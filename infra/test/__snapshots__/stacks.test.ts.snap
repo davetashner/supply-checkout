@@ -1221,14 +1221,368 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
 
 exports[`stack layout > matches the template snapshots > supply-checkout-prod-us-east-1-identity 1`] = `
 {
+  "Mappings": {
+    "AWSCloudFrontPartitionHostedZoneIdMap": {
+      "aws": {
+        "zoneId": "Z2FDTNDATAQYW2",
+      },
+      "aws-cn": {
+        "zoneId": "Z3RFFRIM2A3IF5",
+      },
+    },
+  },
   "Parameters": {
     "BootstrapVersion": {
       "Default": "/cdk-bootstrap/hnb659fds/version",
       "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
       "Type": "AWS::SSM::Parameter::Value<String>",
     },
+    "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Default": "/supply-checkout/prod/dns/hosted-zone-id",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+    "SsmParameterValuesupplycheckoutproddomainauthcertificatearnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Default": "/supply-checkout/prod/domain/auth-certificate-arn",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
   },
   "Resources": {
+    "AuthAlias675B1A2A": {
+      "Properties": {
+        "AliasTarget": {
+          "DNSName": {
+            "Fn::GetAtt": [
+              "UserPoolDomainD0EA232A",
+              "CloudFrontDistribution",
+            ],
+          },
+          "HostedZoneId": {
+            "Fn::FindInMap": [
+              "AWSCloudFrontPartitionHostedZoneIdMap",
+              {
+                "Ref": "AWS::Partition",
+              },
+              "zoneId",
+            ],
+          },
+        },
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter",
+        },
+        "Name": "auth.supplycheckout.com.",
+        "Type": "A",
+      },
+      "Type": "AWS::Route53::RecordSet",
+    },
+    "AuthAliasIpv6B6216023": {
+      "Properties": {
+        "AliasTarget": {
+          "DNSName": {
+            "Fn::GetAtt": [
+              "UserPoolDomainD0EA232A",
+              "CloudFrontDistribution",
+            ],
+          },
+          "HostedZoneId": {
+            "Fn::FindInMap": [
+              "AWSCloudFrontPartitionHostedZoneIdMap",
+              {
+                "Ref": "AWS::Partition",
+              },
+              "zoneId",
+            ],
+          },
+        },
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter",
+        },
+        "Name": "auth.supplycheckout.com.",
+        "Type": "AAAA",
+      },
+      "Type": "AWS::Route53::RecordSet",
+    },
+    "AuthUrlParamA9737EA1": {
+      "Properties": {
+        "Description": "Managed Login and OAuth endpoints",
+        "Name": "/supply-checkout/prod/identity/auth-url",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "identity",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": "https://auth.supplycheckout.com",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "Branding": {
+      "Properties": {
+        "ClientId": {
+          "Ref": "UserPoolWebClient4C9370B0",
+        },
+        "Settings": {
+          "categories": {
+            "form": {
+              "displayGraphics": true,
+              "instructions": {
+                "enabled": false,
+              },
+              "languageSelector": {
+                "enabled": false,
+              },
+              "location": {
+                "horizontal": "CENTER",
+                "vertical": "CENTER",
+              },
+              "sessionTimerDisplay": "NONE",
+            },
+            "global": {
+              "colorSchemeMode": "DYNAMIC",
+              "pageFooter": {
+                "enabled": false,
+              },
+              "pageHeader": {
+                "enabled": false,
+              },
+              "spacingDensity": "REGULAR",
+            },
+          },
+          "componentClasses": {
+            "buttons": {
+              "borderRadius": 10,
+            },
+            "divider": {
+              "darkMode": {
+                "borderColor": "2b3632ff",
+              },
+              "lightMode": {
+                "borderColor": "d2dbd6ff",
+              },
+            },
+            "focusState": {
+              "darkMode": {
+                "borderColor": "43c3a0ff",
+              },
+              "lightMode": {
+                "borderColor": "0e6b58ff",
+              },
+            },
+            "input": {
+              "borderRadius": 10,
+              "darkMode": {
+                "defaults": {
+                  "backgroundColor": "18201dff",
+                  "borderColor": "2b3632ff",
+                },
+                "placeholderColor": "95a69fff",
+              },
+              "lightMode": {
+                "defaults": {
+                  "backgroundColor": "ffffffff",
+                  "borderColor": "d2dbd6ff",
+                },
+                "placeholderColor": "56655fff",
+              },
+            },
+            "inputDescription": {
+              "darkMode": {
+                "textColor": "95a69fff",
+              },
+              "lightMode": {
+                "textColor": "56655fff",
+              },
+            },
+            "inputLabel": {
+              "darkMode": {
+                "textColor": "e3ece8ff",
+              },
+              "lightMode": {
+                "textColor": "17211eff",
+              },
+            },
+            "link": {
+              "darkMode": {
+                "defaults": {
+                  "textColor": "43c3a0ff",
+                },
+                "hover": {
+                  "textColor": "6fd3b7ff",
+                },
+              },
+              "lightMode": {
+                "defaults": {
+                  "textColor": "0e6b58ff",
+                },
+                "hover": {
+                  "textColor": "0a5546ff",
+                },
+              },
+            },
+          },
+          "components": {
+            "alert": {
+              "borderRadius": 10,
+              "darkMode": {
+                "error": {
+                  "backgroundColor": "3c1c19ff",
+                  "borderColor": "f08a80ff",
+                },
+              },
+              "lightMode": {
+                "error": {
+                  "backgroundColor": "f7dedbff",
+                  "borderColor": "b3261eff",
+                },
+              },
+            },
+            "form": {
+              "backgroundImage": {
+                "enabled": false,
+              },
+              "borderRadius": 14,
+              "darkMode": {
+                "backgroundColor": "18201dff",
+                "borderColor": "2b3632ff",
+              },
+              "lightMode": {
+                "backgroundColor": "ffffffff",
+                "borderColor": "d2dbd6ff",
+              },
+              "logo": {
+                "enabled": false,
+                "formInclusion": "IN",
+                "location": "CENTER",
+                "position": "TOP",
+              },
+            },
+            "pageBackground": {
+              "darkMode": {
+                "color": "101614ff",
+              },
+              "image": {
+                "enabled": false,
+              },
+              "lightMode": {
+                "color": "edf1eeff",
+              },
+            },
+            "pageText": {
+              "darkMode": {
+                "bodyColor": "e3ece8ff",
+                "descriptionColor": "95a69fff",
+                "headingColor": "e3ece8ff",
+              },
+              "lightMode": {
+                "bodyColor": "17211eff",
+                "descriptionColor": "56655fff",
+                "headingColor": "17211eff",
+              },
+            },
+            "primaryButton": {
+              "darkMode": {
+                "active": {
+                  "backgroundColor": "6fd3b7ff",
+                  "textColor": "06231cff",
+                },
+                "defaults": {
+                  "backgroundColor": "43c3a0ff",
+                  "textColor": "06231cff",
+                },
+                "disabled": {
+                  "backgroundColor": "2b3632ff",
+                  "borderColor": "2b3632ff",
+                },
+                "hover": {
+                  "backgroundColor": "6fd3b7ff",
+                  "textColor": "06231cff",
+                },
+              },
+              "lightMode": {
+                "active": {
+                  "backgroundColor": "0a5546ff",
+                  "textColor": "ffffffff",
+                },
+                "defaults": {
+                  "backgroundColor": "0e6b58ff",
+                  "textColor": "ffffffff",
+                },
+                "disabled": {
+                  "backgroundColor": "d2dbd6ff",
+                  "borderColor": "d2dbd6ff",
+                },
+                "hover": {
+                  "backgroundColor": "0a5546ff",
+                  "textColor": "ffffffff",
+                },
+              },
+            },
+            "secondaryButton": {
+              "darkMode": {
+                "active": {
+                  "backgroundColor": "16352dff",
+                  "borderColor": "43c3a0ff",
+                  "textColor": "43c3a0ff",
+                },
+                "defaults": {
+                  "backgroundColor": "18201dff",
+                  "borderColor": "43c3a0ff",
+                  "textColor": "43c3a0ff",
+                },
+                "hover": {
+                  "backgroundColor": "16352dff",
+                  "borderColor": "43c3a0ff",
+                  "textColor": "43c3a0ff",
+                },
+              },
+              "lightMode": {
+                "active": {
+                  "backgroundColor": "d5ebe4ff",
+                  "borderColor": "0e6b58ff",
+                  "textColor": "0e6b58ff",
+                },
+                "defaults": {
+                  "backgroundColor": "ffffffff",
+                  "borderColor": "0e6b58ff",
+                  "textColor": "0e6b58ff",
+                },
+                "hover": {
+                  "backgroundColor": "d5ebe4ff",
+                  "borderColor": "0e6b58ff",
+                  "textColor": "0e6b58ff",
+                },
+              },
+            },
+          },
+        },
+        "UserPoolId": {
+          "Ref": "UserPool6BA7E5F2",
+        },
+      },
+      "Type": "AWS::Cognito::ManagedLoginBranding",
+    },
+    "IssuerUrlParamE63C959D": {
+      "Properties": {
+        "Description": "JWT issuer for the API authorizer",
+        "Name": "/supply-checkout/prod/identity/issuer-url",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "identity",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "UserPool6BA7E5F2",
+            "ProviderURL",
+          ],
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
     "StackInfoC49BCBCF": {
       "Properties": {
         "Description": "Supply Checkout identity stack (stateful)",
@@ -1242,6 +1596,225 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
         },
         "Type": "String",
         "Value": "{"stackName":"supply-checkout-prod-us-east-1-identity","layer":"stateful"}",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "UserPool6BA7E5F2": {
+      "DeletionPolicy": "Retain",
+      "Properties": {
+        "AccountRecoverySetting": {
+          "RecoveryMechanisms": [
+            {
+              "Name": "verified_email",
+              "Priority": 1,
+            },
+          ],
+        },
+        "AdminCreateUserConfig": {
+          "AllowAdminCreateUserOnly": false,
+        },
+        "AutoVerifiedAttributes": [
+          "email",
+        ],
+        "DeletionProtection": "ACTIVE",
+        "EmailConfiguration": {
+          "EmailSendingAccount": "DEVELOPER",
+          "From": "Supply Checkout <noreply@supplycheckout.com>",
+          "SourceArn": {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition",
+                },
+                ":ses:us-east-1:",
+                {
+                  "Ref": "AWS::AccountId",
+                },
+                ":identity/supplycheckout.com",
+              ],
+            ],
+          },
+        },
+        "EmailVerificationMessage": "Your Supply Checkout verification code is {####}. It expires in 24 hours.",
+        "EmailVerificationSubject": "Your Supply Checkout verification code",
+        "EnabledMfas": [
+          "SOFTWARE_TOKEN_MFA",
+        ],
+        "MfaConfiguration": "OPTIONAL",
+        "Policies": {
+          "PasswordPolicy": {
+            "MinimumLength": 12,
+            "RequireLowercase": true,
+            "RequireNumbers": true,
+            "RequireSymbols": true,
+            "RequireUppercase": true,
+            "TemporaryPasswordValidityDays": 3,
+          },
+          "SignInPolicy": {
+            "AllowedFirstAuthFactors": [
+              "PASSWORD",
+              "EMAIL_OTP",
+              "WEB_AUTHN",
+            ],
+          },
+        },
+        "Schema": [
+          {
+            "Mutable": true,
+            "Name": "email",
+            "Required": true,
+          },
+        ],
+        "SmsVerificationMessage": "The verification code to your new account is {####}",
+        "UserAttributeUpdateSettings": {
+          "AttributesRequireVerificationBeforeUpdate": [
+            "email",
+          ],
+        },
+        "UserPoolName": "supply-checkout-prod",
+        "UserPoolTags": {
+          "app": "supply-checkout",
+          "component": "identity",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk",
+        },
+        "UserPoolTier": "ESSENTIALS",
+        "UsernameAttributes": [
+          "email",
+        ],
+        "UsernameConfiguration": {
+          "CaseSensitive": false,
+        },
+        "VerificationMessageTemplate": {
+          "DefaultEmailOption": "CONFIRM_WITH_CODE",
+          "EmailMessage": "Your Supply Checkout verification code is {####}. It expires in 24 hours.",
+          "EmailSubject": "Your Supply Checkout verification code",
+          "SmsMessage": "The verification code to your new account is {####}",
+        },
+        "WebAuthnRelyingPartyID": "auth.supplycheckout.com",
+        "WebAuthnUserVerification": "preferred",
+      },
+      "Type": "AWS::Cognito::UserPool",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "UserPoolArnParam5D65BFDA": {
+      "Properties": {
+        "Description": "Cognito user pool ARN",
+        "Name": "/supply-checkout/prod/identity/user-pool-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "identity",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "UserPool6BA7E5F2",
+            "Arn",
+          ],
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "UserPoolDomainD0EA232A": {
+      "Properties": {
+        "CustomDomainConfig": {
+          "CertificateArn": {
+            "Ref": "SsmParameterValuesupplycheckoutproddomainauthcertificatearnC96584B6F00A464EAD1953AFF4B05118Parameter",
+          },
+        },
+        "Domain": "auth.supplycheckout.com",
+        "ManagedLoginVersion": 2,
+        "UserPoolId": {
+          "Ref": "UserPool6BA7E5F2",
+        },
+      },
+      "Type": "AWS::Cognito::UserPoolDomain",
+    },
+    "UserPoolIdParam81D6760E": {
+      "Properties": {
+        "Description": "Cognito user pool ID",
+        "Name": "/supply-checkout/prod/identity/user-pool-id",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "identity",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "UserPool6BA7E5F2",
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "UserPoolWebClient4C9370B0": {
+      "Properties": {
+        "AccessTokenValidity": 60,
+        "AllowedOAuthFlows": [
+          "code",
+        ],
+        "AllowedOAuthFlowsUserPoolClient": true,
+        "AllowedOAuthScopes": [
+          "openid",
+          "email",
+          "profile",
+          "aws.cognito.signin.user.admin",
+        ],
+        "CallbackURLs": [
+          "https://app.supplycheckout.com/",
+        ],
+        "ClientName": "web",
+        "EnableTokenRevocation": true,
+        "ExplicitAuthFlows": [
+          "ALLOW_USER_AUTH",
+        ],
+        "GenerateSecret": false,
+        "IdTokenValidity": 60,
+        "LogoutURLs": [
+          "https://app.supplycheckout.com/",
+        ],
+        "PreventUserExistenceErrors": "ENABLED",
+        "RefreshTokenRotation": {
+          "Feature": "ENABLED",
+          "RetryGracePeriodSeconds": 10,
+        },
+        "RefreshTokenValidity": 43200,
+        "SupportedIdentityProviders": [
+          "COGNITO",
+        ],
+        "TokenValidityUnits": {
+          "AccessToken": "minutes",
+          "IdToken": "minutes",
+          "RefreshToken": "minutes",
+        },
+        "UserPoolId": {
+          "Ref": "UserPool6BA7E5F2",
+        },
+      },
+      "Type": "AWS::Cognito::UserPoolClient",
+    },
+    "WebClientIdParam7E9E0B6A": {
+      "Properties": {
+        "Description": "Web app client ID (public, PKCE): the JWT audience",
+        "Name": "/supply-checkout/prod/identity/web-client-id",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "identity",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "UserPoolWebClient4C9370B0",
+        },
       },
       "Type": "AWS::SSM::Parameter",
     },

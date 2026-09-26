@@ -40,7 +40,8 @@ export interface SupplyCheckoutStacks {
  * Primary region only: identity (stateful). GLOBAL_SERVICES_REGION: web
  * (stateless, CloudFront and WAF; needs every region's data stack for its
  * origin buckets). Identity and web also wait for the domain stack in
- * GLOBAL_SERVICES_REGION, which holds their certificates.
+ * GLOBAL_SERVICES_REGION, which holds their certificates. Identity waits for
+ * web too (its apex record), and for the primary region's domain stack (SES).
  */
 export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyCheckoutStacks {
   Tags.of(app).add("app", "supply-checkout");
@@ -61,6 +62,8 @@ export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyChe
 
   const identity = new IdentityStack(app, config, config.primaryRegion);
   identity.addStackDependency(globalDomain);
+  // The SES domain identity Cognito sends from is in the primary region's domain stack.
+  identity.addStackDependency(domain[config.primaryRegion] as DomainStack);
   const regions: Record<string, RegionStacks> = {};
   for (const region of config.regions) {
     const data = new DataStack(app, config, region);
@@ -80,6 +83,9 @@ export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyChe
   const web = new WebStack(app, config, GLOBAL_SERVICES_REGION);
   for (const { data } of Object.values(regions)) web.addStackDependency(data);
   web.addStackDependency(globalDomain);
+  // Cognito won't create auth.<domain> until the apex resolves, and the web
+  // stack's alias records are what make it resolve.
+  identity.addStackDependency(web);
 
   const all = [
     ...Object.values(domain),
