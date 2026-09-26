@@ -18,7 +18,7 @@ The design below is partly built. This table says which parts are on `main` toda
 | Live updates: AppSync Events, subscribe authorizer, stream consumer with a dead-letter queue | Built | PR #41 |
 | CI gates (lint, tests, cdk-nag synth, CodeQL, audit, secret scan) and release-please | Built | `.github/workflows/` |
 | Runtime adapter: the web app on the AWS API (bead `a2b`) | Planned | |
-| Atomic checkout, return and stock-adjust commands, stock history (bead `1dg.1`, [section 4](#4-checking-out-and-returning)) | Built | This PR; the app switches to them with the adapter (`a2b`) |
+| Atomic checkout, return and stock-adjust commands, stock history (bead `1dg.1`, [section 4](#4-checking-out-and-returning)) | Built | PR #49; the app switches to them with the adapter (`a2b`) |
 | Sending invites, member removal | Planned | |
 | Billing: Stripe Checkout, webhook, SQS worker, access rules (beads `x0l`, `2kl`, `qdx`) | Planned | |
 | Receipt reading with Bedrock | Planned | |
