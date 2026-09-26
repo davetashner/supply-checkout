@@ -299,6 +299,8 @@ describe("defaults for every function and log group", () => {
     testFunction(stack, "Plain");
     testFunction(stack, "PassThrough", Tracing.PASS_THROUGH);
     new LogGroup(stack, "Kept", { retention: RetentionDays.ONE_WEEK });
+    // No retention: CDK writes its default of two years
+    new LogGroup(stack, "Unset");
     return { app, api: stack };
   }
 
@@ -326,7 +328,22 @@ describe("defaults for every function and log group", () => {
     const t = Template.fromStack(withFunctions().api);
     expect(LOG_RETENTION).toBe(365);
     const retentions = Object.values(t.findResources("AWS::Logs::LogGroup")).map((g) => g.Properties.RetentionInDays);
-    expect(retentions.sort()).toEqual([365, 365, 7]);
+    expect(retentions.sort()).toEqual([365, 365, 365, 7]);
+  });
+
+  it.each([
+    ["the default build", {}, {}],
+    ["one region", {}, { regions: [WEST], primaryRegion: WEST }],
+  ] as const)("keeps every log group in every stack for LOG_RETENTION, in %s", (_name, context, overrides) => {
+    const { stacks } = build({ [MANAGED_LOG_GROUPS]: true, ...context }, overrides);
+    let count = 0;
+    for (const stack of stacks.all) {
+      for (const [id, group] of Object.entries(Template.fromStack(stack).findResources("AWS::Logs::LogGroup"))) {
+        expect(group.Properties?.RetentionInDays, `${stack.stackName} ${id}`).toBe(LOG_RETENTION);
+        count++;
+      }
+    }
+    expect(count).toBeGreaterThan(0);
   });
 
   it("leaves nothing for cdk-nag to find", () => {

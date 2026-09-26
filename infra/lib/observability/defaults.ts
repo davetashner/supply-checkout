@@ -15,16 +15,21 @@ import type { DeploymentConfig } from "../config.js";
  */
 export const LOG_RETENTION = RetentionDays.ONE_YEAR;
 
+/** What `new LogGroup()` sets when given no retention. */
+const CDK_DEFAULT_RETENTION = RetentionDays.TWO_YEARS;
+
 /**
  * Applied to the whole app (lib/supply-checkout.ts), so every Lambda function
  * and log group added later gets the same observability settings without
  * remembering to ask for them:
  *
- * - Log groups without a retention get LOG_RETENTION, and so does the log
- *   group CDK makes for each function (its default is two years; the
- *   `@aws-cdk/aws-lambda:useCdkManagedLogGroup` flag in cdk.json makes it).
- *   Any other explicit retention wins; a function that needs one passes its
- *   own `logGroup`.
+ * - Every log group gets LOG_RETENTION unless it chose another retention.
+ *   `new LogGroup()` with no `retention` writes CDK's default of two years
+ *   into the template, indistinguishable from asking for two years, so the
+ *   aspect treats two years as unset too; so does the log group CDK makes for
+ *   each function (the `@aws-cdk/aws-lambda:useCdkManagedLogGroup` flag in
+ *   cdk.json makes it). Any other explicit retention wins; a function that
+ *   needs one passes its own `logGroup`.
  * - Functions get X-Ray active tracing (with the two X-Ray write permissions,
  *   in a policy of their own), JSON log format, and the environment variables
  *   backend/src/observability reads: the metrics namespace and the
@@ -38,7 +43,7 @@ export class ObservabilityDefaults implements IAspect {
   }
 
   visit(node: IConstruct): void {
-    if (node instanceof CfnLogGroup && node.retentionInDays === undefined) {
+    if (node instanceof CfnLogGroup && (node.retentionInDays === undefined || node.retentionInDays === CDK_DEFAULT_RETENTION)) {
       node.retentionInDays = LOG_RETENTION;
     }
     if (node instanceof LambdaFunction) this.function(node);
