@@ -44,6 +44,7 @@ npm run hooks:install    # once per clone: pre-commit check for AWS IDs, emails 
 npx playwright install chromium webkit firefox
 npm run check            # lint + all suites: artifact in desktop Chrome and iPhone Safari, web in every supported browser, against both builds
 npm run test:coverage    # desktop Chrome with the 98% coverage gate, for both builds
+(cd backend && npm run test:ddb)   # backend tests against DynamoDB Local in a container (needs Docker or colima)
 ```
 
 - **Mind the laptop's memory.** Full runs have used up its RAM and swap and frozen it. Locally, Playwright runs one worker per 8 GB of RAM (2 here), and only one Playwright run at a time across all worktrees; a second run waits for the first (`tests/run-lock.js`). Don't pass a higher `--workers`, and don't get around the lock. While iterating, run one file in one browser (`npx playwright test tests/<file> --project=desktop-chrome`). Run `npm run check` once, before opening the PR.
