@@ -17,12 +17,14 @@
 // artifact's storage count write, or nothing, since the command moved stock already), and for
 // a return, how many came back and the line as it is now. (Not `then`: an object with a
 // `then` method is a thenable, and awaiting it would call it.)
+import { WEB } from "./build.js";
 import { int } from "./format.js";
 
 const nothing = async () => true;
 
 async function move(db, action, command, sheetId, body, local) {
-  if (db.command) return { after: nothing, ...(await db.command(command, sheetId, body, action)) };
+  // WEB: the artifact build leaves this path out, since claude.ai's db has no commands (src/build.js)
+  if (WEB && db.command) return { after: nothing, ...(await db.command(command, sheetId, body, action)) };
   await db.doc("sheets/" + sheetId).update({ items: { [body.productKey]: local.patch } });
   return local;
 }
