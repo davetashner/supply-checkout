@@ -219,6 +219,36 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
     }
   }
 
+  // Stock outside a sheet (docs/api/commands.md): POST products/<key>/stock, one transaction
+  // that changes the stock and records a movement saying why. A 409 fetches the item, as a
+  // document write's does, and passes the error on.
+  async function adjustStock(key, body, action) {
+    const operation = operationId(action, ["stock", key, body]);
+    try {
+      put("products", key, (await api("POST", `${docPath("products", key)}/stock`, { operationId: operation, ...body })).product);
+    } catch (e) {
+      if (e.code === "aborted") await fetchDoc("products", key);
+      throw e;
+    }
+  }
+
+  // An item saved from the inventory form or a receipt (src/moves.js saveItem). A PUT replaces
+  // the whole item, so it carries the stock of the copy it's made against, unchanged (the
+  // version check refuses it if stock changed since); the new stock goes through the stock
+  // command, after the item exists. A count that matches what's stored changes nothing. The
+  // web build doesn't stop counting an item: a blank count leaves its stock as it is.
+  async function saveItem(key, body, change, action) {
+    const data = { ...body }, held = coll("products").docs.get(key);
+    delete data.stock;
+    if (held && typeof held.data.stock === "number") data.stock = held.data.stock;
+    await docRef("products/" + key).set(data);
+    const stored = coll("products").docs.get(key).data.stock;
+    const changes = change.reason === "receipt"
+      ? change.lines.map((l) => [l.action, { reason: "receipt", quantity: l.quantity, unitCost: l.unitCost }])
+      : change.count === undefined || change.count === stored ? [] : [[action, { reason: "count", count: change.count }]];
+    for (const [a, b] of changes) await adjustStock(key, b, a);
+  }
+
   function query(name, order) {
     return {
       orderBy: (field, dir = "asc") => query(name, { field, dir }),
@@ -240,6 +270,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
     },
     doc: docRef,
     command,
+    saveItem,
     // A new access token: reconnect live updates with it
     reconnect: () => live.reconnect(),
   };
