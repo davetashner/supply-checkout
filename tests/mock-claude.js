@@ -2,7 +2,8 @@
 // Injected with page.addInitScript, so it must be self-contained.
 export function installMockClaude(opts) {
   const {
-    seed = {}, canWrite = true, userId = "u_test", receipt = null,
+    seed = {}, canWrite = true, userId = "u_test", userName = "Test User", avatarUrl = "data:,", receipt = null,
+    sampleDelay = 0, // milliseconds sample.json takes to answer, like a real model call
     // Failure modes: a capability that isn't available, or calls that reject
     unavailable = [], writeError = null, sampleError = null,
     // More failure modes, all off by default:
@@ -96,7 +97,7 @@ export function installMockClaude(opts) {
   }
 
   const db = { doc: docRef, collection: collRef };
-  const profile = (id) => ({ id, name: id === userId ? "Test User" : "", avatarUrl: "data:,", color: "#336", email: null, isMe: id === userId, guest: false });
+  const profile = (id) => ({ id, name: id === userId ? userName : "", avatarUrl, color: "#336", email: null, isMe: id === userId, guest: false });
   const fails = (name) => { if (userErrors.includes(name)) throw { code: "unavailable", message: "simulated " + name + " failure" }; };
   const user = {
     id: async () => { fails("id"); return userId; },
@@ -117,6 +118,12 @@ export function installMockClaude(opts) {
   sample.json = async (prompt, { signal } = {}) => {
     mock.sampleCalls.push(prompt);
     if (sampleHang) await new Promise((_, reject) => signal.addEventListener("abort", () => reject({ code: "cancelled", message: "cancelled" })));
+    if (sampleDelay) {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, sampleDelay);
+        signal?.addEventListener("abort", () => { clearTimeout(timer); reject({ code: "cancelled", message: "cancelled" }); });
+      });
+    }
     if (sampleError) throw { code: sampleError, message: "simulated " + sampleError };
     return clone(receipt);
   };

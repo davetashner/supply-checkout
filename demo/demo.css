@@ -1,0 +1,4 @@
+/* The demo banner, above the app. Uses the app's colors, so it follows light and dark mode. */
+.demo-banner{margin:12px auto 0;max-width:860px;border:1px solid var(--accent);background:var(--accent-soft);color:var(--ink);border-radius:10px;padding:8px 14px;font-size:14px;overflow-wrap:anywhere}
+.demo-banner p{margin:0}
+.demo-banner strong{font-weight:600}

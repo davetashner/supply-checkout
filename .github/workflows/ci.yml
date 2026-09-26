@@ -136,7 +136,8 @@ jobs:
       fail-fast: false
       matrix:
         # artifact: the single index.html published to claude.ai
-        # web: the hashed static bundle for CloudFront
+        # web: the hashed static bundle for CloudFront, plus the demo build for
+        # supplycheckout.com (tests/demo.spec.js runs with the web build)
         build: [artifact, web]
         project: [desktop-chrome, iphone-safari]
         include:

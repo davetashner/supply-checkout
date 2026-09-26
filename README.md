@@ -8,7 +8,7 @@ A shared supply tracker for taking supplies from storage to client jobs and brin
 
 The app runs as a [Claude artifact](https://claude.ai/artifact/LcSb29dTE99AK4N6iuVFrj). claude.ai provides the shared database, sign-in, file downloads and receipt reading through `window.claude`; there is no server to run.
 
-The source is a small [Vite](https://vite.dev) project with no UI framework. One build of it is the single `index.html` published to claude.ai; another is a static bundle for the AWS version ([ADR 0004](docs/adr/0004-runtime-adapter.md)).
+The source is a small [Vite](https://vite.dev) project with no UI framework. One build of it is the single `index.html` published to claude.ai; another is a static bundle for the AWS version ([ADR 0004](docs/adr/0004-runtime-adapter.md)); a third is a labeled demo of that bundle for supplycheckout.com, which runs entirely in the browser until sign-in and the API exist.
 
 ## Repository layout
 
@@ -22,9 +22,10 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `src/dom.js` | `$`, toast, modals, two-tap confirm buttons and number steppers. |
 | `src/barcode.js` | Reading barcodes from photos (the browser's detector, or ZXing). |
 | `src/receipt-prompt.js` | The receipt-reading prompt and its error messages. |
-| `vite.config.js` | The two builds: `artifact` and `web` (below). |
+| `vite.config.js` | The builds: `artifact`, `web` and `demo` (below). |
+| `demo/` | The demo build's entry (`main.js`: the in-memory runtime and the banner's styles) and the demo data (`data.js`), which `npm run dev` also uses. |
 | `dist/` | Build output (not committed). |
-| `scripts/builds.mjs` | Builds and serves either build for the tests. |
+| `scripts/builds.mjs` | Builds and serves the builds for the tests. |
 | `scripts/page.mjs` | Wraps the artifact in the same document skeleton claude.ai adds at publish time. |
 | `scripts/validate-html.mjs` | HTML validation (html-validate). |
 | `scripts/dev-server.mjs` | Local dev server with the mock runtime (`npm run dev`). |
@@ -61,10 +62,13 @@ Microsoft Edge is a system install rather than one of Playwright's own browsers.
 | --- | --- | --- |
 | `npm run build:artifact` | `dist/artifact/index.html` | claude.ai. One self-contained file with the script and styles inlined. Like the hand-written `index.html` it replaces, it's a page fragment (claude.ai adds the doctype, `<head>` and `<body>`), and it only loads fonts from Google Fonts and ZXing from cdn.jsdelivr.net. It isn't minified, so it can be read before publishing. |
 | `npm run build:web` | `dist/web/` | CloudFront. `index.html` plus minified, content-hashed files in `assets/`, which can be cached forever. |
+| `npm run build:demo` | `dist/demo/` | supplycheckout.com, until sign-in and the API exist. The web build with `demo/main.js` running first: the in-memory runtime from the tests with the `npm run dev` demo data, receipt reading that returns a canned receipt after a pause, and CSV downloads saved in the browser. A banner says it's a demo, that nothing is saved and that data resets on reload. It makes no requests except to its own files, Google Fonts and cdn.jsdelivr.net. Asset URLs are relative (`./assets/…`), so the folder works from any path. |
 
-`npm run build` runs both. Each writes hidden source maps (`dist/artifact/app.js.map`, `dist/web/assets/*.js.map`) with no `sourceMappingURL` comment in the code; the coverage run uses them.
+`npm run build` runs all three. Each writes hidden source maps (`dist/artifact/app.js.map`, `dist/web/assets/*.js.map`, `dist/demo/assets/*.js.map`) with no `sourceMappingURL` comment in the code; the coverage run uses them.
 
-`npm run lint` runs ESLint on `src/`, the scripts and the tests, then builds both and validates their HTML. `npm run check` also runs the public-safety check below and every test suite against both builds.
+The demo's own code lives in `demo/`, outside `src/`, so the artifact and web builds don't include it and it isn't counted in `src/`'s coverage. To publish it, upload `dist/demo/` as is: `index.html` should be served without long caching, and everything in `assets/` is content-hashed and can be cached forever. The `.map` files don't need to be uploaded.
+
+`npm run lint` runs ESLint on `src/`, `demo/`, the scripts and the tests, then builds all three and validates their HTML. `npm run check` also runs the public-safety check below and every test suite against both builds.
 
 Run `npm run hooks:install` once per clone. It installs a pre-commit hook (`scripts/git-hooks/pre-commit`) that blocks commits containing AWS account or SSO identifiers, personal email addresses, or credentials, because this repository is public, and commits that name an AWS region outside `infra/lib/config.ts`.
 
@@ -183,7 +187,7 @@ No Playwright project exercises the camera, the phone's photo picker or real tou
 
 ## Tests
 
-`npm test` runs these Playwright suites against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`), once for each build: the artifact build in desktop Chrome and an iPhone-sized Safari (WebKit), and the web build in every browser and device project (above). `npm run test:artifact` and `npm run test:web` run one build; `BUILD=web npx playwright test …` does the same for a single file or test, and `--project=desktop-firefox` picks one browser. Each run builds the app first (`tests/global-setup.js`), so it always tests the current source.
+`npm test` runs these Playwright suites against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`), once for each build: the artifact build in desktop Chrome and an iPhone-sized Safari (WebKit), and the web build in every browser and device project (above). `npm run test:artifact` and `npm run test:web` run one build (the web build's run also builds and tests the demo); `BUILD=web npx playwright test …` does the same for a single file or test, and `--project=desktop-firefox` picks one browser. Each run builds the app first (`tests/global-setup.js`), so it always tests the current source.
 
 ### Running tests on a laptop
 
@@ -208,6 +212,8 @@ While working on a change, run just the file and browser you're touching, e.g. `
 | `failures.spec.js` | Every kind of save that can fail leaves the screen as it was |
 | `legacy-data.spec.js` | Sheets and items missing fields that older versions didn't save |
 | `concurrent.spec.js` | Someone else changing or deleting data while a form is open |
+| `demo.spec.js` | The demo build (web runs only): the banner, a checkout, a receipt and a download with no requests outside the page, Google Fonts and cdn.jsdelivr.net; a reload starting over; the banner's accessibility and 320px layout |
+| `dev-server.spec.js` | `npm run dev` and its query-string options |
 
 Every test also fails if the page throws an uncaught error or logs a console error.
 
@@ -237,7 +243,7 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | Job | Gate |
 | --- | --- |
 | PR title | Conventional Commits format |
-| Lint and validate HTML | ESLint on `src/`, scripts and tests; builds both and runs html-validate on each |
+| Lint and validate HTML | ESLint on `src/`, `demo/`, scripts and tests; builds all three and runs html-validate on each |
 | Lint GitHub workflows | actionlint |
 | No region names outside the config module | `scripts/check-region-strings.mjs`: fails on any AWS region name in `infra/`, `backend/` or `src/` outside `infra/lib/config.ts` (ADR 0010) |
 | Shell scripts | shellcheck on `scripts/*.sh`, and the `land-pr.sh` tests against a fake `gh` |
@@ -246,7 +252,7 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | CodeQL (javascript-typescript), CodeQL (actions) | CodeQL `security-extended` queries on the app, scripts, tests and workflows (`.github/workflows/codeql.yml`, which also runs weekly). Results go to the repository's code scanning alerts |
 | Backend | Only when `backend/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint (with the DynamoDB ban), and the data-access tests against DynamoDB Local, which runs as a service container |
 | Infra | Only when `infra/`, `backend/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint, the CDK unit and snapshot tests, and a synth with cdk-nag for the deployed region and for both regions; the tests also synth every stack, identity and web included, in each region on its own |
-| Tests (browser, artifact or web build) | All test suites, in twelve parallel jobs: desktop Chrome and iPhone Safari against each build, and desktop Firefox, Safari and Edge, Android Chrome (Pixel portrait and landscape, Galaxy) and iPad Safari (portrait and landscape) against the web build. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
+| Tests (browser, artifact or web build) | All test suites, in twelve parallel jobs: desktop Chrome and iPhone Safari against each build, and desktop Firefox, Safari and Edge, Android Chrome (Pixel portrait and landscape, Galaxy) and iPad Safari (portrait and landscape) against the web build. The web jobs also test the demo build. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
 
 ## Releases
 

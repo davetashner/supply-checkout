@@ -1,10 +1,13 @@
-// Two builds of the same app in src/:
+// Three builds of the same app in src/:
 //
 //   vite build --mode artifact   dist/artifact/index.html: one self-contained file for
 //                                claude.ai, with the script and styles inlined
 //   vite build --mode web        dist/web/: index.html plus hashed assets, for CloudFront
+//   vite build --mode demo       dist/demo/: the web build in demo mode, for supplycheckout.com
+//                                until sign-in exists (demo/main.js). Relative URLs, so it
+//                                works from any path.
 //
-// Both write hidden source maps (no sourceMappingURL comment in the output), which
+// Each writes hidden source maps (no sourceMappingURL comment in the output), which
 // the coverage run uses to report by src/ file and line.
 import { fileURLToPath } from "node:url";
 import browserslist from "browserslist";
@@ -54,6 +57,32 @@ const artifactFragment = () => ({
   },
 });
 
+// The demo build: the app with demo/main.js running first (the in-memory runtime
+// and demo data), a banner saying it's a demo, and its own title. Only this build
+// gets it; demo/ is outside src/, so it isn't part of src/'s coverage.
+const DEMO_BANNER = `<aside class="demo-banner" aria-label="Demo">
+  <p><strong>Demo:</strong> nothing you enter is saved. Data resets when you reload.</p>
+</aside>
+`;
+const demoPage = () => ({
+  name: "supply-checkout:demo-page",
+  transformIndexHtml: {
+    order: "pre",
+    handler(html) {
+      const steps = [
+        ["<title>Supply Checkout</title>", "<title>Supply Checkout demo</title>"],
+        ["<body>\n", "<body>\n" + DEMO_BANNER],
+        ['<script type="module" src="./main.js"></script>', '<script type="module" src="../demo/main.js"></script>\n<script type="module" src="./main.js"></script>'],
+      ];
+      for (const [from, to] of steps) {
+        if (!html.includes(from)) throw new Error(`src/index.html has no ${from}`);
+        html = html.replace(from, to);
+      }
+      return html;
+    },
+  },
+});
+
 // The oldest version of each supported browser, from the browserslist field in
 // package.json, as esbuild-style targets (["chrome153", "edge151", ...]). Vite lowers
 // JavaScript syntax and CSS for these, in both builds.
@@ -79,10 +108,12 @@ function compareVersions(a, b) {
 }
 
 export default defineConfig(({ mode }) => {
-  if (mode !== "artifact" && mode !== "web") throw new Error("Build with --mode artifact or --mode web");
+  if (!["artifact", "web", "demo"].includes(mode)) throw new Error("Build with --mode artifact, web or demo");
   const artifact = mode === "artifact";
   return {
     root: fileURLToPath(new URL("src", import.meta.url)),
+    // The demo is uploaded as a folder and may be served from any path
+    base: mode === "demo" ? "./" : "/",
     // No public/ folder: the artifact can only be one file
     publicDir: false,
     build: {
@@ -97,6 +128,6 @@ export default defineConfig(({ mode }) => {
       minify: !artifact,
       cssMinify: !artifact,
     },
-    plugins: artifact ? [viteSingleFile(), keepArtifactSourceMap(), artifactFragment()] : [],
+    plugins: artifact ? [viteSingleFile(), keepArtifactSourceMap(), artifactFragment()] : mode === "demo" ? [demoPage()] : [],
   };
 });
