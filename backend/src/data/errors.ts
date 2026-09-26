@@ -27,7 +27,10 @@ export function conflictOnConditionFailure(message: string): (error: unknown) =>
     if (name === "ConditionalCheckFailedException") throw new ConflictError(message);
     if (name === "TransactionCanceledException") {
       const reasons = (error as { CancellationReasons?: { Code?: string }[] }).CancellationReasons ?? [];
-      if (reasons.some((r) => r.Code === "ConditionalCheckFailed")) throw new ConflictError(message);
+      // TransactionConflict: another transaction on the same items won the race
+      if (reasons.some((r) => r.Code === "ConditionalCheckFailed" || r.Code === "TransactionConflict")) {
+        throw new ConflictError(message);
+      }
     }
     throw error;
   };

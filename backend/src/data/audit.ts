@@ -3,7 +3,7 @@
 
 import { randomUUID } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
-import type { Db } from "./client.js";
+import { type Db, connection } from "./client.js";
 import { ForbiddenError, InvalidInputError } from "./errors.js";
 import { keys, prefixes, teamPartition } from "./keys.js";
 import { type Page, queryPage } from "./query.js";
@@ -45,7 +45,7 @@ export async function recordAudit(
     detail: input.detail,
     expiresAt: Math.floor(now.getTime() / 1000) + AUDIT_RETENTION_DAYS * 24 * 60 * 60,
   };
-  await db.doc.send(new PutCommand({ TableName: db.tableName, Item: { ...keys.audit(ctx.teamId, event.ts, event.eventId), ...event } }));
+  await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: { ...keys.audit(ctx.teamId, event.ts, event.eventId), ...event } }));
   return event;
 }
 
