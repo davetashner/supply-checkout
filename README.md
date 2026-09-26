@@ -15,6 +15,10 @@ The app runs as a [Claude artifact](https://claude.ai/artifact/LcSb29dTE99AK4N6i
 | `index.html` | The whole app. This file is what gets published to claude.ai. |
 | `scripts/page.mjs` | Wraps `index.html` in the same document skeleton claude.ai adds at publish time. |
 | `scripts/validate-html.mjs` | HTML validation (html-validate). |
+| `scripts/dev-server.mjs` | Local dev server with the mock runtime (`npm run dev`). |
+| `scripts/land-pr.sh` | Waits for CI, squash-merges a PR, cleans up its worktree and branch, and closes its beads (`npm run land -- <pr>`). |
+| `scripts/check-public-safety.mjs` | Blocks AWS identifiers, email addresses and credentials from this public repo (pre-commit hook and CI). |
+| `scripts/export-beads.mjs` | Writes the beads backlog export without owner emails (`npm run beads:export`). |
 | `tests/` | Playwright end-to-end tests, run against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`). |
 | `docs/adr/` | Architecture decision records for the AWS subscription product. |
 | `docs/architecture/` | Architecture overview and diagrams (Mermaid). |
@@ -30,6 +34,8 @@ npm ci
 npx playwright install chromium webkit
 npm run check
 ```
+
+`npm run dev` serves the app at http://localhost:5173 against the same in-memory runtime the tests use, with demo sheets, inventory and a receipt, so it can be tried in a browser without publishing to claude.ai. Add `?seed=empty`, `?viewer`, `?nouser`, or `?mock={...}` with any `tests/mock-claude.js` option. Data resets on reload, and edits to `index.html` show on reload.
 
 `npm run lint` runs ESLint on the app's inline script and the tests, then validates the HTML. `npm run check` also runs the public-safety check below and every test suite.
 
