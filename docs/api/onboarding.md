@@ -85,8 +85,9 @@ it. `GET /teams/{teamId}/invites` lists them: `pending`, `failed` (`bounced`,
 `expired`. `DELETE /teams/{teamId}/invites/{inviteId}` revokes one, and
 `POST /teams/{teamId}/invites/{inviteId}/resend` replaces it with a new link
 (a new `id`), pending again. To correct an address, revoke the invite and make
-a new one. Each team can send 50 invites a day and each address can be sent 5
-(429 `quota_exceeded`); an address that's already a member's, or already has a
+a new one. Each team can send 50 invites a day, 3 to any one address, and each
+address can be sent 15 from all teams (429 `quota_exceeded`). The address must
+be a bare `name@example.com` (400 otherwise); an address that's already a member's, or already has a
 live invite to the team, is 409 `aborted` with a message to show. Removing a
 member also revokes their other invites to the team. See
 [openapi.yaml](openapi.yaml) under the `invites` tag.

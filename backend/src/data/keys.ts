@@ -87,6 +87,11 @@ export const keys = {
    * team: the per-invitee limit, so no one can use invites to flood a mailbox.
    */
   invitesToAddress: (emailHash: string, day: string) => ({ PK: inviteLimitPartition(emailHash), SK: `LIMIT#INVITES#${date(day)}` }),
+  /** How many invites a team sent one address (its limit key) on a UTC day: so one team can't use up the address's allowance. */
+  invitesFromTeamToAddress: (teamId: string, emailHash: string, day: string) => ({
+    PK: `TEAM#${id(teamId, "team ID")}`,
+    SK: `LIMIT#INVITES#${date(day)}#${inviteLimitPartition(emailHash).slice(INVITE_LIMIT_PREFIX.length)}`,
+  }),
   webhook: (eventId: string) => ({ PK: `WEBHOOK#${id(eventId, "webhook event ID")}`, SK: "DONE" }),
   /** A checkout, return or stock command's record, for replaying a retry (commands.ts). */
   operation: (teamId: string, operationId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `OP#${id(operationId, "operation ID")}` }),

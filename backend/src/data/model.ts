@@ -128,11 +128,17 @@ export const TEAMS_PER_USER_PER_DAY = 5;
 export const INVITES_PER_TEAM_PER_DAY = 50;
 
 /**
+ * Invites (new or re-sent) one team may send one address per UTC day. Low, so
+ * one team can't use up the address's allowance from every team.
+ */
+export const INVITES_PER_TEAM_ADDRESS_PER_DAY = 3;
+
+/**
  * Invites (new or re-sent) one address may be sent per UTC day, from all teams
  * together. A complaint suppresses the address for Cognito's sign-in codes
  * too, so invites mustn't be a way to flood someone's mailbox.
  */
-export const INVITES_PER_ADDRESS_PER_DAY = 5;
+export const INVITES_PER_ADDRESS_PER_DAY = 15;
 
 /** Teams one user may belong to. It bounds the per-team work /me does (a role session each). */
 export const MAX_TEAMS_PER_USER = 20;
@@ -148,6 +154,45 @@ export function normalizeEmail(value: unknown): string {
   const email = value.normalize("NFKC").trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+$/.test(email) || email.length > 254) throw new InvalidInputError("Invalid email");
   return email;
+}
+
+// A bare addr-spec, lowercase ASCII: a dot-atom local part and a dotted DNS
+// name (international domains in their xn-- form). No display name, angle
+// brackets, quotes, commas, comments or spaces: SES reads a recipient as an
+// RFC 5322 address, and anything more than an addr-spec could send the mail
+// somewhere other than the address that was checked, hashed and limited.
+const ADDR_SPEC = /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
+/**
+ * An address the app may send mail to, or InvalidInputError: normalizeEmail's
+ * form, and also a strict addr-spec (ADDR_SPEC). Invites and the mailer use
+ * it. Matching a signed-in user's verified email to their invites still uses
+ * normalizeEmail, so an unusual but verified address can't lock anyone out;
+ * such an address just can't be invited.
+ */
+export function mailAddress(value: unknown): string {
+  const email = normalizeEmail(value);
+  const at = email.lastIndexOf("@");
+  if (!ADDR_SPEC.test(email) || at > 64) throw new InvalidInputError("Invalid email");
+  return email;
+}
+
+/**
+ * The key the invite limits count an address under: its mailAddress form,
+ * less a `+tag` in the local part, and for Gmail less the dots too (Gmail
+ * delivers all of those to one mailbox). Only for rate limiting: invites are
+ * stored and matched by the address as given.
+ */
+export function inviteLimitKey(value: unknown): string {
+  const email = mailAddress(value);
+  const at = email.lastIndexOf("@");
+  let local = email.slice(0, at).replace(/\+.*$/, "");
+  let domain = email.slice(at + 1);
+  if (domain === "gmail.com" || domain === "googlemail.com") {
+    local = local.replaceAll(".", "");
+    domain = "gmail.com";
+  }
+  return createHash("sha256").update(`${local || email.slice(0, at)}@${domain}`, "utf8").digest("hex");
 }
 
 /**

@@ -203,8 +203,15 @@ describe("mailer", () => {
   it("normalizes the recipient and refuses one that isn't an address", async () => {
     await mailer().send(" Pat@Example.COM ", samples[3] as EmailInput);
     expect(ses.sent[0]?.input.Destination?.ToAddresses).toEqual([INVITEE]);
-    await expect(mailer().send("pat@example.com\r\nBcc: x@example.com", samples[3] as EmailInput)).rejects.toThrow("Invalid email");
+    // Only a bare addr-spec: a display name, a quoted local part, a list or a header
+    // would let SES deliver somewhere other than the address that was checked
+    for (const to of ["pat@example.com\r\nBcc: x@example.com", "x<v@example.com>", "Pat <v@example.com>", '"a"@b.com', "a,b@c.com", "a@b", "a@b.com, v@example.com", "a@-b.com", "a..b@c.com", "(c)a@b.com"]) { // public-safety: allow (deliberate test addresses)
+      await expect(mailer().send(to, samples[3] as EmailInput), to).rejects.toThrow(expect.objectContaining({ name: "EmailNotSentError", code: "InvalidRecipient" }));
+    }
     expect(ses.sent).toHaveLength(1);
+    // Unusual but plain addresses still go
+    await mailer().send("O'Neil+jobs@xn--bcher-kva.example", samples[3] as EmailInput); // public-safety: allow (deliberate test addresses)
+    expect(ses.sent[1]?.input.Destination?.ToAddresses).toEqual(["o'neil+jobs@xn--bcher-kva.example"]); // public-safety: allow (deliberate test addresses)
   });
 
   it("tags a notice with its team only", async () => {

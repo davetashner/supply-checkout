@@ -14,7 +14,7 @@ import type { CognitoUser } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
-import { hashEmail, hashInviteToken, INVITES_PER_ADDRESS_PER_DAY, INVITES_PER_TEAM_PER_DAY } from "../src/data/index.js";
+import { hashEmail, hashInviteToken, inviteLimitKey, INVITES_PER_ADDRESS_PER_DAY, INVITES_PER_TEAM_ADDRESS_PER_DAY, INVITES_PER_TEAM_PER_DAY } from "../src/data/index.js";
 import { INVITE_LIMIT_ATTRIBUTES } from "../src/data/schema.js";
 import type { Observability } from "../src/observability/index.js";
 import { accountPartitions, fakeMailer } from "./helpers.js";
@@ -192,13 +192,14 @@ describe("POST /teams/{teamId}/invites", () => {
 
   it("runs on the team's session plus the invited address's counter, and writes nothing else there", async () => {
     await invite("pat@example.com");
-    expect(scopes).toContainEqual({ userId: OWNER, teamId: "team-a", inviteLimit: hashEmail("pat@example.com") });
+    expect(scopes).toContainEqual({ userId: OWNER, teamId: "team-a", inviteLimit: inviteLimitKey("pat@example.com") });
     // Only the create's own session has the counter's tag
     expect(scopes.filter((s) => s.inviteLimit !== undefined)).toHaveLength(1);
     // IAM allows only UpdateItem on the counter, naming only these attributes, returning nothing
     const counter = writesTo("INVITELIMIT#");
     expect(counter).toEqual([["Update", [...INVITE_LIMIT_ATTRIBUTES].sort(), "NONE"]]);
-    expect(table.get(`INVITELIMIT#${hashEmail("pat@example.com")}`, "LIMIT#INVITES#2026-09-26")).toMatchObject({ count: 1, expiresAt: START / 1000 + 2 * 86400 });
+    expect(table.get(`INVITELIMIT#${inviteLimitKey("pat@example.com")}`, "LIMIT#INVITES#2026-09-26")).toMatchObject({ count: 1, expiresAt: START / 1000 + 2 * 86400 });
+    expect(table.get("TEAM#team-a", `LIMIT#INVITES#2026-09-26#${inviteLimitKey("pat@example.com")}`)).toMatchObject({ count: 1 });
     expect(table.get("TEAM#team-a", "LIMIT#INVITES#2026-09-26")).toMatchObject({ count: 1 });
   });
 
@@ -269,6 +270,15 @@ describe("POST /teams/{teamId}/invites", () => {
       { email: "pat@example.com", role: "viewer", teamName: "Evil Co" },
       { email: "pat@example.com", role: "viewer", ttlDays: 30 },
       { email: `${"x".repeat(250)}@example.com`, role: "viewer" },
+      // Only a bare addr-spec: anything SES would read as a display name, a list or a quoted part
+      { email: "x<v@example.com>", role: "viewer" },
+      { email: "Mallory <v@example.com>", role: "viewer" },
+      { email: '"a"@b.com', role: "viewer" },
+      { email: "a,b@c.com", role: "viewer" }, // public-safety: allow (deliberate test addresses)
+      { email: "a@b", role: "viewer" },
+      { email: "a@b.com;v@example.com", role: "viewer" }, // public-safety: allow (deliberate test addresses)
+      { email: `${"x".repeat(65)}@example.com`, role: "viewer" },
+      { email: "pät@example.com", role: "viewer" },
     ]) {
       expect((await call("POST", "/teams/team-a/invites", OWNER, body)).status, JSON.stringify(body)).toBe(400);
     }
@@ -301,25 +311,51 @@ describe("rate limits", () => {
     expect((await invite("one-more@example.com")).status).toBe(201);
   });
 
+  it(`lets one team send one address ${INVITES_PER_TEAM_ADDRESS_PER_DAY} invites a day, so it can't use up other teams' allowance`, async () => {
+    let id = (await invite("pat@example.com")).body.invite.id as string;
+    for (let i = 1; i < INVITES_PER_TEAM_ADDRESS_PER_DAY; i++) id = (await resend(id)).body.invite.id;
+    expect(await resend(id)).toMatchObject({ status: 429, body: { error: { code: "quota_exceeded", message: "You've sent as many invites as you can for now. Try again tomorrow." } } });
+    expect(stored(id)).toBeDefined();
+    // Another team can still invite them
+    expect((await invite("pat@example.com", "viewer", OTHER_OWNER, "team-b")).status).toBe(201);
+    now += DAY;
+    expect((await resend(id)).status).toBe(201);
+  });
+
   it(`sends one address at most ${INVITES_PER_ADDRESS_PER_DAY} invites a day, from every team together`, async () => {
-    const first = await invite("pat@example.com");
-    let id = first.body.invite.id as string;
-    for (let i = 1; i < INVITES_PER_ADDRESS_PER_DAY; i++) {
-      const again = await resend(id);
-      expect(again.status).toBe(201);
-      id = again.body.invite.id;
+    // Enough teams, each at its own cap for the address, to reach the address's cap
+    const teams = Array.from({ length: INVITES_PER_ADDRESS_PER_DAY / INVITES_PER_TEAM_ADDRESS_PER_DAY }, (_, i) => `team-flood-${i}`);
+    for (const teamId of teams) {
+      team(teamId, teamId, { [OWNER]: "owner" });
+      let id = (await invite("pat@example.com", "viewer", OWNER, teamId)).body.invite.id as string;
+      for (let i = 1; i < INVITES_PER_TEAM_ADDRESS_PER_DAY; i++) id = (await resend(id, OWNER, teamId)).body.invite.id;
     }
     expect(mails.sent).toHaveLength(INVITES_PER_ADDRESS_PER_DAY);
-    // The same address from another team, or another re-send, is refused with the same message
+    // Another team is refused, with the same message
     const elsewhere = await invite("PAT@example.com", "viewer", OTHER_OWNER, "team-b");
     expect(elsewhere).toMatchObject({ status: 429, body: { error: { code: "quota_exceeded", message: "You've sent as many invites as you can for now. Try again tomorrow." } } });
-    expect((await resend(id)).status).toBe(429);
     expect(invitesIn("team-b")).toEqual([]);
-    expect(stored(id)).toBeDefined();
-    // Other addresses still go
-    expect((await invite("quinn@example.com")).status).toBe(201);
+    // Other addresses still go, and tomorrow is a new day
+    expect((await invite("quinn@example.com", "viewer", OTHER_OWNER, "team-b")).status).toBe(201);
     now += DAY;
     expect((await invite("pat@example.com", "viewer", OTHER_OWNER, "team-b")).status).toBe(201);
+  });
+
+  it("counts +tags, and dots in a Gmail address, as the same mailbox", async () => {
+    // Each is a new invite with its own address, but one mailbox's limit
+    for (const [i, email] of ["pat.lee@gmail.com", "patlee+1@gmail.com", "p.a.t.l.e.e+x@googlemail.com"].entries()) { // public-safety: allow (deliberate test addresses)
+      expect((await invite(email)).status, email).toBe(201);
+      expect(stored((mails.sent.at(-1)?.tags.inviteId) as string)).toMatchObject({ email });
+      expect(i).toBeLessThan(INVITES_PER_TEAM_ADDRESS_PER_DAY);
+    }
+    expect((await invite("PatLee+2@Gmail.com")).status).toBe(429); // public-safety: allow (deliberate test addresses)
+    const key = inviteLimitKey("patlee@gmail.com"); // public-safety: allow (deliberate test addresses)
+    expect(table.get(`INVITELIMIT#${key}`, "LIMIT#INVITES#2026-09-26")).toMatchObject({ count: INVITES_PER_TEAM_ADDRESS_PER_DAY });
+    expect(scopes.filter((s) => s.inviteLimit !== undefined).every((s) => s.inviteLimit === key)).toBe(true);
+    // Elsewhere, only the +tag goes, and dots count
+    expect(inviteLimitKey("a.b+c@example.com")).toBe(inviteLimitKey("a.b@example.com"));
+    expect(inviteLimitKey("a.b@example.com")).not.toBe(inviteLimitKey("ab@example.com"));
+    expect(inviteLimitKey("+x@example.com")).not.toBe(inviteLimitKey("x@example.com"));
   });
 });
 

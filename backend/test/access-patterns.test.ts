@@ -25,7 +25,9 @@ import {
   getTeam,
   hashEmail,
   InvalidInputError,
+  inviteLimitKey,
   INVITES_PER_ADDRESS_PER_DAY,
+  INVITES_PER_TEAM_ADDRESS_PER_DAY,
   INVITES_PER_TEAM_PER_DAY,
   LastOwnerError,
   LimitReachedError,
@@ -473,17 +475,21 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await createInvite(db, owner, { email: "team-limit-x@example.com", role: "viewer" }, new Date("2031-01-02T00:00:00.000Z"));
     });
 
-    it(`sends one address at most ${INVITES_PER_ADDRESS_PER_DAY} invites a UTC day, from all teams`, async () => {
-      const teams = await Promise.all([team("Limit A"), team("Limit B")]);
-      const [a, b] = teams.map((x) => x.owner) as [TeamContext, TeamContext];
+    it(`caps one team at ${INVITES_PER_TEAM_ADDRESS_PER_DAY} invites to an address a day, and all teams at ${INVITES_PER_ADDRESS_PER_DAY}`, async () => {
+      const count = INVITES_PER_ADDRESS_PER_DAY / INVITES_PER_TEAM_ADDRESS_PER_DAY;
+      const owners = (await Promise.all(Array.from({ length: count + 1 }, (_, i) => team(`Limit ${i}`)))).map((x) => x.owner);
       const day = new Date("2031-02-01T10:00:00.000Z");
-      let current = await createInvite(db, a, { email: "flooded@example.com", role: "viewer" }, day);
-      for (let i = 1; i < INVITES_PER_ADDRESS_PER_DAY; i++) current = await resendInvite(db, a, current.invite.inviteId, {}, day);
-      await expect(createInvite(db, b, { email: "FLOODED@example.com", role: "viewer" }, day)).rejects.toThrow(LimitReachedError);
-      await expect(resendInvite(db, a, current.invite.inviteId, {}, day)).rejects.toThrow(LimitReachedError);
-      expect(await rawItem(db, `INVITELIMIT#${hashEmail("flooded@example.com")}`, "LIMIT#INVITES#2031-02-01")).toMatchObject({ count: INVITES_PER_ADDRESS_PER_DAY });
-      expect(await listInvites(db, b)).toEqual([]);
-      expect((await createInvite(db, b, { email: "flooded@example.com", role: "viewer" }, new Date("2031-02-02T10:00:00.000Z"))).invite.email).toBe("flooded@example.com");
+      for (const [i, owner] of owners.slice(0, count).entries()) {
+        // A +tag is the same mailbox, for the limits
+        let current = await createInvite(db, owner, { email: i % 2 ? "flooded+x@example.com" : "flooded@example.com", role: "viewer" }, day);
+        for (let n = 1; n < INVITES_PER_TEAM_ADDRESS_PER_DAY; n++) current = await resendInvite(db, owner, current.invite.inviteId, {}, day);
+        if (i === 0) await expect(resendInvite(db, owner, current.invite.inviteId, {}, day)).rejects.toThrow(LimitReachedError);
+      }
+      const last = owners[count] as TeamContext;
+      await expect(createInvite(db, last, { email: "FLOODED@example.com", role: "viewer" }, day)).rejects.toThrow(LimitReachedError);
+      expect(await rawItem(db, `INVITELIMIT#${inviteLimitKey("flooded@example.com")}`, "LIMIT#INVITES#2031-02-01")).toMatchObject({ count: INVITES_PER_ADDRESS_PER_DAY });
+      expect(await listInvites(db, last)).toEqual([]);
+      expect((await createInvite(db, last, { email: "flooded@example.com", role: "viewer" }, new Date("2031-02-02T10:00:00.000Z"))).invite.email).toBe("flooded@example.com");
     });
 
     it("revokes a removed member's other invites to the team, and only theirs", async () => {

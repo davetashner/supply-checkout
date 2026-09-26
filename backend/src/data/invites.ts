@@ -15,8 +15,11 @@ import {
   type Member,
   type MemberRole,
   INVITES_PER_ADDRESS_PER_DAY,
+  INVITES_PER_TEAM_ADDRESS_PER_DAY,
   INVITES_PER_TEAM_PER_DAY,
   hashEmail,
+  inviteLimitKey,
+  mailAddress,
   hashInviteToken,
   memberRole,
   normalizeEmail,
@@ -26,7 +29,7 @@ import { GSI2 } from "./schema.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
 export { hashEmail, hashInviteToken } from "./model.js";
-export { INVITES_PER_ADDRESS_PER_DAY, INVITES_PER_TEAM_PER_DAY } from "./model.js";
+export { INVITES_PER_ADDRESS_PER_DAY, INVITES_PER_TEAM_ADDRESS_PER_DAY, INVITES_PER_TEAM_PER_DAY, inviteLimitKey, mailAddress } from "./model.js";
 
 const DAY = 24 * 60 * 60;
 export const INVITE_TTL_DAYS = { min: 1, max: 30, default: 7 } as const;
@@ -93,6 +96,7 @@ async function writeInvite(
     expiresAt: epoch + input.ttlDays * DAY,
   };
   const emailHash = hashEmail(input.email);
+  const limitKey = inviteLimitKey(input.email);
   try {
     await doc.send(
       new TransactWriteCommand({
@@ -106,7 +110,8 @@ async function writeInvite(
             },
           },
           countOne(db.tableName, keys.invitesSent(ctx.teamId, day), INVITES_PER_TEAM_PER_DAY, epoch),
-          countOne(db.tableName, keys.invitesToAddress(emailHash, day), INVITES_PER_ADDRESS_PER_DAY, epoch),
+          countOne(db.tableName, keys.invitesToAddress(limitKey, day), INVITES_PER_ADDRESS_PER_DAY, epoch),
+          countOne(db.tableName, keys.invitesFromTeamToAddress(ctx.teamId, limitKey, day), INVITES_PER_TEAM_ADDRESS_PER_DAY, epoch),
         ],
       }),
     );
@@ -115,7 +120,7 @@ async function writeInvite(
     const at = before.length;
     // Either counter at its limit. One message for both, so an owner can't
     // learn how many invites another team sent the address.
-    if (codes && (codes[at + 1] === "ConditionalCheckFailed" || codes[at + 2] === "ConditionalCheckFailed")) throw new LimitReachedError(TOO_MANY_INVITES);
+    if (codes && [1, 2, 3].some((i) => codes[at + i] === "ConditionalCheckFailed")) throw new LimitReachedError(TOO_MANY_INVITES);
     if (codes && at > 0 && codes[0] === "ConditionalCheckFailed") throw new NotFoundError("This invite was accepted or revoked just now");
     return conflictOnConditionFailure("Someone else changed this team's invites just now; try again")(error);
   }
@@ -135,8 +140,10 @@ async function storedInvite(db: Db, ctx: TeamContext, inviteId: string): Promise
  *
  * Refused (ConflictError) when the address is already a member's, or already
  * has a live invite to this team (re-send that one instead). Each invite
- * counts against the team's and the address's limits for the UTC day
- * (INVITES_PER_TEAM_PER_DAY, INVITES_PER_ADDRESS_PER_DAY; LimitReachedError).
+ * counts against the team's, the address's and the team's-for-that-address
+ * limits for the UTC day (INVITES_PER_TEAM_PER_DAY, INVITES_PER_ADDRESS_PER_DAY,
+ * INVITES_PER_TEAM_ADDRESS_PER_DAY; LimitReachedError). The address must be a
+ * bare addr-spec (mailAddress), and the limits count it by inviteLimitKey.
  */
 export async function createInvite(
   db: Db,
@@ -145,7 +152,7 @@ export async function createInvite(
   now = new Date(),
 ): Promise<{ invite: Invite; token: string }> {
   writable(db, ctx, "owner");
-  const email = normalizeEmail(input.email);
+  const email = mailAddress(input.email);
   const ttlDays = ttl(input.ttlDays);
   const role = memberRole(input.role);
   const [members, invites] = await Promise.all([
@@ -179,7 +186,7 @@ export async function resendInvite(db: Db, ctx: TeamContext, inviteId: string, i
       ExpressionAttributeValues: { ":token": old.GSI1PK },
     },
   };
-  return writeInvite(db, ctx, { email: normalizeEmail(old.email), role: memberRole(old.role), ttlDays }, now, [remove]);
+  return writeInvite(db, ctx, { email: mailAddress(old.email), role: memberRole(old.role), ttlDays }, now, [remove]);
 }
 
 /**

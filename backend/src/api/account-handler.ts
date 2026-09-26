@@ -63,6 +63,7 @@ import {
   getInvite,
   getMember,
   getTeam,
+  inviteLimitKey,
   hashEmail,
   type Invite,
   LastOwnerError,
@@ -75,6 +76,7 @@ import {
   listInvites,
   listInvitesForEmail,
   listTeamsForUser,
+  mailAddress,
   markInviteNotSent,
   normalizeEmail,
   resendInvite,
@@ -339,9 +341,9 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     // Membership and role first, so anyone else gets the same 403 whatever they send
     const { teamId, ctx } = await ownerContext(event, userId);
     const body = jsonBody(event, ["email", "role"]);
-    const email = normalizeEmail(body.email);
+    const email = mailAddress(body.email);
     const role = memberRole(body.role);
-    const db = dbFor({ userId, teamId, inviteLimit: hashEmail(email) });
+    const db = dbFor({ userId, teamId, inviteLimit: inviteLimitKey(email) });
     const made = await createInvite(db, ctx, { email, role }, new Date(now()));
     return json(201, { invite: teamInviteBody(await send(db, ctx, made.invite, made.token), now()) });
   }
@@ -359,7 +361,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     // The address comes from the stored invite, never the request
     const old = await getInvite(dbFor({ userId, teamId }), ctx, inviteId);
     if (!old) throw new ApiError(404, "not_found", "This invite was accepted or revoked");
-    const db = dbFor({ userId, teamId, inviteLimit: hashEmail(old.email) });
+    const db = dbFor({ userId, teamId, inviteLimit: inviteLimitKey(old.email) });
     const made = await resendInvite(db, ctx, inviteId, {}, new Date(now()));
     return json(201, { invite: teamInviteBody(await send(db, ctx, made.invite, made.token), now()) });
   }

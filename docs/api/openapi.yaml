@@ -728,9 +728,14 @@ paths:
         complaint reported later marks it failed too (`bounced`,
         `complained`).
 
-        Each team can send 50 invites a day (UTC) and each address can be sent
-        5, from all teams together; re-sends count. Past either, 429
-        `quota_exceeded`.
+        Each team can send 50 invites a day (UTC), 3 of them to any one
+        address, and each address can be sent 15 from all teams together;
+        re-sends count. An address counts without a `+tag`, and a Gmail
+        address without its dots. Past any of these, 429 `quota_exceeded`.
+
+        `email` must be a bare address (`name@example.com`): no display name,
+        angle brackets, quotes, commas or spaces, and an ASCII domain
+        (international ones in their `xn--` form). Anything else is 400.
       requestBody:
         required: true
         content:
@@ -1301,7 +1306,7 @@ components:
             properties:
               team: { $ref: "#/components/schemas/Team" }
     TooManyInvites:
-      description: "`quota_exceeded`: the team has sent 50 invites today (UTC), or the address has been sent 5. Try again tomorrow."
+      description: "`quota_exceeded`: the team has sent 50 invites today (UTC) or 3 to this address, or the address has been sent 15 from all teams. Try again tomorrow."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     TooManyTeams:
       description: "`quota_exceeded`: the caller has created 5 teams today (UTC), or is already in 20 teams (the message says which)."
