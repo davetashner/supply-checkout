@@ -63,25 +63,6 @@ test("saving a line on a sheet someone else deleted says so", async ({ page }) =
   await stillDeleted(page);
 });
 
-test("a checkout on a sheet someone else deleted says so, not that access is view-only", async ({ page }) => {
-  await openEcho(page);
-  await enterBarcode(page, "SKU1");
-  await elsewhere(page, (docs) => docs.delete("sheets/s1"));
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
-  await stillDeleted(page);
-  // The storage count didn't move for a checkout that didn't save
-  expect(await page.evaluate(() => window.__mock.docs.get("products/SKU1").stock)).toBe(10);
-});
-
-test("a return on a sheet someone else deleted says so, not that access is view-only", async ({ page }) => {
-  await openEcho(page);
-  await page.getByRole("button", { name: "Return", exact: true }).click();
-  await enterBarcode(page, "SKU1");
-  await elsewhere(page, (docs) => docs.delete("sheets/s1"));
-  await modal(page).getByRole("button", { name: "Save return" }).click();
-  await stillDeleted(page);
-});
-
 test("removing a line keeps what someone else changed on the sheet meanwhile", async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Storage bins").click();
@@ -113,7 +94,8 @@ test("a checkout on a sheet someone else deleted doesn't bring it back or move s
   await elsewhere(page, (docs) => docs.delete("sheets/s1"));
   await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
   await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
-  await expect(page.locator("#toast")).toBeVisible();
+  // It says the sheet was deleted, and the page stays writable
+  await stillDeleted(page);
   expect(await page.evaluate(() => [window.__mock.docs.has("sheets/s1"), window.__mock.docs.get("products/SKU1").stock])).toEqual([false, stock]);
 });
 
@@ -125,6 +107,7 @@ test("a return on a sheet someone else deleted doesn't bring it back or move sto
   await elsewhere(page, (docs) => docs.delete("sheets/s1"));
   await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
   await modal(page).getByRole("button", { name: "Save return" }).click();
-  await expect(page.locator("#toast")).toBeVisible();
+  // It says the sheet was deleted, and the page stays writable
+  await stillDeleted(page);
   expect(await page.evaluate(() => [window.__mock.docs.has("sheets/s1"), window.__mock.docs.get("products/SKU1").stock])).toEqual([false, stock]);
 });
