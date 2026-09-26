@@ -13,11 +13,14 @@
     "check": "npm run lint && npm test"
   },
   "dependencies": {
+    "@aws-lambda-powertools/logger": "^2.35.0",
+    "@aws-lambda-powertools/metrics": "^2.35.0",
     "@aws-sdk/client-dynamodb": "^3.1141.0",
     "@aws-sdk/lib-dynamodb": "^3.1141.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/aws-lambda": "^8.10.163",
     "@types/node": "^24.19.0",
     "eslint": "^10.11.0",
     "typescript": "~6.0.3",
