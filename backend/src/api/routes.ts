@@ -7,9 +7,10 @@
  * The generic document operations, which the app's edit screens use, and the
  * inventory commands next to them (backend/src/data/commands.ts,
  * docs/api/commands.md): checkout, return and stock adjust, each one atomic and
- * idempotent by operation ID, and a product's stock history.
+ * idempotent by operation ID, and a product's stock history. And the CSV
+ * inventory import.
  */
-export type Operation = "list" | "get" | "set" | "update" | "delete" | "checkout" | "return" | "adjustStock" | "movements";
+export type Operation = "list" | "get" | "set" | "update" | "delete" | "checkout" | "return" | "adjustStock" | "movements" | "importProducts";
 export type HttpMethod = "GET" | "PUT" | "PATCH" | "DELETE" | "POST";
 
 export interface DataRoute {
@@ -17,6 +18,8 @@ export interface DataRoute {
   readonly path: string;
   readonly collection: "products" | "sheets";
   readonly operation: Operation;
+  /** API Gateway's throttle for this route across all callers, for routes much heavier than a document write. */
+  readonly throttle?: { readonly rate: number; readonly burst: number };
 }
 
 const collectionRoutes = (collection: "products" | "sheets", param: string): DataRoute[] => [
@@ -32,6 +35,9 @@ const commandRoutes: DataRoute[] = [
   { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/return", collection: "sheets", operation: "return" },
   { method: "POST", path: "/teams/{teamId}/products/{key}/stock", collection: "products", operation: "adjustStock" },
   { method: "GET", path: "/teams/{teamId}/products/{key}/movements", collection: "products", operation: "movements" },
+  // CSV inventory import, all or nothing and idempotent by import ID (backend/src/data/imports.ts). Owners only.
+  // Up to 1,000 rows each, so it has its own throttle: imports are occasional, onboarding work.
+  { method: "POST", path: "/teams/{teamId}/imports", collection: "products", operation: "importProducts", throttle: { rate: 5, burst: 10 } },
 ];
 
 /** Team data. Every one needs a Cognito access token (the JWT authorizer). */

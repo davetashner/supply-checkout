@@ -82,12 +82,24 @@ export const keys = {
   webhook: (eventId: string) => ({ PK: `WEBHOOK#${id(eventId, "webhook event ID")}`, SK: "DONE" }),
   /** A checkout, return or stock command's record, for replaying a retry (commands.ts). */
   operation: (teamId: string, operationId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `OP#${id(operationId, "operation ID")}` }),
+  /** A CSV inventory import's job record: its request, plan size and progress (imports.ts). */
+  importJob: (teamId: string, importId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `IMPORT#${id(importId, "import ID")}` }),
+  /** One staged chunk of an import's plan: the rows one commit transaction applies. */
+  importChunk: (teamId: string, importId: string, chunk: number) => ({
+    PK: `TEAM#${id(teamId, "team ID")}`,
+    SK: `IMPORT#${id(importId, "import ID")}#CHUNK#${importChunkNumber(chunk)}`,
+  }),
   /** One change to a product's stock, in its history: newest last by `at` (ISO 8601), then operation. */
   movement: (teamId: string, key: string, at: string, operationId: string) => ({
     PK: `TEAM#${id(teamId, "team ID")}`,
     SK: `${movementPrefix(key)}${at}#${id(operationId, "operation ID")}`,
   }),
 };
+
+function importChunkNumber(n: number): string {
+  if (!Number.isInteger(n) || n < 0 || n > 999) throw new InvalidInputError("Invalid import chunk");
+  return String(n).padStart(3, "0");
+}
 
 /**
  * The sort-key prefix of one product's movements. A product key may contain

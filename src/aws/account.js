@@ -6,6 +6,7 @@ import { esc } from "../format.js";
 import { toast } from "../dom.js";
 import { createSession, INVITE_KEY, TEAM_KEY } from "./session.js";
 import { createDb } from "./db.js";
+import { openImport } from "./import.js";
 
 const ROLE = { owner: "an owner", contributor: "a contributor", viewer: "a viewer" };
 
@@ -155,19 +156,21 @@ export async function start(config) {
     <div class="actions"><button type="button" class="btn primary" id="continue" autofocus>Continue</button></div>`,
   (el) => el.querySelector("#continue").addEventListener("click", () => { localStorage.removeItem(TEAM_KEY); location.reload(); }));
 
-  // The team bar under the header: which team, a switcher, and Sign out
+  // The team bar under the header: which team, a switcher, importing inventory (owners),
+  // and Sign out
   function teamBar(me, team) {
     const bar = document.createElement("div");
     bar.className = "teambar";
     bar.innerHTML = (me.teams.length > 1
       ? `<label for="teamSwitch">Team</label><select id="teamSwitch">${me.teams.map((t) => `<option value="${esc(t.id)}"${t.id === team.id ? " selected" : ""}>${esc(t.name)}</option>`).join("")}</select>`
       : `<span>Team: <strong>${esc(team.name)}</strong></span>`)
-      + `<span class="spacer"></span><button type="button" class="btn ghost" id="signOut">Sign out</button>`;
+      + `<span class="spacer"></span>${team.role === "owner" ? `<button type="button" class="btn ghost" id="importInventory">Import CSV</button>` : ""}<button type="button" class="btn ghost" id="signOut">Sign out</button>`;
     box.after(bar);
     const pick = bar.querySelector("#teamSwitch");
     // Switching loads the page again for the other team: new data, role and live updates
     if (pick) pick.addEventListener("change", () => { localStorage.setItem(TEAM_KEY, pick.value); location.reload(); });
     bar.querySelector("#signOut").addEventListener("click", signOut);
+    if (team.role === "owner") bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id));
   }
 
   function open(me, team) {
