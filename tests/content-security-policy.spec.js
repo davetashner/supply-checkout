@@ -1,0 +1,81 @@
+// The Content-Security-Policy CloudFront sends (infra/lib/web/content-security-policy.ts)
+// must not break the app or the demo. Each build is served with that header, and a test
+// fails on any violation: the page fixture already fails on the console error a browser
+// logs, and each test also collects securitypolicyviolation events.
+import { test, expect, createSheet, enterBarcode, modal } from "./helpers.js";
+import { DEMO, builtFiles, currentBuild } from "../scripts/builds.mjs";
+import { installMockClaude } from "./mock-claude.js";
+import { fakeImage } from "./fixtures.js";
+import { contentSecurityPolicy } from "../infra/lib/web/content-security-policy.ts";
+
+test.skip(currentBuild() !== "web", "CloudFront serves the web and demo builds; the artifact runs under claude.ai's own policy");
+
+const CSP = contentSecurityPolicy({ api: "api.supplycheckout.com", realtime: "realtime.supplycheckout.com", auth: "auth.supplycheckout.com" });
+// Their own origins, so coverage of the other suites isn't affected
+const APP = "https://csp-app.supply-checkout.test";
+const DEMO_SITE = "https://csp-demo.supply-checkout.test";
+const THIRD_PARTY = /^https:\/\/(fonts\.(googleapis|gstatic)\.com|cdn\.jsdelivr\.net)\//;
+const png = {
+  name: "barcode.png",
+  mimeType: "image/png",
+  buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64"),
+};
+
+// Serves a build at origin with the CloudFront headers on the page, and records violations
+async function serve(page, origin, files) {
+  await page.addInitScript(() => {
+    window.__cspViolations = [];
+    document.addEventListener("securitypolicyviolation", (e) =>
+      window.__cspViolations.push(`${e.effectiveDirective} blocked ${e.blockedURI || "inline"} (${e.sourceFile}:${e.lineNumber})`),
+    );
+  });
+  // Fonts and ZXing pass the policy before the request is made; then they're aborted
+  // to keep tests offline, as in the other suites.
+  await page.route(THIRD_PARTY, (r) => r.abort());
+  await page.route(origin + "/**", (r) => {
+    const file = files.get(new URL(r.request().url()).pathname);
+    if (!file) return r.fulfill({ status: 404 });
+    const headers = { "content-type": file.contentType };
+    if (file.contentType === "text/html") headers["content-security-policy"] = CSP;
+    return r.fulfill({ ...file, headers });
+  });
+}
+
+const violations = (page) => page.evaluate(() => window.__cspViolations);
+
+test("the web app runs under the policy", async ({ page }) => {
+  await serve(page, APP, builtFiles("web"));
+  await page.addInitScript(installMockClaude, {});
+  await page.goto(APP + "/");
+  await expect(page.getByText("Connecting…")).toBeHidden();
+
+  // A blob: image (the barcode photo), then markup with inline style attributes in a modal
+  await createSheet(page, "Policy Test");
+  await page.setInputFiles("#scanFile", png);
+  await enterBarcode(page, "012345678905");
+  const form = modal(page).locator("form#f");
+  await expect(form).toBeVisible();
+  // style="display:grid" applies: style-src-attr allows it
+  expect(await form.evaluate((el) => getComputedStyle(el).display)).toBe("grid");
+
+  const header = await page.evaluate(async () => (await fetch("/")).headers.get("content-security-policy"));
+  expect(header).toBe(CSP);
+  expect(await violations(page)).toEqual([]);
+});
+
+test("the demo runs under the policy, including its CSV download and receipt", async ({ page }) => {
+  await serve(page, DEMO_SITE, builtFiles(DEMO));
+  await page.goto(DEMO_SITE + "/");
+  await page.getByRole("button", { name: /Acme Offices/ }).click();
+  await expect(page.getByRole("heading", { name: "Acme Offices" })).toBeVisible();
+
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: /Download CSV/ }).click();
+  await download;
+
+  await page.getByRole("button", { name: "← All sheets" }).click();
+  await page.setInputFiles("#receiptFile", fakeImage);
+  await expect(page.locator(".rline")).toHaveCount(3);
+
+  expect(await violations(page)).toEqual([]);
+});

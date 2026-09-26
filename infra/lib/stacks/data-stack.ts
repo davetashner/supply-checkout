@@ -1,4 +1,4 @@
-import { RemovalPolicy } from "aws-cdk-lib";
+import { Aws, Duration, RemovalPolicy, Validations } from "aws-cdk-lib";
 import {
   AttributeType,
   Billing,
@@ -6,12 +6,28 @@ import {
   TableEncryptionV2,
   TableV2,
 } from "aws-cdk-lib/aws-dynamodb";
+import { Effect, PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { Key } from "aws-cdk-lib/aws-kms";
+import { BlockPublicAccess, Bucket, BucketEncryption, ObjectOwnership } from "aws-cdk-lib/aws-s3";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import { GSI1, GSI1PK, GSI1SK, PK, SK, TTL_ATTRIBUTE, tableName } from "../../../backend/src/data/schema.js";
 import type { DeploymentConfig } from "../config.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
+
+/**
+ * The web bucket in a region: releases of the web app and the demo under
+ * releases/<version>/ (ADR 0010: the name includes the region). The account
+ * ID makes the name globally unique; it's resolved at deploy time.
+ */
+export function webBucketName(envName: string, region: string, account: string = Aws.ACCOUNT_ID): string {
+  return `supply-checkout-${envName}-web-${region}-${account}`;
+}
+
+/** Access logs for the web bucket and CloudFront, in the same region. */
+export function logsBucketName(envName: string, region: string, account: string = Aws.ACCOUNT_ID): string {
+  return `supply-checkout-${envName}-logs-${region}-${account}`;
+}
 
 /**
  * Stateful resources in each region: the DynamoDB global table and its KMS key
@@ -24,6 +40,9 @@ import { SupplyCheckoutStack } from "./base-stack.js";
  *   key ARN in `replicaKeyArns`, not a new table.
  * - Its name, ARN, stream ARN and key ARN are published to SSM under
  *   /supply-checkout/<env>/data/ for the API and realtime stacks.
+ * - The web bucket (releases of the web app and demo, served only through
+ *   CloudFront) and a logs bucket, in the primary region. The second region's
+ *   bucket, replication and the origin group are phase 2 (supply-checkout-d79).
  * - Everything added here must use RemovalPolicy.RETAIN.
  */
 export class DataStack extends SupplyCheckoutStack {
@@ -31,6 +50,10 @@ export class DataStack extends SupplyCheckoutStack {
   readonly table?: TableV2;
   /** The table's customer-managed key in this region. */
   readonly tableKey?: Key;
+  /** Web releases, read by CloudFront. Only the primary region's data stack has it (phase 2 adds one per region). */
+  readonly webBucket?: Bucket;
+  /** S3 server access logs and CloudFront standard logs. */
+  readonly logsBucket?: Bucket;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "data", layer: "stateful" });
@@ -73,5 +96,57 @@ export class DataStack extends SupplyCheckoutStack {
     publish("TableArnParam", "table-arn", this.table.tableArn, "App table ARN in this region");
     publish("TableStreamArnParam", "table-stream-arn", this.table.tableStreamArn ?? "", "App table stream ARN in this region");
     publish("TableKeyArnParam", "table-key-arn", this.tableKey.keyArn, "KMS key ARN for the app table in this region");
+
+    // CloudFront's standard logs are written with an ACL grant, so this bucket
+    // keeps ACLs (object writer's grants are honoured, the bucket owner owns
+    // the objects). One year, like the log groups (observability/defaults.ts).
+    this.logsBucket = new Bucket(this, "LogsBucket", {
+      bucketName: logsBucketName(config.envName, region),
+      encryption: BucketEncryption.S3_MANAGED,
+      blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
+      objectOwnership: ObjectOwnership.BUCKET_OWNER_PREFERRED,
+      enforceSSL: true,
+      lifecycleRules: [{ expiration: Duration.days(365) }],
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    Validations.of(this.logsBucket).acknowledge({
+      id: "AwsSolutions-S1",
+      reason: "This is the access-log bucket; logging it to itself would loop.",
+    });
+
+    // Releases are immutable prefixes, rewritten into by the CloudFront Function
+    // (web/router.js). Readable only by CloudFront distributions in this
+    // account, through origin access control. The web stack is in
+    // GLOBAL_SERVICES_REGION and imports this bucket by name, so the grant
+    // can't name its distribution without a cross-region reference; the
+    // account condition keeps it to this account's distributions.
+    this.webBucket = new Bucket(this, "WebBucket", {
+      bucketName: webBucketName(config.envName, region),
+      encryption: BucketEncryption.S3_MANAGED,
+      blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
+      objectOwnership: ObjectOwnership.BUCKET_OWNER_ENFORCED,
+      enforceSSL: true,
+      versioned: true,
+      // Old object versions exist only to undo an accidental overwrite or delete
+      lifecycleRules: [{ noncurrentVersionExpiration: Duration.days(30) }],
+      serverAccessLogsBucket: this.logsBucket,
+      serverAccessLogsPrefix: "s3/web/",
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    this.webBucket.addToResourcePolicy(
+      new PolicyStatement({
+        sid: "CloudFrontReadsReleases",
+        effect: Effect.ALLOW,
+        principals: [new ServicePrincipal("cloudfront.amazonaws.com")],
+        // ListBucket makes a missing object a 404 rather than a 403
+        actions: ["s3:GetObject", "s3:ListBucket"],
+        resources: [this.webBucket.bucketArn, this.webBucket.arnForObjects("*")],
+        conditions: {
+          StringEquals: { "AWS:SourceAccount": Aws.ACCOUNT_ID },
+          ArnLike: { "AWS:SourceArn": `arn:${Aws.PARTITION}:cloudfront::${Aws.ACCOUNT_ID}:distribution/*` },
+        },
+      }),
+    );
+    publish("WebBucketParam", "web-bucket-name", this.webBucket.bucketName, "Web releases bucket in this region");
   }
 }

@@ -1,14 +1,229 @@
+import { readFileSync } from "node:fs";
+import { Annotations, Duration, Validations } from "aws-cdk-lib";
+import { Certificate } from "aws-cdk-lib/aws-certificatemanager";
+import {
+  AllowedMethods,
+  CachePolicy,
+  Distribution,
+  Function as CloudFrontFunction,
+  FunctionCode,
+  FunctionEventType,
+  FunctionRuntime,
+  HeadersFrameOption,
+  HeadersReferrerPolicy,
+  HttpVersion,
+  ImportSource,
+  KeyValueStore,
+  PriceClass,
+  ResponseHeadersPolicy,
+  SecurityPolicyProtocol,
+  ViewerProtocolPolicy,
+} from "aws-cdk-lib/aws-cloudfront";
+import { S3BucketOrigin } from "aws-cdk-lib/aws-cloudfront-origins";
+import { ARecord, AaaaRecord, RecordTarget } from "aws-cdk-lib/aws-route53";
+import { CloudFrontTarget } from "aws-cdk-lib/aws-route53-targets";
+import { Bucket } from "aws-cdk-lib/aws-s3";
+import { StringParameter } from "aws-cdk-lib/aws-ssm";
+import { CfnWebACL } from "aws-cdk-lib/aws-wafv2";
 import type { Construct } from "constructs";
 import type { DeploymentConfig } from "../config.js";
+import { domainOutputParameters, hostNames, importZone } from "../domain.js";
+import { contentSecurityPolicy } from "../web/content-security-policy.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
+import { logsBucketName, webBucketName } from "./data-stack.js";
+
+/** Release channels: the live version of each is a key in the KeyValueStore (web/router.js). */
+export const RELEASE_CHANNELS = ["app", "demo"] as const;
+
+/** Requests per IP per 5 minutes before WAF blocks it. A page load is about 10. */
+export const RATE_LIMIT_PER_5_MINUTES = 2000;
+
+/** AWS managed rule groups on the web ACL, in priority order after the rate limit. */
+export const MANAGED_RULE_GROUPS = [
+  "AWSManagedRulesAmazonIpReputationList",
+  "AWSManagedRulesCommonRuleSet",
+  "AWSManagedRulesKnownBadInputsRuleSet",
+] as const;
+
+export const webOutputParameters = (envName: string) => {
+  const prefix = `/supply-checkout/${envName}/web`;
+  return {
+    distributionId: `${prefix}/distribution-id`,
+    liveVersionStoreArn: `${prefix}/live-version-store-arn`,
+    bucketName: `${prefix}/bucket-name`,
+    bucketRegion: `${prefix}/bucket-region`,
+  };
+};
+
+/** web/router.js without its comment lines (CloudFront Functions are limited to 10 KB). */
+const ROUTER_SOURCE = readFileSync(new URL("../web/router.js", import.meta.url), "utf8")
+  .split("\n")
+  .filter((line) => !/^\s*\/\//.test(line))
+  .join("\n");
 
 /**
- * CloudFront with AWS WAF and an origin group over the regional web buckets,
- * in the primary region only because CloudFront's certificate and WAF web ACL
- * must live in GLOBAL_SERVICES_REGION (config.ts, ADR 0010). Filled in by supply-checkout-qk1.
+ * The web app and the demo on CloudFront, with AWS WAF (supply-checkout-qk1).
+ *
+ * The stack is in GLOBAL_SERVICES_REGION, which AWS requires for a CloudFront
+ * web ACL; its certificate comes from the domain stack there. The releases
+ * bucket is in the primary region's data stack (stateful), imported by name.
+ *
+ * - One distribution for the apex, www. and app. A viewer-request CloudFront
+ *   Function (web/router.js) reads the live version of the host's channel
+ *   (app. -> "app", apex -> "demo") from a KeyValueStore and serves
+ *   releases/<version>/ from the bucket. www. redirects to the apex.
+ * - scripts/publish-web.mjs uploads a build to releases/<version>/ and sets
+ *   the channel's key; the switch reaches every edge in seconds.
+ * - Security headers on every response: CSP (web/content-security-policy.ts),
+ *   HSTS, nosniff, frame DENY, a strict referrer policy and Permissions-Policy.
+ * - WAF: a per-IP rate limit and AWS managed rules (IP reputation, common
+ *   rule set, known bad inputs).
+ * - The bucket's origin failover to a second region is phase 2 (supply-checkout-d79).
  */
 export class WebStack extends SupplyCheckoutStack {
+  readonly distribution: Distribution;
+  readonly liveVersions: KeyValueStore;
+  readonly webAcl: CfnWebACL;
+
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "web", layer: "stateless" });
+
+    const names = hostNames(config);
+    const zone = importZone(this, config);
+    const certificate = Certificate.fromCertificateArn(
+      this,
+      "Certificate",
+      StringParameter.valueForStringParameter(this, domainOutputParameters(config.envName).webCertificateArn),
+    );
+
+    const bucketRegion = config.primaryRegion;
+    const bucket = Bucket.fromBucketAttributes(this, "WebBucket", {
+      bucketName: webBucketName(config.envName, bucketRegion),
+      region: bucketRegion,
+    });
+    const logsBucket = Bucket.fromBucketAttributes(this, "LogsBucket", {
+      bucketName: logsBucketName(config.envName, bucketRegion),
+      region: bucketRegion,
+    });
+
+    // Nothing is live until the first publish; the router answers 503. The
+    // import source only seeds a new store, and changing it (adding a channel,
+    // say) replaces the store, which resets every channel to "none" until the
+    // next `publish-web.mjs activate`. A new channel can instead be added with
+    // `activate` alone: a missing key is treated like "none".
+    this.liveVersions = new KeyValueStore(this, "LiveVersions", {
+      comment: "Live release per channel (scripts/publish-web.mjs)",
+      source: ImportSource.fromInline(JSON.stringify({ data: RELEASE_CHANNELS.map((key) => ({ key, value: "none" })) })),
+    });
+    const router = new CloudFrontFunction(this, "Router", {
+      comment: "Serves the live release for the host's channel",
+      runtime: FunctionRuntime.JS_2_0,
+      keyValueStore: this.liveVersions,
+      code: FunctionCode.fromInline(ROUTER_SOURCE.replace("__KVS_ID__", this.liveVersions.keyValueStoreId)),
+    });
+
+    const headers = new ResponseHeadersPolicy(this, "SecurityHeaders", {
+      comment: "CSP, HSTS and the other security headers for the web app",
+      securityHeadersBehavior: {
+        contentSecurityPolicy: {
+          contentSecurityPolicy: contentSecurityPolicy(names),
+          override: true,
+        },
+        strictTransportSecurity: {
+          accessControlMaxAge: Duration.days(730),
+          includeSubdomains: true,
+          override: true,
+        },
+        contentTypeOptions: { override: true },
+        frameOptions: { frameOption: HeadersFrameOption.DENY, override: true },
+        referrerPolicy: { referrerPolicy: HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN, override: true },
+      },
+      customHeadersBehavior: {
+        customHeaders: [
+          {
+            header: "Permissions-Policy",
+            // The barcode and receipt photos come from a file input, so the
+            // camera is only ever used through the browser's own picker.
+            value: "camera=(self), microphone=(), geolocation=(), usb=()",
+            override: true,
+          },
+          { header: "Cross-Origin-Opener-Policy", value: "same-origin", override: true },
+        ],
+      },
+    });
+
+    this.webAcl = new CfnWebACL(this, "WebAcl", {
+      name: `supply-checkout-${config.envName}-web`,
+      scope: "CLOUDFRONT",
+      defaultAction: { allow: {} },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        metricName: `supply-checkout-${config.envName}-web`,
+        sampledRequestsEnabled: true,
+      },
+      rules: [
+        {
+          name: "RateLimitPerIp",
+          priority: 0,
+          action: { block: {} },
+          statement: { rateBasedStatement: { limit: RATE_LIMIT_PER_5_MINUTES, aggregateKeyType: "IP" } },
+          visibilityConfig: { cloudWatchMetricsEnabled: true, metricName: "RateLimitPerIp", sampledRequestsEnabled: true },
+        },
+        ...MANAGED_RULE_GROUPS.map((name, i) => ({
+          name,
+          priority: i + 1,
+          overrideAction: { none: {} },
+          statement: { managedRuleGroupStatement: { vendorName: "AWS", name } },
+          visibilityConfig: { cloudWatchMetricsEnabled: true, metricName: name, sampledRequestsEnabled: true },
+        })),
+      ],
+    });
+
+    this.distribution = new Distribution(this, "Distribution", {
+      comment: `Supply Checkout ${config.envName}: app, demo`,
+      domainNames: [names.apex, names.www, names.app],
+      certificate,
+      minimumProtocolVersion: SecurityPolicyProtocol.TLS_V1_2_2021,
+      httpVersion: HttpVersion.HTTP2_AND_3,
+      priceClass: PriceClass.PRICE_CLASS_100,
+      enableIpv6: true,
+      webAclId: this.webAcl.attrArn,
+      enableLogging: true,
+      logBucket: logsBucket,
+      logFilePrefix: "cloudfront/web/",
+      defaultBehavior: {
+        origin: S3BucketOrigin.withOriginAccessControl(bucket),
+        viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        allowedMethods: AllowedMethods.ALLOW_GET_HEAD,
+        cachePolicy: CachePolicy.CACHING_OPTIMIZED,
+        responseHeadersPolicy: headers,
+        compress: true,
+        functionAssociations: [{ function: router, eventType: FunctionEventType.VIEWER_REQUEST }],
+      },
+    });
+    // The bucket's policy (data stack) grants read to this account's
+    // distributions; an imported bucket's policy can't be edited from here.
+    Annotations.of(this).acknowledgeWarning(
+      "@aws-cdk/aws-cloudfront-origins:updateImportedBucketPolicyOac",
+      "The data stack's bucket policy grants CloudFront in this account read access.",
+    );
+    Validations.of(this.distribution).acknowledge({
+      id: "AwsSolutions-CFR1",
+      reason: "No geo restriction: customers can travel, and WAF rate-limits abuse.",
+    });
+
+    const target = RecordTarget.fromAlias(new CloudFrontTarget(this.distribution));
+    for (const [id, host] of [["Apex", names.apex], ["Www", names.www], ["App", names.app]] as const) {
+      new ARecord(this, `${id}A`, { zone, recordName: host, target });
+      new AaaaRecord(this, `${id}Aaaa`, { zone, recordName: host, target });
+    }
+
+    const out = webOutputParameters(config.envName);
+    const publish = (id: string, name: string, value: string, description: string) =>
+      new StringParameter(this, id, { parameterName: name, stringValue: value, description });
+    publish("DistributionIdParam", out.distributionId, this.distribution.distributionId, "Web distribution ID");
+    publish("LiveVersionStoreParam", out.liveVersionStoreArn, this.liveVersions.keyValueStoreArn, "KeyValueStore holding the live release per channel");
+    publish("BucketNameParam", out.bucketName, bucket.bucketName, "Bucket holding web releases");
+    publish("BucketRegionParam", out.bucketRegion, bucketRegion, "Region of the web releases bucket");
   }
 }

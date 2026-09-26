@@ -28,7 +28,7 @@ export interface SupplyCheckoutStacks {
   readonly domain: Record<string, DomainStack>;
   /** Primary region only. */
   readonly identity: IdentityStack;
-  /** Primary region only. */
+  /** GLOBAL_SERVICES_REGION only (CloudFront's web ACL and certificate). */
   readonly web: WebStack;
   readonly all: SupplyCheckoutStack[];
 }
@@ -37,9 +37,10 @@ export interface SupplyCheckoutStacks {
  * Adds every stack for one environment to the app.
  *
  * Per region: domain, data (stateful) → api, realtime (stateless) → observability.
- * Primary region only: identity (stateful), web (stateless, needs every
- * region's data stack for its origin buckets). Identity and web also wait for
- * the domain stack in GLOBAL_SERVICES_REGION, which holds their certificates.
+ * Primary region only: identity (stateful). GLOBAL_SERVICES_REGION: web
+ * (stateless, CloudFront and WAF; needs every region's data stack for its
+ * origin buckets). Identity and web also wait for the domain stack in
+ * GLOBAL_SERVICES_REGION, which holds their certificates.
  */
 export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyCheckoutStacks {
   Tags.of(app).add("app", "supply-checkout");
@@ -75,7 +76,8 @@ export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyChe
     observability.addStackDependency(realtime);
     regions[region] = { data, api, realtime, observability };
   }
-  const web = new WebStack(app, config, config.primaryRegion);
+  // CloudFront's web ACL and certificate must be in GLOBAL_SERVICES_REGION
+  const web = new WebStack(app, config, GLOBAL_SERVICES_REGION);
   for (const { data } of Object.values(regions)) web.addStackDependency(data);
   web.addStackDependency(globalDomain);
 

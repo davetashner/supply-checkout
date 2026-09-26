@@ -66,7 +66,7 @@ Microsoft Edge is a system install rather than one of Playwright's own browsers.
 
 `npm run build` runs all three. Each writes hidden source maps (`dist/artifact/app.js.map`, `dist/web/assets/*.js.map`, `dist/demo/assets/*.js.map`) with no `sourceMappingURL` comment in the code; the coverage run uses them.
 
-The demo's own code lives in `demo/`, outside `src/`, so the artifact and web builds don't include it and it isn't counted in `src/`'s coverage. To publish it, upload `dist/demo/` as is: `index.html` should be served without long caching, and everything in `assets/` is content-hashed and can be cached forever. The `.map` files don't need to be uploaded.
+The demo's own code lives in `demo/`, outside `src/`, so the artifact and web builds don't include it and it isn't counted in `src/`'s coverage. `npm run publish:demo` builds it and publishes it to supplycheckout.com ([Web hosting and releases](#web-hosting-and-releases)).
 
 `npm run lint` runs ESLint on `src/`, `demo/`, the scripts and the tests, then builds all three and validates their HTML. `npm run check` also runs the public-safety check below and every test suite against both builds.
 
@@ -86,7 +86,7 @@ npm run synth:all-regions  # the same for every approved region (-c regions=all)
 npm run test:update # accept template snapshot changes after reviewing them
 ```
 
-**Stacks.** Every stack is named `supply-checkout-<env>-<region>-<component>`. Each region in the environment gets `domain` (certificates, DNS records and the SES domain; see [Domain and email](#domain-and-email)), `data` (stateful: table, keys, buckets), `api` and `realtime` (stateless), and `observability`. The primary region also gets `identity` (stateful: Cognito) and `web` (CloudFront and WAF). `GLOBAL_SERVICES_REGION` always has a `domain` stack, because CloudFront, Cognito and AppSync only accept certificates from there. Stateful stacks have termination protection. Every stack writes `/supply-checkout/<env>/<component>/stack` to SSM Parameter Store, and later stacks publish their outputs beside it. All resources are tagged `app=supply-checkout`.
+**Stacks.** Every stack is named `supply-checkout-<env>-<region>-<component>`. Each region in the environment gets `domain` (certificates, DNS records and the SES domain; see [Domain and email](#domain-and-email)), `data` (stateful: table, keys, buckets), `api` and `realtime` (stateless), and `observability`. The primary region also gets `identity` (stateful: Cognito). `GLOBAL_SERVICES_REGION` gets `web` (CloudFront and WAF, which AWS requires there; see [Web hosting and releases](#web-hosting-and-releases)), and always has a `domain` stack, because CloudFront, Cognito and AppSync only accept certificates from there. Stateful stacks have termination protection. Every stack writes `/supply-checkout/<env>/<component>/stack` to SSM Parameter Store, and later stacks publish their outputs beside it. All resources are tagged `app=supply-checkout`.
 
 **Regions.** The MVP runs in **us-east-1 only**. Every stack takes its region as a parameter, and the tests and CI also synthesize us-west-2 (`synth:all-regions`), so turning on the second region from [ADR 0010](docs/adr/0010-multi-region-active-active.md) is a config change: add it to `DEFAULT_REGIONS` in `lib/config.ts`. CDK is already bootstrapped in us-west-2. `lib/config.ts` is the only file in `infra/`, `backend/` or `src/` that may name a region: it holds `APPROVED_REGIONS`, `DEFAULT_REGIONS` and `GLOBAL_SERVICES_REGION` (where AWS requires CloudFront's certificate and WAF, and where Cognito lives). Stacks get their region as a parameter, Lambdas read `AWS_REGION`, and tests import the constants. `npm run check:regions` (in CI and the pre-commit hook) enforces this.
 
@@ -199,6 +199,53 @@ npx cdk deploy supply-checkout-prod-us-east-1-domain --profile supply-prod
 2. In the prod account, put the new zone's four name servers in a `StringList` parameter: `aws ssm put-parameter --type StringList --name /supply-checkout/prod/dns/delegation/staging --value 'ns-1.awsdns-01.org,ns-2.awsdns-02.co.uk,…'`.
 3. Add `"delegatedEnvs": ["staging"]` to `cdk.json` (it holds names only) and redeploy prod's `domain` stack, which adds the NS record. Keep it in `cdk.json` rather than passing `-c`: a prod deploy without it removes the delegation.
 4. Deploy staging with `-c envName=staging` and that account's profile.
+
+### Web hosting and releases
+
+The web app and the demo are static builds served by one CloudFront distribution from one S3 bucket (`supply-checkout-qk1`).
+
+- **Bucket.** `supply-checkout-<env>-web-<region>-<account>`, in the primary region's `data` stack (stateful, retained, versioned, private, SSE-S3, access logs to `supply-checkout-<env>-logs-<region>-<account>`). Only CloudFront distributions in the account can read it, through origin access control. A release is a folder, `releases/<version>/`, uploaded once and never changed. The second region's bucket, replication and the origin group are phase 2 (`supply-checkout-d79`).
+- **Distribution** (`web` stack, `lib/stacks/web-stack.ts`), for the apex, `www.` and `app.`, with the `web` certificate from the domain stack, TLS 1.2+, HTTP/2 and HTTP/3, and standard logs to the logs bucket.
+- **Live version.** A CloudFront Function (`lib/web/router.js`, viewer request) picks a **channel** from the host (`app.` serves `app`; the apex serves `demo`; `www.` redirects to the apex). It reads the channel's live version from a CloudFront KeyValueStore and rewrites the path to `releases/<version>/…`, adding `index.html` to paths that end in `/`. The cache key is the rewritten path, so switching versions needs no invalidation, and the KeyValueStore write reaches every edge within seconds. Until something is published, a channel answers 503.
+- **Headers** on every response: `Content-Security-Policy` (`lib/web/content-security-policy.ts`), HSTS (two years, subdomains), `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy` and `Cross-Origin-Opener-Policy`. The CSP allows only what `src/index.html` loads (Google Fonts, ZXing from cdn.jsdelivr.net), inline `style` attributes, and `data:`/`blob:` images, plus the environment's `api.`, `realtime.` and `auth.` for connections. Infra tests check it against `src/index.html`, and `tests/content-security-policy.spec.js` runs the web app and the demo under it in every browser, failing on any violation. If you add a script, font or image host to the app, add it there too.
+- **WAF** (CloudFront scope): a rate limit of 2,000 requests per IP per 5 minutes, then the AWS managed IP reputation, common and known-bad-inputs rule groups.
+- **Caching.** `scripts/publish-web.mjs` uploads `assets/` with `Cache-Control: public, max-age=31536000, immutable`, and everything else (`index.html`) with `max-age=0, must-revalidate` for browsers and `s-maxage` for the edge, which is safe because a release never changes. Source maps aren't uploaded.
+
+**Publishing.** `scripts/publish-web.mjs` reads the bucket and the KeyValueStore from the SSM parameters under `/supply-checkout/<env>/web/`, so it needs the web stack deployed and an AWS CLI v2 login:
+
+```bash
+npm run publish:demo                                            # build:demo, upload as demo-<time>-<commit>, make it live at the apex
+npm run publish:web -- publish --channel app --dir dist/web     # after npm run build:web: the same for app.
+npm run publish:web -- publish --channel app --dir dist/web --version 1.3.0 --no-activate   # upload only
+npm run publish:web -- activate --channel app --version 1.3.0  # switch, or roll back to any uploaded version
+npm run publish:web -- status                                   # live versions and every uploaded release
+```
+
+Options: `--env` (default `prod`), `--profile` (default `$AWS_PROFILE`, else `supply-prod`), `--dry-run` (print the writes instead of running them). Publishing a version that already exists fails.
+
+**First deploy, and the demo live at supplycheckout.com:**
+
+```bash
+aws sso login --profile supply-prod
+# Once: the SSM parameters from "Domain and email" (hosted zone ID, DMARC report address)
+ZONE_ID=$(aws ssm get-parameter --profile supply-prod --region us-east-1 \
+  --name /supply-checkout/prod/dns/hosted-zone-id --query Parameter.Value --output text)
+# The domain stack adds an SPF TXT record at the apex. This must print nothing: an existing
+# apex TXT record (a site verification, say) must be removed, or its values merged into
+# the ApexSpf record in lib/stacks/domain-stack.ts, before deploying.
+aws route53 list-resource-record-sets --profile supply-prod --hosted-zone-id "$ZONE_ID" \
+  --query "ResourceRecordSets[?Name=='supplycheckout.com.' && Type=='TXT']" --output text
+# The web stack adds A/AAAA aliases at the apex, www. and app.: none may exist yet either.
+aws route53 list-resource-record-sets --profile supply-prod --hosted-zone-id "$ZONE_ID" \
+  --query "ResourceRecordSets[?(Type=='A' || Type=='AAAA' || Type=='CNAME') && contains(['supplycheckout.com.','www.supplycheckout.com.','app.supplycheckout.com.'], Name)].[Name,Type]" --output text
+cd infra && npm ci
+npx cdk deploy supply-checkout-prod-us-east-1-web --profile supply-prod   # also deploys the domain and data stacks it needs
+cd .. && npm ci
+npm run publish:demo
+curl -sI https://supplycheckout.com/ | head -20                            # 200, with the security headers
+```
+
+Then check https://securityheaders.com/?q=supplycheckout.com (it should grade A; `'unsafe-inline'` for style attributes stops it at A rather than A+) and that `https://www.supplycheckout.com/` redirects to the apex. `https://app.supplycheckout.com/` answers 503 until the real app is published to the `app` channel.
 
 ## Backend
 
