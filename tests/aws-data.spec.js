@@ -283,6 +283,74 @@ test.describe("checkout and return commands", () => {
     expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(11);
   });
 
+  test("a retried return is the same request even after a live update changed the line", async ({ page }) => {
+    const backend = await open(page);
+    await card(page, "Echo Studio").click();
+    await page.getByRole("button", { name: "Return", exact: true }).click();
+    // 3 out, 1 back: return the other 2, and the answer is lost
+    backend.on("POST", RETURN, { lost: true });
+    await enterBarcode(page, "SKU1");
+    await modal(page).getByRole("button", { name: "More" }).click();
+    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+    // The saved return's live update arrives while the form is still open
+    await emit(page, { v: 1, eventId: "e1", collection: "sheets", id: "s1", op: "put", version: backend.doc("t1", "sheets", "s1").version });
+    await expect(lineRow(page, "Paper towels")).toContainText("3");
+    await hideToast(page);
+    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await expect(toast(page)).toHaveText("2 returned · 3 of 3 back");
+    const [first, retry] = backend.requests("POST", RETURN).map((r) => r.body);
+    expect(retry).toEqual(first);
+    expect(first.quantity).toBe(2);
+    expect(backend.operations.size).toBe(1);
+    expect(backend.doc("t1", "sheets", "s1").data.items.SKU1).toMatchObject({ out: 3, returned: 3 });
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(12);
+  });
+
+  test("a retried checkout of a new item saves the item once", async ({ page }) => {
+    const backend = await open(page);
+    await card(page, "Echo Studio").click();
+    backend.on("POST", CHECKOUT, { lost: true });
+    await enterBarcode(page, "NEW1");
+    await modal(page).getByLabel("Item name").fill("Wax");
+    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+    // Someone else edits the new item meanwhile: saving it again would conflict
+    backend.write("t1", "products", "NEW1", { code: "NEW1", name: "Floor wax", price: 0 });
+    await hideToast(page);
+    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await expect(toast(page)).toHaveText("Checked out 1 × Wax");
+    expect(backend.requests("PUT", "/teams/t1/products/NEW1")).toHaveLength(1);
+    expect(backend.operations.size).toBe(1);
+    expect(backend.doc("t1", "sheets", "s1").data.items.NEW1).toMatchObject({ out: 1 });
+  });
+
+  for (const kind of ["checkout", "return"]) {
+    test(`a ${kind} by someone made a viewer meanwhile is refused, and the app switches to view-only`, async ({ page }) => {
+      const backend = await open(page);
+      await card(page, "Echo Studio").click();
+      if (kind === "return") await page.getByRole("button", { name: "Return", exact: true }).click();
+      await enterBarcode(page, "SKU1");
+      backend.teams[0].role = "viewer";
+      await modal(page).getByRole("button", { name: kind === "return" ? "Save return" : "Add 1 to sheet" }).click();
+      await expect(page.locator("#notice")).toContainText("You have view-only access.");
+      expect(backend.requests("POST", `/teams/t1/sheets/s1/${kind}`)).toHaveLength(1);
+      expect(backend.operations.size).toBe(0);
+      expect(backend.doc("t1", "sheets", "s1").version).toBe(1);
+    });
+  }
+
+  test("a return on a sheet deleted as it saves still says what came back", async ({ page }) => {
+    const backend = await open(page);
+    await card(page, "Echo Studio").click();
+    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await enterBarcode(page, "SKU1");
+    backend.on("POST", RETURN, { status: 200, body: { operationId: "x", replayed: false, result: { quantity: 1 }, sheet: null, product: null } });
+    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await expect(toast(page)).toHaveText("1 returned · 0 of 0 back");
+    await expect(card(page, "Echo Studio")).toHaveCount(0);
+  });
+
   test("a sheet closed meanwhile refuses a checkout, and the latest sheet and item show", async ({ page }) => {
     const backend = await open(page);
     await card(page, "Echo Studio").click();

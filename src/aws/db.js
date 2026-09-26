@@ -133,7 +133,7 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
     const held = c.docs.get(ev.id);
     // Skip what's already here: an older version, or (for sheets) the same one, such as
     // the echo of this user's own write. A product's is fetched again on the same version,
-    // since the backend's own adjustStock (backend/src/data/products.ts) keeps the version.
+    // for data stored before every stock change gave the product a new version.
     if (held && (ev.version < held.version || (ev.version === held.version && ev.collection === "sheets"))) return;
     fetchDoc(ev.collection, ev.id);
   }
@@ -182,8 +182,9 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
 
   // Checkout and return (docs/api/commands.md): one POST that changes the sheet line and the
   // stock together. The answer has the sheet and the product as they are now (null if gone),
-  // so the screen updates before the live events arrive. A 409 fetches both, as a document
-  // write's does, and passes the error on.
+  // so the screen updates before the live events arrive. Resolves to how many the command
+  // moved and the line as it is now. A 409 fetches both, as a document write's does, and
+  // passes the error on.
   //
   // `action` stands for one action the person confirmed. It keeps one operation ID for as long
   // as the request stays the same, so every attempt at it (a retry, or a second tap while the
@@ -202,6 +203,7 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
       const res = await api("POST", `${docPath("sheets", sheetId)}/${name}`, { operationId: operation, ...body });
       put("sheets", sheetId, res.sheet);
       put("products", body.productKey, res.product);
+      return { quantity: res.result.quantity, line: res.sheet ? res.sheet.data.items[body.productKey] : {} };
     } catch (e) {
       if (e.code === "aborted") await Promise.all([fetchDoc("sheets", sheetId), fetchDoc("products", body.productKey)]);
       throw e;

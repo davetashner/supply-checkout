@@ -243,14 +243,18 @@ function checkoutModal(s, code, key = keyOf(code)) {
         name = m.querySelector("#fName").value.trim(); price = Math.max(0, Number(m.querySelector("#fPrice").value) || 0);
         if (!name) return;
         const save = code || m.querySelector("#fSave").checked;
-        if (save && !await write(() => db.doc("products/" + key).set({ code, name, price, updatedAt: new Date().toISOString() }))) return;
+        // Saved once per action: a retry after the checkout failed doesn't save it again
+        if (save && !action.saved) {
+          if (!await write(() => db.doc("products/" + key).set({ code, name, price, updatedAt: new Date().toISOString() }))) return;
+          action.saved = true;
+        }
         // Not saved to inventory: the line's name and price come from here (whole cents, as the API takes them)
         if (!save) oneOff = { name, price: round2(price), code };
       }
       const fresh = currentSheet() || s, cur = own(fresh.items || {}, key);
       const item = { code, name: cur ? cur.name : name, price: cur ? cur.price : price, out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) };
-      let then;
-      if (await write(async () => { then = await checkOut(db, action, s.id, key, qty, item, oneOff, bumpStock); }, `Checked out ${qty} × ${item.name}`)) { closeModal(); await then(); }
+      let after;
+      if (await write(async () => { ({ after } = await checkOut(db, action, s.id, key, qty, item, oneOff, bumpStock)); }, `Checked out ${qty} × ${item.name}`)) { closeModal(); await after(); }
     });
   });
 }
@@ -332,11 +336,13 @@ function returnModal(s, code, key = keyOf(code)) {
     m.querySelector("#f").addEventListener("submit", async e => {
       e.preventDefault();
       const r = getR(); if (!r) { toast("Choose at least 1."); return; }
-      // Add to the latest count, in case someone else recorded a return meanwhile
       const cur = own((currentSheet() || s).items || {}, key) || line;
-      const out = int(cur.out), before = Math.min(int(cur.returned), out), back = Math.min(out, before + r);
-      let then;
-      if (await write(async () => { then = await recordReturn(db, action, s.id, key, before, back, bumpStock); }, `${back - before} returned · ${back} of ${out} back`)) { closeModal(); await then(); }
+      let after;
+      if (await write(async () => {
+        const done = await recordReturn(db, action, s.id, key, r, cur, bumpStock);
+        after = done.after;
+        toast(`${done.quantity} returned · ${int(done.line.returned)} of ${int(done.line.out)} back`);
+      })) { closeModal(); await after(); }
     });
   });
 }

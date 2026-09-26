@@ -277,6 +277,11 @@ function movementPut(db: Db, ctx: TeamContext, movement: Omit<Movement, "type">)
  */
 const BUMP_VERSION = "#version = if_not_exists(#version, :one) + :one";
 
+/** Refuses a product whose stored version DynamoDB couldn't add to (it would answer ValidationError, a 500). */
+function checkVersion(product: Item): void {
+  if (product.version !== undefined && typeof product.version !== "number") throw new InvalidInputError("This item's version isn't a number");
+}
+
 /**
  * The product's part of a checkout or return: ADD to stock (and a new version) when it tracks
  * stock, otherwise a check that it still doesn't (or still doesn't exist).
@@ -297,6 +302,7 @@ function productWrite(
   const tracked = typeof product.stock === "number";
   const names = { "#stock": "stock", ...extra.names };
   if (tracked) {
+    checkVersion(product);
     return {
       item: {
         Update: {
@@ -553,6 +559,7 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
   return execute(db, ctx, opId, "stockAdjust", request, now, async () => {
     const product = await getItem(db, Key);
     if (!product) throw new NotFoundError("No such item");
+    checkVersion(product);
     const base = { operationId: opId, command: "stockAdjust" as const, productKey: key, userId: ctx.userId, at };
     if (parsed.reason === "receipt") {
       const { qty, unitCost } = parsed;

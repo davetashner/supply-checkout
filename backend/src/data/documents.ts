@@ -219,8 +219,8 @@ async function write(
     const data = checkDocument(collection, build(before));
     const version = (before?.version ?? 0) + 1;
     // Unchanged since the read: same version and, for products, same stock
-    // (the commands give each stock change a new version, but products.ts's
-    // adjustStock changes stock without one)
+    // (every stock change gives a new version now; checking stock as well
+    // covers items stored before it did)
     const names: Record<string, string> = {};
     const values: Record<string, unknown> = {};
     const unchanged = (field: string) => {

@@ -10,21 +10,33 @@
 // build's db gives each action an operation ID, and sends the same one on every attempt at the
 // same request, so a retry or a second tap is applied once.
 //
-// Each resolves, once the sheet has saved, to what's left to do: the artifact's storage count
-// write, or nothing (the command moved stock already).
+// The request depends only on what the person entered, never on the latest copy of the sheet,
+// so a retry after a live update is still the same request.
+//
+// Each resolves, once the sheet has saved, to { after, quantity, line }: what's left to do (the
+// artifact's storage count write, or nothing, since the command moved stock already), and for
+// a return, how many came back and the line as it is now. (Not `then`: an object with a
+// `then` method is a thenable, and awaiting it would call it.)
+import { int } from "./format.js";
+
 const nothing = async () => true;
 
-async function move(db, action, command, sheetId, body, line, stock) {
-  if (db.command) { await db.command(command, sheetId, body, action); return nothing; }
-  await db.doc("sheets/" + sheetId).update({ items: { [body.productKey]: line } });
-  return stock;
+async function move(db, action, command, sheetId, body, local) {
+  if (db.command) return { after: nothing, ...(await db.command(command, sheetId, body, action)) };
+  await db.doc("sheets/" + sheetId).update({ items: { [body.productKey]: local.patch } });
+  return local;
 }
 
 // item: the whole line as it should be now. oneOff: the name, price and code of an item that
 // isn't in inventory, which the command needs to add its line ({} for an item in inventory).
 export const checkOut = (db, action, sheetId, key, qty, item, oneOff, bumpStock) =>
-  move(db, action, "checkout", sheetId, { productKey: key, quantity: qty, ...oneOff }, item, () => bumpStock(key, -qty));
-// before and back: how many of the line were returned before this return, and after it
-export const recordReturn = (db, action, sheetId, key, before, back, bumpStock) =>
-  move(db, action, "return", sheetId, { productKey: key, quantity: back - before }, { returned: back }, () => bumpStock(key, back - before));
+  move(db, action, "checkout", sheetId, { productKey: key, quantity: qty, ...oneOff }, { patch: item, after: () => bumpStock(key, -qty) });
+// r: how many the person is returning. The command adds it on the server, which refuses more
+// than are left. The artifact writes the line's new returned count, added to the latest copy
+// of the line (cur), in case someone else recorded a return meanwhile.
+export function recordReturn(db, action, sheetId, key, r, cur, bumpStock) {
+  const out = int(cur.out), before = Math.min(int(cur.returned), out), back = Math.min(out, before + r);
+  return move(db, action, "return", sheetId, { productKey: key, quantity: r },
+    { patch: { returned: back }, after: () => bumpStock(key, back - before), quantity: back - before, line: { out, returned: back } });
+}
 export const setStock = (db, key, stock) => db.doc("products/" + key).update({ stock });

@@ -1,6 +1,8 @@
 // Inventory items (ADR 0005). Fields match the artifact's `products` collection.
-// `stock` changes only through adjustStock's atomic ADD, never read-then-write,
-// and doesn't bump `version`, so a count change never conflicts with an edit.
+// `stock` changes only through adjustStock's atomic ADD, never read-then-write.
+// Like the commands (commands.ts), it gives the product a new version, so an
+// edit made against the version before a stock change conflicts instead of
+// overwriting it.
 
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
@@ -79,9 +81,10 @@ export async function adjustStock(db: Db, ctx: TeamContext, key: string, delta: 
       new UpdateCommand({
         TableName: db.tableName,
         Key: keys.product(ctx.teamId, key),
-        UpdateExpression: "ADD stock :delta",
+        UpdateExpression: "SET #version = if_not_exists(#version, :one) + :one ADD #stock :delta",
         ConditionExpression: "attribute_exists(PK)",
-        ExpressionAttributeValues: { ":delta": delta },
+        ExpressionAttributeNames: { "#stock": "stock", "#version": "version" },
+        ExpressionAttributeValues: { ":delta": delta, ":one": 1 },
         ReturnValues: "UPDATED_NEW",
       }),
     )

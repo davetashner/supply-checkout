@@ -275,6 +275,20 @@ describe("edits after a command", () => {
     expect((await edit(6)).body).toMatchObject({ version: 7, data: { stock: 10, price: 13 } });
   });
 
+  it("refuse, with 400 and nothing written, a stock change to a product whose stored version isn't a number", async () => {
+    seed({ product: { ...gloves, version: "x" }, sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 5, returned: 1 } } } });
+    for (const [path, body] of [
+      ["/teams/team-a/sheets/s1/checkout", { productKey: "0123", quantity: 1 }],
+      ["/teams/team-a/sheets/s1/return", { productKey: "0123", quantity: 1 }],
+      ["/teams/team-a/products/0123/stock", { reason: "count", count: 3 }],
+      ["/teams/team-a/products/0123/stock", { reason: "receipt", quantity: 1, unitCost: 1 }],
+    ] as const) {
+      expect(await call("POST", path, { operationId: op(), ...body })).toMatchObject({ status: 400, body: { error: { code: "bad_request", message: "This item's version isn't a number" } } });
+    }
+    expect(stock()).toBe(10);
+    expect(movements()).toEqual([]);
+  });
+
   it("leave an untracked product's version alone, since its stock didn't change", async () => {
     seed({ product: { code: "0123", name: "Nitrile gloves", price: 12.5 } });
     await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2 });

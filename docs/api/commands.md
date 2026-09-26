@@ -162,6 +162,10 @@ The toast text the app shows today still works: "Checked out 3 × <name>" from
   every attempt with the same request reuses it, including a second tap while
   the first is still on its way. If the person changes the request after a
   failure (another quantity, say), it's a new operation with a new ID.
+  The request is only what the person entered (a return sends the quantity
+  they're returning, not a count worked out from the latest copy of the
+  line), so a live update that arrives before a retry doesn't change it, and
+  a new item saved to inventory on the first attempt isn't saved again.
 - The server keeps the result for **7 days**. A retry within that returns the
   first result and changes nothing. After that the ID is forgotten, so don't
   queue retries for longer.
