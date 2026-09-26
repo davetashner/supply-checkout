@@ -7,7 +7,8 @@
 // checks that the context it gets is one this file issued.
 //
 // Issuers: authorizeTeam (the API authorizer), createTeam (the new owner),
-// acceptInvite (the new member) and teamContextForStripeCustomer (webhooks).
+// acceptInvite (the new member), teamContextForStripeCustomer (webhooks) and
+// teamContextForEmailEvent (bounces and complaints).
 
 import { randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactGetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -334,4 +335,19 @@ export async function teamContextForStripeCustomer(db: Db, customerId: string): 
   );
   if (!team) return undefined;
   return issue(teamId, "system:stripe", "system", team.homeRegion as string);
+}
+
+/**
+ * The context for the email-events handler acting on a team's invite after
+ * SES reported a bounce or complaint, or undefined if the team is gone. The
+ * team ID comes from the message's tags, which only our own sends set, in an
+ * event only SES can publish (the topic's policy); markInviteFailed also
+ * checks that the invite is for the address that bounced.
+ */
+export async function teamContextForEmailEvent(db: Db, teamId: string): Promise<TeamContext | undefined> {
+  const { Item: team } = await connection(db).doc.send(
+    new GetCommand({ TableName: db.tableName, Key: keys.team(id(teamId, "team ID")), ConsistentRead: true, ProjectionExpression: "homeRegion" }),
+  );
+  if (!team) return undefined;
+  return issue(teamId, "system:email", "system", team.homeRegion as string);
 }

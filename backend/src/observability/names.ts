@@ -43,6 +43,12 @@ export const BusinessMetric = {
   InvitesSent: "InvitesSent",
   /** Invitations accepted (J3). */
   InvitesAccepted: "InvitesAccepted",
+  /** Invitations marked failed because their email bounced or drew a complaint (J3). */
+  InvitesFailed: "InvitesFailed",
+  /** Recipients SES reported as bounced, any message kind; the kind goes in metadata. */
+  EmailBounces: "EmailBounces",
+  /** Recipients who marked a message as spam, any message kind. */
+  EmailComplaints: "EmailComplaints",
   /** Our API failing to create a Stripe Checkout session (J7). */
   CheckoutSessionErrors: "CheckoutSessionErrors",
   /** Stripe webhooks rejected for a bad signature (J7). */

@@ -2,7 +2,8 @@
 // import (see eslint.config.js). It is the only code allowed to use the
 // DynamoDB client. Every team's data is read and written through a
 // TeamContext, which only the issuers in team-context.ts can create:
-// authorizeTeam, createTeam, acceptInvite and teamContextForStripeCustomer.
+// authorizeTeam, createTeam, acceptInvite, teamContextForStripeCustomer and
+// teamContextForEmailEvent.
 // The Db handle is opaque: it exposes no DynamoDB client.
 
 export { closeDb, createDb, type Db, type DbOptions } from "./client.js";
@@ -14,6 +15,7 @@ export {
   createTeam,
   findInvite,
   TeamContext,
+  teamContextForEmailEvent,
   teamContextForStripeCustomer,
   type Role,
 } from "./team-context.js";

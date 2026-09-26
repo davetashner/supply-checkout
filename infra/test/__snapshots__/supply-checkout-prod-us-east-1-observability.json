@@ -1004,6 +1004,59 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmsemaileventsdropped5099762A": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Email events dropped (J3, us-east-1). Any message in the email-events dead-letter queue: a bounce or complaint the handler couldn't record after retries, so an invite that bounced may still show as pending. SES has already suppressed the address; the message has the event to replay. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-email-events-dropped",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "QueueName",
+            "Value": "supply-checkout-prod-email-events-dlq"
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Namespace": "AWS/SQS",
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Period": 300,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmswritesrejected25F2F667": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -1607,6 +1660,13 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
+                  "JourneyAlarmsemaileventsdropped5099762A",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
                   "JourneyAlarmswritesrejected25F2F667",
                   "Arn"
                 ]
@@ -1709,7 +1769,7 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"InvitesSent\",\"Region\",\"us-east-1\",{\"label\":\"InvitesSent (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesAccepted\",\"Region\",\"us-east-1\",{\"label\":\"InvitesAccepted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesSent\",\"Region\",\"us-west-2\",{\"label\":\"InvitesSent (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesAccepted\",\"Region\",\"us-west-2\",{\"label\":\"InvitesAccepted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":31,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: billing errors\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"InvitesSent\",\"Region\",\"us-east-1\",{\"label\":\"InvitesSent (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesAccepted\",\"Region\",\"us-east-1\",{\"label\":\"InvitesAccepted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesFailed\",\"Region\",\"us-east-1\",{\"label\":\"InvitesFailed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesSent\",\"Region\",\"us-west-2\",{\"label\":\"InvitesSent (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesAccepted\",\"Region\",\"us-west-2\",{\"label\":\"InvitesAccepted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesFailed\",\"Region\",\"us-west-2\",{\"label\":\"InvitesFailed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":31,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: billing errors\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
@@ -1717,7 +1777,11 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdates (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdateFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdates (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdateFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
+              "\",\"metrics\":[[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdates (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdateFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdates (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdateFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":37,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email bounces and complaints\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailBounces\",\"Region\",\"us-east-1\",{\"label\":\"EmailBounces (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailComplaints\",\"Region\",\"us-east-1\",{\"label\":\"EmailComplaints (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailBounces\",\"Region\",\"us-west-2\",{\"label\":\"EmailBounces (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailComplaints\",\"Region\",\"us-west-2\",{\"label\":\"EmailComplaints (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
             ]
           ]
         },
