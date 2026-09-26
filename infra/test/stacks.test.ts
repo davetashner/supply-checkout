@@ -96,7 +96,7 @@ describe("stack layout", () => {
       expect(deps(r.realtime)).toEqual([...new Set([r.data.stackName, globalDomain])].sort());
       expect(deps(r.observability)).toEqual([r.api.stackName, r.realtime.stackName].sort());
     }
-    expect(deps(stacks.identity)).toEqual([globalDomain]);
+    expect(deps(stacks.identity)).toEqual([globalDomain, stacks.web.stackName].sort());
     expect(deps(stacks.web)).toEqual([globalDomain, ...Object.values(stacks.regions).map((r) => r.data.stackName)].sort());
     for (const domain of Object.values(stacks.domain)) expect(deps(domain)).toEqual([]);
   });

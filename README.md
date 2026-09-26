@@ -246,6 +246,65 @@ curl -sI https://supplycheckout.com/ | head -20                            # 200
 ```
 
 Then check https://securityheaders.com/?q=supplycheckout.com (it should grade A; `'unsafe-inline'` for style attributes stops it at A rather than A+) and that `https://www.supplycheckout.com/` redirects to the apex. `https://app.supplycheckout.com/` answers 503 until the real app is published to the `app` channel.
+### Sign-in
+
+The `identity` stack (`lib/stacks/identity-stack.ts`, [ADR 0007](docs/adr/0007-identity-cognito.md), `supply-checkout-zsm`) holds the Cognito user pool, in the primary region. It's stateful: termination protection, deletion protection on the pool, and a `RETAIN` removal policy.
+
+- **Essentials tier** with **Managed Login** at `auth.<env domain>`, branded with the app's colors (`managedLoginBranding` in `lib/identity.ts`; light or dark follows the browser).
+- Sign-in by email with a **one-time code**, a **password** (12+ characters, mixed), or a **passkey**. Passkeys use `auth.<env domain>` as their relying party ID, which Cognito requires with a custom domain. They are bound to that host, so changing it orphans every passkey.
+- **Optional TOTP MFA**, no SMS. Owners must turn it on before changing billing. The billing routes enforce that (they check `UserMFASettingList` with `AdminGetUser` and answer 403 `mfa_required`); the pool doesn't.
+- Email codes come from `noreply@<env domain>` through SES, using the domain identity from the `domain` stack.
+- One app client, `web`: a public client (no secret) using the authorization code flow with PKCE. Callback and sign-out URLs are `https://app.<env domain>/`, plus `http://localhost:5173/` outside prod (`-c localhostCallbacks=true|false` overrides). Access and ID tokens last 60 minutes; refresh tokens last 30 days and rotate on every use (a 10-second grace period covers two tabs refreshing at once). Refresh with the `/oauth2/token` endpoint or `GetTokensFromRefreshToken`: rotation turns off `REFRESH_TOKEN_AUTH`.
+- **Sign in with Apple** and **Google** are off until their credentials exist (below).
+
+The stack publishes `user-pool-id`, `user-pool-arn`, `web-client-id`, `issuer-url` and `auth-url` under `/supply-checkout/<env>/identity/`. `cognitoJwtAuthorizer()` in `lib/identity.ts` builds the HTTP API's JWT authorizer from them.
+
+**Deploying.** The first time, in this order:
+
+1. The `domain` stack in `GLOBAL_SERVICES_REGION` must be deployed: it publishes the `auth.` certificate's ARN, which this stack reads (`/supply-checkout/<env>/domain/auth-certificate-arn`). If the primary region is ever not `GLOBAL_SERVICES_REGION`, copy that parameter into the primary region first.
+2. The SES domain identity must be verified (see [Domain and email](#domain-and-email)). While SES is in the sandbox, codes only reach verified addresses.
+3. The apex must resolve: Cognito refuses a custom domain whose parent domain has no A record. The identity stack depends on the `web` stack, whose alias records make it resolve, so `cdk deploy` deploys `web` first. (`dig +short supplycheckout.com A` should answer.)
+4. Deploy, then wait for the domain (Cognito provisions a CloudFront distribution; it can take up to an hour):
+   ```bash
+   cd infra
+   npx cdk deploy supply-checkout-prod-us-east-1-identity --profile supply-prod
+   aws cognito-idp describe-user-pool-domain --profile supply-prod --region us-east-1 \
+     --domain auth.supplycheckout.com --query DomainDescription.Status   # ACTIVE
+   ```
+5. Try it: open `https://auth.supplycheckout.com/login?client_id=<web-client-id>&response_type=code&scope=openid+email+profile&redirect_uri=https://app.supplycheckout.com/`, with the client ID from `aws ssm get-parameter --name /supply-checkout/prod/identity/web-client-id`. Sign up with an email code, add a passkey, and sign in again with each.
+
+If the first deploy fails after the pool is created, CloudFormation rolls back but keeps the pool (it's retained and deletion-protected). Delete it in the Cognito console (turn off deletion protection first) before deploying again.
+
+**Google sign-in.** In the [Google Cloud console](https://console.cloud.google.com/):
+
+1. Create a project (`Supply Checkout`). Under **Google Auth Platform**, set up **Branding** (app name, support email, logo, home page `https://supplycheckout.com`, privacy policy and terms links, authorized domain `supplycheckout.com`), choose **Audience: External**, and publish the app. The scopes are `openid`, `email` and `profile`, which need no Google review.
+2. **Clients → Create client → Web application**. Authorized JavaScript origin `https://auth.supplycheckout.com`; authorized redirect URI `https://auth.supplycheckout.com/oauth2/idpresponse`. Keep the client ID and secret.
+3. Store them in Secrets Manager, in the primary region (the prompts keep them out of your shell history):
+   ```bash
+   read -r -p 'Client ID: ' ID; read -r -s -p 'Client secret: ' SECRET; echo
+   aws secretsmanager create-secret --profile supply-prod --region us-east-1 \
+     --name supply-checkout/prod/identity/google \
+     --secret-string "$(jq -n --arg i "$ID" --arg s "$SECRET" '{clientId:$i,clientSecret:$s}')"
+   ```
+4. Add `"googleSignIn": true` to `cdk.json` and deploy the identity stack. Keep the flag in `cdk.json`: a deploy without it removes the provider.
+
+**Sign in with Apple.** Needs a paid Apple Developer Program membership. In [Certificates, Identifiers & Profiles](https://developer.apple.com/account/resources/):
+
+1. **Identifiers → App IDs**: register the app's ID (for example `com.supplycheckout.app`) with **Sign In with Apple** on, as a primary App ID. The iOS app will use it later.
+2. **Identifiers → Services IDs**: register one for the web (for example `com.supplycheckout.signin`). This is the client ID Cognito sends. Turn on **Sign In with Apple**, **Configure**: primary App ID from step 1, domain `auth.supplycheckout.com`, return URL `https://auth.supplycheckout.com/oauth2/idpresponse`.
+3. **Keys**: create a key with **Sign In with Apple** on, configured for the primary App ID. Download the `.p8` file (only once) and note its **Key ID**. The **Team ID** is on the Membership page.
+4. **Services → Sign in with Apple for Email Communication**: register `supplycheckout.com` and `noreply@supplycheckout.com`, so mail to users' private relay addresses (`@privaterelay.appleid.com`) is delivered. SES's SPF and DKIM already pass for the domain.
+5. Store the values in Secrets Manager, in the primary region:
+   ```bash
+   aws secretsmanager create-secret --profile supply-prod --region us-east-1 \
+     --name supply-checkout/prod/identity/apple \
+     --secret-string "$(jq -n --arg s com.supplycheckout.signin --arg t TEAM_ID --arg k KEY_ID \
+       --rawfile p AuthKey_KEY_ID.p8 '{servicesId:$s,teamId:$t,keyId:$k,privateKey:$p}')"
+   rm AuthKey_KEY_ID.p8   # after storing it somewhere safe offline
+   ```
+6. Add `"appleSignIn": true` to `cdk.json` and deploy the identity stack.
+
+The stack reads each field with a CloudFormation dynamic reference at deploy time, so no ID or secret is ever in a template or this repository. Other environments use `supply-checkout/<env>/identity/{google,apple}` in their own accounts, with `auth.<env>.supplycheckout.com` in the redirect URIs. Apple's App Store rules (guideline 4.8) require Sign in with Apple wherever Google sign-in is offered in the iOS app, so turn both on before the app ships.
 
 ## Backend
 
