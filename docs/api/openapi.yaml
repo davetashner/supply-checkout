@@ -55,11 +55,18 @@ info:
     - A document is any JSON object up to 350,000 bytes (UTF-8 JSON), nested
       at most 16 levels, with numbers DynamoDB can store. These top-level
       fields are the server's and are refused in a body: `PK`, `SK`, `GSI1PK`,
-      `GSI1SK`, `GSI2PK`, `GSI2SK`, `type`, `id`, `key`, `version`, `teamId`. For products,
-      `stock` must be a number if present; for sheets, `date` must be a string
+      `GSI1SK`, `GSI2PK`, `GSI2SK`, `type`, `id`, `key`, `version`, `teamId`. For sheets, `date` must be a string
       and `items` an object. A barcode (`code`, on a product and on each line
       in a sheet's `items`) must be a string of at most 256 characters, the
       product key limit; it's empty for an item without a barcode.
+    - A product's `stock` changes only through the stock commands (the
+      `commands` tag) and the CSV import, which record a movement for every
+      change. A product `set` or `update` keeps the stored `stock`: leave it
+      out of the body (the stored value is kept, or stays absent), or repeat
+      the stored value exactly. Any other `stock`, including one on a product
+      that doesn't track stock or doesn't exist yet, is 400 `bad_request` and
+      changes nothing. A new item starts counting with a `count` adjustment
+      after it's created. See [commands.md](commands.md).
     - Every other field is kept exactly as written. The `Product`, `Sheet` and
       `SheetLine` schemas list the fields the app writes; all of them,
       including each line's `code`, read back unchanged.
@@ -158,7 +165,12 @@ paths:
     put:
       tags: [products]
       operationId: setProduct
-      summary: Create or replace a product (the app's `set`).
+      summary: Create or replace a product (the app's `set`), keeping its stored `stock`.
+      description: |
+        Replaces every field but `stock`, which only the stock commands change:
+        the stored `stock` is kept when the body leaves it out, and a body
+        `stock` that differs from it (any `stock` for a new product, or one
+        that doesn't track stock) is 400 `bad_request`.
       requestBody: { $ref: "#/components/requestBodies/Write" }
       responses:
         "200": { $ref: "#/components/responses/Document" }
@@ -170,7 +182,8 @@ paths:
     patch:
       tags: [products]
       operationId: updateProduct
-      summary: Deep-merge into an existing product (the app's `update`).
+      summary: Deep-merge into an existing product (the app's `update`), keeping its stored `stock`.
+      description: A patch `stock` that differs from the stored one (or any, if the product doesn't track stock) is 400 `bad_request`; only the stock commands change it.
       requestBody: { $ref: "#/components/requestBodies/Write" }
       responses:
         "200": { $ref: "#/components/responses/Document" }
@@ -980,7 +993,7 @@ components:
         code: { type: string, maxLength: 256, description: The barcode; empty for an item without one. }
         name: { type: string }
         price: { type: number, minimum: 0 }
-        stock: { type: number, description: The count in storage; absent if not counted. }
+        stock: { type: number, description: "The count in storage; absent if not counted. Read-only here: only the stock commands and the CSV import change it, and a write may only repeat the stored value." }
         updatedAt: { type: string, format: date-time }
     Sheet:
       type: object

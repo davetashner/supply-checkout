@@ -263,7 +263,7 @@ describe("stock adjust", () => {
 describe("edits after a command", () => {
   it("refuse a product write made against the version before a checkout, return or stock change, so none of them is overwritten", async () => {
     seed({ sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 5, returned: 1 } } } });
-    const edit = (expectedVersion: number) => call("PATCH", "/teams/team-a/products/0123", { data: { stock: 10, price: 13 }, expectedVersion });
+    const edit = (expectedVersion: number) => call("PATCH", "/teams/team-a/products/0123", { data: { price: 13 }, expectedVersion });
     await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2 });
     expect((await edit(3)).body.error.code).toBe("aborted");
     await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "0123", quantity: 1 });
@@ -272,7 +272,19 @@ describe("edits after a command", () => {
     expect((await edit(5)).body.error.code).toBe("aborted");
     expect(stock()).toBe(20);
     // Made against the latest version, it saves
-    expect((await edit(6)).body).toMatchObject({ version: 7, data: { stock: 10, price: 13 } });
+    expect((await edit(6)).body).toMatchObject({ version: 7, data: { stock: 20, price: 13 } });
+  });
+
+  it("keep the stock the commands set through a product PUT or PATCH that leaves it out, and refuse one that changes it", async () => {
+    seed({ sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 5, returned: 1 } } } });
+    await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2 });
+    expect(stock()).toBe(8);
+    const put = await call("PUT", "/teams/team-a/products/0123", { data: { code: "0123", name: "Gloves", price: 13 }, expectedVersion: 4 });
+    expect(put.body).toMatchObject({ version: 5, data: { name: "Gloves", stock: 8 } });
+    expect((await call("PUT", "/teams/team-a/products/0123", { data: { code: "0123", name: "Gloves", price: 13, stock: 10 }, expectedVersion: 5 })).status).toBe(400);
+    expect((await call("PATCH", "/teams/team-a/products/0123", { data: { stock: 7 }, expectedVersion: 5 })).status).toBe(400);
+    expect(stock()).toBe(8);
+    expect(movements().map((m) => m.reason)).toEqual(["checkout"]);
   });
 
   it("refuse, with 400 and nothing written, a stock change to a product whose stored version isn't a number", async () => {

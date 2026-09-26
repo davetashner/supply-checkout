@@ -202,10 +202,14 @@ export class FakeBackend {
     if (expected === undefined) return err(400, "bad_request");
     if (Number(expected) !== (cur ? cur.version : 0)) return err(409, "aborted");
     if (method === "DELETE") { this.docs.delete(key); return [204]; }
-    if (method === "PUT") { this.write(team, coll, id, call.body.data); return [200, out()]; }
-    if (!cur) return err(404, "not_found");
-    const data = clone(cur.data);
-    merge(data, call.body.data);
+    if (method === "PATCH" && !cur) return err(404, "not_found");
+    // A product's stock moves only through the stock commands (keepStock in
+    // backend/src/data/documents.ts): a write keeps what's stored and refuses a different stock
+    const stored = cur && cur.data.stock;
+    if (coll === "products" && Object.hasOwn(call.body.data, "stock") && call.body.data.stock !== stored) return err(400, "bad_request");
+    const data = method === "PUT" ? clone(call.body.data) : clone(cur.data);
+    if (method === "PATCH") merge(data, call.body.data);
+    if (coll === "products" && stored !== undefined) data.stock = stored;
     this.write(team, coll, id, data);
     return [200, out()];
   }
