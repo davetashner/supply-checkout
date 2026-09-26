@@ -28,7 +28,8 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `scripts/page.mjs` | Wraps the artifact in the same document skeleton claude.ai adds at publish time. |
 | `scripts/validate-html.mjs` | HTML validation (html-validate). |
 | `scripts/dev-server.mjs` | Local dev server with the mock runtime (`npm run dev`). |
-| `scripts/land-pr.sh` | Waits for CI, squash-merges a PR, cleans up its worktree and branch, and closes its beads (`npm run land -- <pr>`). |
+| `scripts/land-pr.sh` | Waits for CI, squash-merges a PR, cleans up its worktree and branch, and closes its beads (`npm run land -- <pr>`). Exits non-zero if the PR isn't merged, and explains a PR that main's ruleset blocks. |
+| `scripts/land-pr.test.sh` | Tests for `land-pr.sh` against a fake `gh` in a throwaway repo (`npm run test:scripts`, which also runs shellcheck). |
 | `scripts/check-public-safety.mjs` | Blocks AWS identifiers, email addresses and credentials from this public repo (pre-commit hook and CI). |
 | `scripts/check-region-strings.mjs` | Blocks AWS region names in `infra/`, `backend/` and `src/` outside `infra/lib/config.ts` (ADR 0010; pre-commit hook and CI). |
 | `scripts/export-beads.mjs` | Writes the beads backlog export without owner emails (`npm run beads:export`). |
@@ -202,6 +203,7 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | Lint and validate HTML | ESLint on `src/`, scripts and tests; builds both and runs html-validate on each |
 | Lint GitHub workflows | actionlint |
 | No region names outside the config module | `scripts/check-region-strings.mjs`: fails on any AWS region name in `infra/`, `backend/` or `src/` outside `infra/lib/config.ts` (ADR 0010) |
+| Shell scripts | shellcheck on `scripts/*.sh`, and the `land-pr.sh` tests against a fake `gh` |
 | Secret scan | gitleaks on every commit in the history, and `scripts/check-public-safety.mjs` on every file (AWS account and SSO identifiers, email addresses, AWS and Stripe keys, private keys) |
 | Dependency audit | `npm audit` fails on high-severity advisories; dependency review fails a PR that adds a moderate-or-worse vulnerable package |
 | CodeQL (javascript-typescript), CodeQL (actions) | CodeQL `security-extended` queries on the app, scripts, tests and workflows (`.github/workflows/codeql.yml`, which also runs weekly). Results go to the repository's code scanning alerts |

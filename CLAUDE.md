@@ -34,7 +34,7 @@ Beads are labeled `mvp` or `phase-2` (native mobile apps, full active-active fai
 - Work in a worktree: `git worktree add .claude/worktrees/<type>/<name> -b <type>/<name> origin/main`.
 - PR titles are Conventional Commits; release-please turns `fix:` / `feat:` into releases. Keep app fixes in their own `fix:` PR, separate from `test:` or `docs:` work.
 - Sign off commits (`git commit -s`). Put a `Closes <bead-id>` line in the PR body for each finished bead.
-- Land a PR with `npm run land -- <pr>` from the main checkout. It updates a branch that's behind, waits for CI (printing the failing log if it fails), squash-merges, removes the worktree and branch, pulls main, closes the `Closes` beads, and says whether the beads export is stale.
+- Land a PR with `npm run land -- <pr>` from the main checkout. It updates a branch that's behind, waits for CI (printing the failing log if it fails), squash-merges, removes the worktree and branch, pulls main, closes the `Closes` beads, and says whether the beads export is stale. It exits non-zero whenever the PR isn't merged: when main's ruleset blocks a green PR it names the rule and prints the `gh pr review <pr> --approve` command (release-please PRs always need a human approval), it waits up to 3 minutes for an UNKNOWN merge state to settle, and it still cleans up a PR someone else already merged. Its tests are `npm run test:scripts`.
 
 ## Tests
 
