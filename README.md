@@ -155,21 +155,35 @@ DYNAMODB_ENDPOINT=http://localhost:8000 npm test
 
 ## Supported browsers
 
-The current and previous major versions of Chrome, Edge, Firefox and Safari on desktop. The list is the `browserslist` field in `package.json`, and both builds compile their JavaScript and CSS for it (`build.target` in `vite.config.js`).
+The current and previous major versions of Chrome, Edge, Firefox and Safari on desktop, and on phones and tablets: Safari on iPhone and iPad, Chrome on Android, Samsung Internet and Firefox for Android, at widths from 320 px up, in portrait and landscape. The desktop list is the `browserslist` field in `package.json`, and both builds compile their JavaScript and CSS for it (`build.target` in `vite.config.js`).
 
-| Browser | Test project | Builds tested |
-| --- | --- | --- |
-| Chrome (desktop) | `desktop-chrome` | artifact, web |
-| Safari (iPhone) | `iphone-safari` | artifact, web |
-| Firefox (desktop) | `desktop-firefox` | web |
-| Safari (desktop) | `desktop-safari` | web |
-| Microsoft Edge (desktop) | `desktop-edge` | web |
+| Browser | Test project | Device and viewport | Builds tested |
+| --- | --- | --- | --- |
+| Chrome (desktop) | `desktop-chrome` | 1280 × 720 | artifact, web |
+| Safari (iPhone) | `iphone-safari` | iPhone 13, 390 × 664 | artifact, web |
+| Firefox (desktop) | `desktop-firefox` | 1280 × 720 | web |
+| Safari (desktop) | `desktop-safari` | 1280 × 720 | web |
+| Microsoft Edge (desktop) | `desktop-edge` | 1280 × 720 | web |
+| Chrome (Android phone) | `android-chrome` | Pixel 7, 412 × 839 | web |
+| Chrome (Android phone, landscape) | `android-chrome-landscape` | Pixel 7, 863 × 360 | web |
+| Chrome (Samsung phone) | `galaxy-chrome` | Galaxy S24, 360 × 780 | web |
+| Safari (iPad) | `ipad-safari` | iPad Mini, 768 × 1024 | web |
+| Safari (iPad, landscape) | `ipad-safari-landscape` | iPad Mini, 1024 × 768 | web |
 
-The artifact build only runs on claude.ai, so it's tested in desktop Chrome and iPhone Safari; the web build is tested in every browser above.
+The artifact build only runs on claude.ai, so it's tested in desktop Chrome and iPhone Safari; the web build is tested in every browser above. The mobile projects emulate each device's screen size, pixel ratio, touch and user agent in Playwright's Chromium and WebKit, not the real phone browser.
+
+`tests/layout.spec.js` checks that no screen scrolls sideways at 320, 360, 390, 430 and 768 px wide, and at each project's own viewport (which covers landscape).
+
+Two mobile browsers can't be automated in Playwright:
+
+- **Samsung Internet** is built on Chromium's Blink engine, so `android-chrome` and `galaxy-chrome` cover its rendering and JavaScript.
+- **Firefox for Android** uses Gecko, which `desktop-firefox` covers, while the phone layout is covered by the mobile projects above.
+
+No Playwright project exercises the camera, the phone's photo picker or real touch input, so each release gets a check on real phones: see [Real-device check](#real-device-check) under Releases.
 
 ## Tests
 
-`npm test` runs these Playwright suites against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`), once for each build: the artifact build in desktop Chrome and an iPhone-sized Safari (WebKit), and the web build in every supported browser (above). `npm run test:artifact` and `npm run test:web` run one build; `BUILD=web npx playwright test …` does the same for a single file or test, and `--project=desktop-firefox` picks one browser. Each run builds the app first (`tests/global-setup.js`), so it always tests the current source.
+`npm test` runs these Playwright suites against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`), once for each build: the artifact build in desktop Chrome and an iPhone-sized Safari (WebKit), and the web build in every browser and device project (above). `npm run test:artifact` and `npm run test:web` run one build; `BUILD=web npx playwright test …` does the same for a single file or test, and `--project=desktop-firefox` picks one browser. Each run builds the app first (`tests/global-setup.js`), so it always tests the current source.
 
 ### Running tests on a laptop
 
@@ -232,11 +246,23 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | CodeQL (javascript-typescript), CodeQL (actions) | CodeQL `security-extended` queries on the app, scripts, tests and workflows (`.github/workflows/codeql.yml`, which also runs weekly). Results go to the repository's code scanning alerts |
 | Backend | Only when `backend/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint (with the DynamoDB ban), and the data-access tests against DynamoDB Local, which runs as a service container |
 | Infra | Only when `infra/`, `backend/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint, the CDK unit and snapshot tests, and a synth with cdk-nag for the deployed region and for both regions; the tests also synth every stack, identity and web included, in each region on its own |
-| Tests (browser, artifact or web build) | All test suites, in seven parallel jobs: desktop Chrome and iPhone Safari against each build, and desktop Firefox, Safari and Edge against the web build. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
+| Tests (browser, artifact or web build) | All test suites, in twelve parallel jobs: desktop Chrome and iPhone Safari against each build, and desktop Firefox, Safari and Edge, Android Chrome (Pixel portrait and landscape, Galaxy) and iPad Safari (portrait and landscape) against the web build. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
 
 ## Releases
 
 `.github/workflows/release.yml` uses [release-please](https://github.com/googleapis/release-please). It keeps a release pull request open with the next version number and changelog, and starts CI on it (pull requests opened by GitHub Actions don't start CI on their own). Merging that PR tags the version, re-runs the full CI suite, then builds the artifact from the tag and attaches it to the GitHub Release as `index.html`, along with an SPDX JSON SBOM (`supply-checkout-<tag>.spdx.json`).
+
+### Real-device check
+
+Playwright can't open a phone's camera, so before publishing a release, check scanning on a real iPhone and a real Android phone: your own phones, or a real-device cloud such as BrowserStack Live. Check the web build and the artifact on claude.ai. Scanning takes a photo through the file input (`capture="environment"`), then decodes it with the browser's `BarcodeDetector` where there is one (Chrome and Samsung Internet on Android) or ZXing otherwise (Safari on iPhone and iPad, Firefox).
+
+1. **iPhone, Safari** (current iOS): open a sheet, tap **Scan to check out**, and photograph a real barcode with the rear camera. The checkout dialog opens with the right item. Then, on the sheet list, tap **Scan receipt**, photograph a paper receipt, and check the review screen lists its lines.
+2. **Android phone, Chrome** (current Android): repeat step 1.
+3. **Android phone, Samsung Internet** and **Firefox for Android**: open a sheet and scan one barcode in each.
+4. On both phones, photograph something that isn't a barcode: the app says no barcode was found and suggests typing the number.
+5. On both phones, turn to landscape and back on the sheet and receipt screens: nothing scrolls sideways and no button is cut off.
+
+Note the devices and OS versions in the release PR before merging it.
 
 Dependabot opens weekly update PRs for npm packages and GitHub Actions.
 

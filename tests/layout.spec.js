@@ -1,7 +1,7 @@
-import { test, expect, openApp } from "./helpers.js";
+import { test, expect, openApp, enterBarcode, modal } from "./helpers.js";
 import { usedState, fakeImage } from "./fixtures.js";
 
-// The page body must never scroll sideways on a phone; only tables may, inside their own container.
+// The page body must never scroll sideways on a phone or tablet; only tables may, inside their own container.
 async function expectNoSideways(page) {
   const { overflow, culprits } = await page.evaluate(() => {
     const width = window.innerWidth;
@@ -18,28 +18,47 @@ async function expectNoSideways(page) {
 // Force a wide font so the check doesn't depend on which machine runs it.
 const wideFont = "*{font-family:Verdana,'DejaVu Sans',sans-serif !important}";
 
-for (const width of [320, 390]) {
-  test.describe(`phone layout at ${width}px`, () => {
+// Opens every main screen and two dialogs, checking each one fits the width.
+async function checkEveryScreen(page) {
+  await openApp(page, usedState);
+  await page.addStyleTag({ content: wideFont });
+  await expect(page.getByRole("button", { name: /Echo Studio/ })).toBeVisible();
+  await expectNoSideways(page);
+
+  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await expect(page.locator("#sheetBody tbody tr")).toHaveCount(2);
+  await expectNoSideways(page);
+
+  await enterBarcode(page, "SKU1");
+  await expect(modal(page).getByRole("heading", { name: "Check out" })).toBeVisible();
+  await expectNoSideways(page);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#overlay")).toBeHidden();
+
+  await page.getByRole("button", { name: "Inventory" }).click();
+  await expect(page.locator("#main tbody tr")).toHaveCount(2);
+  await expectNoSideways(page);
+
+  await page.getByRole("button", { name: "Sheets" }).click();
+  await page.getByRole("button", { name: "+ New sheet" }).click();
+  await expect(modal(page).getByRole("heading", { name: "New sheet" })).toBeVisible();
+  await expectNoSideways(page);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#overlay")).toBeHidden();
+
+  await page.setInputFiles("#receiptFile", fakeImage);
+  await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+  await expectNoSideways(page);
+}
+
+// The narrowest phones (320), common Android (360) and iPhone (390, 430) widths,
+// and a portrait tablet (768)
+for (const width of [320, 360, 390, 430, 768]) {
+  test.describe(`layout at ${width}px`, () => {
     test.use({ viewport: { width, height: 740 } });
-
-    test("every screen fits the width", async ({ page }) => {
-      await openApp(page, usedState);
-      await page.addStyleTag({ content: wideFont });
-      await expect(page.getByRole("button", { name: /Echo Studio/ })).toBeVisible();
-      await expectNoSideways(page);
-
-      await page.getByRole("button", { name: /Echo Studio/ }).click();
-      await expect(page.locator("#sheetBody tbody tr")).toHaveCount(2);
-      await expectNoSideways(page);
-
-      await page.getByRole("button", { name: "Inventory" }).click();
-      await expect(page.locator("#main tbody tr")).toHaveCount(2);
-      await expectNoSideways(page);
-
-      await page.getByRole("button", { name: "Sheets" }).click();
-      await page.setInputFiles("#receiptFile", fakeImage);
-      await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
-      await expectNoSideways(page);
-    });
+    test("every screen fits the width", async ({ page }) => checkEveryScreen(page));
   });
 }
+
+// And at each project's own screen, which covers phones and tablets in landscape
+test("every screen fits this device's width", async ({ page }) => checkEveryScreen(page));
