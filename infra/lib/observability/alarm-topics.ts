@@ -61,8 +61,8 @@ export interface AlarmTopicsProps {
 /**
  * The SNS topics alarms notify, one per severity, in this region (an alarm
  * can only notify a topic in its own region). P1 goes to email and SMS, P2 to
- * email. Both topics are encrypted with a key CloudWatch may use, and refuse
- * non-TLS publishing.
+ * email. Both topics are encrypted with a key CloudWatch may use, let this
+ * account's alarms publish to them, and refuse non-TLS publishing.
  */
 export class AlarmTopics extends Construct {
   readonly topics: Record<Severity, Topic>;
@@ -95,6 +95,23 @@ export class AlarmTopics extends Construct {
         enforceSSL: true,
       });
     this.topics = { P1: topic("P1"), P2: topic("P2") };
+    // Without this, alarm actions fail with "CloudWatch Alarms is not
+    // authorized to perform: SNS:Publish". Only this account's alarms in this
+    // region may publish (confused deputy prevention).
+    for (const t of Object.values(this.topics)) {
+      t.addToResourcePolicy(
+        new PolicyStatement({
+          sid: "AllowCloudWatchAlarmsToPublish",
+          principals: [new ServicePrincipal("cloudwatch.amazonaws.com")],
+          actions: ["sns:Publish"],
+          resources: [t.topicArn],
+          conditions: {
+            StringEquals: { "aws:SourceAccount": Aws.ACCOUNT_ID },
+            ArnLike: { "aws:SourceArn": `arn:${Aws.PARTITION}:cloudwatch:${Aws.REGION}:${Aws.ACCOUNT_ID}:alarm:*` },
+          },
+        }),
+      );
+    }
 
     const subscribe = (severity: Severity, kind: keyof AlarmContacts, protocol: SubscriptionProtocol) => {
       for (let n = 1; n <= props.contacts[kind]; n++) {
