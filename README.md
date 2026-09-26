@@ -34,7 +34,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `scripts/export-beads.mjs` | Writes the beads backlog export without owner emails (`npm run beads:export`). |
 | `tests/` | Playwright end-to-end tests, run against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`). |
 | `infra/` | The AWS CDK app (TypeScript) for the SaaS version. Its own npm package; see [Infrastructure](#infrastructure). |
-| `backend/` | Lambda code for the SaaS version (TypeScript). `backend/src/data` is the data-access module, the only code that talks to DynamoDB. Its own npm package; see [Backend](#backend). |
+| `backend/` | Lambda code for the SaaS version (TypeScript). `backend/src/data` is the data-access module, the only code that talks to DynamoDB. `backend/src/observability` is logging and business metrics. Its own npm package; see [Backend](#backend). |
 | `docs/adr/` | Architecture decision records for the AWS subscription product. |
 | `docs/architecture/` | Architecture overview and diagrams (Mermaid). |
 | `docs/journeys.md` | The customer journeys the product must never break, the tests that cover them, and the production alarms for when one is blocked. |
@@ -89,6 +89,8 @@ npm run test:update # accept template snapshot changes after reviewing them
 
 **The `app` table.** The primary region's `data` stack holds the single DynamoDB table from [ADR 0005](docs/adr/0005-multi-tenant-dynamodb.md), `supply-checkout-<env>-app`. It's a `TableV2` (`AWS::DynamoDB::GlobalTable`) with one replica, in its own region: on-demand, encrypted with a customer-managed KMS key that rotates yearly, point-in-time recovery, deletion protection, a stream with new and old images, TTL on `expiresAt`, and one index, `GSI1`. Adding the us-west-2 replica in phase 2 is another entry in `replicas` with that region's key, not a new table. The data stack publishes `table-name`, `table-arn`, `table-stream-arn` and `table-key-arn` to SSM under `/supply-checkout/<env>/data/`. The key and index names come from `backend/src/data/schema.ts`, so the table and the code that reads it can't drift apart.
 
+**Observability** (`lib/observability/`). Each region's `observability` stack has two SNS topics, `supply-checkout-<env>-alarms-p1` (email and SMS) and `-p2` (email), encrypted with a rotating KMS key, and the alarms from [docs/journeys.md](docs/journeys.md) whose metrics exist ("Which alarms exist"). The primary region's stack also has the `supply-checkout-<env>` CloudWatch dashboard: traffic, errors, latency and every business metric, one line per region. An aspect (`lib/observability/defaults.ts`) gives every Lambda function X-Ray active tracing, JSON logs and the metrics namespace, and every log group a **one-year retention** unless it sets its own. One year is a placeholder until the information security policy (`supply-checkout-4p1`) sets it. Metric names come from `backend/src/observability/names.ts`, so the dashboard, the alarms and the code that sends the metrics can't drift apart.
+
 **cdk-nag.** `AwsSolutionsChecks` is registered as a CDK validation plugin, so every synth and deploy fails on an unacknowledged finding. When a finding is intended, acknowledge it on the narrowest construct with a written reason:
 
 ```ts
@@ -105,9 +107,30 @@ npx cdk diff --profile supply-prod
 npx cdk deploy --all --profile supply-prod
 ```
 
+**Alarm recipients.** The addresses and phone numbers aren't in this repository. Each one is an SSM parameter in the account, in every region with an `observability` stack (today, us-east-1), which CloudFormation reads at deploy time: `/supply-checkout/<env>/alarms/email-<n>` and `/supply-checkout/<env>/alarms/sms-<n>`, numbered from 1. Email recipients get P1 and P2 alarms; SMS recipients get P1 only. By default there is one of each; for more, pass `-c alarmContacts='{"email":2,"sms":2}'` (or set `alarmContacts` in `cdk.json`: it holds counts, nothing personal). Create the parameters before the first deploy of the stack, or the deploy fails:
+
+```bash
+aws ssm put-parameter --profile supply-prod --region us-east-1 --type String \
+  --name /supply-checkout/prod/alarms/email-1 --value 'you@example.com'
+aws ssm put-parameter --profile supply-prod --region us-east-1 --type String \
+  --name /supply-checkout/prod/alarms/sms-1 --value '+15555550100'   # E.164
+```
+
+They must be `String`, not `SecureString`: CloudFormation can't resolve a `SecureString` into a subscription. To change a recipient, overwrite the parameter (`--overwrite`) and redeploy the observability stack.
+
+After deploying, confirm each email subscription from the message AWS sends. SMS needs a new account out of the way first: in the SNS console, **Text messaging (SMS)**, add and verify each number under **Sandbox destination phone numbers**, and check the monthly SMS spending limit. Sending to US numbers can also need an origination identity (a toll-free number registered in AWS End User Messaging SMS, which takes days to approve); if the test text doesn't arrive, that's the likely cause. Then page yourself with any P1 alarm; it goes back to OK (and says so) on its next evaluation:
+
+```bash
+aws cloudwatch set-alarm-state --profile supply-prod --region us-east-1 \
+  --alarm-name supply-checkout-prod-p1-checkout-broken \
+  --state-value ALARM --state-reason "Testing the P1 page"
+```
+
 ## Backend
 
-`backend/` holds the Lambda code (ADR 0002, 0006). It is a separate npm package with its own lockfile. So far it has the data-access module, `backend/src/data`:
+`backend/` holds the Lambda code (ADR 0002, 0006). It is a separate npm package with its own lockfile. `backend/src/observability` gives every handler structured JSON logs and business metrics ([Powertools for AWS Lambda](https://docs.powertools.aws.dev/lambda/typescript/)): `createObservability()` returns a `logger` and `count(metric, n, metadata)`, and `withObservability(obs, handler)` adds the request ID to every log line and flushes metrics after each invocation. Metrics go out as CloudWatch embedded metric format in namespace `SupplyCheckout`, with `Region` as their only dimension; per-team detail goes in metadata, never a dimension.
+
+So far it also has the data-access module, `backend/src/data`:
 
 - **Team-scoped access.** Every read and write of a team's data takes a `TeamContext`. Every function that can issue one lives in `src/data/team-context.ts`, and the issuer itself isn't exported. `authorizeTeam(db, userId, teamId)` checks the MEMBER item; the authorizer calls it with the user ID from the verified token. `createTeam`, `acceptInvite` and `teamContextForStripeCustomer` issue a context for the new owner, the new member and the billing webhook. Each function checks the role (viewer, contributor, owner, system) before it writes. The `Db` handle from `createDb` is opaque: it exposes no DynamoDB client.
 - **At least one owner.** The team item keeps an `owners` count. Every change to an owner membership updates it in the same transaction, and a decrease is conditioned on `owners > 1`. Owner actions on other members also re-check the caller's own MEMBER item at write time.
