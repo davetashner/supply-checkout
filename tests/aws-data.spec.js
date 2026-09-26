@@ -102,8 +102,8 @@ test.describe("data", () => {
       await page.getByRole("button", { name: "Create sheet" }).click();
       await expect(page.locator("#toast")).toHaveText("That didn't save. Check your connection and try again.");
     }
-    // A viewer's write: the app switches to view-only
-    backend.on("PUT", /^\/teams\/t1\/sheets\//, error(403, "invalid_argument"));
+    // A viewer's write (403 permission_denied, reason view_only): the app switches to view-only
+    backend.on("PUT", /^\/teams\/t1\/sheets\//, { status: 403, body: { error: { code: "permission_denied", message: "x", reason: "view_only" } } });
     await page.getByRole("button", { name: "Create sheet" }).click();
     await expect(page.locator("#notice")).toContainText("You have view-only access.");
     expect(backend.requests("PUT", /^\/teams\/t1\/sheets\//)).toHaveLength(5);
@@ -768,6 +768,16 @@ test.describe("live updates", () => {
     expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.team"))).toBeNull();
   });
 
+  test("a member removed before a write finds out from the refused write", async ({ page }) => {
+    const backend = await open(page);
+    backend.teams = [];
+    await page.getByRole("button", { name: "+ New sheet" }).click();
+    await page.getByLabel("Client", { exact: true }).fill("Foxtrot Dental");
+    await page.getByRole("button", { name: "Create sheet" }).click();
+    await expect(page.getByRole("heading", { name: "You're no longer in Echo Cleaning" })).toBeVisible();
+    expect(backend.requests("PUT", /^\/teams\/t1\/sheets\//)).toHaveLength(1);
+  });
+
   test("a member removed while connected finds out from the next fetch", async ({ page }) => {
     const backend = await open(page);
     backend.teams = [];
@@ -842,6 +852,14 @@ test.describe("stock commands", () => {
     expect(put.body.expectedVersion).toBe(0);
     expect(backend.requests("POST", `/teams/t1/products/${key}/stock`).map((r) => r.body)).toEqual([{ operationId: expect.any(String), reason: "count", count: 5 }]);
     expect(backend.doc("t1", "products", key).data.stock).toBe(5);
+  });
+
+  test("a count by someone made a viewer meanwhile switches the app to view-only", async ({ page }) => {
+    const backend = await open(page);
+    backend.on("POST", STOCK, { status: 403, body: { error: { code: "permission_denied", message: "x", reason: "view_only" } } });
+    await editStock(page, "7");
+    await expect(page.locator("#notice")).toContainText("You have view-only access.");
+    expect(backend.requests("POST", STOCK)).toHaveLength(1);
   });
 
   test("clearing the count of a counted item leaves its stock as it is", async ({ page }) => {

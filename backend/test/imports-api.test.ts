@@ -569,9 +569,9 @@ describe("retries and resuming", () => {
 describe("who can import", () => {
   it("is owners only: contributors and viewers are refused, and nothing is read or written", async () => {
     const body = { importId: randomUUID(), csv: "name,price\nA,1\n" };
-    expect(await post(body, CONTRIBUTOR)).toMatchObject({ status: 403, body: { error: { code: "permission_denied", message: "Only the team's owners can import inventory" } } });
+    expect(await post(body, CONTRIBUTOR)).toMatchObject({ status: 403, body: { error: { code: "permission_denied", message: "Only the team's owners can do this", reason: "owners_only" } } });
     expect(await post({ ...body, dryRun: true }, CONTRIBUTOR)).toMatchObject({ status: 403 });
-    expect(await post(body, VIEWER)).toMatchObject({ status: 403, body: { error: { code: "invalid_argument" } } });
+    expect(await post(body, VIEWER)).toMatchObject({ status: 403, body: { error: { code: "permission_denied", reason: "owners_only" } } });
     expect(products()).toEqual([]);
     expect(table.calls.filter((c) => c.command !== "TransactGetCommand")).toEqual([]);
   });

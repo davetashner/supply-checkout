@@ -43,6 +43,16 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
     onRemoved();
   }
 
+  // A write the API refused (403 permission_denied): a viewer's is rejected with the
+  // artifact runtime's view-only code, which the app acts on (src/main.js); anything
+  // else means this user is no longer in the team.
+  function denied(e) {
+    if (e.code !== "permission_denied") return e;
+    if (e.reason === "view_only") return { ...e, code: "invalid_argument" };
+    lost();
+    return e;
+  }
+
   // Delivers the collection to its listeners, at most once per tick
   function notify(name) {
     const c = coll(name);
@@ -165,7 +175,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
         const path = docPath(name, id);
         put(name, id, await (body ? api(method, path, { ...body, expectedVersion }) : api(method, `${path}?expectedVersion=${expectedVersion}`)));
       } catch (e) {
-        if (e.code !== "aborted") throw e;
+        if (e.code !== "aborted") throw denied(e);
         await fetchDoc(name, id);
         throw coll(name).docs.has(id) ? e : { code: "not_found", message: "Not found", status: 404 };
       }
@@ -212,12 +222,12 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
       const items = res.sheet?.data.items;
       return { quantity: res.result.quantity, line: (items && Object.hasOwn(items, body.productKey) && items[body.productKey]) || {} };
     } catch (e) {
-      const refused = e.code === "bad_request" || e.code === "not_found";
-      if (refused || e.code === "aborted") await Promise.all([fetchDoc("sheets", sheetId), fetchDoc("products", body.productKey)]);
+      const bad = e.code === "bad_request" || e.code === "not_found";
+      if (bad || e.code === "aborted") await Promise.all([fetchDoc("sheets", sheetId), fetchDoc("products", body.productKey)]);
       // Refused for what the sheet holds now (only so many left to return, the line or the
       // sheet gone): the server's message says why, with the latest now showing
-      if (refused) throw { code: "refused", message: `${String(e.message).replace(/\.$/, "")}. The latest is showing.`, status: e.status };
-      throw e;
+      if (bad) throw { code: "refused", message: `${String(e.message).replace(/\.$/, "")}. The latest is showing.`, status: e.status };
+      throw denied(e);
     }
   }
 
@@ -230,7 +240,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
       put("products", key, (await api("POST", `${docPath("products", key)}/stock`, { operationId: operation, ...body })).product);
     } catch (e) {
       if (e.code === "aborted") await fetchDoc("products", key);
-      throw e;
+      throw denied(e);
     }
   }
 

@@ -2,8 +2,9 @@
 export const TIMEOUT = 15_000;
 
 // One JSON request to the API (docs/api/openapi.yaml). Rejects with an error whose
-// `code` is the error body's code, as is, so the app's existing handling applies:
-// `invalid_argument` means view-only, `quota_exceeded` means storage is full. A request
+// `code` is the error body's code, as is, and `reason` when the body has one (why a
+// `permission_denied` or `aborted`; db.js turns a viewer's refused write into the app's
+// view-only code), so `quota_exceeded` means storage is full, and so on. A request
 // that takes longer than TIMEOUT is aborted and rejects as `unavailable`, so a stalled
 // call (a refresh, a sign-out) can't hang the app with no feedback.
 export async function request(url, init) {
@@ -19,7 +20,7 @@ export async function request(url, init) {
     if (res.ok) return body;
     // API Gateway's own 401 is {"message":"Unauthorized"}, with no error code
     const err = (body && body.error) || {};
-    throw { code: err.code || (res.status === 401 ? "unauthenticated" : "internal"), message: err.message || `HTTP ${res.status}`, status: res.status };
+    throw { code: err.code || (res.status === 401 ? "unauthenticated" : "internal"), message: err.message || `HTTP ${res.status}`, status: res.status, ...(err.reason ? { reason: err.reason } : {}) };
   } finally { clearTimeout(timer); }
 }
 

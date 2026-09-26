@@ -11,12 +11,16 @@
 //   userId   the caller's `sub`, from the verified token         USER#<userId>
 //   teamId   a team the request is entitled to touch             TEAM#<teamId>
 //   invitee  the SHA-256 of the caller's verified email          INVITEE#<invitee> (GSI2)
+//   member   another member of `teamId`, whose team-switcher     USER#<member>, update
+//            row an owner changes or deletes                       and delete only
 //
 // and that role's policy allows DynamoDB only on those partitions
 // (dynamodb:LeadingKeys). The handler chooses the team only from sources the
 // caller is entitled to: the ID derived from their own idempotency key (a new
 // team), an invite found under their verified email (the invited team), or
-// their own USER# rows (/me). Unused tags are ACCOUNT_TAG_UNUSED.
+// their own USER# rows (/me), or the path's team once the caller's membership
+// is checked. It sets `member` only for a member of that team, after the
+// caller's role check. Unused tags are ACCOUNT_TAG_UNUSED.
 
 import { STSClient } from "@aws-sdk/client-sts";
 import { createDb, type Db, InvalidInputError } from "../data/index.js";
@@ -30,6 +34,8 @@ export interface AccountScope {
   readonly teamId?: string;
   /** hashEmail() of the caller's verified email, to read their invites. */
   readonly invitee?: string;
+  /** Another member of `teamId`, whose team-switcher row may be updated or deleted. Needs `teamId`. */
+  readonly member?: string;
 }
 
 export type DbForAccount = (scope: AccountScope) => Db;
@@ -60,12 +66,14 @@ export function accountScopedDbs(options: AccountDbOptions): DbForAccount {
     if (typeof scope.userId !== "string" || !ID.test(scope.userId)) throw new InvalidInputError("Invalid user ID");
     if (scope.teamId !== undefined && (typeof scope.teamId !== "string" || !ID.test(scope.teamId))) throw new InvalidInputError("Invalid team ID");
     if (scope.invitee !== undefined && (typeof scope.invitee !== "string" || !HASH.test(scope.invitee))) throw new InvalidInputError("Invalid invitee");
+    if (scope.member !== undefined && (typeof scope.member !== "string" || !ID.test(scope.member) || scope.teamId === undefined)) throw new InvalidInputError("Invalid member");
     const tags = {
       [ACCOUNT_SESSION_TAGS.userId]: scope.userId,
       [ACCOUNT_SESSION_TAGS.teamId]: scope.teamId ?? ACCOUNT_TAG_UNUSED,
       [ACCOUNT_SESSION_TAGS.invitee]: scope.invitee ?? ACCOUNT_TAG_UNUSED,
+      [ACCOUNT_SESSION_TAGS.member]: scope.member ?? ACCOUNT_TAG_UNUSED,
     };
-    const key = `${tags.userId} ${tags.teamId} ${tags.invitee}`;
+    const key = `${tags.userId} ${tags.teamId} ${tags.invitee} ${tags.member}`;
     return cached(key, () =>
       createDb({ tableName: options.tableName, env, credentials: roleSession(sts, now, { roleArn: options.roleArn, sessionName: `user-${scope.userId}`, tags }) }),
     );

@@ -30,8 +30,10 @@ info:
       (`encodeURIComponent`). Product keys are what the app's `keyOf` or
       `newKey` makes; any key without `/` or control characters works.
     - Reject a call with the error body's `code` as the error's `code`, so the
-      app's existing handling applies unchanged: `invalid_argument` (403)
-      makes it switch to view-only, `quota_exceeded` (413) shows "storage is
+      app's existing handling applies unchanged, except that a 403
+      `permission_denied` with `reason: "view_only"` is rejected as
+      `invalid_argument`, the artifact runtime's code that makes the app
+      switch to view-only. `quota_exceeded` (413) shows "storage is
       full", `aborted` (409) says someone else changed it first (the adapter
       fetches the latest document before rejecting, so it shows), and anything
       else shows the generic "didn't save" message.
@@ -79,16 +81,23 @@ info:
     ## Isolation
 
     Every data route needs a Cognito access token. The Lambda checks the
-    caller's membership of the path's team on every request (roles:
-    viewer reads; contributor and owner also write), and makes every DynamoDB
-    call through a role session tagged with that team, whose IAM policy allows
-    only that team's partition (`dynamodb:LeadingKeys`).
+    caller's membership of the path's team on every request, and their role
+    against the route's (ADR 0007: viewers read; contributors also scan and
+    edit sheets and inventory; owners also import and manage members), and
+    makes every DynamoDB call through a role session tagged with that team,
+    whose IAM policy allows only that team's partition
+    (`dynamodb:LeadingKeys`). A role below the route's is 403
+    `permission_denied` with `reason` `view_only` or `owners_only`.
 
     The account routes (`/me`, `POST /teams`, `POST /invites/{inviteId}/accept`)
     need the same token. They name no team the caller is already in, so they
     run on a separate role session tagged with the caller's `sub` and at most
     one team and one invitee the request is entitled to (the new team, or the
-    team whose invite matched the caller's verified email).
+    team whose invite matched the caller's verified email). The members
+    routes run there too, on the path's team after the same membership and
+    role checks: changing or removing another member also updates or deletes
+    that member's own team-switcher row, so only those sessions carry a tag
+    for that member's partition, and only for updates and deletes.
 servers:
   - url: https://api.{envDomain}
     variables:
@@ -109,6 +118,8 @@ tags:
       history. The client contract is in [commands.md](commands.md).
   - name: account
     description: The signed-in user's teams and pending invites, creating a team, and accepting an invite (first sign-in).
+  - name: members
+    description: A team's members and roles (ADR 0007). Owners list members, change roles and remove members; anyone can leave; a team always keeps an owner.
   - name: auth
     description: Sign-in sessions for the web app, with the refresh token in an HttpOnly cookie.
 paths:
@@ -265,8 +276,8 @@ paths:
           file again (the import expired, or a key it planned was taken by an
           item with another barcode) needs a new `importId`.
 
-        At most 1,000 rows and 300 KB. Owners only: a contributor gets 403
-        `permission_denied`, a viewer 403 `invalid_argument`.
+        At most 1,000 rows and 300 KB. Owners only: a contributor or viewer
+        gets 403 `permission_denied` with `reason: "owners_only"`.
       requestBody:
         required: true
         content:
@@ -573,6 +584,88 @@ paths:
           description: "`aborted`: the caller is already a member of the team."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429": { $ref: "#/components/responses/TooManyTeams" }
+  /teams/{teamId}/members:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    get:
+      tags: [members]
+      operationId: listMembers
+      summary: The team's members and their roles. Owners only.
+      description: |
+        Owners first, then contributors, then viewers, each by email. `email`
+        is the address the member joined with, or `null` if there wasn't one.
+      responses:
+        "200":
+          description: The team's members.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [members]
+                properties:
+                  members:
+                    type: array
+                    items: { $ref: "#/components/schemas/Member" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /teams/{teamId}/members/{userId}:
+    parameters:
+      - { $ref: "#/components/parameters/teamId" }
+      - name: userId
+        in: path
+        required: true
+        description: "The member's user ID (`userId` in the member list; the caller's own is `user.id` in `GET /me`)."
+        schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
+    patch:
+      tags: [members]
+      operationId: setMemberRole
+      summary: Change a member's role. Owners only.
+      description: |
+        Takes effect on the member's next request. An owner can change their
+        own role too, but a team always keeps at least one owner: demoting
+        the last one is 409 with `reason: "last_owner"`. That is enforced in
+        the same transaction as the change, so two owners demoting each other
+        at once can't both succeed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [role]
+              properties:
+                role: { type: string, enum: [owner, contributor, viewer] }
+      responses:
+        "200":
+          description: The member with their new role.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [member]
+                properties:
+                  member: { $ref: "#/components/schemas/Member" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NoSuchMember" }
+        "409": { $ref: "#/components/responses/MemberConflict" }
+    delete:
+      tags: [members]
+      operationId: removeMember
+      summary: Remove a member (owners), or leave the team (anyone, with their own user ID).
+      description: |
+        The member loses access on their next request, and their live updates
+        stop. The team's last owner can't be removed or leave (409 with
+        `reason: "last_owner"`), enforced in the same transaction.
+      responses:
+        "204": { description: Removed. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NoSuchMember" }
+        "409": { $ref: "#/components/responses/MemberConflict" }
   /auth/session:
     post:
       tags: [auth]
@@ -940,6 +1033,14 @@ components:
         teamName: { type: string }
         role: { type: string, enum: [owner, contributor, viewer], description: The role the caller joins with. }
         expiresAt: { type: string, format: date-time }
+    Member:
+      type: object
+      required: [userId, email, role, joinedAt]
+      properties:
+        userId: { type: string }
+        email: { type: [string, "null"], description: The address they joined with. }
+        role: { type: string, enum: [owner, contributor, viewer] }
+        joinedAt: { type: [string, "null"], format: date-time }
     Error:
       type: object
       required: [error]
@@ -952,6 +1053,15 @@ components:
               type: string
               enum: [bad_request, unauthenticated, permission_denied, invalid_argument, not_found, aborted, quota_exceeded, internal]
             message: { type: string }
+            reason:
+              type: string
+              enum: [view_only, owners_only, not_member, last_owner]
+              description: |
+                Why, where the code alone doesn't say. `view_only`: a viewer
+                tried to write. `owners_only`: the route is for owners.
+                `not_member`: the caller isn't in the path's team (or it
+                doesn't exist). `last_owner`: the change would leave the team
+                without an owner.
   responses:
     Document:
       description: The document after the request.
@@ -1038,9 +1148,20 @@ components:
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     Forbidden:
       description: |
-        `permission_denied`: not a member of this team (the same answer if the
-        team doesn't exist). `invalid_argument`: a viewer tried to write; the
-        app reads this as view-only access.
+        `permission_denied`, with a `reason`: `not_member` (not a member of
+        this team, the same answer if the team doesn't exist), `view_only` (a
+        viewer tried to write; the web runtime hands this to the app as
+        `invalid_argument`, view-only access) or `owners_only` (a contributor
+        or viewer on an owners-only route). Nothing was read or written.
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    NoSuchMember:
+      description: "`not_found`: the user isn't a member of this team."
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    MemberConflict:
+      description: |
+        `aborted`. With `reason: "last_owner"`: the team would be left without
+        an owner, and nothing changed. Without a reason: the member, or the
+        caller's own role, changed meanwhile; reload and try again.
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     NotFound:
       description: "`not_found`: no such document (for a command: no such sheet, or for a stock adjustment no such item)."
