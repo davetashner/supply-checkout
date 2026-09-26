@@ -16,13 +16,13 @@ installMockClaude({
   sampleDelay: 1200,
 });
 
-// The mock only records downloads; the demo saves the CSV for real.
+// The mock only records downloads; the demo saves the CSV or JSON for real.
 const use = window.claude.use;
 window.claude.use = async (name) => (name === "downloads" ? { save: saveFile } : use(name));
 
 async function saveFile({ filename, data }) {
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([data], { type: "text/csv" }));
+  a.href = URL.createObjectURL(new Blob([data], { type: filename.endsWith(".json") ? "application/json" : "text/csv" }));
   a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
