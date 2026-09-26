@@ -18,6 +18,12 @@ export const TEAM_KEY = "supplyCheckout.team";
 // and sheets, so it's forgotten on sign-out along with the team
 export const DRAFT_KEY = "supplyCheckout.receiptDraft";
 
+// A first Google or Apple sign-in whose email already has an account: the pre sign-up trigger
+// (backend/src/identity/account-link-handler.ts) links it to that account and fails that one
+// sign-in on purpose, and Cognito sends the person back with "PreSignUp failed with error
+// ACCOUNT_LINKED:<provider>." Signing in again with the provider lands in the existing account.
+const LINKED = /\bACCOUNT_LINKED:(Google|SignInWithApple)\b/;
+
 const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const random = (n) => b64url(crypto.getRandomValues(new Uint8Array(n)));
 const claimsOf = (jwt) => JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0))));
@@ -50,6 +56,9 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
   return {
     // Why the last sign-in didn't finish, for the sign-in screen
     notice: "",
+    // The provider to sign in with again, straight away, after a sign-in was linked to an
+    // existing account (see LINKED)
+    relink: "",
 
     // Finishes a sign-in redirect, or resumes the session from the cookie. True when signed in.
     async start() {
@@ -59,6 +68,9 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
         const code = q.get("code"), state = q.get("state");
         sessionStorage.removeItem(PKCE_KEY);
         history.replaceState(null, "", location.pathname);
+        // Only for the sign-in this tab started, and only once, so it can't loop
+        const linked = !code && state && state === saved.state && !saved.relinked && LINKED.exec(q.get("error_description") || "");
+        if (linked) { this.relink = linked[1]; return false; }
         if (code && state && state === saved.state) {
           try { accept(await post("/auth/session", { code, codeVerifier: saved.verifier, redirectUri })); return true; }
           catch (e) { if (e.code !== "unauthenticated") throw e; }
@@ -70,12 +82,15 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
       catch (e) { if (e.code === "unauthenticated") return false; throw e; }
     },
 
-    // The Managed Login URL, with a new PKCE verifier and state kept for the redirect back
-    async signInUrl() {
+    // The Managed Login URL, with a new PKCE verifier and state kept for the redirect back.
+    // With `provider` (a relink), it goes straight to that provider, and is marked so a second
+    // link error isn't retried.
+    async signInUrl(provider) {
       const verifier = random(32), state = random(16);
       const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
-      sessionStorage.setItem(PKCE_KEY, JSON.stringify({ verifier, state }));
+      sessionStorage.setItem(PKCE_KEY, JSON.stringify(provider ? { verifier, state, relinked: true } : { verifier, state }));
       const q = new URLSearchParams({ response_type: "code", client_id: config.clientId, redirect_uri: redirectUri, scope: SCOPES, state, code_challenge: challenge, code_challenge_method: "S256" });
+      if (provider) q.set("identity_provider", provider);
       return `${config.authUrl}/oauth2/authorize?${q}`;
     },
 

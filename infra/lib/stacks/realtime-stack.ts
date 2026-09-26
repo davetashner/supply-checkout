@@ -11,8 +11,8 @@ import { CnameRecord } from "aws-cdk-lib/aws-route53";
 import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
-import { tableName } from "../../../backend/src/data/schema.js";
-import { DOCUMENT_SK_PREFIXES, REALTIME_ENV, realtimeResourceNames, TEAMS_NAMESPACE } from "../../../backend/src/realtime/channels.js";
+import { LIVE_AUDIENCE_ATTRIBUTES, tableName } from "../../../backend/src/data/schema.js";
+import { AUDIENCE_SK, DOCUMENT_SK_PREFIXES, REALTIME_ENV, realtimeResourceNames, USERS_NAMESPACE } from "../../../backend/src/realtime/channels.js";
 import { type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import { LOG_RETENTION } from "../observability/defaults.js";
@@ -33,18 +33,23 @@ export const realtimeOutputParameters = (envName: string) => ({
 });
 
 /**
- * Live updates (ADR 0006, docs/api/realtime.md): an AppSync Events API with
- * one channel per team, `/teams/<teamId>`, fed by a DynamoDB stream consumer.
+ * Live updates (ADR 0006, ADR 0016, docs/api/realtime.md): an AppSync Events
+ * API with one channel per user, `/users/<sub>`, fed by a DynamoDB stream
+ * consumer that publishes each team's changes to its current members.
  *
  * - Clients connect and subscribe with their Cognito access token. A Lambda
  *   authorizer (backend/src/realtime/authorizer.ts) allows a subscription only
- *   to exactly `/teams/<teamId>`, and only for a member of that team, with the
- *   same membership check as the data API. Its answers aren't cached.
+ *   to exactly `/users/<sub>` for the token's own user. It reads no data and
+ *   has no table access. Its answers aren't cached.
  * - Only IAM may publish, and only the consumer's role has
- *   appsync:EventPublish, on the `teams` namespace. Clients can't publish.
+ *   appsync:EventPublish, on the `users` namespace. Clients can't publish.
  * - The consumer (backend/src/realtime/publisher.ts) reads the table's stream,
- *   filtered to product and sheet items, and publishes a small change event
- *   per write. Partial batch failures are retried from the first record that
+ *   filtered to product and sheet items (the changes) and to META and MEMBER
+ *   items (who gets them), and publishes a small change event per write to
+ *   each current member of an active team. It may read only the attributes
+ *   that answer that (LIVE_AUDIENCE_ATTRIBUTES), in team partitions. A removed
+ *   member or a canceled team stops getting events within the consumer's
+ *   cache time (AUDIENCE_TTL_MS). Partial batch failures are retried from the first record that
  *   didn't go out; a batch that keeps failing goes to a dead-letter queue,
  *   which alarms (observability stack, "Live updates dropped").
  * - The custom domain `realtime.<env domain>` uses the certificate in
@@ -56,7 +61,7 @@ export const realtimeOutputParameters = (envName: string) => ({
  */
 export class RealtimeStack extends SupplyCheckoutStack {
   readonly api: EventApi;
-  readonly teams: ChannelNamespace;
+  readonly users: ChannelNamespace;
   readonly authorizer: NodejsFunction;
   readonly publisher?: NodejsFunction;
   readonly deadLetterQueue?: Queue;
@@ -78,25 +83,14 @@ export class RealtimeStack extends SupplyCheckoutStack {
       conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
     });
 
-    // The authorizer reads only team metadata and membership items
+    // The authorizer compares the channel with the token; it reads nothing
     this.authorizer = this.handler("Authorizer", "authorizer", {
-      description: "AppSync Events authorizer: Cognito access token, and team membership to subscribe",
+      description: "AppSync Events authorizer: Cognito access token, and only the user's own channel to subscribe",
       environment: {
-        [REALTIME_ENV.tableName]: table,
         [REALTIME_ENV.userPoolId]: ssm(identity.userPoolId),
         [REALTIME_ENV.clientId]: ssm(identity.webClientId),
       },
     });
-    this.authorizer.addToRolePolicy(
-      new PolicyStatement({
-        sid: "TeamMembershipReads",
-        // GetItem also covers TransactGetItems (authorizeTeam's one read)
-        actions: ["dynamodb:GetItem"],
-        resources: [tableArn],
-        conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] } },
-      }),
-    );
-    this.authorizer.addToRolePolicy(decryptThroughDynamoDb);
 
     // AppSync writes its logs to /aws/appsync/apis/<api id>; errors only
     const logsRole = new Role(this, "ApiLogsRole", {
@@ -136,8 +130,8 @@ export class RealtimeStack extends SupplyCheckoutStack {
       LogLevel: AppSyncFieldLogLevel.ERROR,
     });
 
-    this.teams = this.api.addChannelNamespace("Teams", {
-      channelNamespaceName: TEAMS_NAMESPACE,
+    this.users = this.api.addChannelNamespace("Users", {
+      channelNamespaceName: USERS_NAMESPACE,
       authorizationConfig: {
         publishAuthModeTypes: [AppSyncAuthorizationType.IAM],
         subscribeAuthModeTypes: [AppSyncAuthorizationType.LAMBDA],
@@ -171,18 +165,39 @@ export class RealtimeStack extends SupplyCheckoutStack {
         id: "AwsSolutions-SQS3",
         reason: "This is the dead-letter queue: it holds the stream positions of batches the consumer gave up on.",
       });
-      this.publisher = this.consumer(config, resources.consumerFunction, decryptThroughDynamoDb, this.deadLetterQueue);
+      this.publisher = this.consumer(config, resources.consumerFunction, { table, tableArn, decrypt: decryptThroughDynamoDb }, this.deadLetterQueue);
     }
   }
 
-  /** The stream consumer: publishes each product and sheet write to its team's channel. */
-  private consumer(config: DeploymentConfig, functionName: string, decrypt: PolicyStatement, dlq: Queue): NodejsFunction {
+  /** The stream consumer: publishes each product and sheet write to the channel of each of its team's members. */
+  private consumer(
+    config: DeploymentConfig,
+    functionName: string,
+    data: { table: string; tableArn: string; decrypt: PolicyStatement },
+    dlq: Queue,
+  ): NodejsFunction {
+    const { decrypt } = data;
     const fn = this.handler("Publisher", "publisher", {
       functionName,
-      description: "Publishes product and sheet changes from the table's stream to each team's AppSync Events channel",
-      environment: { [REALTIME_ENV.httpHost]: this.api.httpDns },
+      description: "Publishes product and sheet changes from the table's stream to each team member's AppSync Events channel",
+      environment: { [REALTIME_ENV.httpHost]: this.api.httpDns, [REALTIME_ENV.tableName]: data.table },
     });
-    this.teams.grantPublish(fn);
+    this.users.grantPublish(fn);
+    // Who gets a team's changes: its META status and MEMBER user IDs and roles
+    // (liveUpdateRecipients). Only in team partitions, and only these
+    // attributes, so it can't read documents or members' emails.
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "TeamAudienceReads",
+        actions: ["dynamodb:GetItem", "dynamodb:Query"],
+        resources: [data.tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LIVE_AUDIENCE_ATTRIBUTES] },
+          StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
     const streamArn = StringParameter.valueForStringParameter(this, `/supply-checkout/${config.envName}/data/table-stream-arn`);
     fn.addToRolePolicy(
       new PolicyStatement({
@@ -217,7 +232,10 @@ export class RealtimeStack extends SupplyCheckoutStack {
       // Clients resync on reconnect, so an event an hour old is worth less than moving on
       maxRecordAge: Duration.hours(1),
       onFailure: new SqsDlq(dlq),
-      filters: DOCUMENT_SK_PREFIXES.map((prefix) => FilterCriteria.filter({ dynamodb: { Keys: { SK: { S: FilterRule.beginsWith(prefix) } } } })),
+      filters: [
+        ...[...DOCUMENT_SK_PREFIXES, AUDIENCE_SK.prefix].map((prefix) => FilterCriteria.filter({ dynamodb: { Keys: { SK: { S: FilterRule.beginsWith(prefix) } } } })),
+        FilterCriteria.filter({ dynamodb: { Keys: { SK: { S: FilterRule.isEqual(AUDIENCE_SK.exact) } } } }),
+      ],
     });
     return fn;
   }

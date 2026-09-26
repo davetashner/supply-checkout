@@ -84,6 +84,21 @@ export function hashInviteToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
+/**
+ * Subscription statuses (ADR 0009) after which a team's members get no more
+ * live-update notices: Stripe's `canceled`, `unpaid` (retries ran out and the
+ * subscription wasn't canceled) and `incomplete_expired` (the first payment
+ * never went through). The billing webhook sets the status with updateTeam;
+ * the stream consumer reads it through liveUpdateRecipients, so nothing else
+ * has to be called when a team is canceled.
+ */
+export const ENDED_STATUSES: readonly string[] = ["canceled", "unpaid", "incomplete_expired"];
+
+/** True when a team's subscription status means it has ended. */
+export function hasEnded(status: unknown): boolean {
+  return typeof status === "string" && ENDED_STATUSES.includes(status);
+}
+
 /** The free trial every new team starts with: 14 days, no card (ADR 0009). */
 export const TRIAL_DAYS = 14;
 

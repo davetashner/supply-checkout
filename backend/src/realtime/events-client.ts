@@ -1,8 +1,8 @@
 // Publishes to AppSync Events over HTTP, signed with the Lambda's role (IAM).
-// Only the stream consumer publishes: the `teams` namespace allows publishing
+// Only the stream consumer publishes: the `users` namespace allows publishing
 // with IAM alone, and only the consumer's role has appsync:EventPublish.
 //
-// POST https://<http host>/event with {"channel": "/teams/<id>", "events": [<JSON string>, ...]}
+// POST https://<http host>/event with {"channel": "/users/<id>", "events": [<JSON string>, ...]}
 // answers 200 with {"successful": [{identifier, index}], "failed": [{identifier, index, code, message}]}.
 
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
