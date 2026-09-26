@@ -50,5 +50,6 @@ export const setStock = (db, key, stock) => db.doc("products/" + key).update({ s
 // changed (docs/api/commands.md). change: { reason: "count", count } (count undefined: not
 // counted), or { reason: "receipt", lines: [{ action, quantity, unitCost }] }, one per receipt
 // line, each line its own action. (`||`, not a condition: the artifact runs the right side.)
+// WEB: the artifact build keeps only the right side, since claude.ai's db has no saveItem.
 export const saveItem = (db, action, key, body, change) =>
-  (db.saveItem || ((key, body) => db.doc("products/" + key).set(body)))(key, body, change, action);
+  ((WEB && db.saveItem) || ((key, body) => db.doc("products/" + key).set(body)))(key, body, change, action);
