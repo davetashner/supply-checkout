@@ -46,6 +46,25 @@ test("an edit someone else saved over first closes the editor and says so", asyn
   await expect(page.getByRole("heading", { name: "Echo Studio" })).toBeVisible();
 });
 
+// `refused` is the web build's code for a checkout or return the API refused (src/aws/db.js)
+test("a return refused for what's saved now closes the form and says why, not to check the connection", async ({ page }) => {
+  await openEcho(page, { ...usedState, writeErrorFor: { prefix: "sheets/", code: "refused" } });
+  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await enterBarcode(page, "SKU1");
+  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await expect(page.locator("#toast")).toHaveText("simulated refused");
+  await expect(modal(page)).toBeEmpty();
+});
+
+test("any other refusal from the runtime keeps the form open with the usual message", async ({ page }) => {
+  await openEcho(page, { ...usedState, writeErrorFor: { prefix: "sheets/", code: "failed_precondition" } });
+  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await enterBarcode(page, "SKU1");
+  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await failed(page);
+  await expect(modal(page).getByRole("button", { name: "Save return" })).toBeVisible();
+});
+
 test("a new item that can't be saved to inventory isn't added to the sheet", async ({ page }) => {
   await openEcho(page, { ...usedState, writeErrorFor: { prefix: "products/", code: "unavailable" } });
   await enterBarcode(page, "NEW1");

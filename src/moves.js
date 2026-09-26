@@ -42,3 +42,13 @@ export function recordReturn(db, action, sheetId, key, r, cur, bumpStock) {
     { patch: { returned: back }, after: () => bumpStock(key, back - before), quantity: back - before, line: { out, returned: back } });
 }
 export const setStock = (db, key, stock) => db.doc("products/" + key).update({ stock });
+
+// Saving an item whose stock changes outside a sheet: the inventory form (someone counted
+// storage) and a receipt's general-inventory lines (stock bought in). body is the whole item,
+// with its new stock, which the artifact saves as it is. The web build's db saves the item with
+// the stock it already has and sends the change as the stock command, which records why stock
+// changed (docs/api/commands.md). change: { reason: "count", count } (count undefined: not
+// counted), or { reason: "receipt", lines: [{ action, quantity, unitCost }] }, one per receipt
+// line, each line its own action. (`||`, not a condition: the artifact runs the right side.)
+export const saveItem = (db, action, key, body, change) =>
+  (db.saveItem || ((key, body) => db.doc("products/" + key).set(body)))(key, body, change, action);
