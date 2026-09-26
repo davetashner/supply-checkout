@@ -128,8 +128,12 @@ describe("web stack", () => {
     });
     const [fn] = Object.values(web.findResources("AWS::CloudFront::Function"));
     const code = JSON.stringify(fn.Properties.FunctionCode);
-    expect(code).not.toContain("__KVS_ID__");
+    expect(code).not.toMatch(/__[A-Z_]+__/);
     expect(code).toContain("LiveVersions");
+    // The redirects' fixed hosts, and the same HSTS as the response headers policy
+    const text = (fn.Properties.FunctionCode["Fn::Join"][1] as unknown[]).filter((part) => typeof part === "string").join("");
+    for (const host of [names.apex, names.www, names.app]) expect(text).toContain(`"${host}"`);
+    expect(text).toContain('const HSTS = "max-age=63072000; includeSubDomains";');
     web.hasResourceProperties("AWS::CloudFront::Distribution", {
       DistributionConfig: {
         DefaultCacheBehavior: Match.objectLike({
