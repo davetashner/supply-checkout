@@ -49,6 +49,39 @@ export const AUDIENCE_TTL_MS = 30_000;
 /** How many publish requests the consumer has in flight at once. */
 export const PUBLISH_CONCURRENCY = 20;
 
+/**
+ * Stream records per consumer invocation (the event source mapping's batch
+ * size). A record costs up to one publish per member of its team, and a team
+ * has at most MEMBERS_PER_TEAM (100) members, so a full batch is at most
+ * STREAM_BATCH_SIZE x 100 publishes: PUBLISHES_PER_INVOCATION.
+ */
+export const STREAM_BATCH_SIZE = 25;
+
+/**
+ * The most publish requests one invocation makes. Past it, the consumer stops
+ * and reports the earliest record it didn't finish, and Lambda invokes it
+ * again from there. With parallelizationFactor 1 a shard runs one invocation
+ * at a time, so this bounds how long a big, busy team can hold up the other
+ * teams on its shard. A full batch at the member cap fits (see
+ * STREAM_BATCH_SIZE).
+ */
+export const PUBLISHES_PER_INVOCATION = 2_500;
+
+/**
+ * How long one invocation starts new publish requests for, in milliseconds.
+ * The same stop-and-resume as PUBLISHES_PER_INVOCATION, for when AppSync is
+ * slow: requests in flight get PUBLISH_TIMEOUT_MS more, which keeps an
+ * invocation well inside CONSUMER_TIMEOUT_SECONDS, so a slow batch returns
+ * what it sent instead of timing out and being sent again from the start.
+ */
+export const PUBLISH_BUDGET_MS = 5_000;
+
+/** One publish request's timeout, in milliseconds. A publish normally takes about 30 ms. */
+export const PUBLISH_TIMEOUT_MS = 3_000;
+
+/** The consumer function's timeout. PUBLISH_BUDGET_MS + PUBLISH_TIMEOUT_MS must fit well inside it (a test checks). */
+export const CONSUMER_TIMEOUT_SECONDS = 10;
+
 /** The change event's format version. A client ignores events with a version it doesn't know. */
 export const CHANGE_EVENT_FORMAT = 1;
 

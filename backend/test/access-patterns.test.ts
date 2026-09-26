@@ -44,6 +44,8 @@ import {
   markInviteNotSent,
   markWebhookProcessed,
   MAX_TEAMS_PER_USER,
+  MEMBERS_PER_TEAM,
+  MEMBERS_PER_TRIAL_TEAM,
   NotFoundError,
   recordAudit,
   recordReceiptRead,
@@ -55,6 +57,7 @@ import {
   setSheetLine,
   teamContextForEmailEvent,
   teamContextForStripeCustomer,
+  TeamFullError,
   teamIdForRequest,
   TEAMS_PER_USER_PER_DAY,
   TRIAL_DAYS,
@@ -65,12 +68,18 @@ import {
   type Invite,
   type TeamContext,
 } from "../src/data/index.js";
-import { PutCommand } from "@aws-sdk/lib-dynamodb";
+import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { connection } from "../src/data/client.js";
 import { endpoint, newUser, rawItem, REGION, useTable } from "./helpers.js";
 
 /** Writes a raw item, for a state the API can't make (an invite for an address that has since joined). */
 const connectionPut = (db: Db, item: Record<string, unknown>) => connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: item }));
+
+/** Changes a team's META item behind the data layer's back: a billing status, or a team from before the member count. */
+const rawMeta = (db: Db, teamId: string, update: string, names: Record<string, string>, values?: Record<string, unknown>) =>
+  connection(db).doc.send(
+    new UpdateCommand({ TableName: db.tableName, Key: { PK: `TEAM#${teamId}`, SK: "META" }, UpdateExpression: update, ExpressionAttributeNames: names, ExpressionAttributeValues: values }),
+  );
 
 describe("DynamoDB Local", () => {
   it.runIf(process.env.CI)("is configured in CI", () => {
@@ -271,6 +280,135 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
     });
   });
 
+  describe("member cap", () => {
+    /** The stored member count, and the MEMBER items actually in the team. */
+    async function members(ctx: TeamContext) {
+      const meta = await rawItem(db, `TEAM#${ctx.teamId}`, "META");
+      return { counted: meta?.members as number | undefined, actual: (await listMembers(db, ctx)).length };
+    }
+    const setStatus = (teamId: string, status: string) => rawMeta(db, teamId, "SET #s = :s", { "#s": "status" }, { ":s": status });
+    const forgetCount = (teamId: string) => rawMeta(db, teamId, "REMOVE #m", { "#m": "members" });
+    let n = 0;
+    /** An invite for a new address and the user who'll accept it. */
+    async function invited(owner: TeamContext, role: "viewer" | "owner" = "viewer") {
+      const email = `cap-${++n}-${owner.teamId.slice(0, 8)}@example.com`;
+      const made = await createInvite(db, owner, { email, role });
+      return { ...made, user: { userId: newUser(), verifiedEmail: email } };
+    }
+    const accept = (i: Awaited<ReturnType<typeof invited>>) => acceptInvite(db, i.user, i.invite, i.token);
+
+    it("counts members as they join, are removed and leave", async () => {
+      const { owner, contributor, viewer } = await team();
+      expect(await members(owner)).toEqual({ counted: 3, actual: 3 });
+      await removeMember(db, owner, viewer.userId);
+      expect(await members(owner)).toEqual({ counted: 2, actual: 2 });
+      await removeMember(db, contributor, contributor.userId);
+      expect(await members(owner)).toEqual({ counted: 1, actual: 1 });
+      // A refused removal (the last owner) leaves the count alone
+      await expect(removeMember(db, owner, owner.userId)).rejects.toThrow(LastOwnerError);
+      const joined = await accept(await invited(owner, "owner"));
+      expect(await members(owner)).toEqual({ counted: 2, actual: 2 });
+      await removeMember(db, owner, joined.userId);
+      expect(await members(owner)).toEqual({ counted: 1, actual: 1 });
+      expect((await rawItem(db, `TEAM#${owner.teamId}`, "META"))?.owners).toBe(1);
+    });
+
+    it(`refuses the ${MEMBERS_PER_TRIAL_TEAM + 1}th member of a trial team, and the invite that would make it`, async () => {
+      const { owner } = await team();
+      const pending = await Promise.all(Array.from({ length: MEMBERS_PER_TRIAL_TEAM - 3 }, () => invited(owner)));
+      // Members and live invites fill the cap: no more invites
+      await expect(createInvite(db, owner, { email: "eleventh@example.com", role: "viewer" })).rejects.toThrow(TeamFullError);
+      for (const i of pending) await accept(i);
+      expect(await members(owner)).toEqual({ counted: MEMBERS_PER_TRIAL_TEAM, actual: MEMBERS_PER_TRIAL_TEAM });
+      await expect(createInvite(db, owner, { email: "eleventh@example.com", role: "viewer" })).rejects.toThrow(TeamFullError);
+
+      // An invite from before the team filled up (a paid team that lapsed) is refused at accept, and kept
+      await setStatus(owner.teamId, "active");
+      const late = await invited(owner);
+      await setStatus(owner.teamId, "canceled");
+      await expect(accept(late)).rejects.toThrow(TeamFullError);
+      expect(await findInvite(db, late.token)).toMatchObject({ inviteId: late.invite.inviteId });
+      expect(await members(owner)).toEqual({ counted: MEMBERS_PER_TRIAL_TEAM, actual: MEMBERS_PER_TRIAL_TEAM });
+      // Once someone leaves there's room, and the same invite works
+      const [someone] = (await listMembers(db, owner)).filter((m) => m.role === "viewer");
+      await removeMember(db, owner, someone?.userId as string);
+      await accept(late);
+      expect(await members(owner)).toEqual({ counted: MEMBERS_PER_TRIAL_TEAM, actual: MEMBERS_PER_TRIAL_TEAM });
+    });
+
+    it(`lets a paying team have ${MEMBERS_PER_TEAM} members`, async () => {
+      const { owner } = await team();
+      await setStatus(owner.teamId, "active");
+      // Past the trial cap, and the count is what the write checks: set it near the paid cap
+      for (let i = 0; i < 2; i++) await accept(await invited(owner));
+      expect(await members(owner)).toEqual({ counted: 5, actual: 5 });
+      await rawMeta(db, owner.teamId, "SET #m = :m", { "#m": "members" }, { ":m": MEMBERS_PER_TEAM - 1 });
+      const [last, over] = [await invited(owner), await invited(owner)];
+      await accept(last);
+      await expect(accept(over)).rejects.toThrow(TeamFullError);
+      expect((await members(owner)).counted).toBe(MEMBERS_PER_TEAM);
+    });
+
+    it("lets only one of two people accepting for the last place join", async () => {
+      for (let round = 0; round < 5; round++) {
+        const { owner } = await team();
+        // Invites made while the team was paying; then it's back on the trial cap with one place left
+        await setStatus(owner.teamId, "active");
+        // Three members already, two racers, and enough others to leave one place
+        const invites = await Promise.all(Array.from({ length: MEMBERS_PER_TRIAL_TEAM - 2 }, () => invited(owner)));
+        for (const i of invites.slice(2)) await accept(i);
+        await setStatus(owner.teamId, "trialing");
+        expect(await members(owner)).toEqual({ counted: MEMBERS_PER_TRIAL_TEAM - 1, actual: MEMBERS_PER_TRIAL_TEAM - 1 });
+
+        const results = await Promise.allSettled([accept(invites[0] as never), accept(invites[1] as never)]);
+        const joined = results.filter((r) => r.status === "fulfilled");
+        const refused = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+        expect(joined).toHaveLength(1);
+        // The loser failed the count's condition, or lost the race for the item: never half-applied
+        expect(refused).toHaveLength(1);
+        expect(refused[0]?.reason).toBeInstanceOf(refused[0]?.reason instanceof TeamFullError ? TeamFullError : ConflictError);
+        expect(await members(owner)).toEqual({ counted: MEMBERS_PER_TRIAL_TEAM, actual: MEMBERS_PER_TRIAL_TEAM });
+      }
+    });
+
+    it("sets the count on a team from before it, on the next change, and keeps it right when two changes race", async () => {
+      const { owner, contributor, viewer } = await team();
+      await forgetCount(owner.teamId);
+      expect(await members(owner)).toEqual({ counted: undefined, actual: 3 });
+      await removeMember(db, owner, viewer.userId);
+      expect(await members(owner)).toEqual({ counted: 2, actual: 2 });
+
+      await forgetCount(owner.teamId);
+      await accept(await invited(owner));
+      expect(await members(owner)).toEqual({ counted: 3, actual: 3 });
+
+      // The last owner still can't leave a team without a count
+      await forgetCount(owner.teamId);
+      await expect(removeMember(db, owner, owner.userId)).rejects.toThrow(LastOwnerError);
+      // A full team without a count is still full
+      await setStatus(owner.teamId, "active");
+      const more = await Promise.all(Array.from({ length: MEMBERS_PER_TRIAL_TEAM - 3 + 1 }, () => invited(owner)));
+      await setStatus(owner.teamId, "trialing");
+      for (const i of more.slice(1)) await accept(i);
+      await forgetCount(owner.teamId);
+      await expect(accept(more[0] as never)).rejects.toThrow(TeamFullError);
+
+      // Two changes that both find no count: one sets it, the other must retry
+      await removeMember(db, owner, contributor.userId);
+      for (const m of (await listMembers(db, owner)).filter((x) => x.role === "viewer").slice(0, 4)) await removeMember(db, owner, m.userId);
+      for (let round = 0; round < 3; round++) {
+        await forgetCount(owner.teamId);
+        const [a, b] = [await invited(owner), await invited(owner)];
+        const results = await Promise.allSettled([accept(a), accept(b)]);
+        for (const r of results) if (r.status === "rejected") expect(r.reason).toBeInstanceOf(ConflictError);
+        const now = await members(owner);
+        expect(now.counted).toBe(now.actual);
+        // Make room again for the next round
+        for (const m of (await listMembers(db, owner)).filter((x) => x.role === "viewer").slice(0, 2)) await removeMember(db, owner, m.userId);
+      }
+    });
+  });
+
   describe("Invite", () => {
     it("stores only the token's hash, finds the invite by it, and works once", async () => {
       const { owner } = await team();
@@ -463,6 +601,8 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
 
     it(`stops a team at ${INVITES_PER_TEAM_PER_DAY} invites a UTC day, re-sends included`, async () => {
       const { owner } = await team();
+      // A paying team: a trial team's member cap is below the day's invite limit
+      await rawMeta(db, owner.teamId, "SET #s = :s", { "#s": "status" }, { ":s": "active" });
       const day = new Date("2031-01-01T10:00:00.000Z");
       let last: Awaited<ReturnType<typeof createInvite>> | undefined;
       for (let i = 0; i < INVITES_PER_TEAM_PER_DAY; i++) last = await createInvite(db, owner, { email: `team-limit-${i}@example.com`, role: "viewer" }, day);

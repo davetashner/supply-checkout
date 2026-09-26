@@ -89,7 +89,14 @@ a new one. Each team can send 50 invites a day, 3 to any one address, and each
 address can be sent 15 from all teams (429 `quota_exceeded`). The address must
 be a bare `name@example.com` (400 otherwise); an address that's already a member's, or already has a
 live invite to the team, is 409 `aborted` with a message to show. Removing a
-member also revokes their other invites to the team. See
+member also revokes their other invites to the team.
+
+A team can have 10 members while it's on its trial (or its subscription isn't
+paying), and 100 once it's `active` or `past_due`. Members and live invites
+together count: an invite past the cap is 429 `quota_exceeded` with
+`reason: "team_full"`, and so is accepting an invite to a team that filled up
+meanwhile (the invite stays, and works once an owner makes room). Show the
+message and point owners at revoking an invite or removing a member. See
 [openapi.yaml](openapi.yaml) under the `invites` tag.
 
 ## Errors from `POST /teams`

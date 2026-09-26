@@ -21,10 +21,10 @@ export type ErrorCode =
 /**
  * Why a request was refused, where the code alone doesn't say: `view_only` (a
  * viewer writing), `owners_only` (an owners-only route), `not_member` (not in
- * the team, or no such team) and `last_owner` (the change would leave the team
- * without an owner).
+ * the team, or no such team), `last_owner` (the change would leave the team
+ * without an owner) and `team_full` (the team is at its member cap).
  */
-export type ErrorReason = "view_only" | "owners_only" | "not_member" | "last_owner";
+export type ErrorReason = "view_only" | "owners_only" | "not_member" | "last_owner" | "team_full";
 
 /** An error with the HTTP status and code the client sees. */
 export class ApiError extends Error {

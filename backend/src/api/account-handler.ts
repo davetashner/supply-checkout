@@ -84,6 +84,7 @@ import {
   type Role,
   type Team,
   type TeamContext,
+  TeamFullError,
   teamIdForRequest,
 } from "../data/index.js";
 import { EmailNotSentError, type Mailer, sendInviteEmail } from "../email/mailer.js";
@@ -113,6 +114,7 @@ const REQUEST_KEY = /^[A-Za-z0-9_-]{8,128}$/;
 /** The data layer's errors, as the account routes answer them. */
 export function errorFor(error: unknown): ApiError {
   if (error instanceof LastOwnerError) return new ApiError(409, "aborted", error.message, "last_owner");
+  if (error instanceof TeamFullError) return new ApiError(429, "quota_exceeded", error.message, "team_full");
   // Here a ForbiddenError is about membership or an invite, never view-only access
   if (error instanceof ForbiddenError) return new ApiError(403, "permission_denied", error.message);
   return dataErrorFor(error);

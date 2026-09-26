@@ -18,7 +18,16 @@
 //   removed member off: nothing more is published to their channel.
 // - Events for one team go out in stream order, up to 5 per request, to every
 //   member's channel; teams and members publish in parallel, at most
-//   PUBLISH_CONCURRENCY requests at a time.
+//   PUBLISH_CONCURRENCY requests at a time, earliest records first.
+// - A publish budget per invocation: at most PUBLISHES_PER_INVOCATION
+//   requests, started within PUBLISH_BUDGET_MS. When it runs out, the handler
+//   reports the earliest record it didn't finish, as for a failure, and Lambda
+//   invokes it again from there. So one big, busy team can't hold its shard
+//   (one invocation at a time) for longer than that, and a slow AppSync ends
+//   an invocation with what it sent rather than a timeout that sends the lot
+//   again. Requests go out earliest record first, so each invocation moves
+//   the shard forward. Budget stops aren't failures: they're logged and
+//   counted apart (LiveUpdatesDeferred in the Batch line).
 // - Partial batch failures: when a publish to any member fails, the handler
 //   reports the earliest record in the batch that didn't reach everyone, and
 //   Lambda retries from there. Records after it are published again, to every
@@ -32,7 +41,15 @@ import type { DynamoDBBatchResponse, DynamoDBRecord, DynamoDBStreamEvent } from 
 import { audienceChangeFromStream, documentChangeFromStream, type DocumentChange } from "../data/index.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import type { Audience } from "./audience.js";
-import { CHANGE_EVENT_FORMAT, type ChangeEvent, EVENTS_PER_PUBLISH, PUBLISH_CONCURRENCY, userChannel } from "./channels.js";
+import {
+  CHANGE_EVENT_FORMAT,
+  type ChangeEvent,
+  EVENTS_PER_PUBLISH,
+  PUBLISH_BUDGET_MS,
+  PUBLISH_CONCURRENCY,
+  PUBLISHES_PER_INVOCATION,
+  userChannel,
+} from "./channels.js";
 import type { Publish } from "./events-client.js";
 
 export interface PublisherDeps {
@@ -41,6 +58,12 @@ export interface PublisherDeps {
   readonly obs: Observability;
   /** Publish requests in flight at once. */
   readonly concurrency?: number;
+  /** Publish requests one invocation may make. */
+  readonly maxPublishes?: number;
+  /** How long one invocation may start publish requests for, in milliseconds. */
+  readonly budgetMs?: number;
+  /** The clock, for tests. */
+  readonly now?: () => number;
 }
 
 interface Outgoing {
@@ -81,33 +104,69 @@ export function outgoing(records: readonly DynamoDBRecord[]): Outgoing[] {
   return out;
 }
 
-/** A shared limit on publish requests in flight, across every team in the batch. */
+/**
+ * A shared limit on publish requests in flight, across every team in the
+ * batch. A freed slot goes to the waiting request with the lowest `priority`
+ * (its first record's position in the batch), so the earliest records go out
+ * first whatever order the teams' requests queued in.
+ */
 function throttle(limit: number) {
   let active = 0;
-  const waiting: (() => void)[] = [];
-  return async <T>(task: () => Promise<T>): Promise<T> => {
+  const waiting: { priority: number; resolve: () => void }[] = [];
+  return async <T>(priority: number, task: () => Promise<T>): Promise<T> => {
     // A slot is either taken now or handed over by the task that frees it
     if (active < limit) active++;
-    else await new Promise<void>((resolve) => waiting.push(resolve));
+    else
+      await new Promise<void>((resolve) => {
+        const at = waiting.findIndex((w) => w.priority > priority);
+        waiting.splice(at === -1 ? waiting.length : at, 0, { priority, resolve });
+      });
     try {
       return await task();
     } finally {
       const next = waiting.shift();
-      if (next) next();
+      if (next) next.resolve();
       else active--;
     }
   };
 }
 
+/** The invocation's publish budget: `max` requests, started before `ms` have passed. */
+function publishBudget(max: number, ms: number, now: () => number) {
+  const deadline = now() + ms;
+  let used = 0;
+  let spent = false;
+  return {
+    /** Takes one request from the budget, or says it's used up (and stays used up). */
+    take(): boolean {
+      if (!spent && (used >= max || now() >= deadline)) spent = true;
+      if (spent) return false;
+      used++;
+      return true;
+    },
+    get spent() {
+      return spent;
+    },
+  };
+}
+
+type Budget = ReturnType<typeof publishBudget>;
+
 type Throttle = ReturnType<typeof throttle>;
+
+/** publishChunk's answer when the budget ran out before the request could start. */
+const SKIPPED = -2;
 
 /**
  * Publishes one chunk to one channel. Returns the position in the chunk of
- * the first event that didn't go out, or -1 when all did.
+ * the first event that didn't go out, -1 when all did, or SKIPPED.
  */
-async function publishChunk(deps: PublisherDeps, run: Throttle, teamId: string, channel: string, chunk: readonly Outgoing[]): Promise<number> {
+async function publishChunk(deps: PublisherDeps, run: Throttle, budget: Budget, teamId: string, channel: string, chunk: readonly Outgoing[]): Promise<number> {
   try {
-    const result = await run(() => deps.publish(channel, chunk.map((e) => e.payload)));
+    const priority = (chunk[0] as Outgoing).index;
+    // The budget is checked when the request gets its slot, not when it queued
+    const result = await run(priority, async () => (budget.take() ? deps.publish(channel, chunk.map((e) => e.payload)) : undefined));
+    if (!result) return SKIPPED;
     const ok = new Set(result.successful);
     const failedAt = chunk.findIndex((_, j) => !ok.has(j));
     if (failedAt !== -1) {
@@ -130,9 +189,10 @@ async function publishChunk(deps: PublisherDeps, run: Throttle, teamId: string, 
 async function publishTeam(
   deps: PublisherDeps,
   run: Throttle,
+  budget: Budget,
   teamId: string,
   events: readonly Outgoing[],
-): Promise<{ sent: number; publishes: number; firstFailed?: Outgoing }> {
+): Promise<{ sent: number; publishes: number; firstFailed?: Outgoing; deferred?: boolean }> {
   let users: readonly string[];
   try {
     users = await deps.audience.recipients(teamId);
@@ -151,9 +211,14 @@ async function publishTeam(
   let publishes = 0;
   for (let i = 0; i < events.length; i += EVENTS_PER_PUBLISH) {
     const chunk = events.slice(i, i + EVENTS_PER_PUBLISH);
-    const failures = await Promise.all(channels.map((channel) => publishChunk(deps, run, teamId, channel, chunk)));
-    publishes += channels.length;
-    const failedAt = Math.min(...failures.filter((f) => f !== -1));
+    if (budget.spent && channels.length) return { sent, publishes, firstFailed: chunk[0], deferred: true };
+    const failures = await Promise.all(channels.map((channel) => publishChunk(deps, run, budget, teamId, channel, chunk)));
+    const failed = failures.filter((f) => f >= 0);
+    const skipped = failures.filter((f) => f === SKIPPED).length;
+    publishes += channels.length - skipped;
+    // A chunk the budget stopped part way goes again, whole, to every member: a client applies an event twice safely
+    if (skipped) return { sent, publishes, firstFailed: chunk[0], deferred: failed.length === 0 };
+    const failedAt = Math.min(...failed);
     if (Number.isFinite(failedAt)) return { sent: sent + failedAt, publishes, firstFailed: chunk[failedAt] };
     sent += chunk.length;
   }
@@ -176,17 +241,29 @@ export function createPublisherHandler(deps: PublisherDeps) {
       byTeam.set(e.teamId, list);
     }
     const run = throttle(deps.concurrency ?? PUBLISH_CONCURRENCY);
-    const results = await Promise.all([...byTeam].map(([teamId, list]) => publishTeam(deps, run, teamId, list)));
+    const budget = publishBudget(deps.maxPublishes ?? PUBLISHES_PER_INVOCATION, deps.budgetMs ?? PUBLISH_BUDGET_MS, deps.now ?? Date.now);
+    const teams = [...byTeam];
+    const results = await Promise.all(teams.map(([teamId, list]) => publishTeam(deps, run, budget, teamId, list)));
 
     const sent = results.reduce((n, r) => n + r.sent, 0);
     const publishes = results.reduce((n, r) => n + r.publishes, 0);
     const failures = results.map((r) => r.firstFailed).filter((f): f is Outgoing => f !== undefined);
     // Lambda retries from the earliest reported record, so report only that one
     const earliest = failures.sort((a, b) => a.index - b.index)[0];
-    const unsent = earliest ? events.length - sent : 0;
+    // Events not sent, split by why: a failure (alarmed on) or the budget (sent next invocation)
+    let unsent = 0;
+    let deferred = 0;
+    results.forEach((r, i) => {
+      const left = (teams[i]?.[1].length ?? 0) - r.sent;
+      if (r.deferred) deferred += left;
+      else unsent += left;
+    });
 
     if (events.length) deps.obs.count(BusinessMetric.LiveUpdates, events.length);
     if (unsent) deps.obs.count(BusinessMetric.LiveUpdateFailures, unsent);
+    if (deferred) {
+      deps.obs.logger.warn("Publish budget used up; Lambda sends the rest from the earliest unsent record", { publishes, deferred, teams: results.filter((r) => r.deferred).length });
+    }
     const oldest = Math.min(...records.map((r) => r.dynamodb?.ApproximateCreationDateTime ?? Infinity));
     deps.obs.logger.info("Batch", {
       records: records.length,
@@ -195,6 +272,7 @@ export function createPublisherHandler(deps: PublisherDeps) {
       publishes,
       sent,
       failed: unsent,
+      deferred,
       // Seconds precision: a rough lag. docs/api/realtime.md says how to measure delivery end to end
       ...(Number.isFinite(oldest) ? { lagMs: Date.now() - oldest * 1000 } : {}),
     });
