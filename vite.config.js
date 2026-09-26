@@ -9,6 +9,7 @@
 //
 // Each writes hidden source maps (no sourceMappingURL comment in the output), which
 // the coverage run uses to report by src/ file and line.
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import browserslist from "browserslist";
 import { defineConfig } from "vite";
@@ -54,6 +55,22 @@ const artifactFragment = () => ({
     // viteSingleFile keeps the <link> tag's attributes and indent on <style>
     source = source.replace(/[ \t]*<style[^>]*>/, "<style>\n").replace("/*$vite$:1*/", "");
     html.source = source.trimEnd() + "\n\n" + code + "\n";
+  },
+});
+
+// The artifact's icon: claude.ai publishes only the page, so the SVG favicon is
+// inlined as a data: URI, and the PNG fallbacks (for browsers without SVG favicons,
+// and iOS home screens) are left to the web build. Vite never inlines icon links.
+const ICON_LINKS = /<link rel="icon" href="\.\/icons\/favicon-32\.png"[^>]*>\n<link rel="icon" href="\.\/icons\/favicon\.svg" type="image\/svg\+xml">\n<link rel="apple-touch-icon"[^>]*>\n/;
+const artifactIcon = () => ({
+  name: "supply-checkout:artifact-icon",
+  transformIndexHtml: {
+    order: "pre",
+    handler(html) {
+      if (!ICON_LINKS.test(html)) throw new Error("src/index.html has no favicon links");
+      const svg = readFileSync(new URL("src/icons/favicon.svg", import.meta.url));
+      return html.replace(ICON_LINKS, `<link rel="icon" href="data:image/svg+xml;base64,${svg.toString("base64")}" type="image/svg+xml">\n`);
+    },
   },
 });
 
@@ -128,6 +145,6 @@ export default defineConfig(({ mode }) => {
       minify: !artifact,
       cssMinify: !artifact,
     },
-    plugins: artifact ? [viteSingleFile(), keepArtifactSourceMap(), artifactFragment()] : mode === "demo" ? [demoPage()] : [],
+    plugins: artifact ? [artifactIcon(), viteSingleFile(), keepArtifactSourceMap(), artifactFragment()] : mode === "demo" ? [demoPage()] : [],
   };
 });

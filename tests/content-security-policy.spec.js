@@ -41,6 +41,18 @@ async function serve(page, origin, files) {
   });
 }
 
+// Loads each favicon the page links as an image, as a browser tab would (img-src)
+const loadIcons = (page) =>
+  page.evaluate(() =>
+    Promise.all(
+      [...document.querySelectorAll('link[rel="icon"], link[rel="apple-touch-icon"]')].map((link) => {
+        const img = new Image();
+        img.src = link.href;
+        return img.decode().then(() => img.naturalWidth > 0);
+      }),
+    ),
+  );
+
 const violations = (page) => page.evaluate(() => window.__cspViolations);
 
 test("the web app runs under the policy", async ({ page }) => {
@@ -60,6 +72,7 @@ test("the web app runs under the policy", async ({ page }) => {
 
   const header = await page.evaluate(async () => (await fetch("/")).headers.get("content-security-policy"));
   expect(header).toBe(CSP);
+  expect(await loadIcons(page)).toEqual([true, true, true]);
   expect(await violations(page)).toEqual([]);
 });
 
@@ -77,5 +90,6 @@ test("the demo runs under the policy, including its CSV download and receipt", a
   await page.setInputFiles("#receiptFile", fakeImage);
   await expect(page.locator(".rline")).toHaveCount(3);
 
+  expect(await loadIcons(page)).toEqual([true, true, true]);
   expect(await violations(page)).toEqual([]);
 });

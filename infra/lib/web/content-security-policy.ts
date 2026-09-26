@@ -7,7 +7,7 @@
 // - Google Fonts: the stylesheet from fonts.googleapis.com, the font files from
 //   fonts.gstatic.com.
 // - ZXing from cdn.jsdelivr.net (a classic script tag, pinned version).
-// - Its own hashed script and stylesheet.
+// - Its own hashed script, stylesheet and favicons (src/icons/).
 // - Inline style="" attributes in markup that src/main.js renders with
 //   innerHTML, hence style-src-attr 'unsafe-inline'. <style> elements and
 //   inline scripts stay blocked.
