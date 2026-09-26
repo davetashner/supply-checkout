@@ -2,7 +2,8 @@ name: Release
 
 # release-please keeps a "chore(main): release x.y.z" pull request up to date
 # from Conventional Commit messages. Merging it tags the version and creates a
-# GitHub Release; the app file is attached once the full check suite passes.
+# GitHub Release; the app file and an SPDX SBOM are attached once the full
+# check suite passes.
 on:
   push:
     branches: [main]
@@ -48,6 +49,10 @@ jobs:
   checks:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
+    # CI's CodeQL job uploads its results to code scanning
+    permissions:
+      contents: read
+      security-events: write
     uses: ./.github/workflows/ci.yml
 
   attach:
@@ -59,8 +64,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
-      - name: Attach index.html to the release
-        run: gh release upload "$TAG" index.html --clobber
+      - name: Generate an SPDX SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .
+          format: spdx-json
+          output-file: supply-checkout-${{ needs.release-please.outputs.tag_name }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Attach index.html and the SBOM to the release
+        run: gh release upload "$TAG" index.html "supply-checkout-$TAG.spdx.json" --clobber
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
