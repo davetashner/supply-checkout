@@ -257,7 +257,7 @@ paths:
         - Otherwise: 200 `imported` when every row is in. A file with any bad
           row is 400 `bad_request` with every problem in `errors`, and nothing
           is written. The import is staged, then committed in transactions of
-          up to 49 rows and 3 MB; if it stops part-way (a timeout, or 409 when
+          up to 49 rows and 2.5 MB; if it stops part-way (a timeout, or 409 when
           items kept changing), send the same request again (same `importId`
           and file, from any owner) to finish it. The same `importId` with a
           finished import returns its summary with `replayed: true`; with a

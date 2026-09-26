@@ -66,6 +66,22 @@ function event(team: string, user: string, body: unknown): DataEvent {
   } as unknown as DataEvent;
 }
 
+/** A request to another data route, such as a contributor's PUT. */
+function write(method: string, path: string, user: string, body: unknown): DataEvent {
+  const segments = path.split("/");
+  const r = DATA_ROUTES.find((d) => {
+    const parts = d.path.split("/");
+    return d.method === method && parts.length === segments.length && parts.every((p, i) => p.startsWith("{") || p === segments[i]);
+  }) as { method: string; path: string };
+  return {
+    ...event("team-a", user, body),
+    routeKey: routeKey(r),
+    rawPath: path,
+    pathParameters: { teamId: "team-a" },
+    requestContext: { ...event("team-a", user, body).requestContext, http: { method, path, protocol: "HTTP/1.1", sourceIp: "192.0.2.1", userAgent: "test" } },
+  } as unknown as DataEvent;
+}
+
 async function post(body: unknown, user = OWNER, team = "team-a") {
   const response = await handler(event(team, user, body));
   return { status: response.statusCode, body: response.body ? JSON.parse(response.body) : undefined };
@@ -443,8 +459,37 @@ describe("retries and resuming", () => {
     const res = await post({ importId: randomUUID(), csv });
     expect(res.body).toMatchObject({ status: "imported", summary: { updated: ROWS_PER_CHUNK } });
     expect(products().every((p) => p.price === 2 && p.note === note)).toBe(true);
-    // Staging, then 9 rows (2.7 MB) at a time
-    expect(table.transactions).toEqual([2, 10, 10, 10, 10, 10, 5]);
+    // Staging, then 8 rows (2.4 MB) at a time
+    expect(table.transactions).toEqual([2, 9, 9, 9, 9, 9, 9, 2]);
+  });
+
+  it("measures maps with a constructor key as DynamoDB stores them", async () => {
+    // A contributor saves items through the API whose data holds maps with a "constructor"
+    // key, which the document client sends as Maps (storable in client.ts)
+    for (let i = 0; i < 20; i++) {
+      const key = keyOfBarcode(`c${i}`);
+      const put = await handler(write("PUT", `/teams/team-a/products/${key}`, CONTRIBUTOR, { data: { code: `c${i}`, name: `Item ${i}`, price: 1, x: { constructor: 1, pad: "y".repeat(340_000) } }, expectedVersion: 0 }));
+      expect(put.statusCode).toBe(200);
+    }
+    const csv = ["name,barcode,price", ...Array.from({ length: 20 }, (_, i) => `Item ${i},c${i},2`)].join("\n");
+    const res = await post({ importId: randomUUID(), csv });
+    expect(res.body).toMatchObject({ status: "imported", summary: { updated: 20 } });
+    expect(products().every((p) => p.price === 2 && (p.x as { pad: string }).pad.length === 340_000)).toBe(true);
+    // Staging, then 7 rows (2.4 MB) at a time
+    expect(table.transactions).toEqual([2, 8, 8, 7]);
+  });
+
+  it("retries a batch DynamoDB refuses as too large with half the rows", async () => {
+    for (let i = 0; i < 10; i++) seedProduct(`k${i}`, { code: `c${i}`, name: `Item ${i}`, price: 1, note: "x".repeat(200_000) });
+    table.maxTransactionBytes = 900_000;
+    const csv = ["name,barcode,price", ...Array.from({ length: 10 }, (_, i) => `Item ${i},c${i},2`)].join("\n");
+    const res = await post({ importId: randomUUID(), csv });
+    expect(res.body).toMatchObject({ status: "imported", summary: { updated: 10 } });
+    // Refused batches aren't recorded: 10 and 5 rows were, then 3 went in; then 7, and 4 went in; then the last 3
+    expect(table.transactions).toEqual([2, 4, 5, 4]);
+    // A single row that still can't fit is too large to save
+    table.maxTransactionBytes = 100_000;
+    expect(await post({ importId: randomUUID(), csv: "name,barcode,price\nItem 0,c0,3\n" })).toMatchObject({ status: 413, body: { error: { code: "quota_exceeded", message: "The item on line 2 is too large to save" } } });
   });
 
   it("measures items when it commits, so items that grew after staging still fit", async () => {

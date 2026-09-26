@@ -75,10 +75,12 @@ export const MAX_NAME_LENGTH = 200;
  */
 export const ROWS_PER_CHUNK = 49;
 /**
- * The most bytes of writes one commit transaction carries, measured as JSON
- * (larger than DynamoDB's own measure). DynamoDB's limit is 4 MB.
+ * The most bytes of writes one commit transaction carries, measured as JSON.
+ * DynamoDB's limit is 4 MB; JSON can understate its measure (lists and maps
+ * of small numbers), so this leaves room. If DynamoDB still refuses a batch
+ * as too large, the commit retries it with half the rows.
  */
-export const TX_BYTES = 3_000_000;
+export const TX_BYTES = 2_500_000;
 /** Row errors returned at most; errorCount has the total. */
 export const MAX_ERRORS = 200;
 
@@ -472,7 +474,7 @@ function staged(row: PlannedRow): StagedRow {
 function rowWrites(db: Db, ctx: TeamContext, id: string, row: StagedRow, item: Item | undefined, at: string): TransactItem[] {
   // Another item took this new item's key after staging (A#B and A_B both make the key A_B, say).
   // The same barcode is the same item, from another import of the same file.
-  if (row.create && item && (typeof item.code === "string" ? item.code : "") !== row.barcode) {
+  if (row.create && item && (typeof item.code === "string" ? item.code.trim() : "") !== row.barcode) {
     throw new ConflictError(`An item was added under line ${row.line}'s key while importing. Choose the file again to finish; rows already imported won't be added twice.`);
   }
   const current = item ? documentData(item) : undefined;
@@ -529,7 +531,13 @@ function imported(job: Item, replayed: boolean): ImportOutcome {
 }
 
 const expired = () => new ConflictError("This import expired before it finished. Choose the file again to finish; rows already imported won't be added twice.");
-const bytesOf = (writes: TransactItem[]) => writes.reduce((sum, w) => sum + Buffer.byteLength(JSON.stringify(w), "utf8"), 0);
+// What DynamoDB gets: storable() sends a map with a "constructor" key as a Map, which
+// JSON.stringify would write as "{}", so Maps are measured as the maps they are
+const expandMaps = (_key: string, value: unknown) => (value instanceof Map ? Object.fromEntries(value) : value);
+const bytesOf = (writes: TransactItem[]) => writes.reduce((sum, w) => sum + Buffer.byteLength(JSON.stringify(w, expandMaps), "utf8"), 0);
+/** DynamoDB refusing a whole transaction for its size (not a cancellation). */
+const transactionTooLarge = (error: unknown) =>
+  (error as { name?: string } | null)?.name === "ValidationException" && /size|large|4 ?MB/i.test((error as Error).message);
 
 /** Commits the job's rows from the first one not yet committed. */
 async function commit(db: Db, ctx: TeamContext, id: string, first: Item, now: Date): Promise<ImportOutcome> {
@@ -548,13 +556,15 @@ async function commit(db: Db, ctx: TeamContext, id: string, first: Item, now: Da
       chunk = { n, rows: staged.rows as StagedRow[] };
     }
     const pending = chunk.rows.slice(r - n * ROWS_PER_CHUNK);
+    // Rows per transaction: halved each time DynamoDB says a batch is too large
+    let limit = pending.length;
     for (let attempt = 1; ; attempt++) {
       const items = await Promise.all(pending.map((row) => getItem(db, keys.product(ctx.teamId, row.key))));
       // As many rows as fit in one transaction, by their size now; always at least one
       const writes: TransactItem[] = [];
       let bytes = 0;
       let k = 0;
-      for (; k < pending.length; k++) {
+      for (; k < limit; k++) {
         const rowItems = rowWrites(db, ctx, id, pending[k] as StagedRow, items[k], at);
         const size = bytesOf(rowItems);
         if (k > 0 && bytes + size > TX_BYTES) break;
@@ -578,6 +588,12 @@ async function commit(db: Db, ctx: TeamContext, id: string, first: Item, now: Da
         job = { ...job, committed: next, status: last ? "done" : job.status };
         break;
       } catch (error) {
+        if (transactionTooLarge(error)) {
+          if (k === 1) throw new TooLargeError(`The item on line ${pending[0]?.line ?? 0} is too large to save`);
+          limit = Math.ceil(k / 2);
+          attempt--;
+          continue;
+        }
         const codes = cancellationCodes(error);
         if (codes && itemTooLarge(error)) throw new TooLargeError(`An item on line ${pending[0]?.line ?? 0} or after is too large to save`);
         if (!codes || !codes.every((c) => RETRYABLE.has(c))) throw error;
