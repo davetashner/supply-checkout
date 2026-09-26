@@ -50,14 +50,15 @@
               "Action": [
                 "kms:Decrypt",
                 "kms:DescribeKey",
-                "kms:Encrypt",
-                "kms:GenerateDataKey*",
-                "kms:ReEncrypt*"
+                "kms:GenerateDataKey"
               ],
               "Condition": {
                 "StringEquals": {
                   "aws:PrincipalAccount": {
                     "Ref": "RestoreAccountIds"
+                  },
+                  "aws:PrincipalOrgID": {
+                    "Ref": "OrganizationId"
                   }
                 }
               },
@@ -74,6 +75,9 @@
                 "StringEquals": {
                   "aws:PrincipalAccount": {
                     "Ref": "RestoreAccountIds"
+                  },
+                  "aws:PrincipalOrgID": {
+                    "Ref": "OrganizationId"
                   }
                 },
                 "Bool": {
@@ -150,6 +154,9 @@
                 "StringEquals": {
                   "aws:PrincipalAccount": {
                     "Ref": "SourceAccountIds"
+                  },
+                  "aws:PrincipalOrgID": {
+                    "Ref": "OrganizationId"
                   }
                 }
               },
@@ -180,7 +187,7 @@
         "LockConfiguration": {
           "ChangeableForDays": 3,
           "MaxRetentionDays": 365,
-          "MinRetentionDays": 7
+          "MinRetentionDays": 30
         }
       },
       "UpdateReplacePolicy": "Retain",
@@ -243,6 +250,31 @@
               }
             },
             {
+              "Action": "backup:CopyFromBackupVault",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":backup:",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":recovery-point:*"
+                  ]
+                ]
+              },
+              "Sid": "CopyFromThisVault"
+            },
+            {
               "Action": [
                 "backup:CopyIntoBackupVault",
                 "backup:DescribeBackupVault"
@@ -251,6 +283,9 @@
                 "StringEquals": {
                   "aws:ResourceAccount": {
                     "Ref": "RestoreAccountIds"
+                  },
+                  "aws:ResourceOrgID": {
+                    "Ref": "OrganizationId"
                   }
                 }
               },
@@ -304,12 +339,22 @@
   "Parameters": {
     "SourceAccountIds": {
       "Type": "CommaDelimitedList",
+      "AllowedPattern": "^\\d{12}$",
+      "ConstraintDescription": "must be comma-separated 12-digit account IDs",
       "Description": "Workload account IDs whose backups are copied into this vault (the prod account; staging when it exists)"
     },
     "RestoreAccountIds": {
       "Type": "CommaDelimitedList",
       "Default": "",
+      "AllowedPattern": "^(\\d{12})?$",
+      "ConstraintDescription": "must be empty, or comma-separated 12-digit account IDs",
       "Description": "Account IDs a copy may be sent to for a restore or restore drill (empty for none)"
+    },
+    "OrganizationId": {
+      "Type": "String",
+      "AllowedPattern": "^o-[a-z0-9]{10,32}$",
+      "ConstraintDescription": "must be an organization ID like o-abcdefghij",
+      "Description": "The AWS Organization ID (o-...) the source and restore accounts belong to"
     },
     "BootstrapVersion": {
       "Type": "AWS::SSM::Parameter::Value<String>",

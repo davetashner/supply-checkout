@@ -11,18 +11,29 @@ export const LOCAL_RETENTION = Duration.days(35);
 export const COPY_RETENTION = Duration.days(90);
 
 /**
- * Vault lock limits, the same in both vaults. A recovery point can't be
- * deleted before MIN_LOCK_RETENTION, and no rule may keep one longer than
- * MAX_LOCK_RETENTION (so a mistaken rule can't pin storage for years under a
- * compliance-mode lock).
+ * The workload account vault's governance-mode lock: a recovery point can't be
+ * deleted before the minimum, and no rule may keep one longer than the
+ * maximum. Governance mode can be changed later by an administrator.
  */
-export const MIN_LOCK_RETENTION = Duration.days(7);
-export const MAX_LOCK_RETENTION = Duration.days(365);
+export const WORKLOAD_LOCK = { minRetention: Duration.days(7), maxRetention: Duration.days(365) } as const;
+
+/**
+ * The backup account vault's compliance-mode lock.
+ *
+ * FIXED FOREVER: once COMPLIANCE_GRACE_DAYS (72 hours) pass after the vault
+ * stack's first deploy, AWS refuses any change to these on that vault, even
+ * from the root user, and a stack update that changes them will fail. Get them
+ * right before the first deploy. The maximum keeps a mistaken rule from
+ * pinning storage for years; the minimum means every copy survives at least
+ * a month whatever happens to either account.
+ */
+export const COPY_LOCK = { minRetention: Duration.days(30), maxRetention: Duration.days(365) } as const;
 
 /**
  * The backup account's vault lock becomes compliance mode, immutable even to
  * that account's root user, this many days after it's created. Until then it
- * can be changed or removed, to fix a mistake in the first deploy.
+ * can be changed or removed, to fix a mistake in the first deploy. AWS
+ * requires at least 3.
  */
 export const COMPLIANCE_GRACE_DAYS = 3;
 
@@ -51,6 +62,8 @@ export function backupParameters(envName: string) {
   return {
     /** Input, set by the owner: the backup account vault's ARN (the vault stack's CopyVaultArn output). */
     copyVaultArn: `${prefix}/copy-vault-arn`,
+    /** Input, set by the owner: the AWS Organization ID (o-...), so copies only go to a vault in the organization. */
+    organizationId: `${prefix}/organization-id`,
     /** Outputs. */
     vaultArn: `${prefix}/vault-arn`,
     restoreRoleArn: `${prefix}/restore-role-arn`,

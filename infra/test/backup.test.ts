@@ -4,14 +4,15 @@ import { AwsSolutionsChecks } from "cdk-nag";
 import { describe, expect, it } from "vitest";
 import {
   COMPLIANCE_GRACE_DAYS,
+  COPY_LOCK,
   COPY_RETENTION,
   LOCAL_RETENTION,
-  MAX_LOCK_RETENTION,
-  MIN_LOCK_RETENTION,
+  WORKLOAD_LOCK,
   backupCopyFromContext,
   backupParameters,
 } from "../lib/backup.js";
 import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
+import { ACCOUNT_ID_PATTERN, OPTIONAL_ACCOUNT_ID_PATTERN, ORGANIZATION_ID_PATTERN } from "../lib/stacks/backup-account-stack.js";
 import { addBackupAccount, addSupplyCheckout } from "../lib/supply-checkout.js";
 
 // Region names live only in lib/config.ts (ADR 0010); tests use its constants.
@@ -63,11 +64,18 @@ describe("backupCopyFromContext", () => {
 });
 
 describe("retention settings", () => {
-  it("keep every rule inside both vault locks", () => {
-    for (const d of [LOCAL_RETENTION, COPY_RETENTION]) {
-      expect(d.toDays()).toBeGreaterThanOrEqual(MIN_LOCK_RETENTION.toDays());
-      expect(d.toDays()).toBeLessThanOrEqual(MAX_LOCK_RETENTION.toDays());
+  it("keep each rule inside its vault's lock", () => {
+    for (const [d, lock] of [
+      [LOCAL_RETENTION, WORKLOAD_LOCK],
+      [COPY_RETENTION, COPY_LOCK],
+    ] as const) {
+      expect(d.toDays()).toBeGreaterThanOrEqual(lock.minRetention.toDays());
+      expect(d.toDays()).toBeLessThanOrEqual(lock.maxRetention.toDays());
     }
+    // Fixed forever on the compliance vault once its grace period ends
+    expect(COPY_LOCK.minRetention.toDays()).toBe(30);
+    expect(COPY_LOCK.maxRetention.toDays()).toBe(365);
+    expect(WORKLOAD_LOCK.minRetention.toDays()).toBe(7);
     // The local copy covers at least PITR's 35 days; the separate account keeps more
     expect(LOCAL_RETENTION.toDays()).toBe(35);
     expect(COPY_RETENTION.toDays()).toBeGreaterThan(LOCAL_RETENTION.toDays());
@@ -150,9 +158,18 @@ describe("backup stack (workload account)", () => {
       "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":iam::", { "Fn::Select": [4, { "Fn::Split": [":", { Ref: copyVault }] }] }, ":root"]],
     };
     const key = statements(template, "AWS::KMS::Key", (p) => p.KeyPolicy as { Statement: Statement[] });
-    expect(key.find((s) => s.Sid === "BackupAccountCopiesRecoveryPoints")?.Principal).toEqual({ AWS: backupAccountRoot });
+    const viaBackup = { "kms:ViaService": { "Fn::Join": ["", ["backup.", { Ref: "AWS::Region" }, ".amazonaws.com"]] } };
+    expect(key.find((s) => s.Sid === "BackupAccountCopiesRecoveryPoints")).toMatchObject({
+      Principal: { AWS: backupAccountRoot },
+      // Read-only use: no Encrypt or ReEncrypt
+      Action: ["kms:Decrypt", "kms:DescribeKey", "kms:GenerateDataKey"],
+      Condition: { StringEquals: viaBackup },
+    });
     const grant = key.find((s) => s.Sid === "BackupAccountGrantsToAwsBackup");
-    expect(grant).toMatchObject({ Action: "kms:CreateGrant", Condition: { Bool: { "kms:GrantIsForAWSResource": "true" } } });
+    expect(grant).toMatchObject({
+      Action: "kms:CreateGrant",
+      Condition: { StringEquals: viaBackup, Bool: { "kms:GrantIsForAWSResource": "true" } },
+    });
     const vault = statements(template, "AWS::Backup::BackupVault", (p) => p.AccessPolicy as { Statement: Statement[] });
     expect(vault.find((s) => s.Sid === "BackupAccountCopiesBackForRestores")).toMatchObject({
       Effect: "Allow",
@@ -167,11 +184,13 @@ describe("backup stack (workload account)", () => {
     expect(plan?.Properties.BackupPlan.BackupPlanRule[0].CopyActions).toBeUndefined();
     const params = Object.values(template.toJSON().Parameters as Record<string, { Default?: string }>);
     expect(params.map((p) => p.Default)).not.toContain(backupParameters("prod").copyVaultArn);
+    expect(params.map((p) => p.Default)).not.toContain(backupParameters("prod").organizationId);
     const key = statements(template, "AWS::KMS::Key", (p) => p.KeyPolicy as { Statement: Statement[] });
     expect(key.map((s) => s.Sid).filter(Boolean)).toEqual([]);
     const vault = statements(template, "AWS::Backup::BackupVault", (p) => p.AccessPolicy as { Statement: Statement[] });
     expect(vault.map((s) => s.Effect)).toEqual(["Deny"]);
     expect(policyStatements(template, "BackupRole").flatMap(actions)).not.toContain("backup:CopyIntoBackupVault");
+    expect(policyStatements(template, "BackupRole").flatMap(actions)).not.toContain("backup:CopyFromBackupVault");
   });
 
   it("gives the backup role only the table, its backups, the two keys and the copy vault, with no managed policy", () => {
@@ -187,7 +206,7 @@ describe("backup stack (workload account)", () => {
     const policy = policyStatements(template, "BackupRole");
     const bySid = Object.fromEntries(policy.map((s) => [s.Sid, s]));
     expect(Object.keys(bySid).sort()).toEqual(
-      ["BackUpTheTable", "CopyToTheBackupAccount", "GrantKeysToAwsBackup", "ManageTheTablesBackups", "ReadTheTablesKey", "UseTheVaultKey"].sort(),
+      ["BackUpTheTable", "CopyFromThisVault", "CopyToTheBackupAccount", "GrantKeysToAwsBackup", "ManageTheTablesBackups", "ReadTheTablesKey", "UseTheVaultKey"].sort(),
     );
     expect(actions(bySid.BackUpTheTable as Statement)).toEqual([
       "dynamodb:CreateBackup",
@@ -198,6 +217,11 @@ describe("backup stack (workload account)", () => {
     expect(JSON.stringify(bySid.BackUpTheTable?.Resource)).toContain(`:table/${TABLE}"`);
     expect(JSON.stringify(bySid.ManageTheTablesBackups?.Resource)).toContain(`:table/${TABLE}/backup/*`);
     expect(bySid.CopyToTheBackupAccount?.Resource).toEqual({ Ref: ssmParameter(template, backupParameters("prod").copyVaultArn) });
+    expect(bySid.CopyToTheBackupAccount?.Condition).toEqual({
+      StringEquals: { "aws:ResourceOrgID": { Ref: ssmParameter(template, backupParameters("prod").organizationId) } },
+    });
+    expect(actions(bySid.CopyFromThisVault as Statement)).toEqual(["backup:CopyFromBackupVault"]);
+    expect(JSON.stringify(bySid.CopyFromThisVault?.Resource)).toContain(':recovery-point:*"');
     expect(bySid.GrantKeysToAwsBackup?.Condition).toEqual({ Bool: { "kms:GrantIsForAWSResource": "true" } });
     for (const s of policy) {
       expect(s.Effect).toBe("Allow");
@@ -299,8 +323,22 @@ describe("backup account vault stack", () => {
     const params = template.toJSON().Parameters as Record<string, { Type: string; Default?: string }>;
     expect(params.SourceAccountIds).toMatchObject({ Type: "CommaDelimitedList" });
     expect(params.SourceAccountIds?.Default).toBeUndefined();
-    expect(params.RestoreAccountIds).toMatchObject({ Type: "CommaDelimitedList", Default: "" });
+    expect(params.RestoreAccountIds).toMatchObject({ Type: "CommaDelimitedList", Default: "", AllowedPattern: OPTIONAL_ACCOUNT_ID_PATTERN });
+    expect(params.SourceAccountIds).toMatchObject({ AllowedPattern: ACCOUNT_ID_PATTERN });
+    expect(params.OrganizationId).toMatchObject({ Type: "String", AllowedPattern: ORGANIZATION_ID_PATTERN });
+    expect(params.OrganizationId?.Default).toBeUndefined();
     expect(JSON.stringify(template.toJSON())).not.toMatch(/\d{12}/);
+  });
+
+  it("validates each account ID and the organization ID", () => {
+    const ok = (pattern: string, value: string) => new RegExp(pattern).test(value);
+    expect(ok(ACCOUNT_ID_PATTERN, "0".repeat(12))).toBe(true);
+    for (const bad of ["", "0".repeat(11), "0".repeat(13), "abcdefghijkl"]) expect(ok(ACCOUNT_ID_PATTERN, bad)).toBe(false);
+    expect(ok(OPTIONAL_ACCOUNT_ID_PATTERN, "")).toBe(true);
+    expect(ok(OPTIONAL_ACCOUNT_ID_PATTERN, "0".repeat(12))).toBe(true);
+    expect(ok(OPTIONAL_ACCOUNT_ID_PATTERN, "0".repeat(11))).toBe(false);
+    expect(ok(ORGANIZATION_ID_PATTERN, "o-abcdefghij")).toBe(true);
+    expect(ok(ORGANIZATION_ID_PATTERN, "r-abcdefghij")).toBe(false);
   });
 
   it("has a vault with its own rotating key and a compliance-mode lock", () => {
@@ -311,11 +349,7 @@ describe("backup account vault stack", () => {
       Properties: {
         BackupVaultName: "supply-checkout-prod-backup-copies",
         EncryptionKeyArn: { "Fn::GetAtt": [Match.stringLikeRegexp("^VaultKey"), "Arn"] },
-        LockConfiguration: {
-          MinRetentionDays: MIN_LOCK_RETENTION.toDays(),
-          MaxRetentionDays: MAX_LOCK_RETENTION.toDays(),
-          ChangeableForDays: COMPLIANCE_GRACE_DAYS,
-        },
+        LockConfiguration: { MinRetentionDays: 30, MaxRetentionDays: 365, ChangeableForDays: COMPLIANCE_GRACE_DAYS },
       },
     });
   });
@@ -330,7 +364,7 @@ describe("backup account vault stack", () => {
     expect(vault.find((s) => s.Sid === "SourceAccountsCopyIn")).toMatchObject({
       Effect: "Allow",
       Action: "backup:CopyIntoBackupVault",
-      Condition: { StringEquals: { "aws:PrincipalAccount": { Ref: "SourceAccountIds" } } },
+      Condition: { StringEquals: { "aws:PrincipalAccount": { Ref: "SourceAccountIds" }, "aws:PrincipalOrgID": { Ref: "OrganizationId" } } },
     });
   });
 
@@ -340,8 +374,11 @@ describe("backup account vault stack", () => {
     const shared = key.filter((s) => s.Sid);
     expect(shared.map((s) => s.Sid).sort()).toEqual(["RestoreAccountsCopyRecoveryPoints", "RestoreAccountsGrantToAwsBackup"]);
     for (const s of shared) {
-      expect(s.Condition).toMatchObject({ StringEquals: { "aws:PrincipalAccount": { Ref: "RestoreAccountIds" } } });
+      expect(s.Condition).toMatchObject({
+        StringEquals: { "aws:PrincipalAccount": { Ref: "RestoreAccountIds" }, "aws:PrincipalOrgID": { Ref: "OrganizationId" } },
+      });
       expect(actions(s)).not.toContain("kms:*");
+      expect(actions(s)).not.toContain("kms:Encrypt");
     }
   });
 
@@ -349,7 +386,10 @@ describe("backup account vault stack", () => {
     const { template } = backupAccount();
     const policy = policyStatements(template, "CopyOutRole");
     const copy = policy.find((s) => s.Sid === "CopyIntoRestoreAccountVaults");
-    expect(copy?.Condition).toEqual({ StringEquals: { "aws:ResourceAccount": { Ref: "RestoreAccountIds" } } });
+    expect(copy?.Condition).toEqual({
+      StringEquals: { "aws:ResourceAccount": { Ref: "RestoreAccountIds" }, "aws:ResourceOrgID": { Ref: "OrganizationId" } },
+    });
+    expect(policy.find((s) => s.Sid === "CopyFromThisVault")?.Action).toBe("backup:CopyFromBackupVault");
     expect(JSON.stringify(copy?.Resource)).toContain(":*:backup-vault:supply-checkout-*");
     template.hasOutput("CopyVaultArn", { Value: { "Fn::GetAtt": [Match.stringLikeRegexp("^Vault"), "BackupVaultArn"] } });
   });

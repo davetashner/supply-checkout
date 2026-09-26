@@ -12,8 +12,7 @@ import { tableName } from "../../../backend/src/data/schema.js";
 import {
   LOCAL_RETENTION,
   COPY_RETENTION,
-  MAX_LOCK_RETENTION,
-  MIN_LOCK_RETENTION,
+  WORKLOAD_LOCK,
   backupCopyFromContext,
   backupParameters,
   backupVaultName,
@@ -22,15 +21,19 @@ import {
 import type { DeploymentConfig } from "../config.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
-/** KMS actions another account needs to copy a recovery point encrypted with a key it doesn't own. */
-const KEY_USE = ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey*", "kms:ReEncrypt*"];
+/**
+ * KMS actions another account needs to copy a recovery point encrypted with a
+ * key it doesn't own: the minimum AWS Backup documents for a vault key
+ * (docs/backups.md). No kms:Encrypt or ReEncrypt: a copy only reads here.
+ */
+export const COPY_KEY_USE = ["kms:Decrypt", "kms:DescribeKey", "kms:GenerateDataKey"];
 
 /**
  * AWS Backup for the app table, in the primary region of the workload account
  * (supply-checkout-8x1, docs/backups.md).
  *
  * - A vault with its own customer-managed key and a governance-mode vault
- *   lock: recovery points can't be deleted before MIN_LOCK_RETENTION, and the
+ *   lock: recovery points can't be deleted before WORKLOAD_LOCK's minimum, and the
  *   access policy denies deleting them at all (they expire on schedule).
  * - A daily plan for the table, kept LOCAL_RETENTION here and copied to the
  *   backup account's vault (compliance-mode lock, COPY_RETENTION). The copy
@@ -69,6 +72,9 @@ export class BackupStack extends SupplyCheckoutStack {
     const tableBackups = `${tableArn}/backup/*`;
     const tableKeyArn = ssm(`/supply-checkout/${config.envName}/data/table-key-arn`);
     const copyVaultArn = this.copiesToBackupAccount ? ssm(params.copyVaultArn) : undefined;
+    const organizationId = this.copiesToBackupAccount ? ssm(params.organizationId) : undefined;
+    // The backup account only reaches this key through AWS Backup in this region
+    const viaBackup = { StringEquals: { "kms:ViaService": `backup.${Aws.REGION}.amazonaws.com` } };
     // arn:<partition>:backup:<region>:<account>:backup-vault:<name>
     const backupAccount = copyVaultArn ? new AccountPrincipal(Fn.select(4, Fn.split(":", copyVaultArn))) : undefined;
 
@@ -84,8 +90,9 @@ export class BackupStack extends SupplyCheckoutStack {
         new PolicyStatement({
           sid: "BackupAccountCopiesRecoveryPoints",
           principals: [backupAccount],
-          actions: KEY_USE,
+          actions: COPY_KEY_USE,
           resources: ["*"],
+          conditions: viaBackup,
         }),
       );
       this.vaultKey.addToResourcePolicy(
@@ -94,7 +101,7 @@ export class BackupStack extends SupplyCheckoutStack {
           principals: [backupAccount],
           actions: ["kms:CreateGrant"],
           resources: ["*"],
-          conditions: { Bool: { "kms:GrantIsForAWSResource": "true" } },
+          conditions: { ...viaBackup, Bool: { "kms:GrantIsForAWSResource": "true" } },
         }),
       );
     }
@@ -105,7 +112,7 @@ export class BackupStack extends SupplyCheckoutStack {
       // Governance mode (no ChangeableForDays): an administrator here can still
       // fix a mistake. The copy in the backup account is the one nobody can
       // delete (compliance mode there).
-      lockConfiguration: { minRetention: MIN_LOCK_RETENTION, maxRetention: MAX_LOCK_RETENTION },
+      lockConfiguration: WORKLOAD_LOCK,
       // Denies backup:DeleteRecoveryPoint and UpdateRecoveryPointLifecycle to everyone
       blockRecoveryPointDeletion: true,
       accessPolicy: new PolicyDocument(),
@@ -166,14 +173,30 @@ export class BackupStack extends SupplyCheckoutStack {
         conditions: { Bool: { "kms:GrantIsForAWSResource": "true" } },
       }),
     );
-    if (copyVaultArn) {
+    if (copyVaultArn && organizationId) {
+      // A cross-account copy needs CopyFromBackupVault on the source recovery
+      // point and CopyIntoBackupVault on the destination (AWS Backup docs,
+      // "Creating backup copies across AWS accounts")
+      this.backupRole.addToPrincipalPolicy(
+        new PolicyStatement({
+          sid: "CopyFromThisVault",
+          actions: ["backup:CopyFromBackupVault"],
+          resources: [`arn:${Aws.PARTITION}:backup:${Aws.REGION}:${Aws.ACCOUNT_ID}:recovery-point:*`],
+        }),
+      );
       this.backupRole.addToPrincipalPolicy(
         new PolicyStatement({
           sid: "CopyToTheBackupAccount",
           actions: ["backup:CopyIntoBackupVault", "backup:DescribeBackupVault"],
           resources: [copyVaultArn],
+          // Even a wrong copy-vault-arn can't send copies outside the organization
+          conditions: { StringEquals: { "aws:ResourceOrgID": organizationId } },
         }),
       );
+      Validations.of(this.backupRole.node.findChild("DefaultPolicy")).acknowledge({
+        id: "AwsSolutions-IAM5[Resource::arn:<AWS::Partition>:backup:<AWS::Region>:<AWS::AccountId>:recovery-point:*]",
+        reason: "Recovery point ARNs are generated per backup; the role can only copy from recovery points in this account and region.",
+      });
     }
     Validations.of(this.backupRole.node.findChild("DefaultPolicy")).acknowledge({
       id: `AwsSolutions-IAM5[Resource::arn:<AWS::Partition>:dynamodb:<AWS::Region>:<AWS::AccountId>:table/${tableName(config.envName)}/backup/*]`,
