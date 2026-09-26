@@ -14,7 +14,7 @@
 #
 #   4. removes the local worktree and branch, and pulls main
 #   5. closes every bead named in a "Closes <bead-id>" line of the PR body
-#   6. says whether .beads/issues.jsonl needs refreshing
+#   6. if .beads/issues.jsonl is stale, suggests npm run beads:pr in one line
 #
 # Exits non-zero whenever the PR ends up not merged, and says why. A PR that
 # someone else already merged still gets steps 4 to 6.
@@ -310,6 +310,7 @@ if [ -n "$ids" ]; then
   done
 fi
 
+# One line, not a warning: refresh the export once after a batch of merges
 if ! node scripts/export-beads.mjs --check >/dev/null; then
-  say "The committed beads export is out of date. Refresh it in your next PR with: npm run beads:export"
+  echo "The beads export is stale; after this batch of merges, refresh it with: npm run beads:pr"
 fi

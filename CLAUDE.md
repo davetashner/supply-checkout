@@ -24,7 +24,7 @@ Beads are labeled `mvp` or `phase-2` (native mobile apps, full active-active fai
 ## Beads
 
 - The database is a local Dolt database in the **main checkout's** `.beads/` (gitignored). `bd` finds it from any worktree. `.beads/issues.jsonl` is only an export, not a sync mechanism.
-- After changing beads, refresh the export in the same PR (or a `chore:` PR) with `npm run beads:export`. Don't use `bd export` directly: it includes each bead's `owner` email.
+- Refresh the committed export after a batch of merges with `npm run beads:pr`, from the main checkout. It runs `npm run beads:export` in a fresh worktree off origin/main and, if `.beads/issues.jsonl` changed, commits it, opens a `chore: refresh the beads export` PR and lands it with `npm run land`. Otherwise it says there's nothing to do. `npm run beads:export` alone writes the export in the current worktree. Don't use `bd export` directly: it includes each bead's `owner` email.
 - Batch-create with `bd create --graph plan.json` (nodes with `key`, `parent_key`, integer `priority`, `labels`, `acceptance_criteria`, and `deps: [{target, type: "blocks"}]`).
 - `bd close` refuses beads with open blockers. Use `--force` only for beads that are superseded, not finished.
 
@@ -36,7 +36,7 @@ Beads are labeled `mvp` or `phase-2` (native mobile apps, full active-active fai
 - Work in a worktree: `git worktree add .claude/worktrees/<type>/<name> -b <type>/<name> origin/main`.
 - PR titles are Conventional Commits; release-please turns `fix:` / `feat:` into releases. Keep app fixes in their own `fix:` PR, separate from `test:` or `docs:` work.
 - Sign off commits (`git commit -s`). Put a `Closes <bead-id>` line in the PR body for each finished bead.
-- Land a PR with `npm run land -- <pr>` from the main checkout. It updates a branch that's behind, waits for CI (printing the failing log if it fails), squash-merges (or, when main has a merge queue, waits for the PR's CI, adds it to the queue and waits for the queue to merge it, printing the merge group's failing log if the queue drops it), removes the worktree and branch, pulls main, closes the `Closes` beads, and says whether the beads export is stale. It exits non-zero whenever the PR isn't merged: when main's ruleset blocks a green PR it names the rule and prints the `gh pr review <pr> --approve` command (release-please PRs always need a human approval), it waits up to 3 minutes for an UNKNOWN merge state to settle, and it still cleans up a PR someone else already merged. Its tests are `npm run test:scripts`.
+- Land a PR with `npm run land -- <pr>` from the main checkout. It updates a branch that's behind, waits for CI (printing the failing log if it fails), squash-merges (or, when main has a merge queue, waits for the PR's CI, adds it to the queue and waits for the queue to merge it, printing the merge group's failing log if the queue drops it), removes the worktree and branch, pulls main, closes the `Closes` beads, and, if the beads export is stale, says so in one line. It exits non-zero whenever the PR isn't merged: when main's ruleset blocks a green PR it names the rule and prints the `gh pr review <pr> --approve` command (release-please PRs always need a human approval), it waits up to 3 minutes for an UNKNOWN merge state to settle, and it still cleans up a PR someone else already merged. Its tests are `npm run test:scripts`.
 
 ## Working with agents
 
