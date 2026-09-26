@@ -19,7 +19,7 @@
 // artifact runtime); with one, it fails with ConflictError.
 
 import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { type Db, connection } from "./client.js";
+import { type Db, connection, storable } from "./client.js";
 import { ConflictError, InvalidInputError, NotFoundError, TooLargeError } from "./errors.js";
 import { barcode, id as checkId, keys, prefixes, productKey, teamPartition } from "./keys.js";
 import { type Page, queryPage } from "./query.js";
@@ -149,7 +149,8 @@ function checkDocument(collection: Collection, data: unknown): DocumentData {
 /** The app's update: nested maps merge key by key; anything else replaces. */
 function deepMerge(target: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
   for (const [k, v] of Object.entries(patch)) {
-    const current = target[k];
+    // Own fields only: a key like "constructor" mustn't find the object's prototype
+    const current = Object.hasOwn(target, k) ? target[k] : undefined;
     target[k] = isMap(v) && isMap(current) ? deepMerge(current, v) : structuredClone(v);
   }
   return target;
@@ -233,7 +234,7 @@ async function write(
       await connection(db).doc.send(
         new PutCommand({
           TableName: db.tableName,
-          Item: toItem(collection, ctx.teamId, id, data, version),
+          Item: storable(toItem(collection, ctx.teamId, id, data, version)),
           ConditionExpression: condition,
           ...(Object.keys(names).length ? { ExpressionAttributeNames: names } : {}),
           ...(Object.keys(values).length ? { ExpressionAttributeValues: values } : {}),
