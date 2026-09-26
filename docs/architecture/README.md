@@ -104,6 +104,8 @@ Not drawn: KMS keys, Secrets Manager (Stripe keys), SES, CloudWatch alarms and d
 
 **Names.** Prod serves `supplycheckout.com` from the Route 53 zone the domain is delegated to; staging and dev serve `<env>.supplycheckout.com` from zones in their own accounts, delegated from prod's. The apex and `www.` serve the demo until the real app launches, `app.` the web app, `auth.` Cognito, `realtime.` AppSync Events and `api.` the HTTP API. The certificates for CloudFront, Cognito and AppSync are in us-east-1 (AWS requires it); `api.` has one in each region. SES signs with DKIM and uses `mail.` as its MAIL FROM domain, so both SPF and DKIM align for DMARC. See the README's "Domain and email" section.
 
+**Web releases.** One CloudFront distribution serves the apex (the demo), `www.` (a redirect to the apex) and `app.` from one S3 bucket in us-east-1, behind AWS WAF (a per-IP rate limit and AWS managed rules). Each build is uploaded once to `releases/<version>/`. A CloudFront Function reads the live version of the host's channel (`demo` or `app`) from a CloudFront KeyValueStore and rewrites the path into that release, so a release or rollback is one key write that takes effect within seconds. See the README's "Web hosting and releases" section.
+
 ## 3. Reading a receipt
 
 The flow from [ADR 0008](../adr/0008-receipt-reading-bedrock.md). Nothing is saved until the user confirms, just like today.

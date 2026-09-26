@@ -30,7 +30,9 @@
     "hooks:install": "git config core.hooksPath scripts/git-hooks",
     "dev": "node scripts/dev-server.mjs",
     "land": "bash scripts/land-pr.sh",
-    "test:scripts": "shellcheck scripts/*.sh && bash scripts/land-pr.test.sh"
+    "test:scripts": "shellcheck scripts/*.sh && bash scripts/land-pr.test.sh && node --test scripts/publish-web.test.mjs",
+    "publish:web": "node scripts/publish-web.mjs",
+    "publish:demo": "npm run build:demo && node scripts/publish-web.mjs publish --channel demo --dir dist/demo"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",

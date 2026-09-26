@@ -52,18 +52,18 @@ describe("stack layout", () => {
     expect(stacks.web.region).toBe(EAST);
   });
 
-  it("takes the environment and regions as parameters, keeping a domain stack in the global services region", () => {
+  it("takes the environment and regions as parameters, keeping domain and web stacks in the global services region", () => {
     const { stacks } = build({ envName: "staging", regions: [WEST], primaryRegion: WEST });
     expect(names(stacks.all)).toEqual([
       // CloudFront, Cognito and AppSync certificates must be in GLOBAL_SERVICES_REGION
       `supply-checkout-staging-${GLOBAL_SERVICES_REGION}-domain`,
+      `supply-checkout-staging-${GLOBAL_SERVICES_REGION}-web`,
       `supply-checkout-staging-${WEST}-api`,
       `supply-checkout-staging-${WEST}-data`,
       `supply-checkout-staging-${WEST}-domain`,
       `supply-checkout-staging-${WEST}-identity`,
       `supply-checkout-staging-${WEST}-observability`,
       `supply-checkout-staging-${WEST}-realtime`,
-      `supply-checkout-staging-${WEST}-web`,
     ]);
     expect(inRegion(stacks, WEST).data.isPrimaryRegion).toBe(true);
   });
@@ -239,11 +239,13 @@ describe("cdk-nag", () => {
   // where it runs (ADR 0010).
   it.each(APPROVED_REGIONS)("synths every stack in %s, cdk-nag clean", (region) => {
     const { app, stacks } = build({ regions: [region], primaryRegion: region });
-    const global = stacks.domain[GLOBAL_SERVICES_REGION];
-    // The global services region always has a domain stack, for certificates
-    // AWS only accepts there; every other stack runs in the one region.
-    const regional = stacks.all.filter((s) => region === GLOBAL_SERVICES_REGION || s !== global);
-    expect(regional).toHaveLength(7);
+    // The global services region always has the web stack (CloudFront's web
+    // ACL) and a domain stack (certificates AWS only accepts there); every
+    // other stack runs in the one region.
+    const global: Stack[] = [stacks.domain[GLOBAL_SERVICES_REGION] as Stack, stacks.web];
+    const regional = stacks.all.filter((s) => region === GLOBAL_SERVICES_REGION || !global.includes(s));
+    expect(regional).toHaveLength(region === GLOBAL_SERVICES_REGION ? 7 : 6);
+    for (const stack of global) expect(stack?.region).toBe(GLOBAL_SERVICES_REGION);
     for (const stack of regional) expect(stack.region, stack.stackName).toBe(region);
     const report = new AwsSolutionsChecks(app).validateScope(app);
     expect(report.violations).toEqual([]);
