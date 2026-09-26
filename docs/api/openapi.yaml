@@ -22,6 +22,10 @@ info:
     | `db.doc("<coll>/<id>").delete()` | `DELETE /teams/{teamId}/<coll>/<id>` |
     | `db.collection("sheets").doc()` | no request: the adapter makes the ID (e.g. `crypto.randomUUID()`), then `set` PUTs it |
 
+    - **Checkout and return** don't use `PATCH` plus a stock update: they're
+      the commands under the `commands` tag, each one transaction that's
+      idempotent by operation ID. [commands.md](commands.md) is the client
+      contract. The edit screens keep using the document routes.
     - Percent-encode the document ID as one path segment
       (`encodeURIComponent`). Product keys are what the app's `keyOf` or
       `newKey` makes; any key without `/` or control characters works.
@@ -90,6 +94,11 @@ tags:
     description: The team's inventory, the app's `products` collection.
   - name: sheets
     description: Checkout sheets per client job, the app's `sheets` collection.
+  - name: commands
+    description: |
+      Checkout, return and stock adjustments as single transactions, each
+      idempotent by a client-generated operation ID, and an item's stock
+      history. The client contract is in [commands.md](commands.md).
   - name: account
     description: The signed-in user's teams and pending invites, creating a team, and accepting an invite (first sign-in).
   - name: auth
@@ -163,6 +172,61 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
+  /teams/{teamId}/products/{key}/stock:
+    parameters:
+      - $ref: "#/components/parameters/teamId"
+      - $ref: "#/components/parameters/productKey"
+    post:
+      tags: [commands]
+      operationId: adjustStock
+      summary: Change an item's stock outside a sheet, in one transaction, with a movement in its history.
+      description: |
+        - `reason: "receipt"`: `quantity` eaches bought at `unitCost` each
+          (after any pack conversion, ADR 0014) are added to stock. An item
+          that didn't track stock starts at `quantity`. The item's `price`
+          and `cost` don't change; update the document for that.
+        - `reason: "count"`: someone counted `count` in storage. Stock is set
+          to it, and the movement records the difference.
+
+        Contributors and owners only. Idempotent by `operationId`.
+      requestBody: { $ref: "#/components/requestBodies/StockAdjust" }
+      responses:
+        "200": { $ref: "#/components/responses/CommandDone" }
+        "400": { $ref: "#/components/responses/CommandRefused" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/CommandConflict" }
+  /teams/{teamId}/products/{key}/movements:
+    parameters:
+      - $ref: "#/components/parameters/teamId"
+      - $ref: "#/components/parameters/productKey"
+    get:
+      tags: [commands]
+      operationId: listMovements
+      summary: An item's stock history, newest first. Any member can read it.
+      parameters:
+        - name: limit
+          in: query
+          description: At most this many movements. Default 50.
+          schema: { type: integer, minimum: 1, maximum: 100 }
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: A page of movements.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [movements]
+                properties:
+                  movements:
+                    type: array
+                    items: { $ref: "#/components/schemas/Movement" }
+                  cursor: { type: string, description: Absent on the last page. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /teams/{teamId}/sheets:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
     get:
@@ -238,6 +302,55 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
+  /teams/{teamId}/sheets/{sheetId}/checkout:
+    parameters:
+      - $ref: "#/components/parameters/teamId"
+      - $ref: "#/components/parameters/sheetId"
+    post:
+      tags: [commands]
+      operationId: checkoutItems
+      summary: Check out whole eaches of an item onto a sheet, and take them off stock, in one transaction.
+      description: |
+        Adds `quantity` to the line's `out`, creating the line if it isn't on
+        the sheet yet, and takes `quantity` off the product's `stock` if the
+        product tracks stock. A new line copies `code`, `name`, `price` and
+        `cost` from the product as the transaction finds it (ADR 0014); the
+        request's `name`, `price`, `code` and `cost` are used only for an item
+        that isn't in inventory, and then `name` and `price` are required. An
+        existing line's copy never changes. The sheet must be open (any
+        `status` but `closed`). Contributors and owners only. Idempotent by
+        `operationId`: see [commands.md](commands.md).
+      requestBody: { $ref: "#/components/requestBodies/Checkout" }
+      responses:
+        "200": { $ref: "#/components/responses/CommandDone" }
+        "400": { $ref: "#/components/responses/CommandRefused" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/CommandConflict" }
+  /teams/{teamId}/sheets/{sheetId}/return:
+    parameters:
+      - $ref: "#/components/parameters/teamId"
+      - $ref: "#/components/parameters/sheetId"
+    post:
+      tags: [commands]
+      operationId: returnItems
+      summary: Record whole eaches of a line coming back, and put them back in stock, in one transaction.
+      description: |
+        Adds `quantity` to the line's `returned`, which can never go above
+        `out`, and adds `quantity` to the product's `stock` if the product
+        tracks stock. Prices aren't touched. The sheet must be open: a closed
+        sheet takes no returns (reopen it first, or correct the line's counts
+        with a `PATCH`, which doesn't move stock). Contributors and owners
+        only. Idempotent by `operationId`.
+      requestBody: { $ref: "#/components/requestBodies/Return" }
+      responses:
+        "200": { $ref: "#/components/responses/CommandDone" }
+        "400": { $ref: "#/components/responses/CommandRefused" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/CommandConflict" }
   /me:
     get:
       tags: [account]
@@ -451,6 +564,17 @@ components:
       required: true
       description: The team. The caller must be a member; the body can't name a team.
       schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
+    productKey:
+      name: key
+      in: path
+      required: true
+      description: The product key, percent-encoded. Up to 256 characters, no `/` or control characters.
+      schema: { type: string, minLength: 1, maxLength: 256 }
+    sheetId:
+      name: sheetId
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
     limit:
       name: limit
       in: query
@@ -500,7 +624,125 @@ components:
             checkout:
               summary: Check out 3 of an item (PATCH a sheet)
               value: { data: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 3, returned: 0 } } } }
+    Checkout:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [operationId, productKey, quantity]
+            properties:
+              operationId: { $ref: "#/components/schemas/OperationId" }
+              productKey: { type: string, minLength: 1, maxLength: 256, description: "The line's key: the product key (or a new key for a one-off item)." }
+              quantity: { $ref: "#/components/schemas/Quantity" }
+              name: { type: string, minLength: 1, maxLength: 200, description: Only for an item that isn't in inventory. Trimmed. }
+              price: { allOf: [{ $ref: "#/components/schemas/Money" }], description: Only for an item that isn't in inventory. The client price per each. }
+              code: { type: string, maxLength: 256, description: Only for an item that isn't in inventory. Its barcode, or empty. }
+              cost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: Only for an item that isn't in inventory. What the business paid per each. }
+          examples:
+            inventoryItem:
+              summary: Check out 3 of an item in inventory
+              value: { operationId: "3b241101-e2bb-4255-8caf-4136c566a962", productKey: "0123", quantity: 3 }
+            oneOff:
+              summary: Check out an item that isn't in inventory
+              value: { operationId: "a8098c1a-f86e-41b1-8e42-6b87b5ab13a6", productKey: "k-7f3a", quantity: 1, name: "Leftover storage bins", price: 4 }
+    Return:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [operationId, productKey, quantity]
+            properties:
+              operationId: { $ref: "#/components/schemas/OperationId" }
+              productKey: { type: string, minLength: 1, maxLength: 256, description: The line's key. }
+              quantity: { $ref: "#/components/schemas/Quantity" }
+    StockAdjust:
+      required: true
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - type: object
+                additionalProperties: false
+                required: [operationId, reason, quantity, unitCost]
+                properties:
+                  operationId: { $ref: "#/components/schemas/OperationId" }
+                  reason: { const: receipt }
+                  quantity: { $ref: "#/components/schemas/Quantity" }
+                  unitCost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: What was paid per each, before tax. }
+              - type: object
+                additionalProperties: false
+                required: [operationId, reason, count]
+                properties:
+                  operationId: { $ref: "#/components/schemas/OperationId" }
+                  reason: { const: count }
+                  count: { type: integer, minimum: 0, maximum: 1000000, description: The number counted in storage. }
   schemas:
+    OperationId:
+      type: string
+      format: uuid
+      description: |
+        A UUID the client makes for one intended action (`crypto.randomUUID()`)
+        and sends again, unchanged, on every retry of it. The same ID returns
+        the first result for 7 days; the same ID with a different request is
+        `bad_request`.
+    Quantity:
+      type: integer
+      minimum: 1
+      maximum: 1000000
+      description: Whole eaches (ADR 0014).
+    Money:
+      type: number
+      minimum: 0
+      maximum: 1000000
+      multipleOf: 0.01
+      description: US dollars before tax, at most two decimals (ADR 0014). More decimals are refused, not rounded.
+    LineSnapshot:
+      type: object
+      required: [code, name, price]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        price: { type: number }
+        cost: { type: number, description: Absent when unknown. }
+    CommandResult:
+      type: object
+      description: What the command did. Kept with the operation ID, and returned unchanged on a retry.
+      required: [operationId, command, reason, productKey, stockDelta, userId, at]
+      properties:
+        operationId: { type: string, format: uuid }
+        command: { type: string, enum: [checkout, return, stockAdjust] }
+        reason: { type: string, enum: [checkout, return, receipt, count] }
+        productKey: { type: string }
+        sheetId: { type: string, description: Checkout and return. }
+        quantity: { type: integer, description: Eaches checked out, returned or received. Absent for a count. }
+        count: { type: integer, description: The level counted (count only). }
+        stockDelta: { type: integer, description: "The change to the product's `stock`: 0 when it doesn't track stock or isn't in inventory." }
+        lineCreated: { type: boolean, description: Checkout only. }
+        snapshot: { $ref: "#/components/schemas/LineSnapshot" }
+        unitCost: { type: number, description: Receipt only. }
+        userId: { type: string }
+        at: { type: string, format: date-time }
+    Movement:
+      type: object
+      description: One change to an item's stock. The sum of an item's `delta`s is its change in stock.
+      required: [type, productKey, reason, delta, tracked, operationId, userId, at]
+      properties:
+        type: { const: movement }
+        productKey: { type: string }
+        reason: { type: string, enum: [checkout, return, receipt, count] }
+        delta: { type: integer, description: The change to `stock`. 0 when the item didn't track stock. }
+        tracked: { type: boolean, description: Whether the item tracked stock. }
+        quantity: { type: integer }
+        count: { type: integer }
+        sheetId: { type: string }
+        unitCost: { type: number }
+        operationId: { type: string, format: uuid }
+        userId: { type: string }
+        at: { type: string, format: date-time }
     Document:
       type: object
       required: [id, version, data]
@@ -547,6 +789,7 @@ components:
         code: { type: string, maxLength: 256, description: 'The barcode, exported as "Barcode" in the sheet CSV; empty for an item without one.' }
         name: { type: string }
         price: { type: number, minimum: 0 }
+        cost: { type: number, minimum: 0, description: "What the business paid per each, copied from the product at the line's first checkout (ADR 0014). Absent when unknown." }
         out: { type: integer, minimum: 0, description: How many were taken. }
         returned: { type: integer, minimum: 0, description: How many came back. }
     Team:
@@ -599,6 +842,41 @@ components:
                 type: array
                 items: { $ref: "#/components/schemas/Document" }
               cursor: { type: string, description: Absent on the last page. }
+    CommandDone:
+      description: |
+        Done, now or by an earlier request with the same `operationId`
+        (`replayed: true`, and nothing changed this time). `result` is what
+        the first run did; `sheet` and `product` are the documents as they
+        are now, read after the command.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [operationId, replayed, result, product]
+            properties:
+              operationId: { type: string, format: uuid }
+              replayed: { type: boolean }
+              result: { $ref: "#/components/schemas/CommandResult" }
+              sheet:
+                description: Checkout and return only. `null` if the sheet has since been deleted.
+                oneOf: [{ $ref: "#/components/schemas/Document" }, { type: "null" }]
+              product:
+                description: "`null` for an item that isn't in inventory."
+                oneOf: [{ $ref: "#/components/schemas/Document" }, { type: "null" }]
+    CommandRefused:
+      description: |
+        `bad_request`, nothing changed: a malformed body, a quantity that isn't
+        a whole number from 1, money with more than two decimals, a return of
+        more than is left out, an item that isn't on the sheet, an item not in
+        inventory checked out without `name` and `price`, or an `operationId`
+        already used for a different request. Don't retry it unchanged.
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    CommandConflict:
+      description: |
+        `aborted`, nothing changed: the sheet is closed, or the line or item
+        kept changing under every retry. The message says which. A retry with
+        the same `operationId` is safe.
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     Tokens:
       description: Tokens for the app to keep in memory. The refresh token is only in the cookie.
       headers:
@@ -637,7 +915,7 @@ components:
         app reads this as view-only access.
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     NotFound:
-      description: "`not_found`: no such document."
+      description: "`not_found`: no such document (for a command: no such sheet, or for a stock adjustment no such item)."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     Conflict:
       description: "`aborted`: the document isn't at `expectedVersion`, or changed during every retry."

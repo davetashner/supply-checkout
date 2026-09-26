@@ -2,11 +2,19 @@ name: CI
 
 # "CI passed" is the one required status check on main. It succeeds only when
 # every job below succeeded or was skipped because it doesn't apply to the event.
+#
+# Pull requests run the browser tests in desktop Chrome and iPhone Safari only.
+# The merge queue, pushes to main, manual runs and the nightly run use every
+# browser, so the full matrix still gates main.
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
+  schedule:
+    - cron: "23 7 * * *"
   # The release workflow starts CI on release-please's pull request, because
   # pull requests opened by GITHUB_TOKEN don't trigger workflows on their own.
   workflow_dispatch:
@@ -130,61 +138,13 @@ jobs:
 
   test:
     name: Tests (${{ matrix.project }}, ${{ matrix.build }} build)
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      matrix:
-        # artifact: the single index.html published to claude.ai
-        # web: the hashed static bundle for CloudFront, plus the demo build for
-        # supplycheckout.com (tests/demo.spec.js runs with the web build)
-        build: [artifact, web]
-        project: [desktop-chrome, iphone-safari]
-        include:
-          # Coverage is measured in Chromium, the only browser that reports it
-          - project: desktop-chrome
-            browser: chromium
-            coverage: "1"
-          - project: iphone-safari
-            browser: webkit
-            coverage: ""
-          # The other supported desktop browsers, against the web build only: the
-          # artifact build runs on claude.ai, which Chrome and iPhone Safari cover
-          - project: desktop-firefox
-            build: web
-            browser: firefox
-            coverage: ""
-          - project: desktop-safari
-            build: web
-            browser: webkit
-            coverage: ""
-          # Branded Microsoft Edge (a system package), not Playwright's Chromium
-          - project: desktop-edge
-            build: web
-            browser: msedge
-            coverage: ""
-          # Phones and tablets, against the web build only. Samsung Internet shares
-          # Android Chrome's engine; see "Supported browsers" in README.md.
-          - project: android-chrome
-            build: web
-            browser: chromium
-            coverage: ""
-          - project: android-chrome-landscape
-            build: web
-            browser: chromium
-            coverage: ""
-          - project: galaxy-chrome
-            build: web
-            browser: chromium
-            coverage: ""
-          - project: ipad-safari
-            build: web
-            browser: webkit
-            coverage: ""
-          - project: ipad-safari-landscape
-            build: web
-            browser: webkit
-            coverage: ""
+      # Chosen by the changes job: see the "Choose the browser matrix" step
+      matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -227,25 +187,70 @@ jobs:
     outputs:
       infra: ${{ steps.diff.outputs.infra }}
       backend: ${{ steps.diff.outputs.backend }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # A pull request checks out a merge commit; its first parent is the base
           fetch-depth: 2
-      - id: diff
+      - name: Choose the browser matrix
+        id: matrix
         env:
           EVENT: ${{ github.event_name }}
         run: |
-          # Infra and backend checks run on every push, release and manual run,
-          # and on pull requests that touch their directory or this workflow.
-          # infra/ imports the table schema from backend/src/data, so a backend
-          # change runs the infra checks too.
-          if [[ "$EVENT" != "pull_request" ]]; then
-            echo "infra=true" >> "$GITHUB_OUTPUT"
-            echo "backend=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          changed=$(git diff --name-only HEAD^1 HEAD)
+          # artifact: the single index.html published to claude.ai
+          # web: the hashed static bundle for CloudFront, plus the demo build for
+          # supplycheckout.com (tests/demo.spec.js and the CSP tests run with the
+          # web build). Coverage is measured in Chromium, the only browser that
+          # reports it. Pull requests run only these four jobs.
+          core='[
+            {"build": "artifact", "project": "desktop-chrome", "browser": "chromium", "coverage": "1"},
+            {"build": "artifact", "project": "iphone-safari", "browser": "webkit", "coverage": ""},
+            {"build": "web", "project": "desktop-chrome", "browser": "chromium", "coverage": "1"},
+            {"build": "web", "project": "iphone-safari", "browser": "webkit", "coverage": ""}
+          ]'
+          # The other supported browsers, against the web build only: the artifact
+          # build runs on claude.ai, which Chrome and iPhone Safari cover. Edge is
+          # branded Microsoft Edge (a system package), not Playwright's Chromium.
+          # Samsung Internet shares Android Chrome's engine; see "Supported
+          # browsers" in README.md.
+          more='[
+            {"build": "web", "project": "desktop-firefox", "browser": "firefox", "coverage": ""},
+            {"build": "web", "project": "desktop-safari", "browser": "webkit", "coverage": ""},
+            {"build": "web", "project": "desktop-edge", "browser": "msedge", "coverage": ""},
+            {"build": "web", "project": "android-chrome", "browser": "chromium", "coverage": ""},
+            {"build": "web", "project": "android-chrome-landscape", "browser": "chromium", "coverage": ""},
+            {"build": "web", "project": "galaxy-chrome", "browser": "chromium", "coverage": ""},
+            {"build": "web", "project": "ipad-safari", "browser": "webkit", "coverage": ""},
+            {"build": "web", "project": "ipad-safari-landscape", "browser": "webkit", "coverage": ""}
+          ]'
+          if [[ "$EVENT" == "pull_request" ]]; then more='[]'; fi
+          matrix="$(jq -cn --argjson core "$core" --argjson more "$more" '{include: ($core + $more)}')"
+          echo "$matrix" | jq -r '.include[] | "\(.project), \(.build) build"'
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          # The commit on main that the merge queue built this group on
+          QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+        run: |
+          # Infra and backend checks run on every push, release, manual and
+          # nightly run, and on pull requests and merge queue groups that touch
+          # their directory or this workflow. infra/ imports the table schema
+          # from backend/src/data, so a backend change runs the infra checks too.
+          case "$EVENT" in
+            pull_request) base="HEAD^1" ;;
+            merge_group)
+              # A group can hold several pull requests, so compare with the main
+              # commit it was built on rather than the parent commit
+              git fetch -q --depth=1 origin "$QUEUE_BASE"
+              base="$QUEUE_BASE" ;;
+            *)
+              echo "infra=true" >> "$GITHUB_OUTPUT"
+              echo "backend=true" >> "$GITHUB_OUTPUT"
+              exit 0 ;;
+          esac
+          changed=$(git diff --name-only "$base" HEAD)
           echo "$changed"
           if grep -Eq '^(infra/|backend/|\.github/workflows/ci\.yml$)' <<< "$changed"; then
             echo "infra=true" >> "$GITHUB_OUTPUT"

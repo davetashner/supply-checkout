@@ -5,6 +5,13 @@
 #   2. waits for CI, and prints the failing job's log if it fails
 #   3. squash-merges and deletes the remote branch, or, if main's ruleset
 #      blocks it (a missing approval, say), names the rule and stops
+#
+#   When main's ruleset has a merge queue, steps 1 to 3 are instead: wait for
+#   the PR's CI, add the PR to the queue, and wait while the queue runs the
+#   full CI on top of main and merges it (or print the failing log if the
+#   queue drops it). The queue keeps the branch current, so there's no update
+#   loop.
+#
 #   4. removes the local worktree and branch, and pulls main
 #   5. closes every bead named in a "Closes <bead-id>" line of the PR body
 #   6. says whether .beads/issues.jsonl needs refreshing
@@ -118,6 +125,86 @@ explain_blocked() {
   exit 1
 }
 
+# main's ruleset has a merge_queue rule once the owner turns the queue on
+has_merge_queue() {
+  [ "$(gh api 'repos/{owner}/{repo}/rules/branches/main' --jq 'any(.[]; .type == "merge_queue")' 2>/dev/null)" = "true" ]
+}
+
+# How long to wait for the queue to merge the PR, and how long a PR may sit
+# with auto-merge on but outside the queue (waiting on an approval, say)
+queue_poll=15 queue_tries=240 outside_tries=4   # 1 hour; 1 minute
+
+# Prints MERGED or CLOSED once the PR is no longer open, "QUEUED <position>
+# <entry state>" while it's in the merge queue, AUTO while auto-merge is on but
+# it isn't queued yet, and NONE otherwise.
+queue_status() {
+  # shellcheck disable=SC2016 # $owner and friends are GraphQL variables
+  gh api graphql -F owner='{owner}' -F repo='{repo}' -F number="$pr" -f query='
+    query($owner: String!, $repo: String!, $number: Int!) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $number) {
+          state
+          mergeQueueEntry { state position }
+          autoMergeRequest { enabledAt }
+        }
+      }
+    }' --jq '.data.repository.pullRequest |
+      if .state != "OPEN" then .state
+      elif .mergeQueueEntry then "QUEUED \(.mergeQueueEntry.position) \(.mergeQueueEntry.state)"
+      elif .autoMergeRequest then "AUTO"
+      else "NONE" end'
+}
+
+# The queue drops a PR when CI fails on its merge group (the PR on top of main
+# and whatever is ahead of it in the queue)
+queue_failed() {
+  local run
+  say "PR #$pr left the merge queue without merging, usually because CI failed on its merge group."
+  run="$(gh run list --workflow CI --event merge_group -L 20 --json databaseId,headBranch \
+    -q "[.[] | select(.headBranch | contains(\"/pr-$pr-\"))][0].databaseId // empty")"
+  if [ -n "$run" ]; then
+    say "Failing steps from run $run:"
+    gh run view "$run" --log-failed | tail -80
+  else
+    echo "Find the run with: gh run list --workflow CI --event merge_group"
+  fi
+  exit 1
+}
+
+wait_for_queue() { # gh pr merge's output, printed if the PR never joins the queue
+  local status last="" seen="" outside=0 tries=0 position entry
+  while :; do
+    status="$(queue_status)" || exit 1
+    case "$status" in
+      MERGED) return 0 ;;
+      CLOSED) fail "PR #$pr was closed without merging." ;;
+      QUEUED*)
+        seen=1 outside=0
+        if [ "$status" != "$last" ]; then
+          read -r _ position entry <<< "$status"
+          echo "In the merge queue: position $position, $entry"
+        fi ;;
+      *)
+        [ -z "$seen" ] || queue_failed
+        outside=$((outside + 1))
+        if [ "$outside" -gt "$outside_tries" ]; then
+          if [ "$status" = "AUTO" ]; then
+            echo "Auto-merge is on for #$pr, but it hasn't joined the merge queue. It joins once nothing blocks it."
+            explain_blocked
+          fi
+          printf '%s\n' "$1"
+          [ "$(merge_state)" != "BLOCKED" ] || explain_blocked
+          fail "PR #$pr didn't join the merge queue."
+        fi ;;
+    esac
+    last="$status" tries=$((tries + 1))
+    if [ "$tries" -ge "$queue_tries" ]; then
+      fail "PR #$pr is still in the merge queue after $(( queue_poll * queue_tries / 60 )) minutes. It merges on its own when the queue's CI passes; run this again then to clean up."
+    fi
+    sleep "$queue_poll"
+  done
+}
+
 state="$(view state)"
 case "$state" in
   MERGED) echo "PR #$pr is already merged." ;;
@@ -125,7 +212,27 @@ case "$state" in
   *) fail "PR #$pr is $state." ;;
 esac
 
-if [ "$state" = "OPEN" ]; then
+if [ "$state" = "OPEN" ] && has_merge_queue; then
+  say "main has a merge queue: it tests #$pr on top of main with the full CI, then merges it"
+  status="$(merge_state)"
+  case "$status" in
+    MERGED) echo "PR #$pr was merged by someone else while this was waiting." ;;
+    CLOSED) fail "PR #$pr was closed without merging." ;;
+    DIRTY) fail "PR #$pr has conflicts with main. Rebase $branch onto origin/main, push, and run this again." ;;
+    DRAFT) fail "PR #$pr is a draft. Mark it ready with: gh pr ready $pr" ;;
+    UNKNOWN) fail "GitHub still reports #$pr's merge state as UNKNOWN after $(( unknown_poll * unknown_tries / 60 )) minutes. Run this again in a few minutes." ;;
+  esac
+  if [ "$status" != "MERGED" ]; then
+    # The queue only takes a PR whose own checks passed
+    wait_for_ci
+    say "Adding #$pr to the merge queue"
+    # The queue squash-merges (its ruleset setting). --delete-branch isn't
+    # used: the branch is deleted below once the queue has merged it.
+    out="$(gh pr merge "$pr" --squash 2>&1)" || true
+    wait_for_queue "$out"
+    if git push -q origin --delete "$branch" 2>/dev/null; then echo "Deleted remote branch $branch"; fi
+  fi
+elif [ "$state" = "OPEN" ]; then
   # main can move while CI runs, so after each green run check again and, if
   # the branch has fallen behind, update it and wait for CI once more.
   max_updates=3 updates=0

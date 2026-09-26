@@ -33,7 +33,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `scripts/validate-html.mjs` | HTML validation (html-validate). |
 | `scripts/dev-server.mjs` | Local dev server with the mock runtime (`npm run dev`). |
 | `scripts/render-icons.mjs` | Renders the favicon's PNG fallbacks from `src/icons/favicon.svg` with Playwright's Chromium (`npm run icons`). Run it after changing the SVG, and commit the PNGs. |
-| `scripts/land-pr.sh` | Waits for CI, squash-merges a PR, cleans up its worktree and branch, and closes its beads (`npm run land -- <pr>`). Exits non-zero if the PR isn't merged, and explains a PR that main's ruleset blocks. |
+| `scripts/land-pr.sh` | Waits for CI, squash-merges a PR (or adds it to the merge queue and waits for the queue to merge it), cleans up its worktree and branch, and closes its beads (`npm run land -- <pr>`). Exits non-zero if the PR isn't merged, and explains a PR that main's ruleset blocks. |
 | `scripts/land-pr.test.sh` | Tests for `land-pr.sh` against a fake `gh` in a throwaway repo (`npm run test:scripts`, which also runs shellcheck). |
 | `scripts/check-public-safety.mjs` | Blocks AWS identifiers, email addresses and credentials from this public repo (pre-commit hook and CI). |
 | `scripts/check-region-strings.mjs` | Blocks AWS region names in `infra/`, `backend/` and `src/` outside `infra/lib/config.ts` (ADR 0010; pre-commit hook and CI). |
@@ -320,13 +320,14 @@ The `api` stack (`lib/stacks/api-stack.ts`, [ADR 0006](docs/adr/0006-api-and-rea
 | --- | --- | --- |
 | `GET /teams/{teamId}/products`, `GET /teams/{teamId}/sheets` (`?orderBy=date&direction=desc`, `limit`, `cursor`) | Cognito access token | `data` |
 | `GET`, `PUT` (set), `PATCH` (deep-merge update), `DELETE` `/teams/{teamId}/products/{key}` and `/teams/{teamId}/sheets/{sheetId}` | Cognito access token | `data` |
+| `POST /teams/{teamId}/sheets/{sheetId}/checkout`, `.../return`, `POST /teams/{teamId}/products/{key}/stock`, `GET /teams/{teamId}/products/{key}/movements` (the inventory commands and stock history, [docs/api/commands.md](docs/api/commands.md)) | Cognito access token | `data` |
 | `GET /me`, `POST /teams`, `POST /invites/{inviteId}/accept` | Cognito access token | `account` |
 | `POST /auth/session`, `/auth/refresh`, `/auth/sign-out` | Refresh-token cookie and `Origin` | `auth` |
 
 **Team isolation**, two layers:
 
 1. **Membership, in the handler.** API Gateway's JWT authorizer checks the token; the handler also requires an unexpired access token and takes the user from `sub`. The team comes only from the path: `authorizeTeam` reads the caller's `MEMBER` item on every request (so a role change applies at once) and issues the `TeamContext` every data function needs. A body that names a team, or any server-owned field, is refused. Viewers can read; a viewer's write gets 403 `invalid_argument`, which the app shows as view-only access.
-2. **IAM, `dynamodb:LeadingKeys`.** The data function's own role has no DynamoDB access. For each team it assumes the `DataAccessRole` with the session tag `teamId=<path team>` (cached for up to an hour per team), and that role allows `GetItem`, `PutItem`, `DeleteItem` and `Query` only on items whose partition key is `TEAM#${aws:PrincipalTag/teamId}`, or the team's date index partition `TEAM#…#SHEETS`. Every item a team route touches is in one of those two partitions, so a bug that built another team's key would be refused by IAM too.
+2. **IAM, `dynamodb:LeadingKeys`.** The data function's own role has no DynamoDB access. For each team it assumes the `DataAccessRole` with the session tag `teamId=<path team>` (cached for up to an hour per team), and that role allows `GetItem`, `PutItem`, `DeleteItem`, `UpdateItem`, `ConditionCheckItem` and `Query` (the last three for the inventory commands' transactions; no `Scan`, no batch writes) only on items whose partition key is `TEAM#${aws:PrincipalTag/teamId}`, or the team's date index partition `TEAM#…#SHEETS`. Every item a team route touches is in one of those two partitions, so a bug that built another team's key would be refused by IAM too.
 
 **First sign-in and teams** (`supply-checkout-l5y`; the app's side is in [docs/api/onboarding.md](docs/api/onboarding.md)). `GET /me` lists the caller's teams (role, plan, trial status) and the live invites for their **verified** email. `POST /teams` creates a team with the caller as owner, `homeRegion` from the serving region and a 14-day trial; it's idempotent per `Idempotency-Key` (the team's ID is derived from the user and the key, and its creation is conditional) and limited to 5 teams per user per UTC day by a counter in the user's partition. `POST /invites/{inviteId}/accept` joins the team that invited the caller's verified email, with `{"token"}` from the emailed link; the transaction checks the token's hash, the address, the expiry and that the invite is unused. Each user can be in at most 20 teams, which also bounds the role sessions one `/me` needs, and the account routes have their own API Gateway throttles (`throttle` in `routes.ts`). The email comes from Cognito's `GetUser`, called with the caller's own access token.
 
@@ -420,6 +421,7 @@ It also has the HTTP API's handlers in `backend/src/api` (see [Data API](#data-a
 - **One way in.** Outside `src/data`, ESLint (`backend/eslint.config.js`) bans any `@aws-sdk/*dynamodb*` package or path inside one, and any file under `data/` except `data/index.js`. This covers static imports, re-exports, `import()` and `require`. Tests are exempt, to inspect stored items.
 - **Region-ready** ([ADR 0010](docs/adr/0010-multi-region-active-active.md)). Every team gets `homeRegion` when it's created, from `AWS_REGION`. `writeRegionFor` in `src/data/region.ts` is the one function that decides where a team's writes go; in the MVP it always returns the local region.
 - **Documents.** `src/data/documents.ts` serves the app's document model (`products/<key>`, `sheets/<id>`: get, set, deep-merge update, delete, list) on the same items the typed functions use. Every write reads the item and puts the new one on the condition that its version (and a product's `stock`) hasn't changed, so each write is one stream record with a new version.
+- **Inventory commands.** `src/data/commands.ts` has checkout, return and stock adjust, each one `TransactWriteItems` in the team's partition: an operation record (`OP#<operationId>`, only if new, kept 7 days for replaying retries), the sheet line (counts added on the server, only while the sheet is open and returned stays at or below out), the product's stock (`ADD`, when it tracks stock), and a movement record (`MOVE#<key>#<time>#<operationId>`), the stock history the nightly drift check reconciles. A failed condition cancels the whole transaction; the command reads again and retries a few times before answering 409. The client contract is [docs/api/commands.md](docs/api/commands.md).
 - **Keys.** As in ADR 0005, except sheets: `SHEET#<sheetId>` instead of `SHEET#<date>#<id>`, because the date is editable and a key can't change. Date order comes from `GSI1` (`TEAM#<teamId>#SHEETS`, `<date>#<sheetId>`), which one update can change. `GSI1` also finds invites by the SHA-256 hash of their token, and `GSI2` (`INVITEE#<SHA-256 of the email>`, `INVITE#<inviteId>`) finds them by the invitee's email. `USER#<userId>` / `LIMIT#TEAMS#<date>` counts the teams a user created that day (TTL two days).
 
 ```bash
@@ -429,12 +431,7 @@ npm run lint        # tsc type-check and ESLint, including the DynamoDB ban
 npm test            # vitest; the access-pattern tests need DynamoDB Local
 ```
 
-`test/data-api.test.ts` and `test/account-api.test.ts` run the data and account handlers against an in-memory table that refuses calls outside the partitions the request's session tags allow, as the IAM policies do; they have the isolation negative tests. The access-pattern tests (and `test/documents.test.ts`) run every entity in ADR 0005 against [DynamoDB Local](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBLocal.html), each test file in a fresh table. They're skipped unless `DYNAMODB_ENDPOINT` is set. To run them locally with Docker:
-
-```bash
-docker run --rm -d -p 8000:8000 amazon/dynamodb-local:3.0.0
-DYNAMODB_ENDPOINT=http://localhost:8000 npm test
-```
+`test/data-api.test.ts`, `test/commands-api.test.ts` and `test/account-api.test.ts` run the data and account handlers against an in-memory table that refuses calls outside the partitions the request's session tags allow, as the IAM policies do; they have the isolation negative tests. The access-pattern tests (and `test/documents.test.ts` and `test/commands.test.ts`, which includes concurrent checkouts on one line) run every entity in ADR 0005 against [DynamoDB Local](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBLocal.html), each test file in a fresh table. They're skipped unless `DYNAMODB_ENDPOINT` is set. `npm run test:ddb` (`scripts/test-ddb.ts`) runs everything against DynamoDB Local locally: it starts CI's image (read from `ci.yml`) with Docker, colima's docker context or Podman on a free port, runs vitest (extra arguments go to vitest), and always removes the container. With no runtime it says how to get one (`brew install colima docker && colima start` on macOS).
 
 ## Supported browsers
 
@@ -475,7 +472,7 @@ A full run starts a browser in every worker, and WebKit workers can each take ov
 - **Fewer workers.** Locally, Playwright uses one worker per 8 GB of RAM, and at most half the CPU cores (`localWorkers` in `playwright.config.js`). That's 2 on a 16 GB laptop. Pass `--workers=N` to change it for one run. CI uses Playwright's default.
 - **One run at a time.** Each run takes a lock in the repo's shared `.git` directory (`tests/run-lock.js`), so a run started in another worktree waits and prints which run it's waiting for. A lock left by a run that was killed is taken over automatically. CI skips the lock.
 
-While working on a change, run just the file and browser you're touching, e.g. `npx playwright test tests/sheets.spec.js --project=desktop-chrome`. Save `npm run check` for before you open a PR; CI runs every browser and build anyway.
+While working on a change, run just the file and browser you're touching, e.g. `npx playwright test tests/sheets.spec.js --project=desktop-chrome`. Save `npm run check` for before you open a PR; CI runs every browser and build anyway (pull requests run desktop Chrome and iPhone Safari, and the merge queue runs the rest).
 
 | Suite | What it checks |
 | --- | --- |
@@ -510,6 +507,8 @@ The mock (`tests/mock-claude.js`) has opt-in failure modes, so tests can reach e
 
 `main` is protected. Every change goes through a pull request that is **squash-merged**, and the PR title becomes the commit message. Merging requires the **CI passed** check, and the branch must be up to date with `main`. Force pushes and branch deletion are blocked, and history stays linear.
 
+When the ruleset has a merge queue, pull requests merge through it: `npm run land -- <pr>` (or `gh pr merge <pr> --squash`) adds a PR whose CI passed to the queue, and the queue runs the full CI on the PR on top of `main`, and on top of any PRs ahead of it, before squash-merging it. A PR whose merge group fails CI leaves the queue unmerged. The queue keeps branches current, so they don't need updating by hand.
+
 Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) style. CI rejects titles that don't match.
 
 - `fix: …` → patch release
@@ -519,11 +518,11 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every pull request, on pushes to `main`, and on release-please's pull request. The **CI passed** job succeeds only if every job below passes (or is skipped because it doesn't apply):
+`.github/workflows/ci.yml` runs on every pull request, on each merge queue group, on pushes to `main`, nightly, and on release-please's pull request. The **CI passed** job succeeds only if every job below passes (or is skipped because it doesn't apply). Pull requests run a smaller browser matrix; everything else runs all of it:
 
 | Job | Gate |
 | --- | --- |
-| PR title | Conventional Commits format |
+| PR title | Conventional Commits format (pull requests only) |
 | Lint and validate HTML | ESLint on `src/`, `demo/`, scripts and tests; builds all three and runs html-validate on each |
 | Lint GitHub workflows | actionlint |
 | No region names outside the config module | `scripts/check-region-strings.mjs`: fails on any AWS region name in `infra/`, `backend/` or `src/` outside `infra/lib/config.ts` (ADR 0010) |
@@ -531,9 +530,9 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | Secret scan | gitleaks on every commit in the history, and `scripts/check-public-safety.mjs` on every file (AWS account and SSO identifiers, email addresses, AWS and Stripe keys, private keys) |
 | Dependency audit | `npm audit` fails on high-severity advisories; dependency review fails a PR that adds a moderate-or-worse vulnerable package |
 | CodeQL (javascript-typescript), CodeQL (actions) | CodeQL `security-extended` queries on the app, scripts, tests and workflows (`.github/workflows/codeql.yml`, which also runs weekly). Results go to the repository's code scanning alerts |
-| Backend | Only when `backend/`, `docs/api/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint (with the DynamoDB ban), the handler and OpenAPI tests, and the data-access tests against DynamoDB Local, which runs as a service container |
-| Infra | Only when `infra/`, `backend/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint, the CDK unit and snapshot tests (which skip Lambda bundling), and a synth with cdk-nag (which bundles the handlers with esbuild from `backend/`) for the deployed region and for both regions; the tests also synth every stack, identity and web included, in each region on its own |
-| Tests (browser, artifact or web build) | All test suites, in twelve parallel jobs: desktop Chrome and iPhone Safari against each build, and desktop Firefox, Safari and Edge, Android Chrome (Pixel portrait and landscape, Galaxy) and iPad Safari (portrait and landscape) against the web build. The web jobs also test the demo build. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
+| Backend | Only when `backend/`, `docs/api/` or the CI workflow changes in the pull request or merge queue group (always on `main`, nightly and manual runs): `npm audit`, type-check and ESLint (with the DynamoDB ban), the handler and OpenAPI tests, and the data-access tests against DynamoDB Local, which runs as a service container |
+| Infra | Only when `infra/`, `backend/` or the CI workflow changes in the pull request or merge queue group (always on `main`, nightly and manual runs): `npm audit`, type-check and ESLint, the CDK unit and snapshot tests (which skip Lambda bundling), and a synth with cdk-nag (which bundles the handlers with esbuild from `backend/`) for the deployed region and for both regions; the tests also synth every stack, identity and web included, in each region on its own |
+| Tests (browser, artifact or web build) | All test suites. On a pull request, four parallel jobs: desktop Chrome and iPhone Safari against each build. On the merge queue, `main`, the nightly run (07:23 UTC) and manual runs, twelve: those four plus desktop Firefox, Safari and Edge, Android Chrome (Pixel portrait and landscape, Galaxy) and iPad Safari (portrait and landscape) against the web build. The `Detect changed areas` job picks the matrix. The web jobs also test the demo build and the CloudFront Content-Security-Policy. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
 
 ## Releases
 
