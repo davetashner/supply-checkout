@@ -43,7 +43,7 @@ export const apiOutputParameters = (envName: string) => ({
  * included (only the clients a handler imports, at the version the tests
  * ran). No Docker: esbuild runs from backend/node_modules.
  */
-const bundling: BundlingOptions = {
+export const bundling: BundlingOptions = {
   format: OutputFormat.ESM,
   target: "node24",
   minify: true,

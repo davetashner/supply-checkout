@@ -26,3 +26,4 @@ export * from "./usage.js";
 export * from "./audit.js";
 export * from "./billing.js";
 export * from "./documents.js";
+export { documentChangeFromStream, type DocumentChange } from "./changes.js";
