@@ -1,9 +1,9 @@
 import "./theme.js";
 import { use, help } from "./runtime.js";
-import { checkOut, recordReturn, setStock } from "./moves.js";
+import { checkOut, recordReturn, setStock, saveItem } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, newKey, uid, round2, numOrNull } from "./format.js";
 import { lines, totals } from "./sheet-math.js";
-import { $, toast, openModal, closeModal, armButton, stepperHTML, setText, setHTML, wireStepper } from "./dom.js";
+import { $, toast, openModal, closeModal, armButton, stepperHTML, setText, setHTML, morph, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
 import { RECEIPT_PROMPT, sampleErr } from "./receipt-prompt.js";
 import { sheetCsv, sheetsCsv, inventoryCsv, allJson } from "./export.js";
@@ -31,6 +31,10 @@ async function write(fn, okMsg) {
     // Someone else saved this first (the web build's versioned writes, ADR 0006). Close the
     // editor so the latest values show, rather than an edit made on the old ones.
     else if (e && e.code === "aborted") { closeModal(); toast("Someone else changed this just now, so your change wasn't saved. The latest is showing; make your change again if it's still needed."); }
+    // Refused for what's saved now, such as returning more than are left (the web build's
+    // checkout and return commands, src/aws/db.js): the message says why. The latest is showing.
+    // `refused` is that adapter's own code, so no other write shows a raw message.
+    else if (e && e.code === "refused") { closeModal(); toast(e.message); }
     else toast("That didn't save. Check your connection and try again.");
     return false;
   }
@@ -79,10 +83,30 @@ function draw() {
   else drawList();
 }
 
+// #main (the sheet list and inventory) is redrawn on every snapshot. morph() keeps the
+// elements that didn't change, so a tap in progress survives; its events are delegated
+// here instead of wired on each redraw.
+$("#main").addEventListener("click", e => {
+  const t = e.target.closest("button, tr[data-prod]");
+  if (!t) return;
+  if (t.id === "newSheet") newSheetModal();
+  else if (t.id === "exportAll") exportAllModal();
+  else if (t.id === "resume") { ui.receipt = true; draw(); renderReceipt(); window.scrollTo(0, 0); }
+  else if (t.id === "addProduct") productModal(null);
+  else if (t.dataset.filter) { ui.filter = t.dataset.filter; draw(); }
+  else if (t.dataset.open) { ui.sheetId = t.dataset.open; draw(); window.scrollTo(0, 0); }
+  else if (t.dataset.prod && canWrite) productModal(t.dataset.prod);
+});
+// preventDefault: otherwise this Enter press also submits the editor's form
+$("#main").addEventListener("keydown", e => {
+  const tr = e.key === "Enter" && canWrite && e.target.closest("tr[data-prod]");
+  if (tr) { e.preventDefault(); productModal(tr.dataset.prod); }
+});
+
 function drawList() {
   const shown = sheets.filter(s => ui.filter === "all" || (ui.filter === "open" ? s.status !== "closed" : s.status === "closed"));
   const openCount = sheets.filter(s => s.status !== "closed").length;
-  $("#main").innerHTML = `
+  morph($("#main"), `
     <div class="bar">
       <div class="chips" role="group" aria-label="Filter sheets">
         <button type="button" class="chip" data-filter="open" aria-pressed="${ui.filter==="open"}">Out now (${openCount})</button>
@@ -106,12 +130,7 @@ function drawList() {
           </div>
           <div class="meta"><span>${esc(fmtDate(s.date))}</span>${personHTML(s)}<span>${t.count} item${t.count===1?"":"s"} · ${t.out} taken${t.ret ? ` · ${t.ret} back` : ""}</span></div>
         </button>`; }).join("") : `<div class="empty">${connected ? (ui.filter === "open" ? "Nothing is checked out right now." : "No sheets here yet.") : "Loading sheets…"}</div>`}
-    </div>`;
-  const ns = $("#newSheet"); ns && ns.addEventListener("click", () => newSheetModal());
-  const ea = $("#exportAll"); ea && ea.addEventListener("click", exportAllModal);
-  const rs = $("#resume"); rs && rs.addEventListener("click", () => { ui.receipt = true; draw(); renderReceipt(); window.scrollTo(0, 0); });
-  $("#main").querySelectorAll("[data-filter]").forEach(b => b.addEventListener("click", () => { ui.filter = b.dataset.filter; draw(); }));
-  $("#main").querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => { ui.sheetId = b.dataset.open; draw(); window.scrollTo(0,0); }));
+    </div>`);
 }
 
 function drawSheet(s) {
@@ -172,7 +191,7 @@ function drawSheet(s) {
 
 function drawPrices() {
   const list = Object.entries(products).map(([key, p]) => ({ key, ...p })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  $("#main").innerHTML = `
+  morph($("#main"), `
     <div class="bar">
       <p class="muted" style="margin:0">${list.length} item${list.length===1?"":"s"}. Storage counts go down when items are checked out and up when they're returned or bought for general inventory.</p>
       ${canWrite ? `<button type="button" class="btn primary" id="addProduct">+ Add item</button>` : ""}
@@ -181,15 +200,7 @@ function drawPrices() {
       <thead><tr><th>Item</th><th>In storage</th><th>Price each</th><th>Cost each</th><th>Value</th></tr></thead>
       <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || "Unnamed item")}<span class="code">${esc(codeText(p.code))}</span></td><td class="${hasStock(p) ? "" : "muted"}">${hasStock(p) ? p.stock : "—"}</td><td>${money(p.price)}</td><td class="${hasCost(p) ? "" : "muted"}">${hasCost(p) ? money(p.cost) : "—"}</td><td>${hasStock(p) ? money(storageCents(p) / 100) : "—"}</td></tr>`).join("")}</tbody>
       <tfoot><tr><td>Total in storage</td><td>${list.reduce((a, p) => a + (hasStock(p) ? p.stock : 0), 0)}</td><td></td><td></td><td>${money(list.reduce((a, p) => a + storageCents(p), 0) / 100)}</td></tr></tfoot>
-    </table></div>` : `<div class="empty">${connected ? "No items yet. Add one, or scan a barcode on a sheet." : "Loading…"}</div>`}`;
-  const ap = $("#addProduct"); ap && ap.addEventListener("click", () => productModal(null));
-  $("#main").querySelectorAll("tr[data-prod]").forEach(tr => {
-    if (!canWrite) return;
-    const go = () => productModal(tr.dataset.prod);
-    tr.addEventListener("click", go);
-    // preventDefault: otherwise this Enter press also submits the editor's form
-    tr.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
-  });
+    </table></div>` : `<div class="empty">${connected ? "No items yet. Add one, or scan a barcode on a sheet." : "Loading…"}</div>`}`);
 }
 
 function newSheetModal(existing) {
@@ -385,6 +396,8 @@ const storageCents = p => hasStock(p) ? Math.round(p.stock * round2(unitValue(p)
 
 function productModal(key) {
   const p = key ? products[key] : null;
+  // One count per form: every attempt at saving the same count is the same stock command
+  const action = {};
   openModal(`
     <h2>${p ? "Edit item" : "Add item"}</h2>
     <form id="f" style="display:grid;gap:14px">
@@ -419,7 +432,7 @@ function productModal(key) {
       opt("#fStock", "stock", int);
       opt("#fCost", "cost", v => Math.max(0, round2(v)));
       opt("#fPack", "packSize", v => Math.min(MAX_PACK, Math.max(1, int(v))));
-      if (await write(() => db.doc("products/" + docKey).set(body), "Saved")) closeModal();
+      if (await write(() => saveItem(db, action, docKey, body, { reason: "count", count: body.stock }), "Saved")) closeModal();
     });
   });
 }
@@ -693,6 +706,11 @@ function rerenderLine(l) {
   old.replaceWith(tmp.firstElementChild); paintSum();
 }
 
+// What a general-inventory line adds to storage: its quantity in eaches at the receipt's price
+// each. The line is the action, so saving the same line again (a retry after a failure) is the
+// same stock command.
+const stockIn = l => ({ action: l, quantity: int(l.qty), unitCost: Math.max(0, round2(l.price)) });
+
 async function saveReceipt(btn) {
   const d = draft;
   const lines = d.lines.filter(l => (lineProd(l) || l.name.trim()) && int(l.qty) > 0);
@@ -721,12 +739,12 @@ async function saveReceipt(btn) {
   const groups = Object.create(null);
   for (const l of lines) (groups[keyOfLine[l.id]] = groups[keyOfLine[l.id]] || []).push(l);
   for (const [k, ls] of Object.entries(groups)) {
-    const ex = products[k], add = ls.filter(l => l.dest === "stock").reduce((a, l) => a + int(l.qty), 0);
+    const ex = products[k], stocked = ls.filter(l => l.dest === "stock"), add = stocked.reduce((a, l) => a + int(l.qty), 0);
     if (!ex && !add && !d.savePrices) continue;
     const l0 = ls[0], code = (ex && ex.code) || (ls.find(l => l.code) || {}).code || "";
     const body = { ...(ex || {}), code, name: effName(l0), price: round2(effPrice(l0)), updatedAt: new Date().toISOString() };
     if (add) body.stock = (hasStock(ex) ? ex.stock : 0) + add;
-    if (!await write(() => db.doc("products/" + k).set(body))) { done(); return; }
+    if (!await write(() => saveItem(db, null, k, body, { reason: "receipt", lines: stocked.map(stockIn) }))) { done(); return; }
   }
   // Inventory is written; drop those lines so a retry can't add them twice
   d.lines = d.lines.filter(l => l.dest !== "stock"); saveDraft();

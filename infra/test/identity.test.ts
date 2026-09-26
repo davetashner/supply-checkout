@@ -167,13 +167,14 @@ describe("web app client", () => {
     });
   });
 
-  it("lets users write only their email and name, never a verified flag", () => {
+  it("lets users write only their email and name, never a verified flag or the linked email", () => {
     const writable = (context: Record<string, unknown>) =>
       (only(build({ envName: "staging" }, context).template, "AWS::Cognito::UserPoolClient").Properties.WriteAttributes as string[]).sort();
     expect(writable({})).toEqual(["email", "family_name", "given_name"]);
-    // With a provider on, also the attribute it maps its claim to (Cognito requires it); the trigger decides what it means
+    // With a provider on, also the attributes the providers map claims to (Cognito requires it); the triggers decide what they mean
     for (const context of [{ googleSignIn: true }, { appleSignIn: true }, { appleSignIn: true, googleSignIn: true }]) {
-      expect(writable(context)).toEqual(["custom:idp_email_verified", "email", "family_name", "given_name"]);
+      expect(writable(context)).toEqual(["custom:idp_email_verified", "custom:idp_hd", "email", "family_name", "given_name"]);
+      expect(writable(context)).not.toContain("custom:linked_email");
     }
   });
 
@@ -209,7 +210,7 @@ describe("Apple and Google sign-in", () => {
         client_secret: secretRef(secrets.google, "clientSecret"),
         authorize_scopes: "openid email profile",
       },
-      AttributeMapping: { email: "email", given_name: "given_name", family_name: "family_name", "custom:idp_email_verified": "email_verified" },
+      AttributeMapping: { email: "email", given_name: "given_name", family_name: "family_name", "custom:idp_email_verified": "email_verified", "custom:idp_hd": "hd" },
     });
     template.hasResourceProperties("AWS::Cognito::UserPoolIdentityProvider", {
       ProviderName: "SignInWithApple",
@@ -241,11 +242,22 @@ describe("Apple and Google sign-in", () => {
     }
   });
 
-  it("keep a mutable custom attribute for the providers' claim, even with both off", () => {
+  it("keep mutable custom attributes for the providers' claims and the linked email, even with both off", () => {
     for (const context of [{}, { googleSignIn: true }]) {
       build({}, context).template.hasResourceProperties("AWS::Cognito::UserPool", {
-        Schema: Match.arrayWith([{ Name: "idp_email_verified", AttributeDataType: "String", Mutable: true }]),
+        Schema: Match.arrayWith([
+          { Name: "idp_email_verified", AttributeDataType: "String", Mutable: true },
+          { Name: "idp_hd", AttributeDataType: "String", Mutable: true },
+          { Name: "linked_email", AttributeDataType: "String", Mutable: true },
+        ]),
       });
+    }
+  });
+
+  it("map custom:linked_email from no provider, so only the linking trigger sets it", () => {
+    const { template } = build({}, { appleSignIn: true, googleSignIn: true });
+    for (const provider of Object.values(template.findResources("AWS::Cognito::UserPoolIdentityProvider"))) {
+      expect(Object.keys(provider.Properties.AttributeMapping as Record<string, string>)).not.toContain("custom:linked_email");
     }
   });
 
@@ -294,15 +306,16 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
     expect(only(template, "AWS::Cognito::UserPool").Properties.LambdaConfig).toBeUndefined();
   });
 
-  it("guard native sign-ins and set email_verified before every token, with either provider on", () => {
+  it("guard native sign-ins, set email_verified before every token and link sign-ups to existing accounts, with either provider on", () => {
     for (const context of [{ googleSignIn: true }, { appleSignIn: true }]) {
       const { stacks, template } = build({}, context);
       expect(stacks.identity.federatedTriggers).toBeDefined();
-      template.resourceCountIs("AWS::Lambda::Function", 2);
+      template.resourceCountIs("AWS::Lambda::Function", 3);
       template.hasResourceProperties("AWS::Cognito::UserPool", {
         LambdaConfig: {
           PreAuthentication: { "Fn::GetAtt": [fnId(template, "SignInGuard"), "Arn"] },
           PreTokenGeneration: { "Fn::GetAtt": [fnId(template, "EmailVerified"), "Arn"] },
+          PreSignUp: { "Fn::GetAtt": [fnId(template, "AccountLink"), "Arn"] },
         },
       });
       for (const fn of Object.values(template.findResources("AWS::Lambda::Function"))) {
@@ -313,14 +326,15 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
     expect(source).toContain("src/identity/${name}.ts");
     expect(source).toMatch(/trigger\("SignInGuard", "sign-in-guard"/);
     expect(source).toMatch(/trigger\("EmailVerified", "email-verified"/);
+    expect(source).toMatch(/trigger\("AccountLink", "account-link"/);
   });
 
   it("may each be invoked only by this pool", () => {
     const { template } = withProviders();
     const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0];
     const permissions = Object.values(template.findResources("AWS::Lambda::Permission")).map((p) => p.Properties);
-    expect(permissions).toHaveLength(2);
-    for (const id of ["SignInGuard", "EmailVerified"]) {
+    expect(permissions).toHaveLength(3);
+    for (const id of ["SignInGuard", "EmailVerified", "AccountLink"]) {
       expect(permissions).toContainEqual({
         Action: "lambda:InvokeFunction",
         FunctionName: { "Fn::GetAtt": [fnId(template, id), "Arn"] },
@@ -330,7 +344,7 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
     }
   });
 
-  it("give the guard no AWS permissions, and the email_verified trigger only AdminUpdateUserAttributes on this pool", () => {
+  it("give the guard no AWS permissions, the email_verified trigger only AdminUpdateUserAttributes and the linking trigger only ListUsers, AdminUpdateUserAttributes and AdminLinkProviderForUser, on this pool", () => {
     const { template } = withProviders();
     const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0];
     const xray = { Effect: "Allow", Action: ["xray:PutTraceSegments", "xray:PutTelemetryRecords"], Resource: "*" };
@@ -338,16 +352,20 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
     sameStatements(statementsOf(template, roleOf(template, "SignInGuard")), [logs("SignInGuard"), xray]);
     const setVerified = { Sid: "SetEmailVerified", Effect: "Allow", Action: "cognito-idp:AdminUpdateUserAttributes", Resource: { "Fn::GetAtt": [poolId, "Arn"] } };
     sameStatements(statementsOf(template, roleOf(template, "EmailVerified")), [logs("EmailVerified"), xray, setVerified]);
+    const link = { Sid: "LinkToExistingAccount", Effect: "Allow", Action: ["cognito-idp:ListUsers", "cognito-idp:AdminUpdateUserAttributes", "cognito-idp:AdminLinkProviderForUser"], Resource: { "Fn::GetAtt": [poolId, "Arn"] } };
+    sameStatements(statementsOf(template, roleOf(template, "AccountLink")), [logs("AccountLink"), xray, link]);
     for (const role of Object.values(template.findResources("AWS::IAM::Role"))) expect(role.Properties.ManagedPolicyArns).toBeUndefined();
   });
 
   it("get their grant after the pool exists, so the pool can name the functions (no dependency cycle)", () => {
     const { template } = withProviders();
     const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0] as string;
-    const grantId = Object.keys(template.findResources("AWS::IAM::Policy", { Properties: { PolicyName: Match.stringLikeRegexp("EmailVerifiedUpdateUser") } }))[0];
-    expect(grantId).toBeDefined();
+    const grantIds = ["EmailVerifiedUpdateUser", "AccountLinkUsers"].map(
+      (name) => Object.keys(template.findResources("AWS::IAM::Policy", { Properties: { PolicyName: Match.stringLikeRegexp(name) } }))[0],
+    );
+    for (const grantId of grantIds) expect(grantId).toBeDefined();
     for (const [id, fn] of Object.entries(template.findResources("AWS::Lambda::Function")) as [string, { DependsOn?: string[]; Properties: unknown }][]) {
-      expect(fn.DependsOn ?? [], id).not.toContain(grantId);
+      for (const grantId of grantIds) expect(fn.DependsOn ?? [], id).not.toContain(grantId);
       expect(JSON.stringify(fn.Properties), id).not.toContain(poolId);
     }
   });

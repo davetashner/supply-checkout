@@ -30,7 +30,13 @@ import { AaaaRecord, ARecord, RecordTarget } from "aws-cdk-lib/aws-route53";
 import { CloudFrontTarget } from "aws-cdk-lib/aws-route53-targets";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
-import { PROVIDER_EMAIL_VERIFIED, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "../../../backend/src/identity/names.js";
+import {
+  LINKED_EMAIL,
+  PROVIDER_EMAIL_VERIFIED,
+  PROVIDER_EMAIL_VERIFIED_ATTRIBUTE,
+  PROVIDER_HOSTED_DOMAIN,
+  PROVIDER_HOSTED_DOMAIN_ATTRIBUTE,
+} from "../../../backend/src/identity/names.js";
 import type { DeploymentConfig } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import {
@@ -77,8 +83,8 @@ const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
  * `custom:idp_email_verified` (they can't map email_verified itself: it would
  * have to be client-writable). A pre authentication trigger keeps Google and
  * Apple users to their provider, so that claim is fresh whenever it's read
- * (see addFederatedTriggers). Later: a pre sign-up trigger to link an Apple
- * or Google sign-in to an existing account with the same email
+ * (see addFederatedTriggers). A pre sign-up trigger links a first Apple or
+ * Google sign-in to an existing account with the same verified email
  * (AdminLinkProviderForUser, supply-checkout-0b1).
  *
  * The auth. certificate is read from the domain stack's SSM output in this
@@ -90,8 +96,8 @@ export class IdentityStack extends SupplyCheckoutStack {
   readonly webClient: UserPoolClient;
   readonly domain: UserPoolDomain;
   readonly options: IdentityOptions;
-  /** The pre authentication and pre token generation triggers, when Google or Apple sign-in is on. */
-  readonly federatedTriggers?: { readonly signInGuard: NodejsFunction; readonly emailVerified: NodejsFunction };
+  /** The pre authentication, pre token generation and pre sign-up triggers, when Google or Apple sign-in is on. */
+  readonly federatedTriggers?: { readonly signInGuard: NodejsFunction; readonly emailVerified: NodejsFunction; readonly accountLink: NodejsFunction };
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "identity", layer: "stateful" });
@@ -112,10 +118,17 @@ export class IdentityStack extends SupplyCheckoutStack {
       autoVerify: { email: true },
       keepOriginal: { email: true },
       standardAttributes: { email: { required: true, mutable: true } },
-      // Google's and Apple's email_verified claim, for the trigger. Defined even
-      // with both providers off, since a custom attribute can't be removed.
-      // Mutable: Cognito rewrites it from the provider at every sign-in.
-      customAttributes: { [PROVIDER_EMAIL_VERIFIED]: new StringAttribute({ mutable: true }) },
+      // Defined even with both providers off, since a custom attribute can't be
+      // removed. Mutable: Cognito or a trigger rewrites them.
+      // - Google's and Apple's email_verified claim, and Google's hd (Workspace
+      //   domain), for the triggers. Cognito rewrites them at every provider sign-in.
+      // - The email a native user had when a provider was linked to it, set only
+      //   by the linking trigger: no IdP maps it and no client can write it.
+      customAttributes: {
+        [PROVIDER_EMAIL_VERIFIED]: new StringAttribute({ mutable: true }),
+        [PROVIDER_HOSTED_DOMAIN]: new StringAttribute({ mutable: true }),
+        [LINKED_EMAIL]: new StringAttribute({ mutable: true }),
+      },
       accountRecovery: AccountRecovery.EMAIL_ONLY,
       userVerification: {
         emailSubject: "Your Supply Checkout verification code",
@@ -207,9 +220,10 @@ export class IdentityStack extends SupplyCheckoutStack {
       // the new one is confirmed with a code (keepOriginal). Attributes an IdP
       // maps must be in this list, so the IdPs don't map emailVerified; they
       // map their claim to custom:idp_email_verified, which the trigger reads
-      // only at a provider sign-in, right after Cognito has rewritten it.
+      // only at a provider sign-in, right after Cognito has rewritten it; the
+      // same goes for Google's hd in custom:idp_hd. Never custom:linked_email.
       writeAttributes: providers.length
-        ? writable.withCustomAttributes(PROVIDER_EMAIL_VERIFIED)
+        ? writable.withCustomAttributes(PROVIDER_EMAIL_VERIFIED, PROVIDER_HOSTED_DOMAIN)
         : writable,
       preventUserExistenceErrors: true,
       enableTokenRevocation: true,
@@ -256,7 +270,12 @@ export class IdentityStack extends SupplyCheckoutStack {
             email: ProviderAttribute.GOOGLE_EMAIL,
             givenName: ProviderAttribute.GOOGLE_GIVEN_NAME,
             familyName: ProviderAttribute.GOOGLE_FAMILY_NAME,
-            custom: { [PROVIDER_EMAIL_VERIFIED_ATTRIBUTE]: ProviderAttribute.GOOGLE_EMAIL_VERIFIED },
+            custom: {
+              [PROVIDER_EMAIL_VERIFIED_ATTRIBUTE]: ProviderAttribute.GOOGLE_EMAIL_VERIFIED,
+              // The Workspace domain, only for Workspace accounts: the linking trigger trusts
+              // Google for a non-Gmail address only when this is the address's domain
+              [PROVIDER_HOSTED_DOMAIN_ATTRIBUTE]: ProviderAttribute.other("hd"),
+            },
           },
         }),
       );
@@ -293,13 +312,20 @@ export class IdentityStack extends SupplyCheckoutStack {
    *   guard: the attribute it reads is user-writable, and is fresh from the
    *   provider only at a provider sign-in. Its role may also call
    *   AdminUpdateUserAttributes on this pool.
+   * - Pre sign-up (account-link-handler.ts) links a first Google or Apple
+   *   sign-in whose provider says the email is verified to the one confirmed
+   *   native user with that verified email, when the provider is
+   *   authoritative for the address. Its role may also call ListUsers (to
+   *   find that user; IAM can't limit the filter, so the code searches by
+   *   exact email only), AdminUpdateUserAttributes (to record the linked
+   *   email in custom:linked_email) and AdminLinkProviderForUser on this pool.
    *
    * The pool names each function (LambdaConfig), so a function can't name
-   * the pool: the grant is a separate policy attached to the role after the
-   * pool exists, and the function doesn't wait for it. The trigger's first
+   * the pool: each grant is a separate policy attached to the role after the
+   * pool exists, and the function doesn't wait for it. A trigger's first
    * call comes with a sign-in, after the deploy.
    */
-  private addFederatedTriggers(): { signInGuard: NodejsFunction; emailVerified: NodejsFunction } {
+  private addFederatedTriggers(): { signInGuard: NodejsFunction; emailVerified: NodejsFunction; accountLink: NodejsFunction } {
     const signInGuard = this.trigger("SignInGuard", "sign-in-guard", "Refuses password, email-code and passkey sign-ins by Google and Apple users");
     this.userPool.addTrigger(UserPoolOperation.PRE_AUTHENTICATION, signInGuard);
 
@@ -315,7 +341,20 @@ export class IdentityStack extends SupplyCheckoutStack {
         }),
       ],
     });
-    return { signInGuard, emailVerified };
+
+    const accountLink = this.trigger("AccountLink", "account-link", "Links a first Google or Apple sign-in to the existing account with the same verified email");
+    this.userPool.addTrigger(UserPoolOperation.PRE_SIGN_UP, accountLink);
+    new Policy(this, "AccountLinkUsers", {
+      roles: [accountLink.role as Role],
+      statements: [
+        new PolicyStatement({
+          sid: "LinkToExistingAccount",
+          actions: ["cognito-idp:ListUsers", "cognito-idp:AdminUpdateUserAttributes", "cognito-idp:AdminLinkProviderForUser"],
+          resources: [this.userPool.userPoolArn],
+        }),
+      ],
+    });
+    return { signInGuard, emailVerified, accountLink };
   }
 
   /** A function from backend/src/identity/<name>.ts, with its own log group and a role that can write only to it. */

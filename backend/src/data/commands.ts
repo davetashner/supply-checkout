@@ -431,7 +431,9 @@ export async function checkout(db: Db, ctx: TeamContext, input: CheckoutInput, n
       }
     }
 
-    // A new line's snapshot must be the product as the transaction finds it
+    // A new line's snapshot must be the product as the transaction finds it. A version that
+    // isn't a number could never match, so refuse it now, not as a conflict after retries.
+    if (!existing && product) checkVersion(product);
     const version = product?.version;
     const fresh = existing
       ? NO_EXTRA
