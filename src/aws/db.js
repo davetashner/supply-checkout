@@ -4,13 +4,20 @@
 //
 // Each collection someone listens to is held in memory. Listeners get the whole collection
 // after the first list, after each of the adapter's own writes, after each live event
-// (fetched through the API, which checks membership on every request) and after every
-// re-list. Documents are sent through as the app wrote them, whatever their fields.
+// (fetched through the API, which checks membership on every request; a burst of them is
+// one re-list) and after every re-list. Documents are sent through as the app wrote them,
+// whatever their fields.
 //
 // Sheets are listed by ID and sorted here, not with ?orderBy=date: that route reads an
 // index that can lag a write, and a full re-list must not drop a sheet just created.
 import { createLive } from "./live.js";
 
+// A burst of events for one collection (a CSV import of hundreds of items, say) is answered
+// by one re-list instead of a fetch per document: past BURST_FETCHES fetches within BURST_MS,
+// events are held and the collection is re-listed once they stop for QUIET_MS, or MAX_WAIT_MS
+// after the first was held if they don't. The re-list uses up the fetch budget, so a burst
+// that goes on is re-listed every MAX_WAIT_MS rather than fetched again.
+const BURST_FETCHES = 10, BURST_MS = 1000, QUIET_MS = 300, MAX_WAIT_MS = 2000;
 const META = { fromCache: false, hasPendingWrites: false };
 const cmp = (a, b) => (a > b) - (a < b);
 // An item's own fields, to compare two copies: not its stock (the stock commands own it) or
@@ -35,7 +42,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
   const colls = {};
   const inflight = new Map();
   let removed = false;
-  const coll = (name) => (colls[name] ||= { docs: new Map(), loaded: false, listeners: new Set(), touched: null, listing: null, again: false, due: false });
+  const coll = (name) => (colls[name] ||= { docs: new Map(), loaded: false, listeners: new Set(), touched: null, listing: null, again: false, due: false, fetched: [], held: null });
   const docPath = (name, id) => `${base}/${name}/${encodeURIComponent(id)}`;
 
   // Removed from the team (or it's gone): stop everything once, and say so
@@ -138,6 +145,24 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
     inflight.delete(key);
   }
 
+  // Fetches a changed document, or during a burst holds it for one re-list (BURST_FETCHES)
+  function changed(name, id) {
+    const c = colls[name], now = Date.now();
+    c.fetched = c.fetched.filter((t) => now - t < BURST_MS);
+    if (!c.held && c.fetched.length < BURST_FETCHES) {
+      c.fetched.push(now);
+      fetchDoc(name, id);
+      return;
+    }
+    c.held ||= { since: now };
+    clearTimeout(c.held.timer);
+    c.held.timer = setTimeout(() => {
+      c.held = null;
+      c.fetched = Array(BURST_FETCHES).fill(Date.now());
+      relist(name);
+    }, Math.min(QUIET_MS, c.held.since + MAX_WAIT_MS - now));
+  }
+
   function onEvent(ev) {
     // The user's channel carries every team they're in; this page shows one
     if (ev.teamId !== teamId) return;
@@ -150,7 +175,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
     // the echo of this user's own write. A product's is fetched again on the same version,
     // for data stored before every stock change gave the product a new version.
     if (held && (ev.version < held.version || (ev.version === held.version && ev.collection === "sheets"))) return;
-    fetchDoc(ev.collection, ev.id);
+    changed(ev.collection, ev.id);
   }
 
   const live = createLive({ url: config.realtimeUrl, host: config.realtimeHost, channel: `/users/${userId}`, token, onEvent, onResync: resync });
