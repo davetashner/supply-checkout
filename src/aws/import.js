@@ -2,7 +2,9 @@
 // onboarding). The server reads and checks the file, and the preview shows what each row
 // will do; then it imports every row or none (POST /teams/{teamId}/imports in
 // docs/api/openapi.yaml). An import that stops part-way is finished by sending the same
-// request again, which "Try again" does, so nothing is added twice.
+// request again, which "Try again" does, so nothing is added twice. When the server says
+// the import can't go on (409 "aborted": items kept changing, the import expired, or a
+// planned key was taken), its message says what to do.
 import { esc, money } from "../format.js";
 import { openModal, closeModal, toast } from "../dom.js";
 
@@ -47,7 +49,7 @@ export function openImport(api, teamId) {
   openModal(`<h2>Import inventory</h2>
     <p class="hint">Choose a CSV file whose first row names its columns: <strong>name</strong> and <strong>price</strong>, and if you have them barcode, cost, stock and pack_size. Items already in inventory are matched by barcode, or by name, and updated. Importing a file again doesn't add anything twice.</p>
     <div class="field"><label for="importFile">CSV file</label><input type="file" id="importFile" accept=".csv,text/csv"></div>
-    <p class="error" role="alert" id="importFail" hidden>The import didn't finish. Try again to finish it; nothing will be added twice.</p>
+    <p class="error" role="alert" id="importFail" hidden></p>
     <div class="import-result" id="importResult" aria-live="polite"></div>
     <div class="modal-actions"><button type="button" class="btn" id="importCancel">Cancel</button><button type="button" class="btn primary" id="importGo" hidden>Import</button></div>`, (m) => {
     const out = m.querySelector("#importResult"), go = m.querySelector("#importGo"), fail = m.querySelector("#importFail");
@@ -87,6 +89,7 @@ export function openImport(api, teamId) {
         if (e.code === "bad_request") { preview(); return; }
         go.disabled = false;
         go.textContent = "Try again";
+        fail.textContent = e.code === "aborted" ? e.message : "The import didn't finish. Try again to finish it; nothing will be added twice.";
         fail.hidden = false;
       }
     });

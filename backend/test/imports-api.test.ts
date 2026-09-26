@@ -104,7 +104,7 @@ describe("importing a file", () => {
     expect(movements()).toHaveLength(200);
     expect(movements()[0]).toMatchObject({ type: "movement", reason: "import", tracked: true, operationId: id, userId: OWNER, at: AT });
     const job = table.get("TEAM#team-a", `IMPORT#${id}`);
-    expect(job).toMatchObject({ type: "import", status: "done", chunks: Math.ceil(200 / ROWS_PER_CHUNK), committed: Math.ceil(200 / ROWS_PER_CHUNK), expiresAt: NOW / 1000 + 7 * 86400 });
+    expect(job).toMatchObject({ type: "import", status: "done", total: 200, chunks: Math.ceil(200 / ROWS_PER_CHUNK), committed: 200, userId: OWNER, expiresAt: NOW / 1000 + 7 * 86400 });
     expect(counts).toMatchObject({ Writes: 200 });
     // Everything stayed in the team's partition (the LeadingKeys scope)
     expect(new Set(table.calls.flatMap((c) => c.partitions))).toEqual(new Set(["TEAM#team-a"]));
@@ -323,9 +323,9 @@ describe("retries and resuming", () => {
     expect(table.items.size).toBe(size);
     expect(counts.Writes).toBe(10);
     expect(await post({ importId: id, csv: sampleCsv(11) })).toMatchObject({ status: 400, body: { error: { message: expect.stringMatching(/already used for a different file/) } } });
-    // Another owner can't reuse it either
+    // The job is the file's, not the owner's: another owner gets the same summary
     table.put({ PK: "TEAM#team-a", SK: "MEMBER#user-owner-2", type: "member", teamId: "team-a", userId: "user-owner-2", role: "owner" });
-    expect((await post({ importId: id, csv }, "user-owner-2")).status).toBe(400);
+    expect(await post({ importId: id, csv }, "user-owner-2")).toMatchObject({ status: 200, body: { replayed: true } });
   });
 
   it("finishes an import that stopped part-way when the same request comes again, without doubling anything", async () => {
@@ -339,7 +339,7 @@ describe("retries and resuming", () => {
     const failed = await post({ importId: id, csv });
     expect(failed).toMatchObject({ status: 500, body: { error: { code: "internal" } } });
     expect(products()).toHaveLength(2 * ROWS_PER_CHUNK);
-    expect(table.get("TEAM#team-a", `IMPORT#${id}`)).toMatchObject({ status: "committing", committed: 2 });
+    expect(table.get("TEAM#team-a", `IMPORT#${id}`)).toMatchObject({ status: "committing", committed: 2 * ROWS_PER_CHUNK });
 
     const done = await post({ importId: id, csv });
     expect(done.body).toMatchObject({ status: "imported", replayed: false, summary: { created: 200 } });
@@ -419,19 +419,105 @@ describe("retries and resuming", () => {
     table.beforeTransactWrite = () => {
       throw Object.assign(new Error("socket hang up"), { name: "TimeoutError" });
     };
-    table.put({ PK: "TEAM#team-a", SK: `IMPORT#${id}`, type: "import", importId: id, status: "committing", chunks: 1, committed: 0, summary: {} });
+    table.put({ PK: "TEAM#team-a", SK: `IMPORT#${id}`, type: "import", importId: id, status: "committing", total: 1, chunks: 1, committed: 0, summary: {} });
     // A job whose request doesn't match is someone else's
     expect((await post({ importId: id, csv })).status).toBe(400);
     table.beforeTransactWrite = undefined;
-    const request = createHash("sha256").update(JSON.stringify({ userId: OWNER, csv }), "utf8").digest("hex");
-    table.put({ PK: "TEAM#team-a", SK: `IMPORT#${id}`, type: "import", importId: id, request, status: "committing", chunks: 1, committed: 0, summary: {} });
+    const request = createHash("sha256").update(csv, "utf8").digest("hex");
+    table.put({ PK: "TEAM#team-a", SK: `IMPORT#${id}`, type: "import", importId: id, request, status: "committing", total: 1, chunks: 1, committed: 0, summary: {} });
     expect(await post({ importId: id, csv })).toMatchObject({ status: 409, body: { error: { message: expect.stringMatching(/expired/) } } });
   });
 
-  it("refuses an item that would be too large to save", async () => {
-    seedProduct("0123", { code: "0123", name: "Gloves", price: 10, notes: "x".repeat(400_000) });
-    const res = await post({ importId: randomUUID(), csv: "name,barcode,price\nGloves,0123,11\n" });
-    expect(res).toMatchObject({ status: 413, body: { error: { code: "quota_exceeded" } } });
+  it("refuses, before writing anything, a row whose item would be too large to save", async () => {
+    seedProduct("0123", { code: "0123", name: "Gloves", price: 10, notes: "x".repeat(349_900) });
+    const res = await post({ importId: randomUUID(), csv: "name,barcode,price\nOther,1,1\nGloves,0123,11\n" });
+    expect(res).toMatchObject({ status: 400, body: { errors: [{ line: 3, message: "This item is too large to update; shorten its other fields in the app first" }] } });
+    expect(importItems()).toEqual([]);
+    expect(products()).toHaveLength(1);
+  });
+
+  it("splits a chunk of large items across transactions so none passes DynamoDB's 4 MB", async () => {
+    const note = "x".repeat(300_000);
+    for (let i = 0; i < ROWS_PER_CHUNK; i++) seedProduct(`k${i}`, { code: `c${i}`, name: `Item ${i}`, price: 1, note });
+    const csv = ["name,barcode,price", ...Array.from({ length: ROWS_PER_CHUNK }, (_, i) => `Item ${i},c${i},2`)].join("\n");
+    const res = await post({ importId: randomUUID(), csv });
+    expect(res.body).toMatchObject({ status: "imported", summary: { updated: ROWS_PER_CHUNK } });
+    expect(products().every((p) => p.price === 2 && p.note === note)).toBe(true);
+    // Staging, then 9 rows (2.7 MB) at a time
+    expect(table.transactions).toEqual([2, 10, 10, 10, 10, 10, 5]);
+  });
+
+  it("measures items when it commits, so items that grew after staging still fit", async () => {
+    const id = randomUUID();
+    const csv = ["name,barcode,price", ...Array.from({ length: 20 }, (_, i) => `Item ${i},c${i},2`)].join("\n");
+    let grown = false;
+    table.beforeTransactWrite = () => {
+      if (grown || !table.get("TEAM#team-a", `IMPORT#${id}`)) return;
+      grown = true;
+      // A contributor fills every item up to the document limit after the import was staged
+      for (let i = 0; i < 20; i++) seedProduct(keyOfBarcode(`c${i}`), { code: `c${i}`, name: `Item ${i}`, price: 1, note: "x".repeat(340_000) }, 2);
+    };
+    const res = await post({ importId: id, csv });
+    expect(res.body).toMatchObject({ status: "imported" });
+    expect(products().every((p) => p.price === 2 && typeof p.note === "string")).toBe(true);
+    expect(table.get("TEAM#team-a", `IMPORT#${id}`)).toMatchObject({ status: "done", committed: 20 });
+  });
+
+  it("refuses a staged new item whose key another item took, and choosing the file again imports it", async () => {
+    const id = randomUUID();
+    const csv = "name,barcode,price\nFirst,1,1\nWidget,A#B,2\n";
+    table.beforeTransactWrite = () => {
+      if (table.get("TEAM#team-a", `IMPORT#${id}`) && !product("A_B")) seedProduct("A_B", { code: "A_B", name: "Someone else's", price: 9 });
+    };
+    const res = await post({ importId: id, csv });
+    expect(res).toMatchObject({ status: 409, body: { error: { code: "aborted", message: expect.stringMatching(/line 3's key.*Choose the file again/) } } });
+    expect(product("A_B")).toMatchObject({ code: "A_B", name: "Someone else's", price: 9 });
+    expect(product("1")).toBeUndefined();
+    table.beforeTransactWrite = undefined;
+    // The same request can't get past it; a new import plans around it
+    expect((await post({ importId: id, csv })).status).toBe(409);
+    expect((await post({ importId: randomUUID(), csv })).body).toMatchObject({ status: "imported", summary: { created: 2 } });
+    expect(product("A_B-2")).toMatchObject({ code: "A#B", name: "Widget" });
+  });
+
+  it("applies a staged new item as an update when the same barcode got there first", async () => {
+    const id = randomUUID();
+    table.beforeTransactWrite = () => {
+      if (table.get("TEAM#team-a", `IMPORT#${id}`) && !product("77")) seedProduct("77", { code: "77", name: "Sponge", price: 1 });
+    };
+    expect((await post({ importId: id, csv: "name,barcode,price\nSponge,77,3\n" })).body.status).toBe("imported");
+    expect(product("77")).toMatchObject({ price: 3, version: 2 });
+  });
+
+  it("says the import expired when its job disappears mid-commit", async () => {
+    const id = randomUUID();
+    let dropped = false;
+    table.beforeTransactWrite = () => {
+      if (!dropped && table.get("TEAM#team-a", `IMPORT#${id}`)) {
+        dropped = true;
+        table.items.delete(`TEAM#team-a\u0000IMPORT#${id}`);
+      }
+    };
+    expect(await post({ importId: id, csv: "name,price\nA,1\n" })).toMatchObject({ status: 409, body: { error: { message: expect.stringMatching(/expired/) } } });
+  });
+
+  it("lets another owner finish an import whose owner was demoted part-way", async () => {
+    const id = randomUUID();
+    const csv = sampleCsv(120);
+    let transactions = 0;
+    table.beforeTransactWrite = () => {
+      if (++transactions === 3) throw Object.assign(new Error("socket hang up"), { name: "TimeoutError" });
+    };
+    expect((await post({ importId: id, csv })).status).toBe(500);
+    expect(products()).toHaveLength(ROWS_PER_CHUNK);
+    table.beforeTransactWrite = undefined;
+    table.put({ PK: "TEAM#team-a", SK: `MEMBER#${OWNER}`, type: "member", teamId: "team-a", userId: OWNER, role: "contributor" });
+    table.put({ PK: "TEAM#team-a", SK: "MEMBER#user-owner-2", type: "member", teamId: "team-a", userId: "user-owner-2", role: "owner" });
+    // The demoted owner can't; the other owner can, with the same file
+    expect((await post({ importId: id, csv })).status).toBe(403);
+    expect((await post({ importId: id, csv }, "user-owner-2")).body).toMatchObject({ status: "imported", summary: { created: 120 } });
+    expect(products()).toHaveLength(120);
+    expect(table.get("TEAM#team-a", `IMPORT#${id}`)).toMatchObject({ status: "done", userId: OWNER });
   });
 });
 

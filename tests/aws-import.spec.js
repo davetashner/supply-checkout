@@ -71,6 +71,18 @@ test("an owner previews a file, imports it, and every retry sends the same impor
   expect(second).toEqual(first);
 });
 
+test("shows the server's words when an import can't go on as it is", async ({ page }) => {
+  const backend = new FakeBackend();
+  const message = "This import expired before it finished. Choose the file again to finish; rows already imported won't be added twice.";
+  backend.on("POST", PATH, ok(PREVIEW));
+  backend.on("POST", PATH, error(409, "aborted", message));
+  await openImport(page, backend);
+  await choose(page);
+  await dialog(page).getByRole("button", { name: "Import", exact: true }).click();
+  await expect(page.locator("#importFail")).toHaveText(message);
+  await expect(dialog(page).getByRole("button", { name: "Try again" })).toBeVisible();
+});
+
 test("shows every problem in the file and offers no import", async ({ page }) => {
   const backend = new FakeBackend();
   backend.on("POST", PATH, ok({

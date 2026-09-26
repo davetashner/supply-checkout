@@ -14,18 +14,28 @@
 //    (only if new) and its whole plan, in chunk records
 //    `IMPORT#<id>#CHUNK#<n>` of up to ROWS_PER_CHUNK rows each: the product
 //    key each row writes and the values it sets.
-// 3. Commit, chunk by chunk. Each chunk is one transaction: its product
-//    writes, a movement for every stock change, and the job's progress
-//    counter (`committed = n` to `n + 1`, conditional on it still being n).
-//    A chunk is applied exactly once, whole or not at all.
+// 3. Commit, a batch of rows at a time. Each batch is one transaction: its
+//    product writes, a movement for every stock change, and the job's
+//    progress counter (`committed` rows, from r to r + k, conditional on it
+//    still being r). A row is applied exactly once. A batch is at most one
+//    staged chunk, and as many of its rows as fit in TX_BYTES, measured from
+//    the items as they are at commit time (they can grow after staging), so
+//    a batch can't pass DynamoDB's 4 MB transaction limit.
 //
 // If the commit stops part-way (the Lambda times out, or items keep changing
-// under it), the import isn't abandoned half done: the same request again
-// (same importId and file) finds the job and carries on from the first chunk
-// not committed, with the plan staged in step 2, so it rolls forward to the
-// complete import. The app retries automatically and offers "Try again". A
-// finished import replays its summary. The job records expire after
-// OPERATION_TTL_DAYS.
+// under it), the import isn't abandoned half done: the same file again with
+// the same importId, from any owner of the team (the role is checked on every
+// request), finds the job and carries on from the first row not committed,
+// with the plan staged in step 2, so it rolls forward to the complete import.
+// The app offers "Try again", which does that. A finished import replays its
+// summary. The job records expire after OPERATION_TTL_DAYS.
+//
+// Two things can stop a staged import for good, and both say to choose the
+// file again (a new import, whose plan re-reads the inventory; rows already
+// imported are then unchanged): its records expired, or a key it planned to
+// create was taken, between staging and commit, by an item with another
+// barcode. Rows whose item would pass the document size limit are refused
+// before staging, and the document routes keep items under it after.
 //
 // Re-importing a file doesn't duplicate items: a row matches an existing item
 // by barcode, or by name when either side has no barcode (ADR 0014), and
@@ -44,7 +54,7 @@ import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
 import { type Movement, OPERATION_TTL_DAYS } from "./commands.js";
 import { parseCsv } from "./csv.js";
-import { RESERVED_FIELDS } from "./documents.js";
+import { MAX_DOCUMENT_BYTES, RESERVED_FIELDS } from "./documents.js";
 import { ConflictError, InvalidInputError, TooLargeError } from "./errors.js";
 import { MAX_CODE_LENGTH, keys, prefixes, teamPartition } from "./keys.js";
 import { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
@@ -64,6 +74,11 @@ export const MAX_NAME_LENGTH = 200;
  * and the job's progress counter makes 2 × 49 + 1 = 99 of DynamoDB's 100.
  */
 export const ROWS_PER_CHUNK = 49;
+/**
+ * The most bytes of writes one commit transaction carries, measured as JSON
+ * (larger than DynamoDB's own measure). DynamoDB's limit is 4 MB.
+ */
+export const TX_BYTES = 3_000_000;
 /** Row errors returned at most; errorCount has the total. */
 export const MAX_ERRORS = 200;
 
@@ -170,6 +185,8 @@ type TransactItem = Record<string, Record<string, unknown>>;
 /** A row as staged in a chunk record: what to write, without the preview's extras. */
 interface StagedRow {
   readonly line: number;
+  /** Planned as a new item: at commit, an existing item at the key must be the same one (same barcode). */
+  readonly create?: true;
   readonly key: string;
   readonly name: string;
   readonly barcode: string;
@@ -403,7 +420,12 @@ export function planImport(rows: ImportRow[], products: Item[]): { planned: Plan
       taken.add(key);
     }
     fileKeys.set(key, row.line);
-    const { changes } = applyRow(match ? documentData(match) : undefined, row);
+    const { data, changes } = applyRow(match ? documentData(match) : undefined, row);
+    // The document routes' size limit, less room for updatedAt: bigger than this can't be saved
+    if (Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_DOCUMENT_BYTES - 100) {
+      fail(undefined, "This item is too large to update; shorten its other fields in the app first");
+      continue;
+    }
     planned.push({ ...row, key, action: match ? (changes.length ? "update" : "unchanged") : "create", changes });
   }
   return { planned, errors };
@@ -439,7 +461,7 @@ function importId(value: unknown): string {
 
 function staged(row: PlannedRow): StagedRow {
   const { line, key, name, barcode, price, cost, stock, packSize } = row;
-  return { line, key, name, barcode, price, ...(cost === undefined ? {} : { cost }), ...(stock === undefined ? {} : { stock }), ...(packSize === undefined ? {} : { packSize }) };
+  return { line, ...(row.action === "create" ? { create: true as const } : {}), key, name, barcode, price, ...(cost === undefined ? {} : { cost }), ...(stock === undefined ? {} : { stock }), ...(packSize === undefined ? {} : { packSize }) };
 }
 
 /**
@@ -448,11 +470,17 @@ function staged(row: PlannedRow): StagedRow {
  * if stock changes, a movement. Nothing when the row changes nothing.
  */
 function rowWrites(db: Db, ctx: TeamContext, id: string, row: StagedRow, item: Item | undefined, at: string): TransactItem[] {
+  // Another item took this new item's key after staging (A#B and A_B both make the key A_B, say).
+  // The same barcode is the same item, from another import of the same file.
+  if (row.create && item && (typeof item.code === "string" ? item.code : "") !== row.barcode) {
+    throw new ConflictError(`An item was added under line ${row.line}'s key while importing. Choose the file again to finish; rows already imported won't be added twice.`);
+  }
   const current = item ? documentData(item) : undefined;
   const { data, changes } = applyRow(current, row);
   if (item && !changes.length) return [];
   data.updatedAt = at;
-  const version = item ? (typeof item.version === "number" ? item.version : 1) + 1 : 1;
+  // As documents.ts counts: a missing item is version 0, an item without a version is 1
+  const version = (item ? (typeof item.version === "number" ? item.version : 1) : 0) + 1;
   const names: Record<string, string> = {};
   const values: Item = {};
   const unchanged = (field: string) => {
@@ -500,43 +528,64 @@ function imported(job: Item, replayed: boolean): ImportOutcome {
   return { status: "imported", importId: String(job.importId), replayed, summary: job.summary as ImportSummary };
 }
 
-/** Commits the job's chunks from the first one not yet committed. */
+const expired = () => new ConflictError("This import expired before it finished. Choose the file again to finish; rows already imported won't be added twice.");
+const bytesOf = (writes: TransactItem[]) => writes.reduce((sum, w) => sum + Buffer.byteLength(JSON.stringify(w), "utf8"), 0);
+
+/** Commits the job's rows from the first one not yet committed. */
 async function commit(db: Db, ctx: TeamContext, id: string, first: Item, now: Date): Promise<ImportOutcome> {
   const jobKey = keys.importJob(ctx.teamId, id);
   let job = first;
   const replayed = job.status === "done";
   const at = now.toISOString();
+  const total = job.total as number;
+  let chunk: { n: number; rows: StagedRow[] } | undefined;
   while (job.status !== "done") {
-    const n = job.committed as number;
-    const chunks = job.chunks as number;
-    const chunk = await getItem(db, keys.importChunk(ctx.teamId, id, n));
-    if (!chunk || !Array.isArray(chunk.rows)) throw new ConflictError("This import expired before it finished; import the file again with a new importId");
-    const rows = chunk.rows as StagedRow[];
-    const last = n + 1 === chunks;
+    const r = job.committed as number;
+    const n = Math.floor(r / ROWS_PER_CHUNK);
+    if (chunk?.n !== n) {
+      const staged = await getItem(db, keys.importChunk(ctx.teamId, id, n));
+      if (!staged || !Array.isArray(staged.rows)) throw expired();
+      chunk = { n, rows: staged.rows as StagedRow[] };
+    }
+    const pending = chunk.rows.slice(r - n * ROWS_PER_CHUNK);
     for (let attempt = 1; ; attempt++) {
-      const items = await Promise.all(rows.map((r) => getItem(db, keys.product(ctx.teamId, r.key))));
-      const writes = rows.flatMap((r, i) => rowWrites(db, ctx, id, r, items[i], at));
+      const items = await Promise.all(pending.map((row) => getItem(db, keys.product(ctx.teamId, row.key))));
+      // As many rows as fit in one transaction, by their size now; always at least one
+      const writes: TransactItem[] = [];
+      let bytes = 0;
+      let k = 0;
+      for (; k < pending.length; k++) {
+        const rowItems = rowWrites(db, ctx, id, pending[k] as StagedRow, items[k], at);
+        const size = bytesOf(rowItems);
+        if (k > 0 && bytes + size > TX_BYTES) break;
+        writes.push(...rowItems);
+        bytes += size;
+      }
+      const next = r + k;
+      const last = next === total;
       writes.push({
         Update: {
           TableName: db.tableName,
           Key: jobKey,
           UpdateExpression: last ? "SET #committed = :next, #status = :done, finishedAt = :at" : "SET #committed = :next",
-          ConditionExpression: "#committed = :n AND #status = :committing",
+          ConditionExpression: "#committed = :r AND #status = :committing",
           ExpressionAttributeNames: { "#committed": "committed", "#status": "status" },
-          ExpressionAttributeValues: { ":next": n + 1, ":n": n, ":committing": "committing", ...(last ? { ":done": "done", ":at": at } : {}) },
+          ExpressionAttributeValues: { ":next": next, ":r": r, ":committing": "committing", ...(last ? { ":done": "done", ":at": at } : {}) },
         },
       });
       try {
         await connection(db).doc.send(new TransactWriteCommand({ TransactItems: writes }));
-        job = { ...job, committed: n + 1, status: last ? "done" : job.status };
+        job = { ...job, committed: next, status: last ? "done" : job.status };
         break;
       } catch (error) {
         const codes = cancellationCodes(error);
-        if (codes && itemTooLarge(error)) throw new TooLargeError(`An item on line ${rows[0]?.line ?? 0} or after is too large to save`);
+        if (codes && itemTooLarge(error)) throw new TooLargeError(`An item on line ${pending[0]?.line ?? 0} or after is too large to save`);
         if (!codes || !codes.every((c) => RETRYABLE.has(c))) throw error;
-        // The job moved on: a concurrent retry of this import committed this chunk
+        // The job moved on: a concurrent retry of this import committed these rows
         if (codes[writes.length - 1] === "ConditionalCheckFailed") {
-          job = (await getItem(db, jobKey)) as Item;
+          const fresh = await getItem(db, jobKey);
+          if (!fresh) throw expired();
+          job = fresh;
           break;
         }
         if (attempt >= MAX_ATTEMPTS) throw new ConflictError("Items kept changing during the import; try again to finish it");
@@ -559,7 +608,8 @@ export async function importProducts(db: Db, ctx: TeamContext, input: ImportInpu
   const dryRun = input.dryRun === true;
   const id = dryRun && input.importId === undefined ? undefined : importId(input.importId);
   if (typeof input.csv !== "string") throw new InvalidInputError("csv must be the file's text");
-  const request = createHash("sha256").update(JSON.stringify({ userId: ctx.userId, csv: input.csv }), "utf8").digest("hex");
+  // The file alone, not who sent it: any owner can finish an import another owner started
+  const request = createHash("sha256").update(input.csv, "utf8").digest("hex");
 
   const jobKey = id === undefined ? undefined : keys.importJob(ctx.teamId, id);
   const checkJob = (job: Item) => {
@@ -598,7 +648,9 @@ export async function importProducts(db: Db, ctx: TeamContext, input: ImportInpu
     importId: id,
     request,
     status: "committing",
+    total: planned.length,
     chunks: chunks.length,
+    // Rows committed so far
     committed: 0,
     summary,
     userId: ctx.userId,

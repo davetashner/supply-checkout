@@ -5,7 +5,7 @@
 
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { acceptInvite, createInvite, createTeam, type Db, ForbiddenError, importProducts, listDocuments, listMovements, MAX_IMPORT_ROWS, type TeamContext } from "../src/data/index.js";
+import { acceptInvite, createInvite, createTeam, type Db, ForbiddenError, importProducts, listDocuments, listMovements, MAX_IMPORT_ROWS, setDocument, type TeamContext } from "../src/data/index.js";
 import { keys } from "../src/data/keys.js";
 import { endpoint, newUser, rawItem, useTable } from "./helpers.js";
 
@@ -53,7 +53,17 @@ describe.skipIf(!endpoint)("inventory import (DynamoDB Local)", () => {
     const id = randomUUID();
     const outcome = await importProducts(db, ctx, { importId: id, csv: sampleCsv(MAX_IMPORT_ROWS) });
     expect(outcome).toMatchObject({ status: "imported", summary: { created: MAX_IMPORT_ROWS } });
-    expect(await rawItem(db, keys.importJob(ctx.teamId, id).PK, keys.importJob(ctx.teamId, id).SK)).toMatchObject({ status: "done", committed: 21, chunks: 21 });
+    expect(await rawItem(db, keys.importJob(ctx.teamId, id).PK, keys.importJob(ctx.teamId, id).SK)).toMatchObject({ status: "done", committed: MAX_IMPORT_ROWS, total: MAX_IMPORT_ROWS, chunks: 21 });
+  });
+
+  it("updates a chunk of large items in transactions DynamoDB accepts", async () => {
+    const ctx = await team();
+    const note = "x".repeat(300_000);
+    for (let i = 0; i < 30; i++) await setDocument(db, ctx, "products", `k${i}`, { code: `c${i}`, name: `Item ${i}`, price: 1, note }, { expectedVersion: 0 });
+    const csv = ["name,barcode,price", ...Array.from({ length: 30 }, (_, i) => `Item ${i},c${i},2`)].join("\n");
+    expect(await importProducts(db, ctx, { importId: randomUUID(), csv })).toMatchObject({ status: "imported", summary: { updated: 30 } });
+    const items = await allProducts(ctx);
+    expect(items.every((d) => d.data.price === 2 && d.data.note === note)).toBe(true);
   });
 
   it("two imports of the same file at once make one item per row", async () => {
