@@ -12,7 +12,7 @@
     "test": "vitest run",
     "test:update": "vitest run --update",
     "synth": "cdk synth --quiet",
-    "synth:all-regions": "cdk synth --quiet -c regions=us-east-1,us-west-2 -o cdk.out/all-regions",
+    "synth:all-regions": "cdk synth --quiet -c regions=all -o cdk.out/all-regions",
     "diff": "cdk diff",
     "deploy": "cdk deploy --all",
     "check": "npm run lint && npm test && npm run synth && npm run synth:all-regions",
