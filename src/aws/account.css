@@ -17,6 +17,11 @@
 .teambar label{font-weight:600}
 .teambar select{flex:0 1 260px}
 /* Importing inventory (src/aws/import.js), in the app's modal */
+.import-guide{font-size:14px}
+.import-guide summary{cursor:pointer;font-weight:600}
+.import-guide dl{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:8px 0}
+.import-guide dt{font-family:var(--mono)}
+.import-guide dd{margin:0}
 .import-result{display:grid;gap:10px}
 .import-result:empty{display:none}
 .import-result p{margin:0}
