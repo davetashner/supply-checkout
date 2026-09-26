@@ -33,8 +33,11 @@ function merge(target, patch) {
 export class FakeBackend {
   // docs: { "<teamId>/<collection>/<id>": data }
   // members: { "<teamId>": [{ userId, email, role, joinedAt }] }, for the members screen
-  constructor({ teams = [TEAM], invites = [], members = {}, user = USER, docs = {}, signedIn = true, claims = { given_name: "Pat", family_name: "Lee", email: USER.email }, config = CONFIG, expiresIn = 3600 } = {}) {
-    Object.assign(this, { teams: clone(teams), invites: clone(invites), members: clone(members), user, signedIn, claims, config, expiresIn });
+  // teamInvites: { "<teamId>": [{ id, email, role, createdAt, expiresAt, inviteStatus, failureReason, failedAt }] },
+  // the invites its owners see there (invites is the signed-in user's own, for /me)
+  constructor({ teams = [TEAM], invites = [], members = {}, teamInvites = {}, user = USER, docs = {}, signedIn = true, claims = { given_name: "Pat", family_name: "Lee", email: USER.email }, config = CONFIG, expiresIn = 3600 } = {}) {
+    Object.assign(this, { teams: clone(teams), invites: clone(invites), members: clone(members), teamInvites: clone(teamInvites), user, signedIn, claims, config, expiresIn });
+    this.inviteIds = 0;
     this.docs = new Map(Object.entries(docs).map(([k, data]) => [k, { version: 1, data: clone(data) }]));
     this.calls = [];
     // Checkout, return and stock operations: "<teamId>/<operationId>" -> { request, result }
@@ -176,6 +179,9 @@ export class FakeBackend {
     m = path.match(/^\/teams\/([^/]+)\/members(?:\/([^/]+))?$/);
     if (m) return this.member(decodeURIComponent(m[1]), m[2] && decodeURIComponent(m[2]), method, call.body, err);
 
+    m = path.match(/^\/teams\/([^/]+)\/invites(?:\/([^/]+)(\/resend)?)?$/);
+    if (m) return this.teamInvite(decodeURIComponent(m[1]), m[2] && decodeURIComponent(m[2]), !!m[3], method, call.body, err);
+
     m = path.match(/^\/teams\/([^/]+)\/sheets\/([^/]+)\/(checkout|return)$/);
     if (m && method === "POST") return this.command(decodeURIComponent(m[1]), decodeURIComponent(m[2]), m[3], call.body);
 
@@ -231,9 +237,43 @@ export class FakeBackend {
     const owners = list.filter((x) => x.role === "owner").length;
     const demoting = target.role === "owner" && (method === "DELETE" || body.role !== "owner");
     if (demoting && owners === 1) return [409, { error: { code: "aborted", message: "A team needs at least one owner. Make someone else an owner first.", reason: "last_owner" } }];
-    if (method === "DELETE") { this.members[team] = list.filter((x) => x !== target); return [204]; }
+    if (method === "DELETE") {
+      this.members[team] = list.filter((x) => x !== target);
+      // Their other invites to the team go too
+      if (target.email) this.teamInvites[team] = (this.teamInvites[team] || []).filter((i) => i.email !== target.email);
+      return [204];
+    }
     target.role = body.role;
     return [200, { member: clone(target) }];
+  }
+
+  // A team's invites as the API runs them: owners list, invite (the server emails the
+  // link), revoke and re-send (a new ID and link, pending again)
+  teamInvite(team, id, resend, method, body, err) {
+    const mine = this.teams.find((t) => t.id === team);
+    if (!mine) return err(403, "permission_denied", "not_member");
+    if (mine.role !== "owner") return err(403, "permission_denied", "owners_only");
+    const list = (this.teamInvites[team] ||= []);
+    const fresh = (email, role) => {
+      const now = Date.now();
+      return { id: `inv-${++this.inviteIds}`, email, role, createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 7 * 86400_000).toISOString(), inviteStatus: "pending", failureReason: null, failedAt: null };
+    };
+    if (method === "GET") return [200, { invites: clone(list) }];
+    if (method === "DELETE") { this.teamInvites[team] = list.filter((i) => i.id !== id); return [204]; }
+    if (resend) {
+      const old = list.find((i) => i.id === id);
+      if (!old) return err(404, "not_found");
+      const invite = fresh(old.email, old.role);
+      this.teamInvites[team] = [invite, ...list.filter((i) => i !== old)];
+      return [201, { invite: clone(invite) }];
+    }
+    const email = String(body.email || "").trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+$/.test(email) || !["owner", "contributor", "viewer"].includes(body.role)) return err(400, "bad_request");
+    if ((this.members[team] || []).some((x) => x.email === email)) return [409, { error: { code: "aborted", message: "They're already a member of this team" } }];
+    if (list.some((i) => i.email === email && i.inviteStatus !== "expired")) return [409, { error: { code: "aborted", message: "They already have an invite to this team. Resend it instead." } }];
+    const invite = fresh(email, body.role);
+    list.unshift(invite);
+    return [201, { invite: clone(invite) }];
   }
 
   command(team, sheetId, name, body) {

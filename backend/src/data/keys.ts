@@ -3,6 +3,7 @@
 // into another key (for example, a sheet ID containing "#").
 
 import { InvalidInputError } from "./errors.js";
+import { INVITE_LIMIT_PREFIX } from "./schema.js";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
@@ -79,6 +80,18 @@ export const keys = {
   stripe: (customerId: string) => ({ PK: `STRIPE#${id(customerId, "Stripe customer ID")}`, SK: "TEAM" }),
   /** How many teams the user created on a UTC day (YYYY-MM-DD): the per-user rate limit. */
   teamsCreated: (userId: string, day: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: `LIMIT#TEAMS#${date(day)}` }),
+  /** How many invites a team sent (created or re-sent) on a UTC day: the per-team invite limit. */
+  invitesSent: (teamId: string, day: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `LIMIT#INVITES#${date(day)}` }),
+  /**
+   * How many invites went to one address (hashEmail) on a UTC day, from any
+   * team: the per-invitee limit, so no one can use invites to flood a mailbox.
+   */
+  invitesToAddress: (emailHash: string, day: string) => ({ PK: inviteLimitPartition(emailHash), SK: `LIMIT#INVITES#${date(day)}` }),
+  /** How many invites a team sent one address (its limit key) on a UTC day: so one team can't use up the address's allowance. */
+  invitesFromTeamToAddress: (teamId: string, emailHash: string, day: string) => ({
+    PK: `TEAM#${id(teamId, "team ID")}`,
+    SK: `LIMIT#INVITES#${date(day)}#${inviteLimitPartition(emailHash).slice(INVITE_LIMIT_PREFIX.length)}`,
+  }),
   webhook: (eventId: string) => ({ PK: `WEBHOOK#${id(eventId, "webhook event ID")}`, SK: "DONE" }),
   /** A checkout, return or stock command's record, for replaying a retry (commands.ts). */
   operation: (teamId: string, operationId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `OP#${id(operationId, "operation ID")}` }),
@@ -140,6 +153,12 @@ export const gsi2 = {
 export function inviteePartition(emailHash: string): string {
   if (typeof emailHash !== "string" || !HASH.test(emailHash)) throw new InvalidInputError("Invalid email hash");
   return `INVITEE#${emailHash}`;
+}
+
+/** The partition that counts the invites sent to one address (hashEmail), across teams. */
+export function inviteLimitPartition(emailHash: string): string {
+  if (typeof emailHash !== "string" || !HASH.test(emailHash)) throw new InvalidInputError("Invalid email hash");
+  return `${INVITE_LIMIT_PREFIX}${emailHash}`;
 }
 
 /** The partition that holds everything a team owns. */
