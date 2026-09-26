@@ -39,6 +39,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `scripts/check-public-safety.mjs` | Blocks AWS identifiers, email addresses and credentials from this public repo (pre-commit hook and CI). |
 | `scripts/check-region-strings.mjs` | Blocks AWS region names in `infra/`, `backend/` and `src/` outside `infra/lib/config.ts` (ADR 0010; pre-commit hook and CI). |
 | `scripts/export-beads.mjs` | Writes the beads backlog export without owner emails (`npm run beads:export`). |
+| `scripts/beads-pr.sh` | Refreshes the committed beads export through a `chore:` PR and lands it (`npm run beads:pr`); does nothing if the export is current. |
 | `tests/` | Playwright end-to-end tests, run against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`), and the web build's runtime against a fake AWS backend (`tests/fake-aws.js`). |
 | `infra/` | The AWS CDK app (TypeScript) for the SaaS version. Its own npm package; see [Infrastructure](#infrastructure). |
 | `backend/` | Lambda code for the SaaS version (TypeScript). `backend/src/data` is the data-access module, the only code that talks to DynamoDB. `backend/src/api` is the HTTP API's handlers (data and sign-in sessions). `backend/src/observability` is logging and business metrics. Its own npm package; see [Backend](#backend). |
@@ -527,7 +528,7 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | Lint and validate HTML | ESLint on `src/`, `demo/`, scripts and tests; builds all three and runs html-validate on each |
 | Lint GitHub workflows | actionlint |
 | No region names outside the config module | `scripts/check-region-strings.mjs`: fails on any AWS region name in `infra/`, `backend/` or `src/` outside `infra/lib/config.ts` (ADR 0010) |
-| Shell scripts | shellcheck on `scripts/*.sh`, and the `land-pr.sh` tests against a fake `gh` |
+| Shell scripts | shellcheck on `scripts/*.sh`, and the `land-pr.sh` and `beads-pr.sh` tests against a fake `gh` |
 | Secret scan | gitleaks on every commit in the history, and `scripts/check-public-safety.mjs` on every file (AWS account and SSO identifiers, email addresses, AWS and Stripe keys, private keys) |
 | Dependency audit | `npm audit` fails on high-severity advisories; dependency review fails a PR that adds a moderate-or-worse vulnerable package |
 | CodeQL (javascript-typescript), CodeQL (actions) | CodeQL `security-extended` queries on the app, scripts, tests and workflows (`.github/workflows/codeql.yml`, which also runs weekly). Results go to the repository's code scanning alerts |

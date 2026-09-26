@@ -11,6 +11,7 @@ import {
   checkout,
   ConflictError,
   createInvite,
+  createSheet,
   createTeam,
   type Db,
   ForbiddenError,
@@ -22,6 +23,7 @@ import {
   returnItems,
   setDocument,
   type TeamContext,
+  TooLargeError,
   updateDocument,
 } from "../src/data/index.js";
 import { connection } from "../src/data/client.js";
@@ -188,5 +190,70 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
     await expect(checkout(db, viewer, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 1 })).rejects.toThrow(ForbiddenError);
     await expect(adjustStockCommand(db, viewer, { operationId: randomUUID(), productKey: "0123", reason: "count", count: 1 })).rejects.toThrow(ForbiddenError);
     expect(await history(viewer)).toEqual([]);
+  });
+  it("refuses __proto__ as a product key, and handles other built-in names like any key", async () => {
+    const ctx = await team();
+    await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 1 });
+    await expect(checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "__proto__", quantity: 1, name: "x", price: 1 })).rejects.toThrow(InvalidInputError);
+    await expect(returnItems(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "__proto__", quantity: 1 })).rejects.toThrow(InvalidInputError);
+    await expect(adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "__proto__", reason: "count", count: 1 })).rejects.toThrow(InvalidInputError);
+    await expect(setDocument(db, ctx, "products", "__proto__", { name: "x", price: 1 })).rejects.toThrow(InvalidInputError);
+    expect((await getDocument(db, ctx, "sheets", "s1"))?.version).toBe(2);
+
+    // Named "String": the SDK would store a map with its own `constructor` field as a string
+    for (const key of ["constructor", "toString"]) {
+      await setDocument(db, ctx, "products", key, { code: key, name: "String", price: 2, stock: 20 });
+      await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: key, quantity: 2 });
+      await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: key, quantity: 3 });
+      await returnItems(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: key, quantity: 4 });
+      expect(await line(ctx, key)).toEqual({ code: key, name: "String", price: 2, out: 5, returned: 4 });
+      expect((await getDocument(db, ctx, "products", key))?.data.stock).toBe(19);
+      expect((await history(ctx, key)).map((m) => m.delta)).toEqual([4, -3, -2]);
+    }
+    expect(await line(ctx)).toMatchObject({ out: 1, returned: 0 });
+    // The whole sheet saves and merges as a document with those lines in it
+    await updateDocument(db, ctx, "sheets", "s1", { items: { constructor: { out: 6 } } });
+    expect(await line(ctx, "constructor")).toEqual({ code: "constructor", name: "String", price: 2, out: 6, returned: 4 });
+    const sheet = await getDocument(db, ctx, "sheets", "s1");
+    await setDocument(db, ctx, "sheets", "s1", sheet?.data);
+    expect((await getDocument(db, ctx, "sheets", "s1"))?.data.items).toEqual(sheet?.data.items);
+
+    // A new items map whose only line is keyed constructor, from a command and from createSheet
+    await setDocument(db, ctx, "sheets", "s1", { client: "Echo", date: "2026-09-26", status: "open" });
+    await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "constructor", quantity: 1 });
+    expect((await getDocument(db, ctx, "sheets", "s1"))?.data.items).toEqual({ constructor: { code: "constructor", name: "String", price: 2, out: 1, returned: 0 } });
+    const created = await createSheet(db, ctx, { client: "Echo", date: "2026-09-26", items: { constructor: { name: "String", price: 1, out: 1, returned: 0 } } });
+    expect((await getDocument(db, ctx, "sheets", created.id))?.data.items).toEqual({ constructor: { name: "String", price: 1, out: 1, returned: 0 } });
+  });
+
+  it("refuses with TooLargeError, having written nothing, a change that takes a sheet past DynamoDB's item limit", async () => {
+    const ctx = await team();
+    const Key = keys.sheet(ctx.teamId, "s1");
+    const put = (pad: number) =>
+      connection(db).doc.send(
+        new PutCommand({
+          TableName: db.tableName,
+          Item: { ...Key, type: "sheet", id: "s1", version: 1, status: "open", items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 1 } }, pad: "x".repeat(pad) },
+        }),
+      );
+    // The largest sheet DynamoDB takes, to the byte: a line's first return adds a field to it
+    let [fits, tooBig] = [390_000, 410_000];
+    while (tooBig - fits > 1) {
+      const mid = Math.floor((fits + tooBig) / 2);
+      try {
+        await put(mid);
+        fits = mid;
+      } catch {
+        tooBig = mid;
+      }
+    }
+    await put(fits);
+    const before = await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1");
+    await expect(returnItems(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 1 })).rejects.toThrow(TooLargeError);
+    // A new line is refused before the transaction
+    await expect(checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "one-off", quantity: 1, name: "Bins", price: 4 })).rejects.toThrow(TooLargeError);
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1")).toEqual(before);
+    expect(await stock(ctx)).toBe(100);
+    expect(await history(ctx)).toEqual([]);
   });
 });

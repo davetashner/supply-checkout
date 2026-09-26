@@ -61,7 +61,11 @@ rather than rounding ([ADR 0014](../adr/0014-units-cost-and-rounding.md)).
 ```
 
 - `productKey` is the line's key: the product key, as the app's `keyOf(code)`
-  or `newKey()` makes it.
+  or `newKey()` makes it. Any key the documents accept works, including
+  built-in names like `constructor`, except `__proto__` (400).
+- A sheet that a new line would take past the 350,000-byte document limit
+  refuses it with 413 `quota_exceeded`, as does any checkout or return that
+  DynamoDB refuses for its 400 KB item limit. Start another sheet.
 - A new line copies `code`, `name`, `price` and `cost` from the product, read
   inside the transaction. The client doesn't send them.
 - For an item that isn't in inventory (the "Save to inventory" box unticked),

@@ -19,6 +19,7 @@
 #   seq.queue        JSON objects, one per line, merged into pr.json by each
 #                    `gh api graphql` read (the merge queue status); the last
 #                    one then sticks
+#   export_stale     if present, `node scripts/export-beads.mjs --check` fails
 #   calls            every gh, bd and sleep call, appended by the fakes
 set -euo pipefail
 
@@ -104,7 +105,10 @@ cat > "$tmp/bin/sleep" <<'EOF'
 #!/usr/bin/env bash
 echo "sleep $*" >> "$FAKE/calls"
 EOF
-printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/bin/node"
+cat > "$tmp/bin/node" <<'EOF'
+#!/usr/bin/env bash
+[ ! -e "$FAKE/export_stale" ]
+EOF
 chmod +x "$tmp/bin/"*
 export PATH="$tmp/bin:$PATH"
 
@@ -173,6 +177,16 @@ check "squash-merges" called "gh pr merge 42 --squash --delete-branch"
 check "reports the merge commit" says "Merged as abcdef1"
 check "removes the worktree and branch" cleaned_up
 check "closes the Closes bead" called "bd close supply-checkout-abc --reason Completed in PR #42"
+check "says nothing about an up-to-date export" not_says "beads export"
+done_case
+
+echo "beads export is stale"
+scenario export-stale
+touch "$FAKE/export_stale"
+land
+check "exits 0" exits 0
+check "suggests npm run beads:pr in one line" [ "$(grep -c "beads" <<< "$out")" -eq 2 ]
+check "names the command" says "refresh it with: npm run beads:pr"
 done_case
 
 echo "blocked with green CI and no approval (release-please)"

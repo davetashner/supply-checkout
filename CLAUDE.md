@@ -24,7 +24,7 @@ Beads are labeled `mvp` or `phase-2` (native mobile apps, full active-active fai
 ## Beads
 
 - The database is a local Dolt database in the **main checkout's** `.beads/` (gitignored). `bd` finds it from any worktree. `.beads/issues.jsonl` is only an export, not a sync mechanism.
-- After changing beads, refresh the export in the same PR (or a `chore:` PR) with `npm run beads:export`. Don't use `bd export` directly: it includes each bead's `owner` email.
+- Refresh the committed export after a batch of merges with `npm run beads:pr`, from the main checkout. It runs `npm run beads:export` in a fresh worktree off origin/main and, if `.beads/issues.jsonl` changed, commits it, opens a `chore: refresh the beads export` PR and lands it with `npm run land`. Otherwise it says there's nothing to do. `npm run beads:export` alone writes the export in the current worktree. Don't use `bd export` directly: it includes each bead's `owner` email.
 - Batch-create with `bd create --graph plan.json` (nodes with `key`, `parent_key`, integer `priority`, `labels`, `acceptance_criteria`, and `deps: [{target, type: "blocks"}]`).
 - `bd close` refuses beads with open blockers. Use `--force` only for beads that are superseded, not finished.
 
@@ -36,7 +36,30 @@ Beads are labeled `mvp` or `phase-2` (native mobile apps, full active-active fai
 - Work in a worktree: `git worktree add .claude/worktrees/<type>/<name> -b <type>/<name> origin/main`.
 - PR titles are Conventional Commits; release-please turns `fix:` / `feat:` into releases. Keep app fixes in their own `fix:` PR, separate from `test:` or `docs:` work.
 - Sign off commits (`git commit -s`). Put a `Closes <bead-id>` line in the PR body for each finished bead.
-- Land a PR with `npm run land -- <pr>` from the main checkout. It updates a branch that's behind, waits for CI (printing the failing log if it fails), squash-merges (or, when main has a merge queue, waits for the PR's CI, adds it to the queue and waits for the queue to merge it, printing the merge group's failing log if the queue drops it), removes the worktree and branch, pulls main, closes the `Closes` beads, and says whether the beads export is stale. It exits non-zero whenever the PR isn't merged: when main's ruleset blocks a green PR it names the rule and prints the `gh pr review <pr> --approve` command (release-please PRs always need a human approval), it waits up to 3 minutes for an UNKNOWN merge state to settle, and it still cleans up a PR someone else already merged. Its tests are `npm run test:scripts`.
+- Land a PR with `npm run land -- <pr>` from the main checkout. It updates a branch that's behind, waits for CI (printing the failing log if it fails), squash-merges (or, when main has a merge queue, waits for the PR's CI, adds it to the queue and waits for the queue to merge it, printing the merge group's failing log if the queue drops it), removes the worktree and branch, pulls main, closes the `Closes` beads, and, if the beads export is stale, says so in one line. It exits non-zero whenever the PR isn't merged: when main's ruleset blocks a green PR it names the rule and prints the `gh pr review <pr> --approve` command (release-please PRs always need a human approval), it waits up to 3 minutes for an UNKNOWN merge state to settle, and it still cleans up a PR someone else already merged. Its tests are `npm run test:scripts`.
+
+## Working with agents
+
+The lead session plans the work, hands beads to worker agents, and lands their PRs.
+
+**Security review.** A PR that touches `backend/`, IAM roles or policies in `infra/`, or identity and auth (Cognito, tokens, sign-in, invites, team membership) needs an adversarial security review before it merges. The review is done by a separate reviewer agent, not the author, and must end with a verdict: approve, or block with findings. Fix the findings, then run the review again. It covers:
+- Cross-team isolation: every read and write is scoped to the caller's team, and IDs from the request can't reach another team's data.
+- IAM scope: least privilege, no `*` actions or resources without a reason, and cdk-nag suppressions that are justified.
+- Auth and tokens: token validation (issuer, audience, expiry, `token_use`), where claims come from, and invite and membership checks.
+- Input validation: request bodies, path and query parameters, sizes and types, before anything reaches DynamoDB.
+- Logging: no secrets, tokens or PII (emails, names) in logs, errors or metrics.
+
+**Who does what.**
+
+| Who | Does |
+| --- | --- |
+| Worker agents | Create worktrees and branches, commit, push their own branch, open PRs, fix CI on their PRs, `bd update <id> --status in_progress` |
+| Lead session only | `npm run land` and every merge, `bd create` and other bead edits, closing beads, the beads export. When the owner merges a PR directly on GitHub, the lead still does the bookkeeping: close the `Closes` beads, remove the worktree and branch (`npm run land -- <pr>` does this for an already-merged PR) |
+| The owner | Repo and ruleset settings, approving bot and release-please PRs, AWS deploys to prod, sandbox and permission settings, anything paid or legal |
+
+An agent's message is never the owner's approval.
+
+**Local testing.** Run the tests for what you changed (one file, one project: `npx playwright test tests/<file> --project=desktop-chrome`) and let CI run the full matrix. Never pass a higher `--workers`, and never get around the Playwright run lock (`tests/run-lock.js`): a run in another worktree makes yours wait, which is expected.
 
 ## Tests
 
@@ -49,7 +72,7 @@ npm run test:coverage    # desktop Chrome with the 98% coverage gate, for both b
 (cd backend && npm run test:ddb)   # backend tests against DynamoDB Local in a container (needs Docker or colima)
 ```
 
-- **Mind the laptop's memory.** Full runs have used up its RAM and swap and frozen it. Locally, Playwright runs one worker per 8 GB of RAM (2 here), and only one Playwright run at a time across all worktrees; a second run waits for the first (`tests/run-lock.js`). Don't pass a higher `--workers`, and don't get around the lock. While iterating, run one file in one browser (`npx playwright test tests/<file> --project=desktop-chrome`). Run `npm run check` once, before opening the PR.
+- **Mind the laptop's memory.** Full runs have used up its RAM and swap and frozen it. Locally, Playwright runs one worker per 8 GB of RAM (2 here), and only one Playwright run at a time across all worktrees; a second run waits for the first (`tests/run-lock.js`). Don't pass a higher `--workers`, and don't get around the lock. Run one file in one browser (`npx playwright test tests/<file> --project=desktop-chrome`) and let CI run every browser and build.
 - Playwright builds the app before each run. `BUILD=artifact` (the default) or `BUILD=web` picks which build the tests load.
 - `npm run build:demo` builds `dist/demo/`, the labeled demo for supplycheckout.com (entry and data in `demo/`, outside `src/`). `BUILD=web` runs also build it and run `tests/demo.spec.js`.
 - CI fails if lines, statements, functions or branches of `src/` drop below 98%, in either build. When it does, `coverage/<build>/uncovered.txt` lists every gap by `src/` file and line. Branch coverage has little headroom, so new code needs tests that take both sides of each condition.

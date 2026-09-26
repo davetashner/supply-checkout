@@ -328,6 +328,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/CommandConflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
   /teams/{teamId}/sheets/{sheetId}/return:
     parameters:
       - $ref: "#/components/parameters/teamId"
@@ -351,6 +352,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/CommandConflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
   /me:
     get:
       tags: [account]
@@ -568,7 +570,7 @@ components:
       name: key
       in: path
       required: true
-      description: The product key, percent-encoded. Up to 256 characters, no `/` or control characters.
+      description: The product key, percent-encoded. Up to 256 characters, no `/` or control characters, and not `__proto__`.
       schema: { type: string, minLength: 1, maxLength: 256 }
     sheetId:
       name: sheetId

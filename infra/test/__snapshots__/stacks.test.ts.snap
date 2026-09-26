@@ -4471,6 +4471,46 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
               },
               "Sid": "AllowPublishThroughSSLOnly",
             },
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":cloudwatch:",
+                        {
+                          "Ref": "AWS::Region",
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":alarm:*",
+                      ],
+                    ],
+                  },
+                },
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId",
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudwatch.amazonaws.com",
+              },
+              "Resource": {
+                "Ref": "AlarmTopicsP1E7C597D3",
+              },
+              "Sid": "AllowCloudWatchAlarmsToPublish",
+            },
           ],
           "Version": "2012-10-17",
         },
@@ -4558,6 +4598,46 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
                 "Ref": "AlarmTopicsP213C63151",
               },
               "Sid": "AllowPublishThroughSSLOnly",
+            },
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":cloudwatch:",
+                        {
+                          "Ref": "AWS::Region",
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":alarm:*",
+                      ],
+                    ],
+                  },
+                },
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId",
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudwatch.amazonaws.com",
+              },
+              "Resource": {
+                "Ref": "AlarmTopicsP213C63151",
+              },
+              "Sid": "AllowCloudWatchAlarmsToPublish",
             },
           ],
           "Version": "2012-10-17",
@@ -10703,6 +10783,46 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
               },
               "Sid": "AllowPublishThroughSSLOnly",
             },
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":cloudwatch:",
+                        {
+                          "Ref": "AWS::Region",
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":alarm:*",
+                      ],
+                    ],
+                  },
+                },
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId",
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudwatch.amazonaws.com",
+              },
+              "Resource": {
+                "Ref": "AlarmTopicsP1E7C597D3",
+              },
+              "Sid": "AllowCloudWatchAlarmsToPublish",
+            },
           ],
           "Version": "2012-10-17",
         },
@@ -10790,6 +10910,46 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
                 "Ref": "AlarmTopicsP213C63151",
               },
               "Sid": "AllowPublishThroughSSLOnly",
+            },
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition",
+                        },
+                        ":cloudwatch:",
+                        {
+                          "Ref": "AWS::Region",
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId",
+                        },
+                        ":alarm:*",
+                      ],
+                    ],
+                  },
+                },
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId",
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudwatch.amazonaws.com",
+              },
+              "Resource": {
+                "Ref": "AlarmTopicsP213C63151",
+              },
+              "Sid": "AllowCloudWatchAlarmsToPublish",
             },
           ],
           "Version": "2012-10-17",

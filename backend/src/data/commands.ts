@@ -30,8 +30,9 @@
 // as a whole, and the command reads again and retries, up to MAX_ATTEMPTS.
 
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { type Db, connection } from "./client.js";
-import { ConflictError, InvalidInputError, NotFoundError } from "./errors.js";
+import { type Db, connection, storable } from "./client.js";
+import { MAX_DOCUMENT_BYTES } from "./documents.js";
+import { ConflictError, InvalidInputError, NotFoundError, TooLargeError } from "./errors.js";
 import { barcode, id as checkId, keys, movementPrefix, productKey, strip, teamPartition } from "./keys.js";
 import { count as checkCount, money, quantity as checkQuantity, storedMoney } from "./money.js";
 import { type Page, queryPage } from "./query.js";
@@ -179,6 +180,17 @@ function cancellationCodes(error: unknown): (string | undefined)[] | undefined {
 
 const RETRYABLE = new Set([undefined, "None", "ConditionalCheckFailed", "TransactionConflict"]);
 
+/** True when DynamoDB cancelled the transaction because an item would pass its 400 KB limit. */
+function itemTooLarge(error: unknown): boolean {
+  const reasons = (error as { CancellationReasons?: { Code?: string; Message?: string }[] }).CancellationReasons ?? [];
+  return reasons.some((r) => r.Code === "ValidationError" && /size/i.test(r.Message ?? ""));
+}
+
+/** A sheet's line for `key`, only if the sheet has one: never a built-in like `constructor` from the map's prototype. */
+function lineOf(items: Item | undefined, key: string): unknown {
+  return items !== undefined && Object.hasOwn(items, key) ? items[key] : undefined;
+}
+
 async function getItem(db: Db, key: Item): Promise<Item | undefined> {
   const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: key, ConsistentRead: true }));
   return Item;
@@ -231,6 +243,7 @@ async function execute(
       return { result, replayed: false };
     } catch (error) {
       const codes = cancellationCodes(error);
+      if (codes && itemTooLarge(error)) throw new TooLargeError("This sheet is too large to add to; start another sheet");
       // Anything but a failed condition or a race (a malformed item, say) won't get better by retrying
       if (!codes || !codes.every((c) => RETRYABLE.has(c))) throw error;
       // The same operation got in first, from a concurrent retry
@@ -354,7 +367,7 @@ export async function checkout(db: Db, ctx: TeamContext, input: CheckoutInput, n
     const [rawSheet, product] = await readSheetAndProduct(db, ctx, sheetId, key);
     const sheet = openSheet(rawSheet, "check items out");
     const items = sheet.items as Item | undefined;
-    const existing = items?.[key];
+    const existing = lineOf(items, key);
     if (existing !== undefined && !isMap(existing)) throw new InvalidInputError("This line is malformed; correct it first");
 
     const names: Record<string, string> = { "#items": "items", "#line": key, "#status": "status", "#version": "version" };
@@ -384,12 +397,18 @@ export async function checkout(db: Db, ctx: TeamContext, input: CheckoutInput, n
         snapshot = { code: oneOff.code ?? "", name: oneOff.name, price: oneOff.price, ...(oneOff.cost === undefined ? {} : { cost: oneOff.cost }) };
       }
       const line = { ...snapshot, out: qty, returned: 0 };
+      // Refuse early a line that would take the sheet past the document limit
+      // (DynamoDB would refuse it past 400 KB anyway, which execute also maps to 413)
+      if (Buffer.byteLength(JSON.stringify(sheet), "utf8") + Buffer.byteLength(JSON.stringify({ [key]: line }), "utf8") > MAX_DOCUMENT_BYTES) {
+        throw new TooLargeError(`Sheets are limited to ${MAX_DOCUMENT_BYTES} bytes; start another sheet`);
+      }
       if (items) {
         values[":line"] = line;
         update = "SET #items.#line = :line ADD #version :one";
         clauses = ["attribute_exists(#items)", "attribute_not_exists(#items.#line)"];
       } else {
-        values[":items"] = { [key]: line };
+        // An own field even for a key like "constructor" (storable() below makes it marshal as a map)
+        values[":items"] = Object.fromEntries([[key, line]]);
         // DynamoDB refuses a name the expressions don't use
         delete names["#line"];
         update = "SET #items = :items ADD #version :one";
@@ -430,7 +449,7 @@ export async function checkout(db: Db, ctx: TeamContext, input: CheckoutInput, n
             UpdateExpression: update,
             ConditionExpression: anyOf(clauses, SHEET_OPEN),
             ExpressionAttributeNames: names,
-            ExpressionAttributeValues: values,
+            ExpressionAttributeValues: storable(values),
           },
         },
         productItem,
@@ -458,7 +477,7 @@ export async function returnItems(db: Db, ctx: TeamContext, input: ReturnInput, 
   return execute(db, ctx, opId, "return", request, now, async () => {
     const [rawSheet, product] = await readSheetAndProduct(db, ctx, sheetId, key);
     const sheet = openSheet(rawSheet, "record returns");
-    const line = (sheet.items as Item | undefined)?.[key];
+    const line = lineOf(sheet.items as Item | undefined, key);
     if (!isMap(line)) throw new InvalidInputError("This item isn't on this sheet");
     const { out, returned } = lineCounts(line);
     if ((returned ?? 0) + qty > out) {

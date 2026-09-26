@@ -135,7 +135,7 @@ export function sheetMovement(result: WriteResult): { checkouts: number; returns
   let checkouts = 0;
   let returns = 0;
   for (const [key, line] of Object.entries(after)) {
-    const old = before[key];
+    const old = Object.hasOwn(before, key) ? before[key] : undefined;
     checkouts += Math.max(0, int(line?.out) - int(old?.out));
     returns += Math.max(0, int(line?.returned) - int(old?.returned));
   }

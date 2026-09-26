@@ -5,6 +5,7 @@
 // condition scopes a role session: a call that names any other partition is
 // refused with AccessDeniedException.
 
+import { convertToAttr, convertToNative } from "@aws-sdk/util-dynamodb";
 import type { Db } from "../src/data/index.js";
 import { fakeDb, REGION } from "./helpers.js";
 
@@ -32,6 +33,33 @@ export class MemoryTable {
   beforeTransactWrite?: () => void;
 
   private static id = (k: Item) => `${String(k.PK)}\u0000${String(k.SK)}`;
+
+  /** DynamoDB's item size limit. The table measures an item as JSON, which is close enough. */
+  static readonly MAX_ITEM_BYTES = 400_000;
+
+  private static tooBig = (item: Item) => Buffer.byteLength(JSON.stringify(item), "utf8") > MemoryTable.MAX_ITEM_BYTES;
+
+  /**
+   * What DynamoDB would get: each attribute or value marshalled as the
+   * document client does it (one by one, dropping undefined and "__proto__"),
+   * and read back. A value the SDK can't marshal throws as it would.
+   */
+  private static wire(values: Item | undefined): Item | undefined {
+    if (values === undefined) return undefined;
+    const out: Item = {};
+    for (const [k, v] of Object.entries(values)) {
+      if (v !== undefined && typeof v !== "function") out[k] = convertToNative(convertToAttr(v, { removeUndefinedValues: true, convertClassInstanceToMap: false }));
+    }
+    return out;
+  }
+
+  private static onWire(input: Input): Input {
+    return {
+      ...input,
+      ...(input.Item ? { Item: MemoryTable.wire(input.Item) } : {}),
+      ...(input.ExpressionAttributeValues ? { ExpressionAttributeValues: MemoryTable.wire(input.ExpressionAttributeValues) } : {}),
+    };
+  }
 
   put(item: Item): void {
     this.items.set(MemoryTable.id(item), structuredClone(item));
@@ -80,7 +108,10 @@ export class MemoryTable {
 
   private send(command: { constructor: { name: string }; input: Input }, team: Set<string> | undefined): unknown {
     const name = command.constructor.name;
-    const input = command.input;
+    const input = MemoryTable.onWire(command.input);
+    if (input.TransactItems) {
+      input.TransactItems = (input.TransactItems as Record<string, Input>[]).map((op) => Object.fromEntries(Object.entries(op).map(([kind, body]) => [kind, MemoryTable.onWire(body)])));
+    }
     MemoryTable.checkExpressions(input);
     for (const op of (input.TransactItems as Record<string, Input>[] | undefined) ?? []) MemoryTable.checkExpressions(Object.values(op)[0] as Input);
     const record = (partitions: string[]) => {
@@ -104,6 +135,7 @@ export class MemoryTable {
         const item = input.Item as Item;
         record([String(item.PK)]);
         this.check(input, this.items.get(MemoryTable.id(item)));
+        if (MemoryTable.tooBig(item)) throw Object.assign(new Error("Item size has exceeded the maximum allowed size"), { name: "ValidationException" });
         this.items.set(MemoryTable.id(item), structuredClone(item));
         return {};
       }
@@ -158,7 +190,8 @@ export class MemoryTable {
   private static resolve(item: Item, path: string[]): unknown {
     let value: unknown = item;
     for (const part of path) {
-      if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+      // Own fields only, as in DynamoDB: "constructor" isn't in every map
+      if (typeof value !== "object" || value === null || Array.isArray(value) || !Object.hasOwn(value, part)) return undefined;
       value = (value as Item)[part];
     }
     return value;
@@ -190,11 +223,21 @@ export class MemoryTable {
     if (reasons.some((r) => r.Code !== "None")) {
       throw Object.assign(new Error("Transaction cancelled"), { name: "TransactionCanceledException", CancellationReasons: reasons });
     }
-    for (const { kind, body, key } of ops) {
+    // Build every change first: an item over the size limit cancels the lot
+    const changes = ops.map(({ kind, body, key }) => {
       const id = MemoryTable.id(key);
-      if (kind === "Put") this.items.set(id, structuredClone(body.Item as Item));
+      const next = kind === "Put" ? structuredClone(body.Item as Item) : kind === "Update" ? this.update(body, this.items.get(id) ?? { ...key }) : undefined;
+      return { kind, id, next };
+    });
+    const sizes = changes.map(({ next }) =>
+      next && MemoryTable.tooBig(next) ? { Code: "ValidationError", Message: "Item size to update has exceeded the maximum allowed size" } : { Code: "None" },
+    );
+    if (sizes.some((r) => r.Code !== "None")) {
+      throw Object.assign(new Error("Transaction cancelled"), { name: "TransactionCanceledException", CancellationReasons: sizes });
+    }
+    for (const { kind, id, next } of changes) {
       if (kind === "Delete") this.items.delete(id);
-      if (kind === "Update") this.items.set(id, this.update(body, this.items.get(id) ?? { ...key }));
+      else if (next) this.items.set(id, next);
     }
     return {};
   }
