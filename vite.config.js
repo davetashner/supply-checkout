@@ -116,6 +116,23 @@ const awsRuntime = () => ({
   },
 });
 
+// The web and demo builds load the app from its own file, which a browser could still be
+// fetching when it first paints. blocking="render" holds that paint until the script has
+// run, so a saved Light or Dark theme (src/theme.js) shows without a flash of the other.
+// Browsers without it ignore the attribute. The artifact's script is inline.
+const RENDER_BLOCKING_ENTRY = /<script type="module" crossorigin src="([^"]+)">/;
+const renderBlockingEntry = () => ({
+  name: "supply-checkout:render-blocking-entry",
+  enforce: "post",
+  transformIndexHtml: {
+    order: "post",
+    handler(html) {
+      if (!RENDER_BLOCKING_ENTRY.test(html)) throw new Error("index.html has no module entry script");
+      return html.replace(RENDER_BLOCKING_ENTRY, '<script type="module" crossorigin blocking="render" src="$1">');
+    },
+  },
+});
+
 // The oldest version of each supported browser, from the browserslist field in
 // package.json, as esbuild-style targets (["chrome153", "edge151", ...]). Vite lowers
 // JavaScript syntax and CSS for these, in both builds.
@@ -162,6 +179,6 @@ export default defineConfig(({ mode }) => {
       minify: !artifact,
       cssMinify: !artifact,
     },
-    plugins: artifact ? [artifactIcon(), viteSingleFile(), keepArtifactSourceMap(), artifactFragment()] : mode === "demo" ? [demoPage()] : [awsRuntime()],
+    plugins: artifact ? [artifactIcon(), viteSingleFile(), keepArtifactSourceMap(), artifactFragment()] : mode === "demo" ? [demoPage(), renderBlockingEntry()] : [awsRuntime(), renderBlockingEntry()],
   };
 });

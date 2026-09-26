@@ -112,8 +112,11 @@ export function documentId(event: DataEvent, fromEnd = 0): string {
   return id;
 }
 
-function expectedVersionFrom(value: unknown): number | undefined {
-  if (value === undefined) return undefined;
+// Every document write names the version it was made against (ADR 0006), so two people
+// editing the same sheet or item can't silently overwrite each other: 0 for a document
+// that shouldn't exist yet, otherwise the version the client last read. A stale one is 409.
+function expectedVersionFrom(value: unknown): number {
+  if (value === undefined) throw new ApiError(400, "bad_request", "expectedVersion is required");
   const n = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
   if (typeof n !== "number" || !Number.isInteger(n) || n < 0) throw new ApiError(400, "bad_request", "expectedVersion must be a whole number");
   return n;
