@@ -51,7 +51,8 @@ export class FakeBackend {
     this.cors = null;
   }
 
-  // The next `times` requests matching method and path get this answer instead.
+  // The next `times` requests matching method and path get this answer instead. path is a
+  // string, a RegExp, or a function of (path, call), where call is as in requests().
   // { status, body }, { abort: true }, or { lost: true } (the API handles the request, but
   // the answer never arrives), and optionally { wait: promise } first.
   on(method, path, answer, times = 1) {
@@ -98,7 +99,7 @@ export class FakeBackend {
     if (method === "OPTIONS") return route.fulfill({ status: 204, headers: this.corsHeaders() });
     const call = { method, path, query: Object.fromEntries(url.searchParams), headers: req.headers(), body: req.postDataJSON() };
     this.calls.push(call);
-    const rule = this.rules.find((r) => r.method === method && (typeof r.path === "string" ? r.path === path : r.path.test(path)));
+    const rule = this.rules.find((r) => r.method === method && (typeof r.path === "string" ? r.path === path : typeof r.path === "function" ? r.path(path, call) : r.path.test(path)));
     if (rule) {
       if (--rule.times <= 0) this.rules.splice(this.rules.indexOf(rule), 1);
       if (rule.answer.late) {
@@ -335,7 +336,8 @@ export const connected = (page) => page.waitForFunction(() => {
 export const sockets = (page) => page.evaluate(() => window.__sockets.map((s) => ({ closed: s.closed, token: s.protocols[1] && s.token, sent: s.sent, url: s.url, protocols: s.protocols })));
 export const lastSocket = async (page) => (await sockets(page)).at(-1);
 // Sends a live event (an object, or raw text) on the latest socket
-export const emit = (page, ev) => page.evaluate((e) => window.__sockets.at(-1).event(e), ev);
+// Live events are for team t1 unless they say otherwise
+export const emit = (page, ev) => page.evaluate((e) => window.__sockets.at(-1).event(e), ev && typeof ev === "object" && !("teamId" in ev) ? { teamId: "t1", ...ev } : ev);
 // Any other message from AppSync on the latest socket
 export const receive = (page, msg) => page.evaluate((m) => window.__sockets.at(-1).receive(m), msg);
 export const dropSocket = (page) => page.evaluate(() => window.__sockets.at(-1).close());

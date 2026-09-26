@@ -26,12 +26,12 @@ const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200 }
 describe("createEventsClient", () => {
   it("POSTs the channel and events to /event, signed for appsync in the region", async () => {
     const { publish, calls } = client(() => ok({ successful: [{ identifier: "a", index: 0 }, { identifier: "b", index: 1 }], failed: [] }));
-    const result = await publish("/teams/t1", ['{"n":1}', '{"n":2}']);
+    const result = await publish("/users/u1", ['{"n":1}', '{"n":2}']);
     expect(result).toEqual({ successful: [0, 1], failed: [] });
     const [call] = calls;
     expect(call?.url).toBe(`https://${HOST}/event`);
     expect(call?.init.method).toBe("POST");
-    expect(JSON.parse(String(call?.init.body))).toEqual({ channel: "/teams/t1", events: ['{"n":1}', '{"n":2}'] });
+    expect(JSON.parse(String(call?.init.body))).toEqual({ channel: "/users/u1", events: ['{"n":1}', '{"n":2}'] });
     const headers = call?.init.headers as Record<string, string>;
     expect(headers.authorization).toMatch(new RegExp(`^AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/\\d{8}/${REGION}/appsync/aws4_request, SignedHeaders=[^,]*host[^,]*, Signature=[0-9a-f]{64}$`));
     expect(headers["x-amz-security-token"]).toBe("session");
@@ -43,7 +43,7 @@ describe("createEventsClient", () => {
     const { publish } = client(() =>
       ok({ successful: [{ index: 0 }], failed: [{ index: 1, code: "InvalidEvent", message: "bad" }, { index: "x", errorCode: "E", errorMessage: "m" }] }),
     );
-    expect(await publish("/teams/t1", ["{}", "{}", "{}"])).toEqual({
+    expect(await publish("/users/u1", ["{}", "{}", "{}"])).toEqual({
       successful: [0],
       failed: [
         { index: 1, code: "InvalidEvent", message: "bad" },
@@ -51,18 +51,18 @@ describe("createEventsClient", () => {
       ],
     });
     const empty = client(() => ok({}));
-    expect(await empty.publish("/teams/t1", ["{}"])).toEqual({ successful: [], failed: [] });
+    expect(await empty.publish("/users/u1", ["{}"])).toEqual({ successful: [], failed: [] });
   });
 
   it("sends nothing for no events, and refuses more than 5", async () => {
     const { publish, calls } = client(() => ok({}));
-    expect(await publish("/teams/t1", [])).toEqual({ successful: [], failed: [] });
-    await expect(publish("/teams/t1", Array(6).fill("{}"))).rejects.toThrow(PublishError);
+    expect(await publish("/users/u1", [])).toEqual({ successful: [], failed: [] });
+    await expect(publish("/users/u1", Array(6).fill("{}"))).rejects.toThrow(PublishError);
     expect(calls).toHaveLength(0);
   });
 
   it("throws on an HTTP error, a network error, or an answer that isn't JSON", async () => {
-    await expect(client(() => new Response("denied", { status: 403 })).publish("/teams/t1", ["{}"])).rejects.toMatchObject({
+    await expect(client(() => new Response("denied", { status: 403 })).publish("/users/u1", ["{}"])).rejects.toMatchObject({
       name: "PublishError",
       status: 403,
       message: "Publish failed with HTTP 403: denied",
@@ -70,9 +70,9 @@ describe("createEventsClient", () => {
     await expect(
       client(() => {
         throw new TypeError("fetch failed");
-      }).publish("/teams/t1", ["{}"]),
+      }).publish("/users/u1", ["{}"]),
     ).rejects.toThrow("Publish request failed: fetch failed");
-    await expect(client(() => new Response("<html>", { status: 200 })).publish("/teams/t1", ["{}"])).rejects.toThrow("something other than JSON");
+    await expect(client(() => new Response("<html>", { status: 200 })).publish("/users/u1", ["{}"])).rejects.toThrow("something other than JSON");
   });
 
   it("defaults to the Lambda's credentials and the global fetch", () => {

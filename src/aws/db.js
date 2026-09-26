@@ -27,7 +27,7 @@ function querySnap(docs, order) {
   return { docs: out, size: out.length, empty: !out.length, docChanges: () => [], metadata: META };
 }
 
-export function createDb({ api, config, teamId, token, onRemoved }) {
+export function createDb({ api, config, teamId, userId, token, onRemoved }) {
   const base = `/teams/${encodeURIComponent(teamId)}`;
   const colls = {};
   const inflight = new Map();
@@ -136,6 +136,8 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
   }
 
   function onEvent(ev) {
+    // The user's channel carries every team they're in; this page shows one
+    if (ev.teamId !== teamId) return;
     // Only the collections this page reads (not "__proto__", "constructor" and the like)
     if (!Object.hasOwn(colls, ev.collection)) return;
     const c = colls[ev.collection];
@@ -148,7 +150,7 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
     fetchDoc(ev.collection, ev.id);
   }
 
-  const live = createLive({ url: config.realtimeUrl, host: config.realtimeHost, channel: `/teams/${teamId}`, token, onEvent, onResync: resync });
+  const live = createLive({ url: config.realtimeUrl, host: config.realtimeHost, channel: `/users/${userId}`, token, onEvent, onResync: resync });
   live.start();
 
   // Calls render with the collection whenever it changes, once it has loaded

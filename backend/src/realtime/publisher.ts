@@ -1,13 +1,21 @@
 // Lambda entry point for the DynamoDB stream consumer (see publisher-handler.ts).
+// The audience cache lives as long as the container.
 
+import { createDb } from "../data/index.js";
 import { createObservability, withObservability } from "../observability/index.js";
+import { createAudience } from "./audience.js";
 import { REALTIME_ENV } from "./channels.js";
 import { createEventsClient } from "./events-client.js";
 import { createPublisherHandler } from "./publisher-handler.js";
 
-const host = process.env[REALTIME_ENV.httpHost];
-if (!host) throw new Error(`${REALTIME_ENV.httpHost} is not set`);
+function required(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is not set`);
+  return value;
+}
 
+const host = required(REALTIME_ENV.httpHost);
 const obs = createObservability({ service: "live-updates" });
 const publish = createEventsClient({ host, region: obs.region });
-export const handler = withObservability(obs, createPublisherHandler({ publish, obs }));
+const audience = createAudience({ db: createDb({ tableName: required(REALTIME_ENV.tableName) }) });
+export const handler = withObservability(obs, createPublisherHandler({ publish, audience, obs }));

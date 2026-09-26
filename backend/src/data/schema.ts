@@ -32,3 +32,11 @@ export const TTL_ATTRIBUTE = "expiresAt";
 export function tableName(envName: string): string {
   return `supply-checkout-${envName}-app`;
 }
+
+/**
+ * The only attributes the live-updates stream consumer may read (ADR 0016):
+ * the keys, a MEMBER item's user ID and role, and the META item's billing
+ * status. Its IAM policy allows exactly these (dynamodb:Attributes), so it
+ * can't read documents, emails or anything else in a team's partition.
+ */
+export const LIVE_AUDIENCE_ATTRIBUTES = [PK, SK, "userId", "role", "status"] as const;
