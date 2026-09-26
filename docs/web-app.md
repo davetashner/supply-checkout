@@ -6,7 +6,21 @@ The web app and the demo are static builds served by one CloudFront distribution
 
 - **Bucket.** `supply-checkout-<env>-web-<region>-<account>`, in the primary region's `data` stack (stateful, retained, versioned, private, SSE-S3, access logs to `supply-checkout-<env>-logs-<region>-<account>`). Only CloudFront distributions in the account can read it, through origin access control. A release is a folder, `releases/<version>/`, uploaded once and never changed. The second region's bucket, replication and the origin group are phase 2 (`supply-checkout-d79`).
 - **Distribution** (`web` stack, `lib/stacks/web-stack.ts`), for the apex, `www.` and `app.`, with the `web` certificate from the domain stack, TLS 1.2+, HTTP/2 and HTTP/3, and standard logs to the logs bucket.
-- **Live version.** A CloudFront Function (`lib/web/router.js`, viewer request) picks a **channel** from the host (`app.` serves `app`; the apex serves `demo`; `www.` redirects to the apex). It reads the channel's live version from a CloudFront KeyValueStore and rewrites the path to `releases/<version>/…`, adding `index.html` to paths that end in `/`. The cache key is the rewritten path, so switching versions needs no invalidation, and the KeyValueStore write reaches every edge within seconds. Until something is published, a channel answers 503.
+- **Routing and live version.** A CloudFront Function (`lib/web/router.js`, viewer request) routes by host and path:
+
+  | Request | Response |
+  |---|---|
+  | `app.<domain>/…` | the `app` channel |
+  | `<domain>/` | 302 to `https://app.<domain>/`, `Cache-Control: no-store` (until the landing page, `supply-checkout-21q`) |
+  | `<domain>/demo` | 301 to `/demo/` |
+  | `<domain>/demo/…` | the `demo` channel, with `/demo` taken off the path |
+  | any other `<domain>` path | 302 to `https://app.<domain>/`, `no-store` |
+  | `www.<domain>/demo…` | 301 to `https://<domain>/demo/` |
+  | any other `www.<domain>` path | 301 to `https://<domain>/` |
+
+  Any other host (the distribution's `cloudfront.net` name) is treated like the apex. Every `Location` is a fixed URL from the configured host names; nothing from the request (host, path or query string) is copied into one, so there's no open redirect, and query strings are dropped (the app's invite links point at `app.` directly). The 301s say `max-age=86400`. Responses the function makes never reach the CloudFront cache, and they set HSTS and `nosniff` themselves, because AWS documents the response headers policy for cached and origin responses only.
+
+  To serve a channel, the function reads its live version from a CloudFront KeyValueStore and rewrites the path to `releases/<version>/…`, adding `index.html` to paths that end in `/`. The cache key is the rewritten path, so switching versions needs no invalidation, and the KeyValueStore write reaches every edge within seconds. Until something is published, a channel answers 503. The demo build's URLs are relative (`./assets/…`, including the favicons and the ZXing chunk), so the same release works under `/demo/`; `tests/content-security-policy.spec.js` serves it there.
 - **Headers** on every response: `Content-Security-Policy` (`lib/web/content-security-policy.ts`), HSTS (two years, subdomains), `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy` and `Cross-Origin-Opener-Policy`. The CSP allows only the app's own scripts (ZXing is bundled, in its own chunk), Google Fonts, inline `style` attributes, and `data:`/`blob:` images, plus the environment's `api.`, `realtime.` and `auth.` for connections. Infra tests check it against `src/index.html`, and `tests/content-security-policy.spec.js` runs the web app and the demo under it in every browser, failing on any violation. If you add a script, font or image host to the app, add it there too.
 - **WAF** (CloudFront scope): a rate limit of 2,000 requests per IP per 5 minutes, then the AWS managed IP reputation, common and known-bad-inputs rule groups.
 - **Caching.** `scripts/publish-web.mjs` uploads `assets/` with `Cache-Control: public, max-age=31536000, immutable`, and everything else (`index.html`) with `max-age=0, must-revalidate` for browsers and `s-maxage` for the edge, which is safe because a release never changes. Source maps aren't uploaded.
@@ -14,7 +28,7 @@ The web app and the demo are static builds served by one CloudFront distribution
 **Publishing.** `scripts/publish-web.mjs` reads the bucket and the KeyValueStore from the SSM parameters under `/supply-checkout/<env>/web/`, so it needs the web stack deployed and an AWS CLI v2 login:
 
 ```bash
-npm run publish:demo                                            # build:demo, upload as demo-<time>-<commit>, make it live at the apex
+npm run publish:demo                                            # build:demo, upload as demo-<time>-<commit>, make it live at /demo/
 npm run publish:web -- publish --channel app --dir dist/web     # after npm run build:web: the same for app.
 npm run publish:web -- publish --channel app --dir dist/web --version 1.3.0 --no-activate   # upload only
 npm run publish:web -- activate --channel app --version 1.3.0  # switch, or roll back to any uploaded version
@@ -23,7 +37,7 @@ npm run publish:web -- status                                   # live versions 
 
 Options: `--env` (default `prod`), `--profile` (default `$AWS_PROFILE`, else `supply-prod`), `--dry-run` (print the writes instead of running them). Publishing a version that already exists fails. Publishing to the `app` channel first writes `config.json` into the folder from the api, identity and realtime stacks' SSM outputs, so those must be deployed; `npm run publish:web -- config` prints it.
 
-**First deploy, and the demo live at supplycheckout.com:**
+**First deploy, and the demo live at supplycheckout.com/demo/:**
 
 ```bash
 aws sso login --profile supply-prod
@@ -42,10 +56,11 @@ cd infra && npm ci
 npx cdk deploy supply-checkout-prod-us-east-1-web --profile supply-prod   # also deploys the domain and data stacks it needs
 cd .. && npm ci
 npm run publish:demo
-curl -sI https://supplycheckout.com/ | head -20                            # 200, with the security headers
+curl -sI https://supplycheckout.com/demo/ | head -20                       # 200, with the security headers
+curl -sI https://supplycheckout.com/ | grep -i '^location\|^cache-control'  # 302 to https://app.supplycheckout.com/, no-store
 ```
 
-Then check https://securityheaders.com/?q=supplycheckout.com (it should grade A; `'unsafe-inline'` for style attributes stops it at A rather than A+) and that `https://www.supplycheckout.com/` redirects to the apex. `https://app.supplycheckout.com/` answers 503 until the real app is published to the `app` channel.
+Then check https://securityheaders.com/?q=supplycheckout.com/demo/ (it should grade A; `'unsafe-inline'` for style attributes stops it at A rather than A+) and that `https://www.supplycheckout.com/` redirects to the apex and `/demo` to `/demo/`. `https://app.supplycheckout.com/` answers 503 until the real app is published to the `app` channel.
 
 ## The web app on AWS
 
