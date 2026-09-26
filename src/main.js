@@ -1,3 +1,4 @@
+import "./theme.js";
 import { use, help } from "./runtime.js";
 import { checkOut, recordReturn, setStock } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, newKey, uid, round2, numOrNull } from "./format.js";
