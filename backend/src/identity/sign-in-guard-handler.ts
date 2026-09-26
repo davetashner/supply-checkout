@@ -1,0 +1,60 @@
+// The pre authentication trigger that keeps Google and Apple users to their
+// provider (supply-checkout-6v9).
+//
+// The invariant: a federated-only user (username `<provider>_<provider user
+// ID>`, user status EXTERNAL_PROVIDER) signs in only through Google or Apple.
+// Cognito runs pre authentication for native sign-ins (password, email code,
+// passkey, in Managed Login or the API) and not for federated ones, so this
+// trigger refuses every native sign-in by such a user, even if they somehow
+// got a password (forgot-password once verified) or registered a passkey.
+//
+// The email_verified trigger (email-verified-handler.ts) depends on it: it
+// trusts `custom:idp_email_verified`, which users can write, only at a
+// Managed Login token for a federated-only user, and this guard makes every
+// such token come from a provider sign-in, right after Cognito rewrote the
+// attribute from the provider's claim.
+//
+// Native users, including a native user with a linked Google or Apple
+// identity (supply-checkout-0b1), are let through: their username isn't a
+// provider identity's. If 0b1 changes who counts as federated, change
+// isFederatedOnly() here and in the email_verified trigger together.
+//
+// Needs no AWS permissions. Logs carry the outcome only, never the username
+// or email.
+
+import type { PreAuthenticationTriggerEvent } from "aws-lambda";
+import type { Observability } from "../observability/index.js";
+import { federatedProvider } from "./email-verified-handler.js";
+
+export interface SignInGuardDeps {
+  readonly obs: Observability;
+}
+
+/** What Cognito shows the person; it names no provider and no account detail. */
+export const NATIVE_SIGN_IN_REFUSED = "Sign in with the provider you signed up with";
+
+/**
+ * True for a user who must sign in only through Google or Apple: a Google or
+ * Apple identity whose `<providerName>_<userId>` is the username, or a user
+ * Cognito marks EXTERNAL_PROVIDER.
+ */
+export function isFederatedOnly(userName: unknown, attributes: Readonly<Record<string, string | undefined>>): boolean {
+  return federatedProvider(userName, attributes.identities) !== undefined || attributes["cognito:user_status"] === "EXTERNAL_PROVIDER";
+}
+
+export function createSignInGuardHandler(deps: SignInGuardDeps) {
+  return async (event: PreAuthenticationTriggerEvent): Promise<PreAuthenticationTriggerEvent> => {
+    const attributes = event.request?.userAttributes ?? {};
+    if (event.request?.userNotFound) {
+      // With user existence errors prevented, Cognito asks about unknown users too and fails the sign-in itself
+      deps.obs.logger.info("Native sign-in", { outcome: "unknown-user" });
+      return event;
+    }
+    if (isFederatedOnly(event.userName, attributes)) {
+      deps.obs.logger.warn("Native sign-in", { outcome: "refused-federated" });
+      throw new Error(NATIVE_SIGN_IN_REFUSED);
+    }
+    deps.obs.logger.info("Native sign-in", { outcome: "allowed" });
+    return event;
+  };
+}
