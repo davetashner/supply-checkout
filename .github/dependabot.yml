@@ -10,6 +10,16 @@ updates:
     commit-message:
       prefix: chore
       include: scope
+  - package-ecosystem: npm
+    directory: /infra
+    schedule:
+      interval: weekly
+    groups:
+      infra-dependencies:
+        patterns: ["*"]
+    commit-message:
+      prefix: chore
+      include: scope
   - package-ecosystem: github-actions
     directory: /
     schedule:

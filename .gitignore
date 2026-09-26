@@ -14,3 +14,8 @@ playwright-report/
 .claude/worktrees/
 coverage/
 dist/
+
+# CDK
+infra/cdk.out/
+# Context lookups are keyed by account ID, and this repo is public
+infra/cdk.context.json
