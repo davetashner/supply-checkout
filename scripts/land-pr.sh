@@ -10,6 +10,14 @@
 # Usage: npm run land -- <pr-number>     (or scripts/land-pr.sh <pr-number>)
 set -euo pipefail
 
+# Run from a temporary copy: this script removes worktrees and pulls main,
+# either of which can change or delete the file bash is still reading.
+if [ -z "${LAND_PR_COPY:-}" ]; then
+  copy="$(mktemp)"; cp "$0" "$copy"
+  LAND_PR_COPY="$copy" exec bash "$copy" "$@"
+fi
+trap 'rm -f "$LAND_PR_COPY"' EXIT
+
 pr="${1:?usage: scripts/land-pr.sh <pr-number>}"
 main="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
 cd "$main"
