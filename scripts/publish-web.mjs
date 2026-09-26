@@ -21,6 +21,10 @@
 // environment's API, sign-in and live updates are (src/aws/main.js). It's written into
 // --dir before the upload, from the SSM parameters the api, identity and realtime stacks
 // publish, so one build works in every environment and no IDs are in the repository.
+// config.json is also how a release's channel is told: app releases have it and demo
+// releases don't (publishing the demo refuses a folder that has one), and `activate`
+// refuses a release from the other channel, so the app build and its config.json are
+// never served at the apex's /demo/, nor the demo at app.
 //
 // Needs the AWS CLI v2 (the KeyValueStore API uses SigV4A, which v2 includes).
 import { execFileSync } from "node:child_process";
@@ -135,6 +139,7 @@ export function appConfig(aws, envName) {
 }
 
 export const releaseIndexKey = (version) => `releases/${version}/index.html`;
+export const releaseConfigKey = (version) => `releases/${version}/config.json`;
 
 class Aws {
   constructor({ profile, region, dryRun, log = console.log, run = execFileSync }) {
@@ -210,6 +215,9 @@ export function main(argv, deps = {}) {
     if (aws.exists(bucket, releaseIndexKey(version), bucketRegion)) {
       throw new Error(`Release ${version} already exists; releases never change. Pick another --version, or activate it.`);
     }
+    if (opts.channel === "demo" && existsSync(path.join(dir, "config.json"))) {
+      throw new Error(`${opts.dir} has a config.json, so it's an app build, not the demo (npm run build:demo builds dist/demo).`);
+    }
     if (opts.channel === "app") {
       const config = JSON.stringify(appConfig(aws, opts.env), null, 2) + "\n";
       if (aws.dryRun) aws.log(`Would write config.json:\n${config}`);
@@ -228,6 +236,10 @@ export function main(argv, deps = {}) {
   // activate
   if (!aws.exists(bucket, releaseIndexKey(opts.version), bucketRegion)) {
     throw new Error(`No release ${opts.version} in ${bucket} (see: node scripts/publish-web.mjs status)`);
+  }
+  const releaseChannel = aws.exists(bucket, releaseConfigKey(opts.version), bucketRegion) ? "app" : "demo";
+  if (releaseChannel !== opts.channel) {
+    throw new Error(`Release ${opts.version} is ${releaseChannel === "app" ? "an app" : "a demo"} release (it ${releaseChannel === "app" ? "has" : "has no"} config.json), so it can't go live on the ${opts.channel} channel.`);
   }
   activate(aws, { store, channel: opts.channel, version: opts.version });
 }

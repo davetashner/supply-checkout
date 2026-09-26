@@ -59,6 +59,19 @@ describe("router (CloudFront Function)", () => {
     expect(() => routerCode({ kvsId: "__X__", apex: APEX, www: WWW, app: APP })).toThrow(/__X__/);
   });
 
+  it("copies values in literally, with no $ replacement patterns", () => {
+    const code = routerCode({ kvsId: "id-$&-$'-$`-$$", apex: APEX, www: WWW, app: APP });
+    expect(code).toContain('cf.kvs("id-$&-$\'-$`-$$")');
+  });
+
+  it("refuses hosts that aren't lowercase hostnames", () => {
+    for (const bad of ["$&", "App.example.com", "a.example.com/x", 'a"b', "a b", ""]) {
+      expect(() => routerCode({ kvsId: "k", apex: bad, www: WWW, app: APP }), bad).toThrow(/apex host/);
+      expect(() => routerCode({ kvsId: "k", apex: APEX, www: bad, app: APP }), bad).toThrow(/www host/);
+      expect(() => routerCode({ kvsId: "k", apex: APEX, www: WWW, app: bad }), bad).toThrow(/app host/);
+    }
+  });
+
   it("serves the app channel on app., with index.html for directories only (no client-side routing)", async () => {
     expect((await live(APP, "/")).uri).toBe("/releases/1.4.0/index.html");
     expect((await live("APP.SupplyCheckout.com", "/")).uri).toBe("/releases/1.4.0/index.html");
@@ -104,6 +117,26 @@ describe("router (CloudFront Function)", () => {
     }
   });
 
+  it("treats app. or www. with a trailing dot or a port as the apex", async () => {
+    for (const host of [`${APP}.`, `${APP}:443`, `${WWW}.`, `${WWW}:443`, `${APEX}.`, `${APEX}:443`]) {
+      expectRedirect(await live(host, "/"), 302, `https://${APP}/`);
+      expectRedirect(await live(host, "/assets/app.js"), 302, `https://${APP}/`);
+      expect((await live(host, "/demo/")).uri, host).toBe("/releases/demo-20260926-abc1234/index.html");
+    }
+  });
+
+  it("keeps encoded traversal inside the live release's prefix", async () => {
+    // CloudFront passes the path still encoded, and S3 takes keys literally
+    for (const [uri, rewritten] of [
+      ["/demo/..%2f..%2freleases/x", "/releases/demo-20260926-abc1234/..%2f..%2freleases/x"],
+      ["/demo/..%2F..%2Freleases/x", "/releases/demo-20260926-abc1234/..%2F..%2Freleases/x"],
+      ["/demo/%2e%2e/%2e%2e/releases/x", "/releases/demo-20260926-abc1234/%2e%2e/%2e%2e/releases/x"],
+    ]) {
+      expect((await live(APEX, uri)).uri).toBe(rewritten);
+    }
+    expect((await live(APP, "/..%2f..%2freleases/x")).uri).toBe("/releases/1.4.0/..%2f..%2freleases/x");
+  });
+
   it("redirects www. to the apex, keeping only whether it was the demo", async () => {
     for (const [uri, location] of [
       ["/", `https://${APEX}/`],
@@ -137,6 +170,9 @@ describe("router (CloudFront Function)", () => {
       const res = await r(host, host === APP ? "/" : "/demo/");
       expect(res.statusCode).toBe(503);
       expect(res.headers?.["cache-control"]?.value).toBe("no-store");
+      expect(res.headers?.["retry-after"]?.value).toBe("60");
+      expect(res.headers?.["strict-transport-security"]?.value).toBe(HSTS);
+      expect(res.headers?.["x-content-type-options"]?.value).toBe("nosniff");
     }
     expect((await router({ app: "1.0.0" })(APEX, "/demo/")).statusCode).toBe(503);
     // The home page redirect doesn't need the store
