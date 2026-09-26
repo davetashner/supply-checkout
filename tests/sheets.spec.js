@@ -368,3 +368,40 @@ test("barcodes that are built-in object keys check out and return like any other
   expect(doc).toMatchObject({ code: "constructor", name: "Widget A", price: 2, out: 1, returned: 1 });
   expect(await page.evaluate(() => [Object.prototype.out, Object.out])).toEqual([undefined, undefined]);
 });
+
+test("a tap on the list survives a redraw, and a snapshot with no changes leaves the list alone", async ({ page }) => {
+  await openApp(page, usedState);
+  await page.waitForFunction(() => { const n = document.getElementById("notice"); return n.hidden || !n.textContent.startsWith("Connecting"); });
+  const echo = page.getByRole("button", { name: /Echo Studio/ });
+  await expect(echo).toBeVisible();
+  const card = await echo.elementHandle();
+
+  // Press + New sheet; another user adds a sheet, which redraws the list mid-tap
+  const box = await page.getByRole("button", { name: "+ New sheet" }).boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.evaluate(() => {
+    window.__mock.docs.set("sheets/late", { client: "Late job", date: "2026-08-01", status: "open", items: {} });
+    window.__mock.notify();
+  });
+  await expect(page.getByRole("button", { name: /Late job/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Out now (2)" })).toBeVisible();
+  // The cards that didn't change are the same elements
+  expect(await card.evaluate((el) => el.isConnected)).toBe(true);
+  await page.mouse.up();
+  await expect(modal(page).getByRole("heading", { name: "New sheet" })).toBeVisible();
+  await modal(page).getByRole("button", { name: "Cancel" }).click();
+
+  // A snapshot with nothing new doesn't touch the list
+  await page.evaluate(() => {
+    window.__mutations = 0;
+    new MutationObserver((m) => { window.__mutations += m.length; }).observe(document.getElementById("main"), { subtree: true, childList: true, attributes: true, characterData: true });
+    window.__mock.notify();
+  });
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 50)));
+  expect(await page.evaluate(() => window.__mutations)).toBe(0);
+
+  // Clicks on the list outside its buttons do nothing
+  await page.locator("#main .bar").click({ position: { x: 1, y: 1 } });
+  await expect(page.locator("#overlay")).toBeHidden();
+});

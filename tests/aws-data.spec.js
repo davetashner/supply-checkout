@@ -193,6 +193,29 @@ test.describe("data", () => {
     await expect.poll(() => backend.requests("GET", "/teams/t1/sheets").length).toBe(22);
   });
 
+  test("a tap survives the redraw when a re-list's pages arrive", async ({ page }) => {
+    const docs = seeded();
+    for (let i = 0; i < 30; i++) docs[`t1/sheets/b${i}`] = { client: `Client ${i}`, date: "2026-09-01", status: "open", items: {} };
+    const backend = new FakeBackend({ docs });
+    backend.pageSize = 10;
+    await open(page, backend);
+    const first = await card(page, "Client 0").elementHandle();
+    // A re-list is held while a sheet is added that it will pick up
+    const release = backend.hold("GET", "/teams/t1/sheets");
+    backend.write("t1", "sheets", "late", { client: "Late job", date: "2026-08-01", status: "open", items: {} });
+    await setVisible(page, true);
+    await expect.poll(() => lists(backend).sheets).toBe(3);
+    // Press Export data, and let the re-list page in and redraw the list before letting go
+    const box = await page.getByRole("button", { name: "Export data" }).boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    release();
+    await expect(card(page, "Late job")).toBeVisible();
+    expect(await first.evaluate((el) => el.isConnected)).toBe(true);
+    await page.mouse.up();
+    await expect(modal(page)).toContainText("32 sheets and 2 inventory items");
+  });
+
   test("members who aren't owners get no Export data", async ({ page }) => {
     await open(page, new FakeBackend({ teams: [{ ...TEAM, role: "contributor" }], docs: seeded() }));
     await expect(card(page, "Echo Studio")).toBeVisible();
