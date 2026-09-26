@@ -7,10 +7,13 @@
 //   send to it comes back here as a bounce with the OnAccountSuppressionList
 //   subtype). This handler doesn't need, and doesn't have, permission to
 //   change the list.
-// - An invite's email that bounces (hard, or soft once SES gives up) or draws
-//   a complaint marks that invite failed, so the owner sees it and can correct
-//   the address. The message's tags name the team and the invite; the invite
-//   must also be for the address that bounced. Nothing is re-sent.
+// - An invite's email that bounces permanently (including a send to an
+//   address SES has suppressed) or draws a complaint marks that invite
+//   failed, so the owner sees it and can correct the address. Transient and
+//   undetermined bounces (a full mailbox, an out-of-office auto-reply) are
+//   counted but don't mark it: the address works. The message's tags name the
+//   team and the invite; the invite must also be for the address that
+//   bounced. Nothing is re-sent.
 // - Addresses never reach a log line or a metric: only kinds, IDs and counts.
 // - A DynamoDB failure throws, so Lambda retries the event and, after its
 //   retries, puts it on the dead-letter queue. A malformed event is logged
@@ -58,16 +61,21 @@ function parse(message: string): SesEvent | undefined {
   }
 }
 
-/** The failure an event reports and the addresses it's about, or undefined for other events. */
-function failureOf(event: SesEvent): { reason: InviteFailure; recipients: readonly Recipient[]; detail: string } | undefined {
+/**
+ * What an event reports and the addresses it's about, or undefined for other
+ * events. `failure` is set only when the invite should be marked failed: a
+ * permanent bounce or a complaint.
+ */
+function reportOf(event: SesEvent): { reason: string; failure?: InviteFailure; recipients: readonly Recipient[]; detail: string } | undefined {
   const type = event.eventType ?? event.notificationType;
   if (type === "Bounce" && event.bounce) {
     const permanent = event.bounce.bounceType === "Permanent";
     const subType = typeof event.bounce.bounceSubType === "string" && ID.test(event.bounce.bounceSubType) ? event.bounce.bounceSubType : "unknown";
-    return { reason: permanent ? "bounced" : "undeliverable", recipients: event.bounce.bouncedRecipients ?? [], detail: subType };
+    const recipients = event.bounce.bouncedRecipients ?? [];
+    return permanent ? { reason: "bounced", failure: "bounced", recipients, detail: subType } : { reason: "transient", recipients, detail: subType };
   }
   if (type === "Complaint" && event.complaint) {
-    return { reason: "complained", recipients: event.complaint.complainedRecipients ?? [], detail: "complaint" };
+    return { reason: "complained", failure: "complained", recipients: event.complaint.complainedRecipients ?? [], detail: "complaint" };
   }
   return undefined;
 }
@@ -78,18 +86,20 @@ export function createEmailEventsHandler(deps: EmailEventsDeps): (event: SNSEven
   return async (event) => {
     for (const record of event.Records ?? []) {
       const ses = parse(record.Sns?.Message ?? "");
-      const failure = ses && failureOf(ses);
-      if (!ses || !failure) {
+      const report = ses && reportOf(ses);
+      if (!ses || !report) {
         obs.logger.warn("Ignoring an email event that isn't a bounce or complaint");
         continue;
       }
       const kind = tag(ses, EMAIL_TAGS.kind) ?? "unknown";
-      const recipients = Array.isArray(failure.recipients) ? failure.recipients : [];
-      obs.count(failure.reason === "complained" ? BusinessMetric.EmailComplaints : BusinessMetric.EmailBounces, recipients.length, {
+      const recipients = Array.isArray(report.recipients) ? report.recipients : [];
+      obs.count(report.reason === "complained" ? BusinessMetric.EmailComplaints : BusinessMetric.EmailBounces, recipients.length, {
         kind,
-        reason: failure.reason,
-        detail: failure.detail,
+        reason: report.reason,
+        detail: report.detail,
       });
+      const failure = report.failure;
+      if (!failure) continue;
       const teamId = tag(ses, EMAIL_TAGS.teamId);
       const inviteId = tag(ses, EMAIL_TAGS.inviteId);
       if (kind !== "invite" || !teamId || !inviteId) continue;
@@ -106,9 +116,9 @@ export function createEmailEventsHandler(deps: EmailEventsDeps): (event: SNSEven
           obs.logger.warn("Ignoring a recipient that isn't an email address", { teamId, inviteId });
           continue;
         }
-        const marked = await markInviteFailed(db, ctx, { inviteId, emailHash, reason: failure.reason, at: now() });
-        obs.logger.info(marked ? "Marked an invite failed" : "No pending invite for this bounce", { teamId, inviteId, reason: failure.reason });
-        if (marked) obs.count(BusinessMetric.InvitesFailed, 1, { teamId, reason: failure.reason });
+        const marked = await markInviteFailed(db, ctx, { inviteId, emailHash, reason: failure, at: now() });
+        obs.logger.info(marked ? "Marked an invite failed" : "No pending invite for this bounce", { teamId, inviteId, reason: failure });
+        if (marked) obs.count(BusinessMetric.InvitesFailed, 1, { teamId, reason: failure });
       }
     }
   };

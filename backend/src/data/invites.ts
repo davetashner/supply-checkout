@@ -69,7 +69,7 @@ export async function listInvites(db: Db, ctx: TeamContext): Promise<Invite[]> {
   return queryAll<Invite>(db, teamPartition(ctx.teamId), prefixes.invite);
 }
 
-const FAILURES: readonly InviteFailure[] = ["bounced", "undeliverable", "complained"];
+const FAILURES: readonly InviteFailure[] = ["bounced", "complained"];
 
 /**
  * Marks an invite failed after SES reported that its email bounced or drew a

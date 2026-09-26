@@ -46,3 +46,12 @@ export const EMAIL_TAGS = { kind: "kind", teamId: "teamId", inviteId: "inviteId"
 /** The kinds of message the app sends (templates.ts). */
 export const EMAIL_KINDS = ["invite", "trialEnding", "paymentFailed", "readOnly", "exportReady"] as const;
 export type EmailKind = (typeof EMAIL_KINDS)[number];
+
+/**
+ * The only attributes the email-events function may read (GetItem on a team's
+ * META item, with a projection) and write (UpdateItem on an invite, including
+ * the ones its condition reads). The email stack's IAM policy allows exactly
+ * these (dynamodb:Attributes); a test checks the data calls stay within them.
+ */
+export const EMAIL_EVENTS_READS = ["PK", "SK", "homeRegion"] as const;
+export const EMAIL_EVENTS_WRITES = ["PK", "SK", "status", "failureReason", "failedAt", "type", "GSI2PK"] as const;

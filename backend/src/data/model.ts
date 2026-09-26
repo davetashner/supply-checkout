@@ -75,11 +75,10 @@ export interface Invite {
 }
 
 /**
- * Why an invite's email failed: a permanent bounce (SES suppresses the
- * address), a temporary bounce SES gave up retrying, or a complaint (SES
- * suppresses the address).
+ * Why an invite's email failed: a permanent bounce or a complaint. SES
+ * suppresses the address either way. Transient bounces don't fail an invite.
  */
-export type InviteFailure = "bounced" | "undeliverable" | "complained";
+export type InviteFailure = "bounced" | "complained";
 
 /** True for a role a MEMBER item may hold. */
 export function isMemberRole(value: unknown): value is MemberRole {

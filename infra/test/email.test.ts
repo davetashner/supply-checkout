@@ -93,7 +93,7 @@ describe("email stack", () => {
     const t = email();
     const [[fnId]] = resources(t, "AWS::Lambda::Function").filter(([, r]) => (r.Properties.Handler as string) === "index.handler") as [[string, Resource]];
     const [[dlqId]] = resources(t, "AWS::SQS::Queue") as [[string, Resource]];
-    t.hasResourceProperties("AWS::SQS::Queue", { QueueName: "supply-checkout-prod-email-events-dlq", SqsManagedSseEnabled: true });
+    t.hasResourceProperties("AWS::SQS::Queue", { QueueName: "supply-checkout-prod-email-events-dlq" });
     t.hasResourceProperties("AWS::SNS::Subscription", {
       Protocol: "lambda",
       Endpoint: { "Fn::GetAtt": [fnId, "Arn"] },
@@ -109,19 +109,58 @@ describe("email stack", () => {
     t.hasResourceProperties("AWS::Lambda::EventInvokeConfig", { MaximumRetryAttempts: 2 });
   });
 
-  it("lets the function read team metadata and update team items, and nothing else in DynamoDB or SES", () => {
+  it("lets the function read only a team's home region and write only an invite's failure fields, and nothing in SES", () => {
     const all = statements(email());
     const dynamo = all.filter((s) => JSON.stringify(s.Action).includes("dynamodb:"));
-    expect(dynamo).toHaveLength(1);
-    expect(dynamo[0]).toMatchObject({
-      Sid: "MarkInvitesFailed",
-      Action: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
-      Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] } },
-    });
-    expect(JSON.stringify(dynamo[0]?.Resource)).not.toContain("*");
+    expect(dynamo).toEqual([
+      expect.objectContaining({
+        Sid: "ReadTeamHomeRegion",
+        Action: "dynamodb:GetItem",
+        Condition: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "homeRegion"] },
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+      expect.objectContaining({
+        Sid: "MarkInvitesFailed",
+        Action: "dynamodb:UpdateItem",
+        Condition: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "status", "failureReason", "failedAt", "type", "GSI2PK"] },
+          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        },
+      }),
+    ]);
+    for (const s of dynamo) expect(JSON.stringify(s.Resource)).not.toContain("*");
     expect(JSON.stringify(all)).not.toMatch(/"ses:|"sesv2:/);
     const kms = all.find((s) => s.Sid === "TableKeyThroughDynamoDb");
     expect(kms?.Condition).toMatchObject({ StringEquals: { "kms:ViaService": expect.anything() } });
+  });
+
+  it("encrypts the dead-letter queue, which holds addresses, with its own rotating key that SNS may use only for the events topic", () => {
+    const t = email();
+    const [[keyId]] = resources(t, "AWS::KMS::Key") as [[string, Resource]];
+    t.hasResourceProperties("AWS::SQS::Queue", {
+      QueueName: "supply-checkout-prod-email-events-dlq",
+      KmsMasterKeyId: { "Fn::GetAtt": [keyId, "Arn"] },
+      MessageRetentionPeriod: 7 * 24 * 60 * 60,
+    });
+    t.hasResourceProperties("AWS::KMS::Key", {
+      EnableKeyRotation: true,
+      KeyPolicy: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "SnsRedrivesFailedDeliveries",
+            Principal: { Service: "sns.amazonaws.com" },
+            Condition: { ArnEquals: { "aws:SourceArn": { "Fn::Join": ["", Match.arrayWith([Match.stringLikeRegexp(":supply-checkout-prod-email-events$")])] } } },
+          }),
+        ]),
+      }),
+    });
+    // Lambda sends failed events with the function's role, so the role may use the key
+    const all = statements(t);
+    expect(all.some((s) => JSON.stringify(s.Action).includes("kms:GenerateDataKey") && JSON.stringify(s.Resource).includes(keyId))).toBe(true);
   });
 
   it("is only for the primary region", () => {

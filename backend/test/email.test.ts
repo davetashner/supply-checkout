@@ -9,10 +9,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { type Invite, hashEmail, markInviteFailed, teamContextForEmailEvent } from "../src/data/index.js";
 import { createEmailEventsHandler } from "../src/email/events-handler.js";
 import { EmailNotSentError, createMailer, mailerFromEnv, sendInviteEmail, sendTeamNotice, type SesSender } from "../src/email/mailer.js";
-import { EMAIL_ENV, EMAIL_KINDS, EMAIL_TAGS, configurationSetName } from "../src/email/names.js";
+import { EMAIL_ENV, EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, EMAIL_KINDS, EMAIL_TAGS, configurationSetName } from "../src/email/names.js";
 import { type EmailInput, escapeHtml, formatDate, plainName, renderEmail } from "../src/email/templates.js";
 import type { Observability } from "../src/observability/index.js";
-import { contextFor } from "./helpers.js";
+import { contextFor, fakeDb } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const APP = "https://app.supplycheckout.com";
@@ -293,9 +293,25 @@ describe("email events", () => {
     expect(logs).toContainEqual({ level: "info", message: "Marked an invite failed", data: { teamId: TEAM, inviteId: INVITE, reason: "bounced" } });
   });
 
-  it("marks a soft bounce SES gave up on as undeliverable, and a complaint as complained", async () => {
-    await run(sns(bounce("Transient", [INVITEE], inviteTags(), "MailboxFull")));
-    expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)).toMatchObject({ status: "failed", failureReason: "undeliverable" });
+  it("counts transient and undetermined bounces (out-of-office, full mailbox) but leaves the invite pending", async () => {
+    const { counts, logs } = await run(
+      sns(
+        bounce("Transient", [INVITEE], inviteTags(), "MailboxFull"),
+        bounce("Transient", [INVITEE], inviteTags(), "General"),
+        bounce("Undetermined", [INVITEE], inviteTags(), "Undetermined"),
+      ),
+    );
+    expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)?.status).toBeUndefined();
+    expect(counts).toEqual([
+      { metric: "EmailBounces", value: 1, metadata: { kind: "invite", reason: "transient", detail: "MailboxFull" } },
+      { metric: "EmailBounces", value: 1, metadata: { kind: "invite", reason: "transient", detail: "General" } },
+      { metric: "EmailBounces", value: 1, metadata: { kind: "invite", reason: "transient", detail: "Undetermined" } },
+    ]);
+    expect(logs).toEqual([]);
+    expect(table.calls).toEqual([]);
+  });
+
+  it("marks a complaint as complained", async () => {
     const { counts } = await run(sns(complaint([INVITEE], inviteTags())));
     expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)).toMatchObject({ status: "failed", failureReason: "complained" });
     expect(counts[0]).toMatchObject({ metric: "EmailComplaints", value: 1 });
@@ -372,6 +388,32 @@ describe("email events", () => {
     await expect(markInviteFailed(table.db(), ctx as never, { inviteId: INVITE, emailHash: hashEmail(INVITEE), reason: "lost" as never, at: NOW })).rejects.toThrow(
       "Invalid failure reason",
     );
+  });
+
+  it("reads and writes only the attributes the email stack's IAM policy allows", async () => {
+    const inputs: { name: string; input: Record<string, unknown> }[] = [];
+    const db = fakeDb(async (command) => {
+      inputs.push({ name: (command as unknown as { constructor: { name: string } }).constructor.name, input: command.input });
+      return { Item: { homeRegion: "test-local-1" } };
+    });
+    await createEmailEventsHandler({ db, obs: fakeObservability().obs, now: () => NOW })(sns(bounce("Permanent", [INVITEE], inviteTags())));
+    // Attribute names an expression uses: bare names, and #placeholders resolved
+    const attributes = (input: Record<string, unknown>) => {
+      const names = (input.ExpressionAttributeNames ?? {}) as Record<string, string>;
+      const text = ["ProjectionExpression", "UpdateExpression", "ConditionExpression"].map((k) => input[k] ?? "").join(" ");
+      const used = [...text.replace(/:[A-Za-z0-9_]+/g, " ").matchAll(/#?[A-Za-z_][A-Za-z0-9_]*/g)]
+        .map((m) => m[0])
+        .filter((w) => !["SET", "AND", "OR", "NOT", "attribute_exists", "attribute_not_exists"].includes(w))
+        .map((w) => (w.startsWith("#") ? names[w] : w));
+      return new Set([...Object.keys(input.Key as object), ...used]);
+    };
+    expect(inputs.map((i) => i.name)).toEqual(["GetCommand", "UpdateCommand"]);
+    const [get, update] = inputs as [(typeof inputs)[0], (typeof inputs)[0]];
+    expect(get.input.ProjectionExpression).toBeDefined();
+    for (const a of attributes(get.input)) expect(EMAIL_EVENTS_READS).toContain(a);
+    for (const a of attributes(update.input)) expect(EMAIL_EVENTS_WRITES).toContain(a);
+    expect(attributes(update.input)).toEqual(new Set(EMAIL_EVENTS_WRITES));
+    expect(update.input.ReturnValues).toBeUndefined();
   });
 
   it("rethrows a DynamoDB error that isn't a failed condition", async () => {

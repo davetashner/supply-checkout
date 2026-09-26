@@ -16,12 +16,108 @@
         "Value": "{\"stackName\":\"supply-checkout-prod-us-east-1-email\",\"layer\":\"stateless\"}"
       }
     },
+    "DeadLetterQueueKey3D053A26": {
+      "Type": "AWS::KMS::Key",
+      "Properties": {
+        "Description": "Encrypts the email-events dead-letter queue (it holds recipients' addresses)",
+        "EnableKeyRotation": true,
+        "KeyPolicy": {
+          "Statement": [
+            {
+              "Action": "kms:*",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Resource": "*"
+            },
+            {
+              "Action": [
+                "kms:GenerateDataKey*",
+                "kms:Decrypt"
+              ],
+              "Condition": {
+                "ArnEquals": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":sns:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":supply-checkout-prod-email-events"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "sns.amazonaws.com"
+              },
+              "Resource": "*",
+              "Sid": "SnsRedrivesFailedDeliveries"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "email"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
     "DeadLetterQueue9F481546": {
       "Type": "AWS::SQS::Queue",
       "Properties": {
-        "MessageRetentionPeriod": 1209600,
+        "KmsMasterKeyId": {
+          "Fn::GetAtt": [
+            "DeadLetterQueueKey3D053A26",
+            "Arn"
+          ]
+        },
+        "MessageRetentionPeriod": 604800,
         "QueueName": "supply-checkout-prod-email-events-dlq",
-        "SqsManagedSseEnabled": true,
         "Tags": [
           {
             "Key": "app",
@@ -214,14 +310,93 @@
             },
             {
               "Action": [
-                "dynamodb:GetItem",
-                "dynamodb:UpdateItem"
+                "kms:GenerateDataKey",
+                "kms:Decrypt"
               ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "sqs.",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ".amazonaws.com"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "DeadLetterQueueKey3D053A26",
+                  "Arn"
+                ]
+              },
+              "Sid": "DeadLetterQueueKeyThroughSqs"
+            },
+            {
+              "Action": "dynamodb:GetItem",
               "Condition": {
                 "ForAllValues:StringLike": {
                   "dynamodb:LeadingKeys": [
                     "TEAM#*"
                   ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "homeRegion"
+                  ]
+                },
+                "StringEquals": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "ReadTeamHomeRegion"
+            },
+            {
+              "Action": "dynamodb:UpdateItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "TEAM#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "status",
+                    "failureReason",
+                    "failedAt",
+                    "type",
+                    "GSI2PK"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "dynamodb:ReturnValues": "NONE"
                 }
               },
               "Effect": "Allow",
