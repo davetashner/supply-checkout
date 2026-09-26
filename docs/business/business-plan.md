@@ -1,7 +1,7 @@
 # Supply Checkout business plan
 
 > **DRAFT — not reviewed by a lawyer / owner; not in effect.**
-> Every number here is an estimate. Prices from vendors were not re-checked against their current pricing pages. Check them before making decisions.
+> Every number here is an estimate. Vendor prices were re-checked against their official pricing pages on 2026-09-26 (section 6.1). Usage figures are still guesses until the pilot measures them.
 
 ## 1. Summary
 
@@ -42,7 +42,7 @@ What the MVP adds: teams and roles, sign-in, live sync across devices, subscript
 ## 5. Pricing hypothesis
 
 - Headline: **about $3 per user per month**.
-- Stripe's fixed $0.30 per charge makes a single $3 charge expensive (about 13% in fees), so the starting proposal from [ADR 0009](../adr/0009-billing-stripe.md) is:
+- Stripe's fixed $0.30 per charge makes a single $3 charge expensive (13.6% in fees, section 6.3), so the starting proposal from [ADR 0009](../adr/0009-billing-stripe.md) is:
   - **Starter**: $9/month includes 3 seats, then $3 per extra seat. 200 receipts per team per month.
   - **Annual**: 2 months free.
   - **Trial**: 14 days, no card.
@@ -51,67 +51,104 @@ What the MVP adds: teams and roles, sign-in, live sync across devices, subscript
 
 ## 6. Unit economics
 
-### 6.1 Assumptions
+The numbers in this section come from the cost model spreadsheet, **[cost-model.xlsx](cost-model.xlsx)**. Every input is a named cell on its Assumptions sheet with a link to its source, and every result is a live formula, so changing an input (price, receipts per seat, overhead, team size) updates the tables. The sheets are:
 
-| Item | Assumption | Source |
+- **Assumptions**: every input, its unit and its source
+- **Fixed AWS**: fixed monthly cost per environment
+- **Per-seat margin**: margin at 1, 3, 10 and 50 seats per team
+- **Break-even**: fixed costs and the paying seats needed to cover them
+- **24-month projection**: month-by-month teams, revenue, costs and profit
+
+The model prices seats at a straight **$3 per user per month**. It also has a switch for the $9 Starter minimum from section 5. Stripe's $0.30 fixed fee is charged once per team per month, so the model spreads it over the team's seats.
+
+### 6.1 Assumptions and price check
+
+Prices were checked on **2026-09-26** against the official pricing pages. The spreadsheet has the full list.
+
+| Item | Price used | Source | Change since the first draft |
+| --- | --- | --- | --- |
+| Stripe card fee | 2.9% + $0.30 per charge (+1.5% for international cards, 0 assumed) | [Stripe pricing](https://stripe.com/pricing) | None |
+| Stripe Billing | 0.7% of billing volume | [Stripe pricing](https://stripe.com/pricing) | None (now confirmed) |
+| Stripe Tax | 0.5% per transaction, off until the business registers to collect tax | [Stripe pricing](https://stripe.com/pricing) | None (now confirmed) |
+| Claude Haiku 4.5 | $1 / $5 per million input/output tokens | [Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing), [Bedrock pricing](https://aws.amazon.com/bedrock/pricing/) | None |
+| Claude Sonnet 5 | $2 / $10 per million tokens | same | The launch price is now the standard price. The rise to $3 / $15 planned for 2026-09-01 was cancelled |
+| Bedrock regional endpoint | **+10%** over global endpoints for Claude 4.5 and later models | [Claude pricing: cloud platforms](https://platform.claude.com/docs/en/about-claude/pricing) | **New.** Keeping inference in the US uses a regional (or US) endpoint, so the model adds 10% |
+| Sonnet 5 tokenizer | about **30% more tokens** for the same text | same | **New.** Applies to Claude 4.7 and later, including Sonnet 5 |
+| Cost per receipt | Haiku 4.5 **$0.0067**, Sonnet 5 **$0.0164** (1,600 image + 2,000 prompt + 500 output tokens, no cache discount) | computed | Up from about $0.006 and $0.015 because of the two changes above |
+| Receipts | 20 per seat per month, capped at 200 per team | guess; measure in the pilot | Now per seat instead of per team size |
+| Cognito Essentials | 10,000 MAU free each month (no expiry), then $0.015 per MAU | [Cognito pricing](https://aws.amazon.com/cognito/pricing/) | None |
+| Pay-per-use AWS per seat | about **$0.05 per seat per month**: API Gateway HTTP $1/M, Lambda $0.20/M plus Arm duration, DynamoDB on-demand $0.625/M writes and $0.125/M reads, AppSync Events $1/M operations and $0.08/M connection-minutes, SES $0.10 per 1,000, CloudWatch Logs $0.50/GB, all ×2 for safety | [API Gateway](https://aws.amazon.com/api-gateway/pricing/), [Lambda](https://aws.amazon.com/lambda/pricing/), [DynamoDB](https://aws.amazon.com/dynamodb/pricing/on-demand/), [AppSync](https://aws.amazon.com/appsync/pricing/), [SES](https://aws.amazon.com/ses/pricing/), [CloudWatch](https://aws.amazon.com/cloudwatch/pricing/) | Was a flat guess of $0.10 to $1 per team. Now built from usage estimates |
+| Synthetics canaries | $0.0012 per run after 100 free runs. The core canary runs every 5 minutes from 8am to 8pm, and the sign-up canary every 15 minutes, about 7,200 billed runs | [CloudWatch pricing](https://aws.amazon.com/cloudwatch/pricing/) | The official page lists the free runs, but its paid rate didn't load when checked. $0.0012 is the widely reported rate. Confirm it in the AWS Pricing Calculator |
+| AWS WAF | $5 per web ACL + $1 per rule or managed group + $0.60 per million requests | [WAF pricing](https://aws.amazon.com/waf/pricing/) | The draft said "about $6+". With 4 rules it's about $9.60 |
+| Route 53 | $0.50 per hosted zone. Basic health checks on AWS endpoints are free (first 50); the HTTPS option adds about $1. Queries are $0.40 per million | [Route 53 pricing](https://aws.amazon.com/route53/pricing/) | None |
+| KMS / Secrets Manager | $1 per key per month / $0.40 per secret per month | [KMS](https://aws.amazon.com/kms/pricing/), [Secrets Manager](https://aws.amazon.com/secrets-manager/pricing/) | None |
+| CloudFront | Pay-as-you-go, pennies at this volume. Flat-rate plans now exist (Free $0, Pro $15 with WAF included) | [CloudFront pricing](https://aws.amazon.com/cloudfront/pricing/) | **New option.** The Pro plan could replace the separate WAF charge; not assumed |
+| App store developer fees | Apple $99 a year and Google Play $25 once, only when the native apps ship (phase 2). No store commission, because billing is web only ([ADR 0013](../adr/0013-web-billing-only.md)) | [Apple](https://developer.apple.com/programs/whats-included/), [Google Play](https://support.google.com/googleplay/android-developer/answer/6112435) | Now itemized |
+| Tooling and domain | about $15 a month | estimate | None |
+| Business overhead | about $150 a month | estimate; owner to confirm | None |
+
+### 6.2 Fixed AWS cost per environment
+
+For the MVP in us-east-1 only ([ADR 0010](../adr/0010-multi-region-active-active.md)), with no customers:
+
+| Environment | Per month | Largest items |
 | --- | --- | --- |
-| Stripe card fee | 2.9% + $0.30 per charge | ADR 0009 |
-| Stripe Billing fee | about 0.7% of billed amount | Stripe pricing; check |
-| Stripe Tax | about 0.5% per transaction, once turned on | Stripe pricing; check. Not in the tables below. |
-| Receipt reading, Haiku 4.5 | about $0.006 per receipt | ADR 0008 |
-| Receipt reading, Sonnet 5 | about $0.015 per receipt | ADR 0008 (worst case) |
-| Receipts per team per month | 50 (1 seat), 100 (3 seats), 200 (10+ seats, capped) | guess; measure in the pilot |
-| Cognito | free for the first 10,000 monthly active users, then about $0.015 each | AWS pricing; check |
-| Other AWS per team (Lambda, API Gateway, DynamoDB global table writes, AppSync Events, SES, CloudWatch logs) | about $0.10 for a 1–3 seat team, rising to about $1 for 50 seats | rough; set up billing metrics per team to confirm |
-| Fixed AWS, prod (both regions) | $20–30/month | architecture README: Route 53, KMS, Secrets Manager, Synthetics, WAF |
-| Fixed AWS, staging and dev | $15–25/month | architecture README |
-| Tooling and domain | about $15/month | domain, email, small SaaS tools |
-| Business overhead | about $150/month | registered agent, state fees, accounting, insurance; wide range, owner to confirm |
+| Prod | **$30.34** | Synthetics canaries ($9.64 with side costs), WAF ($9.60), CloudWatch alarms and metrics ($3.50), KMS ($2) |
+| Staging | **$14.80** | WAF ($9.06), KMS ($2), Secrets Manager ($1.20) |
+| Dev | **$3.84** | KMS, secrets, hosted zone |
+| **All environments** | **$48.98** | |
 
-### 6.2 Margin per team (Starter plan, monthly, Haiku)
+The draft estimated $20–30 for prod in **both** regions. The MVP now has one region, and prod alone is about $30, mostly because the WAF and canary estimates went up. Phase 2 (us-west-2) roughly doubles fixed AWS to about $98 a month.
 
-| Seats per team | Revenue | Stripe (card + Billing) | Receipts | Other AWS | Variable cost | Margin | Margin % | Margin per seat |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | $9.00 | $0.62 | $0.30 | $0.10 | $1.02 | $7.98 | 89% | $7.98 |
-| 3 | $9.00 | $0.62 | $0.60 | $0.15 | $1.37 | $7.63 | 85% | $2.54 |
-| 10 | $30.00 | $1.38 | $1.20 | $0.30 | $2.88 | $27.12 | 90% | $2.71 |
-| 50 | $150.00 | $5.70 | $1.20 | $1.00 | $7.90 | $142.10 | 95% | $2.84 |
+### 6.3 Margin per seat
 
-Stripe's share is 6.9% at the smallest plan, inside the 10% target in bead `supply-checkout-akz`.
+At a straight $3 per seat with Claude Haiku 4.5 (monthly, per team):
 
-**Worst case**: a 1-seat team that reads all 200 receipts with Sonnet 5 costs about $0.62 + $3.00 + $0.10 = $3.72, leaving $5.28 (59%). The receipt limit is what keeps this bounded.
+| Seats per team | Revenue | Stripe (card + Billing) | Receipts (Bedrock) | AWS pay-per-use | Variable cost | Margin | Margin % | Stripe share | **Margin per seat** |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | $3.00 | $0.41 | $0.13 | $0.05 | $0.59 | $2.41 | 80% | 13.6% | **$2.41** |
+| 3 | $9.00 | $0.62 | $0.40 | $0.15 | $1.18 | $7.82 | 87% | 6.9% | **$2.61** |
+| 10 | $30.00 | $1.38 | $1.34 | $0.51 | $3.23 | $26.77 | 89% | 4.6% | **$2.68** |
+| 50 | $150.00 | $5.70 | $1.34 | $2.55 | $9.59 | $140.41 | 94% | 3.8% | **$2.81** |
 
-**A single $3 seat with no minimum** would pay $0.39 to Stripe card fees plus $0.02 to Billing (about 14%). This is why the minimum charge matters.
+- **The fixed $0.30 Stripe fee is what hurts a one-seat team.** It's $0.30 per seat at 1 seat, $0.10 at 3, $0.03 at 10 and under a cent at 50. At 1 seat, Stripe takes 13.6% of revenue, above the 10% target in bead `supply-checkout-akz`.
+- **With the $9 Starter minimum** (3 seats billed even for 1 user), a one-person team pays $9 and leaves $8.19 margin (91%). Teams of 3 or more are unchanged.
+- **Worst case** (Sonnet 5, every team reads its full 200-receipt cap): the receipts cost $3.28 a team, so a one-seat team at straight $3 **loses $0.74 a month**. A 3-seat team keeps $1.65 per seat, a 10-seat team $2.48 and a 50-seat team $2.77. A per-seat receipt limit (for example 20 × seats, at least 20), or the $9 minimum, keeps small teams profitable even on Sonnet.
 
-### 6.3 Break-even
+### 6.4 Break-even
 
 | Fixed costs per month | Amount |
 | --- | --- |
-| AWS (prod, staging, dev) | $35–55 |
-| Tooling and domain | $15 |
-| **Running costs** | **$50–70** |
-| Business overhead | $150 |
-| **All-in** | **$200–220** |
+| AWS (prod, staging, dev) | $48.98 |
+| Tooling and domain | $15.00 |
+| App store fees (phase 2 only) | $0.00 |
+| **Running costs** | **$63.98** |
+| Business overhead | $150.00 |
+| **All-in** | **$213.98** |
 
-- Running costs only: **about 7–9 paying teams** (about 21–27 paying seats at 3 seats per team).
-- All-in: **about 28 paying teams** (about 85–110 paying seats at 3–4 seats per team).
-- Neither figure pays for the owner's time.
+Each paying seat contributes about $2.63 a month toward fixed costs (straight $3 pricing, Haiku, teams of 4 on average).
 
-### 6.4 24-month sketch
+> **Break-even: 25 paying seats (7 teams of 4) covers running costs. 82 paying seats (21 teams of 4) covers all-in costs including business overhead.** Neither figure pays for the owner's time.
 
-Illustrative only. Assumes an average team of 4 seats ($12/month), 12% of revenue to variable costs, and all-in fixed costs of $210/month from launch.
+Team size barely moves this. At 1, 3, 10 or 50 seats per team, break-even is 27, 25, 24 or 23 seats for running costs, and 89, 83, 80 or 77 seats all-in. Phase 2's second region adds about $49 a month, which takes about 19 more seats.
 
-| Month | Paying teams | Monthly revenue | Monthly cost | Monthly profit |
-| --- | --- | --- | --- | --- |
-| 3 (pilot, free) | 0 | $0 | $210 | −$210 |
-| 6 | 15 | $180 | $232 | −$52 |
-| 12 | 50 | $600 | $282 | $318 |
-| 18 | 120 | $1,440 | $383 | $1,057 |
-| 24 | 250 | $3,000 | $570 | $2,430 |
+### 6.5 24-month projection
 
-Growth this fast needs a working sales channel (section 7). The pilot's job is to show whether it exists.
+This is illustrative only. The spreadsheet's growth inputs are labeled as **assumptions, not forecasts**:
 
-A cost-model spreadsheet (bead `supply-checkout-keh` acceptance criteria) is still to be built from these tables.
+- a 3-month free pilot with 5 teams, 60% of which convert
+- 4 new paying teams in the first paid month, with new sign-ups growing 12% a month
+- 3% monthly churn, 4 seats per team, straight $3 pricing, Haiku
+
+| Month | Paying teams | Paying seats | Monthly revenue | Monthly cost | Monthly profit |
+| --- | --- | --- | --- | --- | --- |
+| 3 (pilot, free) | 0 | 0 | $0 | $218 | −$218 |
+| 6 | 16 | 64 | $192 | $238 | −$46 |
+| 12 | 57 | 228 | $684 | $298 | $386 |
+| 18 | 132 | 528 | $1,584 | $408 | $1,176 |
+| 24 | 276 | 1,104 | $3,312 | $620 | $2,692 |
+
+On these assumptions, the first profitable month is month 7, cumulative profit turns positive in month 12, and the 24 months total about $16,800 in profit. Growth this fast needs a working sales channel (section 7). The pilot's job is to show whether it exists and to replace these guesses with measured numbers.
 
 ## 7. Go-to-market
 
@@ -173,3 +210,4 @@ All `mvp` beads roll up to `supply-checkout-jgl` (MVP live in AWS).
 4. What is the real monthly business overhead (insurance, accounting, state fees)?
 5. Is the pilot free, discounted, or paid from day one?
 6. Who handles support, and how many hours a week are available?
+7. Should the receipt limit scale with seats (for example 20 per seat) instead of a flat 200 per team? With Sonnet 5, a one-seat team at the full cap costs more than it pays (section 6.3).
