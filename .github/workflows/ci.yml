@@ -85,6 +85,16 @@ jobs:
       - name: Scan files for AWS identifiers and email addresses
         run: node scripts/check-public-safety.mjs
 
+  regions:
+    name: No region names outside the config module
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # ADR 0010: region names appear only in infra/lib/config.ts. Lambdas read
+      # AWS_REGION and stacks take their region as a parameter.
+      - run: node scripts/check-region-strings.mjs
+
   dependencies:
     name: Dependency audit
     runs-on: ubuntu-latest
@@ -239,7 +249,8 @@ jobs:
       # Account-agnostic synth (no AWS credentials). cdk-nag AwsSolutions runs
       # as a validation plugin and fails the synth on any unacknowledged finding.
       # Only us-east-1 is deployed today; us-west-2 is synthesized too so the
-      # second region stays one config change away (ADR 0010).
+      # second region stays one config change away (ADR 0010). npm test also
+      # synths every stack, identity and web included, in each region with cdk-nag.
       - run: npm run synth
       - run: npm run synth:all-regions
 
@@ -286,7 +297,7 @@ jobs:
   ci-passed:
     name: CI passed
     if: always()
-    needs: [pr-title, lint, workflows, secrets, dependencies, codeql, test, changes, infra, backend]
+    needs: [pr-title, lint, workflows, secrets, regions, dependencies, codeql, test, changes, infra, backend]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

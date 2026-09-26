@@ -30,6 +30,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `scripts/dev-server.mjs` | Local dev server with the mock runtime (`npm run dev`). |
 | `scripts/land-pr.sh` | Waits for CI, squash-merges a PR, cleans up its worktree and branch, and closes its beads (`npm run land -- <pr>`). |
 | `scripts/check-public-safety.mjs` | Blocks AWS identifiers, email addresses and credentials from this public repo (pre-commit hook and CI). |
+| `scripts/check-region-strings.mjs` | Blocks AWS region names in `infra/`, `backend/` and `src/` outside `infra/lib/config.ts` (ADR 0010; pre-commit hook and CI). |
 | `scripts/export-beads.mjs` | Writes the beads backlog export without owner emails (`npm run beads:export`). |
 | `tests/` | Playwright end-to-end tests, run against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`). |
 | `infra/` | The AWS CDK app (TypeScript) for the SaaS version. Its own npm package; see [Infrastructure](#infrastructure). |
@@ -64,7 +65,7 @@ Microsoft Edge is a system install rather than one of Playwright's own browsers.
 
 `npm run lint` runs ESLint on `src/`, the scripts and the tests, then builds both and validates their HTML. `npm run check` also runs the public-safety check below and every test suite against both builds.
 
-Run `npm run hooks:install` once per clone. It installs a pre-commit hook (`scripts/git-hooks/pre-commit`) that blocks commits containing AWS account or SSO identifiers, personal email addresses, or credentials, because this repository is public.
+Run `npm run hooks:install` once per clone. It installs a pre-commit hook (`scripts/git-hooks/pre-commit`) that blocks commits containing AWS account or SSO identifiers, personal email addresses, or credentials, because this repository is public, and commits that name an AWS region outside `infra/lib/config.ts`.
 
 ## Infrastructure
 
@@ -74,17 +75,17 @@ Run `npm run hooks:install` once per clone. It installs a pre-commit hook (`scri
 cd infra
 npm ci
 npm run lint        # tsc type-check and ESLint
-npm test            # vitest: config, stack layout, template snapshots, cdk-nag
+npm test            # vitest: config, stack layout, template snapshots, cdk-nag (every stack in each region)
 npm run synth       # cdk synth; cdk-nag AwsSolutions fails it on any finding
-npm run synth:all-regions  # the same, with us-west-2 added
+npm run synth:all-regions  # the same for every approved region (-c regions=all)
 npm run test:update # accept template snapshot changes after reviewing them
 ```
 
 **Stacks.** Every stack is named `supply-checkout-<env>-<region>-<component>`. Each region in the environment gets `data` (stateful: table, keys, buckets), `api` and `realtime` (stateless), and `observability`. The primary region also gets `identity` (stateful: Cognito) and `web` (CloudFront and WAF). Stateful stacks have termination protection. Every stack writes `/supply-checkout/<env>/<component>/stack` to SSM Parameter Store, and later stacks publish their outputs beside it. All resources are tagged `app=supply-checkout`.
 
-**Regions.** The MVP runs in **us-east-1 only**. Every stack takes its region as a parameter, and the tests and CI also synthesize us-west-2 (`synth:all-regions`), so turning on the second region from [ADR 0010](docs/adr/0010-multi-region-active-active.md) is a config change: set `regions` in `cdk.json` to `["us-east-1", "us-west-2"]`. CDK is already bootstrapped in us-west-2.
+**Regions.** The MVP runs in **us-east-1 only**. Every stack takes its region as a parameter, and the tests and CI also synthesize us-west-2 (`synth:all-regions`), so turning on the second region from [ADR 0010](docs/adr/0010-multi-region-active-active.md) is a config change: add it to `DEFAULT_REGIONS` in `lib/config.ts`. CDK is already bootstrapped in us-west-2. `lib/config.ts` is the only file in `infra/`, `backend/` or `src/` that may name a region: it holds `APPROVED_REGIONS`, `DEFAULT_REGIONS` and `GLOBAL_SERVICES_REGION` (where AWS requires CloudFront's certificate and WAF, and where Cognito lives). Stacks get their region as a parameter, Lambdas read `AWS_REGION`, and tests import the constants. `npm run check:regions` (in CI and the pre-commit hook) enforces this.
 
-**Parameters.** The environment and regions are CDK context (defaults in `cdk.json`: `envName=prod`, `regions=["us-east-1"]`, `primaryRegion=us-east-1`); override them with `-c envName=staging -c regions=us-east-1,us-west-2`. Only the regions in `APPROVED_REGIONS` (`lib/config.ts`) are allowed. The account ID is never committed: it comes from the AWS profile at synth time, and a synth without credentials (CI, tests) is account-agnostic.
+**Parameters.** The environment and regions are CDK context (`cdk.json` sets `envName=prod`; `regions` defaults to `DEFAULT_REGIONS` and `primaryRegion` to the first of them); override them with `-c envName=staging -c regions=all` (or a comma-separated list, with `-c primaryRegion=...`). Only the regions in `APPROVED_REGIONS` (`lib/config.ts`) are allowed. The account ID is never committed: it comes from the AWS profile at synth time, and a synth without credentials (CI, tests) is account-agnostic.
 
 **The `app` table.** The primary region's `data` stack holds the single DynamoDB table from [ADR 0005](docs/adr/0005-multi-tenant-dynamodb.md), `supply-checkout-<env>-app`. It's a `TableV2` (`AWS::DynamoDB::GlobalTable`) with one replica, in its own region: on-demand, encrypted with a customer-managed KMS key that rotates yearly, point-in-time recovery, deletion protection, a stream with new and old images, TTL on `expiresAt`, and one index, `GSI1`. Adding the us-west-2 replica in phase 2 is another entry in `replicas` with that region's key, not a new table. The data stack publishes `table-name`, `table-arn`, `table-stream-arn` and `table-key-arn` to SSM under `/supply-checkout/<env>/data/`. The key and index names come from `backend/src/data/schema.ts`, so the table and the code that reads it can't drift apart.
 
@@ -200,11 +201,12 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | PR title | Conventional Commits format |
 | Lint and validate HTML | ESLint on `src/`, scripts and tests; builds both and runs html-validate on each |
 | Lint GitHub workflows | actionlint |
+| No region names outside the config module | `scripts/check-region-strings.mjs`: fails on any AWS region name in `infra/`, `backend/` or `src/` outside `infra/lib/config.ts` (ADR 0010) |
 | Secret scan | gitleaks on every commit in the history, and `scripts/check-public-safety.mjs` on every file (AWS account and SSO identifiers, email addresses, AWS and Stripe keys, private keys) |
 | Dependency audit | `npm audit` fails on high-severity advisories; dependency review fails a PR that adds a moderate-or-worse vulnerable package |
 | CodeQL (javascript-typescript), CodeQL (actions) | CodeQL `security-extended` queries on the app, scripts, tests and workflows (`.github/workflows/codeql.yml`, which also runs weekly). Results go to the repository's code scanning alerts |
 | Backend | Only when `backend/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint (with the DynamoDB ban), and the data-access tests against DynamoDB Local, which runs as a service container |
-| Infra | Only when `infra/`, `backend/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint, the CDK unit and snapshot tests, and a synth with cdk-nag for the deployed region and for both regions |
+| Infra | Only when `infra/`, `backend/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint, the CDK unit and snapshot tests, and a synth with cdk-nag for the deployed region and for both regions; the tests also synth every stack, identity and web included, in each region on its own |
 | Tests (browser, artifact or web build) | All test suites, in seven parallel jobs: desktop Chrome and iPhone Safari against each build, and desktop Firefox, Safari and Edge against the web build. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
 
 ## Releases

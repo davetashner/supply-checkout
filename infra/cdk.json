@@ -13,10 +13,6 @@
   },
   "context": {
     "envName": "prod",
-    "regions": [
-      "us-east-1"
-    ],
-    "primaryRegion": "us-east-1",
     "@aws-cdk/aws-signer:signingProfileNamePassedToCfn": true,
     "@aws-cdk/aws-ecs-patterns:secGroupsDisablesImplicitOpenListener": true,
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
