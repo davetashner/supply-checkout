@@ -289,6 +289,18 @@ describe("edits after a command", () => {
     expect(movements()).toEqual([]);
   });
 
+  it("refuse, with 400, a new line for an untracked product whose stored version isn't a number, and add to an existing line", async () => {
+    seed({ product: { code: "0123", name: "Nitrile gloves", price: 12.5, version: "x" } });
+    const path = "/teams/team-a/sheets/s1/checkout";
+    expect(await call("POST", path, { operationId: op(), productKey: "0123", quantity: 1 })).toMatchObject({ status: 400, body: { error: { code: "bad_request", message: "This item's version isn't a number" } } });
+    expect(line()).toBeUndefined();
+    expect(movements()).toEqual([]);
+    // A line already on the sheet doesn't need the product's version
+    seed({ product: { code: "0123", name: "Nitrile gloves", price: 12.5, version: "x" }, sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 5, returned: 1 } } } });
+    expect(await call("POST", path, { operationId: op(), productKey: "0123", quantity: 1 })).toMatchObject({ status: 200 });
+    expect(line().out).toBe(6);
+  });
+
   it("leave an untracked product's version alone, since its stock didn't change", async () => {
     seed({ product: { code: "0123", name: "Nitrile gloves", price: 12.5 } });
     await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2 });

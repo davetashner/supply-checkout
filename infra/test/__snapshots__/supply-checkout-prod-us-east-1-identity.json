@@ -87,6 +87,16 @@
             "AttributeDataType": "String",
             "Mutable": true,
             "Name": "idp_email_verified"
+          },
+          {
+            "AttributeDataType": "String",
+            "Mutable": true,
+            "Name": "idp_hd"
+          },
+          {
+            "AttributeDataType": "String",
+            "Mutable": true,
+            "Name": "linked_email"
           }
         ],
         "SmsVerificationMessage": "The verification code to your new account is {####}",

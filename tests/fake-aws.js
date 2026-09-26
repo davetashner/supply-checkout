@@ -230,10 +230,11 @@ export class FakeBackend {
   }
 
   command(team, sheetId, name, body) {
-    const err = (status, code, reason) => [status, { error: { code, message: code, ...(reason ? { reason } : {}) } }];
+    // With the API's messages where the app shows them (a refused checkout or return)
+    const err = (status, code, message = code, reason) => [status, { error: { code, message, ...(reason ? { reason } : {}) } }];
     const member = this.teams.find((t) => t.id === team);
-    if (!member) return err(403, "permission_denied");
-    if (member.role === "viewer") return err(403, "permission_denied", "view_only");
+    if (!member) return err(403, "permission_denied", "permission_denied", "not_member");
+    if (member.role === "viewer") return err(403, "permission_denied", "permission_denied", "view_only");
     const { operationId, productKey: key, quantity: qty, ...oneOff } = body;
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId) || typeof key !== "string" || !Number.isInteger(qty) || qty < 1) return err(400, "bad_request");
     const sheetKey = `${team}/sheets/${sheetId}`, productKey = `${team}/products/${key}`;
@@ -244,7 +245,7 @@ export class FakeBackend {
     if (prior) return prior.request === request ? answer(prior.result, true) : err(400, "bad_request");
 
     const sheet = this.docs.get(sheetKey), product = this.docs.get(productKey);
-    if (!sheet) return err(404, "not_found");
+    if (!sheet) return err(404, "not_found", "No such sheet");
     if (sheet.data.status === "closed") return err(409, "aborted");
     const items = (sheet.data.items ||= {});
     const line = Object.hasOwn(items, key) ? items[key] : undefined;
@@ -253,12 +254,14 @@ export class FakeBackend {
       if (line) line.out += qty;
       else {
         const from = product ? product.data : oneOff;
-        if (!product && (oneOff.name === undefined || oneOff.price === undefined)) return err(400, "bad_request");
+        if (!product && (oneOff.name === undefined || oneOff.price === undefined)) return err(400, "bad_request", "This item isn't in inventory; send its name and price");
         items[key] = { code: from.code ?? "", name: from.name ?? "", price: from.price ?? 0, ...(from.cost === undefined ? {} : { cost: from.cost }), out: qty, returned: 0 };
       }
       delta = -qty;
     } else {
-      if (!line || (line.returned || 0) + qty > line.out) return err(400, "bad_request");
+      if (!line) return err(400, "bad_request", "This item isn't on this sheet");
+      const left = line.out - (line.returned || 0);
+      if (qty > left) return err(400, "bad_request", `Only ${left} of this item ${left === 1 ? "is" : "are"} left to return`);
       line.returned = (line.returned || 0) + qty;
       delta = qty;
     }

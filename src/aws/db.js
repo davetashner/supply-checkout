@@ -46,7 +46,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
   // A write the API refused (403 permission_denied): a viewer's is rejected with the
   // artifact runtime's view-only code, which the app acts on (src/main.js); anything
   // else means this user is no longer in the team.
-  function refused(e) {
+  function denied(e) {
     if (e.code !== "permission_denied") return e;
     if (e.reason === "view_only") return { ...e, code: "invalid_argument" };
     lost();
@@ -175,7 +175,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
         put(name, id, await (body ? api(method, path, { ...body, expectedVersion }) : api(method, `${path}?expectedVersion=${expectedVersion}`)));
       } catch (e) {
         if (e.code === "aborted") await fetchDoc(name, id);
-        throw refused(e);
+        throw denied(e);
       }
     };
     return {
@@ -196,7 +196,8 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
   // stock together. The answer has the sheet and the product as they are now (null if gone),
   // so the screen updates before the live events arrive. Resolves to how many the command
   // moved and the line as it is now. A 409 fetches both, as a document write's does, and
-  // passes the error on.
+  // passes the error on. So does a 400 or 404, which the command refuses for what the sheet
+  // holds now; it rejects as `refused` (a code only this adapter uses) with the server's message, for the app to show.
   //
   // `action` stands for one action the person confirmed. It keeps one operation ID for as long
   // as the request stays the same, so every attempt at it (a retry, or a second tap while the
@@ -215,10 +216,16 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
       const res = await api("POST", `${docPath("sheets", sheetId)}/${name}`, { operationId: operation, ...body });
       put("sheets", sheetId, res.sheet);
       put("products", body.productKey, res.product);
-      return { quantity: res.result.quantity, line: res.sheet ? res.sheet.data.items[body.productKey] : {} };
+      // The line as the sheet has it now; {} if the sheet or the line is gone (or has no items)
+      const items = res.sheet?.data.items;
+      return { quantity: res.result.quantity, line: (items && Object.hasOwn(items, body.productKey) && items[body.productKey]) || {} };
     } catch (e) {
-      if (e.code === "aborted") await Promise.all([fetchDoc("sheets", sheetId), fetchDoc("products", body.productKey)]);
-      throw refused(e);
+      const bad = e.code === "bad_request" || e.code === "not_found";
+      if (bad || e.code === "aborted") await Promise.all([fetchDoc("sheets", sheetId), fetchDoc("products", body.productKey)]);
+      // Refused for what the sheet holds now (only so many left to return, the line or the
+      // sheet gone): the server's message says why, with the latest now showing
+      if (bad) throw { code: "refused", message: `${String(e.message).replace(/\.$/, "")}. The latest is showing.`, status: e.status };
+      throw denied(e);
     }
   }
 
