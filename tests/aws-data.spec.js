@@ -137,7 +137,7 @@ test.describe("data", () => {
     backend.docs.delete("t1/sheets/s1");
     await page.getByRole("button", { name: "Delete sheet" }).click();
     await page.getByRole("button", { name: "Tap again to delete" }).click();
-    await expect(page.locator("#toast")).toContainText("Someone else changed this just now");
+    await expect(page.locator("#toast")).toHaveText("Someone else deleted this sheet, so your change wasn't saved.");
     await expect(card(page, "Echo Studio")).toHaveCount(0);
   });
 
@@ -474,6 +474,58 @@ test.describe("checkout and return commands", () => {
     await expect(modal(page)).toBeEmpty();
     await expect(card(page, "Echo Studio")).toHaveCount(0);
     expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(10);
+  });
+
+  // Whether or not this page has heard of the delete yet, a write to the sheet says it was
+  // deleted, never recreates it, and doesn't switch the page to view-only
+  for (const heard of [false, true]) {
+    test(`editing a line on a sheet deleted meanwhile says so${heard ? ", after hearing of it" : ""}`, async ({ page }) => {
+      const backend = await open(page);
+      await card(page, "Echo Studio").click();
+      await lineRow(page, "Paper towels").click();
+      backend.docs.delete("t1/sheets/s1");
+      if (heard) {
+        await emit(page, { v: 1, eventId: "d1", collection: "sheets", id: "s1", op: "delete", version: 2, at: Date.now() });
+        await expect(card(page, "Echo Studio")).toHaveCount(0);
+      }
+      await modal(page).getByRole("button", { name: "Save" }).click();
+      await expect(toast(page)).toHaveText("Someone else deleted this sheet, so your change wasn't saved.");
+      await expect(modal(page)).toBeEmpty();
+      await expect(card(page, "Echo Studio")).toHaveCount(0);
+      await expect(page.locator("#notice")).toBeHidden();
+      expect(backend.requests("PATCH", "/teams/t1/sheets/s1").map((r) => r.body.expectedVersion)).toEqual([heard ? 0 : 1]);
+      expect(backend.doc("t1", "sheets", "s1")).toBeUndefined();
+    });
+
+    test(`removing a line from a sheet deleted meanwhile doesn't make it again${heard ? ", after hearing of it" : ""}`, async ({ page }) => {
+      const backend = await open(page);
+      await card(page, "Echo Studio").click();
+      await lineRow(page, "Paper towels").click();
+      backend.docs.delete("t1/sheets/s1");
+      if (heard) {
+        await emit(page, { v: 1, eventId: "d1", collection: "sheets", id: "s1", op: "delete", version: 2, at: Date.now() });
+        await expect(card(page, "Echo Studio")).toHaveCount(0);
+      }
+      await modal(page).getByRole("button", { name: "Remove" }).click();
+      await modal(page).getByRole("button", { name: "Tap to remove" }).click();
+      await expect(toast(page)).toHaveText("Someone else deleted this sheet, so your change wasn't saved.");
+      await expect(page.locator("#notice")).toBeHidden();
+      expect(backend.requests("PUT", "/teams/t1/sheets/s1")).toEqual([]);
+      expect(backend.doc("t1", "sheets", "s1")).toBeUndefined();
+    });
+  }
+
+  test("removing a line saves the sheet as the server has it, without the line", async ({ page }) => {
+    const backend = await open(page);
+    await card(page, "Echo Studio").click();
+    await lineRow(page, "Paper towels").click();
+    await modal(page).getByRole("button", { name: "Remove" }).click();
+    await modal(page).getByRole("button", { name: "Tap to remove" }).click();
+    await expect(toast(page)).toHaveText("Removed");
+    await expect(lineRow(page, "Paper towels")).toHaveCount(0);
+    const [put] = backend.requests("PUT", "/teams/t1/sheets/s1");
+    expect(put.body.expectedVersion).toBe(1);
+    expect(Object.keys(put.body.data.items)).toEqual(["nb-bins"]);
   });
 
   // The answer's sheet may have no items, or no longer have the line (removed by someone

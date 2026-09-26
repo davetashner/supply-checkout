@@ -3,7 +3,7 @@ import { use, help } from "./runtime.js";
 import { checkOut, recordReturn, setStock, saveItem } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, newKey, uid, round2, numOrNull } from "./format.js";
 import { lines, totals } from "./sheet-math.js";
-import { $, toast, openModal, closeModal, armButton, stepperHTML, setText, setHTML, morph, wireStepper } from "./dom.js";
+import { $, toast, openModal, closeModal, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
 import { RECEIPT_PROMPT, sampleErr } from "./receipt-prompt.js";
 import { sheetCsv, sheetsCsv, inventoryCsv, allJson } from "./export.js";
@@ -22,11 +22,18 @@ let db = null, userNs = null, dl = null, myId = null, canWrite = true, connected
 let products = Object.create(null), sheets = [], people = {};
 const ui = { tab: "sheets", sheetId: null, mode: "out", filter: "open", receipt: false };
 
-async function write(fn, okMsg) {
+// sheetId: the sheet this write changes, if any, so a write to a sheet someone else deleted
+// says so. claude.ai's db refuses an update to a missing document as invalid_argument, the
+// same code as a viewer's write, so that asks whether the sheet is still there; the web
+// build's db rejects it as not_found.
+async function write(fn, okMsg, sheetId) {
   if (!db) { toast("Not connected to shared storage."); return false; }
   try { await fn(); if (okMsg) toast(okMsg); return true; }
   catch (e) {
-    if (e && e.code === "invalid_argument") { canWrite = false; render(); toast("You have view-only access. Ask the owner for Contributor access to make changes."); }
+    if (sheetId && e && (e.code === "not_found" || (e.code === "invalid_argument" && await sheetGone(sheetId)))) {
+      closeModal(); toast("Someone else deleted this sheet, so your change wasn't saved.");
+    }
+    else if (e && e.code === "invalid_argument") { canWrite = false; render(); toast("You have view-only access. Ask the owner for Contributor access to make changes."); }
     else if (e && e.code === "quota_exceeded") toast("Storage is full. Delete old sheets or items to make room.");
     // Someone else saved this first (the web build's versioned writes, ADR 0006). Close the
     // editor so the latest values show, rather than an edit made on the old ones.
@@ -41,6 +48,9 @@ async function write(fn, okMsg) {
 }
 
 const currentSheet = () => sheets.find(s => s.id === ui.sheetId);
+async function sheetGone(id) {
+  try { return !(await db.doc("sheets/" + id).get()).exists; } catch { return false; }
+}
 // Show a sheet we just created right away; the next snapshot replaces this copy
 const addLocalSheet = (id, body) => { if (!sheets.some(s => s.id === id)) sheets = [{ id, ...body }, ...sheets]; };
 function personHTML(s) {
@@ -135,7 +145,7 @@ function drawList() {
 
 function drawSheet(s) {
   const closed = s.status === "closed", t = totals(s), ls = lines(s);
-  $("#sheetHead").innerHTML = `
+  morph($("#sheetHead"), `
     <div class="sheet-head">
       <h2>${esc(s.client || "Untitled")}</h2>
       <div class="meta"><span>${esc(fmtDate(s.date))}</span><span>Prepared by ${personHTML(s)}</span><span class="pill ${closed ? "closed" : "open"}">${closed ? "Returned" : "Checked out"}</span></div>
@@ -144,16 +154,17 @@ function drawSheet(s) {
         ${canWrite ? `<button type="button" class="btn" id="editSheet">Edit details</button>` : ""}
         ${canWrite ? (closed ? `<button type="button" class="btn" id="reopen">Reopen</button>` : `<button type="button" class="btn" id="closeSheet">Finished Return</button>`) : ""}
       </div>
-    </div>`;
-  $("#scanbar").hidden = closed || !canWrite;
-  document.querySelectorAll(".mode button").forEach(b => b.setAttribute("aria-pressed", b.dataset.mode === ui.mode));
-  $("#scanLabel").textContent = ui.mode === "out" ? "Scan to check out" : "Scan to return";
-  $("#noCodeBtn").textContent = ui.mode === "out" ? "Add item without a barcode" : "Return item without a barcode";
-  $("#modeHint").textContent = ui.mode === "out"
+    </div>`);
+  // Each only changes the DOM when its value changes (toggleAttribute too)
+  $("#scanbar").toggleAttribute("hidden", closed || !canWrite);
+  document.querySelectorAll(".mode button").forEach(b => setAttr(b, "aria-pressed", b.dataset.mode === ui.mode));
+  setText($("#scanLabel"), ui.mode === "out" ? "Scan to check out" : "Scan to return");
+  setText($("#noCodeBtn"), ui.mode === "out" ? "Add item without a barcode" : "Return item without a barcode");
+  setText($("#modeHint"), ui.mode === "out"
     ? "Take a photo of the barcode, then choose how many you're taking."
-    : "Scan an item you're bringing back and enter how many are unused. Whatever isn't returned counts as used. Tap Finished Return when everything is back.";
+    : "Scan an item you're bringing back and enter how many are unused. Whatever isn't returned counts as used. Tap Finished Return when everything is back.");
 
-  $("#sheetBody").innerHTML = `
+  morph($("#sheetBody"), `
     <div class="totals">
       <div><div class="k">Taken</div><div class="v">${t.out}</div></div>
       <div><div class="k">Returned</div><div class="v">${t.ret}</div></div>
@@ -171,23 +182,34 @@ function drawSheet(s) {
         </tr>`; }).join("")}</tbody>
       <tfoot><tr><td>Total</td><td></td><td>${t.out}</td><td>${t.ret}</td><td>${t.used}</td><td>${money(t.charge)}</td></tr></tfoot>
     </table></div>` : `<div class="empty">No supplies on this sheet yet. Scan a barcode to check one out.</div>`}
-    ${canWrite ? `<div class="sheet-actions" style="margin-top:18px"><button type="button" class="btn danger" id="delSheet">Delete sheet</button></div>` : ""}`;
-
-  const on = (id, fn) => { const el = document.getElementById(id); el && el.addEventListener("click", fn); };
-  on("exportCsv", () => exportCsv(s));
-  on("editSheet", () => newSheetModal(s));
-  on("closeSheet", () => write(() => db.doc("sheets/" + s.id).update({ status: "closed", closedAt: new Date().toISOString() }), "Return finished"));
-  on("reopen", () => write(() => db.doc("sheets/" + s.id).update({ status: "open" }), "Sheet reopened"));
-  const del = $("#delSheet");
-  del && armButton(del, "Tap again to delete", async () => { if (await write(() => db.doc("sheets/" + s.id).delete(), "Sheet deleted")) { ui.sheetId = null; draw(); } });
-  $("#sheetBody").querySelectorAll("tr[data-line]").forEach(tr => {
-    if (!canWrite) return;
-    const go = () => lineModal(s, tr.dataset.line);
-    tr.addEventListener("click", go);
-    // preventDefault: otherwise this Enter press also submits the editor's form
-    tr.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
-  });
+    ${canWrite ? `<div class="sheet-actions" style="margin-top:18px"><button type="button" class="btn danger" id="delSheet">Delete sheet</button></div>` : ""}`);
 }
+
+// The sheet view is redrawn on every snapshot, with morph() like #main. Its events are
+// delegated here, and each looks up the sheet when it runs, so it acts on the latest copy.
+const sheetAction = {
+  exportCsv: () => exportCsv(currentSheet()),
+  editSheet: () => newSheetModal(currentSheet()),
+  closeSheet: () => write(() => db.doc("sheets/" + ui.sheetId).update({ status: "closed", closedAt: new Date().toISOString() }), "Return finished", ui.sheetId),
+  reopen: () => write(() => db.doc("sheets/" + ui.sheetId).update({ status: "open" }), "Sheet reopened", ui.sheetId),
+  delSheet: b => arm(b, "Tap again to delete", async () => {
+    const id = ui.sheetId;
+    if (await write(() => db.doc("sheets/" + id).delete(), "Sheet deleted", id)) { ui.sheetId = null; draw(); }
+  }),
+};
+["#sheetHead", "#sheetBody"].forEach(sel => {
+  $(sel).addEventListener("click", e => {
+    const t = e.target.closest("button, tr[data-line]");
+    if (!t) return;
+    if (t.dataset.line) { if (canWrite) lineModal(currentSheet(), t.dataset.line); }
+    else sheetAction[t.id](t);
+  });
+});
+// preventDefault: otherwise this Enter press also submits the editor's form
+$("#sheetBody").addEventListener("keydown", e => {
+  const tr = e.key === "Enter" && canWrite && e.target.closest("tr[data-line]");
+  if (tr) { e.preventDefault(); lineModal(currentSheet(), tr.dataset.line); }
+});
 
 function drawPrices() {
   const list = Object.entries(products).map(([key, p]) => ({ key, ...p })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
@@ -220,7 +242,7 @@ function newSheetModal(existing) {
       const client = m.querySelector("#fClient").value.trim(), date = m.querySelector("#fDate").value;
       if (!client || !date) return;
       if (editing) {
-        if (await write(() => db.doc("sheets/" + existing.id).update({ client, date }), "Saved")) closeModal();
+        if (await write(() => db.doc("sheets/" + existing.id).update({ client, date }), "Saved", existing.id)) closeModal();
         return;
       }
       const ref = db.collection("sheets").doc();
@@ -268,7 +290,7 @@ function checkoutModal(s, code, key = keyOf(code)) {
       const fresh = currentSheet() || s, cur = own(fresh.items || {}, key);
       const item = { code, name: cur ? cur.name : name, price: cur ? cur.price : price, out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) };
       let after;
-      if (await write(async () => { ({ after } = await checkOut(db, action, s.id, key, qty, item, oneOff, bumpStock)); }, `Checked out ${qty} × ${item.name}`)) { closeModal(); await after(); }
+      if (await write(async () => { ({ after } = await checkOut(db, action, s.id, key, qty, item, oneOff, bumpStock)); }, `Checked out ${qty} × ${item.name}`, s.id)) { closeModal(); await after(); }
     });
   });
 }
@@ -356,7 +378,7 @@ function returnModal(s, code, key = keyOf(code)) {
         const done = await recordReturn(db, action, s.id, key, r, cur, bumpStock);
         after = done.after;
         toast(`${done.quantity} returned · ${int(done.line.returned)} of ${int(done.line.out)} back`);
-      })) { closeModal(); await after(); }
+      }, undefined, s.id)) { closeModal(); await after(); }
     });
   });
 }
@@ -376,15 +398,21 @@ function lineModal(s, key) {
     </form>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     armButton(m.querySelector("#remove"), "Tap to remove", async () => {
-      const fresh = currentSheet() || s; const items = { ...(fresh.items || {}) }; delete items[key];
-      const body = { ...fresh }; delete body.id; body.items = items;
-      if (await write(() => db.doc("sheets/" + s.id).set(body), "Removed")) closeModal();
+      // Saved as the whole sheet without the line, so only if the sheet is still there:
+      // a set would make a sheet someone else deleted again
+      const ref = db.doc("sheets/" + s.id);
+      if (await write(async () => {
+        const got = await ref.get();
+        if (!got.exists) throw { code: "not_found" };
+        const body = got.data(); body.items = { ...(body.items || {}) }; delete body.items[key];
+        await ref.set(body);
+      }, "Removed", s.id)) closeModal();
     });
     m.querySelector("#f").addEventListener("submit", async e => {
       e.preventDefault();
       const out = int(m.querySelector("#fOut").value), returned = Math.min(int(m.querySelector("#fRet").value), out);
       const price = Math.max(0, Number(m.querySelector("#fPrice").value) || 0);
-      if (await write(() => db.doc("sheets/" + s.id).update({ items: { [key]: { out, returned, price } } }), "Saved")) closeModal();
+      if (await write(() => db.doc("sheets/" + s.id).update({ items: { [key]: { out, returned, price } } }), "Saved", s.id)) closeModal();
     });
   });
 }
@@ -762,7 +790,7 @@ async function saveReceipt(btn) {
       const s = sheets.find(s => s.id === x.sheetId);
       if (!s) { toast("One of the chosen sheets was deleted. Pick another and save again."); done(); renderReceipt(); return; }
       for (const [k, it] of Object.entries(items)) { const cur = own(s.items || {}, k); if (cur) Object.assign(it, { name: cur.name, price: cur.price, out: it.out + int(cur.out), returned: int(cur.returned), code: cur.code || it.code }); }
-      ok = await write(() => db.doc("sheets/" + s.id).update({ items }));
+      ok = await write(() => db.doc("sheets/" + s.id).update({ items }), undefined, s.id);
       if (ok) savedIds.push(s.id);
     } else {
       const ref = db.collection("sheets").doc();
