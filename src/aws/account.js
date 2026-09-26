@@ -1,12 +1,13 @@
 // Getting a signed-in user into a team (docs/api/onboarding.md), and the screens for it:
 // sign-in, "name your team", joining from an invite link, and errors. They take the app's
 // place until a team is open; then a bar under the header shows the team (a switcher when
-// there are several) and Sign out.
+// there are several), Members and Import CSV for owners, and Sign out.
 import { esc } from "../format.js";
 import { toast } from "../dom.js";
 import { createSession, INVITE_KEY, TEAM_KEY } from "./session.js";
 import { createDb } from "./db.js";
 import { openImport } from "./import.js";
+import { openMembers } from "./members.js";
 
 const ROLE = { owner: "an owner", contributor: "a contributor", viewer: "a viewer" };
 
@@ -166,21 +167,34 @@ export async function start(config) {
     <div class="actions"><button type="button" class="btn primary" id="continue" autofocus>Continue</button></div>`,
   (el) => el.querySelector("#continue").addEventListener("click", () => { localStorage.removeItem(TEAM_KEY); location.reload(); }));
 
-  // The team bar under the header: which team, a switcher, importing inventory (owners),
-  // and Sign out
+  // The owner changed their own role or left the team (the members screen): their access
+  // changed, so start again from /me. Leaving forgets the team, so another one opens.
+  const changed = (text, left) => {
+    if (left) localStorage.removeItem(TEAM_KEY);
+    show(`<h2>Your access changed</h2>
+    <p>${esc(text)}</p>
+    <div class="actions"><button type="button" class="btn primary" id="continue" autofocus>Continue</button></div>`,
+    (el) => el.querySelector("#continue").addEventListener("click", () => location.reload()));
+  };
+
+  // The team bar under the header: which team, a switcher, managing members and importing
+  // inventory (owners), and Sign out
   function teamBar(me, team) {
     const bar = document.createElement("div");
     bar.className = "teambar";
     bar.innerHTML = (me.teams.length > 1
       ? `<label for="teamSwitch">Team</label><select id="teamSwitch">${me.teams.map((t) => `<option value="${esc(t.id)}"${t.id === team.id ? " selected" : ""}>${esc(t.name)}</option>`).join("")}</select>`
       : `<span>Team: <strong>${esc(team.name)}</strong></span>`)
-      + `<span class="spacer"></span>${team.role === "owner" ? `<button type="button" class="btn ghost" id="importInventory">Import CSV</button>` : ""}<button type="button" class="btn ghost" id="signOut">Sign out</button>`;
+      + `<span class="spacer"></span>${team.role === "owner" ? `<button type="button" class="btn ghost" id="members">Members</button><button type="button" class="btn ghost" id="importInventory">Import CSV</button>` : ""}<button type="button" class="btn ghost" id="signOut">Sign out</button>`;
     box.after(bar);
     const pick = bar.querySelector("#teamSwitch");
     // Switching loads the page again for the other team: new data, role and live updates
     if (pick) pick.addEventListener("change", () => { localStorage.setItem(TEAM_KEY, pick.value); location.reload(); });
     bar.querySelector("#signOut").addEventListener("click", signOut);
-    if (team.role === "owner") bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id));
+    if (team.role === "owner") {
+      bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed));
+      bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id));
+    }
   }
 
   function open(me, team) {

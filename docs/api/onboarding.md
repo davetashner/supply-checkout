@@ -69,7 +69,7 @@ Then:
    `403 permission_denied`; call `/me` again and pick another team.
 
 Use `role` to show or hide editing (viewers read only; the data routes also
-answer a viewer's write with `403 invalid_argument`). Use `status` and
+answer a viewer's write with `403 permission_denied`, `reason: "view_only"`). Use `status` and
 `trialEndsAt` for the trial banner.
 
 ## Errors from `POST /teams`

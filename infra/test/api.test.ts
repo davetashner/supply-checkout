@@ -2,6 +2,7 @@ import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { ACCOUNT_ROUTES, AUTH_ROUTES, DATA_ROUTES, routeKey } from "../../backend/src/api/routes.js";
+import { MEMBER_ROW_ATTRIBUTES } from "../../backend/src/data/schema.js";
 import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
 import { apiOutputParameters } from "../lib/stacks/api-stack.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
@@ -88,6 +89,9 @@ describe("HTTP API routes", () => {
       "GET /me": { ThrottlingRateLimit: 50, ThrottlingBurstLimit: 100 },
       "POST /teams": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
       "POST /invites/{inviteId}/accept": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
+      "GET /teams/{teamId}/members": { ThrottlingRateLimit: 20, ThrottlingBurstLimit: 40 },
+      "PATCH /teams/{teamId}/members/{userId}": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
+      "DELETE /teams/{teamId}/members/{userId}": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
     });
     // Created after the routes it names
     expect((stage.DependsOn as string[]).filter((d) => d.startsWith("HttpApi")).length).toBeGreaterThanOrEqual(ACCOUNT_ROUTES.length + 1);
@@ -168,7 +172,8 @@ describe("data-access role (LeadingKeys)", () => {
 
   it("reaches only items in the session team's partitions, and only through the item and query actions", () => {
     const [policy] = role().Policies;
-    const [items, kms] = policy?.PolicyDocument.Statement ?? [];
+    const [items, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    expect(rest).toEqual([]);
     expect(items).toMatchObject({
       Sid: "TeamItemsOnly",
       Effect: "Allow",
@@ -202,7 +207,7 @@ describe("account-access role (LeadingKeys)", () => {
     return r.Properties as { AssumeRolePolicyDocument: { Statement: Record<string, unknown>[] }; Policies: { PolicyDocument: { Statement: Record<string, unknown>[] } }[]; MaxSessionDuration: number };
   };
 
-  it("can be assumed only by the account function's role, with the user, team and invitee tags and no others", () => {
+  it("can be assumed only by the account function's role, with the user, team, invitee and member tags and no others", () => {
     const r = role();
     expect(r.MaxSessionDuration).toBe(3600);
     const [trust, ...rest] = r.AssumeRolePolicyDocument.Statement;
@@ -212,15 +217,16 @@ describe("account-access role (LeadingKeys)", () => {
       Action: ["sts:AssumeRole", "sts:TagSession"],
       Principal: { AWS: { "Fn::GetAtt": [expect.stringMatching(/^AccountFunctionRole/), "Arn"] } },
       Condition: {
-        StringLike: { "aws:RequestTag/userId": "?*", "aws:RequestTag/teamId": "?*", "aws:RequestTag/invitee": "?*" },
-        "ForAllValues:StringEquals": { "aws:TagKeys": ["userId", "teamId", "invitee"] },
+        StringLike: { "aws:RequestTag/userId": "?*", "aws:RequestTag/teamId": "?*", "aws:RequestTag/invitee": "?*", "aws:RequestTag/member": "?*" },
+        "ForAllValues:StringEquals": { "aws:TagKeys": ["userId", "teamId", "invitee", "member"] },
       },
     });
   });
 
-  it("reaches only the tagged user, team and invitee partitions, with item, transaction and query actions and no scan", () => {
+  it("reaches only the tagged user, team and invitee partitions, with item, transaction and query actions and no scan, and a member's only to update or delete", () => {
     const [policy] = role().Policies;
-    const [items, kms] = policy?.PolicyDocument.Statement ?? [];
+    const [items, member, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    expect(rest).toEqual([]);
     expect(items).toMatchObject({
       Sid: "CallerItemsOnly",
       Effect: "Allow",
@@ -236,6 +242,22 @@ describe("account-access role (LeadingKeys)", () => {
     expect(resourcesJson).toContain("/index/GSI2");
     expect(resourcesJson).not.toContain("GSI1");
     expect(resourcesJson).not.toContain("*");
+    // Another member's partition: only updating or deleting items (their team-switcher row), on the table itself
+    expect(member).toMatchObject({
+      Sid: "MemberSwitcherRowOnly",
+      Effect: "Allow",
+      Action: ["dynamodb:UpdateItem", "dynamodb:DeleteItem"],
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["USER#${aws:PrincipalTag/member}"], "dynamodb:Attributes": ["PK", "SK", "role"] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+      },
+    });
+    expect(Object.keys(member?.Condition as object).sort()).toEqual(["ForAllValues:StringEquals", "StringEqualsIfExists"]);
+    // The same list the data layer's member-row writes are tested against (backend/test/members-api.test.ts)
+    expect([...MEMBER_ROW_ATTRIBUTES]).toEqual(["PK", "SK", "role"]);
+    expect(JSON.stringify(member?.Resource)).toContain(":table/supply-checkout-prod-app");
+    expect(JSON.stringify(member?.Resource)).not.toContain("index");
+    expect(JSON.stringify(member?.Resource)).not.toContain("*");
     expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } });
   });
 

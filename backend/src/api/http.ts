@@ -18,16 +18,26 @@ export type ErrorCode =
   | "quota_exceeded"
   | "internal";
 
+/**
+ * Why a request was refused, where the code alone doesn't say: `view_only` (a
+ * viewer writing), `owners_only` (an owners-only route), `not_member` (not in
+ * the team, or no such team) and `last_owner` (the change would leave the team
+ * without an owner).
+ */
+export type ErrorReason = "view_only" | "owners_only" | "not_member" | "last_owner";
+
 /** An error with the HTTP status and code the client sees. */
 export class ApiError extends Error {
   override readonly name = "ApiError";
   readonly status: number;
   readonly code: ErrorCode;
+  readonly reason?: ErrorReason;
 
-  constructor(status: number, code: ErrorCode, message: string) {
+  constructor(status: number, code: ErrorCode, message: string, reason?: ErrorReason) {
     super(message);
     this.status = status;
     this.code = code;
+    if (reason) this.reason = reason;
   }
 }
 
@@ -50,16 +60,26 @@ export function errorFor(error: unknown): ApiError {
 }
 
 export function errorResponse(error: ApiError, cookies?: string[]): APIGatewayProxyStructuredResultV2 {
-  return json(error.status, { error: { code: error.code, message: error.message } }, {}, cookies);
+  return json(error.status, { error: { code: error.code, message: error.message, ...(error.reason ? { reason: error.reason } : {}) } }, {}, cookies);
 }
 
 /**
- * A member whose role can't write. The app treats `invalid_argument` on a
- * write as "you have view-only access" (src/main.js), as the artifact runtime
- * reports it.
+ * A viewer writing. The web build's runtime (src/aws/db.js) hands this to the
+ * app as `invalid_argument`, the code the artifact runtime uses for view-only
+ * access (src/main.js).
  */
 export function viewOnly(): ApiError {
-  return new ApiError(403, "invalid_argument", "You have view-only access to this team");
+  return new ApiError(403, "permission_denied", "You have view-only access to this team", "view_only");
+}
+
+/** A contributor or viewer calling an owners-only route. */
+export function ownersOnly(): ApiError {
+  return new ApiError(403, "permission_denied", "Only the team's owners can do this", "owners_only");
+}
+
+/** Not a member of the team, or no such team: one answer for both, so it doesn't reveal which teams exist. */
+export function notMember(): ApiError {
+  return new ApiError(403, "permission_denied", "You're not a member of this team", "not_member");
 }
 
 /** The request body as text, decoded and size-checked. */

@@ -9,6 +9,15 @@
 //   POST /invites/{inviteId}/accept Joins the team that invited the caller's
 //                                   verified email address, with the token
 //                                   from the emailed link.
+//   GET    /teams/{teamId}/members           Owners: the team's members and roles.
+//   PATCH  /teams/{teamId}/members/{userId}  Owners: change a member's role.
+//   DELETE /teams/{teamId}/members/{userId}  Owners: remove a member. Anyone:
+//                                            leave (their own user ID).
+//
+// The team's last owner can't be removed, demoted or leave: the team item's
+// owner count moves in the same transaction as the membership, conditioned
+// on another owner remaining (data/teams.ts), so two owners demoting each
+// other at once can't both succeed.
 //
 // Isolation, in order:
 // 1. API Gateway's JWT authorizer checks the Cognito access token; this handler
@@ -22,6 +31,12 @@
 // 3. Every DynamoDB call runs on an account-access role session tagged with the
 //    user and, at most, one team and one invitee the request is entitled to
 //    (account-db.ts); IAM refuses any other partition.
+// 4. Member routes take the team only from the path and check the caller's
+//    MEMBER item for it (authorizeTeam) and their role (roles.ts) before
+//    anything else. Only after that, and only for a user who is a member of
+//    that team, does a session also carry the `member` tag, which lets it
+//    update or delete that user's team-switcher row and nothing else in
+//    their partition.
 
 import type { APIGatewayProxyStructuredResultV2, Context } from "aws-lambda";
 import {
@@ -30,22 +45,31 @@ import {
   createTeam,
   findInviteForEmail,
   ForbiddenError,
+  getMember,
   getTeam,
   hashEmail,
   type Invite,
+  LastOwnerError,
+  listMembers,
+  type Member,
   MAX_TEAMS_PER_USER,
+  memberRole,
+  removeMember,
+  setMemberRole,
   listInvitesForEmail,
   listTeamsForUser,
   normalizeEmail,
   type Role,
   type Team,
+  type TeamContext,
   teamIdForRequest,
 } from "../data/index.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import type { DbForAccount } from "./account-db.js";
 import type { CognitoUser, UserInfo } from "./cognito-user.js";
 import { callerId, type DataEvent, errorFor as dataErrorFor } from "./data-handler.js";
-import { ApiError, errorResponse, header, json, jsonBody } from "./http.js";
+import { ApiError, errorResponse, header, json, jsonBody, noContent, notMember } from "./http.js";
+import { requireRole } from "./roles.js";
 import { ACCOUNT_ROUTES, type AccountRoute, IDEMPOTENCY_HEADER, routeKey } from "./routes.js";
 
 export interface AccountHandlerDeps {
@@ -63,6 +87,7 @@ const REQUEST_KEY = /^[A-Za-z0-9_-]{8,128}$/;
 
 /** The data layer's errors, as the account routes answer them. */
 export function errorFor(error: unknown): ApiError {
+  if (error instanceof LastOwnerError) return new ApiError(409, "aborted", error.message, "last_owner");
   // Here a ForbiddenError is about membership or an invite, never view-only access
   if (error instanceof ForbiddenError) return new ApiError(403, "permission_denied", error.message);
   return dataErrorFor(error);
@@ -88,6 +113,11 @@ const inviteBody = (invite: Invite) => ({
   role: invite.role,
   expiresAt: new Date(invite.expiresAt * 1000).toISOString(),
 });
+
+const ROLE_ORDER = { owner: 0, contributor: 1, viewer: 2 };
+
+/** A member as the members routes return them: never the stored item as is. */
+const memberBody = (member: Member) => ({ userId: member.userId, email: member.email ?? null, role: member.role, joinedAt: member.joinedAt ?? null });
 
 /** The verified email, normalized, or undefined if Cognito hasn't verified one. */
 function verifiedEmail(user: CognitoUser): string | undefined {
@@ -171,10 +201,71 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     return json(200, { team: teamBody(await getTeam(db, ctx), ctx.role) });
   }
 
+  /** A path parameter that must be an ID, or 400. */
+  function pathId(event: DataEvent, name: string, what: string): string {
+    const value = event.pathParameters?.[name];
+    if (typeof value !== "string" || !ID.test(value)) throw new ApiError(400, "bad_request", `Invalid ${what}`);
+    return value;
+  }
+
+  /** The caller's context for the path's team, or 403 `not_member` (the same for a team that doesn't exist). */
+  async function teamContext(event: DataEvent, userId: string): Promise<{ teamId: string; ctx: TeamContext }> {
+    const teamId = pathId(event, "teamId", "team ID");
+    const ctx = await authorizeTeam(dbFor({ userId, teamId }), userId, teamId).catch((error: unknown) => {
+      if (error instanceof ForbiddenError) throw notMember();
+      throw error;
+    });
+    return { teamId, ctx };
+  }
+
+  /**
+   * The member the path names, checked to be in the team, and a handle that
+   * may also update or delete their team-switcher row. Call only after the
+   * caller's role check.
+   */
+  async function targetMember(event: DataEvent, userId: string, teamId: string, ctx: TeamContext) {
+    const target = pathId(event, "userId", "user ID");
+    if (!(await getMember(dbFor({ userId, teamId }), ctx, target))) throw new ApiError(404, "not_found", "That person isn't a member of this team");
+    return { target, db: dbFor({ userId, teamId, member: target === userId ? undefined : target }) };
+  }
+
+  async function members(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    const { teamId, ctx } = await teamContext(event, userId);
+    requireRole(ctx.role, "owner");
+    const list = (await listMembers(dbFor({ userId, teamId }), ctx))
+      .map(memberBody)
+      .sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || (a.email ?? "").localeCompare(b.email ?? "") || a.userId.localeCompare(b.userId));
+    return json(200, { members: list });
+  }
+
+  async function changeRole(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    // Membership and role first, so anyone else gets the same 403 whatever they send
+    const { teamId, ctx } = await teamContext(event, userId);
+    requireRole(ctx.role, "owner");
+    const role = memberRole(jsonBody(event, ["role"]).role);
+    const { target, db } = await targetMember(event, userId, teamId, ctx);
+    await setMemberRole(db, ctx, target, role);
+    const member = await getMember(db, ctx, target);
+    if (!member) throw new ApiError(409, "aborted", "That person was removed from the team just now");
+    return json(200, { member: memberBody(member) });
+  }
+
+  async function remove(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    const { teamId, ctx } = await teamContext(event, userId);
+    // Anyone can leave; only owners remove someone else
+    if (pathId(event, "userId", "user ID") !== userId) requireRole(ctx.role, "owner");
+    const { target, db } = await targetMember(event, userId, teamId, ctx);
+    await removeMember(db, ctx, target);
+    return noContent();
+  }
+
   const actions: Record<AccountRoute["action"], (event: DataEvent, userId: string) => Promise<APIGatewayProxyStructuredResultV2>> = {
     me,
     createTeam: newTeam,
     acceptInvite: accept,
+    listMembers: members,
+    setMemberRole: changeRole,
+    removeMember: remove,
   };
 
   return async (event: DataEvent, context?: Context): Promise<APIGatewayProxyStructuredResultV2> => {

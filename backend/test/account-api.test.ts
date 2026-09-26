@@ -274,7 +274,7 @@ describe("POST /invites/{inviteId}/accept", () => {
     const accepted = await accept(PAT, inviteId, token);
     expect(accepted).toMatchObject({ status: 200, body: { team: { id: "team-b", role: "owner" } } });
     expect(table.get("TEAM#team-b", `MEMBER#${PAT}`)).toMatchObject({ role: "owner", email: "pat@example.com" });
-    expect(table.get("TEAM#team-b", "META")?.owners).toBe(1);
+    expect(table.get("TEAM#team-b", "META")?.owners).toBe(2);
     expect(counts.InvitesAccepted).toBe(1);
     const me = (await call("GET", "/me", { user: PAT })).body;
     expect(me.teams.map((t: { id: string }) => t.id)).toEqual(["team-a", "team-b"]);

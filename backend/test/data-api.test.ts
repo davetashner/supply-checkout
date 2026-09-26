@@ -270,7 +270,7 @@ describe("documents (the app's db contract)", () => {
     expect(table.get("TEAM#team-a", "SHEET#s2")).toBeUndefined();
     // Membership and role are still checked first: another team's route is refused as before
     expect((await call("PATCH", "/teams/team-b/sheets/b1", { unversioned: true, body: { data: { client: "X" } } })).body.error.code).toBe("permission_denied");
-    expect((await call("DELETE", "/teams/team-a/sheets/s1", { unversioned: true, user: VIEWER })).body.error.code).toBe("invalid_argument");
+    expect((await call("DELETE", "/teams/team-a/sheets/s1", { unversioned: true, user: VIEWER })).body.error).toMatchObject({ code: "permission_denied", reason: "view_only" });
   });
 
   it("answers 409 when another write lands between the read and the put, without retrying", async () => {
@@ -404,7 +404,7 @@ describe("team isolation (negative tests)", () => {
     table.put({ PK: "TEAM#team-b", SK: "SHEET#b1", GSI1PK: "TEAM#team-b#SHEETS", GSI1SK: "2026-09-01#b1", type: "sheet", id: "b1", client: "B", version: 1 });
   });
 
-  const denied = { status: 403, body: { error: { code: "permission_denied", message: expect.any(String) } } };
+  const denied = { status: 403, body: { error: { code: "permission_denied", message: expect.any(String), reason: "not_member" } } };
 
   it("refuses every route on another team's ID in the path, and reveals nothing", async () => {
     for (const [method, path] of [
@@ -451,11 +451,11 @@ describe("team isolation (negative tests)", () => {
     expect((await call("GET", "/teams/team-a/sheets", { query: { cursor: indexCursor, orderBy: "date" } })).body.error.code).toBe("bad_request");
   });
 
-  it("lets a viewer read but not write, with the code the app reads as view-only", async () => {
+  it("lets a viewer read but not write, with the reason the web runtime reads as view-only", async () => {
     await call("PUT", "/teams/team-a/sheets/s1", { body: { data: sheet("2026-09-01") } });
     expect((await call("GET", "/teams/team-a/sheets/s1", { user: VIEWER })).status).toBe(200);
     expect((await call("GET", "/teams/team-a/sheets", { user: VIEWER })).status).toBe(200);
-    const viewOnly = { status: 403, body: { error: { code: "invalid_argument", message: expect.any(String) } } };
+    const viewOnly = { status: 403, body: { error: { code: "permission_denied", message: expect.any(String), reason: "view_only" } } };
     expect(await call("PUT", "/teams/team-a/sheets/s2", { user: VIEWER, body: { data: sheet("2026-09-01") } })).toEqual(viewOnly);
     expect(await call("PATCH", "/teams/team-a/sheets/s1", { user: VIEWER, body: { data: { client: "Viewer" } } })).toEqual(viewOnly);
     expect(await call("DELETE", "/teams/team-a/sheets/s1", { user: VIEWER })).toEqual(viewOnly);
