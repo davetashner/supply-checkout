@@ -63,7 +63,23 @@ export interface Invite {
   readonly createdAt: string;
   /** Epoch seconds; DynamoDB's TTL removes the item after this. */
   readonly expiresAt: number;
+  /**
+   * "failed" once the invite's email bounced or its recipient marked it as
+   * spam (the email-events handler); absent while it's pending. The owner
+   * sees it and can correct the address. Nothing re-sends it automatically.
+   */
+  readonly status?: "failed";
+  readonly failureReason?: InviteFailure;
+  /** When the failure was reported (ISO 8601). */
+  readonly failedAt?: string;
 }
+
+/**
+ * Why an invite's email failed: a permanent bounce (SES suppresses the
+ * address), a temporary bounce SES gave up retrying, or a complaint (SES
+ * suppresses the address).
+ */
+export type InviteFailure = "bounced" | "undeliverable" | "complained";
 
 /** True for a role a MEMBER item may hold. */
 export function isMemberRole(value: unknown): value is MemberRole {

@@ -241,6 +241,7 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Database errors | Every journey | P1 | DynamoDB `SystemErrors` on the app table, summed over the operations the data module uses |
 | Database throttled | Every journey | P2 | DynamoDB `ReadThrottleEvents` + `WriteThrottleEvents` on the app table |
 | Email bouncing, Email complaints | J3 | P1 | SES reputation metrics, as below |
+| Email events dropped | J3 | P2 | As below |
 | Writes rejected | J4 | P2 | `ConditionalWriteConflicts` ÷ `Writes`, at least 20 writes |
 | Live updates failing | J4 | P2 | `LiveUpdateFailures` ÷ `LiveUpdates` from the stream consumer (`supply-checkout-dpc`), at least 20 events, over 10 minutes. The canary's live-update check comes with the canary. |
 | Live updates delayed, Live updates dropped | J4 | P2 | As below |
@@ -284,6 +285,7 @@ Every other alarm on this page waits for the resource or code it watches, and is
 | --- | --- | --- | --- |
 | **Email bouncing** | SES `Reputation.BounceRate` | above 4%. AWS reviews accounts at 5% and can pause sending at 10%. | P1 |
 | **Email complaints** | SES `Reputation.ComplaintRate` | above 0.08%. AWS reviews at 0.1%. | P1 |
+| **Email events dropped** | Messages in the email-events dead-letter queue (`supply-checkout-<env>-email-events-dlq`): a bounce or complaint the handler couldn't record, so a bounced invite may still look pending. SES has still suppressed the address. | any | P2 |
 | **Near the sending limit** | SES `Send` against the daily quota | above 80% of the quota | P2 |
 | **Invites not accepted** | `InvitesAccepted` ÷ `InvitesSent` business metrics | below 30% over 7 days | P3 |
 

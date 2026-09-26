@@ -147,6 +147,14 @@ export class MemoryTable {
         this.items.delete(MemoryTable.id(key));
         return { Attributes: input.ReturnValues === "ALL_OLD" && old ? structuredClone(old) : undefined };
       }
+      case "UpdateCommand": {
+        const key = input.Key as Item;
+        record([String(key.PK)]);
+        const old = this.items.get(MemoryTable.id(key));
+        this.check(input, old);
+        this.items.set(MemoryTable.id(key), this.update(input, old ?? { ...key }));
+        return {};
+      }
       case "QueryCommand":
         return this.query(input, record);
       case "TransactWriteCommand":

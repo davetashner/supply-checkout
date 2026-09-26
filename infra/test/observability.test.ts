@@ -40,6 +40,7 @@ const ALARM_IDS = [
   "database-throttled",
   "email-bouncing",
   "email-complaints",
+  "email-events-dropped",
   "writes-rejected",
   "live-updates-failing",
   "live-updates-delayed",

@@ -1,10 +1,16 @@
+import { Aws, Stack } from "aws-cdk-lib";
 import { Certificate, CertificateValidation, type ICertificate } from "aws-cdk-lib/aws-certificatemanager";
+import { PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
+import { Key } from "aws-cdk-lib/aws-kms";
 import { type IPublicHostedZone, NsRecord, TxtRecord } from "aws-cdk-lib/aws-route53";
-import { EmailIdentity, Identity } from "aws-cdk-lib/aws-ses";
+import { ConfigurationSet, EmailIdentity, EmailSendingEvent, EventDestination, Identity, SuppressionReasons } from "aws-cdk-lib/aws-ses";
+import { Topic } from "aws-cdk-lib/aws-sns";
 import { StringListParameter, StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import { type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../config.js";
 import { dnsInputParameters, domainOutputParameters, envDomain, hostNames, importZone } from "../domain.js";
+import { emailResourceNames } from "../../../backend/src/email/names.js";
+import { emailSettings } from "../email.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
 /** Environments whose zones the prod zone delegates to, from `-c delegatedEnvs=staging,dev`. */
@@ -35,6 +41,12 @@ export function delegatedEnvsFromContext(node: { tryGetContext(key: string): unk
  * - Primary region: the SES domain identity with Easy DKIM, a custom MAIL FROM
  *   domain (MX and SPF), SPF on the apex, and DMARC. SES in the second region
  *   is phase 2 (supply-checkout-3x3.1).
+ * - Primary region: the configuration set every message goes through (the
+ *   identity's default, so Cognito's mail uses it too). It adds addresses that
+ *   hard-bounce or complain to SES's account-level suppression list, and
+ *   publishes bounce and complaint events to an encrypted SNS topic that only
+ *   SES, for this configuration set, may publish to. The email stack handles
+ *   them (supply-checkout-5hx).
  * - Prod only, opt-in: NS records delegating `<env>.<domain>` to the staging
  *   and dev accounts' zones (`-c delegatedEnvs=staging,dev`).
  *
@@ -49,6 +61,8 @@ export class DomainStack extends SupplyCheckoutStack {
   readonly authCertificate?: ICertificate;
   readonly realtimeCertificate?: ICertificate;
   readonly emailIdentity?: EmailIdentity;
+  readonly configurationSet?: ConfigurationSet;
+  readonly emailEventsTopic?: Topic;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "domain", layer: "stateless" });
@@ -87,9 +101,44 @@ export class DomainStack extends SupplyCheckoutStack {
     if (region === config.primaryRegion) {
       // Easy DKIM (three CNAMEs) and a custom MAIL FROM domain (MX and SPF on
       // mail.<apex>), so both DKIM and SPF align with the From domain for DMARC.
+      const email = emailSettings(config);
+      this.configurationSet = new ConfigurationSet(this, "ConfigurationSet", {
+        configurationSetName: email.configurationSet,
+        suppressionReasons: SuppressionReasons.BOUNCES_AND_COMPLAINTS,
+        reputationMetrics: true,
+        sendingEnabled: true,
+      });
+      const configurationSetArn = Stack.of(this).formatArn({ service: "ses", resource: "configuration-set", resourceName: email.configurationSet });
+      // SES encrypts what it publishes with this key, so its key policy lets
+      // SES use it, for this account's configuration set only
+      const eventsKey = new Key(this, "EmailEventsKey", {
+        description: "Encrypts SES bounce and complaint events",
+        enableKeyRotation: true,
+      });
+      eventsKey.addToResourcePolicy(
+        new PolicyStatement({
+          sid: "SesPublishesEvents",
+          principals: [new ServicePrincipal("ses.amazonaws.com")],
+          actions: ["kms:GenerateDataKey*", "kms:Decrypt"],
+          resources: ["*"],
+          conditions: { StringEquals: { "aws:SourceAccount": Aws.ACCOUNT_ID, "aws:SourceArn": configurationSetArn } },
+        }),
+      );
+      this.emailEventsTopic = new Topic(this, "EmailEvents", {
+        topicName: emailResourceNames(config.envName).eventsTopic,
+        displayName: "SES bounces and complaints",
+        masterKey: eventsKey,
+        enforceSSL: true,
+      });
+      // Adds a topic policy: sns:Publish for ses.amazonaws.com, from this configuration set only
+      this.configurationSet.addEventDestination("BouncesAndComplaints", {
+        destination: EventDestination.snsTopic(this.emailEventsTopic),
+        events: [EmailSendingEvent.BOUNCE, EmailSendingEvent.COMPLAINT],
+      });
       this.emailIdentity = new EmailIdentity(this, "EmailIdentity", {
         identity: Identity.publicHostedZone(this.zone),
         mailFromDomain: names.mailFrom,
+        configurationSet: this.configurationSet,
       });
       publish("EmailIdentityParam", outputs.emailIdentity, this.emailIdentity.emailIdentityName, "SES domain identity");
 

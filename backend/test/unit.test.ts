@@ -90,6 +90,7 @@ describe("TeamContext (ADR 0005)", () => {
       "createTeam",
       "findInvite",
       "readable",
+      "teamContextForEmailEvent",
       "teamContextForStripeCustomer",
       "writable",
     ]);
