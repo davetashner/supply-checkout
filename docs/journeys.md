@@ -115,11 +115,11 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 2. Check each line: name, quantity, price, and the suggested inventory match.
 3. Assign each line to a client (a new or existing sheet) or to **General inventory**, then tap **Save**.
 
-**Expected:** lines appear within 60 seconds. Nothing is saved until **Save**. Client items go on the sheets at the receipt price, and storage items raise storage counts. If reading fails, the person can enter the items by hand.
+**Expected:** lines appear within 60 seconds. Nothing is saved until **Save**. An item that comes in packs of n shows "1 case = n each" and adds eaches (cases × n) at a cost of the case price ÷ n, rounded to cents, unless the line is switched to **Priced per each**. Where the price differs from the item's, the line offers **Charge the receipt price** or **Keep the client price**, and keeps the client price by default when the item's cost is below its price (ADR 0014). Client items go on the sheets at the chosen price, with the receipt's cost; storage items raise storage counts; and the receipt's cost each is saved to the item. If reading fails, the person can enter the items by hand.
 
 **Status:** tested with claude.ai receipt reading. The Bedrock version is planned: `supply-checkout-kx8` (receipt Lambda), `supply-checkout-wxx` (limits).
 
-**Tests:** `app.spec.js`: "receipt review merges duplicates and splits items between a client and storage"; `receipts.spec.js` (all tests); `resilience.spec.js`: failed reads, empty photos and resuming an unsaved review.
+**Tests:** `app.spec.js`: "receipt review merges duplicates and splits items between a client and storage"; `receipts.spec.js` (all tests, including the default price choice and pack conversion); `aws-data.spec.js`: "a receipt's cases are stock commands in eaches at the cost of one each"; `resilience.spec.js`: failed reads, empty photos and resuming an unsaved review.
 
 ### J6. Export a sheet to bill a client
 

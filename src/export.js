@@ -1,8 +1,8 @@
 // Exports: one sheet as CSV, and all of a team's data as CSV or JSON. Built from the
 // documents the app already holds and shows (both collections are loaded in full to draw
 // the lists), with the same math and labels as the screens, so an export matches them.
-import { int, hasStock } from "./format.js";
-import { lines, totals } from "./sheet-math.js";
+import { hasStock } from "./format.js";
+import { lines, lineCounts, lineCharge, totals } from "./sheet-math.js";
 
 // One CSV cell. Text that a spreadsheet would run as a formula (=, +, -, @, tab or return
 // first) gets a leading apostrophe, so a name a team member typed can't run in the
@@ -17,11 +17,6 @@ export const toCsv = rows => rows.map(r => r.map(cell).join(",")).join("\n");
 
 const statusText = s => s.status === "closed" ? "Returned" : "Checked out";
 const fixed = n => (Number(n) || 0).toFixed(2);
-// A line's counts as the sheet shows them: returned never above taken
-function lineCounts(l) {
-  const o = int(l.out), r = Math.min(int(l.returned), o), p = Number(l.price) || 0;
-  return { o, r, u: o - r, p };
-}
 
 // One sheet, as its "Download CSV" button saves it
 export function sheetCsv(s, preparedBy) {
@@ -29,7 +24,7 @@ export function sheetCsv(s, preparedBy) {
   return toCsv([
     ["Client", s.client], ["Date", s.date], ["Prepared by", preparedBy], ["Status", statusText(s)], [],
     ["Item", "Barcode", "Price each", "Taken", "Returned", "Used", "Charge"],
-    ...lines(s).map(l => { const { o, r, u, p } = lineCounts(l); return [l.name, l.code || "", fixed(p), o, r, u, fixed(u * p)]; }),
+    ...lines(s).map(l => { const { o, r, u, p } = lineCounts(l); return [l.name, l.code || "", fixed(p), o, r, u, fixed(lineCharge(l))]; }),
     ["Total", "", "", t.out, t.ret, t.used, fixed(t.charge)],
   ]);
 }
@@ -41,7 +36,7 @@ export function sheetsCsv(sheets, preparedBy) {
     const head = [s.client || "Untitled", s.date || "", preparedBy(s), statusText(s)];
     const ls = lines(s);
     if (!ls.length) rows.push([...head, "", "", "", "", "", "", "", s.id]);
-    for (const l of ls) { const { o, r, u, p } = lineCounts(l); rows.push([...head, l.name || "Unnamed item", l.code || "", fixed(p), o, r, u, fixed(u * p), s.id]); }
+    for (const l of ls) { const { o, r, u, p } = lineCounts(l); rows.push([...head, l.name || "Unnamed item", l.code || "", fixed(p), o, r, u, fixed(lineCharge(l)), s.id]); }
   }
   return toCsv(rows);
 }
