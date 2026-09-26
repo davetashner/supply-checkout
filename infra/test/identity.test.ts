@@ -168,10 +168,12 @@ describe("web app client", () => {
   });
 
   it("lets users write only their email and name, never a verified flag", () => {
-    for (const context of [{}, { appleSignIn: true, googleSignIn: true }]) {
-      const { template } = build({ envName: "staging" }, context);
-      const client = only(template, "AWS::Cognito::UserPoolClient");
-      expect((client.Properties.WriteAttributes as string[]).sort()).toEqual(["email", "family_name", "given_name"]);
+    const writable = (context: Record<string, unknown>) =>
+      (only(build({ envName: "staging" }, context).template, "AWS::Cognito::UserPoolClient").Properties.WriteAttributes as string[]).sort();
+    expect(writable({})).toEqual(["email", "family_name", "given_name"]);
+    // With a provider on, also the attribute it maps its claim to (Cognito requires it); the trigger decides what it means
+    for (const context of [{ googleSignIn: true }, { appleSignIn: true }, { appleSignIn: true, googleSignIn: true }]) {
+      expect(writable(context)).toEqual(["custom:idp_email_verified", "email", "family_name", "given_name"]);
     }
   });
 
@@ -207,7 +209,7 @@ describe("Apple and Google sign-in", () => {
         client_secret: secretRef(secrets.google, "clientSecret"),
         authorize_scopes: "openid email profile",
       },
-      AttributeMapping: { email: "email", given_name: "given_name", family_name: "family_name" },
+      AttributeMapping: { email: "email", given_name: "given_name", family_name: "family_name", "custom:idp_email_verified": "email_verified" },
     });
     template.hasResourceProperties("AWS::Cognito::UserPoolIdentityProvider", {
       ProviderName: "SignInWithApple",
@@ -219,7 +221,7 @@ describe("Apple and Google sign-in", () => {
         private_key: secretRef(secrets.apple, "privateKey"),
         authorize_scopes: "name email",
       },
-      AttributeMapping: Match.objectLike({ email: "email" }),
+      AttributeMapping: Match.objectLike({ email: "email", "custom:idp_email_verified": "email_verified" }),
     });
     // Referencing the providers also makes CloudFormation create them before the client
     template.hasResourceProperties("AWS::Cognito::UserPoolClient", {
@@ -239,6 +241,14 @@ describe("Apple and Google sign-in", () => {
     }
   });
 
+  it("keep a mutable custom attribute for the providers' claim, even with both off", () => {
+    for (const context of [{}, { googleSignIn: true }]) {
+      build({}, context).template.hasResourceProperties("AWS::Cognito::UserPool", {
+        Schema: Match.arrayWith([{ Name: "idp_email_verified", AttributeDataType: "String", Mutable: true }]),
+      });
+    }
+  });
+
   it("can be turned on one at a time", () => {
     const { template } = build({}, { googleSignIn: true });
     template.resourceCountIs("AWS::Cognito::UserPoolIdentityProvider", 1);
@@ -255,6 +265,70 @@ describe("Apple and Google sign-in", () => {
       localhostCallbacks: false,
     });
     expect(() => identityOptionsFromContext(ctx({ appleSignIn: "yes" }), "prod")).toThrow(/appleSignIn must be true or false/);
+  });
+});
+
+describe("email_verified trigger (supply-checkout-6v9)", () => {
+  const withProviders = () => build({ envName: "staging" }, { appleSignIn: true, googleSignIn: true });
+
+  it("isn't there with both providers off", () => {
+    const { stacks, template } = build();
+    expect(stacks.identity.emailVerifiedTrigger).toBeUndefined();
+    template.resourceCountIs("AWS::Lambda::Function", 0);
+    expect(only(template, "AWS::Cognito::UserPool").Properties.LambdaConfig).toBeUndefined();
+  });
+
+  it("runs before every token with either provider on, from backend/src/identity", () => {
+    for (const context of [{ googleSignIn: true }, { appleSignIn: true }]) {
+      const { stacks, template } = build({}, context);
+      expect(stacks.identity.emailVerifiedTrigger).toBeDefined();
+      const fnId = Object.keys(template.findResources("AWS::Lambda::Function"))[0] as string;
+      template.hasResourceProperties("AWS::Cognito::UserPool", { LambdaConfig: { PreTokenGeneration: { "Fn::GetAtt": [fnId, "Arn"] } } });
+      template.hasResourceProperties("AWS::Lambda::Function", { Runtime: "nodejs24.x", Architectures: ["arm64"], Timeout: 5 });
+    }
+    const source = readFileSync(new URL("../lib/stacks/identity-stack.ts", import.meta.url), "utf8");
+    expect(source).toContain("src/identity/email-verified.ts");
+  });
+
+  it("may be invoked only by this pool", () => {
+    const { template } = withProviders();
+    const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0];
+    const fnId = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
+    const permission = only(template, "AWS::Lambda::Permission");
+    expect(permission.Properties).toEqual({
+      Action: "lambda:InvokeFunction",
+      FunctionName: { "Fn::GetAtt": [fnId, "Arn"] },
+      Principal: "cognito-idp.amazonaws.com",
+      SourceArn: { "Fn::GetAtt": [poolId, "Arn"] },
+    });
+  });
+
+  it("can update users only in this pool, and write only its own log group", () => {
+    const { template } = withProviders();
+    const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0];
+    const logsId = Object.keys(template.findResources("AWS::Logs::LogGroup"))[0];
+    const policies = Object.values(template.findResources("AWS::IAM::Policy"));
+    const statements = policies.flatMap((p) => p.Properties.PolicyDocument.Statement as Record<string, unknown>[]);
+    const cognito = statements.filter((s) => JSON.stringify(s.Action).includes("cognito-idp"));
+    expect(cognito).toEqual([
+      { Sid: "SetEmailVerified", Effect: "Allow", Action: "cognito-idp:AdminUpdateUserAttributes", Resource: { "Fn::GetAtt": [poolId, "Arn"] } },
+    ]);
+    expect(statements).toContainEqual({ Effect: "Allow", Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: { "Fn::GetAtt": [logsId, "Arn"] } });
+    // Nothing else but the X-Ray writes every function gets
+    const other = statements.filter((s) => !cognito.includes(s) && !JSON.stringify(s.Action).includes("logs:"));
+    expect(other).toEqual([{ Effect: "Allow", Action: ["xray:PutTraceSegments", "xray:PutTelemetryRecords"], Resource: "*" }]);
+    const role = only(template, "AWS::IAM::Role");
+    expect(role.Properties.ManagedPolicyArns).toBeUndefined();
+  });
+
+  it("gets its grant after the pool exists, so the pool can name the function (no dependency cycle)", () => {
+    const { template } = withProviders();
+    const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0] as string;
+    const [fnId, fn] = Object.entries(template.findResources("AWS::Lambda::Function"))[0] as [string, { DependsOn?: string[] }];
+    const grantId = Object.keys(template.findResources("AWS::IAM::Policy", { Properties: { PolicyName: Match.stringLikeRegexp("EmailVerifiedUpdateUser") } }))[0];
+    expect(grantId).toBeDefined();
+    expect(fn.DependsOn ?? []).not.toContain(grantId);
+    expect(JSON.stringify(template.toJSON().Resources[fnId].Properties)).not.toContain(poolId);
   });
 });
 

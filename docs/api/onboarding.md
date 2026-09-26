@@ -93,7 +93,9 @@ answer a viewer's write with `403 invalid_argument`). Use `status` and
   caller. It is accepted only with the token from its emailed link *and* by a
   caller with that verified address, only before it expires, and only once.
   Users can't mark their own email verified: the web client can't write
-  `email_verified`.
+  `email_verified`. A Google or Apple user's email counts as verified only
+  when the provider says it is (a user pool trigger copies the provider's
+  claim at each sign-in; see "Sign-in" in docs/infrastructure.md).
 - Every DynamoDB call runs on a role session scoped by IAM to the caller's own
   `USER#` partition, plus at most the one team and the one invitee partition
   the request is entitled to (see "Data API" in docs/infrastructure.md).
