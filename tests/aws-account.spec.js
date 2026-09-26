@@ -1,0 +1,387 @@
+// The web build's runtime (src/aws/), part 1: config, sign-in, first sign-in and teams
+// (docs/api/onboarding.md), against the fake backend in tests/fake-aws.js.
+import { createHash } from "node:crypto";
+import AxeBuilder from "@axe-core/playwright";
+import { test, expect } from "./helpers.js";
+import { currentBuild } from "../scripts/builds.mjs";
+import { usedState } from "./fixtures.js";
+import { FakeBackend, TEAM, USER, ORIGIN, AUTH, CONFIG, openAws, connected, lastSocket } from "./fake-aws.js";
+
+test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
+
+const seeded = (team = "t1") => Object.fromEntries(Object.entries(usedState.seed).map(([k, v]) => [`${team}/${k}`, v]));
+const account = (page) => page.locator("#account");
+const alert = (page) => page.locator("#accountError");
+
+async function expectAccessible(page) {
+  const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`)).toEqual([]);
+}
+
+async function expectNoSideways(page) {
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
+}
+
+test.describe("config", () => {
+  for (const [name, config] of [["missing", null], ["not JSON", "{"], ["incomplete", { apiUrl: CONFIG.apiUrl }]]) {
+    test(`without a usable config.json (${name}) the app says storage isn't available`, async ({ page }) => {
+      const backend = new FakeBackend({ config });
+      await openAws(page, backend);
+      await expect(page.locator("#notice")).toHaveText("Shared storage isn't available in this view. Reload the page, or try again in a few minutes.");
+      expect(backend.calls).toEqual([]);
+    });
+  }
+});
+
+test.describe("sign-in", () => {
+  test("resumes the session and opens the team", async ({ page }) => {
+    const backend = new FakeBackend({ docs: { ...seeded(), "t1/sheets/mine": { client: "Mine", date: "2026-09-25", createdBy: USER.id, status: "open", items: {} } } });
+    await openAws(page, backend);
+    await connected(page);
+    await expect(page.getByRole("button", { name: /Echo Studio/ })).toContainText("Someone");
+    await expect(page.getByRole("button", { name: /Mine/ })).toContainText("Pat Lee");
+    await expect(page.locator(".teambar")).toContainText("Team: Echo Cleaning");
+    // No receipt reading until its endpoint exists
+    await expect(page.getByText("Scan receipt")).toHaveCount(0);
+    expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.team"))).toBe("t1");
+
+    const me = backend.requests("GET", "/me")[0];
+    expect(me.headers.authorization).toBe("Bearer at-1");
+    expect(backend.requests("POST", "/auth/refresh")).toHaveLength(1);
+    // The refresh token is only in a cookie; nothing about the session is stored
+    expect(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))).not.toContain("at-1");
+
+    const sock = await lastSocket(page);
+    expect(sock.url).toBe(CONFIG.realtimeUrl);
+    expect(sock.protocols[0]).toBe("aws-appsync-event-ws");
+    expect(sock.token).toBe("at-1");
+    expect(sock.sent[0]).toEqual({ type: "connection_init" });
+    expect(sock.sent[1]).toMatchObject({ type: "subscribe", channel: "/teams/t1", authorization: { host: CONFIG.realtimeHost, Authorization: "at-1" } });
+    await expectAccessible(page);
+  });
+
+  test("signed out: a sign-in link to Managed Login with PKCE", async ({ page }) => {
+    const backend = new FakeBackend({ signedIn: false });
+    await openAws(page, backend);
+    await expect(account(page).getByRole("heading", { name: "Sign in" })).toBeVisible();
+    await expect(account(page)).toContainText("Sign in to see your team's sheets and inventory.");
+    await expect(alert(page)).toBeHidden();
+    await expect(page.locator("#main")).toBeHidden();
+    await expectAccessible(page);
+
+    const link = page.getByRole("link", { name: "Sign in" });
+    const url = new URL(await link.getAttribute("href"));
+    const saved = JSON.parse(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.signIn")));
+    expect(url.origin + url.pathname).toBe(AUTH + "/oauth2/authorize");
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      response_type: "code",
+      client_id: "test-client",
+      redirect_uri: ORIGIN + "/",
+      scope: "openid email profile aws.cognito.signin.user.admin",
+      state: saved.state,
+      code_challenge: createHash("sha256").update(saved.verifier).digest("base64url"),
+      code_challenge_method: "S256",
+    });
+    expect(saved.verifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    await link.click();
+    await expect.poll(() => backend.authRequests).toEqual([url.href]);
+  });
+
+  test("an invite link is kept across sign-in", async ({ page }) => {
+    await openAws(page, new FakeBackend({ signedIn: false }), { path: "/?invite=i1&token=tok" });
+    await expect(account(page)).toContainText("Sign in with the email address your invite was sent to");
+    expect(new URL(page.url()).search).toBe("");
+    expect(JSON.parse(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.invite")))).toEqual({ id: "i1", token: "tok" });
+  });
+
+  test("finishes the sign-in redirect", async ({ page }) => {
+    const backend = new FakeBackend({ signedIn: false, docs: seeded() });
+    const verifier = "v".repeat(43);
+    await openAws(page, backend, { path: "/?code=good-code&state=st1", storage: { session: { "supplyCheckout.signIn": JSON.stringify({ verifier, state: "st1" }) } } });
+    await connected(page);
+    expect(backend.requests("POST", "/auth/session")[0].body).toEqual({ code: "good-code", codeVerifier: verifier, redirectUri: ORIGIN + "/" });
+    expect(backend.requests("POST", "/auth/refresh")).toHaveLength(0);
+    expect(page.url()).toBe(ORIGIN + "/");
+    expect(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.signIn"))).toBeNull();
+    await expect(page.getByRole("button", { name: /Echo Studio/ })).toBeVisible();
+  });
+
+  const unfinished = [
+    ["with the wrong state", "/?code=good-code&state=other", { verifier: "v".repeat(43), state: "st1" }],
+    ["that was cancelled", "/?error=access_denied", null],
+    ["whose code is refused", "/?code=bad-code&state=st1", { verifier: "v".repeat(43), state: "st1" }],
+    ["with nothing saved from before", "/?code=good-code&state=st1", null],
+  ];
+  for (const [name, path, saved] of unfinished) {
+    test(`a sign-in redirect ${name} asks to sign in again`, async ({ page }) => {
+      const backend = new FakeBackend({ signedIn: false });
+      await openAws(page, backend, { path, storage: saved ? { session: { "supplyCheckout.signIn": JSON.stringify(saved) } } : undefined });
+      await expect(alert(page)).toHaveText("Sign-in didn't finish. Please try again.");
+      await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
+      expect(backend.requests("POST", "/auth/session")).toHaveLength(name === "whose code is refused" ? 1 : 0);
+    });
+  }
+
+  test("a failed code exchange can be tried again", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded() });
+    backend.on("POST", "/auth/session", { status: 503, body: { error: { code: "internal", message: "Cognito didn't answer" } } });
+    await openAws(page, backend, { path: "/?code=good-code&state=st1", storage: { session: { "supplyCheckout.signIn": JSON.stringify({ verifier: "v".repeat(43), state: "st1" }) } } });
+    await expect(account(page).getByRole("heading", { name: "Couldn't connect" })).toBeVisible();
+    await expectAccessible(page);
+    // Trying again resumes from the cookie
+    await page.getByRole("button", { name: "Try again" }).click();
+    await connected(page);
+    await expect(page.getByRole("button", { name: /Echo Studio/ })).toBeVisible();
+  });
+
+  test("an unreachable API can be tried again", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded() });
+    backend.on("POST", "/auth/refresh", { abort: true });
+    backend.on("GET", "/me", { status: 502, body: "<html>Bad gateway</html>" });
+    await openAws(page, backend);
+    await page.getByRole("button", { name: "Try again" }).click();
+    await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+    await page.getByRole("button", { name: "Try again" }).click();
+    await connected(page);
+  });
+
+  test("an expired access token is refreshed, and the request tried again", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded() });
+    // /me first answers with API Gateway's own 401
+    backend.on("GET", "/me", { status: 401, body: { message: "Unauthorized" } });
+    await openAws(page, backend);
+    await connected(page);
+    expect(backend.requests("GET", "/me").map((c) => c.headers.authorization)).toEqual(["Bearer at-1", "Bearer at-2"]);
+
+    // Later, a write with an expired token
+    backend.token = "expired";
+    await page.getByRole("button", { name: "+ New sheet" }).click();
+    await page.getByLabel("Client", { exact: true }).fill("Refreshed");
+    await page.getByRole("button", { name: "Create sheet" }).click();
+    await expect(page.getByRole("heading", { name: "Refreshed" })).toBeVisible();
+    const puts = backend.requests("PUT", /^\/teams\/t1\/sheets\//);
+    expect(puts.map((c) => c.headers.authorization)).toEqual(["Bearer at-2", "Bearer at-3"]);
+    // Live updates reconnect with the new token
+    await expect.poll(async () => (await lastSocket(page)).token).toBe("at-3");
+  });
+
+  test("when the session has ended, the app asks to sign in", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded() });
+    await openAws(page, backend);
+    await connected(page);
+    backend.token = "expired";
+    backend.signedIn = false;
+    await page.getByRole("button", { name: "+ New sheet" }).click();
+    await page.getByLabel("Client", { exact: true }).fill("Too late");
+    await page.getByRole("button", { name: "Create sheet" }).click();
+    await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
+    await expect(page.locator("#main")).toBeHidden();
+  });
+
+  test("a session that ends while /me loads asks to sign in", async ({ page }) => {
+    const backend = new FakeBackend();
+    const release = backend.hold("GET", "/me");
+    await openAws(page, backend);
+    await expect.poll(() => backend.requests("GET", "/me").length).toBe(1);
+    backend.token = "revoked";
+    backend.signedIn = false;
+    release();
+    await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
+    expect(backend.requests("POST", "/auth/refresh")).toHaveLength(2);
+  });
+
+  test("the access token is refreshed before it expires", async ({ page }) => {
+    await page.clock.install();
+    // Refreshed a minute in, when it would expire in six
+    const backend = new FakeBackend({ docs: seeded(), expiresIn: 360 });
+    await openAws(page, backend);
+    await connected(page);
+    await page.clock.fastForward(61e3);
+    await expect.poll(async () => (await lastSocket(page)).token).toBe("at-2");
+    expect(backend.requests("POST", "/auth/refresh")).toHaveLength(2);
+    // The next one fails: the session ended elsewhere
+    backend.signedIn = false;
+    await page.clock.fastForward(61e3);
+    await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
+  });
+
+  test("signing out revokes the session and signs out of Managed Login", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded() });
+    // Sign-out still leaves when the API can't be reached
+    backend.on("POST", "/auth/sign-out", { abort: true });
+    await openAws(page, backend);
+    await connected(page);
+    await page.locator(".teambar").getByRole("button", { name: "Sign out" }).click();
+    await expect.poll(() => backend.authRequests).toEqual([`${AUTH}/logout?client_id=test-client&logout_uri=${encodeURIComponent(ORIGIN + "/")}`]);
+    expect(backend.requests("POST", "/auth/sign-out")).toHaveLength(1);
+  });
+});
+
+test.describe("first sign-in and teams", () => {
+  test("a new user names their team", async ({ page }) => {
+    const backend = new FakeBackend({ teams: [] });
+    await openAws(page, backend);
+    await expect(account(page).getByRole("heading", { name: "Name your team" })).toBeVisible();
+    await expect(account(page)).toContainText("Signed in as pat@example.com.");
+    await expect(page.getByLabel("Team name")).toBeFocused();
+    await expectAccessible(page);
+
+    const create = async (name) => {
+      await page.getByLabel("Team name").fill(name);
+      await page.getByRole("button", { name: "Create team" }).click();
+    };
+    // A blank name does nothing
+    await create("   ");
+    expect(backend.requests("POST", "/teams")).toHaveLength(0);
+    backend.on("POST", "/teams", { status: 500, body: { error: { code: "internal", message: "boom" } } });
+    await create("Bravo");
+    await expect(alert(page)).toHaveText("Couldn't create the team. Check your connection and try again.");
+    backend.on("POST", "/teams", { status: 429, body: { error: { code: "quota_exceeded", message: "5 a day" } } });
+    await create("Bravo");
+    await expect(alert(page)).toContainText("You've made as many teams as you can for now.");
+    backend.on("POST", "/teams", { status: 400, body: { error: { code: "bad_request", message: "name" } } });
+    await create("Bravo Co");
+    await expect(alert(page)).toHaveText("Enter a team name of up to 200 characters.");
+    await create("Bravo Co");
+    await connected(page);
+    await expect(page.locator(".teambar")).toContainText("Team: Bravo Co");
+    await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
+
+    // The same key for the same name; a new one after the name changed
+    const keys = backend.requests("POST", "/teams").map((c) => c.headers["idempotency-key"]);
+    expect(keys).toHaveLength(4);
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).not.toBe(keys[1]);
+    expect(keys[3]).toBe(keys[2]);
+    expect(keys[0]).toMatch(/^[A-Za-z0-9_-]{8,128}$/);
+    expect(backend.requests("POST", "/teams").map((c) => c.body)).toEqual([{ name: "Bravo" }, { name: "Bravo" }, { name: "Bravo Co" }, { name: "Bravo Co" }]);
+    expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.team"))).toBe(backend.teams[0].id);
+  });
+
+  test("invites without the link are shown, with how to join", async ({ page }) => {
+    const backend = new FakeBackend({ teams: [], user: { ...USER, email: null }, invites: [{ id: "i9", teamName: "Bravo Co", role: "viewer", expiresAt: "2026-10-03T12:00:00.000Z" }] });
+    await openAws(page, backend);
+    await expect(account(page)).toContainText("Bravo Co invited you as a viewer. Open the link in your invite email to join.");
+    await expect(account(page)).toContainText("Signed in as you.");
+    await account(page).getByRole("button", { name: "Sign out" }).click();
+    await expect.poll(() => backend.authRequests.length).toBe(1);
+  });
+
+  const invited = { id: "i1", teamName: "Bravo Co", role: "contributor", expiresAt: "2026-10-03T12:00:00.000Z" };
+  const inviteLink = (token = "tok") => ({ session: { "supplyCheckout.invite": JSON.stringify({ id: "i1", token }) } });
+
+  test("joins the team from an invite link", async ({ page }) => {
+    const backend = new FakeBackend({ teams: [], invites: [invited], docs: seeded("t-i1") });
+    await openAws(page, backend, { storage: inviteLink() });
+    await expect(account(page).getByRole("heading", { name: "Join Bravo Co" })).toBeVisible();
+    await expect(account(page)).toContainText("Bravo Co invited you as a contributor.");
+    await expect(page.getByRole("button", { name: "Create my own team instead" })).toBeVisible();
+    await expectAccessible(page);
+    await page.getByRole("button", { name: "Join" }).click();
+    await connected(page);
+    expect(backend.requests("POST", "/invites/i1/accept")[0].body).toEqual({ token: "tok" });
+    await expect(page.locator(".teambar")).toContainText("Team: Bravo Co");
+    await expect(page.getByRole("button", { name: /Echo Studio/ })).toBeVisible();
+    expect(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.invite"))).toBeNull();
+  });
+
+  test("an invite that's expired or used says so, and offers a team of their own", async ({ page }) => {
+    const backend = new FakeBackend({ teams: [], invites: [invited] });
+    await openAws(page, backend, { storage: inviteLink("wrong") });
+    await page.getByRole("button", { name: "Join" }).click();
+    await expect(alert(page)).toContainText("This invite has expired, was already used");
+    await expect(page.getByRole("button", { name: "Join" })).toBeHidden();
+    await page.getByRole("button", { name: "Create my own team instead" }).click();
+    await expect(account(page).getByRole("heading", { name: "Name your team" })).toBeVisible();
+  });
+
+  test("joining explains an unverified email, too many teams, and a lost connection", async ({ page }) => {
+    const backend = new FakeBackend({ teams: [], invites: [invited] });
+    backend.on("POST", "/invites/i1/accept", { status: 403, body: { error: { code: "permission_denied", message: "verify" } } });
+    backend.on("POST", "/invites/i1/accept", { status: 429, body: { error: { code: "quota_exceeded", message: "20 teams" } } });
+    backend.on("POST", "/invites/i1/accept", { abort: true });
+    await openAws(page, backend, { storage: inviteLink() });
+    const join = page.getByRole("button", { name: "Join" });
+    await join.click();
+    await expect(alert(page)).toContainText("Your email address isn't verified yet.");
+    await join.click();
+    await expect(alert(page)).toContainText("You're already in as many teams as you can be.");
+    await join.click();
+    await expect(alert(page)).toHaveText("Couldn't join the team. Check your connection and try again.");
+    await join.click();
+    await connected(page);
+  });
+
+  test("an invite to a team they're already in opens their team", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded() });
+    backend.on("POST", "/invites/i7/accept", { status: 409, body: { error: { code: "aborted", message: "member" } } });
+    await openAws(page, backend, { path: "/?invite=i7&token=tok" });
+    await expect(account(page).getByRole("heading", { name: "Join a team" })).toBeVisible();
+    await expect(account(page)).toContainText("You've been invited to join a team.");
+    await page.getByRole("button", { name: "Join" }).click();
+    await connected(page);
+    await expect(page.locator(".teambar")).toContainText("Team: Echo Cleaning");
+  });
+
+  test("an invite can wait while they use their own team", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded(), invites: [invited] });
+    await openAws(page, backend, { storage: inviteLink() });
+    await page.getByRole("button", { name: "Not now" }).click();
+    await connected(page);
+    expect(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.invite"))).toBeNull();
+    expect(backend.requests("POST", "/invites/i1/accept")).toHaveLength(0);
+  });
+
+  const teams = [TEAM, { ...TEAM, id: "t2", name: "Bravo Co", role: "contributor" }];
+
+  test("with several teams, opens the last one used and switches between them", async ({ page }) => {
+    const backend = new FakeBackend({ teams, docs: { ...seeded(), "t2/sheets/b1": { client: "Bravo job", date: "2026-09-20", status: "open", items: {} } } });
+    await openAws(page, backend, { storage: { local: { "supplyCheckout.team": "t2" } } });
+    await connected(page);
+    await expect(page.getByRole("button", { name: /Bravo job/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Echo Studio/ })).toHaveCount(0);
+    const pick = page.getByLabel("Team");
+    await expect(pick).toHaveValue("t2");
+    await expect(pick.locator("option")).toHaveText(["Echo Cleaning", "Bravo Co"]);
+    expect((await lastSocket(page)).sent[1].channel).toBe("/teams/t2");
+    await expectAccessible(page);
+    // Switching remembers the team and loads the page again
+    await pick.selectOption("t1");
+    await expect.poll(() => backend.pageLoads).toBe(2);
+    expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.team"))).toBe("t1");
+  });
+
+  test("a remembered team they've left falls back to the first", async ({ page }) => {
+    const backend = new FakeBackend({ teams, docs: seeded() });
+    await openAws(page, backend, { storage: { local: { "supplyCheckout.team": "gone" } } });
+    await connected(page);
+    await expect(page.getByLabel("Team")).toHaveValue("t1");
+  });
+
+  test("viewers see the view-only notice", async ({ page }) => {
+    const backend = new FakeBackend({ teams: [{ ...TEAM, role: "viewer" }], docs: seeded() });
+    await openAws(page, backend);
+    await connected(page);
+    await expect(page.locator("#notice")).toHaveText("You have view-only access. Ask the owner to give you Contributor access to scan and edit.");
+    await expect(page.getByRole("button", { name: "+ New sheet" })).toHaveCount(0);
+  });
+
+  test("the account screens and team bar fit a 320px phone", async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    const backend = new FakeBackend({ teams: [], invites: [{ ...invited, teamName: "A team with a rather long name, Incorporated" }] });
+    await openAws(page, backend, { storage: inviteLink() });
+    await expect(page.getByRole("button", { name: "Join" })).toBeVisible();
+    await expectNoSideways(page);
+    await page.getByRole("button", { name: "Create my own team instead" }).click();
+    await expect(page.getByLabel("Team name")).toBeVisible();
+    await expectNoSideways(page);
+  });
+
+  test("the team switcher fits a 320px phone", async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    await openAws(page, new FakeBackend({ teams: [TEAM, { ...TEAM, id: "t2", name: "A team with a rather long name, Incorporated" }], docs: seeded() }));
+    await connected(page);
+    await expect(page.getByLabel("Team")).toBeVisible();
+    await expectNoSideways(page);
+  });
+});
