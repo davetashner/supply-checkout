@@ -4,6 +4,7 @@
 // build's operation IDs and lost answers are in tests/aws-save-states.spec.js.
 import { test, expect, openApp, enterBarcode, modal, lineRow, createSheet } from "./helpers.js";
 import { usedState } from "./fixtures.js";
+import { currentBuild } from "../scripts/builds.mjs";
 
 const toast = (page) => page.locator("#toast");
 const failedNote = (page) => modal(page).locator(".save-failed");
@@ -207,4 +208,139 @@ test("editing a sheet, a line or an item says it's saving", async ({ page }) => 
   // One item, not one per attempt
   const items = await mock(page, () => [...window.__mock.docs.values()].filter((d) => d.name === "Sponges"));
   expect(items).toHaveLength(1);
+});
+
+// Finishing, reopening and deleting a sheet, and removing a line or deleting an item, send one
+// write however they're tapped, and say they're saving meanwhile (once() and busy() in src/main.js)
+test("finishing and reopening a sheet say they're saving, and a second tap sends nothing", async ({ page }) => {
+  await openEcho(page);
+  await hold(page);
+  await page.getByRole("button", { name: "Finished Return" }).click();
+  const saving = page.getByRole("button", { name: "Saving…" });
+  await expect(saving).toBeDisabled();
+  await expect(saving).toHaveAttribute("aria-busy", "true");
+  await expect(page.getByRole("button", { name: "Delete sheet" })).toBeDisabled();
+  await saving.dispatchEvent("click");
+  await page.locator("#delSheet").dispatchEvent("click");
+  // A redraw meanwhile (another user's change) keeps it saving
+  await mock(page, () => { window.__mock.docs.get("sheets/s1").client = "Echo Studio 2"; window.__mock.notify(); });
+  await expect(page.getByRole("heading", { name: "Echo Studio 2" })).toBeVisible();
+  await expect(saving).toBeDisabled();
+  expect(await writes(page)).toBe(1);
+  await release(page);
+  await expect(toast(page)).toHaveText("Return finished");
+  await expect(page.getByRole("button", { name: "Delete sheet" })).toBeEnabled();
+
+  await hold(page);
+  await page.getByRole("button", { name: "Reopen" }).click();
+  await expect(saving).toBeDisabled();
+  await saving.dispatchEvent("click");
+  expect(await writes(page)).toBe(2);
+  await release(page);
+  await expect(toast(page)).toHaveText("Sheet reopened");
+  await expect(page.getByRole("button", { name: "Finished Return" })).toBeEnabled();
+  expect((await doc(page, "sheets/s1")).status).toBe("open");
+});
+
+test("deleting a sheet sends one delete, and a tap after a failed one arms it again", async ({ page }) => {
+  await openEcho(page);
+  await failWrites(page, "unavailable");
+  await page.getByRole("button", { name: "Delete sheet" }).click();
+  await page.getByRole("button", { name: "Tap again to delete" }).click();
+  await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+  // The second tap disarmed it: another tap asks again rather than deleting
+  const del = page.getByRole("button", { name: "Delete sheet" });
+  await expect(del).toBeEnabled();
+  await failWrites(page, null);
+  await del.click();
+  await hold(page);
+  await page.getByRole("button", { name: "Tap again to delete" }).click();
+  await expect(page.getByRole("button", { name: "Saving…" })).toBeDisabled();
+  await page.locator("#delSheet").dispatchEvent("click");
+  await page.locator("#delSheet").dispatchEvent("click");
+  expect(await writes(page)).toBe(2);
+  await release(page);
+  await expect(toast(page)).toHaveText("Sheet deleted");
+  await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
+  expect(await doc(page, "sheets/s1")).toBeUndefined();
+  expect(await writes(page)).toBe(2);
+});
+
+test("removing a line or deleting an item keeps the form busy and writes once", async ({ page }) => {
+  await openEcho(page);
+  await lineRow(page, "Paper towels").click();
+  await modal(page).getByRole("button", { name: "Remove" }).click();
+  await hold(page);
+  await modal(page).getByRole("button", { name: "Tap to remove" }).click();
+  const remove = modal(page).getByRole("button", { name: "Remove" });
+  await expect(remove).toBeDisabled();
+  await expect(modal(page).getByRole("button", { name: "Save" })).toBeDisabled();
+  await remove.dispatchEvent("click");
+  await remove.dispatchEvent("click");
+  await page.keyboard.press("Escape");
+  await expect(remove).toBeVisible();
+  expect(await writes(page)).toBe(1);
+  await release(page);
+  await expect(toast(page)).toHaveText("Removed");
+  await expect(modal(page)).toBeEmpty();
+  await expect(lineRow(page, "Paper towels")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Inventory" }).click();
+  await page.locator("#main tbody tr", { hasText: "Paper towels" }).click();
+  await failWrites(page, "unavailable");
+  await modal(page).getByRole("button", { name: "Delete" }).click();
+  await modal(page).getByRole("button", { name: "Tap to delete" }).click();
+  await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+  // Still open, and usable again
+  await expect(modal(page).getByRole("button", { name: "Delete" })).toBeEnabled();
+  await expect(modal(page).getByLabel("Item name")).toBeEnabled();
+  await failWrites(page, null);
+  await hold(page);
+  await modal(page).getByRole("button", { name: "Delete" }).click();
+  await modal(page).getByRole("button", { name: "Tap to delete" }).click();
+  await expect(modal(page).getByRole("button", { name: "Delete" })).toBeDisabled();
+  await modal(page).getByRole("button", { name: "Delete" }).dispatchEvent("click");
+  await release(page);
+  await expect(toast(page)).toHaveText("Item deleted");
+  expect(await doc(page, "products/SKU1")).toBeUndefined();
+  expect(await writes(page)).toBe(3);
+});
+
+// claude.ai's db has no timeout, so the artifact gives up on a write after 20 s (write() in
+// src/main.js). The web build's requests time out themselves (tests/aws-save-states.spec.js).
+const WRITE_TIMEOUT = 20e3;
+test("in the artifact, a write that never answers fails after 20 seconds and can be tried again", async ({ page }) => {
+  test.skip(currentBuild() === "web", "The web build's requests have their own timeout");
+  await page.clock.install();
+  await openEcho(page);
+  await hold(page);
+  await page.getByRole("button", { name: "Edit details" }).click();
+  await modal(page).getByLabel("Client", { exact: true }).fill("Echo Two");
+  await modal(page).getByRole("button", { name: "Save" }).click();
+  await expect(modal(page).getByRole("button", { name: "Saving…" })).toBeDisabled();
+  await page.clock.fastForward(WRITE_TIMEOUT - 1000);
+  await expect(modal(page).getByRole("button", { name: "Saving…" })).toBeDisabled();
+  await page.clock.fastForward(1000);
+  await expect(failedNote(page)).toHaveText("Not saved. Check your connection, then tap Try again.");
+  await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+  await expect(modal(page).getByLabel("Client", { exact: true })).toHaveValue("Echo Two");
+  // It goes through after the page gave up on it; trying again saves the same edit
+  await release(page);
+  await expect.poll(() => doc(page, "sheets/s1").then((s) => s.client)).toBe("Echo Two");
+  await modal(page).getByRole("button", { name: "Try again" }).click();
+  await expect(toast(page)).toHaveText("Saved");
+  await expect(modal(page)).toBeEmpty();
+  await expect(page.getByRole("heading", { name: "Echo Two" })).toBeVisible();
+});
+
+test("in the artifact, a sheet action that never answers gives its button back after 20 seconds", async ({ page }) => {
+  test.skip(currentBuild() === "web", "The web build's requests have their own timeout");
+  await page.clock.install();
+  await openEcho(page);
+  await hold(page);
+  await page.getByRole("button", { name: "Finished Return" }).click();
+  await expect(page.getByRole("button", { name: "Saving…" })).toBeDisabled();
+  await page.clock.fastForward(WRITE_TIMEOUT);
+  await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+  await expect(page.getByRole("button", { name: "Finished Return" })).toBeEnabled();
 });

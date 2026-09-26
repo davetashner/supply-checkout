@@ -31,12 +31,23 @@ const ui = { tab: "sheets", sheetId: null, mode: "out", filter: "open", receipt:
 // Resolves to whether it saved. `retryable` then says whether it failed for the connection
 // (not refused or overtaken), so the same save is worth trying again (saving() below).
 // Offline, nothing is sent: it can't be confirmed, so it isn't tried.
+//
+// claude.ai's db has no timeout of its own, so in the artifact build a write that hasn't
+// answered in WRITE_TIMEOUT fails as the connection's (the web build's requests give up
+// after 15 s each, src/aws/http.js).
 let retryable = false;
+const WRITE_TIMEOUT = 20000;
+// WEB: the web build's requests time out themselves, so the artifact build keeps only the right side
+const timed = WEB ? p => p : p => {
+  let timer;
+  const late = new Promise((_, reject) => { timer = setTimeout(() => reject({ code: "timeout" }), WRITE_TIMEOUT); });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+};
 async function write(fn, okMsg, sheetId) {
   retryable = false;
   if (!db) { toast("Not connected to shared storage."); return false; }
   if (!navigator.onLine) { retryable = true; toast(OFFLINE); return false; }
-  try { await fn(); if (okMsg) toast(okMsg); return true; }
+  try { await timed(fn()); if (okMsg) toast(okMsg); return true; }
   catch (e) {
     if (sheetId && e && (e.code === "not_found" || (e.code === "invalid_argument" && await sheetGone(sheetId)))) {
       closeModal(); toast("Someone else deleted this sheet, so your change wasn't saved.");
@@ -68,14 +79,21 @@ const TRY = "Try again";
 const onSubmit = (form, fn) => form.addEventListener("submit", e => { e.preventDefault(); if (!form.hasAttribute("aria-busy")) fn(); });
 // Closes the modal once the write saved, and resolves to whether it did
 const closing = async saved => { const ok = await saved; if (ok) closeModal(); return ok; };
-async function saving(form, fn) {
-  const go = form.querySelector("[type=submit]"), failed = form.querySelector(".save-failed");
+// Runs fn (a write, which never throws) with the form busy: its controls disabled and the
+// modal kept open, so nothing in it can be sent again meanwhile. Resolves to what fn does.
+async function busy(form, fn) {
   const controls = [...form.querySelectorAll("input, select, button")].filter(c => !c.disabled);
-  if (go.textContent !== TRY) form.dataset.label = go.textContent;
-  if (failed) { failed.remove(); go.removeAttribute("aria-describedby"); }
-  form.setAttribute("aria-busy", "true"); controls.forEach(c => { c.disabled = true; }); go.textContent = "Saving…";
+  form.setAttribute("aria-busy", "true"); controls.forEach(c => { c.disabled = true; });
   const ok = await fn();
   form.removeAttribute("aria-busy"); controls.forEach(c => { c.disabled = false; });
+  return ok;
+}
+async function saving(form, fn) {
+  const go = form.querySelector("[type=submit]"), failed = form.querySelector(".save-failed");
+  if (go.textContent !== TRY) form.dataset.label = go.textContent;
+  if (failed) { failed.remove(); go.removeAttribute("aria-describedby"); }
+  go.textContent = "Saving…";
+  const ok = await busy(form, fn);
   go.textContent = form.dataset.label;
   // Gone if it saved, or if the save closed it (someone else deleted or changed this)
   if (ok || !form.isConnected || !retryable) return;
@@ -202,7 +220,7 @@ function drawSheet(s) {
       <div class="sheet-actions">
         ${dl ? `<button type="button" class="btn" id="exportCsv">Download CSV</button>` : ""}
         ${canWrite ? `<button type="button" class="btn" id="editSheet">Edit details</button>` : ""}
-        ${canWrite ? (closed ? `<button type="button" class="btn" id="reopen">Reopen</button>` : `<button type="button" class="btn" id="closeSheet">Finished Return</button>`) : ""}
+        ${canWrite ? (closed ? actionButton("reopen", "btn", "Reopen") : actionButton("closeSheet", "btn", "Finished Return")) : ""}
       </div>
     </div>`);
   // Each only changes the DOM when its value changes (toggleAttribute too)
@@ -232,7 +250,18 @@ function drawSheet(s) {
         </tr>`; }).join("")}</tbody>
       <tfoot><tr><td>Total</td><td></td><td>${t.out}</td><td>${t.ret}</td><td>${t.used}</td><td>${money(t.charge)}</td></tr></tfoot>
     </table></div>` : `<div class="empty">No supplies on this sheet yet. Scan a barcode to check one out.</div>`}
-    ${canWrite ? `<div class="sheet-actions" style="margin-top:18px"><button type="button" class="btn danger" id="delSheet">Delete sheet</button></div>` : ""}`);
+    ${canWrite ? `<div class="sheet-actions" style="margin-top:18px">${actionButton("delSheet", "btn danger", "Delete sheet")}</div>` : ""}`);
+}
+
+// Finishing, reopening or deleting the sheet, while its write is on its way: that button says
+// Saving… and every one of them is disabled, redraws included, so a second tap sends nothing
+let pending = null;
+const actionButton = (id, cls, label) => `<button type="button" class="${cls}" id="${id}"${pending ? ` disabled${pending === id ? ' aria-busy="true"' : ""}` : ""}>${pending === id ? "Saving…" : label}</button>`;
+async function once(id, fn) {
+  if (pending) return;
+  pending = id; draw();
+  await fn();
+  pending = null; draw();
 }
 
 // The sheet view is redrawn on every snapshot, with morph() like #main. Its events are
@@ -240,12 +269,12 @@ function drawSheet(s) {
 const sheetAction = {
   exportCsv: () => exportCsv(currentSheet()),
   editSheet: () => newSheetModal(currentSheet()),
-  closeSheet: () => write(() => db.doc("sheets/" + ui.sheetId).update({ status: "closed", closedAt: new Date().toISOString() }), "Return finished", ui.sheetId),
-  reopen: () => write(() => db.doc("sheets/" + ui.sheetId).update({ status: "open" }), "Sheet reopened", ui.sheetId),
-  delSheet: b => arm(b, "Tap again to delete", async () => {
+  closeSheet: () => once("closeSheet", () => write(() => db.doc("sheets/" + ui.sheetId).update({ status: "closed", closedAt: new Date().toISOString() }), "Return finished", ui.sheetId)),
+  reopen: () => once("reopen", () => write(() => db.doc("sheets/" + ui.sheetId).update({ status: "open" }), "Sheet reopened", ui.sheetId)),
+  delSheet: b => arm(b, "Tap again to delete", () => once("delSheet", async () => {
     const id = ui.sheetId;
-    if (await write(() => db.doc("sheets/" + id).delete(), "Sheet deleted", id)) { ui.sheetId = null; draw(); }
-  }),
+    if (await write(() => db.doc("sheets/" + id).delete(), "Sheet deleted", id)) ui.sheetId = null;
+  })),
 };
 ["#sheetHead", "#sheetBody"].forEach(sel => {
   $(sel).addEventListener("click", e => {
@@ -463,18 +492,17 @@ function lineModal(s, key) {
       <div class="modal-actions"><button type="button" class="btn danger" id="remove">Remove</button><span class="spacer"></span><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div>
     </form>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
-    armButton(m.querySelector("#remove"), "Tap to remove", async () => {
+    const form = m.querySelector("#f");
+    // The form is busy until it's removed, so it's removed once
+    armButton(m.querySelector("#remove"), "Tap to remove", () => busy(form, () => closing(write(async () => {
       // Saved as the whole sheet without the line, so only if the sheet is still there:
       // a set would make a sheet someone else deleted again
       const ref = db.doc("sheets/" + s.id);
-      if (await write(async () => {
-        const got = await ref.get();
-        if (!got.exists) throw { code: "not_found" };
-        const body = got.data(); body.items = { ...(body.items || {}) }; delete body.items[key];
-        await ref.set(body);
-      }, "Removed", s.id)) closeModal();
-    });
-    const form = m.querySelector("#f");
+      const got = await ref.get();
+      if (!got.exists) throw { code: "not_found" };
+      const body = got.data(); body.items = { ...(body.items || {}) }; delete body.items[key];
+      await ref.set(body);
+    }, "Removed", s.id))));
     onSubmit(form, () => {
       const out = int(m.querySelector("#fOut").value), returned = Math.min(int(m.querySelector("#fRet").value), out);
       // Typed prices are kept in whole cents (ADR 0014)
@@ -513,9 +541,8 @@ function productModal(key) {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     const scan = m.querySelector("#fScan");
     scan && scan.addEventListener("change", async () => { const c = await scanFromInput(scan); if (c) m.querySelector("#fCode").value = c; });
-    const rm = m.querySelector("#remove");
-    rm && armButton(rm, "Tap to delete", async () => { if (await write(() => db.doc("products/" + key).delete(), "Item deleted")) closeModal(); });
-    const form = m.querySelector("#f");
+    const rm = m.querySelector("#remove"), form = m.querySelector("#f");
+    rm && armButton(rm, "Tap to delete", () => busy(form, () => closing(write(() => db.doc("products/" + key).delete(), "Item deleted"))));
     onSubmit(form, () => {
       const code = p ? (p.code || "") : m.querySelector("#fCode").value.trim();
       const name = m.querySelector("#fName").value.trim(), price = Math.max(0, round2(m.querySelector("#fPrice").value));
