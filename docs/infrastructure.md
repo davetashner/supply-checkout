@@ -42,7 +42,7 @@ npx cdk deploy --all --profile supply-prod
 
 | Name | What serves it | Certificate |
 | --- | --- | --- |
-| apex, `www.` | the demo, until the real app launches (CloudFront) | `web`, in `GLOBAL_SERVICES_REGION` |
+| apex, `www.` | the demo at `/demo/`; other paths redirect to `app.` until the landing page (CloudFront) | `web`, in `GLOBAL_SERVICES_REGION` |
 | `app.` | the web app (CloudFront) | `web`, in `GLOBAL_SERVICES_REGION` |
 | `auth.` | Cognito Managed Login | `auth`, in `GLOBAL_SERVICES_REGION` |
 | `realtime.` | AppSync Events | `realtime`, in `GLOBAL_SERVICES_REGION` |

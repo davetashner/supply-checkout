@@ -10,7 +10,7 @@
 // supply-prod), --region <the web stack's region> (default: GLOBAL_SERVICES_REGION in
 // infra/lib/config.ts), --dry-run (print the AWS CLI commands instead of running them).
 //
-// Channels: "demo" is served at the apex (and www., which redirects there), "app" at app.
+// Channels: "demo" is served at the apex's /demo/, "app" at app. (infra/lib/web/router.js).
 // A release is uploaded once to s3://<bucket>/releases/<version>/ and never changed;
 // publishing an existing version fails. Making it live is one write to the CloudFront
 // KeyValueStore the router function reads (infra/lib/web/router.js), which reaches every

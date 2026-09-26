@@ -22,8 +22,9 @@ const png = {
   buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64"),
 };
 
-// Serves a build at origin with the CloudFront headers on the page, and records violations
-async function serve(page, origin, files) {
+// Serves a build at origin (under prefix, as CloudFront serves the demo at /demo/) with
+// the CloudFront headers on the page, and records violations
+async function serve(page, origin, files, prefix = "") {
   await page.addInitScript(() => {
     window.__cspViolations = [];
     document.addEventListener("securitypolicyviolation", (e) =>
@@ -34,7 +35,8 @@ async function serve(page, origin, files) {
   // to keep tests offline, as in the other suites.
   await page.route(THIRD_PARTY, (r) => r.abort());
   await page.route(origin + "/**", (r) => {
-    const file = files.get(new URL(r.request().url()).pathname);
+    const { pathname } = new URL(r.request().url());
+    const file = pathname.startsWith(prefix + "/") && files.get(pathname.slice(prefix.length));
     if (!file) return r.fulfill({ status: 404 });
     const headers = { "content-type": file.contentType };
     if (file.contentType === "text/html") headers["content-security-policy"] = CSP;
@@ -97,11 +99,17 @@ test("the web app signs in and loads its data from the API under the policy", as
   expect(await violations(page)).toEqual([]);
 });
 
-test("the demo runs under the policy, including its CSV download and receipt", async ({ page }) => {
-  await serve(page, DEMO_SITE, builtFiles(DEMO));
-  await page.goto(DEMO_SITE + "/");
+test("the demo runs under the policy at /demo/, including its barcode reader, CSV download and receipt", async ({ page }) => {
+  await serve(page, DEMO_SITE, builtFiles(DEMO), "/demo");
+  await page.goto(DEMO_SITE + "/demo/");
   await page.getByRole("button", { name: /Acme Offices/ }).click();
   await expect(page.getByRole("heading", { name: "Acme Offices" })).toBeVisible();
+
+  // ZXing's chunk resolves under /demo/ too
+  await page.setInputFiles("#scanFile", png);
+  await expect(page.locator("#toast")).toContainText("No barcode found");
+  const scripts = await page.evaluate(() => performance.getEntriesByType("resource").map((e) => e.name).filter((u) => u.endsWith(".js")));
+  expect(scripts.some((u) => u.startsWith(DEMO_SITE + "/demo/assets/zxing-"))).toBe(true);
 
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: /Download CSV/ }).click();
@@ -111,6 +119,8 @@ test("the demo runs under the policy, including its CSV download and receipt", a
   await page.setInputFiles("#receiptFile", fakeImage);
   await expect(page.locator(".rline")).toHaveCount(3);
 
+  const icons = await page.evaluate(() => [...document.querySelectorAll('link[rel="icon"], link[rel="apple-touch-icon"]')].map((l) => l.href));
+  for (const href of icons) expect(href.startsWith(DEMO_SITE + "/demo/assets/"), href).toBe(true);
   expect(await loadIcons(page)).toEqual([true, true, true]);
   expect(await violations(page)).toEqual([]);
 });

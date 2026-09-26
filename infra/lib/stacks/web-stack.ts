@@ -55,11 +55,26 @@ export const webOutputParameters = (envName: string) => {
   };
 };
 
+/** HSTS on every response: two years, with subdomains. */
+export const HSTS_MAX_AGE = Duration.days(730);
+
 /** web/router.js without its comment lines (CloudFront Functions are limited to 10 KB). */
 const ROUTER_SOURCE = readFileSync(new URL("../web/router.js", import.meta.url), "utf8")
   .split("\n")
   .filter((line) => !/^\s*\/\//.test(line))
   .join("\n");
+
+/** The router's source with its placeholders filled in. */
+export function routerCode(values: { kvsId: string; apex: string; www: string; app: string }): string {
+  const code = ROUTER_SOURCE.replace("__KVS_ID__", values.kvsId)
+    .replace("__APEX_HOST__", values.apex)
+    .replace("__WWW_HOST__", values.www)
+    .replace("__APP_HOST__", values.app)
+    .replace("__HSTS__", `max-age=${HSTS_MAX_AGE.toSeconds()}; includeSubDomains`);
+  const left = code.match(/__[A-Z_]+__/);
+  if (left) throw new Error(`router.js placeholder ${left[0]} isn't filled in`);
+  return code;
+}
 
 /**
  * The web app and the demo on CloudFront, with AWS WAF (supply-checkout-qk1).
@@ -69,9 +84,10 @@ const ROUTER_SOURCE = readFileSync(new URL("../web/router.js", import.meta.url),
  * bucket is in the primary region's data stack (stateful), imported by name.
  *
  * - One distribution for the apex, www. and app. A viewer-request CloudFront
- *   Function (web/router.js) reads the live version of the host's channel
- *   (app. -> "app", apex -> "demo") from a KeyValueStore and serves
- *   releases/<version>/ from the bucket. www. redirects to the apex.
+ *   Function (web/router.js) reads the live version of the channel
+ *   (app. -> "app", the apex's /demo/ -> "demo") from a KeyValueStore and
+ *   serves releases/<version>/ from the bucket. The apex's other paths
+ *   redirect to app. (302), and www. to the apex (301).
  * - scripts/publish-web.mjs uploads a build to releases/<version>/ and sets
  *   the channel's key; the switch reaches every edge in seconds.
  * - Security headers on every response: CSP (web/content-security-policy.ts),
@@ -116,10 +132,12 @@ export class WebStack extends SupplyCheckoutStack {
       source: ImportSource.fromInline(JSON.stringify({ data: RELEASE_CHANNELS.map((key) => ({ key, value: "none" })) })),
     });
     const router = new CloudFrontFunction(this, "Router", {
-      comment: "Serves the live release for the host's channel",
+      comment: "Serves the live release for the host's channel; redirects the apex home page",
       runtime: FunctionRuntime.JS_2_0,
       keyValueStore: this.liveVersions,
-      code: FunctionCode.fromInline(ROUTER_SOURCE.replace("__KVS_ID__", this.liveVersions.keyValueStoreId)),
+      code: FunctionCode.fromInline(
+        routerCode({ kvsId: this.liveVersions.keyValueStoreId, apex: names.apex, www: names.www, app: names.app }),
+      ),
     });
 
     const headers = new ResponseHeadersPolicy(this, "SecurityHeaders", {
@@ -130,7 +148,7 @@ export class WebStack extends SupplyCheckoutStack {
           override: true,
         },
         strictTransportSecurity: {
-          accessControlMaxAge: Duration.days(730),
+          accessControlMaxAge: HSTS_MAX_AGE,
           includeSubdomains: true,
           override: true,
         },
