@@ -187,6 +187,8 @@ export async function start(config) {
       user: {
         id: async () => me.user.id,
         can: async (what) => what === "data.write" && team.role !== "viewer",
+        // Team owners can export all the team's data (the app's "Export data")
+        isOwner: async () => team.role === "owner",
         // Only the signed-in user's own profile: the API doesn't share other members' names yet
         profiles: async (ids) => Object.fromEntries([].concat(ids).filter((id) => id === me.user.id).map((id) => [id, profile])),
       },
@@ -209,10 +211,10 @@ export async function start(config) {
   }
 }
 
-// A CSV the app made, saved as a browser download
+// A CSV or JSON file the app made, saved as a browser download
 async function download({ filename, data }) {
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([data], { type: "text/csv" }));
+  a.href = URL.createObjectURL(new Blob([data], { type: filename.endsWith(".json") ? "application/json" : "text/csv" }));
   a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 10e3);

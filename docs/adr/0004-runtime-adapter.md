@@ -10,8 +10,8 @@ All of the app's data, identity and AI calls go through `window.claude.use(name)
 | Capability | What the app calls |
 | --- | --- |
 | `db` | `collection(name).doc(id)` with `set`, `update` (deep merge), `delete`, `onSnapshot`, and `collection("sheets").orderBy("date", "desc")` |
-| `user` | `can("data.write")` to decide between view-only and contributor |
-| `downloads` | Saving the CSV export |
+| `user` | `can("data.write")` to decide between view-only and contributor; `isOwner()` to offer exporting all data |
+| `downloads` | Saving a sheet's CSV, and exporting all data as CSV or JSON |
 | `sample` | `json(prompt, { images, signal })` and `limits()` for receipt reading |
 
 `tests/mock-claude.js` already implements this same interface in memory for the Playwright suites. The original artifact keeps running for the family business on claude.ai.

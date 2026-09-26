@@ -130,9 +130,9 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Expected:** a CSV named after the client and date, with each item's price, taken, returned, used and charge, and a total row.
 
-**Status:** tested. Exporting all of a team's data is planned: `supply-checkout-zuv`.
+**Status:** tested. Owners can also export all of a team's data: on the sheet list, **Export data** offers every sheet (one CSV row per item), the inventory (CSV), or everything (JSON, each document as stored plus each sheet's totals). It's built in the browser from the collections the app has already loaded, so it matches the screens and needs no server route; 1,000 sheets take well under a second once listed. It shows for owners only (`user.isOwner()`), whether or not they can write, so it keeps working while a team is read-only.
 
-**Tests:** `app.spec.js`: "exports a sheet as CSV"; `startup.spec.js`: "CSV export quotes commas and quotes, and names untitled sheets", "a declined download is silent", "a failed download explains".
+**Tests:** `app.spec.js`: "exports a sheet as CSV"; `startup.spec.js`: "CSV export quotes commas and quotes, and names untitled sheets", "a declined download is silent", "a failed download explains"; `export.spec.js` (all tests); `aws-data.spec.js`: "an owner exports 1,000 sheets, listed page by page, as a JSON download", "members who aren't owners get no Export data".
 
 ### J7. Subscribe, add seats and see invoices
 
@@ -179,7 +179,7 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Expected:** access continues to the end of the paid period, then the team is read-only for 30 days with export available. After that the data is deleted, as the privacy policy says.
 
-**Status:** planned. `supply-checkout-121`, `supply-checkout-qdx`, `supply-checkout-zuv`.
+**Status:** planned. `supply-checkout-121`, `supply-checkout-qdx`. Export is built (`supply-checkout-zuv`, see J6); it only reads, through the list routes, so read-only mode must keep those open to owners.
 
 ### J11. Delete an account
 
@@ -335,7 +335,7 @@ Receipt reading is not critical: people can still enter items by hand.
 | Alarm | Signal | Starting threshold | Severity |
 | --- | --- | --- | --- |
 | **Cross-team access attempts** | Authorizer denials where the signed-in user asked for a team they don't belong to | any, over 15 minutes. Could be a client bug or someone probing. | P2 |
-| **Export failing** | Export function `Errors` | any, for 15 minutes | P2 |
+| **Export failing** | Export runs in the browser from the data API's list routes, so there's no export function: the API errors alarm covers it | as API errors | P2 |
 | **Deletion job failing** | Scheduled deletion job errors, or accounts past their deletion date | any | P2. The privacy policy promises a deadline. |
 
 ### J12. Choose a plan in the mobile app
