@@ -177,7 +177,8 @@ describe("POST /teams/{teamId}/invites", () => {
     expect(JSON.stringify(res.body)).not.toContain(hashInviteToken(link.token));
     expect(counts).toContainEqual(["InvitesSent", 1, { teamId: "team-a" }]);
     // No address or token in any log line
-    expect(JSON.stringify(logs)).not.toMatch(/example\.com|pat@/i);
+    expect(JSON.stringify(logs).toLowerCase()).not.toContain("example.com");
+    expect(JSON.stringify(logs).toLowerCase()).not.toContain("pat@");
     expect(JSON.stringify(logs)).not.toContain(link.token);
 
     // Pat signs in with that address and accepts: they join with the role, once
@@ -210,7 +211,7 @@ describe("POST /teams/{teamId}/invites", () => {
     expect(counts).toContainEqual(["InvitesFailed", 1, { teamId: "team-a", reason: "not_sent" }]);
     expect(counts.find(([m]) => m === "InvitesSent")).toBeUndefined();
     expect(logs).toContainEqual(["warn", "Invite email not sent", { teamId: "team-a", inviteId: res.body.invite.id, code: "SendingPausedException" }]);
-    expect(JSON.stringify(logs)).not.toMatch(/example\.com/);
+    expect(JSON.stringify(logs)).not.toContain("example.com");
     expect((await list()).body.invites).toMatchObject([{ id: res.body.invite.id, inviteStatus: "failed", failureReason: "not_sent" }]);
 
     // SES is back: re-sending clears the failure
