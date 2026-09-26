@@ -45,7 +45,8 @@ export class FakeBackend {
     this.cors = null;
   }
 
-  // The next `times` requests matching method and path get this answer instead.
+  // The next `times` requests matching method and path get this answer instead. path is a
+  // string, a RegExp, or a function of (path, call), where call is as in requests().
   // { status, body } or { abort: true }, and optionally { wait: promise } first.
   on(method, path, answer, times = 1) {
     this.rules.push({ method, path, answer, times });
@@ -90,7 +91,7 @@ export class FakeBackend {
     if (method === "OPTIONS") return route.fulfill({ status: 204, headers: this.corsHeaders() });
     const call = { method, path, query: Object.fromEntries(url.searchParams), headers: req.headers(), body: req.postDataJSON() };
     this.calls.push(call);
-    const rule = this.rules.find((r) => r.method === method && (typeof r.path === "string" ? r.path === path : r.path.test(path)));
+    const rule = this.rules.find((r) => r.method === method && (typeof r.path === "string" ? r.path === path : typeof r.path === "function" ? r.path(path, call) : r.path.test(path)));
     if (rule) {
       if (--rule.times <= 0) this.rules.splice(this.rules.indexOf(rule), 1);
       if (rule.answer.late) {

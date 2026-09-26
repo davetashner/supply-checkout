@@ -162,8 +162,14 @@ test.describe("data", () => {
     }
     const backend = new FakeBackend({ docs });
     backend.pageSize = 100;
+    // The re-list after subscribing redraws the list, replacing the Export data button; in
+    // WebKit a redraw of 1,000 cards mid-tap can swallow the click. Holding each re-list's
+    // first page keeps the list still until the export is done.
+    const relist = (c) => backend.hold("GET", (path) => path === `/teams/t1/${c}` && lists(backend)[c] === 2);
+    const release = [relist("products"), relist("sheets")];
     const start = Date.now();
     await open(page, backend);
+    await expect(card(page, "Client 999")).toBeVisible();
     await page.getByRole("button", { name: "Export data" }).click();
     await expect(modal(page)).toContainText("1001 sheets and 2 inventory items");
     const download = page.waitForEvent("download");
@@ -174,6 +180,10 @@ test.describe("data", () => {
     const json = JSON.parse(await (await import("node:fs/promises")).readFile(await file.path(), "utf8"));
     expect(json.sheets).toHaveLength(1001);
     expect(json.sheets.find((s) => s.id === "b7").totals).toEqual({ taken: 60, returned: 20, used: 40, charge: 380 });
+    // The re-lists waited at their first page, then run page by page as before
+    expect(backend.requests("GET", "/teams/t1/sheets")).toHaveLength(12);
+    release.forEach((r) => r());
+    await expect.poll(() => backend.requests("GET", "/teams/t1/sheets").length).toBe(22);
   });
 
   test("members who aren't owners get no Export data", async ({ page }) => {
