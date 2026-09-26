@@ -1,0 +1,4 @@
+#!/bin/sh
+# Blocks commits that would publish AWS identifiers, personal email addresses
+# or credentials in this public repository. Install with: npm run hooks:install
+exec node scripts/check-public-safety.mjs --staged

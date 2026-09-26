@@ -24,7 +24,7 @@ Beads are labeled `mvp` or `phase-2` (native mobile apps, full active-active fai
 ## Beads
 
 - The database is a local Dolt database in the **main checkout's** `.beads/` (gitignored). `bd` finds it from any worktree. `.beads/issues.jsonl` is only an export, not a sync mechanism.
-- After changing beads, refresh the export in the same PR (or a `chore:` PR): `bd export -o .beads/issues.jsonl`.
+- After changing beads, refresh the export in the same PR (or a `chore:` PR) with `npm run beads:export`. Don't use `bd export` directly: it includes each bead's `owner` email.
 - Batch-create with `bd create --graph plan.json` (nodes with `key`, `parent_key`, integer `priority`, `labels`, `acceptance_criteria`, and `deps: [{target, type: "blocks"}]`).
 - `bd close` refuses beads with open blockers. Use `--force` only for beads that are superseded, not finished.
 
@@ -39,6 +39,7 @@ Beads are labeled `mvp` or `phase-2` (native mobile apps, full active-active fai
 
 ```bash
 npm ci
+npm run hooks:install    # once per clone: pre-commit check for AWS IDs, emails and keys
 npx playwright install chromium webkit
 npm run check            # lint + all suites in desktop Chrome and iPhone Safari
 npm run test:coverage    # desktop Chrome with the 98% coverage gate
@@ -55,4 +56,4 @@ npm run test:coverage    # desktop Chrome with the 98% coverage gate
 - The account is `supply-checkout-prod`, in the user's existing AWS Organization. Profiles in `~/.aws/config` use sso-session `supply-checkout`: `supply-prod` (workloads, Route 53) and `supply-mgmt` (the organization's management account). Log in with `aws sso login --profile supply-prod`.
 - `aws configure sso` needs a real terminal and fails under `!`. Write profiles directly instead.
 - `supplycheckout.com` is registered at Namecheap and delegated to a Route 53 hosted zone in `supply-checkout-prod`.
-- **This repo is public.** Keep account IDs, SSO URLs and email addresses out of committed files, including bead text (the export is committed).
+- **This repo is public.** Keep account IDs, SSO URLs and email addresses out of committed files, including bead text (the export is committed). `scripts/check-public-safety.mjs` enforces this in the pre-commit hook and in CI, and gitleaks scans every commit for credentials.
