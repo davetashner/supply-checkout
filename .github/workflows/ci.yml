@@ -153,6 +153,28 @@ jobs:
             build: web
             browser: msedge
             coverage: ""
+          # Phones and tablets, against the web build only. Samsung Internet shares
+          # Android Chrome's engine; see "Supported browsers" in README.md.
+          - project: android-chrome
+            build: web
+            browser: chromium
+            coverage: ""
+          - project: android-chrome-landscape
+            build: web
+            browser: chromium
+            coverage: ""
+          - project: galaxy-chrome
+            build: web
+            browser: chromium
+            coverage: ""
+          - project: ipad-safari
+            build: web
+            browser: webkit
+            coverage: ""
+          - project: ipad-safari-landscape
+            build: web
+            browser: webkit
+            coverage: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
