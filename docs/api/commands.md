@@ -181,10 +181,10 @@ movement or the operation record changed.
 | --- | --- | --- |
 | `200`, `replayed: false` | Done now | Update the cache from `sheet` and `product` |
 | `200`, `replayed: true` | An earlier attempt did it | The same |
-| `400 bad_request` | Refused: malformed, a non-whole or zero quantity, money with more than two decimals, more returned than is out, an item not on the sheet, an item not in inventory without `name` and `price`, or a reused ID | Show the message; don't retry unchanged |
+| `400 bad_request` | Refused: malformed, a non-whole or zero quantity, money with more than two decimals, more returned than is out, an item not on the sheet, an item not in inventory without `name` and `price`, an item whose stored version isn't a number, or a reused ID | Show the message; don't retry unchanged. The web build fetches the sheet and item, closes the form and shows the message |
 | `403 invalid_argument` | The caller is a viewer | Switch to view-only, as for document writes |
 | `403 permission_denied` | Not a member of the team | As for document writes |
-| `404 not_found` | No such sheet, or (stock adjustment) no such item | Show the message |
+| `404 not_found` | No such sheet, or (stock adjustment) no such item | Show the message (the web build handles it as for `400`) |
 | `409 aborted` | The sheet is closed ("Reopen it to …"), or the line or item changed on every retry | Show the message. Safe to retry with the same ID |
 | `429`, `5xx`, timeout, network error | Unknown whether it ran | Retry with the same ID, with backoff |
 
