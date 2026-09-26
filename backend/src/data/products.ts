@@ -5,7 +5,7 @@
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { InvalidInputError, conflictOnConditionFailure } from "./errors.js";
-import { keys, prefixes, productKey, strip, teamPartition } from "./keys.js";
+import { barcode, keys, prefixes, productKey, strip, teamPartition } from "./keys.js";
 import { queryAll, versionedSet } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
@@ -27,13 +27,11 @@ export interface ProductFields {
 }
 
 function fields(input: ProductFields): Record<string, unknown> {
-  if (typeof input.code !== "string" || typeof input.name !== "string" || !input.name.trim()) {
-    throw new InvalidInputError("Invalid product");
-  }
+  if (typeof input.name !== "string" || !input.name.trim()) throw new InvalidInputError("Invalid product");
   if (typeof input.price !== "number" || !Number.isFinite(input.price) || input.price < 0) {
     throw new InvalidInputError("Invalid price");
   }
-  return { code: input.code, name: input.name.trim(), price: input.price, updatedAt: new Date().toISOString() };
+  return { code: barcode(input.code), name: input.name.trim(), price: input.price, updatedAt: new Date().toISOString() };
 }
 
 export async function listProducts(db: Db, ctx: TeamContext): Promise<Product[]> {

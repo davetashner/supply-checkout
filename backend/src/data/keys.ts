@@ -25,6 +25,15 @@ export function productKey(value: unknown): string {
   return value;
 }
 
+/** The longest barcode: the same bound as a product key, which the app makes from the barcode. */
+export const MAX_CODE_LENGTH = 256;
+
+/** A barcode (a product's or a sheet line's `code`): a string, empty for an item without one. */
+export function barcode(value: unknown): string {
+  if (typeof value !== "string" || value.length > MAX_CODE_LENGTH) throw new InvalidInputError("Invalid barcode");
+  return value;
+}
+
 /** A sheet date, YYYY-MM-DD, as the app stores it. */
 export function date(value: unknown): string {
   if (typeof value !== "string" || !DATE.test(value)) throw new InvalidInputError("Invalid date");

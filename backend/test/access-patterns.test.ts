@@ -392,6 +392,8 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await expect(updateProduct(db, contributor, "missing", { code: "", name: "x", price: 5 }, 1)).rejects.toThrow(ConflictError);
       await expect(updateProduct(db, viewer, "0123456789", { code: "", name: "x", price: 5 }, 2)).rejects.toThrow(ForbiddenError);
       await expect(createProduct(db, contributor, "bad", { code: "", name: "x", price: -1 })).rejects.toThrow(InvalidInputError);
+      await expect(createProduct(db, contributor, "bad", { code: "1".repeat(257), name: "x", price: 1 })).rejects.toThrow(InvalidInputError);
+      await expect(createProduct(db, contributor, "bad", { code: 123 as unknown as string, name: "x", price: 1 })).rejects.toThrow(InvalidInputError);
 
       await expect(deleteProduct(db, contributor, "0123456789", 1)).rejects.toThrow(ConflictError);
       await deleteProduct(db, contributor, "0123456789", 2);
@@ -415,6 +417,32 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
 
   describe("Sheet", () => {
     const line = (out: number, returned = 0) => ({ name: "Towels", price: 2, out, returned });
+
+    it("keeps every field the app writes: each line's barcode, the preparer's name and the receipt", async () => {
+      const { contributor, viewer } = await team();
+      const gloves = { code: "0123456789", name: "Gloves", price: 12.5, out: 3, returned: 0 };
+      const rags = { code: "", name: "Rags", price: 1, out: 1, returned: 0 };
+      const sheet = await createSheet(db, contributor, {
+        client: "Smith house",
+        date: "2026-09-25",
+        createdByName: "Dana",
+        source: { store: "Hardware Co", receiptDate: "2026-09-24" },
+        items: { "0123456789": gloves, "nb-1": rags },
+      });
+      let s = await getSheet(db, viewer, sheet.id);
+      expect(s).toMatchObject({ createdByName: "Dana", source: { store: "Hardware Co", receiptDate: "2026-09-24" }, items: { "0123456789": gloves, "nb-1": rags } });
+      s = await setSheetLine(db, contributor, sheet.id, "0123456789", { ...gloves, returned: 2 }, 1);
+      expect(s.items["0123456789"]).toEqual({ ...gloves, returned: 2 });
+      expect((await getSheet(db, viewer, sheet.id))?.items["0123456789"]?.code).toBe("0123456789");
+
+      const long = { ...gloves, code: "1".repeat(257) };
+      await expect(setSheetLine(db, contributor, sheet.id, "x", long, s.version)).rejects.toThrow(InvalidInputError);
+      await expect(setSheetLine(db, contributor, sheet.id, "x", { ...gloves, code: 5 as unknown as string }, s.version)).rejects.toThrow(InvalidInputError);
+      expect((await setSheetLine(db, contributor, sheet.id, "x", { ...gloves, code: "1".repeat(256) }, s.version)).items.x?.code).toHaveLength(256);
+      await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", source: null as unknown as { store: string; receiptDate: string } })).rejects.toThrow(InvalidInputError);
+      await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", source: { store: 1 as unknown as string, receiptDate: "" } })).rejects.toThrow(InvalidInputError);
+      await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", createdByName: "x".repeat(201) })).rejects.toThrow(InvalidInputError);
+    });
 
     it("is keyed by an immutable ID and read by ID alone", async () => {
       const { contributor, viewer } = await team();
@@ -469,8 +497,8 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       s = await updateSheet(db, contributor, sheet.id, { status: "closed" }, s.version);
       expect(s.status).toBe("closed");
       expect(s.closedAt).toBeTruthy();
-      s = await updateSheet(db, contributor, sheet.id, { status: "open", preparedBy: "Dana" }, s.version);
-      expect(s).toMatchObject({ status: "open", preparedBy: "Dana" });
+      s = await updateSheet(db, contributor, sheet.id, { status: "open", createdByName: "Dana" }, s.version);
+      expect(s).toMatchObject({ status: "open", createdByName: "Dana" });
       await expect(updateSheet(db, contributor, sheet.id, { status: "lost" as "open" }, s.version)).rejects.toThrow(InvalidInputError);
 
       await expect(deleteSheet(db, contributor, sheet.id, 1)).rejects.toThrow(ConflictError);

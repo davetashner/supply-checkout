@@ -46,7 +46,12 @@ info:
       fields are the server's and are refused in a body: `PK`, `SK`, `GSI1PK`,
       `GSI1SK`, `GSI2PK`, `GSI2SK`, `type`, `id`, `key`, `version`, `teamId`. For products,
       `stock` must be a number if present; for sheets, `date` must be a string
-      and `items` an object.
+      and `items` an object. A barcode (`code`, on a product and on each line
+      in a sheet's `items`) must be a string of at most 256 characters, the
+      product key limit; it's empty for an item without a barcode.
+    - Every other field is kept exactly as written. The `Product`, `Sheet` and
+      `SheetLine` schemas list the fields the app writes; all of them,
+      including each line's `code`, read back unchanged.
     - `update` merges like the artifact runtime: where the patch and the
       document both have an object at the same key, they merge key by key;
       any other value (including `null` and arrays) replaces.
@@ -502,7 +507,48 @@ components:
       properties:
         id: { type: string, description: The product key or sheet ID. }
         version: { type: integer, minimum: 1 }
-        data: { type: object, description: The document's fields as the app wrote them. }
+        data:
+          type: object
+          description: The document's fields as the app wrote them. `Product` and `Sheet` list the fields the app writes.
+    Product:
+      type: object
+      description: "`data` of a document in `products` (src/main.js). Other fields are kept as written."
+      properties:
+        code: { type: string, maxLength: 256, description: The barcode; empty for an item without one. }
+        name: { type: string }
+        price: { type: number, minimum: 0 }
+        stock: { type: number, description: The count in storage; absent if not counted. }
+        updatedAt: { type: string, format: date-time }
+    Sheet:
+      type: object
+      description: "`data` of a document in `sheets` (src/main.js). Other fields are kept as written."
+      properties:
+        client: { type: string }
+        date: { type: string, description: "`YYYY-MM-DD`; sheets without a valid date sort last when newest-first." }
+        createdBy: { type: [string, "null"], description: "The creator's user ID, or `null` without a signed-in user." }
+        createdByName: { type: string, description: "Who prepared the sheet, when `createdBy` is `null`." }
+        createdAt: { type: string, format: date-time }
+        status: { type: string, enum: [open, closed] }
+        closedAt: { type: string, format: date-time }
+        items:
+          type: object
+          description: The sheet's lines, keyed by product key.
+          additionalProperties: { $ref: "#/components/schemas/SheetLine" }
+        source:
+          type: object
+          description: The receipt the sheet was made from, when receipt scanning named a store.
+          properties:
+            store: { type: string }
+            receiptDate: { type: string }
+    SheetLine:
+      type: object
+      description: One line of a sheet. A PATCH may send only some fields (a return sends `returned`); the rest, including `code`, are kept.
+      properties:
+        code: { type: string, maxLength: 256, description: 'The barcode, exported as "Barcode" in the sheet CSV; empty for an item without one.' }
+        name: { type: string }
+        price: { type: number, minimum: 0 }
+        out: { type: integer, minimum: 0, description: How many were taken. }
+        returned: { type: integer, minimum: 0, description: How many came back. }
     Team:
       type: object
       required: [id, name, role, plan, status, trialEndsAt, homeRegion]

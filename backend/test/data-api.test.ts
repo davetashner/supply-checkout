@@ -140,6 +140,37 @@ describe("documents (the app's db contract)", () => {
     expect(body.data.tags).toEqual(["y"]);
   });
 
+  it("keeps each sheet line's barcode through PUT and PATCH", async () => {
+    const gloves = { code: "0123", name: "Gloves", price: 2, out: 3, returned: 0 };
+    expect((await call("PUT", "/teams/team-a/sheets/s1", { body: { data: sheet("2026-09-01", { "0123": gloves }) } })).body.data.items["0123"]).toEqual(gloves);
+    // checkoutModal: the whole line, with its code
+    await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { items: { "0123": { ...gloves, out: 5 } } } } });
+    // The line edit: out, returned and price only
+    await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { items: { "0123": { out: 5, returned: 1, price: 3 } } } } });
+    const { body } = await call("GET", "/teams/team-a/sheets/s1");
+    expect(body.data.items["0123"]).toEqual({ code: "0123", name: "Gloves", price: 3, out: 5, returned: 1 });
+  });
+
+  it("keeps every other field the app writes on sheets and products", async () => {
+    // The receipt save and the new-sheet form, without a signed-in user
+    const receiptSheet = {
+      client: "Echo",
+      date: "2026-09-01",
+      createdBy: null,
+      createdByName: "Dana",
+      createdAt: "2026-09-01T10:00:00.000Z",
+      status: "open",
+      items: { "nb-1": { code: "", name: "Rags", price: 1, out: 2, returned: 0 } },
+      source: { store: "Hardware Co", receiptDate: "2026-08-31" },
+    };
+    expect((await call("PUT", "/teams/team-a/sheets/s1", { body: { data: receiptSheet } })).body.data).toEqual(receiptSheet);
+    await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { status: "closed", closedAt: "2026-09-02T00:00:00.000Z" } } });
+    expect((await call("GET", "/teams/team-a/sheets/s1")).body.data).toEqual({ ...receiptSheet, status: "closed", closedAt: "2026-09-02T00:00:00.000Z" });
+    const full = { ...product, stock: 7 };
+    expect((await call("PUT", "/teams/team-a/products/0123", { body: { data: full } })).body.data).toEqual(full);
+    expect((await call("PATCH", "/teams/team-a/products/0123", { body: { data: { stock: 6 } } })).body.data).toEqual({ ...product, stock: 6 });
+  });
+
   it("refuses to update a document that doesn't exist", async () => {
     expect(await call("PATCH", "/teams/team-a/sheets/nope", { body: { data: { status: "open" } } })).toMatchObject({
       status: 404,
@@ -234,6 +265,10 @@ describe("documents (the app's db contract)", () => {
     expect(await bad("PUT", "/teams/team-a/products/p", { body: { data: { ...product, stock: "4" } } })).toBe("bad_request");
     expect(await bad("PUT", "/teams/team-a/sheets/s1", { body: { data: { date: 20260901 } } })).toBe("bad_request");
     expect(await bad("PUT", "/teams/team-a/sheets/s1", { body: { data: { items: [] } } })).toBe("bad_request");
+    expect(await bad("PUT", "/teams/team-a/sheets/s1", { body: { data: sheet("2026-09-01", { a: { code: "1".repeat(257) } }) } })).toBe("bad_request");
+    expect(await bad("PUT", "/teams/team-a/sheets/s1", { body: { data: sheet("2026-09-01", { a: { code: 123 } }) } })).toBe("bad_request");
+    expect(await bad("PUT", "/teams/team-a/products/p", { body: { data: { ...product, code: "1".repeat(257) } } })).toBe("bad_request");
+    expect(await bad("PUT", "/teams/team-a/products/p", { body: { data: { ...product, code: null } } })).toBe("bad_request");
     expect(await bad("PUT", "/teams/team-a/sheets/s#1", { body: { data: sheet("2026-09-01") } })).toBe("bad_request");
     expect(await bad("PUT", "/teams/team-a/sheets/s1", { body: { data: { a: { "": 1 } } } })).toBe("bad_request");
     expect(await bad("PUT", "/teams/team-a/sheets/s1", { rawBody: '{"data":{"__proto__":{"x":1}}}' })).toBe("bad_request");
