@@ -1,6 +1,30 @@
 # Supply Checkout SaaS: architecture
 
-This is the target design for running Supply Checkout as a paid, multi-tenant product on AWS at $3 per user per month. Each choice is explained in an [architecture decision record](../adr/README.md); the diagrams below show how the pieces fit together.
+This is the target design for running Supply Checkout as a paid, multi-tenant product on AWS at $3 per user per month. Each choice is explained in an [architecture decision record](../adr/README.md); the diagrams below show how the pieces fit together. Sections marked planned or phase 2 aren't built yet; [What's built](#whats-built) lists what is.
+
+## What's built
+
+The design below is partly built. This table says which parts are on `main` today; everything else in this document is planned. Mobile apps and the second region (us-west-2) are phase 2.
+
+| Component | Status | Where |
+| --- | --- | --- |
+| DynamoDB table, team-scoped data access, Stripe-link and webhook-idempotency helpers | Built | PRs #24, #26 |
+| Alarm topics, journey alarms, dashboard, structured logging | Built | PR #30 |
+| Route 53 zone, ACM certificates, SES domain identity | Built | PR #33 |
+| Web hosting: S3, CloudFront, WAF, versioned releases (serves the demo today) | Built | PR #35 |
+| Cognito user pool, `auth.` domain, web app client | Built | PR #36 |
+| HTTP API with JWT authorizer, data Lambda for products and sheets, sign-in session routes | Built | PR #37 |
+| Onboarding: `GET /me`, create a team, accept an invite | Built | PR #40 |
+| Live updates: AppSync Events, subscribe authorizer, stream consumer with a dead-letter queue | Built | PR #41 |
+| CI gates (lint, tests, cdk-nag synth, CodeQL, audit, secret scan) and release-please | Built | `.github/workflows/` |
+| Runtime adapter: the web app on the AWS API (bead `a2b`) | Planned | |
+| Atomic checkout, return and stock-adjust commands (bead `1dg.1`, [section 4](#4-checking-out-and-returning-planned)) | Planned | |
+| Sending invites, member removal | Planned | |
+| Billing: Stripe Checkout, webhook, SQS worker, access rules (beads `x0l`, `2kl`, `qdx`) | Planned | |
+| Receipt reading with Bedrock | Planned | |
+| Synthetics canaries, automated deploys to staging and prod | Planned | |
+| Faster cut-off of live updates for removed members (bead `4zn`) | Planned | |
+| iOS and Android apps, us-west-2 | Phase 2 | |
 
 ## 1. System context
 
@@ -12,7 +36,7 @@ flowchart LR
   crew([Crew member: contributor or viewer])
   subgraph SC[Supply Checkout]
     web[Web app<br/>desktop and mobile browsers]
-    apps[iOS and Android apps<br/>Capacitor]
+    apps[iOS and Android apps<br/>Capacitor, phase 2]
     backend[AWS backend<br/>us-east-1; us-west-2 in phase 2]
   end
   stripe[(Stripe<br/>billing, invoices, tax)]
@@ -38,7 +62,7 @@ flowchart LR
 
 ## 2. AWS deployment
 
-The MVP runs in us-east-1 only. The stacks are region-ready, and us-west-2 is added in phase 2 to make the design active-active, with a home region for each team's writes ([ADR 0010](../adr/0010-multi-region-active-active.md)). Dashed boxes and lines are phase 2.
+The MVP runs in us-east-1 only. The stacks are region-ready, and us-west-2 is added in phase 2 to make the design active-active, with a home region for each team's writes ([ADR 0010](../adr/0010-multi-region-active-active.md)). Dashed boxes and lines are phase 2. In us-east-1, the web hosting, Cognito, the HTTP API with its data Lambda, AppSync Events with its stream consumer, and DynamoDB are built; the receipts and billing Lambdas, Bedrock and the Stripe queue are planned.
 
 ```mermaid
 flowchart TB
@@ -106,7 +130,7 @@ Not drawn: KMS keys, Secrets Manager (Stripe keys), SES, CloudWatch alarms and d
 
 **Web releases.** One CloudFront distribution serves the apex (the demo), `www.` (a redirect to the apex) and `app.` from one S3 bucket in us-east-1, behind AWS WAF (a per-IP rate limit and AWS managed rules). Each build is uploaded once to `releases/<version>/`. A CloudFront Function reads the live version of the host's channel (`demo` or `app`) from a CloudFront KeyValueStore and rewrites the path into that release, so a release or rollback is one key write that takes effect within seconds. See the README's "Web hosting and releases" section.
 
-## 3. Reading a receipt
+## 3. Reading a receipt (planned)
 
 The flow from [ADR 0008](../adr/0008-receipt-reading-bedrock.md). Nothing is saved until the user confirms, just like today.
 
@@ -141,9 +165,105 @@ sequenceDiagram
   end
 ```
 
-## 4. Billing and access
+## 4. Checking out and returning (planned)
 
-How Stripe events turn into access rules ([ADR 0009](../adr/0009-billing-stripe.md)).
+**Not built yet** (bead `supply-checkout-1dg.1`). Today the app saves the sheet line and then changes stock in a second, separate read-then-write (`bumpStock` in `src/main.js`), so a retry or a double tap can take stock down twice and two people checking out the same line at once can lose a count. The planned commands make each checkout, return or stock adjustment one DynamoDB transaction with an operation ID, so a retry is safe. They sit next to the generic document routes, which the edit screens keep using. Route names aren't final. The claude.ai artifact build keeps its two-write path ([ADR 0004](../adr/0004-runtime-adapter.md)); the commands extend [ADR 0006](../adr/0006-api-and-realtime-sync.md).
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor U as Crew member
+  participant App
+  participant API as HTTP API + data Lambda
+  participant DB as DynamoDB
+  participant RT as Stream consumer and AppSync Events
+
+  U->>App: Scan item, choose how many
+  App->>App: New operation ID, kept until the call settles
+  App->>API: POST checkout: sheet, product, quantity, operation ID
+  API->>API: Verify JWT, check membership (contributor or owner),<br/>validate a whole-number quantity
+  API->>DB: TransactWriteItems, all or nothing
+  Note over API,DB: 1. Put the operation record, only if the ID is new<br/>2. Sheet line: ADD out, only if the sheet is open<br/>3. Product: ADD stock minus the quantity<br/>4. Put a movement record: product, sheet, change, user, time
+  alt All four written
+    DB-->>API: OK
+    API-->>App: New line and stock, with versions
+    DB-->>RT: Stream records
+    RT-->>App: Change notices to the team's other devices
+  else Operation ID already used (a retry)
+    DB-->>API: Transaction canceled on the operation record
+    API->>DB: Read the operation record
+    API-->>App: The first call's outcome, nothing changed again
+  else Any other check fails
+    DB-->>API: Transaction canceled, nothing written
+    API-->>App: 400 or 409 with a clear message
+  end
+  Note over App,API: After a timeout or a dropped connection the app<br/>retries with the same operation ID
+```
+
+- **Return** is the same transaction with `ADD returned` on the line (only while the total returned stays at or below the total taken out) and stock going up by the quantity.
+- **Stock adjust** (buying for general inventory, a count correction) has no sheet line: operation record, stock and movement record.
+- The movement records are the inventory history: a per-item stock history view and the nightly stock-drift check ([docs/journeys.md](../journeys.md), J4) reconcile stock against them.
+- IAM: the data Lambda's per-team role gains `UpdateItem` and `ConditionCheckItem`, under the same `dynamodb:LeadingKeys` condition it has now.
+
+### 4a. Sheet states
+
+As built in `src/main.js`. A sheet's `status` is `open` or `closed`; the app labels them "Checked out" and "Returned". Owners and contributors change it; viewers can't.
+
+```mermaid
+stateDiagram-v2
+  state "Open, shown as Checked out" as open
+  state "Closed, shown as Returned" as closed
+  [*] --> open : New sheet
+  open --> closed : Finished Return, sets closedAt
+  closed --> open : Reopen
+  open --> [*] : Delete sheet
+  closed --> [*] : Delete sheet
+```
+
+- A reopened sheet is simply `open` again; `closedAt` keeps the time it was last closed.
+- Closing or reopening doesn't change stock. Only checkouts and returns do.
+- A closed sheet hides the scan bar, so nothing new is checked out or returned on it. Owners and contributors can still correct a line's counts and price, edit the sheet's details, or delete it. The planned commands (section 4) enforce closed-sheet rules on the server as well.
+
+## 5. Live updates: authorization and revocation
+
+As built in PR #41 ([ADR 0006](../adr/0006-api-and-realtime-sync.md)). The client contract, including reconnects and the polling fallback, is in [docs/api/realtime.md](../api/realtime.md). The web app doesn't use it yet; the runtime adapter (bead `a2b`) will.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant App as Member's device
+  participant RT as AppSync Events
+  participant Au as Authorizer Lambda
+  participant DB as DynamoDB
+  participant P as Stream consumer
+  participant API as HTTP API + data Lambda
+
+  App->>RT: Connect with the Cognito access token
+  RT->>Au: EVENT_CONNECT
+  Au-->>RT: Allow a valid access token for the web app client
+  App->>RT: Subscribe to /teams/teamId, with the token
+  RT->>Au: EVENT_SUBSCRIBE
+  Au->>DB: Read the caller's MEMBER item
+  Au-->>RT: Allow only a member, only that exact channel
+  RT-->>App: subscribe_success
+  App->>API: Re-list products and sheets
+  Note over DB,P: Someone on the team changes a sheet
+  DB->>P: Stream record, products and sheets only
+  P->>RT: Publish collection, id, op, version (IAM only)
+  RT-->>App: Change notice, no document data
+  App->>API: GET the document
+  API->>DB: Membership check, on every request
+  API-->>App: The document, or 403 if no longer a member
+```
+
+- **Connect and subscribe.** The authorizer allows a connection with a valid Cognito access token, and a subscription only to exactly `/teams/<teamId>` for a member of that team (any role), using the same membership check as the data API. Its answers aren't cached. Clients can't publish: the `teams` namespace takes publishes only from the stream consumer's IAM role, and the authorizer refuses publishes too.
+- **Events are refetch hints.** Each carries a collection, an ID, an operation and a version, never document data. The app fetches the document from the data API, which reads the caller's `MEMBER` item on every request.
+- **Revocation.** When a member is removed (or a team is canceled), their next fetch gets `403` at once and a new subscription is refused at once. AppSync Events can't end or filter a subscription that's already open, so that connection keeps receiving change notices (not contents) until it closes: in practice at the client's hourly reconnect on token refresh, and at most 24 hours. Cutting notices off within about a minute is bead `supply-checkout-4zn`; the options are in [docs/api/realtime.md](../api/realtime.md#cutting-off-notices-faster).
+- **Missed events.** AppSync doesn't replay events, so the app re-lists both collections after every subscribe, when the tab becomes visible, and every 10 minutes. Batches the consumer can't publish go to a dead-letter queue, which alarms.
+
+## 6. Billing and access (planned)
+
+How Stripe events turn into access rules ([ADR 0009](../adr/0009-billing-stripe.md)). **Not built yet** (beads `x0l`, `2kl`, `qdx`); only the data layer's Stripe-link and webhook-idempotency helpers exist.
 
 ```mermaid
 sequenceDiagram
@@ -162,20 +282,64 @@ sequenceDiagram
   S-->>O: Hosted checkout page
   O->>S: Pay
   S->>API: Webhook: checkout.session.completed,<br/>customer.subscription.updated
-  API->>API: Verify signature
-  API->>DB: Record event ID (skip if already seen)
-  API->>Q: Queue event
-  API-->>S: 200
+  API->>API: Verify signature (400 if it doesn't match)
+  API->>Q: Enqueue event
+  alt Enqueue failed
+    API-->>S: 5xx, so Stripe retries
+  else Queued
+    API-->>S: 200
+  end
   Q->>W: Event
+  W->>DB: Event ID already processed? Then skip it
   W->>S: Fetch latest subscription
   W->>DB: Update team: plan, seats, status, period end
-  DB-->>App: Live update: billing banner clears
+  W->>DB: Record event ID as processed
+  App->>API: Next GET /me shows the new status
   Note over S,W: invoice.payment_failed → status past_due →<br/>7-day grace, then read-only
 ```
 
-## 4a. Choosing a plan in the mobile app
+- **Order matters.** The webhook only verifies, enqueues and answers; it records nothing. The worker records the event ID only after the team is updated. Recording first could lose an event if the queue write or the worker then failed. If the worker fails after the update but before recording, the retry applies the same update again, which is harmless because the worker always applies the latest subscription it fetched from Stripe.
+- **One subscription at a time.** Updates for one subscription are serialized, by an SQS FIFO message group per subscription or a conditional write on the event's creation time (bead `2kl` decides), so an older event can't overwrite a newer one.
+- **Failures.** A message that keeps failing goes to a dead-letter queue, which alarms. A nightly job reconciles every team's entitlements with Stripe (bead `8jc.9`).
+- Live updates carry products and sheets only, so the app sees a new plan or status on its next `GET /me`.
 
-Owners choose a plan in the iOS or Android app and pay on Stripe Checkout; there is no store in-app purchase ([ADR 0013](../adr/0013-web-billing-only.md)).
+### 6a. Subscription and access states
+
+From [ADR 0009](../adr/0009-billing-stripe.md) and bead `qdx`. Stripe's subscription status is stored on the team; the grace period and read-only mode are worked out from it and from how long the team has been in that status. New teams start as `trialing` today (PR #40); nothing enforces access by status yet.
+
+```mermaid
+stateDiagram-v2
+  state "Trialing, full access, 14 days, no card" as trialing
+  state "Active, full access" as active
+  state "Past due, grace, full access and a banner, 7 days" as grace
+  state "Past due, read-only" as readonly
+  state "Canceled, read-only with export, 30 days" as canceled
+  state "Data deleted" as deleted
+  [*] --> trialing : Team created
+  trialing --> active : First invoice paid
+  trialing --> canceled : Trial ends without a card
+  active --> grace : invoice.payment_failed
+  grace --> active : invoice.paid
+  grace --> readonly : 7 days pass
+  readonly --> active : invoice.paid
+  active --> canceled : Owner cancels
+  grace --> canceled : Stripe stops retrying
+  readonly --> canceled : Stripe stops retrying
+  canceled --> deleted : 30 days pass
+  deleted --> [*]
+```
+
+| Access | Stripe status |
+| --- | --- |
+| Full | `trialing`, `active`, and `past_due` for the first 7 days (with a banner) |
+| Read-only | `past_due` after 7 days; `canceled` for 30 days, with export |
+| None, data deleted | 30 days after `canceled`, as the privacy policy describes |
+
+What happens when a trial ends without a card, and when Stripe stops retrying a failed payment, are Stripe settings chosen in beads `x0l` and `qdx`; the diagram shows the cancel option for both.
+
+### 6b. Choosing a plan in the mobile app (phase 2)
+
+**Phase 2.** The mobile apps aren't part of the MVP. Owners choose a plan in the iOS or Android app and pay on Stripe Checkout; there is no store in-app purchase ([ADR 0013](../adr/0013-web-billing-only.md)).
 
 ```mermaid
 sequenceDiagram
@@ -196,13 +360,15 @@ sequenceDiagram
   Br->>S: Payment
   S-->>Br: Redirect to success_url
   Br-->>App: App link reopens the app
-  S->>API: Webhook (same path as section 4)
-  API->>DB: Team: plan, seats, status
-  DB-->>App: Live update: plan active
+  S->>API: Webhook (same path as section 6)
+  API->>DB: Via the queue and worker: plan, seats, status
+  App->>API: GET /me shows the plan active
   Note over App,S: Where store rules don't allow the link, the app shows<br/>"Manage your plan on our website" and no prices
 ```
 
-## 5. Sign-in and team access
+## 7. Sign-in and team access
+
+Built: Cognito in PR #36, the JWT authorizer and data API in PR #37, and `GET /me` with team creation and invite acceptance in PR #40 ([docs/api/onboarding.md](../api/onboarding.md)).
 
 ```mermaid
 sequenceDiagram
@@ -226,9 +392,9 @@ sequenceDiagram
   Note over App,DB: Every later request names the team.<br/>The Lambda re-checks membership. The client never supplies the role.
 ```
 
-## 6. Data model
+## 8. Data model
 
-One DynamoDB table ([ADR 0005](../adr/0005-multi-tenant-dynamodb.md)). Everything a team owns shares the `TEAM#<teamId>` partition key.
+One DynamoDB table ([ADR 0005](../adr/0005-multi-tenant-dynamodb.md)). Everything a team owns shares the `TEAM#<teamId>` partition key. Built in PRs #24 and #26. The planned checkout commands (section 4) add an operation record and an inventory movement record per change, in the team's partition.
 
 ```mermaid
 erDiagram
@@ -304,9 +470,9 @@ erDiagram
   }
 ```
 
-## 7. Delivery pipeline
+## 9. Delivery pipeline
 
-From pull request to production, with automatic rollback ([ADR 0012](../adr/0012-cicd-releases-rollbacks.md)).
+From pull request to production, with automatic rollback ([ADR 0012](../adr/0012-cicd-releases-rollbacks.md)). Built today: the pull request gates (without the preview stack), release-please, and attaching `index.html` to each release. The deploys, canaries and rollback are planned.
 
 ```mermaid
 flowchart LR
@@ -326,6 +492,6 @@ flowchart LR
 
 In phase 2, staging deploys to both regions, and prod deploys to us-west-2 first (with its own canary and rollback), then us-east-1. The mobile builds are also phase 2.
 
-## Costs at a glance
+## Costs
 
-Rough monthly AWS cost for production **before** customers, in one region (the MVP): Route 53 hosted zone and health checks (about $3), KMS keys (about $2–4), Secrets Manager (about $1–2), CloudWatch Synthetics canaries (about $5–10, the biggest fixed item), and WAF (about $6+). Everything else (Lambda, API Gateway, DynamoDB, AppSync Events, CloudFront, S3, Cognito, SES) is pay-per-use and costs pennies at low volume. Receipt reading is about half a cent to one and a half cents per receipt ([ADR 0008](../adr/0008-receipt-reading-bedrock.md)). Staging and dev add a similar but smaller fixed amount. Adding us-west-2 in phase 2 roughly doubles the fixed items. The business plan bead turns this into a full cost model.
+The cost model is in [docs/business/cost-model.xlsx](../business/cost-model.xlsx), and the [business plan's unit economics section](../business/business-plan.md#6-unit-economics) summarizes it: fixed AWS cost per environment, margin per seat, and break-even. Receipt reading costs are in [ADR 0008](../adr/0008-receipt-reading-bedrock.md).
