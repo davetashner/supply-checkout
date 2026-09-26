@@ -20,9 +20,11 @@ import { createLive } from "./live.js";
 const BURST_FETCHES = 10, BURST_MS = 1000, QUIET_MS = 300, MAX_WAIT_MS = 2000;
 const META = { fromCache: false, hasPendingWrites: false };
 const cmp = (a, b) => (a > b) - (a < b);
-// An item's own fields, to compare two copies: not its stock (the stock commands own it) or
-// when it was last saved
-const fields = (data) => JSON.stringify(Object.keys(data).filter((k) => k !== "stock" && k !== "updatedAt").sort().map((k) => [k, data[k]]));
+// A document's own fields, to compare two copies: not an item's stock (the stock commands own
+// it) or when it was last saved. Keys are sorted at every level, since the server needn't keep
+// their order.
+const sorted = (v) => (v && typeof v === "object" && !Array.isArray(v) ? Object.keys(v).sort().map((k) => [k, sorted(v[k])]) : v);
+const fields = (data) => JSON.stringify(sorted(Object.fromEntries(Object.entries(data).filter(([k]) => k !== "stock" && k !== "updatedAt"))));
 const snap = (id, doc) => ({ id, exists: !!doc, data: () => (doc ? structuredClone(doc.data) : undefined), metadata: META });
 
 function querySnap(docs, order) {
@@ -196,7 +198,9 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
     // Every write names the version it was made against (ADR 0006): the one held, or 0 for
     // a document this page doesn't have. If someone else changed it first (409 aborted),
     // fetch the latest so the app redraws with it, and pass the error on for the app to say so.
-    // If what changed is that someone deleted it, that's the error: not_found.
+    // If what changed is that someone deleted it, that's the error: not_found. A set that finds
+    // the document already as it was sent is this page's own earlier attempt, whose answer was
+    // lost (a new sheet saved again after a timeout): it's saved, so it isn't made twice.
     const write = async (method, body) => {
       const held = coll(name).docs.get(id), expectedVersion = held ? held.version : 0;
       try {
@@ -205,7 +209,9 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
       } catch (e) {
         if (e.code !== "aborted") throw denied(e);
         await fetchDoc(name, id);
-        throw coll(name).docs.has(id) ? e : { code: "not_found", message: "Not found", status: 404 };
+        const now = coll(name).docs.get(id);
+        if (now && method === "PUT" && fields(now.data) === fields(body.data)) return;
+        throw now ? e : { code: "not_found", message: "Not found", status: 404 };
       }
     };
     return {

@@ -62,7 +62,7 @@ test("any other refusal from the runtime keeps the form open with the usual mess
   await enterBarcode(page, "SKU1");
   await modal(page).getByRole("button", { name: "Save return" }).click();
   await failed(page);
-  await expect(modal(page).getByRole("button", { name: "Save return" })).toBeVisible();
+  await expect(modal(page).getByRole("button", { name: "Try again" })).toBeVisible();
 });
 
 test("a new item that can't be saved to inventory isn't added to the sheet", async ({ page }) => {
@@ -85,7 +85,7 @@ test("a checkout that fails after saving a new item doesn't save the item again 
   // Gone by the retry: if the retry saved it again, it would be back
   await page.evaluate(() => window.__mock.docs.delete("products/NEW1"));
   await page.locator("#toast").evaluate((t) => { t.hidden = true; });
-  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await modal(page).getByRole("button", { name: "Try again" }).click();
   await failed(page);
   expect(await page.evaluate(() => window.__mock.docs.has("products/NEW1"))).toBe(false);
 });
