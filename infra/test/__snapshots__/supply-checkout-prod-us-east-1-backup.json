@@ -1,0 +1,996 @@
+{
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Supply Checkout backup stack (stateful)",
+        "Name": "/supply-checkout/prod/backup/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "backup",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": "{\"stackName\":\"supply-checkout-prod-us-east-1-backup\",\"layer\":\"stateful\"}"
+      }
+    },
+    "VaultKey6B75F33E": {
+      "Type": "AWS::KMS::Key",
+      "Properties": {
+        "Description": "Encrypts the Supply Checkout backup vault",
+        "EnableKeyRotation": true,
+        "KeyPolicy": {
+          "Statement": [
+            {
+              "Action": "kms:*",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Resource": "*"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey",
+                "kms:GenerateDataKey"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "backup.",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ".amazonaws.com"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":iam::",
+                      {
+                        "Fn::Select": [
+                          4,
+                          {
+                            "Fn::Split": [
+                              ":",
+                              {
+                                "Ref": "SsmParameterValuesupplycheckoutprodbackupcopyvaultarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Resource": "*",
+              "Sid": "BackupAccountCopiesRecoveryPoints"
+            },
+            {
+              "Action": "kms:CreateGrant",
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "backup.",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ".amazonaws.com"
+                      ]
+                    ]
+                  }
+                },
+                "Bool": {
+                  "kms:GrantIsForAWSResource": "true"
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":iam::",
+                      {
+                        "Fn::Select": [
+                          4,
+                          {
+                            "Fn::Split": [
+                              ":",
+                              {
+                                "Ref": "SsmParameterValuesupplycheckoutprodbackupcopyvaultarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Resource": "*",
+              "Sid": "BackupAccountGrantsToAwsBackup"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "VaultKeyAlias6C40A5EE": {
+      "Type": "AWS::KMS::Alias",
+      "Properties": {
+        "AliasName": "alias/supply-checkout-prod-backups",
+        "TargetKeyId": {
+          "Fn::GetAtt": [
+            "VaultKey6B75F33E",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "Vault23237E5B": {
+      "Type": "AWS::Backup::BackupVault",
+      "Properties": {
+        "AccessPolicy": {
+          "Statement": [
+            {
+              "Action": [
+                "backup:DeleteRecoveryPoint",
+                "backup:UpdateRecoveryPointLifecycle"
+              ],
+              "Effect": "Deny",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Resource": "*"
+            },
+            {
+              "Action": "backup:CopyIntoBackupVault",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":iam::",
+                      {
+                        "Fn::Select": [
+                          4,
+                          {
+                            "Fn::Split": [
+                              ":",
+                              {
+                                "Ref": "SsmParameterValuesupplycheckoutprodbackupcopyvaultarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Resource": "*",
+              "Sid": "BackupAccountCopiesBackForRestores"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "BackupVaultName": "supply-checkout-prod-backups",
+        "BackupVaultTags": {
+          "app": "supply-checkout",
+          "component": "backup",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "EncryptionKeyArn": {
+          "Fn::GetAtt": [
+            "VaultKey6B75F33E",
+            "Arn"
+          ]
+        },
+        "LockConfiguration": {
+          "MaxRetentionDays": 365,
+          "MinRetentionDays": 7
+        }
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "BackupRoleF43CFD90": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "backup.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "AWS Backup backs up the Supply Checkout app table and copies it to the backup account",
+        "RoleName": "supply-checkout-prod-backup",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "BackupRoleDefaultPolicy94E594AC": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "dynamodb:CreateBackup",
+                "dynamodb:DescribeTable",
+                "dynamodb:ListTagsOfResource",
+                "dynamodb:StartAwsBackupJob"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":dynamodb:",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "BackUpTheTable"
+            },
+            {
+              "Action": [
+                "dynamodb:DeleteBackup",
+                "dynamodb:DescribeBackup"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":dynamodb:",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app/backup/*"
+                  ]
+                ]
+              },
+              "Sid": "ManageTheTablesBackups"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "Sid": "ReadTheTablesKey"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey",
+                "kms:Encrypt",
+                "kms:GenerateDataKey"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "VaultKey6B75F33E",
+                  "Arn"
+                ]
+              },
+              "Sid": "UseTheVaultKey"
+            },
+            {
+              "Action": "kms:CreateGrant",
+              "Condition": {
+                "Bool": {
+                  "kms:GrantIsForAWSResource": "true"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                },
+                {
+                  "Fn::GetAtt": [
+                    "VaultKey6B75F33E",
+                    "Arn"
+                  ]
+                }
+              ],
+              "Sid": "GrantKeysToAwsBackup"
+            },
+            {
+              "Action": "backup:CopyFromBackupVault",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":backup:",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":recovery-point:*"
+                  ]
+                ]
+              },
+              "Sid": "CopyFromThisVault"
+            },
+            {
+              "Action": [
+                "backup:CopyIntoBackupVault",
+                "backup:DescribeBackupVault"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "aws:ResourceOrgID": {
+                    "Ref": "SsmParameterValuesupplycheckoutprodbackuporganizationidC96584B6F00A464EAD1953AFF4B05118Parameter"
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutprodbackupcopyvaultarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "Sid": "CopyToTheBackupAccount"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "BackupRoleDefaultPolicy94E594AC",
+        "Roles": [
+          {
+            "Ref": "BackupRoleF43CFD90"
+          }
+        ]
+      }
+    },
+    "PlanDAF4E53A": {
+      "Type": "AWS::Backup::BackupPlan",
+      "Properties": {
+        "BackupPlan": {
+          "BackupPlanName": "supply-checkout-prod-daily",
+          "BackupPlanRule": [
+            {
+              "CopyActions": [
+                {
+                  "DestinationBackupVaultArn": {
+                    "Ref": "SsmParameterValuesupplycheckoutprodbackupcopyvaultarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                  },
+                  "Lifecycle": {
+                    "DeleteAfterDays": 90
+                  }
+                }
+              ],
+              "Lifecycle": {
+                "DeleteAfterDays": 35
+              },
+              "RuleName": "daily",
+              "ScheduleExpression": "cron(0 2 * * ? *)",
+              "ScheduleExpressionTimezone": "America/New_York",
+              "TargetBackupVault": {
+                "Fn::GetAtt": [
+                  "Vault23237E5B",
+                  "BackupVaultName"
+                ]
+              }
+            }
+          ]
+        },
+        "BackupPlanTags": {
+          "app": "supply-checkout",
+          "component": "backup",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        }
+      }
+    },
+    "PlanAppTable3542D20A": {
+      "Type": "AWS::Backup::BackupSelection",
+      "Properties": {
+        "BackupPlanId": {
+          "Fn::GetAtt": [
+            "PlanDAF4E53A",
+            "BackupPlanId"
+          ]
+        },
+        "BackupSelection": {
+          "IamRoleArn": {
+            "Fn::GetAtt": [
+              "BackupRoleF43CFD90",
+              "Arn"
+            ]
+          },
+          "Resources": [
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "arn:",
+                  {
+                    "Ref": "AWS::Partition"
+                  },
+                  ":dynamodb:",
+                  {
+                    "Ref": "AWS::Region"
+                  },
+                  ":",
+                  {
+                    "Ref": "AWS::AccountId"
+                  },
+                  ":table/supply-checkout-prod-app"
+                ]
+              ]
+            }
+          ],
+          "SelectionName": "app-table"
+        }
+      }
+    },
+    "RestoreRole76935C4A": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "backup.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "AWS Backup restores the Supply Checkout app table into a new <table>-restore-* table",
+        "RoleName": "supply-checkout-prod-restore",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "RestoreRoleDefaultPolicy227D7FC3": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "dynamodb:BatchWriteItem",
+                "dynamodb:DeleteItem",
+                "dynamodb:DescribeTable",
+                "dynamodb:GetItem",
+                "dynamodb:PutItem",
+                "dynamodb:Query",
+                "dynamodb:RestoreTableFromAwsBackup",
+                "dynamodb:RestoreTableFromBackup",
+                "dynamodb:Scan",
+                "dynamodb:UpdateItem"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":dynamodb:",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app-restore-*"
+                  ]
+                ]
+              },
+              "Sid": "RestoreIntoANewTable"
+            },
+            {
+              "Action": "dynamodb:RestoreTableFromBackup",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":dynamodb:",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app/backup/*"
+                  ]
+                ]
+              },
+              "Sid": "RestoreFromTheTablesBackups"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "VaultKey6B75F33E",
+                  "Arn"
+                ]
+              },
+              "Sid": "ReadTheVaultKey"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey",
+                "kms:Encrypt",
+                "kms:GenerateDataKey"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "Sid": "EncryptTheRestoredTable"
+            },
+            {
+              "Action": "kms:CreateGrant",
+              "Condition": {
+                "Bool": {
+                  "kms:GrantIsForAWSResource": "true"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                },
+                {
+                  "Fn::GetAtt": [
+                    "VaultKey6B75F33E",
+                    "Arn"
+                  ]
+                }
+              ],
+              "Sid": "GrantKeysToDynamoDb"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "RestoreRoleDefaultPolicy227D7FC3",
+        "Roles": [
+          {
+            "Ref": "RestoreRole76935C4A"
+          }
+        ]
+      }
+    },
+    "backupfailedE6400161": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp2arnC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+        ],
+        "AlarmDescription": "P2 Backup failed. A backup or copy job for the app table failed, was aborted or expired in the last hour. Runbook: docs/backups.md, When a backup fails.",
+        "AlarmName": "supply-checkout-prod-p2-backup-failed",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Expression": "FILL(bf, 0) + FILL(ba, 0) + FILL(be, 0) + FILL(cf, 0)",
+            "Id": "expr_1",
+            "Label": "Failed backup and copy jobs",
+            "ReturnData": true
+          },
+          {
+            "Id": "bf",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "ResourceType",
+                    "Value": "DynamoDB"
+                  }
+                ],
+                "MetricName": "NumberOfBackupJobsFailed",
+                "Namespace": "AWS/Backup"
+              },
+              "Period": 3600,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "ba",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "ResourceType",
+                    "Value": "DynamoDB"
+                  }
+                ],
+                "MetricName": "NumberOfBackupJobsAborted",
+                "Namespace": "AWS/Backup"
+              },
+              "Period": 3600,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "be",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "ResourceType",
+                    "Value": "DynamoDB"
+                  }
+                ],
+                "MetricName": "NumberOfBackupJobsExpired",
+                "Namespace": "AWS/Backup"
+              },
+              "Period": 3600,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "cf",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "ResourceType",
+                    "Value": "DynamoDB"
+                  }
+                ],
+                "MetricName": "NumberOfCopyJobsFailed",
+                "Namespace": "AWS/Backup"
+              },
+              "Period": 3600,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp2arnC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "norecentbackupF31F773A": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp2arnC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+        ],
+        "AlarmDescription": "P2 No recent backup. No backup of the app table finished in the last 24 hours (the plan runs daily at 2am Eastern). It also fires on the first day after the backup stack is deployed. Runbook: docs/backups.md, When a backup fails.",
+        "AlarmName": "supply-checkout-prod-p2-no-recent-backup",
+        "ComparisonOperator": "LessThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "ResourceType",
+            "Value": "DynamoDB"
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "NumberOfBackupJobsCompleted",
+        "Namespace": "AWS/Backup",
+        "OKActions": [
+          {
+            "Ref": "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp2arnC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+        ],
+        "Period": 86400,
+        "Statistic": "Sum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 1,
+        "TreatMissingData": "breaching"
+      }
+    },
+    "VaultArnParamA36B4823": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Backup vault for the app table",
+        "Name": "/supply-checkout/prod/backup/vault-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "backup",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "Vault23237E5B",
+            "BackupVaultArn"
+          ]
+        }
+      }
+    },
+    "RestoreRoleArnParam9B16B286": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Role to pass to AWS Backup restore jobs",
+        "Name": "/supply-checkout/prod/backup/restore-role-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "backup",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "RestoreRole76935C4A",
+            "Arn"
+          ]
+        }
+      }
+    }
+  },
+  "Parameters": {
+    "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/data/table-key-arn"
+    },
+    "SsmParameterValuesupplycheckoutprodbackupcopyvaultarnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/backup/copy-vault-arn"
+    },
+    "SsmParameterValuesupplycheckoutprodbackuporganizationidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/backup/organization-id"
+    },
+    "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp2arnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/observability/alarm-topic-p2-arn"
+    },
+    "BootstrapVersion": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+    }
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5"
+                  ],
+                  {
+                    "Ref": "BootstrapVersion"
+                  }
+                ]
+              }
+            ]
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+        }
+      ]
+    }
+  }
+}
