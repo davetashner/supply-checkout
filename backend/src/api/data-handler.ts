@@ -15,7 +15,8 @@
 //
 // Next to the document routes are the inventory commands (checkout, return,
 // stock adjust), each one transaction that's idempotent by operation ID, and
-// a product's stock history (backend/src/data/commands.ts, docs/api/commands.md).
+// a product's stock history (backend/src/data/commands.ts, docs/api/commands.md),
+// and the CSV inventory import, owners only (backend/src/data/imports.ts).
 
 import type {
   APIGatewayProxyEventV2WithJWTAuthorizer,
@@ -32,6 +33,7 @@ import {
   deleteDocument,
   ForbiddenError,
   getDocument,
+  importProducts,
   InvalidInputError,
   LimitReachedError,
   listDocuments,
@@ -59,7 +61,7 @@ export interface DataHandlerDeps {
 }
 
 const ROUTES = new Map(DATA_ROUTES.map((r) => [routeKey(r), r]));
-const WRITES = new Set(["set", "update", "delete", "checkout", "return", "adjustStock"]);
+const WRITES = new Set(["set", "update", "delete", "checkout", "return", "adjustStock", "importProducts"]);
 /** Roles that may write through the API. Anything else (viewer, or a role we don't know) is read-only. */
 const WRITERS = new Set(["contributor", "owner"]);
 const SUB = /^[A-Za-z0-9_-]{1,128}$/;
@@ -199,8 +201,35 @@ async function runCommand(deps: DataHandlerDeps, route: DataRoute, event: DataEv
 }
 
 const COMMANDS = new Set(["checkout", "return", "adjustStock", "movements"]);
+const IMPORT_FIELDS = ["importId", "csv", "dryRun"];
+
+/**
+ * A CSV inventory import (data/imports.ts). A dry run answers 200 with the
+ * preview, problems included. An import with bad rows answers 400 with every
+ * problem, and nothing is written.
+ */
+async function runImport(deps: DataHandlerDeps, event: DataEvent, ctx: TeamContext): Promise<APIGatewayProxyStructuredResultV2> {
+  // The data layer checks the role too; this says why in words the app can show
+  if (ctx.role !== "owner") throw new ApiError(403, "permission_denied", "Only the team's owners can import inventory");
+  const body = jsonBody(event, IMPORT_FIELDS);
+  const outcome = await importProducts(deps.dbForTeam(ctx.teamId), ctx, body as { csv: unknown }, new Date((deps.now ?? Date.now)()));
+  if (outcome.status === "invalid" && body.dryRun !== true) {
+    const n = outcome.errorCount;
+    return json(400, {
+      error: { code: "bad_request", message: `${n} ${n === 1 ? "row has a problem" : "rows have problems"}; nothing was imported` },
+      errors: outcome.errors,
+      errorCount: n,
+    });
+  }
+  if (outcome.status === "imported" && !outcome.replayed) {
+    const { created, updated } = outcome.summary;
+    if (created + updated) deps.obs.count(BusinessMetric.Writes, created + updated, { teamId: ctx.teamId });
+  }
+  return json(200, outcome);
+}
 
 async function run(deps: DataHandlerDeps, route: DataRoute, event: DataEvent, ctx: TeamContext): Promise<APIGatewayProxyStructuredResultV2> {
+  if (route.operation === "importProducts") return runImport(deps, event, ctx);
   if (COMMANDS.has(route.operation)) return runCommand(deps, route, event, ctx);
   const db = deps.dbForTeam(ctx.teamId);
   const collection: Collection = route.collection;

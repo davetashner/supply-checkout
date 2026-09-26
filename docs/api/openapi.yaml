@@ -227,6 +227,92 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /teams/{teamId}/imports:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    post:
+      tags: [products]
+      operationId: importProducts
+      summary: Import items from a CSV file, all or nothing, with a dry-run preview. Owners only.
+      description: |
+        The server reads the file (columns `name`, `barcode`, `price`, `cost`,
+        `stock`, `pack_size`, matched without regard to case or spacing; other
+        columns are left out) and validates every row against the whole
+        inventory before it writes anything. A row matches an existing item by
+        barcode, or by name when the row or the item has no barcode, and
+        updates it; a re-import **sets** price, cost, pack size and stock to
+        the file's values and never duplicates an item. Blank optional cells
+        keep what's there. Money may have `$` and thousands separators and is
+        rounded to cents; stock and pack size are whole numbers (ADR 0014).
+
+        - `dryRun: true`: writes nothing. 200 with `status: "preview"` (or
+          `"invalid"` with every problem) and what each row will do.
+        - Otherwise: 200 `imported` when every row is in. A file with any bad
+          row is 400 `bad_request` with every problem in `errors`, and nothing
+          is written. The import is staged, then committed in transactions of
+          up to 49 rows; if it stops part-way (a timeout, or 409 when items
+          kept changing), send the same request again (same `importId` and
+          file) to finish it. The same `importId` with a finished import
+          returns its summary with `replayed: true`; with a different file it
+          is 400.
+
+        At most 1,000 rows and 300 KB. Owners only: a contributor gets 403
+        `permission_denied`, a viewer 403 `invalid_argument`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [csv]
+              properties:
+                importId: { allOf: [{ $ref: "#/components/schemas/OperationId" }], description: "One UUID per import, sent again unchanged on every retry. Required unless `dryRun`." }
+                csv: { type: string, maxLength: 300000, description: The file's text (UTF-8). The first non-blank row names the columns. }
+                dryRun: { type: boolean, description: "True: validate and preview, and write nothing." }
+            examples:
+              preview:
+                summary: Preview a file
+                value: { dryRun: true, csv: "name,barcode,price,cost,stock,pack_size\nNitrile gloves,0123,12.50,9.99,40,100\n" }
+      responses:
+        "200":
+          description: The preview (dry run), or the finished import.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [status, rows, errors, errorCount, ignoredColumns, summary]
+                    properties:
+                      status: { type: string, enum: [preview, invalid] }
+                      rows: { type: array, items: { $ref: "#/components/schemas/ImportRow" }, description: The valid rows and what each will do. }
+                      errors: { type: array, maxItems: 200, items: { $ref: "#/components/schemas/ImportRowError" } }
+                      errorCount: { type: integer }
+                      ignoredColumns: { type: array, items: { type: string } }
+                      summary: { $ref: "#/components/schemas/ImportSummary" }
+                  - type: object
+                    required: [status, importId, replayed, summary]
+                    properties:
+                      status: { const: imported }
+                      importId: { type: string, format: uuid }
+                      replayed: { type: boolean }
+                      summary: { $ref: "#/components/schemas/ImportSummary" }
+        "400":
+          description: "`bad_request`, nothing written: a malformed body or file, or rows with problems (listed in `errors`, at most 200, and counted in `errorCount`)."
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/Error" }
+                  - type: object
+                    properties:
+                      errors: { type: array, items: { $ref: "#/components/schemas/ImportRowError" } }
+                      errorCount: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: "`aborted`: items kept changing under the import, or its staged plan expired. Send the same request again to finish it (unless it expired)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "413": { $ref: "#/components/responses/TooLarge" }
   /teams/{teamId}/sheets:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
     get:
@@ -735,7 +821,7 @@ components:
       properties:
         type: { const: movement }
         productKey: { type: string }
-        reason: { type: string, enum: [checkout, return, receipt, count] }
+        reason: { type: string, enum: [checkout, return, receipt, count, import], description: "`import`: a CSV import set the stock (`count`)." }
         delta: { type: integer, description: The change to `stock`. 0 when the item didn't track stock. }
         tracked: { type: boolean, description: Whether the item tracked stock. }
         quantity: { type: integer }
@@ -745,6 +831,35 @@ components:
         operationId: { type: string, format: uuid }
         userId: { type: string }
         at: { type: string, format: date-time }
+    ImportRow:
+      type: object
+      required: [line, name, barcode, price, key, action, changes]
+      properties:
+        line: { type: integer, description: The row's line in the file. }
+        name: { type: string, maxLength: 200 }
+        barcode: { type: string, maxLength: 256 }
+        price: { $ref: "#/components/schemas/Money" }
+        cost: { $ref: "#/components/schemas/Money" }
+        stock: { type: integer, minimum: 0, maximum: 1000000 }
+        packSize: { type: integer, minimum: 1, maximum: 10000 }
+        key: { type: string, description: The product key the row writes. }
+        action: { type: string, enum: [create, update, unchanged] }
+        changes: { type: array, items: { type: string, enum: [code, name, price, cost, packSize, stock] } }
+    ImportRowError:
+      type: object
+      required: [line, message]
+      properties:
+        line: { type: integer }
+        column: { type: string, description: The column as the file names it, when the problem is in one cell. }
+        message: { type: string }
+    ImportSummary:
+      type: object
+      required: [rows, created, updated, unchanged]
+      properties:
+        rows: { type: integer }
+        created: { type: integer }
+        updated: { type: integer }
+        unchanged: { type: integer }
     Document:
       type: object
       required: [id, version, data]
