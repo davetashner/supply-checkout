@@ -13,7 +13,7 @@ test.afterAll(() => new Promise((resolve) => server.close(resolve)));
 
 const open = async (page, query = "") => {
   // Keep tests offline: the app works without fonts
-  await page.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort());
+  await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, (r) => r.abort());
   await page.goto(base + query);
 };
 
