@@ -41,11 +41,12 @@ Beads are labeled `mvp` or `phase-2` (native mobile apps, full active-active fai
 ```bash
 npm ci
 npm run hooks:install    # once per clone: pre-commit check for AWS IDs, emails and keys
-npx playwright install chromium webkit
-npm run check            # lint + all suites in desktop Chrome and iPhone Safari, against both builds
+npx playwright install chromium webkit firefox
+npm run check            # lint + all suites: artifact in desktop Chrome and iPhone Safari, web in every supported browser, against both builds
 npm run test:coverage    # desktop Chrome with the 98% coverage gate, for both builds
 ```
 
+- **Mind the laptop's memory.** Full runs have used up its RAM and swap and frozen it. Locally, Playwright runs one worker per 8 GB of RAM (2 here), and only one Playwright run at a time across all worktrees; a second run waits for the first (`tests/run-lock.js`). Don't pass a higher `--workers`, and don't get around the lock. While iterating, run one file in one browser (`npx playwright test tests/<file> --project=desktop-chrome`). Run `npm run check` once, before opening the PR.
 - Playwright builds the app before each run. `BUILD=artifact` (the default) or `BUILD=web` picks which build the tests load.
 - CI fails if lines, statements, functions or branches of `src/` drop below 98%, in either build. When it does, `coverage/<build>/uncovered.txt` lists every gap by `src/` file and line. Branch coverage has little headroom, so new code needs tests that take both sides of each condition.
 - Tests run against `tests/mock-claude.js`. It has opt-in failure modes (see the options at its top), and `window.__mock.notify()` acts as another user after a test edits `window.__mock.docs`.

@@ -7,6 +7,7 @@
 // Both write hidden source maps (no sourceMappingURL comment in the output), which
 // the coverage run uses to report by src/ file and line.
 import { fileURLToPath } from "node:url";
+import browserslist from "browserslist";
 import { defineConfig } from "vite";
 import { viteSingleFile } from "vite-plugin-singlefile";
 
@@ -53,6 +54,30 @@ const artifactFragment = () => ({
   },
 });
 
+// The oldest version of each supported browser, from the browserslist field in
+// package.json, as esbuild-style targets (["chrome153", "edge151", ...]). Vite lowers
+// JavaScript syntax and CSS for these, in both builds.
+const ESBUILD_BROWSERS = { chrome: "chrome", edge: "edge", firefox: "firefox", safari: "safari", ios_saf: "ios" };
+export function browserTargets(query = browserslist.loadConfig({ path: fileURLToPath(new URL(".", import.meta.url)) })) {
+  const oldest = new Map();
+  for (const entry of browserslist(query)) {
+    const [name, versions] = entry.split(" ");
+    const target = ESBUILD_BROWSERS[name];
+    if (!target) throw new Error(`No esbuild target for browserslist entry "${entry}"`);
+    // Safari and iOS list ranges like "18.5-18.6"; the range starts at the oldest
+    const version = versions.split("-")[0];
+    const old = oldest.get(target);
+    if (!old || compareVersions(version, old) < 0) oldest.set(target, version);
+  }
+  return [...oldest].map(([target, version]) => target + version);
+}
+
+function compareVersions(a, b) {
+  const [x, y] = [a, b].map((v) => v.split(".").map(Number));
+  for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0);
+  return 0;
+}
+
 export default defineConfig(({ mode }) => {
   if (mode !== "artifact" && mode !== "web") throw new Error("Build with --mode artifact or --mode web");
   const artifact = mode === "artifact";
@@ -64,6 +89,8 @@ export default defineConfig(({ mode }) => {
       outDir: fileURLToPath(new URL(`dist/${mode}`, import.meta.url)),
       emptyOutDir: true,
       sourcemap: "hidden",
+      // Also the CSS target (build.cssTarget defaults to this)
+      target: browserTargets(),
       // One entry chunk and no dynamic imports, so there's nothing to preload
       modulePreload: { polyfill: false },
       // The artifact stays readable, like the hand-written file it replaces

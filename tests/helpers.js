@@ -4,6 +4,16 @@ import { installMockClaude } from "./mock-claude.js";
 import * as coverage from "./coverage.js";
 
 const ORIGIN = "https://supply-checkout.test/";
+// Fonts and CDN scripts, which openApp aborts to keep tests hermetic
+const ABORTED = /^https:\/\/(fonts\.(googleapis|gstatic)\.com|cdn\.jsdelivr\.net)\//;
+
+// The console error a browser logs for a request openApp aborted. Chromium and
+// WebKit say "Failed to load resource"; Firefox reports an aborted cross-origin
+// stylesheet as "Cross-Origin Request Blocked … (Reason: CORS request did not
+// succeed)", with the URL, so that error is only ignored for an aborted URL.
+const isAbortedRequest = (text) =>
+  /Failed to load resource/.test(text) ||
+  (/Cross-Origin Request Blocked/.test(text) && (text.match(/https:\/\/[^\s"]+/g) || []).some((url) => ABORTED.test(url)));
 // The build under test (BUILD=artifact or BUILD=web), built by tests/global-setup.js
 const files = builtFiles(currentBuild());
 
@@ -14,7 +24,7 @@ export const test = base.extend({
     page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
     page.on("console", (m) => {
       // Aborted font/CDN requests are expected in tests
-      if (m.type() === "error" && !/Failed to load resource/.test(m.text())) errors.push(`console: ${m.text()}`);
+      if (m.type() === "error" && !isAbortedRequest(m.text())) errors.push(`console: ${m.text()}`);
     });
     // Only Chromium reports JS coverage
     const measure = coverage.enabled && browserName === "chromium";
@@ -28,7 +38,7 @@ export { expect };
 
 export async function openApp(page, opts = {}) {
   // Keep tests hermetic: no fonts or CDN scripts. The app works without ZXing.
-  await page.route(/fonts\.(googleapis|gstatic)\.com|cdn\.jsdelivr\.net/, (r) => r.abort());
+  await page.route(ABORTED, (r) => r.abort());
   await page.route(ORIGIN + "**", (r) => {
     const file = files.get(new URL(r.request().url()).pathname);
     return file ? r.fulfill(file) : r.fulfill({ status: 404 });
