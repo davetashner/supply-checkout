@@ -11,7 +11,10 @@ import {
   withObservability,
 } from "../src/observability/index.js";
 
-const env = { AWS_REGION: "us-east-1", SUPPLY_CHECKOUT_ENV: "prod" };
+// Made-up regions: real region names belong only in infra/lib/config.ts (ADR 0010)
+const REGION = "test-local-1";
+const OTHER_REGION = "test-local-2";
+const env = { AWS_REGION: REGION, SUPPLY_CHECKOUT_ENV: "prod" };
 
 let lines: Record<string, unknown>[] = [];
 beforeEach(() => {
@@ -56,16 +59,16 @@ describe("business metrics", () => {
       { Name: "Checkouts", Unit: "Count" },
       { Name: "Returns", Unit: "Count" },
     ]);
-    expect(blob).toMatchObject({ Region: "us-east-1", Checkouts: 3, Returns: 1 });
+    expect(blob).toMatchObject({ Region: REGION, Checkouts: 3, Returns: 1 });
     expect(blob).not.toHaveProperty("service");
   });
 
   it("uses the Lambda's region, falling back to AWS_DEFAULT_REGION", () => {
-    const obs = createObservability({ env: { AWS_DEFAULT_REGION: "us-west-2" } });
-    expect(obs.region).toBe("us-west-2");
+    const obs = createObservability({ env: { AWS_DEFAULT_REGION: OTHER_REGION } });
+    expect(obs.region).toBe(OTHER_REGION);
     obs.count(BusinessMetric.SignUps);
     obs.flush();
-    expect(emf()[0]).toMatchObject({ Region: "us-west-2", SignUps: 1 });
+    expect(emf()[0]).toMatchObject({ Region: OTHER_REGION, SignUps: 1 });
   });
 
   it("fails fast without a region, so no metric is sent without its dimension", () => {
@@ -81,7 +84,7 @@ describe("business metrics", () => {
     expect(earlier).toMatchObject({ ReceiptReads: 1 });
     expect(earlier).not.toHaveProperty("teamId");
     expect(blob._aws.CloudWatchMetrics[0].Dimensions).toEqual([[REGION_DIMENSION]]);
-    expect(blob).toMatchObject({ Region: "us-east-1", ReceiptTokens: 1234, teamId: "t1", cached: "false" });
+    expect(blob).toMatchObject({ Region: REGION, ReceiptTokens: 1234, teamId: "t1", cached: "false" });
     // Sent at once; nothing left to flush
     obs.flush();
     expect(emf()).toHaveLength(2);
@@ -116,12 +119,12 @@ describe("structured logs", () => {
     const obs = createObservability({ service: "sheets", env });
     obs.logger.info("Checked out", { sheetId: "s1" });
     expect(logs()).toEqual([
-      expect.objectContaining({ level: "INFO", message: "Checked out", service: "sheets", env: "prod", region: "us-east-1", sheetId: "s1" }),
+      expect.objectContaining({ level: "INFO", message: "Checked out", service: "sheets", env: "prod", region: REGION, sheetId: "s1" }),
     ]);
   });
 
   it("defaults the service and environment when neither is set", () => {
-    const obs = createObservability({ env: { AWS_REGION: "us-east-1" } });
+    const obs = createObservability({ env: { AWS_REGION: REGION } });
     obs.logger.info("hi");
     expect(logs()[0]).toMatchObject({ service: "supply-checkout", env: "local" });
   });

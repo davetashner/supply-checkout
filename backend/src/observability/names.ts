@@ -7,7 +7,7 @@ export const METRICS_NAMESPACE = "SupplyCheckout";
 
 /**
  * The only dimension on business metrics. Its value is the Lambda's region, so
- * metrics split cleanly by region once us-west-2 is added (ADR 0010). Keep the
+ * metrics split cleanly by region once the second region is added (ADR 0010). Keep the
  * dimension set this small: every extra dimension value is a separate metric,
  * billed separately. Per-team detail goes in metadata (searchable in Logs
  * Insights), never in a dimension.

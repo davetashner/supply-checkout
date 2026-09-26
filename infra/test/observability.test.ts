@@ -7,13 +7,15 @@ import { AwsSolutionsChecks } from "cdk-nag";
 import type { Construct } from "constructs";
 import { describe, expect, it } from "vitest";
 import { BusinessMetric } from "../../backend/src/observability/names.js";
-import type { DeploymentConfig } from "../lib/config.js";
+import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
 import { alarmContactParameter, alarmContactsFromContext } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
 import { journeyAlarmSpecs } from "../lib/observability/journey-alarms.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
 
-const config: DeploymentConfig = { envName: "prod", regions: ["us-east-1", "us-west-2"], primaryRegion: "us-east-1" };
+// Region names live only in lib/config.ts (ADR 0010); tests use its constants.
+const [EAST, WEST] = APPROVED_REGIONS;
+const config: DeploymentConfig = { envName: "prod", regions: [EAST, WEST], primaryRegion: EAST };
 
 function build(context: Record<string, unknown> = {}, overrides: Partial<DeploymentConfig> = {}) {
   const app = new App({ context: { "aws:cdk:version-reporting": false, ...context } });
@@ -26,7 +28,7 @@ function build(context: Record<string, unknown> = {}, overrides: Partial<Deploym
   return { app, stacks, region };
 }
 
-const observability = (r = "us-east-1", context: Record<string, unknown> = {}) =>
+const observability = (r: string = EAST, context: Record<string, unknown> = {}) =>
   Template.fromStack(build(context).region(r).observability);
 
 const ALARM_IDS = [
@@ -90,9 +92,9 @@ describe("alarm topics", () => {
   });
 
   it("takes the number of recipients from context, as JSON or an object", () => {
-    const two = observability("us-east-1", { alarmContacts: '{"email":2,"sms":2}' });
+    const two = observability(EAST, { alarmContacts: '{"email":2,"sms":2}' });
     two.resourceCountIs("AWS::SNS::Subscription", 6);
-    const none = observability("us-east-1", { alarmContacts: { email: 0, sms: 0 } });
+    const none = observability(EAST, { alarmContacts: { email: 0, sms: 0 } });
     none.resourceCountIs("AWS::SNS::Subscription", 0);
     expect(alarmContactsFromContext({ tryGetContext: () => ({ sms: 3 }) })).toEqual({ email: 1, sms: 3 });
     expect(alarmContactParameter("staging", "sms", 2)).toBe("/supply-checkout/staging/alarms/sms-2");
@@ -140,7 +142,7 @@ describe("journey alarms (docs/journeys.md)", () => {
   });
 
   it("reads business metrics from the SupplyCheckout namespace with the region as their only dimension", () => {
-    const t = observability("us-west-2");
+    const t = observability(WEST);
     t.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "supply-checkout-prod-p1-checkout-broken",
       Threshold: 0,
@@ -150,7 +152,7 @@ describe("journey alarms (docs/journeys.md)", () => {
             Metric: {
               Namespace: "SupplyCheckout",
               MetricName: BusinessMetric.CheckoutSessionErrors,
-              Dimensions: [{ Name: "Region", Value: "us-west-2" }],
+              Dimensions: [{ Name: "Region", Value: WEST }],
             },
             Stat: "Sum",
             Period: 300,
@@ -177,7 +179,8 @@ describe("journey alarms (docs/journeys.md)", () => {
     const t = observability();
     const [alarm] = Object.values(t.findResources("AWS::CloudWatch::Alarm", { Properties: { AlarmName: "supply-checkout-prod-p1-database-errors" } }));
     const [expr, ...metrics] = alarm.Properties.Metrics;
-    expect(expr.Expression).toMatch(/^FILL\(e0_us_east_1, 0\)( \+ FILL\(e\d_us_east_1, 0\))+$/);
+    const suffix = EAST.replaceAll("-", "_");
+    expect(expr.Expression).toMatch(new RegExp(`^FILL\\(e0_${suffix}, 0\\)( \\+ FILL\\(e\\d_${suffix}, 0\\))+$`));
     expect(metrics.length).toBeLessThanOrEqual(9); // an alarm takes at most 10 metrics
     for (const m of metrics) {
       expect(m.MetricStat.Metric.Dimensions).toContainEqual({ Name: "TableName", Value: "supply-checkout-prod-app" });
@@ -194,9 +197,9 @@ describe("dashboard", () => {
 
   it("is in the primary region only", () => {
     const { region } = build();
-    Template.fromStack(region("us-east-1").observability).resourceCountIs("AWS::CloudWatch::Dashboard", 1);
-    Template.fromStack(region("us-west-2").observability).resourceCountIs("AWS::CloudWatch::Dashboard", 0);
-    Template.fromStack(region("us-east-1").observability).hasResourceProperties("AWS::CloudWatch::Dashboard", {
+    Template.fromStack(region(EAST).observability).resourceCountIs("AWS::CloudWatch::Dashboard", 1);
+    Template.fromStack(region(WEST).observability).resourceCountIs("AWS::CloudWatch::Dashboard", 0);
+    Template.fromStack(region(EAST).observability).hasResourceProperties("AWS::CloudWatch::Dashboard", {
       DashboardName: "supply-checkout-prod",
     });
   });
@@ -216,10 +219,10 @@ describe("dashboard", () => {
   });
 
   it("follows the configured regions", () => {
-    const { region } = build({}, { regions: ["us-east-1"] });
-    const text = body(Template.fromStack(region("us-east-1").observability));
-    expect(text).toContain("(us-east-1)");
-    expect(text).not.toContain("us-west-2");
+    const { region } = build({}, { regions: [EAST] });
+    const text = body(Template.fromStack(region(EAST).observability));
+    expect(text).toContain(`(${EAST})`);
+    expect(text).not.toContain(WEST);
   });
 });
 
@@ -249,7 +252,7 @@ describe("defaults for every function and log group", () => {
 
   function withFunctions() {
     const { app, region } = build({ [MANAGED_LOG_GROUPS]: true });
-    const api = region("us-east-1").api;
+    const api = region(EAST).api;
     testFunction(api, "Plain");
     testFunction(api, "PassThrough", Tracing.PASS_THROUGH);
     new LogGroup(api, "Kept", { retention: RetentionDays.ONE_WEEK });
@@ -291,8 +294,8 @@ describe("defaults for every function and log group", () => {
 
   it("applies to functions in every stack, not just the API", () => {
     const { region } = build();
-    const fn = testFunction(region("us-west-2").realtime, "Publisher");
-    Template.fromStack(region("us-west-2").realtime).hasResourceProperties("AWS::Lambda::Function", {
+    const fn = testFunction(region(WEST).realtime, "Publisher");
+    Template.fromStack(region(WEST).realtime).hasResourceProperties("AWS::Lambda::Function", {
       TracingConfig: { Mode: "Active" },
     });
     expect(fn.node.tryFindChild("XRayWrite")).toBeDefined();
