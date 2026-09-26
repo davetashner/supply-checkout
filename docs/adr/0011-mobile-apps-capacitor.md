@@ -10,9 +10,9 @@ Crews use the app on phones in storage rooms and trucks. They want an icon on th
 ## Decision
 
 - Build the iOS and Android apps with **Capacitor**, loading the same web bundle as the website ([ADR 0004](0004-runtime-adapter.md)).
-- Native plugins: in-app purchases (RevenueCat), camera, barcode scanning (ML Kit on Android, VisionKit on iOS) in place of the web barcode reader, secure token storage, share sheet for CSV export, and app/deep links for invites.
+- Native plugins: in-app browser for Stripe Checkout and the Customer Portal, camera, barcode scanning (ML Kit on Android, VisionKit on iOS) in place of the web barcode reader, secure token storage, share sheet for CSV export, and app/deep links for invites.
 - Build and sign with **fastlane** in GitHub Actions on macOS runners. Upload to TestFlight and the Play internal track on every release; promote to production by hand at first.
-- **Owners can choose and buy a subscription inside both apps** with App Store and Google Play billing through RevenueCat. Teams already subscribed on the web just sign in. See [ADR 0013](0013-in-app-subscriptions.md).
+- **Billing stays on the web.** Owners choose a plan in the app and pay through Stripe Checkout in the system browser, where store rules allow the link; no App Store or Google Play in-app purchase. See [ADR 0013](0013-web-billing-only.md).
 - Includes in-app account deletion ([ADR 0007](0007-identity-cognito.md)) and privacy details (App Store privacy labels, Play data safety form).
 
 ## Alternatives considered

@@ -15,9 +15,7 @@ flowchart LR
     apps[iOS and Android apps<br/>Capacitor]
     backend[AWS backend<br/>us-east-1 + us-west-2]
   end
-  stripe[(Stripe<br/>web billing, invoices, tax)]
-  stores[(App Store + Google Play<br/>in-app subscriptions)]
-  rc[(RevenueCat<br/>store receipts + webhooks)]
+  stripe[(Stripe<br/>billing, invoices, tax)]
   bedrock[(Amazon Bedrock<br/>Claude)]
   mail[(Amazon SES<br/>email)]
   support[(Support inbox)]
@@ -30,9 +28,7 @@ flowchart LR
   apps --> backend
   backend --> bedrock
   backend <--> stripe
-  apps -->|owner buys plan| stores
-  stores --> rc
-  rc -->|webhook| backend
+  apps -->|owner pays on web checkout| stripe
   owner -->|Checkout, Customer Portal| stripe
   backend --> mail
   owner -.-> support
@@ -170,40 +166,33 @@ sequenceDiagram
   Note over S,W: invoice.payment_failed → status past_due →<br/>7-day grace, then read-only
 ```
 
-## 4a. Subscribing in the mobile app
+## 4a. Choosing a plan in the mobile app
 
-Owners can buy a seat-bundle plan in the iOS or Android app ([ADR 0013](../adr/0013-in-app-subscriptions.md)). Store and web purchases end up in the same team fields.
+Owners choose a plan in the iOS or Android app and pay on Stripe Checkout; there is no store in-app purchase ([ADR 0013](../adr/0013-web-billing-only.md)).
 
 ```mermaid
 sequenceDiagram
   autonumber
   actor O as Team owner
   participant App as iOS / Android app
-  participant API as HTTP API
-  participant Store as App Store / Google Play
-  participant RC as RevenueCat
-  participant W as billing worker
+  participant API as billing Lambda
+  participant Br as System browser<br/>(Safari View Controller / Custom Tab)
+  participant S as Stripe
   participant DB as DynamoDB
 
-  O->>App: Open Plans
-  App->>API: GET /teams/{id}/billing
-  API-->>App: billingSource, plan, status
-  alt Team already billed through Stripe or another store
-    App-->>O: Show current plan and where to manage it
-  else No active subscription
-    App->>RC: Fetch offerings (seat bundles, monthly and annual)
-    O->>App: Choose "Crew 10, monthly"
-    App->>Store: Purchase (RevenueCat app user ID = teamId)
-    Store-->>App: Transaction
-    App->>RC: Sync purchase
-    RC->>RC: Validate with the store
-    RC->>API: Webhook INITIAL_PURCHASE (signed)
-    API->>DB: Record event ID (skip if already seen)
-    API->>W: Queue event (SQS)
-    W->>DB: Team: billingSource=app_store, plan, seatLimit, status, periodEnd
-    DB-->>App: Live update: plan active
-  end
-  Note over Store,W: Renewals, billing retry, refunds and cancellations<br/>arrive as RevenueCat webhooks and use the same path
+  O->>App: Open Plans, choose plan and seats
+  App->>API: POST /teams/{id}/billing/checkout (source=app)
+  API->>S: Create Checkout Session<br/>success_url = app link back to the app
+  API-->>App: Checkout URL
+  App->>Br: Open Checkout
+  O->>Br: Pay with Apple Pay / Google Pay / card
+  Br->>S: Payment
+  S-->>Br: Redirect to success_url
+  Br-->>App: App link reopens the app
+  S->>API: Webhook (same path as section 4)
+  API->>DB: Team: plan, seats, status
+  DB-->>App: Live update: plan active
+  Note over App,S: Where store rules don't allow the link, the app shows<br/>"Manage your plan on our website" and no prices
 ```
 
 ## 5. Sign-in and team access
@@ -245,15 +234,14 @@ erDiagram
   PRODUCT ||--o{ SHEET_LINE : "checked out as"
   TEAM ||--o{ USAGE : "counts receipts"
   TEAM ||--o{ AUDIT : logs
-  TEAM ||--o| STRIPE_CUSTOMER : "billed on web as"
+  TEAM ||--|| STRIPE_CUSTOMER : "billed as"
 
   TEAM {
     string teamId PK
     string name
     string plan
-    int seatLimit
+    int seats
     string status
-    string billingSource
     string homeRegion
   }
   MEMBER {

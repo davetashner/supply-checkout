@@ -5,7 +5,7 @@
 
 ## Context
 
-We need per-seat monthly subscriptions sold on the web (the mobile apps also sell subscriptions; see [ADR 0013](0013-in-app-subscriptions.md)), invoices customers can download, card changes and cancellations without contacting us, one-time charges (such as onboarding help or an extra receipt pack) and scheduled payments (such as annual plans, or a plan change that starts next month). Stripe's fee of about 2.9% + $0.30 per card charge takes about 13% of a single $3 seat, so pricing has to keep charges above a minimum amount.
+We need per-seat monthly subscriptions (chosen on the web or in the mobile apps, paid on the web; see [ADR 0013](0013-web-billing-only.md)), invoices customers can download, card changes and cancellations without contacting us, one-time charges (such as onboarding help or an extra receipt pack) and scheduled payments (such as annual plans, or a plan change that starts next month). Stripe's fee of about 2.9% + $0.30 per card charge takes about 13% of a single $3 seat, so pricing has to keep charges above a minimum amount.
 
 ## Decision
 
@@ -32,4 +32,4 @@ We need per-seat monthly subscriptions sold on the web (the mobile apps also sel
 
 - Stripe keys live in AWS Secrets Manager, replicated to the second region. The webhook signing secret is rotated with the key.
 - The billing Lambda is the only code allowed to change a team's plan or status.
-- Stripe is one of three billing sources. The iOS and Android apps sell seat-bundle subscriptions through the App Store and Google Play ([ADR 0013](0013-in-app-subscriptions.md)); all three feed the same team entitlement fields and access rules.
+- Stripe is the only billing system. The mobile apps send owners to Stripe Checkout and the Customer Portal rather than using App Store or Google Play in-app purchase ([ADR 0013](0013-web-billing-only.md)).
