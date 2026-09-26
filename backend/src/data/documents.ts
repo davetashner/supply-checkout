@@ -317,6 +317,9 @@ export async function listDocuments(db: Db, ctx: TeamContext, collection: Collec
 
 /** Replaces a document, creating it if needed (the app's `set`). */
 export function setDocument(db: Db, ctx: TeamContext, collection: Collection, rawId: unknown, data: unknown, options: WriteOptions = {}): Promise<WriteResult> {
+  // Validate before cloning: structuredClone of a very deep value overflows the stack
+  if (!isMap(data)) throw new InvalidInputError("A document is a JSON object");
+  checkValue(data, 0);
   return write(db, ctx, collection, rawId, options, () => structuredClone(data) as DocumentData);
 }
 

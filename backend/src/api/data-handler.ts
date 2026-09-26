@@ -51,6 +51,8 @@ export interface DataHandlerDeps {
 
 const ROUTES = new Map(DATA_ROUTES.map((r) => [routeKey(r), r]));
 const WRITES = new Set(["set", "update", "delete"]);
+/** Roles that may write through the API. Anything else (viewer, or a role we don't know) is read-only. */
+const WRITERS = new Set(["contributor", "owner"]);
 const SUB = /^[A-Za-z0-9_-]{1,128}$/;
 
 /**
@@ -204,7 +206,7 @@ export function createDataHandler(deps: DataHandlerDeps) {
         if (error instanceof ForbiddenError) throw new ApiError(403, "permission_denied", "You're not a member of this team");
         throw error;
       }
-      if (WRITES.has(route.operation) && ctx.role === "viewer") throw viewOnly();
+      if (WRITES.has(route.operation) && !WRITERS.has(ctx.role)) throw viewOnly();
       const response = await run(deps, route, event, ctx);
       status = response.statusCode ?? 200;
       return response;

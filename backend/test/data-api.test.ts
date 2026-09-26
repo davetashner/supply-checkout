@@ -251,6 +251,26 @@ describe("documents (the app's db contract)", () => {
     expect(await bad("PUT", "/teams/team-a/sheets/s1", { body: { data: {}, expectedVersion: -1 } })).toBe("bad_request");
   });
 
+  it("answers 400, not 500, for a body nested far too deeply", async () => {
+    const depth = 200_000;
+    const rawBody = `{"data":{"a":${"[".repeat(depth)}${"]".repeat(depth)}}}`;
+    for (const method of ["PUT", "PATCH"]) {
+      const response = await call(method, "/teams/team-a/sheets/s1", { rawBody });
+      expect(response, method).toMatchObject({ status: 400, body: { error: { code: "bad_request", message: "Document is nested too deeply" } } });
+    }
+  });
+
+  it("never lets a document write set the index keys", async () => {
+    for (const field of ["GSI1PK", "GSI1SK"]) {
+      const data = { ...sheet("2026-09-01"), [field]: "TEAM#team-b#SHEETS" };
+      expect((await call("PUT", "/teams/team-a/sheets/s1", { body: { data } })).status, field).toBe(400);
+    }
+    await call("PUT", "/teams/team-a/sheets/s1", { body: { data: sheet("2026-09-01") } });
+    expect((await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { GSI1SK: "9999-12-31#x" } } })).status).toBe(400);
+    expect((await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { GSI1PK: "TEAM#team-b#SHEETS" } } })).status).toBe(400);
+    expect(table.get("TEAM#team-a", "SHEET#s1")).toMatchObject({ GSI1PK: "TEAM#team-a#SHEETS", GSI1SK: "2026-09-01#s1" });
+  });
+
   it("refuses documents over the size limit with quota_exceeded, the app's \"storage is full\"", async () => {
     const big = { client: "x".repeat(MAX_DOCUMENT_BYTES) };
     expect(await call("PUT", "/teams/team-a/sheets/s1", { body: { data: big } })).toMatchObject({ status: 413, body: { error: { code: "quota_exceeded" } } });
@@ -364,6 +384,17 @@ describe("team isolation (negative tests)", () => {
     expect((await call("PUT", "/teams/team-a/sheets/s1", { user: CONTRIBUTOR, body: { data: sheet("2026-09-01") } })).status).toBe(403);
     table.put({ PK: "TEAM#team-a", SK: `MEMBER#${CONTRIBUTOR}`, type: "member", role: "contributor" });
     expect((await call("PUT", "/teams/team-a/sheets/s1", { user: CONTRIBUTOR, body: { data: sheet("2026-09-01") } })).status).toBe(200);
+  });
+
+  it("treats a MEMBER item with a missing or unknown role as no membership", async () => {
+    table.put({ PK: "TEAM#team-a", SK: "MEMBER#user-norole", type: "member" });
+    table.put({ PK: "TEAM#team-a", SK: "MEMBER#user-bogus", type: "member", role: "superuser" });
+    for (const user of ["user-norole", "user-bogus"]) {
+      expect(await call("GET", "/teams/team-a/products", { user }), user).toEqual(denied);
+      expect(await call("PUT", "/teams/team-a/sheets/s9", { user, body: { data: sheet("2026-09-01") } }), user).toEqual(denied);
+      expect(await call("DELETE", "/teams/team-a/sheets/s9", { user }), user).toEqual(denied);
+    }
+    expect(table.get("TEAM#team-a", "SHEET#s9")).toBeUndefined();
   });
 
   it("refuses a missing token, an expired one, an ID token and a bad subject, before touching the table", async () => {

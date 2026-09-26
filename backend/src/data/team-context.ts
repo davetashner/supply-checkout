@@ -14,7 +14,7 @@ import { GetCommand, QueryCommand, TransactGetCommand, TransactWriteCommand } fr
 import { type Db, connection } from "./client.js";
 import { ForbiddenError, InvalidInputError, conflictOnConditionFailure } from "./errors.js";
 import { gsi1, id, keys, strip } from "./keys.js";
-import { type Invite, type Member, type Role, type Team, type UserTeam, hashInviteToken, ownersUpdate, teamName } from "./model.js";
+import { type Invite, type Member, type Role, type Team, type UserTeam, hashInviteToken, isMemberRole, ownersUpdate, teamName } from "./model.js";
 import { writeRegionFor } from "./region.js";
 import { GSI1 } from "./schema.js";
 
@@ -69,7 +69,9 @@ export function readable(ctx: TeamContext): TeamContext {
  */
 export function writable(db: Db, ctx: TeamContext, minimum: Role = "contributor"): TeamContext {
   assertContext(ctx);
-  if (RANK[ctx.role] < RANK[minimum]) throw new ForbiddenError(`Needs the ${minimum} role`);
+  // Fails closed: a role without a rank (which authorizeTeam never issues) can't write
+  const rank = RANK[ctx.role] as number | undefined;
+  if (rank === undefined || rank < RANK[minimum]) throw new ForbiddenError(`Needs the ${minimum} role`);
   const target = writeRegionFor(ctx, db.region);
   if (target !== db.region) throw new Error(`Writes for this team go to ${target}; forwarding is phase 2`);
   return ctx;
@@ -101,7 +103,9 @@ export async function authorizeTeam(db: Db, userId: string, teamId: string): Pro
   );
   const [meta, membership] = (result.Responses ?? []).map((r) => r.Item);
   if (!meta || !membership) throw new ForbiddenError("Not a member of this team");
-  return issue(teamId, userId, membership.role as Role, meta.homeRegion as string);
+  // A MEMBER item with a missing or unknown role is treated as no membership
+  if (!isMemberRole(membership.role)) throw new ForbiddenError("Not a member of this team");
+  return issue(teamId, userId, membership.role, meta.homeRegion as string);
 }
 
 /**
