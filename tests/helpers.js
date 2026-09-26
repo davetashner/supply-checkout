@@ -5,7 +5,7 @@ import * as coverage from "./coverage.js";
 
 const ORIGIN = "https://supply-checkout.test/";
 // Fonts and CDN scripts, which openApp aborts to keep tests hermetic
-const ABORTED = /^https:\/\/(fonts\.(googleapis|gstatic)\.com|cdn\.jsdelivr\.net)\//;
+const ABORTED = /^https:\/\/fonts\.(googleapis|gstatic)\.com\//;
 
 // The console error a browser logs for a request openApp aborted. Chromium and
 // WebKit say "Failed to load resource"; Firefox reports an aborted cross-origin
@@ -37,7 +37,7 @@ export const test = base.extend({
 export { expect };
 
 export async function openApp(page, opts = {}) {
-  // Keep tests hermetic: no fonts or CDN scripts. The app works without ZXing.
+  // Keep tests hermetic: no fonts.
   await page.route(ABORTED, (r) => r.abort());
   await page.route(ORIGIN + "**", (r) => {
     const file = files.get(new URL(r.request().url()).pathname);

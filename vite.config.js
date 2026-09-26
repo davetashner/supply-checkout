@@ -155,7 +155,8 @@ export default defineConfig(({ mode }) => {
       sourcemap: "hidden",
       // Also the CSS target (build.cssTarget defaults to this)
       target: browserTargets(),
-      // One entry chunk and no dynamic imports, so there's nothing to preload
+      // No polyfill: every supported browser has modulepreload. The only dynamic import
+      // is ZXing (src/barcode.js), its own chunk in the web build, inlined in the artifact.
       modulePreload: { polyfill: false },
       // The artifact stays readable, like the hand-written file it replaces
       minify: !artifact,

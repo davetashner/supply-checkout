@@ -126,8 +126,9 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
   }
 
   function onEvent(ev) {
+    // Only the collections this page reads (not "__proto__", "constructor" and the like)
+    if (!Object.hasOwn(colls, ev.collection)) return;
     const c = colls[ev.collection];
-    if (!c) return;
     if (ev.op === "delete") { put(ev.collection, ev.id, null); return; }
     const held = c.docs.get(ev.id);
     // Skip what's already here: an older version, or (for sheets) the same one, such as

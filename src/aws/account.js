@@ -3,11 +3,11 @@
 // place until a team is open; then a bar under the header shows the team (a switcher when
 // there are several) and Sign out.
 import { esc } from "../format.js";
-import { createSession } from "./session.js";
+import { toast } from "../dom.js";
+import { createSession, INVITE_KEY } from "./session.js";
 import { createDb } from "./db.js";
 
 const TEAM_KEY = "supplyCheckout.team";
-const INVITE_KEY = "supplyCheckout.invite";
 const ROLE = { owner: "an owner", contributor: "a contributor", viewer: "a viewer" };
 
 // A plain circle for the signed-in user's avatar; the API has no pictures yet
@@ -61,9 +61,14 @@ export async function start(config) {
     return until(() => {});
   }
 
+  // Leaves the page once the session is revoked; otherwise stays signed in and says so
+  async function signOut() {
+    if (!(await session.signOut())) toast("Couldn't sign out. Try again.", 5000);
+  }
+
   // Who's signed in, with a way out, on the screens before a team is open
   const whoami = (me) => `<p class="whoami">Signed in as ${esc(me.user.email || "you")}. <button type="button" class="btn ghost" id="accountSignOut">Sign out</button></p>`;
-  const wireWhoami = (el) => el.querySelector("#accountSignOut").addEventListener("click", () => session.signOut());
+  const wireWhoami = (el) => el.querySelector("#accountSignOut").addEventListener("click", signOut);
 
   // Anything else that went wrong: say so, and try again from the start
   const failed = () => until((resolve) => show(`<h2>Couldn't connect</h2>
@@ -160,7 +165,7 @@ export async function start(config) {
     const pick = bar.querySelector("#teamSwitch");
     // Switching loads the page again for the other team: new data, role and live updates
     if (pick) pick.addEventListener("change", () => { localStorage.setItem(TEAM_KEY, pick.value); location.reload(); });
-    bar.querySelector("#signOut").addEventListener("click", () => session.signOut());
+    bar.querySelector("#signOut").addEventListener("click", signOut);
   }
 
   function open(me, team) {

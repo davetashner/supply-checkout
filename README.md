@@ -14,7 +14,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 
 | Path | What it is |
 | --- | --- |
-| `src/index.html` | The page: head (fonts, ZXing from a CDN) and markup. |
+| `src/index.html` | The page: head (fonts) and markup. |
 | `src/styles.css` | All of the app's styles. |
 | `src/icons/` | The barcode favicon: `favicon.svg` (the source, drawn on a 16 px grid so it stays crisp at 16 and 32 px, with dark-mode colors), and its PNG fallbacks `favicon-32.png` and `apple-touch-icon.png` (180 px), which `npm run icons` renders from the SVG. The web build and demo serve all three from `assets/`; the artifact inlines only the SVG, as a `data:` URI. |
 | `src/main.js` | App state, screens, modals, receipt review, and startup. |
@@ -23,7 +23,8 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `src/moves.js` | Checkout and return writes, in one place so the web build can switch to atomic commands (`supply-checkout-1dg.1`). |
 | `src/format.js`, `src/sheet-math.js` | Formatting helpers and sheet totals, with no app state. |
 | `src/dom.js` | `$`, toast, modals, two-tap confirm buttons and number steppers. |
-| `src/barcode.js` | Reading barcodes from photos (the browser's detector, or ZXing). |
+| `src/barcode.js` | Reading barcodes from photos (the browser's detector, or ZXing, loaded the first time it's needed). |
+| `src/zxing.js` | The parts of ZXing (`@zxing/library`, from npm) the barcode reader uses. |
 | `src/receipt-prompt.js` | The receipt-reading prompt and its error messages. |
 | `vite.config.js` | The builds: `artifact`, `web` and `demo` (below). |
 | `demo/` | The demo build's entry (`main.js`: the in-memory runtime and the banner's styles) and the demo data (`data.js`), which `npm run dev` also uses. |
@@ -65,9 +66,9 @@ Microsoft Edge is a system install rather than one of Playwright's own browsers.
 
 | Command | Output | For |
 | --- | --- | --- |
-| `npm run build:artifact` | `dist/artifact/index.html` | claude.ai. One self-contained file with the script and styles inlined. Like the hand-written `index.html` it replaces, it's a page fragment (claude.ai adds the doctype, `<head>` and `<body>`), and it only loads fonts from Google Fonts and ZXing from cdn.jsdelivr.net. It isn't minified, so it can be read before publishing. |
+| `npm run build:artifact` | `dist/artifact/index.html` | claude.ai. One self-contained file with the script and styles inlined. Like the hand-written `index.html` it replaces, it's a page fragment (claude.ai adds the doctype, `<head>` and `<body>`), and it only loads fonts from Google Fonts. ZXing is inlined too, which makes it about 800 KB. It isn't minified, so it can be read before publishing. |
 | `npm run build:web` | `dist/web/` | CloudFront, at `app.`. `index.html` plus minified, content-hashed files in `assets/`, which can be cached forever. It runs the same app on the AWS backend through `src/aws/`, which reads `config.json` (written when publishing) to find the environment. |
-| `npm run build:demo` | `dist/demo/` | supplycheckout.com, until sign-in and the API exist. The web build with `demo/main.js` running first: the in-memory runtime from the tests with the `npm run dev` demo data, receipt reading that returns a canned receipt after a pause, and CSV downloads saved in the browser. A banner says it's a demo, that nothing is saved and that data resets on reload. It makes no requests except to its own files, Google Fonts and cdn.jsdelivr.net. Asset URLs are relative (`./assets/…`), so the folder works from any path. |
+| `npm run build:demo` | `dist/demo/` | supplycheckout.com, until sign-in and the API exist. The web build with `demo/main.js` running first: the in-memory runtime from the tests with the `npm run dev` demo data, receipt reading that returns a canned receipt after a pause, and CSV downloads saved in the browser. A banner says it's a demo, that nothing is saved and that data resets on reload. It makes no requests except to its own files and Google Fonts. Asset URLs are relative (`./assets/…`), so the folder works from any path. |
 
 `npm run build` runs all three. Each writes hidden source maps (`dist/artifact/app.js.map`, `dist/web/assets/*.js.map`, `dist/demo/assets/*.js.map`) with no `sourceMappingURL` comment in the code; the coverage run uses them.
 
@@ -212,7 +213,7 @@ The web app and the demo are static builds served by one CloudFront distribution
 - **Bucket.** `supply-checkout-<env>-web-<region>-<account>`, in the primary region's `data` stack (stateful, retained, versioned, private, SSE-S3, access logs to `supply-checkout-<env>-logs-<region>-<account>`). Only CloudFront distributions in the account can read it, through origin access control. A release is a folder, `releases/<version>/`, uploaded once and never changed. The second region's bucket, replication and the origin group are phase 2 (`supply-checkout-d79`).
 - **Distribution** (`web` stack, `lib/stacks/web-stack.ts`), for the apex, `www.` and `app.`, with the `web` certificate from the domain stack, TLS 1.2+, HTTP/2 and HTTP/3, and standard logs to the logs bucket.
 - **Live version.** A CloudFront Function (`lib/web/router.js`, viewer request) picks a **channel** from the host (`app.` serves `app`; the apex serves `demo`; `www.` redirects to the apex). It reads the channel's live version from a CloudFront KeyValueStore and rewrites the path to `releases/<version>/…`, adding `index.html` to paths that end in `/`. The cache key is the rewritten path, so switching versions needs no invalidation, and the KeyValueStore write reaches every edge within seconds. Until something is published, a channel answers 503.
-- **Headers** on every response: `Content-Security-Policy` (`lib/web/content-security-policy.ts`), HSTS (two years, subdomains), `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy` and `Cross-Origin-Opener-Policy`. The CSP allows only what `src/index.html` loads (Google Fonts, ZXing from cdn.jsdelivr.net), inline `style` attributes, and `data:`/`blob:` images, plus the environment's `api.`, `realtime.` and `auth.` for connections. Infra tests check it against `src/index.html`, and `tests/content-security-policy.spec.js` runs the web app and the demo under it in every browser, failing on any violation. If you add a script, font or image host to the app, add it there too.
+- **Headers** on every response: `Content-Security-Policy` (`lib/web/content-security-policy.ts`), HSTS (two years, subdomains), `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy` and `Cross-Origin-Opener-Policy`. The CSP allows only the app's own scripts (ZXing is bundled, in its own chunk), Google Fonts, inline `style` attributes, and `data:`/`blob:` images, plus the environment's `api.`, `realtime.` and `auth.` for connections. Infra tests check it against `src/index.html`, and `tests/content-security-policy.spec.js` runs the web app and the demo under it in every browser, failing on any violation. If you add a script, font or image host to the app, add it there too.
 - **WAF** (CloudFront scope): a rate limit of 2,000 requests per IP per 5 minutes, then the AWS managed IP reputation, common and known-bad-inputs rule groups.
 - **Caching.** `scripts/publish-web.mjs` uploads `assets/` with `Cache-Control: public, max-age=31536000, immutable`, and everything else (`index.html`) with `max-age=0, must-revalidate` for browsers and `s-maxage` for the edge, which is safe because a release never changes. Source maps aren't uploaded.
 
@@ -488,7 +489,7 @@ While working on a change, run just the file and browser you're touching, e.g. `
 | `failures.spec.js` | Every kind of save that can fail leaves the screen as it was |
 | `legacy-data.spec.js` | Sheets and items missing fields that older versions didn't save |
 | `concurrent.spec.js` | Someone else changing or deleting data while a form is open |
-| `demo.spec.js` | The demo build (web runs only): the banner, a checkout, a receipt and a download with no requests outside the page, Google Fonts and cdn.jsdelivr.net; a reload starting over; the banner's accessibility and 320px layout |
+| `demo.spec.js` | The demo build (web runs only): the banner, a checkout, a receipt and a download with no requests outside the page and Google Fonts; a reload starting over; the banner's accessibility and 320px layout |
 | `dev-server.spec.js` | `npm run dev` and its query-string options |
 | `aws-account.spec.js` | The web build's runtime (web runs only): `config.json`, sign-in and the code exchange, token refresh (including 401, refresh, retry), first sign-in, invites, the team switcher, view-only, sign-out, and the screens' accessibility and 320px layout |
 | `aws-data.spec.js` | The web build's runtime (web runs only): the app's writes on the data routes, cursors, error codes, downloads, live events, re-lists, reconnecting, the polling fallback and removal from a team |

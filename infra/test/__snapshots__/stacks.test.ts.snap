@@ -7627,7 +7627,7 @@ async function handler(event) {
           "Name": "supplycheckoutproduseast1webSecurityHeadersE7D0AE58",
           "SecurityHeadersConfig": {
             "ContentSecurityPolicy": {
-              "ContentSecurityPolicy": "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.supplycheckout.com https://realtime.supplycheckout.com wss://realtime.supplycheckout.com https://auth.supplycheckout.com; manifest-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests",
+              "ContentSecurityPolicy": "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.supplycheckout.com https://realtime.supplycheckout.com wss://realtime.supplycheckout.com https://auth.supplycheckout.com; manifest-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests",
               "Override": true,
             },
             "ContentTypeOptions": {

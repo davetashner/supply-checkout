@@ -203,6 +203,9 @@ test.describe("live updates", () => {
     await emit(page, "not json");
     await emit(page, { v: 2, collection: "sheets", id: "s5", op: "put", version: 1 });
     await emit(page, { v: 1, collection: "notes", id: "n1", op: "put", version: 1 });
+    // Names an object has without owning them: no error (the page fixture fails on one)
+    await emit(page, { v: 1, collection: "constructor", id: "c1", op: "put", version: 1 });
+    await emit(page, { v: 1, collection: "__proto__", id: "p1", op: "delete", version: 1 });
     await receive(page, { type: "data", id: "another-subscription", event: JSON.stringify({ v: 1, collection: "sheets", id: "s6", op: "put", version: 1 }) });
     await receive(page, { type: "connection_error", errors: [] });
     await expect.poll(() => gets("s3") + gets("s4")).toBe(2);

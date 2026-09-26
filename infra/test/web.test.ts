@@ -211,7 +211,9 @@ describe("content security policy", () => {
   it("allows the scripts and stylesheets src/index.html loads", () => {
     const scripts = [...html.matchAll(/<script[^>]*\bsrc="(https:[^"]+)"/g)].map((m) => origin(m[1] as string));
     const styles = [...html.matchAll(/<link[^>]*rel="stylesheet"[^>]*href="(https:[^"]+)"/g)].map((m) => origin(m[1] as string));
-    expect(scripts).toContain("https://cdn.jsdelivr.net");
+    // No third-party scripts: ZXing is bundled
+    expect(scripts).toEqual([]);
+    expect(directives["script-src"]).toEqual(["'self'"]);
     expect(styles).toContain("https://fonts.googleapis.com");
     for (const s of scripts) expect(directives["script-src"]).toContain(s);
     for (const s of styles) expect(directives["style-src"]).toContain(s);
