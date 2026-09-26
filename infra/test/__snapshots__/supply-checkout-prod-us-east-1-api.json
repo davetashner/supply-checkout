@@ -543,6 +543,50 @@
                   "Arn"
                 ]
               }
+            },
+            {
+              "Action": "ses:SendEmail",
+              "Condition": {
+                "StringEquals": {
+                  "ses:FromAddress": "noreply@supplycheckout.com"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":ses:us-east-1:",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":identity/supplycheckout.com"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":ses:us-east-1:",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":configuration-set/supply-checkout-prod-transactional"
+                    ]
+                  ]
+                }
+              ],
+              "Sid": "SendAppEmail"
             }
           ],
           "Version": "2012-10-17"
@@ -567,7 +611,7 @@
           },
           "S3Key": "<asset hash>.zip"
         },
-        "Description": "The signed-in user's teams and invites; creates teams and accepts invites",
+        "Description": "The signed-in user's teams and invites; creates teams, manages members and invites, and accepts invites",
         "Environment": {
           "Variables": {
             "ACCOUNT_ROLE_ARN": {
@@ -576,6 +620,10 @@
                 "Arn"
               ]
             },
+            "EMAIL_APP_URL": "https://app.supplycheckout.com",
+            "EMAIL_CONFIGURATION_SET": "supply-checkout-prod-transactional",
+            "EMAIL_FROM_ADDRESS": "noreply@supplycheckout.com",
+            "EMAIL_REGION": "us-east-1",
             "ISSUER_URL": {
               "Ref": "SsmParameterValuesupplycheckoutprodidentityissuerurlC96584B6F00A464EAD1953AFF4B05118Parameter"
             },
@@ -833,14 +881,16 @@
                   "aws:RequestTag/userId": "?*",
                   "aws:RequestTag/teamId": "?*",
                   "aws:RequestTag/invitee": "?*",
-                  "aws:RequestTag/member": "?*"
+                  "aws:RequestTag/member": "?*",
+                  "aws:RequestTag/inviteLimit": "?*"
                 },
                 "ForAllValues:StringEquals": {
                   "aws:TagKeys": [
                     "userId",
                     "teamId",
                     "invitee",
-                    "member"
+                    "member",
+                    "inviteLimit"
                   ]
                 }
               },
@@ -857,7 +907,7 @@
           ],
           "Version": "2012-10-17"
         },
-        "Description": "Assumed by the account function per request, tagged with the user and at most one team and invitee; reaches only those partitions",
+        "Description": "Assumed by the account function per request, tagged with the user and at most one team, invitee, member and invited address; reaches only those partitions",
         "MaxSessionDuration": 3600,
         "Policies": [
           {
@@ -956,6 +1006,44 @@
                     ]
                   },
                   "Sid": "MemberSwitcherRowOnly"
+                },
+                {
+                  "Action": "dynamodb:UpdateItem",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "INVITELIMIT#${aws:PrincipalTag/inviteLimit}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "count",
+                        "type",
+                        "expiresAt"
+                      ]
+                    },
+                    "StringEqualsIfExists": {
+                      "dynamodb:ReturnValues": "NONE"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "InviteLimitCounterOnly"
                 },
                 {
                   "Action": [
@@ -2234,6 +2322,222 @@
         }
       }
     },
+    "HttpApiGETteamsteamIdinvitesAccountIntegrationPermissionB8124B59": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/invites"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiGETteamsteamIdinvitesBB2E6828": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "GET /teams/{teamId}/invites",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTteamsteamIdinvitesAccountIntegrationPermissionE1270C09": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/invites"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTteamsteamIdinvites598792ED": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /teams/{teamId}/invites",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiDELETEteamsteamIdinvitesinviteIdAccountIntegrationPermission76ABDA4B": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/invites/{inviteId}"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiDELETEteamsteamIdinvitesinviteId6790595C": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "DELETE /teams/{teamId}/invites/{inviteId}",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTteamsteamIdinvitesinviteIdresendAccountIntegrationPermissionE3A2628E": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/invites/{inviteId}/resend"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTteamsteamIdinvitesinviteIdresend75A0DA29": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /teams/{teamId}/invites/{inviteId}/resend",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiPOSTauthsessionAuthIntegration113028DA": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -2478,6 +2782,22 @@
           "DELETE /teams/{teamId}/members/{userId}": {
             "ThrottlingRateLimit": 10,
             "ThrottlingBurstLimit": 20
+          },
+          "GET /teams/{teamId}/invites": {
+            "ThrottlingRateLimit": 20,
+            "ThrottlingBurstLimit": 40
+          },
+          "POST /teams/{teamId}/invites": {
+            "ThrottlingRateLimit": 5,
+            "ThrottlingBurstLimit": 10
+          },
+          "DELETE /teams/{teamId}/invites/{inviteId}": {
+            "ThrottlingRateLimit": 10,
+            "ThrottlingBurstLimit": 20
+          },
+          "POST /teams/{teamId}/invites/{inviteId}/resend": {
+            "ThrottlingRateLimit": 5,
+            "ThrottlingBurstLimit": 10
           }
         },
         "StageName": "$default",
@@ -2490,11 +2810,15 @@
         }
       },
       "DependsOn": [
+        "HttpApiDELETEteamsteamIdinvitesinviteIdAccountIntegrationPermission76ABDA4B",
+        "HttpApiDELETEteamsteamIdinvitesinviteId6790595C",
         "HttpApiDELETEteamsteamIdmembersuserIdAccountIntegrationPermission2D5A21C0",
         "HttpApiDELETEteamsteamIdmembersuserId904CD60C",
         "HttpApiGETmeAccountIntegrationPermission45713A73",
         "HttpApiGETmeAccountIntegration0EFB5255",
         "HttpApiGETme466879BE",
+        "HttpApiGETteamsteamIdinvitesAccountIntegrationPermissionB8124B59",
+        "HttpApiGETteamsteamIdinvitesBB2E6828",
         "HttpApiGETteamsteamIdmembersAccountIntegrationPermission8330B349",
         "HttpApiGETteamsteamIdmembersC3ACF5A2",
         "HttpApiPATCHteamsteamIdmembersuserIdAccountIntegrationPermission15C68DE8",
@@ -2503,6 +2827,10 @@
         "HttpApiPOSTinvitesinviteIdacceptD95AE303",
         "HttpApiPOSTteamsteamIdimportsDataIntegrationPermission8AC0ABAB",
         "HttpApiPOSTteamsteamIdimportsA904FDBB",
+        "HttpApiPOSTteamsteamIdinvitesinviteIdresendAccountIntegrationPermissionE3A2628E",
+        "HttpApiPOSTteamsteamIdinvitesinviteIdresend75A0DA29",
+        "HttpApiPOSTteamsteamIdinvitesAccountIntegrationPermissionE1270C09",
+        "HttpApiPOSTteamsteamIdinvites598792ED",
         "HttpApiPOSTteamsAccountIntegrationPermission37B4CDE2",
         "HttpApiPOSTteams93EBE9A5"
       ]

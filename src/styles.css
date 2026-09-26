@@ -98,6 +98,8 @@ select{background:var(--ground);border:1px solid var(--line);border-radius:9px;p
 .rrow input{font-family:var(--mono)}
 .rrow select{width:100%}
 @media (max-width:440px){.rrow{grid-template-columns:repeat(2,minmax(0,1fr))}.rrow .grow{grid-column:1 / -1}}
+.pack{display:flex;flex-wrap:wrap;align-items:center;gap:6px 16px;font-size:14px;font-weight:600}
+.rline [data-note]:empty{display:none}
 .ractions{display:flex;align-items:center;gap:4px}
 .ractions .num{font-weight:500}
 .spacer{flex:1}

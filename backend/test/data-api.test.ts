@@ -222,6 +222,22 @@ describe("documents (the app's db contract)", () => {
     expect(body.data.items["0123"]).toEqual({ code: "0123", name: "Gloves", price: 3, out: 5, returned: 1 });
   });
 
+  it("keeps each sheet line's cost, and refuses one that isn't an amount in whole cents (ADR 0014)", async () => {
+    // A receipt's client items go on the sheet with the receipt's cost each
+    const towels = { code: "", name: "Towels", price: 3, cost: 2.25, out: 2, returned: 0 };
+    expect((await call("PUT", "/teams/team-a/sheets/s1", { body: { data: sheet("2026-09-01", { "nb-1": towels }) } })).body.data.items["nb-1"]).toEqual(towels);
+    await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { items: { "nb-1": { out: 3 }, "nb-2": { ...towels, cost: 1_000_000 } } } } });
+    const { body } = await call("GET", "/teams/team-a/sheets/s1");
+    expect(body.data.items).toEqual({ "nb-1": { ...towels, out: 3 }, "nb-2": { ...towels, cost: 1_000_000 } });
+    for (const cost of [-1, "2.25", 2.255, 1_000_000.01, null]) {
+      const put = await call("PUT", "/teams/team-a/sheets/s2", { body: { data: sheet("2026-09-01", { a: { ...towels, cost } }) } });
+      expect(put.body.error.code).toBe("bad_request");
+      const patch = await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { items: { "nb-1": { cost } } } } });
+      expect(patch.body.error.code).toBe("bad_request");
+    }
+    expect((await call("GET", "/teams/team-a/sheets/s1")).body.data.items["nb-1"].cost).toBe(2.25);
+  });
+
   it("keeps every other field the app writes on sheets and products", async () => {
     // The receipt save and the new-sheet form, without a signed-in user
     const receiptSheet = {

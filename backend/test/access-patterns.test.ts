@@ -17,6 +17,7 @@ import {
   findInvite,
   findInviteForEmail,
   ForbiddenError,
+  getInvite,
   getMember,
   getProduct,
   getReceiptUsage,
@@ -24,6 +25,10 @@ import {
   getTeam,
   hashEmail,
   InvalidInputError,
+  inviteLimitKey,
+  INVITES_PER_ADDRESS_PER_DAY,
+  INVITES_PER_TEAM_ADDRESS_PER_DAY,
+  INVITES_PER_TEAM_PER_DAY,
   LastOwnerError,
   LimitReachedError,
   linkStripeCustomer,
@@ -36,6 +41,7 @@ import {
   listSheetsByDate,
   listTeamsForUser,
   markInviteFailed,
+  markInviteNotSent,
   markWebhookProcessed,
   MAX_TEAMS_PER_USER,
   NotFoundError,
@@ -43,6 +49,7 @@ import {
   recordReceiptRead,
   removeMember,
   removeSheetLine,
+  resendInvite,
   revokeInvite,
   setMemberRole,
   setSheetLine,
@@ -58,7 +65,12 @@ import {
   type Invite,
   type TeamContext,
 } from "../src/data/index.js";
+import { PutCommand } from "@aws-sdk/lib-dynamodb";
+import { connection } from "../src/data/client.js";
 import { endpoint, newUser, rawItem, REGION, useTable } from "./helpers.js";
+
+/** Writes a raw item, for a state the API can't make (an invite for an address that has since joined). */
+const connectionPut = (db: Db, item: Record<string, unknown>) => connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: item }));
 
 describe("DynamoDB Local", () => {
   it.runIf(process.env.CI)("is configured in CI", () => {
@@ -76,8 +88,10 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
     const ownerId = newUser();
     const { team: created, context: owner } = await createTeam(db, { userId: ownerId, email: "owner@example.com" }, { name });
     const join = async (role: "contributor" | "viewer") => {
-      const { invite, token } = await createInvite(db, owner, { email: `${role}@example.com`, role });
-      return acceptInvite(db, { userId: newUser(), verifiedEmail: `${role}@example.com` }, invite, token);
+      // An address per team: each address can be sent only so many invites a day
+      const email = `${role}.${ownerId}@example.com`;
+      const { invite, token } = await createInvite(db, owner, { email, role });
+      return acceptInvite(db, { userId: newUser(), verifiedEmail: email }, invite, token);
     };
     return { team: created, owner, contributor: await join("contributor"), viewer: await join("viewer") };
   }
@@ -302,7 +316,9 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       // An address no other test in this file (and so this table) invites
       const { owner } = await team();
       const { invite, token } = await createInvite(db, owner, { email: "quinn@example.com", role: "viewer", ttlDays: 1 });
-      const other = await createInvite(db, owner, { email: "quinn@example.com", role: "viewer" });
+      // Another team's invite to the same address
+      const { owner: elsewhere } = await team("Elsewhere Co");
+      const other = await createInvite(db, elsewhere, { email: "quinn@example.com", role: "viewer" });
       const pat = newUser();
       const as = (verifiedEmail: string) => ({ userId: pat, verifiedEmail });
       await expect(acceptInvite(db, as("mallory@example.com"), invite, token)).rejects.toThrow(ForbiddenError);
@@ -403,6 +419,93 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
     });
   });
 
+  describe("Invite limits and re-sending", () => {
+    it("re-sends with a new ID and token, the same address and role, and no failure", async () => {
+      const { team: t, owner, contributor } = await team();
+      const first = await createInvite(db, owner, { email: "resend@example.com", role: "contributor" });
+      const system = await teamContextForEmailEvent(db, t.teamId);
+      if (!system) throw new Error("no context");
+      await markInviteFailed(db, system, { inviteId: first.invite.inviteId, emailHash: hashEmail("resend@example.com"), reason: "bounced", at: new Date() });
+      await expect(resendInvite(db, contributor, first.invite.inviteId)).rejects.toThrow(ForbiddenError);
+      const again = await resendInvite(db, owner, first.invite.inviteId);
+      expect(again.invite).toMatchObject({ email: "resend@example.com", role: "contributor", teamId: t.teamId });
+      expect(again.invite.inviteId).not.toBe(first.invite.inviteId);
+      expect(again.token).not.toBe(first.token);
+      expect(await rawItem(db, `TEAM#${t.teamId}`, `INVITE#${first.invite.inviteId}`)).toBeUndefined();
+      const stored = await rawItem(db, `TEAM#${t.teamId}`, `INVITE#${again.invite.inviteId}`);
+      expect(stored).not.toHaveProperty("inviteStatus");
+      expect(stored).not.toHaveProperty("failureReason");
+      expect(stored).not.toHaveProperty("failedAt");
+      expect(await getInvite(db, owner, again.invite.inviteId)).toMatchObject({ inviteId: again.invite.inviteId });
+      expect(await getInvite(db, owner, first.invite.inviteId)).toBeUndefined();
+      // A late bounce for the first message names the old ID, so it changes nothing
+      expect(await markInviteFailed(db, system, { inviteId: first.invite.inviteId, emailHash: hashEmail("resend@example.com"), reason: "bounced", at: new Date() })).toBe(false);
+      expect(await findInvite(db, first.token)).toBeUndefined();
+      expect(await findInvite(db, again.token)).toMatchObject({ inviteId: again.invite.inviteId });
+      await expect(resendInvite(db, owner, first.invite.inviteId)).rejects.toThrow(NotFoundError);
+      // Not sent: owners mark it, and see it
+      await expect(markInviteNotSent(db, contributor, again.invite.inviteId)).rejects.toThrow(ForbiddenError);
+      expect(await markInviteNotSent(db, owner, again.invite.inviteId, new Date("2026-09-26T12:00:00.000Z"))).toBe(true);
+      expect(await getInvite(db, owner, again.invite.inviteId)).toMatchObject({ inviteStatus: "failed", failureReason: "not_sent", failedAt: "2026-09-26T12:00:00.000Z" });
+      expect(await markInviteNotSent(db, owner, "no-such-invite")).toBe(false);
+    });
+
+    it("refuses a member's address and a second live invite to one address", async () => {
+      const { owner } = await team();
+      const members = await listMembers(db, owner);
+      const viewerEmail = members.find((m) => m.role === "viewer")?.email as string;
+      await expect(createInvite(db, owner, { email: viewerEmail.toUpperCase(), role: "owner" })).rejects.toThrow(ConflictError);
+      await createInvite(db, owner, { email: "twice@example.com", role: "viewer" });
+      await expect(createInvite(db, owner, { email: "Twice@example.com", role: "owner" })).rejects.toThrow(ConflictError);
+      // After it expires, a new one is fine
+      expect((await createInvite(db, owner, { email: "twice@example.com", role: "viewer" }, new Date(Date.now() + 8 * 86400_000))).invite.email).toBe("twice@example.com");
+    });
+
+    it(`stops a team at ${INVITES_PER_TEAM_PER_DAY} invites a UTC day, re-sends included`, async () => {
+      const { owner } = await team();
+      const day = new Date("2031-01-01T10:00:00.000Z");
+      let last: Awaited<ReturnType<typeof createInvite>> | undefined;
+      for (let i = 0; i < INVITES_PER_TEAM_PER_DAY; i++) last = await createInvite(db, owner, { email: `team-limit-${i}@example.com`, role: "viewer" }, day);
+      await expect(createInvite(db, owner, { email: "team-limit-x@example.com", role: "viewer" }, day)).rejects.toThrow(LimitReachedError);
+      await expect(resendInvite(db, owner, (last as { invite: Invite }).invite.inviteId, {}, day)).rejects.toThrow(LimitReachedError);
+      // The refused re-send left the invite as it was
+      expect(await getInvite(db, owner, (last as { invite: Invite }).invite.inviteId)).toBeDefined();
+      expect((await listInvites(db, owner)).length).toBe(INVITES_PER_TEAM_PER_DAY);
+      expect(await rawItem(db, `TEAM#${owner.teamId}`, "LIMIT#INVITES#2031-01-01")).toMatchObject({ count: INVITES_PER_TEAM_PER_DAY, expiresAt: day.getTime() / 1000 + 2 * 86400 });
+      await createInvite(db, owner, { email: "team-limit-x@example.com", role: "viewer" }, new Date("2031-01-02T00:00:00.000Z"));
+    });
+
+    it(`caps one team at ${INVITES_PER_TEAM_ADDRESS_PER_DAY} invites to an address a day, and all teams at ${INVITES_PER_ADDRESS_PER_DAY}`, async () => {
+      const count = INVITES_PER_ADDRESS_PER_DAY / INVITES_PER_TEAM_ADDRESS_PER_DAY;
+      const owners = (await Promise.all(Array.from({ length: count + 1 }, (_, i) => team(`Limit ${i}`)))).map((x) => x.owner);
+      const day = new Date("2031-02-01T10:00:00.000Z");
+      for (const [i, owner] of owners.slice(0, count).entries()) {
+        // A +tag is the same mailbox, for the limits
+        let current = await createInvite(db, owner, { email: i % 2 ? "flooded+x@example.com" : "flooded@example.com", role: "viewer" }, day);
+        for (let n = 1; n < INVITES_PER_TEAM_ADDRESS_PER_DAY; n++) current = await resendInvite(db, owner, current.invite.inviteId, {}, day);
+        if (i === 0) await expect(resendInvite(db, owner, current.invite.inviteId, {}, day)).rejects.toThrow(LimitReachedError);
+      }
+      const last = owners[count] as TeamContext;
+      await expect(createInvite(db, last, { email: "FLOODED@example.com", role: "viewer" }, day)).rejects.toThrow(LimitReachedError);
+      expect(await rawItem(db, `INVITELIMIT#${inviteLimitKey("flooded@example.com")}`, "LIMIT#INVITES#2031-02-01")).toMatchObject({ count: INVITES_PER_ADDRESS_PER_DAY });
+      expect(await listInvites(db, last)).toEqual([]);
+      expect((await createInvite(db, last, { email: "flooded@example.com", role: "viewer" }, new Date("2031-02-02T10:00:00.000Z"))).invite.email).toBe("flooded@example.com");
+    });
+
+    it("revokes a removed member's other invites to the team, and only theirs", async () => {
+      const { owner, contributor } = await team();
+      const member = (await getMember(db, owner, contributor.userId)) as { email: string };
+      // An invite for their address that they hadn't used (made before they joined)
+      const { invite: spare, token } = await createInvite(db, owner, { email: "spare@example.com", role: "owner" });
+      await connectionPut(db, { ...(await rawItem(db, `TEAM#${owner.teamId}`, `INVITE#${spare.inviteId}`)), email: member.email });
+      const keep = await createInvite(db, owner, { email: "keep@example.com", role: "viewer" });
+      await removeMember(db, owner, contributor.userId);
+      expect(await getInvite(db, owner, spare.inviteId)).toBeUndefined();
+      expect(await findInvite(db, token)).toBeUndefined();
+      expect(await getInvite(db, owner, keep.invite.inviteId)).toBeDefined();
+    });
+  });
+
   describe("Product", () => {
     it("is created, listed, read, edited with a version check, and deleted", async () => {
       const { owner, contributor, viewer } = await team();
@@ -466,6 +569,15 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await expect(setSheetLine(db, contributor, sheet.id, "x", long, s.version)).rejects.toThrow(InvalidInputError);
       await expect(setSheetLine(db, contributor, sheet.id, "x", { ...gloves, code: 5 as unknown as string }, s.version)).rejects.toThrow(InvalidInputError);
       expect((await setSheetLine(db, contributor, sheet.id, "x", { ...gloves, code: "1".repeat(256) }, s.version)).items.x?.code).toHaveLength(256);
+      // A line's cost each (ADR 0014) is kept, and has to be an amount in whole cents
+      s = await setSheetLine(db, contributor, sheet.id, "x", { ...gloves, cost: 9.99 }, s.version + 1);
+      expect(s.items.x).toEqual({ ...gloves, cost: 9.99 });
+      const costed = await createSheet(db, contributor, { client: "x", date: "2026-09-25", items: { a: { ...rags, cost: 0 } } });
+      expect((await getSheet(db, viewer, costed.id))?.items.a).toEqual({ ...rags, cost: 0 });
+      for (const cost of [-0.01, Number.NaN, "1" as unknown as number, 1.234, 1_000_001]) {
+        await expect(setSheetLine(db, contributor, sheet.id, "x", { ...gloves, cost }, s.version)).rejects.toThrow(InvalidInputError);
+        await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", items: { a: { ...rags, cost } } })).rejects.toThrow(InvalidInputError);
+      }
       await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", source: null as unknown as { store: string; receiptDate: string } })).rejects.toThrow(InvalidInputError);
       await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", source: { store: 1 as unknown as string, receiptDate: "" } })).rejects.toThrow(InvalidInputError);
       await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", createdByName: "x".repeat(201) })).rejects.toThrow(InvalidInputError);

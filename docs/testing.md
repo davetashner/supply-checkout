@@ -60,6 +60,7 @@ While working on a change, run just the file and browser you're touching, e.g. `
 | `aws-account.spec.js` | The web build's runtime (web runs only): `config.json`, sign-in and the code exchange, token refresh (including 401, refresh, retry), first sign-in, invites, the team switcher, view-only, sign-out, and the screens' accessibility and 320px layout |
 | `aws-data.spec.js` | The web build's runtime (web runs only): the app's writes on the data routes, cursors, error codes, downloads (including exporting 1,000 sheets listed page by page, and owners only), live events, re-lists, reconnecting, the polling fallback and removal from a team (found by a read or a refused write) |
 | `aws-members.spec.js` | The members screen (web runs only): owners see members and roles, change roles and remove members, the last owner can't step down or leave, an owner stepping down or leaving starts again, refusals say why, only owners see it, accessibility and 320px layout |
+| `aws-invites.spec.js` | Invites on the members screen (web runs only): inviting an address with a role, each invite as pending, failed ("Couldn't deliver", with why) or expired, resending and revoking, an email that couldn't be sent, refusals and rate limits say why, removing a member drops their invites, accessibility and 320px layout |
 
 Every test also fails if the page throws an uncaught error or logs a console error.
 

@@ -1,7 +1,8 @@
 // Lambda entry point for the account API (see account-handler.ts). The STS
-// client, the per-user DynamoDB clients and the logger are built once per
-// container, outside the handler.
+// client, the per-user DynamoDB clients, the SES client and the logger are
+// built once per container, outside the handler.
 
+import { mailerFromEnv } from "../email/mailer.js";
 import { createObservability, withObservability } from "../observability/index.js";
 import { accountScopedDbs } from "./account-db.js";
 import { createAccountHandler } from "./account-handler.js";
@@ -19,5 +20,5 @@ const issuerUrl = required(API_ENV.issuerUrl);
 const obs = createObservability({ service: "account-api" });
 export const handler = withObservability(
   obs,
-  createAccountHandler({ dbFor: accountScopedDbs({ roleArn: required(API_ENV.accountRoleArn) }), userInfo: cognitoUserInfo(issuerUrl), issuerUrl, obs }),
+  createAccountHandler({ dbFor: accountScopedDbs({ roleArn: required(API_ENV.accountRoleArn) }), userInfo: cognitoUserInfo(issuerUrl), issuerUrl, obs, mailer: mailerFromEnv() }),
 );
