@@ -2,7 +2,8 @@
 //
 //   vite build --mode artifact   dist/artifact/index.html: one self-contained file for
 //                                claude.ai, with the script and styles inlined
-//   vite build --mode web        dist/web/: index.html plus hashed assets, for CloudFront
+//   vite build --mode web        dist/web/: index.html plus hashed assets, for CloudFront,
+//                                with the AWS runtime (src/aws/main.js) running first
 //   vite build --mode demo       dist/demo/: the web build in demo mode, for supplycheckout.com
 //                                until sign-in exists (demo/main.js). Relative URLs, so it
 //                                works from any path.
@@ -100,6 +101,21 @@ const demoPage = () => ({
   },
 });
 
+// The web build: src/aws/main.js runs first and provides window.claude on the AWS backend
+// (sign-in, teams, the data API and live updates), unless a runtime is already there, as in
+// the tests. Only this build gets it; the artifact keeps claude.ai's runtime.
+const WEB_ENTRY = '<script type="module" src="./main.js"></script>';
+const awsRuntime = () => ({
+  name: "supply-checkout:aws-runtime",
+  transformIndexHtml: {
+    order: "pre",
+    handler(html) {
+      if (!html.includes(WEB_ENTRY)) throw new Error(`src/index.html has no ${WEB_ENTRY}`);
+      return html.replace(WEB_ENTRY, '<script type="module" src="./aws/main.js"></script>\n' + WEB_ENTRY);
+    },
+  },
+});
+
 // The oldest version of each supported browser, from the browserslist field in
 // package.json, as esbuild-style targets (["chrome153", "edge151", ...]). Vite lowers
 // JavaScript syntax and CSS for these, in both builds.
@@ -145,6 +161,6 @@ export default defineConfig(({ mode }) => {
       minify: !artifact,
       cssMinify: !artifact,
     },
-    plugins: artifact ? [artifactIcon(), viteSingleFile(), keepArtifactSourceMap(), artifactFragment()] : mode === "demo" ? [demoPage()] : [],
+    plugins: artifact ? [artifactIcon(), viteSingleFile(), keepArtifactSourceMap(), artifactFragment()] : mode === "demo" ? [demoPage()] : [awsRuntime()],
   };
 });

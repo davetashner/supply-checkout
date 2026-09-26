@@ -7,6 +7,7 @@ import { DEMO, builtFiles, currentBuild } from "../scripts/builds.mjs";
 import { installMockClaude } from "./mock-claude.js";
 import { fakeImage } from "./fixtures.js";
 import { contentSecurityPolicy } from "../infra/lib/web/content-security-policy.ts";
+import { FakeBackend, installFakeSocket, TEAM } from "./fake-aws.js";
 
 test.skip(currentBuild() !== "web", "CloudFront serves the web and demo builds; the artifact runs under claude.ai's own policy");
 
@@ -73,6 +74,22 @@ test("the web app runs under the policy", async ({ page }) => {
   const header = await page.evaluate(async () => (await fetch("/")).headers.get("content-security-policy"));
   expect(header).toBe(CSP);
   expect(await loadIcons(page)).toEqual([true, true, true]);
+  expect(await violations(page)).toEqual([]);
+});
+
+test("the web app signs in and loads its data from the API under the policy", async ({ page }) => {
+  // The API on its own origin, as deployed: cross-origin requests with credentials
+  const config = { apiUrl: "https://api.supplycheckout.com/_api", authUrl: "https://auth.supplycheckout.com", clientId: "c", realtimeUrl: "wss://realtime.supplycheckout.com/event/realtime", realtimeHost: "realtime.supplycheckout.com" };
+  const backend = new FakeBackend({ config, docs: { "t1/sheets/s1": { client: "Policy Co", date: "2026-09-26", status: "open", items: {} } } });
+  backend.cors = APP;
+  await serve(page, APP, builtFiles("web"));
+  await page.route(APP + "/config.json", (r) => r.fulfill({ contentType: "application/json", body: JSON.stringify(config) }));
+  await page.route("https://api.supplycheckout.com/**", (r) => backend.route(r));
+  await page.addInitScript(installFakeSocket, {});
+  await page.goto(APP + "/");
+  await expect(page.getByRole("button", { name: /Policy Co/ })).toBeVisible();
+  await expect(page.locator(".teambar")).toContainText(TEAM.name);
+  expect(backend.requests("POST", "/auth/refresh")[0].headers.origin).toBe(APP);
   expect(await violations(page)).toEqual([]);
 });
 
