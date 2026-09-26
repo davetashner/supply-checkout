@@ -1,23 +1,23 @@
-// The AppSync Events Lambda authorizer (ADR 0006, docs/api/realtime.md).
+// The AppSync Events Lambda authorizer (ADR 0006, ADR 0016, docs/api/realtime.md).
 //
 // AppSync calls it with the token the client sent, for each connection and
 // each subscription. It answers:
 //
 // - EVENT_CONNECT: allowed with a valid Cognito access token for the web app.
-// - EVENT_SUBSCRIBE: allowed only for exactly `/teams/<teamId>`, and only if
-//   the token's user is a member of that team (authorizeTeam, the same check
-//   the data API makes, which also validates the team ID). No wildcards.
+// - EVENT_SUBSCRIBE: allowed only for exactly `/users/<sub>`, where `<sub>` is
+//   the token's own user. No wildcards, no other user's channel. It reads no
+//   data: which teams' changes reach that channel is the stream consumer's
+//   job, and it publishes only to current members of an active team.
 // - Anything else, EVENT_PUBLISH included: refused. Clients never publish;
-//   the `teams` namespace takes publishes only with IAM, from the stream
+//   the `users` namespace takes publishes only with IAM, from the stream
 //   consumer, so this is a second lock on the same door.
 //
 // Nothing is cached (ttlOverride 0): AppSync's authorizer cache is keyed on
-// the token, and one token subscribes to several channels.
+// the token, and a cached answer for one channel must not stand for another.
 
 import type { Context } from "aws-lambda";
-import { authorizeTeam, type Db, ForbiddenError, InvalidInputError } from "../data/index.js";
 import type { Observability } from "../observability/index.js";
-import { teamFromChannel, TEAMS_NAMESPACE } from "./channels.js";
+import { userFromChannel, USERS_NAMESPACE } from "./channels.js";
 
 /** What AppSync sends a Lambda authorizer for an Event API. */
 export interface EventsAuthorizerEvent {
@@ -52,7 +52,6 @@ export interface TokenVerifier {
 
 export interface AuthorizerDeps {
   readonly verifier: TokenVerifier;
-  readonly db: Db;
   readonly obs: Observability;
   readonly now?: () => number;
 }
@@ -97,24 +96,19 @@ export function createAuthorizerHandler(deps: AuthorizerDeps) {
       if (operation !== "EVENT_SUBSCRIBE") throw new Denied("Operation not allowed for clients");
 
       const namespace = event.requestContext?.channelNamespaceName;
-      if (namespace !== undefined && namespace !== TEAMS_NAMESPACE) throw new Denied("Unknown namespace");
-      const teamId = teamFromChannel(channel);
-      if (!teamId) throw new Denied("Not a team channel");
+      if (namespace !== undefined && namespace !== USERS_NAMESPACE) throw new Denied("Unknown namespace");
+      const owner = userFromChannel(channel);
+      if (!owner) throw new Denied("Not a user channel");
       const userId = await userFrom(deps, event.authorizationToken, now());
-      try {
-        await authorizeTeam(deps.db, userId, teamId);
-      } catch (error) {
-        if (error instanceof ForbiddenError || error instanceof InvalidInputError) throw new Denied("Not a member of this team");
-        throw error;
-      }
-      deps.obs.logger.info("Subscribe allowed", { ...log, teamId, userId });
+      if (owner !== userId) throw new Denied("Not this user's channel");
+      deps.obs.logger.info("Subscribe allowed", { ...log, userId });
       return ALLOW;
     } catch (error) {
       if (error instanceof Denied) {
         deps.obs.logger.info("Denied", { ...log, reason: error.message });
         return DENY;
       }
-      // DynamoDB trouble: fail closed, and let the error count against the function
+      // Anything unexpected: fail closed, and let the error count against the function
       throw error;
     }
   };

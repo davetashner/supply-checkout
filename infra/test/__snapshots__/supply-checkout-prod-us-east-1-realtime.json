@@ -103,60 +103,6 @@
                   "Arn"
                 ]
               }
-            },
-            {
-              "Action": "dynamodb:GetItem",
-              "Condition": {
-                "ForAllValues:StringLike": {
-                  "dynamodb:LeadingKeys": [
-                    "TEAM#*"
-                  ]
-                }
-              },
-              "Effect": "Allow",
-              "Resource": {
-                "Fn::Join": [
-                  "",
-                  [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition"
-                    },
-                    ":dynamodb:us-east-1:",
-                    {
-                      "Ref": "AWS::AccountId"
-                    },
-                    ":table/supply-checkout-prod-app"
-                  ]
-                ]
-              },
-              "Sid": "TeamMembershipReads"
-            },
-            {
-              "Action": [
-                "kms:Decrypt",
-                "kms:DescribeKey"
-              ],
-              "Condition": {
-                "StringEquals": {
-                  "kms:ViaService": {
-                    "Fn::Join": [
-                      "",
-                      [
-                        "dynamodb.",
-                        {
-                          "Ref": "AWS::Region"
-                        },
-                        ".amazonaws.com"
-                      ]
-                    ]
-                  }
-                }
-              },
-              "Effect": "Allow",
-              "Resource": {
-                "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
-              }
             }
           ],
           "Version": "2012-10-17"
@@ -181,11 +127,10 @@
           },
           "S3Key": "<asset hash>.zip"
         },
-        "Description": "AppSync Events authorizer: Cognito access token, and team membership to subscribe",
+        "Description": "AppSync Events authorizer: Cognito access token, and only the user's own channel to subscribe",
         "Environment": {
           "Variables": {
             "NODE_OPTIONS": "--enable-source-maps",
-            "TABLE_NAME": "supply-checkout-prod-app",
             "USER_POOL_ID": {
               "Ref": "SsmParameterValuesupplycheckoutprodidentityuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter"
             },
@@ -472,7 +417,7 @@
         "EventApiDomainName1C1CA3FD"
       ]
     },
-    "EventApiTeams337BF52D": {
+    "EventApiUsers91CD3747": {
       "Type": "AWS::AppSync::ChannelNamespace",
       "Properties": {
         "ApiId": {
@@ -482,7 +427,7 @@
           ]
         },
         "HandlerConfigs": {},
-        "Name": "teams",
+        "Name": "users",
         "PublishAuthModes": [
           {
             "AuthType": "AWS_IAM"
@@ -808,10 +753,53 @@
                         "ApiId"
                       ]
                     },
-                    "/channelNamespace/teams"
+                    "/channelNamespace/users"
                   ]
                 ]
               }
+            },
+            {
+              "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:Query"
+              ],
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "TEAM#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "userId",
+                    "role",
+                    "status"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "TeamAudienceReads"
             },
             {
               "Action": [
@@ -888,7 +876,7 @@
           },
           "S3Key": "<asset hash>.zip"
         },
-        "Description": "Publishes product and sheet changes from the table's stream to each team's AppSync Events channel",
+        "Description": "Publishes product and sheet changes from the table's stream to each team member's AppSync Events channel",
         "Environment": {
           "Variables": {
             "NODE_OPTIONS": "--enable-source-maps",
@@ -898,6 +886,7 @@
                 "Dns.Http"
               ]
             },
+            "TABLE_NAME": "supply-checkout-prod-app",
             "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
             "SUPPLY_CHECKOUT_ENV": "prod"
           }
@@ -1019,6 +1008,12 @@
             },
             {
               "Pattern": "{\"dynamodb\":{\"Keys\":{\"SK\":{\"S\":[{\"prefix\":\"SHEET#\"}]}}}}"
+            },
+            {
+              "Pattern": "{\"dynamodb\":{\"Keys\":{\"SK\":{\"S\":[{\"prefix\":\"MEMBER#\"}]}}}}"
+            },
+            {
+              "Pattern": "{\"dynamodb\":{\"Keys\":{\"SK\":{\"S\":[\"META\"]}}}}"
             }
           ]
         },

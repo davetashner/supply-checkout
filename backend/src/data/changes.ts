@@ -49,6 +49,20 @@ function versionOf(image: Record<string, { N?: string }> | undefined): number | 
 }
 
 /**
+ * The team whose live-update audience a stream record changes: a write to its
+ * META item (billing status) or to one of its MEMBER items. Undefined for
+ * anything else. Only the keys are read; the member's details never leave
+ * this function.
+ */
+export function audienceChangeFromStream(record: DynamoDBRecord): string | undefined {
+  const pk = record.dynamodb?.Keys?.PK?.S;
+  const sk = record.dynamodb?.Keys?.SK?.S;
+  if (typeof pk !== "string" || typeof sk !== "string") return undefined;
+  if (sk !== "META" && !sk.startsWith(prefixes.member)) return undefined;
+  return valid(() => checkId(TEAM_PK.exec(pk)?.[1], "team ID"));
+}
+
+/**
  * The document change in a stream record, or undefined for anything that
  * isn't a product or sheet document: team metadata, members, invites, usage,
  * audit entries, Stripe links, and anything malformed.
