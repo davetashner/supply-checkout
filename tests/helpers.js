@@ -5,14 +5,15 @@ import * as coverage from "./coverage.js";
 
 const ORIGIN = "https://supply-checkout.test/";
 // Fonts and CDN scripts, which openApp aborts to keep tests hermetic
-const ABORTED = /fonts\.(googleapis|gstatic)\.com|cdn\.jsdelivr\.net/;
+const ABORTED = /^https:\/\/(fonts\.(googleapis|gstatic)\.com|cdn\.jsdelivr\.net)\//;
 
 // The console error a browser logs for a request openApp aborted. Chromium and
 // WebKit say "Failed to load resource"; Firefox reports an aborted cross-origin
 // stylesheet as "Cross-Origin Request Blocked … (Reason: CORS request did not
-// succeed)", with the URL, so only that error naming an aborted host is ignored.
+// succeed)", with the URL, so that error is only ignored for an aborted URL.
 const isAbortedRequest = (text) =>
-  /Failed to load resource/.test(text) || (/Cross-Origin Request Blocked/.test(text) && ABORTED.test(text));
+  /Failed to load resource/.test(text) ||
+  (/Cross-Origin Request Blocked/.test(text) && (text.match(/https:\/\/[^\s"]+/g) || []).some((url) => ABORTED.test(url)));
 // The build under test (BUILD=artifact or BUILD=web), built by tests/global-setup.js
 const files = builtFiles(currentBuild());
 
