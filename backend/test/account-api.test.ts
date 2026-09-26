@@ -11,7 +11,7 @@ import type { CognitoUser } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, ACCOUNT_TAG_UNUSED, routeKey } from "../src/api/routes.js";
-import { authorizeTeam, createInvite, hashEmail, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS } from "../src/data/index.js";
+import { authorizeTeam, createInvite, hashEmail, MAX_TEAMS_PER_USER, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS } from "../src/data/index.js";
 import type { Observability } from "../src/observability/index.js";
 import { REGION } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -22,6 +22,9 @@ const OWNER = "user-owner";
 const PAT = "user-pat";
 const MALLORY = "user-mallory";
 const UNVERIFIED = "user-unverified";
+// Somehow got Pat's address marked verified on their own account (the identity
+// stack stops users writing email_verified; this is the second line)
+const IMPOSTOR = "user-impostor";
 
 const USERS: Record<string, CognitoUser> = {
   [OWNER]: { sub: OWNER, email: "owner@example.com", emailVerified: true },
@@ -29,6 +32,7 @@ const USERS: Record<string, CognitoUser> = {
   [MALLORY]: { sub: MALLORY, email: "mallory@example.com", emailVerified: true },
   // Signed up with Pat's address but never confirmed it
   [UNVERIFIED]: { sub: UNVERIFIED, email: "pat@example.com", emailVerified: false },
+  [IMPOSTOR]: { sub: IMPOSTOR, email: "pat@example.com", emailVerified: true },
 };
 
 let table: MemoryTable;
@@ -120,8 +124,13 @@ const create = (user: string, name: string, key: string) => call("POST", "/teams
 async function invite(email: string, options: { role?: "contributor" | "viewer" | "owner"; ttlDays?: number; team?: string } = {}) {
   const team = options.team ?? "team-a";
   const owner = await authorizeTeam(table.db(), OWNER, team);
-  return (await createInvite(table.db(), owner, { email, role: options.role ?? "viewer", ttlDays: options.ttlDays })).invite;
+  const { invite: made, token } = await createInvite(table.db(), owner, { email, role: options.role ?? "viewer", ttlDays: options.ttlDays });
+  return { ...made, token };
 }
+
+/** Accept, as the app does from the emailed link: the invite ID and its token. */
+const accept = (user: string, inviteId: string, token?: string) =>
+  call("POST", `/invites/${inviteId}/accept`, { user, ...(token === undefined ? {} : { body: { token } }) });
 
 describe("POST /teams", () => {
   it("creates a team on a 14-day trial with the caller as its only owner, in this region", async () => {
@@ -155,6 +164,19 @@ describe("POST /teams", () => {
     const other = await create(MALLORY, "Echo", "second-team");
     expect(other.status).toBe(201);
     expect(other.body.team.id).not.toBe(a.body.team.id);
+  });
+
+  it("answers 409 to a key reused for a differently named team", async () => {
+    expect((await create(MALLORY, "Echo", "reused-key")).status).toBe(201);
+    expect(await create(MALLORY, "Foxtrot", "reused-key")).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
+    expect((await create(MALLORY, "Echo", "reused-key")).status).toBe(200);
+  });
+
+  it("stops at the most teams one account can be in", async () => {
+    for (let i = 0; i < MAX_TEAMS_PER_USER; i++) {
+      table.put({ PK: `USER#${MALLORY}`, SK: `TEAM#busy-${i}`, type: "userTeam", userId: MALLORY, teamId: `busy-${i}`, teamName: "x", role: "viewer" });
+    }
+    expect(await create(MALLORY, "One more", "cap-key-1")).toMatchObject({ status: 429, body: { error: { code: "quota_exceeded", message: expect.stringMatching(/at most 20 teams/) } } });
   });
 
   it("needs a well-formed idempotency key and a name, and nothing else", async () => {
@@ -207,6 +229,15 @@ describe("GET /me", () => {
     expect(scopes.every((s) => s.userId === MALLORY)).toBe(true);
   });
 
+  it("does per-team work for at most the membership limit, however many rows there are", async () => {
+    for (let i = 0; i < MAX_TEAMS_PER_USER + 5; i++) {
+      table.seedTeam(`many-${String(i).padStart(2, "0")}`, { [MALLORY]: "viewer" });
+      table.put({ PK: `USER#${MALLORY}`, SK: `TEAM#many-${String(i).padStart(2, "0")}`, type: "userTeam", userId: MALLORY, teamId: `many-${String(i).padStart(2, "0")}`, teamName: "x", role: "viewer" });
+    }
+    expect((await call("GET", "/me", { user: MALLORY })).body.teams).toHaveLength(MAX_TEAMS_PER_USER);
+    expect(scopes.filter((s) => s.teamId !== undefined)).toHaveLength(MAX_TEAMS_PER_USER);
+  });
+
   it("skips a switcher row for a team the caller was removed from", async () => {
     table.put({ PK: `USER#${MALLORY}`, SK: "TEAM#team-a", type: "userTeam", userId: MALLORY, teamId: "team-a", teamName: "team-a", role: "viewer" });
     expect((await call("GET", "/me", { user: MALLORY })).body.teams).toEqual([]);
@@ -222,7 +253,7 @@ describe("GET /me", () => {
     const pat = (await call("GET", "/me", { user: PAT })).body;
     // Pat is already in team-a, so that invite isn't offered
     expect(pat.invites).toEqual([
-      { id: fromB.inviteId, teamId: "team-b", teamName: "team-b", role: "viewer", expiresAt: new Date(fromB.expiresAt * 1000).toISOString() },
+      { id: fromB.inviteId, teamName: "team-b", role: "viewer", expiresAt: new Date(fromB.expiresAt * 1000).toISOString() },
     ]);
     expect(fromA.teamId).toBe("team-a");
     // Same address, not verified: nothing, and no invitee session at all
@@ -239,8 +270,8 @@ describe("GET /me", () => {
 describe("POST /invites/{inviteId}/accept", () => {
   it("adds the caller to the team with the invited role, once", async () => {
     await table.seedTeam("team-b", { [OWNER]: "owner" });
-    const { inviteId } = await invite("pat@example.com", { team: "team-b", role: "owner" });
-    const accepted = await call("POST", `/invites/${inviteId}/accept`, { user: PAT });
+    const { inviteId, token } = await invite("pat@example.com", { team: "team-b", role: "owner" });
+    const accepted = await accept(PAT, inviteId, token);
     expect(accepted).toMatchObject({ status: 200, body: { team: { id: "team-b", role: "owner" } } });
     expect(table.get("TEAM#team-b", `MEMBER#${PAT}`)).toMatchObject({ role: "owner", email: "pat@example.com" });
     expect(table.get("TEAM#team-b", "META")?.owners).toBe(1);
@@ -249,27 +280,64 @@ describe("POST /invites/{inviteId}/accept", () => {
     expect(me.teams.map((t: { id: string }) => t.id)).toEqual(["team-a", "team-b"]);
     expect(me.invites).toEqual([]);
     // Used: it's gone
-    expect(await call("POST", `/invites/${inviteId}/accept`, { user: PAT })).toMatchObject({ status: 404, body: { error: { code: "not_found" } } });
+    expect(await accept(PAT, inviteId, token)).toMatchObject({ status: 404, body: { error: { code: "not_found" } } });
   });
 
-  it("refuses another email address, an unverified one, and an expired invite", async () => {
+  it("needs the token from the emailed link: none, a wrong one or another invite's is 404", async () => {
     await table.seedTeam("team-b", { [OWNER]: "owner" });
-    const { inviteId } = await invite("pat@example.com", { team: "team-b", ttlDays: 1 });
-    expect((await call("POST", `/invites/${inviteId}/accept`, { user: MALLORY })).status).toBe(404);
-    expect(await call("POST", `/invites/${inviteId}/accept`, { user: UNVERIFIED })).toMatchObject({ status: 403, body: { error: { code: "permission_denied" } } });
+    const { inviteId, token } = await invite("pat@example.com", { team: "team-b" });
+    const other = await invite("pat@example.com", { team: "team-b" });
+    for (const wrong of [undefined, "", "x".repeat(43), other.token, 42 as unknown as string]) {
+      expect(await accept(PAT, inviteId, wrong), String(wrong)).toMatchObject({ status: 404, body: { error: { code: "not_found" } } });
+    }
+    expect(table.get("TEAM#team-b", `MEMBER#${PAT}`)).toBeUndefined();
+    expect(table.get("TEAM#team-b", `INVITE#${inviteId}`)).toBeDefined();
+    expect((await call("POST", `/invites/${inviteId}/accept`, { user: PAT, body: { token, teamId: "team-a" } })).status).toBe(400);
+    expect((await accept(PAT, inviteId, token)).status).toBe(200);
+  });
+
+  it("keeps out someone with the invited address marked verified but no token", async () => {
+    await table.seedTeam("team-b", { [OWNER]: "owner" });
+    const { inviteId } = await invite("pat@example.com", { team: "team-b", role: "owner" });
+    // They can see the invite exists (team name and role)...
+    expect((await call("GET", "/me", { user: IMPOSTOR })).body.invites).toEqual([expect.objectContaining({ id: inviteId, teamName: "team-b", role: "owner" })]);
+    // ...but can't join without the link, however they guess
+    for (const guess of [undefined, inviteId, "a".repeat(43)]) expect((await accept(IMPOSTOR, inviteId, guess)).status).toBe(404);
+    expect(table.get("TEAM#team-b", `MEMBER#${IMPOSTOR}`)).toBeUndefined();
+  });
+
+  it("refuses another email address, an unverified one, and an expired invite, even with the token", async () => {
+    await table.seedTeam("team-b", { [OWNER]: "owner" });
+    const { inviteId, token } = await invite("pat@example.com", { team: "team-b", ttlDays: 1 });
+    expect((await accept(MALLORY, inviteId, token)).status).toBe(404);
+    expect(await accept(UNVERIFIED, inviteId, token)).toMatchObject({ status: 403, body: { error: { code: "permission_denied" } } });
     now += 2 * DAY;
-    expect((await call("POST", `/invites/${inviteId}/accept`, { user: PAT })).status).toBe(404);
+    expect((await accept(PAT, inviteId, token)).status).toBe(404);
     for (const user of [MALLORY, UNVERIFIED, PAT]) expect(table.get("TEAM#team-b", `MEMBER#${user}`)).toBeUndefined();
     // Mallory's lookups ran on her own invitee partition, never Pat's
     expect(scopes.filter((s) => s.userId === MALLORY && s.invitee).map((s) => s.invitee)).toEqual([hashEmail("mallory@example.com")]);
     expect(scopes.some((s) => s.userId === MALLORY && s.teamId === "team-b")).toBe(false);
   });
 
-  it("answers 409 to someone already in the team, and 400 to a malformed ID", async () => {
-    const { inviteId } = await invite("pat@example.com");
-    expect(await call("POST", `/invites/${inviteId}/accept`, { user: PAT })).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
+  it("matches a Kelvin-sign address to the plain one", async () => {
+    await table.seedTeam("team-b", { [OWNER]: "owner" });
+    // U+212A KELVIN SIGN: NFKC folds it to K on both sides
+    const { inviteId, token } = await invite("\u212Aat@example.com", { team: "team-b" });
+    USERS["user-kat"] = { sub: "user-kat", email: "kat@example.com", emailVerified: true };
+    expect((await call("GET", "/me", { user: "user-kat" })).body.invites).toHaveLength(1);
+    expect((await accept("user-kat", inviteId, token)).status).toBe(200);
+  });
+
+  it("answers 409 to someone already in the team, 429 at the team limit, and 400 to a malformed ID", async () => {
+    const { inviteId, token } = await invite("pat@example.com");
+    expect(await accept(PAT, inviteId, token)).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
     expect(table.get("TEAM#team-a", `INVITE#${inviteId}`)).toBeDefined();
-    expect((await call("POST", "/invites/not%20an%20id/accept", { user: PAT })).status).toBe(400);
+    expect((await accept(PAT, "not%20an%20id", token)).status).toBe(400);
+    for (let i = 0; i < MAX_TEAMS_PER_USER; i++) {
+      table.put({ PK: `USER#${MALLORY}`, SK: `TEAM#busy-${i}`, type: "userTeam", userId: MALLORY, teamId: `busy-${i}`, teamName: "x", role: "viewer" });
+    }
+    const busy = await invite("mallory@example.com");
+    expect(await accept(MALLORY, busy.inviteId, busy.token)).toMatchObject({ status: 429, body: { error: { code: "quota_exceeded" } } });
   });
 });
 

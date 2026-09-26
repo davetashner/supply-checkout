@@ -3,6 +3,7 @@ import { Certificate } from "aws-cdk-lib/aws-certificatemanager";
 import {
   AccountRecovery,
   CfnManagedLoginBranding,
+  ClientAttributes,
   FeaturePlan,
   ManagedLoginVersion,
   Mfa,
@@ -169,6 +170,13 @@ export class IdentityStack extends SupplyCheckoutStack {
         // References to the providers, so CloudFormation creates them first
         ...providers.map((p) => UserPoolClientIdentityProvider.custom(p.providerName)),
       ],
+      // What a signed-in user may change about themselves (UpdateUserAttributes,
+      // which the admin scope allows). Never email_verified or
+      // phone_number_verified: the API trusts a verified email to list and
+      // accept invites. Changing `email` keeps the old, verified address until
+      // the new one is confirmed with a code (keepOriginal). Attributes an IdP
+      // maps must be in this list, so the IdPs don't map emailVerified.
+      writeAttributes: new ClientAttributes().withStandardAttributes({ email: true, givenName: true, familyName: true }),
       preventUserExistenceErrors: true,
       enableTokenRevocation: true,
       accessTokenValidity: Duration.minutes(60),
@@ -209,8 +217,9 @@ export class IdentityStack extends SupplyCheckoutStack {
           clientSecretValue: field(secrets.google, "clientSecret"),
           scopes: ["openid", "email", "profile"],
           attributeMapping: {
+            // No emailVerified: an IdP-mapped attribute must be client-writable,
+            // and email_verified mustn't be (see the web client's writeAttributes)
             email: ProviderAttribute.GOOGLE_EMAIL,
-            emailVerified: ProviderAttribute.GOOGLE_EMAIL_VERIFIED,
             givenName: ProviderAttribute.GOOGLE_GIVEN_NAME,
             familyName: ProviderAttribute.GOOGLE_FAMILY_NAME,
           },
@@ -228,7 +237,6 @@ export class IdentityStack extends SupplyCheckoutStack {
           scopes: ["name", "email"],
           attributeMapping: {
             email: ProviderAttribute.APPLE_EMAIL,
-            emailVerified: ProviderAttribute.APPLE_EMAIL_VERIFIED,
             givenName: ProviderAttribute.APPLE_FIRST_NAME,
             familyName: ProviderAttribute.APPLE_LAST_NAME,
           },

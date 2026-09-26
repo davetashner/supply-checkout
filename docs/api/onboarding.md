@@ -23,7 +23,7 @@ After sign-in (and after every page load with a session), call `GET /me`:
     { "id": "…", "name": "Echo Cleaning", "role": "owner", "plan": "trial", "status": "trialing", "trialEndsAt": "2026-10-10T12:00:00.000Z", "homeRegion": "…" }
   ],
   "invites": [
-    { "id": "…", "teamId": "…", "teamName": "Bravo Co", "role": "contributor", "expiresAt": "2026-10-03T12:00:00.000Z" }
+    { "id": "…", "teamName": "Bravo Co", "role": "contributor", "expiresAt": "2026-10-03T12:00:00.000Z" }
   ]
 }
 ```
@@ -39,16 +39,27 @@ Then:
    return `{"team": {…}}`, with `role: "owner"`. Open it: its `id` is the
    `teamId` for the data routes. It's empty, so the app shows its empty
    inventory, ready to add products.
-2. **Invites** (with or without teams): offer each one ("Bravo Co invited you as
-   a contributor"), with **Join** and, if the user has no teams yet, **Create my
-   own team instead**. **Join** is `POST /invites/{id}/accept` with no body; it
-   returns `{"team": {…}}` with the invited role. Open that team.
-   - `404 not_found`: the invite expired, was used or revoked. Drop it from the
-     list and say so.
+2. **Arrived from an invite link.** The invite email links to the app with the
+   invite's ID and a one-time token (the link format is
+   `supply-checkout-5tp`'s; for example `?invite=<id>&token=<token>`). Keep
+   both across sign-in (in `sessionStorage`, then remove them from the URL),
+   and once `/me` has loaded offer that invite ("Bravo Co invited you as a
+   contributor") with **Join**, and **Create my own team instead** if the user
+   has no teams. **Join** is `POST /invites/{id}/accept` with
+   `{"token": "<token from the link>"}`; it returns `{"team": {…}}` with the
+   invited role. Open that team.
+   - `404 not_found`: the invite expired, was used or revoked, the token is
+     wrong, or it was sent to another address. Say so, and suggest asking for
+     a new invite.
+   - `429 quota_exceeded`: the user is already in 20 teams; they must leave one.
    - `403 permission_denied`: the email isn't verified. `/me` says so too
      (`emailVerified: false`, and `invites` is always empty then). Ask the
      user to verify their email in Managed Login.
    - `409 aborted`: they're already in the team. Open it.
+
+   **Invites in `/me` without a link** (the user signed in some other way):
+   show them ("Bravo Co invited you as a contributor"), with "Open the link in
+   your invite email to join". They can't be accepted without the token.
 3. **One team, no invites**: open it.
 4. **Several teams**: open the last one used (keep its ID in `localStorage`;
    if it's no longer in `teams`, fall back to the first) and show a switcher
@@ -66,7 +77,10 @@ answer a viewer's write with `403 invalid_argument`). Use `status` and
 - `400 bad_request`: no or malformed `Idempotency-Key` (8–128 letters, digits,
   `-` or `_`), a missing or blank name, a name over 200 characters, or any
   body field other than `name`.
-- `429 quota_exceeded`: the user has created 5 teams today (UTC).
+- `409 aborted`: the same `Idempotency-Key` already made a team with another
+  name. Make a new key when the user changes the name after a failed attempt.
+- `429 quota_exceeded`: the user has created 5 teams today (UTC), or is already
+  in 20 teams. Show the message.
 
 ## What the server guarantees
 
@@ -75,8 +89,11 @@ answer a viewer's write with `403 invalid_argument`). Use `status` and
 - A new team gets the caller as its only owner, `homeRegion` = the region that
   served the request, `plan: "trial"`, `status: "trialing"` and a 14-day
   `trialEndsAt` (ADR 0009). Billing (`supply-checkout-x0l`) takes it from there.
-- An invite is listed and accepted only for the email address Cognito has
-  verified for the caller, only before it expires, and only once.
+- An invite is listed only for the email address Cognito has verified for the
+  caller. It is accepted only with the token from its emailed link *and* by a
+  caller with that verified address, only before it expires, and only once.
+  Users can't mark their own email verified: the web client can't write
+  `email_verified`.
 - Every DynamoDB call runs on a role session scoped by IAM to the caller's own
   `USER#` partition, plus at most the one team and the one invitee partition
   the request is entitled to (see the README's "Data API").

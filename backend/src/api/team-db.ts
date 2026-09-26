@@ -77,7 +77,17 @@ export function roleSession(sts: Sts, now: () => number, input: { roleArn: strin
   };
 }
 
-/** A small LRU cache of Db handles, closing the ones it evicts. */
+/**
+ * How long an evicted handle stays open. A request that took the handle before
+ * it was evicted may still be using it, and a Lambda request lasts at most the
+ * function's timeout (10 seconds), so it's closed well after that.
+ */
+export const CLOSE_EVICTED_AFTER_MS = 60_000;
+
+/**
+ * A small LRU cache of Db handles. An evicted handle is closed only after
+ * CLOSE_EVICTED_AFTER_MS, never under a request that is still using it.
+ */
 export function dbCache(maxSize: number) {
   const cache = new Map<string, Db>();
   return (key: string, create: () => Db): Db => {
@@ -93,7 +103,8 @@ export function dbCache(maxSize: number) {
     if (cache.size > maxSize) {
       const [oldest, evicted] = cache.entries().next().value as [string, Db];
       cache.delete(oldest);
-      closeDb(evicted);
+      // unref: a pending close never keeps the process alive
+      setTimeout(() => closeDb(evicted), CLOSE_EVICTED_AFTER_MS).unref();
     }
     return db;
   };

@@ -280,7 +280,9 @@ paths:
         Idempotent: send a new `Idempotency-Key` for each "create team"
         attempt, and the same one on retries. A repeat with the same key
         returns the team the first request made (200) instead of making
-        another. A user can create 5 teams a day (429 `quota_exceeded`).
+        another; the same key with a different name is 409 `aborted`. A user
+        can create 5 teams a day, and be in at most 20 teams (429
+        `quota_exceeded` for either).
       parameters:
         - name: Idempotency-Key
           in: header
@@ -302,23 +304,37 @@ paths:
         "200": { $ref: "#/components/responses/TeamCreated" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "409":
+          description: "`aborted`: this `Idempotency-Key` already made a team with another name."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429": { $ref: "#/components/responses/TooManyTeams" }
   /invites/{inviteId}/accept:
     parameters:
       - name: inviteId
         in: path
         required: true
-        description: "`id` from an invite in `GET /me`."
+        description: "The invite's ID, from the emailed link (it's also `id` in `GET /me`)."
         schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
     post:
       tags: [account]
       operationId: acceptInvite
       summary: Join the team that invited the caller's verified email address.
       description: |
-        The invite must be addressed to the caller's email, which Cognito must
-        have verified; it must not have expired; and it works once. The
-        caller joins with the invite's role.
+        Needs both the `token` from the emailed invite link (proof the caller
+        read that mailbox) and a caller whose Cognito-verified email is the
+        invite's address. The invite must not have expired, and it works once.
+        The caller joins with the invite's role. A missing or wrong token is
+        the same 404 as an unknown invite.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token: { type: string, description: The `token` parameter of the emailed invite link, as is. }
       responses:
         "200":
           description: The team the caller joined.
@@ -335,11 +351,12 @@ paths:
           description: "`permission_denied`: the caller's email isn't verified yet."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "404":
-          description: "`not_found`: no such invite for the caller's email, or it expired or was already used."
+          description: "`not_found`: no such invite for the caller's email, a missing or wrong token, or it expired or was already used."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "409":
           description: "`aborted`: the caller is already a member of the team."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429": { $ref: "#/components/responses/TooManyTeams" }
   /auth/session:
     post:
       tags: [auth]
@@ -499,10 +516,10 @@ components:
         homeRegion: { type: string, description: The region the team was created in (ADR 0010). }
     Invite:
       type: object
-      required: [id, teamId, teamName, role, expiresAt]
+      description: A pending invite, to show. Accepting it needs the token from the invite email.
+      required: [id, teamName, role, expiresAt]
       properties:
-        id: { type: string, description: "Accept with `POST /invites/{id}/accept`." }
-        teamId: { type: string }
+        id: { type: string, description: "The invite's ID, as in the emailed link." }
         teamName: { type: string }
         role: { type: string, enum: [owner, contributor, viewer], description: The role the caller joins with. }
         expiresAt: { type: string, format: date-time }
@@ -559,7 +576,7 @@ components:
             properties:
               team: { $ref: "#/components/schemas/Team" }
     TooManyTeams:
-      description: "`quota_exceeded`: the caller has created 5 teams today (UTC)."
+      description: "`quota_exceeded`: the caller has created 5 teams today (UTC), or is already in 20 teams (the message says which)."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     BadRequest:
       description: "`bad_request`: malformed JSON, ID, field, query or cursor."

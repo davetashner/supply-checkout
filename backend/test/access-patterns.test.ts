@@ -34,6 +34,7 @@ import {
   listSheetsByDate,
   listTeamsForUser,
   markWebhookProcessed,
+  MAX_TEAMS_PER_USER,
   NotFoundError,
   recordAudit,
   recordReceiptRead,
@@ -71,8 +72,8 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
     const ownerId = newUser();
     const { team: created, context: owner } = await createTeam(db, { userId: ownerId, email: "owner@example.com" }, { name });
     const join = async (role: "contributor" | "viewer") => {
-      const { invite } = await createInvite(db, owner, { email: `${role}@example.com`, role });
-      return acceptInvite(db, { userId: newUser(), verifiedEmail: `${role}@example.com` }, invite);
+      const { invite, token } = await createInvite(db, owner, { email: `${role}@example.com`, role });
+      return acceptInvite(db, { userId: newUser(), verifiedEmail: `${role}@example.com` }, invite, token);
     };
     return { team: created, owner, contributor: await join("contributor"), viewer: await join("viewer") };
   }
@@ -106,6 +107,8 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       expect(other.created).toBe(true);
       expect(other.team.teamId).not.toBe(first.team.teamId);
       await expect(createTeam(db, { userId }, { name: "Echo", requestKey: "short" }, now)).rejects.toThrow(InvalidInputError);
+      // The same key for a differently named team is a mistake, not a retry
+      await expect(createTeam(db, { userId }, { name: "Foxtrot", requestKey: "key-00000001" }, now)).rejects.toThrow(ConflictError);
     });
 
     it("limits how many teams a user creates a day, and a replay isn't one more", async () => {
@@ -207,8 +210,8 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await expect(setMemberRole(db, second, second.userId, "viewer")).rejects.toThrow(ConflictError);
       await expect(removeMember(db, second, second.userId)).rejects.toThrow(ConflictError);
 
-      const { invite } = await createInvite(db, second, { email: "co-owner@example.com", role: "owner" });
-      const third = await acceptInvite(db, { userId: newUser(), verifiedEmail: "co-owner@example.com" }, invite);
+      const { invite, token } = await createInvite(db, second, { email: "co-owner@example.com", role: "owner" });
+      const third = await acceptInvite(db, { userId: newUser(), verifiedEmail: "co-owner@example.com" }, invite, token);
       expect(third.role).toBe("owner");
       expect(await owners(second)).toEqual({ counted: 2, actual: 2 });
       await removeMember(db, third, third.userId);
@@ -260,12 +263,12 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
 
       const userId = newUser();
       const found = (await findInvite(db, token)) as Invite;
-      const joined = await acceptInvite(db, { userId, verifiedEmail: "NEW@example.com" }, found);
+      const joined = await acceptInvite(db, { userId, verifiedEmail: "NEW@example.com" }, found, token);
       expect(joined).toMatchObject({ teamId: owner.teamId, role: "viewer" });
       expect(await getMember(db, owner, userId)).toMatchObject({ role: "viewer", email: "new@example.com" });
       expect(await listInvites(db, owner)).toEqual([]);
       expect(await findInvite(db, token)).toBeUndefined();
-      await expect(acceptInvite(db, { userId: newUser(), verifiedEmail: "new@example.com" }, found)).rejects.toThrow(NotFoundError);
+      await expect(acceptInvite(db, { userId: newUser(), verifiedEmail: "new@example.com" }, found, token)).rejects.toThrow(NotFoundError);
     });
 
     it("is listed and found by the invitee's verified email, across teams", async () => {
@@ -288,20 +291,49 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       expect(await findInviteForEmail(db, "pat@example.com", fromB.invite.inviteId, later)).toBeUndefined();
     });
 
-    it("is accepted only with the invited email, before it expires, and once", async () => {
+    it("is accepted only with the invited email and the link's token, before it expires, and once", async () => {
       // An address no other test in this file (and so this table) invites
       const { owner } = await team();
-      const { invite } = await createInvite(db, owner, { email: "quinn@example.com", role: "viewer", ttlDays: 1 });
+      const { invite, token } = await createInvite(db, owner, { email: "quinn@example.com", role: "viewer", ttlDays: 1 });
+      const other = await createInvite(db, owner, { email: "quinn@example.com", role: "viewer" });
       const pat = newUser();
-      await expect(acceptInvite(db, { userId: pat, verifiedEmail: "mallory@example.com" }, invite)).rejects.toThrow(ForbiddenError);
+      const as = (verifiedEmail: string) => ({ userId: pat, verifiedEmail });
+      await expect(acceptInvite(db, as("mallory@example.com"), invite, token)).rejects.toThrow(ForbiddenError);
       // A forged invite object naming another address still has to match the stored item
-      await expect(acceptInvite(db, { userId: pat, verifiedEmail: "mallory@example.com" }, { ...invite, email: "mallory@example.com" })).rejects.toThrow(NotFoundError);
-      await expect(acceptInvite(db, { userId: pat, verifiedEmail: "quinn@example.com" }, invite, new Date(Date.now() + 2 * 86400_000))).rejects.toThrow(NotFoundError);
-      await expect(acceptInvite(db, { userId: pat, verifiedEmail: "quinn@example.com" }, { ...invite, role: "owner" })).rejects.toThrow(NotFoundError);
+      await expect(acceptInvite(db, as("mallory@example.com"), { ...invite, email: "mallory@example.com" }, token)).rejects.toThrow(NotFoundError);
+      // The right address, but no token, a wrong one, or another invite's
+      for (const wrong of ["", "short", "x".repeat(43), other.token]) {
+        await expect(acceptInvite(db, as("quinn@example.com"), invite, wrong), wrong).rejects.toThrow(NotFoundError);
+      }
+      await expect(acceptInvite(db, as("quinn@example.com"), invite, token, new Date(Date.now() + 2 * 86400_000))).rejects.toThrow(NotFoundError);
+      await expect(acceptInvite(db, as("quinn@example.com"), { ...invite, role: "owner" }, token)).rejects.toThrow(NotFoundError);
       await expect(authorizeTeam(db, pat, owner.teamId)).rejects.toThrow(ForbiddenError);
-      expect(await acceptInvite(db, { userId: pat, verifiedEmail: "quinn@example.com" }, invite)).toMatchObject({ teamId: owner.teamId, role: "viewer" });
-      expect(await listInvitesForEmail(db, "quinn@example.com")).toEqual([]);
-      await expect(acceptInvite(db, { userId: newUser(), verifiedEmail: "quinn@example.com" }, invite)).rejects.toThrow(NotFoundError);
+      expect(await acceptInvite(db, as("quinn@example.com"), invite, token)).toMatchObject({ teamId: owner.teamId, role: "viewer" });
+      expect((await listInvitesForEmail(db, "quinn@example.com")).map((i) => i.inviteId)).toEqual([other.invite.inviteId]);
+      await expect(acceptInvite(db, { userId: newUser(), verifiedEmail: "quinn@example.com" }, invite, token)).rejects.toThrow(NotFoundError);
+    });
+
+    it("matches addresses after NFKC, so a Kelvin sign is a K", async () => {
+      const { owner } = await team();
+      // U+212A KELVIN SIGN, which NFKC folds to a plain K
+      const { invite, token } = await createInvite(db, owner, { email: "\u212Aelvin@example.com", role: "viewer" });
+      expect(invite.email).toBe("kelvin@example.com");
+      expect((await listInvitesForEmail(db, "KELVIN@example.com")).map((i) => i.inviteId)).toEqual([invite.inviteId]);
+      expect(await acceptInvite(db, { userId: newUser(), verifiedEmail: "Kelvin@example.com" }, invite, token)).toMatchObject({ teamId: owner.teamId });
+    });
+
+    it("stops at the most teams one account can be in", async () => {
+      db = table.db;
+      const userId = newUser();
+      const day = (i: number) => new Date(Date.UTC(2026, 0, 1 + Math.floor(i / TEAMS_PER_USER_PER_DAY), 12));
+      for (let i = 0; i < MAX_TEAMS_PER_USER; i++) await createTeam(db, { userId }, { name: `Team ${i}`, requestKey: `cap-key-${i}` }, day(i));
+      const later = day(MAX_TEAMS_PER_USER + TEAMS_PER_USER_PER_DAY);
+      await expect(createTeam(db, { userId }, { name: "One more", requestKey: "cap-key-x" }, later)).rejects.toThrow(LimitReachedError);
+      // A replay of one they already made still answers
+      expect((await createTeam(db, { userId }, { name: "Team 0", requestKey: "cap-key-0" }, later)).created).toBe(false);
+      const { owner } = await team();
+      const { invite, token } = await createInvite(db, owner, { email: "busy@example.com", role: "viewer" });
+      await expect(acceptInvite(db, { userId, verifiedEmail: "busy@example.com" }, invite, token)).rejects.toThrow(LimitReachedError);
     });
 
     it("ignores expired, revoked and unknown tokens, and only owners invite", async () => {
@@ -339,7 +371,7 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
     it("rejects an invite for someone who is already a member", async () => {
       const { owner, viewer } = await team();
       const { invite, token } = await createInvite(db, owner, { email: "v@example.com", role: "contributor" });
-      await expect(acceptInvite(db, { userId: viewer.userId, verifiedEmail: "v@example.com" }, invite)).rejects.toThrow(ConflictError);
+      await expect(acceptInvite(db, { userId: viewer.userId, verifiedEmail: "v@example.com" }, invite, token)).rejects.toThrow(ConflictError);
       // The failed transaction left the invite in place
       expect(await findInvite(db, token)).toBeDefined();
     });

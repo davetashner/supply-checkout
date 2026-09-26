@@ -2,7 +2,7 @@
 
 import type { AssumeRoleCommand } from "@aws-sdk/client-sts";
 import { describe, expect, it, vi } from "vitest";
-import { teamScopedDbs } from "../src/api/team-db.js";
+import { CLOSE_EVICTED_AFTER_MS, teamScopedDbs } from "../src/api/team-db.js";
 import { connection } from "../src/data/client.js";
 import type { Db } from "../src/data/index.js";
 import { REGION } from "./helpers.js";
@@ -85,7 +85,8 @@ describe("teamScopedDbs", () => {
     expect(sts.send).not.toHaveBeenCalled();
   });
 
-  it("keeps at most maxTeams handles, closing the least recently used", () => {
+  it("keeps at most maxTeams handles, closing the least recently used once no request can still be using it", () => {
+    vi.useFakeTimers();
     const { sts } = fakeSts();
     const dbForTeam = teamScopedDbs({ roleArn: ROLE, env, sts, maxTeams: 2 });
     const a = dbForTeam("a");
@@ -93,6 +94,12 @@ describe("teamScopedDbs", () => {
     const destroyB = vi.spyOn(connection(b).client, "destroy");
     dbForTeam("a");
     dbForTeam("c");
+    // Evicted, but a request that already holds it can finish
+    expect(destroyB).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(CLOSE_EVICTED_AFTER_MS - 1);
+    expect(destroyB).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    vi.useRealTimers();
     expect(destroyB).toHaveBeenCalled();
     expect(dbForTeam("a")).toBe(a);
     expect(dbForTeam("b")).not.toBe(b);

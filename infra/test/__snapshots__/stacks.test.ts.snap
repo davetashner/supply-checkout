@@ -1190,6 +1190,15 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
       "Type": "AWS::IAM::Policy",
     },
     "DefaultStageEE28A986": {
+      "DependsOn": [
+        "HttpApiGETmeAccountIntegrationPermission45713A73",
+        "HttpApiGETmeAccountIntegration0EFB5255",
+        "HttpApiGETme466879BE",
+        "HttpApiPOSTinvitesinviteIdacceptAccountIntegrationPermission862E8450",
+        "HttpApiPOSTinvitesinviteIdacceptD95AE303",
+        "HttpApiPOSTteamsAccountIntegrationPermission37B4CDE2",
+        "HttpApiPOSTteams93EBE9A5",
+      ],
       "Properties": {
         "AccessLogSettings": {
           "DestinationArn": {
@@ -1207,6 +1216,20 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
         "DefaultRouteSettings": {
           "ThrottlingBurstLimit": 400,
           "ThrottlingRateLimit": 200,
+        },
+        "RouteSettings": {
+          "GET /me": {
+            "ThrottlingBurstLimit": 100,
+            "ThrottlingRateLimit": 50,
+          },
+          "POST /invites/{inviteId}/accept": {
+            "ThrottlingBurstLimit": 20,
+            "ThrottlingRateLimit": 10,
+          },
+          "POST /teams": {
+            "ThrottlingBurstLimit": 20,
+            "ThrottlingRateLimit": 10,
+          },
         },
         "StageName": "$default",
         "Tags": {
@@ -3985,6 +4008,11 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
         "UserPoolId": {
           "Ref": "UserPool6BA7E5F2",
         },
+        "WriteAttributes": [
+          "email",
+          "family_name",
+          "given_name",
+        ],
       },
       "Type": "AWS::Cognito::UserPoolClient",
     },
@@ -8807,6 +8835,15 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
       "Type": "AWS::IAM::Policy",
     },
     "DefaultStageEE28A986": {
+      "DependsOn": [
+        "HttpApiGETmeAccountIntegrationPermission45713A73",
+        "HttpApiGETmeAccountIntegration0EFB5255",
+        "HttpApiGETme466879BE",
+        "HttpApiPOSTinvitesinviteIdacceptAccountIntegrationPermission862E8450",
+        "HttpApiPOSTinvitesinviteIdacceptD95AE303",
+        "HttpApiPOSTteamsAccountIntegrationPermission37B4CDE2",
+        "HttpApiPOSTteams93EBE9A5",
+      ],
       "Properties": {
         "AccessLogSettings": {
           "DestinationArn": {
@@ -8824,6 +8861,20 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
         "DefaultRouteSettings": {
           "ThrottlingBurstLimit": 400,
           "ThrottlingRateLimit": 200,
+        },
+        "RouteSettings": {
+          "GET /me": {
+            "ThrottlingBurstLimit": 100,
+            "ThrottlingRateLimit": 50,
+          },
+          "POST /invites/{inviteId}/accept": {
+            "ThrottlingBurstLimit": 20,
+            "ThrottlingRateLimit": 10,
+          },
+          "POST /teams": {
+            "ThrottlingBurstLimit": 20,
+            "ThrottlingRateLimit": 10,
+          },
         },
         "StageName": "$default",
         "Tags": {

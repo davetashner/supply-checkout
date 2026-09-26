@@ -104,8 +104,8 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
   it("refuses viewers, reserved fields and oversized documents", async () => {
     const owner = await team();
     const { createInvite, acceptInvite } = await import("../src/data/index.js");
-    const { invite } = await createInvite(db, owner, { email: "v@example.com", role: "viewer" });
-    const viewer = await acceptInvite(db, { userId: newUser(), verifiedEmail: "v@example.com" }, invite);
+    const { invite, token } = await createInvite(db, owner, { email: "v@example.com", role: "viewer" });
+    const viewer = await acceptInvite(db, { userId: newUser(), verifiedEmail: "v@example.com" }, invite, token);
     await expect(setDocument(db, viewer, "products", "p1", { name: "x" })).rejects.toThrow(ForbiddenError);
     await expect(deleteDocument(db, viewer, "products", "p1")).rejects.toThrow(ForbiddenError);
     expect(await getDocument(db, viewer, "products", "p1")).toBeUndefined();

@@ -44,6 +44,12 @@ export interface AccountRoute {
   readonly method: "GET" | "POST";
   readonly path: string;
   readonly action: "me" | "createTeam" | "acceptInvite";
+  /**
+   * API Gateway's throttle for this route across all callers (requests a
+   * second, and burst), below the stage's. /me assumes a role per team, so it
+   * is bounded to keep STS well inside its rate.
+   */
+  readonly throttle: { readonly rate: number; readonly burst: number };
 }
 
 /**
@@ -54,9 +60,9 @@ export interface AccountRoute {
  * the team-scoped data function.
  */
 export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
-  { method: "GET", path: "/me", action: "me" },
-  { method: "POST", path: "/teams", action: "createTeam" },
-  { method: "POST", path: "/invites/{inviteId}/accept", action: "acceptInvite" },
+  { method: "GET", path: "/me", action: "me", throttle: { rate: 50, burst: 100 } },
+  { method: "POST", path: "/teams", action: "createTeam", throttle: { rate: 10, burst: 20 } },
+  { method: "POST", path: "/invites/{inviteId}/accept", action: "acceptInvite", throttle: { rate: 10, burst: 20 } },
 ];
 
 /** The header that makes `POST /teams` idempotent: the client's key for one "create team" attempt. */

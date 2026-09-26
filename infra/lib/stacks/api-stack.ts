@@ -3,6 +3,7 @@ import { Aws, Duration, Stack, Validations } from "aws-cdk-lib";
 import { AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
 import {
   ApiMapping,
+  CfnStage,
   CorsHttpMethod,
   DomainName,
   HttpApi,
@@ -28,6 +29,7 @@ import {
   AUTH_ROUTES,
   DATA_ROUTES,
   IDEMPOTENCY_HEADER,
+  routeKey,
   TEAM_SESSION_TAG,
 } from "../../../backend/src/api/routes.js";
 import { GSI1, GSI2, tableName } from "../../../backend/src/data/schema.js";
@@ -288,9 +290,15 @@ export class ApiStack extends SupplyCheckoutStack {
       this.api.addRoutes({ path: route.path, methods: [route.method as HttpMethod], integration: dataIntegration, authorizer });
     }
     const accountIntegration = new HttpLambdaIntegration("AccountIntegration", this.live(this.accountFunction));
+    // RouteSettings is a JSON map in CloudFormation, so it takes CloudFormation's casing
+    const routeSettings: Record<string, { ThrottlingRateLimit: number; ThrottlingBurstLimit: number }> = {};
     for (const route of ACCOUNT_ROUTES) {
-      this.api.addRoutes({ path: route.path, methods: [route.method as HttpMethod], integration: accountIntegration, authorizer });
+      const added = this.api.addRoutes({ path: route.path, methods: [route.method as HttpMethod], integration: accountIntegration, authorizer });
+      // Route settings name the route, so it must exist first
+      stage.node.addDependency(...added);
+      routeSettings[routeKey(route)] = { ThrottlingRateLimit: route.throttle.rate, ThrottlingBurstLimit: route.throttle.burst };
     }
+    (stage.node.defaultChild as CfnStage).routeSettings = routeSettings;
     const authIntegration = new HttpLambdaIntegration("AuthIntegration", this.live(this.authFunction));
     for (const route of AUTH_ROUTES) {
       const [added] = this.api.addRoutes({ path: route.path, methods: [route.method as HttpMethod], integration: authIntegration });

@@ -90,10 +90,18 @@ export const TRIAL_DAYS = 14;
 /** Teams one user may create per UTC day: a guard against scripts and runaway retries. */
 export const TEAMS_PER_USER_PER_DAY = 5;
 
-/** An email address as invites store and match it: trimmed and lowercased. */
+/** Teams one user may belong to. It bounds the per-team work /me does (a role session each). */
+export const MAX_TEAMS_PER_USER = 20;
+
+/**
+ * An email address as invites store and match it: NFKC-normalized, then
+ * trimmed and lowercased, so look-alike compatibility characters (a Kelvin
+ * sign for a K, full-width letters) compare equal to the plain ones on both
+ * the invite and the accept side.
+ */
 export function normalizeEmail(value: unknown): string {
   if (typeof value !== "string") throw new InvalidInputError("Invalid email");
-  const email = value.trim().toLowerCase();
+  const email = value.normalize("NFKC").trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+$/.test(email) || email.length > 254) throw new InvalidInputError("Invalid email");
   return email;
 }

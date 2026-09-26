@@ -71,6 +71,18 @@ describe("HTTP API routes", () => {
     });
   });
 
+  it("throttles each account route below the stage, /me included", () => {
+    const { template } = api();
+    const [[, stage]] = resources(template, "AWS::ApiGatewayV2::Stage") as [[string, Resource]];
+    expect(stage.Properties.RouteSettings).toEqual({
+      "GET /me": { ThrottlingRateLimit: 50, ThrottlingBurstLimit: 100 },
+      "POST /teams": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
+      "POST /invites/{inviteId}/accept": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
+    });
+    // Created after the routes it names
+    expect((stage.DependsOn as string[]).filter((d) => d.startsWith("HttpApi")).length).toBeGreaterThanOrEqual(ACCOUNT_ROUTES.length);
+  });
+
   it("serves api.<env domain> with TLS 1.2 and latency records per region", () => {
     for (const region of [EAST, WEST]) {
       const { template } = api(region);

@@ -13,13 +13,14 @@ import { randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactGetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { ConflictError, ForbiddenError, LimitReachedError, NotFoundError, conflictOnConditionFailure } from "./errors.js";
-import { gsi1, id, keys, strip } from "./keys.js";
+import { gsi1, id, keys, prefixes, strip } from "./keys.js";
 import {
   type Invite,
   type Member,
   type Role,
   type Team,
   type UserTeam,
+  MAX_TEAMS_PER_USER,
   TEAMS_PER_USER_PER_DAY,
   TRIAL_DAYS,
   hashInviteToken,
@@ -29,6 +30,7 @@ import {
   teamIdForRequest,
   teamName,
 } from "./model.js";
+import { queryAll } from "./query.js";
 import { writeRegionFor } from "./region.js";
 import { GSI1 } from "./schema.js";
 
@@ -130,6 +132,13 @@ function cancellationCodes(error: unknown): (string | undefined)[] | undefined {
 
 const DAY_SECONDS = 24 * 60 * 60;
 
+/** The IDs of the teams a user is in, from their own USER# rows. */
+async function teamsOf(db: Db, userId: string): Promise<Set<string>> {
+  return new Set((await queryAll<UserTeam>(db, keys.userTeam(userId, "x").PK, prefixes.userTeam)).map((row) => row.teamId));
+}
+
+const TOO_MANY_TEAMS = `An account can be in at most ${MAX_TEAMS_PER_USER} teams; leave one first`;
+
 /**
  * Creates a team with the verified caller as its owner, and returns the owner's
  * context. The home region is the region this runs in (ADR 0010), and the
@@ -139,7 +148,11 @@ const DAY_SECONDS = 24 * 60 * 60;
  * from the user and the key, so a double-click or a retry makes one team: the
  * repeat finds the team it already made and returns it with `created: false`.
  * A user can create TEAMS_PER_USER_PER_DAY teams a UTC day; the counter is in
- * the user's own partition and moves in the same transaction.
+ * the user's own partition and moves in the same transaction. A repeat whose
+ * name differs from the stored team's is a ConflictError: the key was reused
+ * for a different team. A user in MAX_TEAMS_PER_USER teams can't create
+ * another (LimitReachedError). That check reads before it writes, so two
+ * requests at the same moment can go one over; it bounds work, not billing.
  */
 export async function createTeam(
   db: Db,
@@ -167,6 +180,8 @@ export async function createTeam(
   const member: Member = { type: "member", teamId, userId, role: "owner", email: owner.email, joinedAt: createdAt };
   const userTeam: UserTeam = { type: "userTeam", userId, teamId, teamName: team.name, role: "owner" };
   const epoch = Math.floor(now.getTime() / 1000);
+  const mine = await teamsOf(db, userId);
+  if (!mine.has(teamId) && mine.size >= MAX_TEAMS_PER_USER) throw new LimitReachedError(TOO_MANY_TEAMS);
   const write = () =>
     connection(db).doc.send(
       new TransactWriteCommand({
@@ -187,7 +202,7 @@ export async function createTeam(
         ],
       }),
     );
-  for (let attempt = 1; ; attempt++) {
+  for (let attempt = 1; !mine.has(teamId); attempt++) {
     try {
       await write();
       return { team, context: issue(teamId, userId, "owner", team.homeRegion), created: true };
@@ -213,7 +228,9 @@ export async function createTeam(
     });
     if (context) {
       const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: keys.team(teamId), ConsistentRead: true }));
-      return { team: strip<Team>(Item) as Team, context, created: false };
+      const existing = strip<Team>(Item) as Team;
+      if (existing.name !== name) throw new ConflictError("This Idempotency-Key was already used to create a team with another name");
+      return { team: existing, context, created: false };
     }
   }
   throw new ConflictError("Team already exists");
@@ -240,21 +257,32 @@ export async function findInvite(db: Db, token: string, now = new Date()): Promi
 
 /**
  * Accepts an invite for the verified user and returns the new member's
- * context. `verifiedEmail` must be an address the identity provider has
- * verified for this user: it has to match the invite's. The invite comes from
- * findInviteForEmail (or findInvite); the transaction re-checks it against the
- * stored item, so it works once, only before it expires, and only for that
- * email. Deleting the invite and adding the membership happen together.
+ * context. Two proofs, both re-checked against the stored invite inside the
+ * transaction:
+ *
+ * - `token`, from the emailed link: its SHA-256 must be the invite's. It
+ *   proves the caller read that mailbox.
+ * - `verifiedEmail`, an address the identity provider has verified for this
+ *   user: it must be the invite's address.
+ *
+ * So an invite works once, before it expires, for its own address and link
+ * only. Deleting the invite and adding the membership happen together. A user
+ * already in MAX_TEAMS_PER_USER teams gets LimitReachedError.
  */
 export async function acceptInvite(
   db: Db,
   user: { readonly userId: string; readonly verifiedEmail: string },
   invite: Invite,
+  token: string,
   now = new Date(),
 ): Promise<TeamContext> {
   const userId = id(user.userId, "user ID");
   const email = normalizeEmail(user.verifiedEmail);
   if (invite.email !== email) throw new ForbiddenError("This invite is for another email address");
+  if (typeof token !== "string" || token.length < 16 || token.length > 512) throw new NotFoundError("This invite has expired or was already used");
+  const mine = await teamsOf(db, userId);
+  if (mine.has(invite.teamId)) throw new ConflictError("You're already a member of this team");
+  if (mine.size >= MAX_TEAMS_PER_USER) throw new LimitReachedError(TOO_MANY_TEAMS);
   const member: Member = { type: "member", teamId: invite.teamId, userId, role: invite.role, email, joinedAt: now.toISOString() };
   const userTeam: UserTeam = { type: "userTeam", userId, teamId: invite.teamId, teamName: invite.teamName, role: invite.role };
   try {
@@ -265,9 +293,15 @@ export async function acceptInvite(
             Delete: {
               TableName: db.tableName,
               Key: keys.invite(invite.teamId, invite.inviteId),
-              ConditionExpression: "attribute_exists(PK) AND #type = :invite AND email = :email AND #role = :role AND expiresAt > :now",
+              ConditionExpression: "attribute_exists(PK) AND #type = :invite AND GSI1PK = :token AND email = :email AND #role = :role AND expiresAt > :now",
               ExpressionAttributeNames: { "#type": "type", "#role": "role" },
-              ExpressionAttributeValues: { ":invite": "invite", ":email": email, ":role": invite.role, ":now": Math.floor(now.getTime() / 1000) },
+              ExpressionAttributeValues: {
+                ":invite": "invite",
+                ":token": gsi1.inviteToken(hashInviteToken(token)).GSI1PK,
+                ":email": email,
+                ":role": invite.role,
+                ":now": Math.floor(now.getTime() / 1000),
+              },
             },
           },
           { Put: { TableName: db.tableName, Item: { ...keys.member(invite.teamId, userId), ...member }, ConditionExpression: "attribute_not_exists(PK)" } },

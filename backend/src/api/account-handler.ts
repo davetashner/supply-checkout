@@ -7,14 +7,18 @@
 //                                   a 14-day trial. Idempotent per
 //                                   Idempotency-Key; rate-limited per user.
 //   POST /invites/{inviteId}/accept Joins the team that invited the caller's
-//                                   verified email address.
+//                                   verified email address, with the token
+//                                   from the emailed link.
 //
 // Isolation, in order:
 // 1. API Gateway's JWT authorizer checks the Cognito access token; this handler
 //    re-checks it (an access token from our issuer, not expired) and takes the
 //    user only from `sub`. Nothing in the path, query or body names a user.
 // 2. The email comes from Cognito (GetUser with the caller's own token), and
-//    only a verified one finds or accepts invites.
+//    only a verified one lists invites. Accepting also needs the invite's
+//    token from the emailed link, checked against the stored hash in the same
+//    transaction, so a user who somehow got someone else's address marked
+//    verified still can't join without reading that mailbox.
 // 3. Every DynamoDB call runs on an account-access role session tagged with the
 //    user and, at most, one team and one invitee the request is entitled to
 //    (account-db.ts); IAM refuses any other partition.
@@ -29,6 +33,7 @@ import {
   getTeam,
   hashEmail,
   type Invite,
+  MAX_TEAMS_PER_USER,
   listInvitesForEmail,
   listTeamsForUser,
   normalizeEmail,
@@ -76,9 +81,9 @@ export function teamBody(team: Team, role: Role) {
   };
 }
 
+/** What /me shows of an invite: enough to offer it, not to accept it (that needs the emailed token). */
 const inviteBody = (invite: Invite) => ({
   id: invite.inviteId,
-  teamId: invite.teamId,
   teamName: invite.teamName,
   role: invite.role,
   expiresAt: new Date(invite.expiresAt * 1000).toISOString(),
@@ -115,10 +120,11 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const own = dbFor({ userId, invitee: email && hashEmail(email) });
     const [rows, invites] = await Promise.all([listTeamsForUser(own, userId), email ? listInvitesForEmail(own, email, new Date(now())) : []]);
     // Each team's details on a session for that team, after the membership
-    // check: a stale switcher row (a removed member) shows nothing
+    // check: a stale switcher row (a removed member) shows nothing. Capped, so
+    // one request never needs more role sessions than that.
     const teams = (
       await Promise.all(
-        rows.map(async (row) => {
+        rows.slice(0, MAX_TEAMS_PER_USER).map(async (row) => {
           const db = dbFor({ userId, teamId: row.teamId });
           const ctx = await authorizeTeam(db, userId, row.teamId).catch((error: unknown) => {
             if (error instanceof ForbiddenError) return undefined;
@@ -152,14 +158,15 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
   async function accept(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
     const inviteId = event.pathParameters?.inviteId;
     if (typeof inviteId !== "string" || !ID.test(inviteId)) throw new ApiError(400, "bad_request", "Invalid invite ID");
+    const token = event.body ? jsonBody(event, ["token"]).token : undefined;
     const email = verifiedEmail(await cognitoUser(event, userId));
     if (!email) throw new ApiError(403, "permission_denied", "Verify your email address to accept invites");
     const at = new Date(now());
     const invite = await findInviteForEmail(dbFor({ userId, invitee: hashEmail(email) }), email, inviteId, at);
-    // Unknown, expired, used, or for someone else: one answer for all
-    if (!invite) throw new ApiError(404, "not_found", "This invite has expired, was already used, or is for another email address");
+    // Unknown, expired, used, for someone else, or no token: one answer for all
+    if (!invite || typeof token !== "string") throw new ApiError(404, "not_found", "This invite has expired, was already used, or is for another email address");
     const db = dbFor({ userId, teamId: invite.teamId });
-    const ctx = await acceptInvite(db, { userId, verifiedEmail: email }, invite, at);
+    const ctx = await acceptInvite(db, { userId, verifiedEmail: email }, invite, token, at);
     obs.count(BusinessMetric.InvitesAccepted, 1, { teamId: ctx.teamId });
     return json(200, { team: teamBody(await getTeam(db, ctx), ctx.role) });
   }
