@@ -95,6 +95,15 @@ jobs:
       # AWS_REGION and stacks take their region as a parameter.
       - run: node scripts/check-region-strings.mjs
 
+  scripts:
+    name: Shell scripts (shellcheck, land-pr tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # shellcheck and jq come with the runner image
+      - run: npm run test:scripts
+
   dependencies:
     name: Dependency audit
     runs-on: ubuntu-latest
@@ -319,7 +328,7 @@ jobs:
   ci-passed:
     name: CI passed
     if: always()
-    needs: [pr-title, lint, workflows, secrets, regions, dependencies, codeql, test, changes, infra, backend]
+    needs: [pr-title, lint, workflows, scripts, secrets, regions, dependencies, codeql, test, changes, infra, backend]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
