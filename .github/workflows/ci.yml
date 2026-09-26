@@ -110,12 +110,16 @@ jobs:
     uses: ./.github/workflows/codeql.yml
 
   test:
-    name: Tests (${{ matrix.project }})
+    name: Tests (${{ matrix.project }}, ${{ matrix.build }} build)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
+        # artifact: the single index.html published to claude.ai
+        # web: the hashed static bundle for CloudFront
+        build: [artifact, web]
+        project: [desktop-chrome, iphone-safari]
         include:
           # Coverage is measured in Chromium, the only browser that reports it
           - project: desktop-chrome
@@ -132,24 +136,28 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps ${{ matrix.browser }}
+      # Builds the app first (tests/global-setup.js)
       - run: npx playwright test --project=${{ matrix.project }}
         env:
           CI: true
+          BUILD: ${{ matrix.build }}
           # Fails the run below 98% coverage; see tests/coverage.js
           COVERAGE: ${{ matrix.coverage }}
       - name: Coverage summary
-        if: always() && matrix.coverage && hashFiles('coverage/summary.json') != ''
-        run: node scripts/coverage-summary.mjs >> "$GITHUB_STEP_SUMMARY"
+        if: always() && matrix.coverage && hashFiles(format('coverage/{0}/summary.json', matrix.build)) != ''
+        run: node scripts/coverage-summary.mjs "$BUILD" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          BUILD: ${{ matrix.build }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always() && matrix.coverage
         with:
-          name: coverage-report
-          path: coverage/
+          name: coverage-report-${{ matrix.build }}
+          path: coverage/${{ matrix.build }}/
           retention-days: 14
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: playwright-report-${{ matrix.project }}
+          name: playwright-report-${{ matrix.project }}-${{ matrix.build }}
           path: |
             playwright-report/
             test-results/

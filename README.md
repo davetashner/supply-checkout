@@ -8,12 +8,24 @@ A shared supply tracker for taking supplies from storage to client jobs and brin
 
 The app runs as a [Claude artifact](https://claude.ai/artifact/LcSb29dTE99AK4N6iuVFrj). claude.ai provides the shared database, sign-in, file downloads and receipt reading through `window.claude`; there is no server to run.
 
+The source is a small [Vite](https://vite.dev) project with no UI framework. One build of it is the single `index.html` published to claude.ai; another is a static bundle for the AWS version ([ADR 0004](docs/adr/0004-runtime-adapter.md)).
+
 ## Repository layout
 
 | Path | What it is |
 | --- | --- |
-| `index.html` | The whole app. This file is what gets published to claude.ai. |
-| `scripts/page.mjs` | Wraps `index.html` in the same document skeleton claude.ai adds at publish time. |
+| `src/index.html` | The page: head (fonts, ZXing from a CDN) and markup. |
+| `src/styles.css` | All of the app's styles. |
+| `src/main.js` | App state, screens, modals, receipt review, and startup. |
+| `src/runtime.js` | `use()`, the one place the app reaches the claude.ai runtime (`window.claude`). |
+| `src/format.js`, `src/sheet-math.js` | Formatting helpers and sheet totals, with no app state. |
+| `src/dom.js` | `$`, toast, modals, two-tap confirm buttons and number steppers. |
+| `src/barcode.js` | Reading barcodes from photos (the browser's detector, or ZXing). |
+| `src/receipt-prompt.js` | The receipt-reading prompt and its error messages. |
+| `vite.config.js` | The two builds: `artifact` and `web` (below). |
+| `dist/` | Build output (not committed). |
+| `scripts/builds.mjs` | Builds and serves either build for the tests. |
+| `scripts/page.mjs` | Wraps the artifact in the same document skeleton claude.ai adds at publish time. |
 | `scripts/validate-html.mjs` | HTML validation (html-validate). |
 | `scripts/dev-server.mjs` | Local dev server with the mock runtime (`npm run dev`). |
 | `scripts/land-pr.sh` | Waits for CI, squash-merges a PR, cleans up its worktree and branch, and closes its beads (`npm run land -- <pr>`). |
@@ -35,15 +47,24 @@ npx playwright install chromium webkit
 npm run check
 ```
 
-`npm run dev` serves the app at http://localhost:5173 against the same in-memory runtime the tests use, with demo sheets, inventory and a receipt, so it can be tried in a browser without publishing to claude.ai. Add `?seed=empty`, `?viewer`, `?nouser`, or `?mock={...}` with any `tests/mock-claude.js` option. Data resets on reload, and edits to `index.html` show on reload.
+`npm run dev` serves `src/` with Vite's dev server at http://localhost:5173, against the same in-memory runtime the tests use, with demo sheets, inventory and a receipt, so it can be tried in a browser without publishing to claude.ai. Add `?seed=empty`, `?viewer`, `?nouser`, or `?mock={...}` with any `tests/mock-claude.js` option. Data resets on reload, and the page reloads when a file in `src/` changes.
 
-`npm run lint` runs ESLint on the app's inline script and the tests, then validates the HTML. `npm run check` also runs the public-safety check below and every test suite.
+### Builds
+
+| Command | Output | For |
+| --- | --- | --- |
+| `npm run build:artifact` | `dist/artifact/index.html` | claude.ai. One self-contained file with the script and styles inlined. Like the hand-written `index.html` it replaces, it's a page fragment (claude.ai adds the doctype, `<head>` and `<body>`), and it only loads fonts from Google Fonts and ZXing from cdn.jsdelivr.net. It isn't minified, so it can be read before publishing. |
+| `npm run build:web` | `dist/web/` | CloudFront. `index.html` plus minified, content-hashed files in `assets/`, which can be cached forever. |
+
+`npm run build` runs both. Each writes hidden source maps (`dist/artifact/app.js.map`, `dist/web/assets/*.js.map`) with no `sourceMappingURL` comment in the code; the coverage run uses them.
+
+`npm run lint` runs ESLint on `src/`, the scripts and the tests, then builds both and validates their HTML. `npm run check` also runs the public-safety check below and every test suite against both builds.
 
 Run `npm run hooks:install` once per clone. It installs a pre-commit hook (`scripts/git-hooks/pre-commit`) that blocks commits containing AWS account or SSO identifiers, personal email addresses, or credentials, because this repository is public.
 
 ## Tests
 
-`npm test` runs these Playwright suites in desktop Chrome and an iPhone-sized Safari (WebKit), against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`):
+`npm test` runs these Playwright suites in desktop Chrome and an iPhone-sized Safari (WebKit), against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`), once for each build. `npm run test:artifact` and `npm run test:web` run one build; `BUILD=web npx playwright test …` does the same for a single file or test. Each run builds the app first (`tests/global-setup.js`), so it always tests the current source.
 
 | Suite | What it checks |
 | --- | --- |
@@ -64,9 +85,9 @@ Every test also fails if the page throws an uncaught error or logs a console err
 
 ### Coverage
 
-`npm run test:coverage` runs the suites in desktop Chrome with code coverage on. The run fails if lines, statements, functions or branches of the app's script fall below **98%** (`THRESHOLD` in `tests/coverage.js`). CI runs this on every pull request.
+`npm run test:coverage` runs the suites in desktop Chrome with code coverage on, once for each build. Coverage is mapped back to the files in `src/` through the builds' source maps. A run fails if lines, statements, functions or branches fall below **98%** (`THRESHOLD` in `tests/coverage.js`). CI runs this on every pull request.
 
-When coverage is too low, `coverage/uncovered.txt` lists each gap by its line in `index.html`: lines that never ran, lines that only partly ran, and branches that never ran. `coverage/index.html` is the full report; CI uploads the `coverage/` folder as the `coverage-report` artifact.
+When coverage is too low, `coverage/<build>/uncovered.txt` lists each gap by `src/` file and line: lines that never ran, lines that only partly ran, and branches that never ran. `coverage/<build>/index.html` is the full report; CI uploads each as the `coverage-report-artifact` and `coverage-report-web` artifacts. The web build is minified, so its statement count is smaller than the artifact's; lines, functions and branches come out close to the same.
 
 The mock (`tests/mock-claude.js`) has opt-in failure modes, so tests can reach error paths: a missing runtime, declined capabilities, failed or path-specific writes, lost listeners, failed downloads, and a receipt read that waits to be cancelled. `window.__mock.notify()` fires live updates after a test changes `window.__mock.docs`, to act as another user.
 
@@ -88,19 +109,19 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | Job | Gate |
 | --- | --- |
 | PR title | Conventional Commits format |
-| Lint and validate HTML | ESLint on the app script and tests, html-validate on the markup |
+| Lint and validate HTML | ESLint on `src/`, scripts and tests; builds both and runs html-validate on each |
 | Lint GitHub workflows | actionlint |
 | Secret scan | gitleaks on every commit in the history, and `scripts/check-public-safety.mjs` on every file (AWS account and SSO identifiers, email addresses, AWS and Stripe keys, private keys) |
 | Dependency audit | `npm audit` fails on high-severity advisories; dependency review fails a PR that adds a moderate-or-worse vulnerable package |
 | CodeQL (javascript-typescript), CodeQL (actions) | CodeQL `security-extended` queries on the app, scripts, tests and workflows (`.github/workflows/codeql.yml`, which also runs weekly). Results go to the repository's code scanning alerts |
-| Tests (desktop-chrome), Tests (iphone-safari) | All test suites, in parallel. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
+| Tests (desktop-chrome or iphone-safari, artifact or web build) | All test suites, in four parallel jobs: each browser against each build. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
 
 ## Releases
 
-`.github/workflows/release.yml` uses [release-please](https://github.com/googleapis/release-please). It keeps a release pull request open with the next version number and changelog, and starts CI on it (pull requests opened by GitHub Actions don't start CI on their own). Merging that PR tags the version, re-runs the full CI suite, and attaches `index.html` and an SPDX JSON SBOM (`supply-checkout-<tag>.spdx.json`) to the GitHub Release.
+`.github/workflows/release.yml` uses [release-please](https://github.com/googleapis/release-please). It keeps a release pull request open with the next version number and changelog, and starts CI on it (pull requests opened by GitHub Actions don't start CI on their own). Merging that PR tags the version, re-runs the full CI suite, then builds the artifact from the tag and attaches it to the GitHub Release as `index.html`, along with an SPDX JSON SBOM (`supply-checkout-<tag>.spdx.json`).
 
 Dependabot opens weekly update PRs for npm packages and GitHub Actions.
 
 ## Publishing to claude.ai
 
-Publishing the artifact is a manual step, because claude.ai artifacts are published from a Claude session rather than from CI. After a release, ask Claude to republish `index.html` from this repo to the existing artifact URL above. Publishing to the same URL keeps all saved sheets and inventory.
+Publishing the artifact is a manual step, because claude.ai artifacts are published from a Claude session rather than from CI. After a release, download `index.html` from the GitHub Release (or run `npm run build:artifact` on the release tag), and ask Claude to republish that file to the existing artifact URL above. Publish `dist/artifact/index.html`, never `src/index.html`: the source page loads its script and styles as separate files, which an artifact can't serve. Publishing to the same URL keeps all saved sheets and inventory.
