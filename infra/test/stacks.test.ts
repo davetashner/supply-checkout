@@ -122,9 +122,12 @@ describe("stack layout", () => {
   it("matches the template snapshots", () => {
     const { stacks } = build();
     for (const stack of stacks.all) {
-      // Lambda asset hashes depend on the checkout's path (bundling is skipped
-      // in tests, and CDK hashes the bundling command instead), so mask them
-      const json = JSON.stringify(Template.fromStack(stack).toJSON()).replace(/"[0-9a-f]{64}\.zip"/g, '"<asset hash>.zip"');
+      // Lambda asset hashes, and the function version IDs made from them,
+      // depend on the checkout's path (bundling is skipped in tests, and CDK
+      // hashes the bundling command instead), so mask them
+      const json = JSON.stringify(Template.fromStack(stack).toJSON())
+        .replace(/"[0-9a-f]{64}\.zip"/g, '"<asset hash>.zip"')
+        .replace(/(CurrentVersion[0-9A-F]{8})[0-9a-f]{32}/g, "$1<code hash>");
       expect(JSON.parse(json)).toMatchSnapshot(stack.stackName);
     }
   });

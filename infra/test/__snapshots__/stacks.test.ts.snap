@@ -260,7 +260,7 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
       },
       "Type": "AWS::Lambda::Function",
     },
-    "AuthFunctionCurrentVersionDB17CE86b6b69ffe3d3d9204aa2b703863f54f15": {
+    "AuthFunctionCurrentVersionDB17CE86<code hash>": {
       "Metadata": {
         "aws:cdk:do-not-refactor": true,
       },
@@ -278,7 +278,7 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
         },
         "FunctionVersion": {
           "Fn::GetAtt": [
-            "AuthFunctionCurrentVersionDB17CE86b6b69ffe3d3d9204aa2b703863f54f15",
+            "AuthFunctionCurrentVersionDB17CE86<code hash>",
             "Version",
           ],
         },
@@ -632,7 +632,7 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
       },
       "Type": "AWS::Lambda::Function",
     },
-    "DataFunctionCurrentVersionDAEE8477d485e6e148520505a42dfdb4f843ee34": {
+    "DataFunctionCurrentVersionDAEE8477<code hash>": {
       "Metadata": {
         "aws:cdk:do-not-refactor": true,
       },
@@ -650,7 +650,7 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
         },
         "FunctionVersion": {
           "Fn::GetAtt": [
-            "DataFunctionCurrentVersionDAEE8477d485e6e148520505a42dfdb4f843ee34",
+            "DataFunctionCurrentVersionDAEE8477<code hash>",
             "Version",
           ],
         },
@@ -5994,7 +5994,7 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
       },
       "Type": "AWS::Lambda::Function",
     },
-    "AuthFunctionCurrentVersionDB17CE86e4d8de414f23b28de7fc94b53b633f60": {
+    "AuthFunctionCurrentVersionDB17CE86<code hash>": {
       "Metadata": {
         "aws:cdk:do-not-refactor": true,
       },
@@ -6012,7 +6012,7 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
         },
         "FunctionVersion": {
           "Fn::GetAtt": [
-            "AuthFunctionCurrentVersionDB17CE86e4d8de414f23b28de7fc94b53b633f60",
+            "AuthFunctionCurrentVersionDB17CE86<code hash>",
             "Version",
           ],
         },
@@ -6366,7 +6366,7 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
       },
       "Type": "AWS::Lambda::Function",
     },
-    "DataFunctionCurrentVersionDAEE847794d41fc249725f27bfe5f3209e20a7ed": {
+    "DataFunctionCurrentVersionDAEE8477<code hash>": {
       "Metadata": {
         "aws:cdk:do-not-refactor": true,
       },
@@ -6384,7 +6384,7 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
         },
         "FunctionVersion": {
           "Fn::GetAtt": [
-            "DataFunctionCurrentVersionDAEE847794d41fc249725f27bfe5f3209e20a7ed",
+            "DataFunctionCurrentVersionDAEE8477<code hash>",
             "Version",
           ],
         },
