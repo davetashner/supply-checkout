@@ -14,6 +14,9 @@ const EARLY = 300, LIFETIME = 3600;
 export const INVITE_KEY = "supplyCheckout.invite";
 // The team the user last chose (account.js)
 export const TEAM_KEY = "supplyCheckout.team";
+// The receipt being entered (DKEY in src/main.js), which names the team's items, prices
+// and sheets, so it's forgotten on sign-out along with the team
+export const DRAFT_KEY = "supplyCheckout.receiptDraft";
 
 const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const random = (n) => b64url(crypto.getRandomValues(new Uint8Array(n)));
@@ -21,7 +24,7 @@ const claimsOf = (jwt) => JSON.parse(new TextDecoder().decode(Uint8Array.from(at
 
 export function createSession(config, { onSignedOut, onRefreshed }) {
   const redirectUri = location.origin + "/";
-  let tokens = null, refreshing = null, timer;
+  let tokens = null, refreshing = null, timer, signingOut = false;
   const post = (path, body) => request(config.apiUrl + path, { ...json("POST", body), credentials: "include" });
 
   function accept(t) {
@@ -33,8 +36,11 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
 
   const background = () => refresh().catch(() => {});
 
-  // One refresh at a time; a 401 means the session is over
+  // One refresh at a time; a 401 means the session is over. None while signing out: with
+  // refresh-token rotation, one that started after the revoke (a 401 from a live update's
+  // fetch, say) would set a new refresh cookie and sign the user back in.
   function refresh() {
+    if (signingOut) return Promise.reject({ code: "unavailable", message: "Signing out" });
     refreshing ||= post("/auth/refresh")
       .then((t) => { accept(t); onRefreshed(); }, (e) => { if (e.code === "unauthenticated") { tokens = null; onSignedOut(); } throw e; })
       .finally(() => { refreshing = null; });
@@ -91,20 +97,21 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
       }
     },
 
-    // Revokes the refresh token, forgets sign-in's saved state and the chosen team, then
-    // signs out of Managed Login too. False, still signed in, when the API couldn't be
+    // Revokes the refresh token, forgets sign-in's saved state, the chosen team and the
+    // receipt draft, then signs out of Managed Login too. False, still signed in, when the API couldn't be
     // reached. A refresh already in flight finishes first: with refresh-token rotation, its
     // response would otherwise set a new refresh cookie after sign-out cleared it.
     async signOut() {
       clearTimeout(timer);
       if (refreshing) await refreshing.catch(() => {});
       clearTimeout(timer);
+      signingOut = true;
       // Still signed in when it fails, so refresh again in a minute
-      try { await post("/auth/sign-out"); } catch { timer = setTimeout(background, 60_000); return false; }
+      try { await post("/auth/sign-out"); } catch { signingOut = false; timer = setTimeout(background, 60_000); return false; }
       tokens = null;
       clearTimeout(timer);
       for (const key of [PKCE_KEY, INVITE_KEY]) sessionStorage.removeItem(key);
-      localStorage.removeItem(TEAM_KEY);
+      for (const key of [TEAM_KEY, DRAFT_KEY]) localStorage.removeItem(key);
       location.assign(`${config.authUrl}/logout?${new URLSearchParams({ client_id: config.clientId, logout_uri: redirectUri })}`);
       return true;
     },
