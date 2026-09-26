@@ -15,9 +15,10 @@
 // attribute from the provider's claim.
 //
 // Native users, including a native user with a linked Google or Apple
-// identity (supply-checkout-0b1), are let through: their username isn't a
-// provider identity's. If 0b1 changes who counts as federated, change
-// isFederatedOnly() here and in the email_verified trigger together.
+// identity (account-link-handler.ts, supply-checkout-0b1), are let through:
+// their username isn't a provider identity's, and Cognito keeps them
+// CONFIRMED. If who counts as federated changes, change isFederatedOnly() here,
+// in the email_verified trigger and in the linking trigger together.
 //
 // Needs no AWS permissions. Logs carry the outcome only, never the username
 // or email.

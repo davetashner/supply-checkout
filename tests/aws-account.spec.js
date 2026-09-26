@@ -122,6 +122,61 @@ test.describe("sign-in", () => {
     });
   }
 
+  // A first Google or Apple sign-in whose email already has an account: the pre sign-up trigger
+  // links it and fails that sign-in with ACCOUNT_LINKED:<provider> (supply-checkout-0b1)
+  const linkedError = (provider, state = "st1") => `/?${new URLSearchParams({ error_description: `PreSignUp failed with error ACCOUNT_LINKED:${provider}. `, state, error: "invalid_request" })}`;
+  for (const [provider, name, article] of [["Google", "Google", "a"], ["SignInWithApple", "Apple", "an"]]) {
+    test(`${article} ${name} sign-in just linked to an existing account signs in again with ${name}, once`, async ({ page }) => {
+      const backend = new FakeBackend({ signedIn: false });
+      await openAws(page, backend, { path: linkedError(provider), storage: { session: { "supplyCheckout.signIn": JSON.stringify({ verifier: "v".repeat(43), state: "st1" }), "supplyCheckout.invite": JSON.stringify({ id: "i1", token: "tok" }) } } });
+      await expect.poll(() => backend.authRequests.length).toBe(1);
+      const url = new URL(backend.authRequests[0]);
+      const saved = JSON.parse(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.signIn")));
+      expect(url.origin + url.pathname).toBe(AUTH + "/oauth2/authorize");
+      expect(Object.fromEntries(url.searchParams)).toEqual({
+        response_type: "code",
+        client_id: "test-client",
+        redirect_uri: ORIGIN + "/",
+        scope: "openid email profile aws.cognito.signin.user.admin",
+        state: saved.state,
+        code_challenge: createHash("sha256").update(saved.verifier).digest("base64url"),
+        code_challenge_method: "S256",
+        identity_provider: provider,
+      });
+      expect(saved.relinked).toBe(true);
+      expect(saved.state).not.toBe("st1");
+      // Said on screen too, with a way on if the redirect doesn't happen
+      await expect(account(page).getByRole("heading", { name: "Signing in" })).toBeVisible();
+      await expect(account(page)).toContainText(`Your ${name} sign-in is now linked to your Supply Checkout account.`);
+      expect(await page.getByRole("link", { name: "Continue" }).getAttribute("href")).toBe(url.href);
+      expect(page.url()).toBe(ORIGIN + "/");
+      // The invite waits for the retried sign-in
+      expect(JSON.parse(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.invite")))).toEqual({ id: "i1", token: "tok" });
+      expect(backend.requests("POST", "/auth/session")).toHaveLength(0);
+      await expectAccessible(page);
+    });
+  }
+
+  const notRelinked = [
+    ["after a retry already failed", linkedError("Google"), { verifier: "v".repeat(43), state: "st1", relinked: true }],
+    ["for a sign-in this tab didn't start", linkedError("Google", "other"), { verifier: "v".repeat(43), state: "st1" }],
+    ["with nothing saved from before", linkedError("Google"), null],
+    ["for another provider", linkedError("Facebook"), { verifier: "v".repeat(43), state: "st1" }],
+    ["without a description", "/?error=invalid_request&state=st1", { verifier: "v".repeat(43), state: "st1" }],
+  ];
+  for (const [name, path, saved] of notRelinked) {
+    test(`a linked-account error ${name} asks to sign in again instead of retrying`, async ({ page }) => {
+      const backend = new FakeBackend({ signedIn: false });
+      await openAws(page, backend, { path, storage: saved ? { session: { "supplyCheckout.signIn": JSON.stringify(saved) } } : undefined });
+      await expect(alert(page)).toHaveText("Sign-in didn't finish. Please try again.");
+      const link = page.getByRole("link", { name: "Sign in" });
+      await expect(link).toBeVisible();
+      expect(new URL(await link.getAttribute("href")).searchParams.has("identity_provider")).toBe(false);
+      expect(JSON.parse(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.signIn"))).relinked).toBeUndefined();
+      expect(backend.authRequests).toEqual([]);
+    });
+  }
+
   test("a failed code exchange can be tried again", async ({ page }) => {
     const backend = new FakeBackend({ docs: seeded() });
     backend.on("POST", "/auth/session", { status: 503, body: { error: { code: "internal", message: "Cognito didn't answer" } } });

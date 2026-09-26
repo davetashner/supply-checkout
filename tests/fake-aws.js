@@ -50,7 +50,8 @@ export class FakeBackend {
     this.cors = null;
   }
 
-  // The next `times` requests matching method and path get this answer instead.
+  // The next `times` requests matching method and path get this answer instead. path is a
+  // string, a RegExp, or a function of (path, call), where call is as in requests().
   // { status, body }, { abort: true }, or { lost: true } (the API handles the request, but
   // the answer never arrives), and optionally { wait: promise } first.
   on(method, path, answer, times = 1) {
@@ -97,7 +98,7 @@ export class FakeBackend {
     if (method === "OPTIONS") return route.fulfill({ status: 204, headers: this.corsHeaders() });
     const call = { method, path, query: Object.fromEntries(url.searchParams), headers: req.headers(), body: req.postDataJSON() };
     this.calls.push(call);
-    const rule = this.rules.find((r) => r.method === method && (typeof r.path === "string" ? r.path === path : r.path.test(path)));
+    const rule = this.rules.find((r) => r.method === method && (typeof r.path === "string" ? r.path === path : typeof r.path === "function" ? r.path(path, call) : r.path.test(path)));
     if (rule) {
       if (--rule.times <= 0) this.rules.splice(this.rules.indexOf(rule), 1);
       if (rule.answer.late) {
@@ -210,7 +211,8 @@ export class FakeBackend {
   // sheet (and a product that tracks stock) a new version. An operation ID that's been used
   // returns its first result and changes nothing; used for another request, it's refused.
   command(team, sheetId, name, body) {
-    const err = (status, code) => [status, { error: { code, message: code } }];
+    // With the API's messages where the app shows them (a refused checkout or return)
+    const err = (status, code, message = code) => [status, { error: { code, message } }];
     const member = this.teams.find((t) => t.id === team);
     if (!member) return err(403, "permission_denied");
     if (member.role === "viewer") return err(403, "invalid_argument");
@@ -224,7 +226,7 @@ export class FakeBackend {
     if (prior) return prior.request === request ? answer(prior.result, true) : err(400, "bad_request");
 
     const sheet = this.docs.get(sheetKey), product = this.docs.get(productKey);
-    if (!sheet) return err(404, "not_found");
+    if (!sheet) return err(404, "not_found", "No such sheet");
     if (sheet.data.status === "closed") return err(409, "aborted");
     const items = (sheet.data.items ||= {});
     const line = Object.hasOwn(items, key) ? items[key] : undefined;
@@ -233,12 +235,14 @@ export class FakeBackend {
       if (line) line.out += qty;
       else {
         const from = product ? product.data : oneOff;
-        if (!product && (oneOff.name === undefined || oneOff.price === undefined)) return err(400, "bad_request");
+        if (!product && (oneOff.name === undefined || oneOff.price === undefined)) return err(400, "bad_request", "This item isn't in inventory; send its name and price");
         items[key] = { code: from.code ?? "", name: from.name ?? "", price: from.price ?? 0, ...(from.cost === undefined ? {} : { cost: from.cost }), out: qty, returned: 0 };
       }
       delta = -qty;
     } else {
-      if (!line || (line.returned || 0) + qty > line.out) return err(400, "bad_request");
+      if (!line) return err(400, "bad_request", "This item isn't on this sheet");
+      const left = line.out - (line.returned || 0);
+      if (qty > left) return err(400, "bad_request", `Only ${left} of this item ${left === 1 ? "is" : "are"} left to return`);
       line.returned = (line.returned || 0) + qty;
       delta = qty;
     }
