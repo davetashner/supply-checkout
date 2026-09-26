@@ -14,6 +14,11 @@
 #   checks_rc        exit code of `gh pr checks --watch` (default 0)
 #   rules.json       what `gh api .../rules/branches/main` returns
 #   merge_ok         if present, `gh pr merge` marks the PR merged
+#   merge_sets       if present, a jq expression `gh pr merge` applies to
+#                    pr.json instead (for the merge queue cases)
+#   seq.queue        JSON objects, one per line, merged into pr.json by each
+#                    `gh api graphql` read (the merge queue status); the last
+#                    one then sticks
 #   calls            every gh, bd and sleep call, appended by the fakes
 set -euo pipefail
 
@@ -65,10 +70,22 @@ case "$1 $2" in
     fi ;;
   "pr update-branch") echo "Updated branch" ;;
   "pr merge")
-    if [ -e "$FAKE/merge_ok" ]; then set_field state MERGED; else
+    if [ -e "$FAKE/merge_sets" ]; then
+      jq "$(cat "$FAKE/merge_sets")" "$pr_json" > "$pr_json.new" && mv "$pr_json.new" "$pr_json"
+      echo "! The merge strategy for main is set by the merge queue"
+    elif [ -e "$FAKE/merge_ok" ]; then set_field state MERGED; else
       echo "X Pull request is not mergeable: the base branch policy prohibits the merge." >&2; exit 1; fi ;;
   "run list") echo 999 ;;
   "run view") echo "Tests  Run tests  expected 1 to equal 2" ;;
+  "api graphql")
+    expr="."
+    while [ $# -gt 0 ]; do case "$1" in --jq) expr="$2"; shift 2 ;; *) shift ;; esac; done
+    file="$FAKE/seq.queue"
+    if [ -s "$file" ]; then
+      jq --argjson v "$(head -1 "$file")" '. + $v' "$pr_json" > "$pr_json.new" && mv "$pr_json.new" "$pr_json"
+      if [ "$(wc -l < "$file")" -gt 1 ]; then tail -n +2 "$file" > "$file.new" && mv "$file.new" "$file"; fi
+    fi
+    jq '{data: {repository: {pullRequest: {state, mergeQueueEntry, autoMergeRequest}}}}' "$pr_json" | jq -r "$expr" ;;
   "api repos/{owner}/{repo}/rules/branches/main")
     [ -e "$FAKE/rules.json" ] || { echo "HTTP 404" >&2; exit 1; }
     jq -r "$4" "$FAKE/rules.json" ;;
@@ -117,6 +134,11 @@ EOF
 }
 pr() { jq "$1" "$FAKE/pr.json" > "$FAKE/pr.new" && mv "$FAKE/pr.new" "$FAKE/pr.json"; }
 seq_of() { local f="$1"; shift; printf '%s\n' "$@" > "$FAKE/seq.$f"; }
+# Turns on the merge queue in main's ruleset; gh pr merge then just enqueues
+queue_on() {
+  echo '[{"type": "pull_request"}, {"type": "merge_queue", "parameters": {"merge_method": "SQUASH"}}]' > "$FAKE/rules.json"
+  echo '.' > "$FAKE/merge_sets"
+}
 
 land() {
   rc=0
@@ -246,6 +268,7 @@ land
 check "exits 0" exits 0
 check "updates the branch" called "gh pr update-branch 42"
 check "merges" called "gh pr merge 42"
+check "doesn't use a merge queue" not_says "merge queue"
 done_case
 
 echo "behind main every time"
@@ -299,6 +322,108 @@ pr '.mergeStateStatus = "DRAFT"'
 land
 check "exits non-zero" fails
 check "says how to mark it ready" says "gh pr ready 42"
+done_case
+
+echo "merge queue: queued, then merged"
+scenario queue
+queue_on
+git -C "$repo" push -q origin feat/x
+seq_of queue '{"mergeQueueEntry": {"position": 2, "state": "QUEUED"}}' \
+  '{"mergeQueueEntry": {"position": 2, "state": "QUEUED"}}' \
+  '{"mergeQueueEntry": {"position": 1, "state": "AWAITING_CHECKS"}}' \
+  '{"state": "MERGED", "mergeQueueEntry": null}'
+land
+check "exits 0" exits 0
+check "says main has a merge queue" says "main has a merge queue"
+check "waits for the PR's CI first" called "gh pr checks 42 --watch"
+check "enqueues with gh pr merge" called "gh pr merge 42 --squash"
+check "doesn't pass --delete-branch" not_called "--delete-branch"
+check "doesn't update the branch" not_called "gh pr update-branch"
+check "reports the queue position" says "In the merge queue: position 2, QUEUED"
+check "reports it only when it changes" [ "$(grep -c "position 2, QUEUED" <<< "$out")" -eq 1 ]
+check "reports the next position" says "In the merge queue: position 1, AWAITING_CHECKS"
+check "reports the merge commit" says "Merged as abcdef1"
+check "removes the worktree and branch" cleaned_up
+check "deletes the remote branch" bash -c "! git -C '$tmp/queue/origin.git' rev-parse -q --verify refs/heads/feat/x"
+check "closes the Closes bead" called "bd close supply-checkout-abc --reason Completed in PR #42"
+done_case
+
+echo "merge queue: behind main"
+scenario queue-behind
+queue_on
+pr '.mergeStateStatus = "BEHIND"'
+seq_of queue '{"state": "MERGED"}'
+land
+check "exits 0" exits 0
+check "leaves updating to the queue" not_called "gh pr update-branch"
+check "enqueues" called "gh pr merge 42 --squash"
+done_case
+
+echo "merge queue: the queue's CI fails"
+scenario queue-fails
+queue_on
+seq_of queue '{"mergeQueueEntry": {"position": 1, "state": "AWAITING_CHECKS"}}' '{"mergeQueueEntry": null}'
+land
+check "exits non-zero" fails
+check "says it left the queue" says "left the merge queue without merging"
+check "looks up the merge group run" called "gh run list --workflow CI --event merge_group"
+check "prints the failing log" says "expected 1 to equal 2"
+check "leaves the worktree and branch" untouched
+check "closes no beads" not_called "bd close"
+done_case
+
+echo "merge queue: auto-merge on, but an approval is missing"
+scenario queue-needs-approval
+queue_on
+pr '.mergeStateStatus = "BLOCKED"'
+echo '.autoMergeRequest = {"enabledAt": "2026-01-01T00:00:00Z"}' > "$FAKE/merge_sets"
+land
+check "exits non-zero" fails
+check "says it hasn't joined the queue" says "hasn't joined the merge queue"
+check "gives the approve command" says "gh pr review 42 --approve"
+check "waits a minute first" [ "$(count "sleep 15")" -eq 4 ]
+check "leaves the worktree and branch" untouched
+done_case
+
+echo "merge queue: gh can't enqueue it"
+scenario queue-rejected
+queue_on
+rm "$FAKE/merge_sets" "$FAKE/merge_ok"
+land
+check "exits non-zero" fails
+check "prints gh's error" says "base branch policy prohibits the merge"
+check "says it didn't join the queue" says "didn't join the merge queue"
+done_case
+
+echo "merge queue: the PR's own CI fails"
+scenario queue-ci-fails
+queue_on
+echo 1 > "$FAKE/checks_rc"
+land
+check "exits non-zero" fails
+check "prints the failing log" says "expected 1 to equal 2"
+check "doesn't enqueue" not_called "gh pr merge"
+done_case
+
+echo "merge queue: conflicts"
+scenario queue-dirty
+queue_on
+pr '.mergeStateStatus = "DIRTY"'
+land
+check "exits non-zero" fails
+check "says to rebase" says "has conflicts with main"
+check "doesn't wait for CI" not_called "gh pr checks"
+done_case
+
+echo "merge queue: still queued after an hour"
+scenario queue-slow
+queue_on
+pr '.mergeQueueEntry = {"position": 3, "state": "QUEUED"}'
+land
+check "exits non-zero" fails
+check "says it's still queued" says "still in the merge queue after 60 minutes"
+check "polls for an hour" [ "$(count "sleep 15")" -eq 239 ]
+check "leaves the worktree and branch" untouched
 done_case
 
 echo
