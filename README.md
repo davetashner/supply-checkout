@@ -103,6 +103,15 @@ npx cdk deploy --all --profile supply-prod
 
 `npm test` runs these Playwright suites in desktop Chrome and an iPhone-sized Safari (WebKit), against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`), once for each build. `npm run test:artifact` and `npm run test:web` run one build; `BUILD=web npx playwright test …` does the same for a single file or test. Each run builds the app first (`tests/global-setup.js`), so it always tests the current source.
 
+### Running tests on a laptop
+
+A full run starts a browser in every worker, and WebKit workers can each take over a gigabyte. Several at once, with other apps open, have used up a 16 GB laptop's memory and swap and frozen the screen. Two guards keep local runs in bounds:
+
+- **Fewer workers.** Locally, Playwright uses one worker per 8 GB of RAM, and at most half the CPU cores (`localWorkers` in `playwright.config.js`). That's 2 on a 16 GB laptop. Pass `--workers=N` to change it for one run. CI uses Playwright's default.
+- **One run at a time.** Each run takes a lock in the repo's shared `.git` directory (`tests/run-lock.js`), so a run started in another worktree waits and prints which run it's waiting for. A lock left by a run that was killed is taken over automatically. CI skips the lock.
+
+While working on a change, run just the file and browser you're touching, e.g. `npx playwright test tests/sheets.spec.js --project=desktop-chrome`. Save `npm run check` for before you open a PR; CI runs every browser and build anyway.
+
 | Suite | What it checks |
 | --- | --- |
 | `app.spec.js` | Core flows: sheets, checkout and return, storage counts, items without barcodes, receipt review, CSV export, view-only access |
