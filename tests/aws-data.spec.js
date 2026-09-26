@@ -856,17 +856,18 @@ test.describe("inventory edits", () => {
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(inventoryRow(page, "Paper towels").locator("td").nth(2)).toHaveText("$9.00");
     expect(backend.requests("PUT", "/teams/t1/products/SKU1")[0].body).toEqual({
-      data: { code: "SKU1", name: "Paper towels, 6 roll", price: 9, cost: 6.25, packSize: 12, stock: 10, note: "keep me", updatedAt: expect.any(String) },
+      data: { code: "SKU1", name: "Paper towels, 6 roll", price: 9, cost: 6.25, packSize: 12, note: "keep me", updatedAt: expect.any(String) },
       expectedVersion: 1,
     });
-    expect(backend.doc("t1", "products", "SKU1").data).toMatchObject({ cost: 6.25, packSize: 12, note: "keep me" });
+    // Without stock in the body, the server keeps the stock it has
+    expect(backend.doc("t1", "products", "SKU1").data).toMatchObject({ cost: 6.25, packSize: 12, note: "keep me", stock: 10 });
     // The count didn't change, so there's no stock command
     expect(backend.requests("POST", "/teams/t1/products/SKU1/stock")).toEqual([]);
   });
 });
 
 // docs/api/commands.md: stock outside a sheet changes only through the stock command, which
-// records why. A PUT replaces the whole item, so it carries the stock it was made against.
+// records why. The document routes keep the stored stock, so a PUT never carries it.
 test.describe("stock commands", () => {
   const STOCK = "/teams/t1/products/SKU1/stock";
   const toast = (page) => page.locator("#toast");
@@ -884,13 +885,48 @@ test.describe("stock commands", () => {
     await editStock(page, "7");
     await expect(toast(page)).toHaveText("Saved");
     await expect(stockCell(page, "Paper towels")).toHaveText("7");
-    // The item keeps the stock it had; the count comes after it's saved
-    expect(backend.requests("PUT", "/teams/t1/products/SKU1").map((r) => r.body)).toEqual([
-      { data: { code: "SKU1", name: "Paper towels, 6 roll", price: 8.5, stock: 10, updatedAt: expect.any(String) }, expectedVersion: 1 },
-    ]);
+    // Nothing else changed, so there's no PUT, only the count
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1")).toEqual([]);
     expect(backend.requests("POST", STOCK).map((r) => r.body)).toEqual([{ operationId: expect.stringMatching(/^[0-9a-f-]{36}$/), reason: "count", count: 7 }]);
-    expect(backend.doc("t1", "products", "SKU1")).toMatchObject({ version: 3, data: { stock: 7 } });
+    expect(backend.doc("t1", "products", "SKU1")).toMatchObject({ version: 2, data: { stock: 7 } });
     expect([...backend.operations.values()][0].result).toMatchObject({ reason: "count", count: 7, stockDelta: -3 });
+  });
+
+  test("an edit with a new count saves the item without stock, then counts", async ({ page }) => {
+    const backend = await open(page);
+    await page.getByRole("button", { name: "Inventory" }).click();
+    await inventoryRow(page, "Paper towels").click();
+    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByLabel("In storage now").fill("7");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(toast(page)).toHaveText("Saved");
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1").map((r) => r.body)).toEqual([
+      { data: { code: "SKU1", name: "Paper towels, 6 roll", price: 9, updatedAt: expect.any(String) }, expectedVersion: 1 },
+    ]);
+    expect(backend.doc("t1", "products", "SKU1")).toMatchObject({ version: 3, data: { price: 9, stock: 7 } });
+  });
+
+  test("saving again after a count's answer was lost counts once, without a conflict", async ({ page }) => {
+    const backend = await open(page);
+    backend.on("POST", STOCK, { lost: true });
+    await page.getByRole("button", { name: "Inventory" }).click();
+    await inventoryRow(page, "Paper towels").click();
+    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByLabel("In storage now").fill("7");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+    expect(backend.doc("t1", "products", "SKU1")).toMatchObject({ version: 3, data: { price: 9, stock: 7 } });
+    // One more save finishes it: the item is saved already, so the count is sent again, and
+    // the server answers it from its record
+    await hideToast(page);
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(toast(page)).toHaveText("Saved");
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1")).toHaveLength(1);
+    const [lost, again] = backend.requests("POST", STOCK).map((r) => r.body);
+    expect(again).toEqual(lost);
+    expect(backend.operations.size).toBe(1);
+    expect(backend.doc("t1", "products", "SKU1")).toMatchObject({ version: 3, data: { price: 9, stock: 7 } });
+    await expect(stockCell(page, "Paper towels")).toHaveText("7");
   });
 
   test("a new item counted in the form is saved without stock, then counted", async ({ page }) => {
@@ -922,7 +958,7 @@ test.describe("stock commands", () => {
     const backend = await open(page);
     await editStock(page, "");
     await expect(toast(page)).toHaveText("Saved");
-    expect(backend.requests("PUT", "/teams/t1/products/SKU1")[0].body.data.stock).toBe(10);
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1")).toEqual([]);
     expect(backend.requests("POST", STOCK)).toEqual([]);
     await expect(stockCell(page, "Paper towels")).toHaveText("10");
   });
@@ -933,7 +969,7 @@ test.describe("stock commands", () => {
     const backend = await open(page, new FakeBackend({ docs }));
     await editStock(page, "6");
     await expect(stockCell(page, "Paper towels")).toHaveText("6");
-    expect(backend.requests("PUT", "/teams/t1/products/SKU1")[0].body.data).not.toHaveProperty("stock");
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1")).toEqual([]);
     expect([...backend.operations.values()][0].result).toMatchObject({ reason: "count", count: 6, stockDelta: 6 });
   });
 
@@ -980,7 +1016,7 @@ test.describe("stock commands", () => {
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(toast(page)).toHaveText("9 added to storage");
     // The item keeps its stock; each line adds its eaches at its price each
-    expect(backend.requests("PUT", "/teams/t1/products/SKU1")[0].body.data.stock).toBe(10);
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1")[0].body.data).not.toHaveProperty("stock");
     expect(backend.requests("POST", STOCK).map((r) => r.body)).toEqual([
       { operationId: expect.any(String), reason: "receipt", quantity: 2, unitCost: 7.99 },
       { operationId: expect.any(String), reason: "receipt", quantity: 3, unitCost: 8.25 },
@@ -991,6 +1027,21 @@ test.describe("stock commands", () => {
     expect(backend.requests("POST", `/teams/t1/products/${key}/stock`).map((r) => r.body)).toEqual([{ operationId: expect.any(String), reason: "receipt", quantity: 4, unitCost: 4.5 }]);
     expect(backend.doc("t1", "products", key).data.stock).toBe(4);
     expect(backend.requests("PATCH", /^\/teams\/t1\//)).toEqual([]);
+  });
+
+  test("a receipt's cases are stock commands in eaches at the cost of one each", async ({ page }) => {
+    const docs = { ...seeded(), "t1/products/SKU1": { ...usedState.seed["products/SKU1"], cost: 7, packSize: 6 } };
+    const backend = new FakeBackend({ docs });
+    await openDraft(page, backend, [draftLine({ id: "l1", name: "Paper towels", qty: 2, price: 45, match: "SKU1", usePrice: "" })]);
+    await connected(page);
+    await page.getByRole("button", { name: "Continue review" }).click();
+    await expect(page.locator(".rline [data-note]")).toHaveText("12 each, cost $7.50 each");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(toast(page)).toHaveText("12 added to storage");
+    // The client price is kept (it was above the cost), and the cost is the receipt's
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1")[0].body.data).toMatchObject({ price: 8.5, cost: 7.5, packSize: 6 });
+    expect(backend.requests("POST", STOCK).map((r) => r.body)).toEqual([{ operationId: expect.any(String), reason: "receipt", quantity: 12, unitCost: 7.5 }]);
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(22);
   });
 
   test("saving a receipt again after a failed line adds each line once", async ({ page }) => {
@@ -1006,15 +1057,13 @@ test.describe("stock commands", () => {
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
     expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(12);
-    // Saving again meets the item as that line left it, and fetches it
-    await hideToast(page);
-    await page.getByRole("button", { name: "Save", exact: true }).click();
-    await expect(toast(page)).toContainText("Someone else changed this just now");
-    expect(backend.requests("GET", "/teams/t1/products/SKU1")).toHaveLength(1);
-    // Then the same two operations: the first is answered from the server's record
+    // Saving again doesn't save the item again (its price and name are saved already), so it
+    // doesn't meet the version that line gave it: the same two operations go, and the first is
+    // answered from the server's record
     await hideToast(page);
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(toast(page)).toHaveText("5 added to storage");
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1")).toHaveLength(1);
     const [lost, again1, again2] = backend.requests("POST", STOCK).map((r) => r.body);
     expect(again1).toEqual(lost);
     expect(again2.operationId).not.toBe(lost.operationId);

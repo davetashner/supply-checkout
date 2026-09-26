@@ -34,8 +34,8 @@ the artifact's document write.
 | --- | --- | --- |
 | Check out (`checkoutModal`) | `PATCH sheets/<id>` with the whole line, then `bumpStock(key, -qty)` | `POST /teams/{teamId}/sheets/{sheetId}/checkout`. No `bumpStock`. |
 | Return (`returnModal`) | `PATCH sheets/<id>` with `returned`, then `bumpStock(key, back - before)` | `POST /teams/{teamId}/sheets/{sheetId}/return`. No `bumpStock`. |
-| Inventory form, "In storage now" (`productModal`) | `PUT products/<key>` with the new `stock` | `PUT products/<key>` with the stock it already has, then, if the count differs, `POST /teams/{teamId}/products/{key}/stock` with `reason: "count"`. A blank count leaves stock as it is. |
-| Receipt save, General inventory lines (`saveReceipt`) | `PUT products/<key>` with `stock` plus the lines' quantities | `PUT products/<key>` with the stock it already has (price and name updates), then one `POST .../products/{key}/stock` with `reason: "receipt"` per line: its quantity in eaches and its receipt price as `unitCost` |
+| Inventory form, "In storage now" (`productModal`) | `PUT products/<key>` with the new `stock` | `PUT products/<key>` without `stock`, if any other field changed, then, if the count differs, `POST /teams/{teamId}/products/{key}/stock` with `reason: "count"`. A blank count leaves stock as it is. |
+| Receipt save, General inventory lines (`saveReceipt`) | `PUT products/<key>` with `stock` plus the lines' quantities | `PUT products/<key>` without `stock` (price and name updates), if they changed, then one `POST .../products/{key}/stock` with `reason: "receipt"` per line: its quantity in eaches and its receipt price as `unitCost` |
 | Item history (new) | none | `GET /teams/{teamId}/products/{key}/movements` (not used by the app yet) |
 
 Everything else stays on the document routes: creating, editing and deleting
@@ -44,13 +44,28 @@ counts or price** (the line edit, a `PATCH` that doesn't move stock). A new
 item scanned at checkout is still saved to inventory with `PUT products/<key>`
 first, as today; the checkout then copies it.
 
-In the web build no document write changes `stock`. A `PUT` replaces the whole
-item, so the inventory form and the receipt save send the stock of the copy
-they're made against, unchanged: `expectedVersion` refuses the write if a
-command changed stock since. The item is saved first (a new item has to exist
-before the stock command), then the stock command runs. Each count is one
-operation per form, and each receipt line is its own operation, so saving
-again after a failure sends the same IDs and nothing is added twice. The
+No document write changes `stock` (`keepStock` in
+`backend/src/data/documents.ts`). A product `PUT` or `PATCH` keeps the stored
+stock: a body that leaves `stock` out keeps it, one that repeats the stored
+value is fine, and any other `stock` is `400 bad_request`. That includes any
+`stock` on a new product or on one that doesn't track stock: an item is
+created without stock and starts counting with a `count` adjustment, so every
+stock level the server holds is backed by a movement. The CSV import
+(`backend/src/data/imports.ts`) writes products itself and sets stock, with a
+movement (`reason: "import"`) for each change, so it stays consistent with
+this. The claude.ai artifact build writes stock in documents, but to claude.ai's
+storage, not to this API.
+
+The web build's `PUT` never carries `stock`. The item is saved first (a new
+item has to exist before the stock command), then the stock command runs. Each
+count is one operation per form, and each receipt line is its own operation, so
+saving again after a failure sends the same IDs and nothing is added twice.
+The `PUT` is skipped when the item's own fields (all but `stock` and
+`updatedAt`) are already what the page holds: a count on its own, or saving
+again after a stock command's answer was lost. In that second case the page
+holds the version from before the command, so a `PUT` would get `409` and show
+"someone else changed this"; skipping it, the same save sends the command
+again with the same ID and the server replays it. The
 receipt's pack conversion ([ADR 0014](../adr/0014-units-cost-and-rounding.md))
 comes later, in the line's quantity and `unitCost` (`stockIn` in
 `src/main.js`); the item's price and cost updates stay a document write.
@@ -143,7 +158,7 @@ starts at `quantity`) and records `unitCost`; it doesn't change the item's
   edit screen that sends `expectedVersion` sees the change. So does the
   product's with every change to its `stock` (not for an item that doesn't
   track stock), so an inventory edit made against the version before a
-  command gets `409` instead of overwriting the command's stock change.
+  command gets `409` rather than being saved over a copy it hasn't seen.
 - Live updates: the sheet and product each produce a change event, as a
   document write does.
 
@@ -236,9 +251,8 @@ drifting") is a separate bead. It reconciles each item from the movements:
 - The check keeps, per item, the last reconciled `stock` and the last movement
   it had summed. Each night it reads the item's movements after that one: the
   new `stock` should equal the old one plus their deltas. A mismatch means
-  stock changed without a movement: a document write that set `stock` (the
-  artifact's writes, or a client that doesn't use the stock command), or a
-  bug.
+  stock changed without a movement: since the document routes can't change
+  `stock`, a bug.
 - It reads the product, then the movements, and on a mismatch reads both again
   before alarming, so a command that commits between the two reads isn't
   reported as drift.

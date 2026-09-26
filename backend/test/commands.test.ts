@@ -37,10 +37,14 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
   async function team(): Promise<TeamContext> {
     db = table.db;
     const ctx = (await createTeam(db, { userId: newUser() }, { name: "Echo" })).context;
-    await setDocument(db, ctx, "products", "0123", { code: "0123", name: "Nitrile gloves", price: 12.5, cost: 9.99, stock: 100 });
+    await counted(ctx, "0123", { code: "0123", name: "Nitrile gloves", price: 12.5, cost: 9.99, stock: 100 });
     await setDocument(db, ctx, "sheets", "s1", { client: "Echo", date: "2026-09-26", status: "open", items: {} });
     return ctx;
   }
+
+  // A product that already tracks stock, stored at version 1 (a document write can't set stock)
+  const counted = (ctx: TeamContext, key: string, data: Record<string, unknown>) =>
+    connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: { ...keys.product(ctx.teamId, key), type: "product", key, version: 1, ...data } }));
 
   const line = async (ctx: TeamContext, key = "0123") => ((await getDocument(db, ctx, "sheets", "s1"))?.data.items as Record<string, Record<string, unknown>>)[key];
   const stock = async (ctx: TeamContext) => (await getDocument(db, ctx, "products", "0123"))?.data.stock;
@@ -205,7 +209,7 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
 
     // Named "String": the SDK would store a map with its own `constructor` field as a string
     for (const key of ["constructor", "toString"]) {
-      await setDocument(db, ctx, "products", key, { code: key, name: "String", price: 2, stock: 20 });
+      await counted(ctx, key, { code: key, name: "String", price: 2, stock: 20 });
       await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: key, quantity: 2 });
       await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: key, quantity: 3 });
       await returnItems(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: key, quantity: 4 });

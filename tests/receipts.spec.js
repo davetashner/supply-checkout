@@ -124,6 +124,10 @@ test("adds receipt items to an existing sheet, merging with what's already there
   await expect(lineRow(page, "Storage bins, 12 qt").locator("td").nth(2)).toHaveText("6");
   await expect(lineRow(page, "Storage bins, 12 qt").locator("td").nth(1)).toHaveText("$5.00");
   await expect(lineRow(page, "Painter's tape")).toContainText("$6.25");
+  // A line from before costs were kept stays without one; a new line gets the receipt's cost
+  const items = (await docs(page, "sheets/s1"))["sheets/s1"].items;
+  expect(items["nb-bins"]).not.toHaveProperty("cost");
+  expect(Object.values(items).find((it) => it.name.startsWith("Painter")).cost).toBe(6.25);
 });
 
 test("a sheet deleted during the review is reported on save", async ({ page }) => {
@@ -141,11 +145,13 @@ test("chooses between the inventory and receipt name and price", async ({ page }
   await scanReceipt(page);
   const bins = line(page, 0);
   await expect(bins).toContainText("2 in storage now");
+  // No cost known, so the receipt price is charged by default (ADR 0014)
+  await expect(bins.getByRole("button", { name: /Charge the receipt price/ })).toHaveAttribute("aria-pressed", "true");
   await bins.getByRole("button", { name: /From receipt/ }).click();
   await expect(line(page, 0).getByRole("button", { name: /From receipt/ })).toHaveAttribute("aria-pressed", "true");
-  await line(page, 0).getByRole("button", { name: /Receipt price/ }).click();
+  await line(page, 0).getByRole("button", { name: /Charge the receipt price/ }).click();
   await expect(line(page, 0).locator("[data-total]")).toHaveText("$22.00");
-  await line(page, 0).getByRole("button", { name: /Keep inventory price/ }).click();
+  await line(page, 0).getByRole("button", { name: /Keep the client price/ }).click();
   await expect(line(page, 0).locator("[data-total]")).toHaveText("$20.00");
   await line(page, 0).getByRole("button", { name: /Inventory name/ }).click();
 
@@ -415,4 +421,88 @@ test("if one sheet fails to save, only its items stay in the review", async ({ p
   await expect(page.locator(".rline")).toHaveCount(1);
   await expect(line(page, 0)).toContainText("PTR TAPE");
   await expect(saveBtn(page)).toBeEnabled();
+});
+
+// ADR 0014: cost and client price, and packs converted to eaches (J5)
+const gloves = { code: "GL", name: "Gloves, box", price: 2, cost: 1, packSize: 12, stock: 5 };
+
+test("keeps the client price by default when the item is marked up, and saves the receipt price as its cost", async ({ page }) => {
+  const seed = { ...usedState.seed, "products/nb-bins": { code: "", name: "Storage bins, 12 qt", price: 5, cost: 4, packSize: 1, stock: 2 }, "products/SKU1": { ...usedState.seed["products/SKU1"], cost: 9 } };
+  await seedDraft(page, {
+    dests: [{ id: "d1", sheetId: "", client: "Markup Co" }],
+    lines: [draftLine({ name: "Bins", match: "nb-bins", qty: 2, price: 4.5, usePrice: "" }), draftLine({ name: "Towels", match: "SKU1", qty: 1, price: 9.5, usePrice: "" })],
+  }, { seed });
+  // A cost below the price is a markup, so it's kept
+  await expect(line(page, 0).getByRole("button", { name: /Keep the client price/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(line(page, 0).getByRole("button", { name: /Charge the receipt price/ })).toContainText("$4.50");
+  await expect(line(page, 0).locator("[data-total]")).toHaveText("$10.00");
+  // A pack size of 1 is no pack
+  await expect(line(page, 0)).not.toContainText("1 case");
+  // A cost above the price isn't a markup, so the receipt price is charged
+  await expect(line(page, 1).getByRole("button", { name: /Charge the receipt price/ })).toHaveAttribute("aria-pressed", "true");
+  await saveBtn(page).click();
+  await expect(page.getByRole("heading", { name: "Markup Co" })).toBeVisible();
+  const products = await docs(page, "products/");
+  expect(products["products/nb-bins"]).toMatchObject({ price: 5, cost: 4.5, stock: 2 });
+  expect(products["products/SKU1"]).toMatchObject({ price: 9.5, cost: 9.5 });
+  const [sheet] = Object.values(await docs(page, "sheets/")).filter((s) => s.client === "Markup Co");
+  expect(sheet.items["nb-bins"]).toMatchObject({ price: 5, cost: 4.5, out: 2 });
+  expect(sheet.items.SKU1).toMatchObject({ price: 9.5, cost: 9.5, out: 1 });
+});
+
+test("a case on a receipt goes into storage as eaches, at the case price divided by its pack size", async ({ page }) => {
+  await seedDraft(page, {
+    subtotal: 30,
+    lines: [draftLine({ name: "Gloves", match: "GL", qty: 2, price: 15, dest: "stock", usePrice: "" })],
+  }, { seed: { ...usedState.seed, "products/GL": gloves } });
+  const gl = line(page, 0);
+  await expect(gl).toContainText("1 case = 12 each");
+  await expect(gl.locator("[data-note]")).toHaveText("24 each, cost $1.25 each");
+  await expect(gl.getByLabel("Cases")).toHaveValue("2");
+  await expect(gl.getByLabel("Per case ($)")).toHaveValue("15");
+  await expect(gl.getByRole("button", { name: /Keep the client price/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(gl.locator("[data-total]")).toHaveText("$48.00");
+  // Storage counts eaches; the receipt comparison uses the receipt's prices
+  await expect(page.locator("#rSum")).toContainText("24 items");
+  await expect(page.locator("#rSum")).not.toContainText("doesn't match");
+  await gl.getByLabel("Cases").fill("3");
+  await expect(gl.locator("[data-note]")).toHaveText("36 each, cost $1.25 each");
+  await expect(page.locator("#rSum")).toContainText("doesn't match");
+  await saveBtn(page).click();
+  await expect(toast(page)).toHaveText("36 added to storage");
+  const products = await docs(page, "products/");
+  expect(products["products/GL"]).toMatchObject({ price: 2, cost: 1.25, packSize: 12, stock: 41 });
+});
+
+test("a pack item priced per each isn't converted", async ({ page }) => {
+  await seedDraft(page, {
+    dests: [{ id: "d1", sheetId: "", client: "Singles Co" }],
+    lines: [draftLine({ name: "Gloves", match: "GL", qty: 3, price: 1.5, usePrice: "" })],
+  }, { seed: { ...usedState.seed, "products/GL": gloves } });
+  await line(page, 0).getByLabel("Priced per each").check();
+  const gl = line(page, 0);
+  await expect(gl.getByLabel("Priced per each")).toBeChecked();
+  await expect(gl.locator("[data-note]")).toBeHidden();
+  await expect(gl.getByLabel("Qty")).toHaveValue("3");
+  await expect(gl.getByLabel("Each ($)")).toHaveValue("1.5");
+  await gl.getByRole("button", { name: /Charge the receipt price/ }).click();
+  await expect(line(page, 0).locator("[data-total]")).toHaveText("$4.50");
+  await saveBtn(page).click();
+  await expect(page.getByRole("heading", { name: "Singles Co" })).toBeVisible();
+  const [sheet] = Object.values(await docs(page, "sheets/")).filter((s) => s.client === "Singles Co");
+  expect(sheet.items.GL).toMatchObject({ code: "GL", price: 1.5, cost: 1.5, out: 3, returned: 0 });
+  expect((await docs(page, "products/"))["products/GL"]).toMatchObject({ price: 1.5, cost: 1.5, stock: 5 });
+});
+
+test("cases added to an existing sheet line add eaches and keep the line's price and cost", async ({ page }) => {
+  const s1 = usedState.seed["sheets/s1"];
+  const seed = { ...usedState.seed, "products/GL": gloves, "sheets/s1": { ...s1, items: { ...s1.items, GL: { code: "GL", name: "Gloves, box", price: 1.8, cost: 0.9, out: 4, returned: 1 } } } };
+  await seedDraft(page, {
+    dests: [{ id: "d1", sheetId: "s1", client: "" }],
+    lines: [draftLine({ name: "Gloves", match: "GL", qty: 1, price: 18 })],
+  }, { seed });
+  await saveBtn(page).click();
+  await expect(toast(page)).toHaveText("Saved to 1 sheet");
+  const sheets = await docs(page, "sheets/");
+  expect(sheets["sheets/s1"].items.GL).toEqual({ code: "GL", name: "Gloves, box", price: 1.8, cost: 0.9, out: 16, returned: 1 });
 });

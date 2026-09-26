@@ -20,6 +20,9 @@ import { createLive } from "./live.js";
 const BURST_FETCHES = 10, BURST_MS = 1000, QUIET_MS = 300, MAX_WAIT_MS = 2000;
 const META = { fromCache: false, hasPendingWrites: false };
 const cmp = (a, b) => (a > b) - (a < b);
+// An item's own fields, to compare two copies: not its stock (the stock commands own it) or
+// when it was last saved
+const fields = (data) => JSON.stringify(Object.keys(data).filter((k) => k !== "stock" && k !== "updatedAt").sort().map((k) => [k, data[k]]));
 const snap = (id, doc) => ({ id, exists: !!doc, data: () => (doc ? structuredClone(doc.data) : undefined), metadata: META });
 
 function querySnap(docs, order) {
@@ -269,16 +272,21 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
     }
   }
 
-  // An item saved from the inventory form or a receipt (src/moves.js saveItem). A PUT replaces
-  // the whole item, so it carries the stock of the copy it's made against, unchanged (the
-  // version check refuses it if stock changed since); the new stock goes through the stock
-  // command, after the item exists. A count that matches what's stored changes nothing. The
-  // web build doesn't stop counting an item: a blank count leaves its stock as it is.
+  // An item saved from the inventory form or a receipt (src/moves.js saveItem). Stock moves only
+  // through the stock command (the document routes keep the stored stock and refuse another), so
+  // the PUT leaves it out and the new stock goes through the command, after the item exists. A
+  // count that matches what's stored changes nothing. The web build doesn't stop counting an
+  // item: a blank count leaves its stock as it is.
+  //
+  // The PUT is skipped when the item's own fields are what's held already (the time it was
+  // saved aside): a count on its own, or saving again after the stock command's answer was lost.
+  // The held copy is then older than the server's, since the command gave the item a new
+  // version, so a PUT would conflict; the command is sent again with the same ID instead, and
+  // the server replays it.
   async function saveItem(key, body, change, action) {
     const data = { ...body }, held = coll("products").docs.get(key);
     delete data.stock;
-    if (held && typeof held.data.stock === "number") data.stock = held.data.stock;
-    await docRef("products/" + key).set(data);
+    if (!held || fields(held.data) !== fields(data)) await docRef("products/" + key).set(data);
     const stored = coll("products").docs.get(key).data.stock;
     const changes = change.reason === "receipt"
       ? change.lines.map((l) => [l.action, { reason: "receipt", quantity: l.quantity, unitCost: l.unitCost }])

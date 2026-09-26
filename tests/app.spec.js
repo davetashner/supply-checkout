@@ -104,7 +104,7 @@ test("receipt review merges duplicates and splits items between a client and sto
   const bins = page.locator(".rline").nth(0);
   await expect(bins).toContainText("Suggested match");
   await expect(bins).toContainText("Price changed");
-  await bins.getByRole("button", { name: /Keep inventory price/ }).click();
+  await bins.getByRole("button", { name: /Keep the client price/ }).click();
   await page.locator(".rline").nth(0).locator('select[data-f="dest"]').selectOption({ label: "General inventory (storage)" });
 
   await page.getByLabel("Client name").fill("Delta Inc");
