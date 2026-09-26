@@ -12,6 +12,8 @@ const SCOPES = "openid email profile aws.cognito.signin.user.admin";
 const EARLY = 300, LIFETIME = 3600;
 // The invite from a link, kept across sign-in (account.js)
 export const INVITE_KEY = "supplyCheckout.invite";
+// The team the user last chose (account.js)
+export const TEAM_KEY = "supplyCheckout.team";
 
 const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const random = (n) => b64url(crypto.getRandomValues(new Uint8Array(n)));
@@ -26,8 +28,10 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
     tokens = t;
     clearTimeout(timer);
     const life = t.expiresIn > 0 ? t.expiresIn : LIFETIME;
-    timer = setTimeout(() => refresh().catch(() => {}), Math.max(60, life - EARLY) * 1000);
+    timer = setTimeout(background, Math.max(60, life - EARLY) * 1000);
   }
+
+  const background = () => refresh().catch(() => {});
 
   // One refresh at a time; a 401 means the session is over
   function refresh() {
@@ -87,13 +91,20 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
       }
     },
 
-    // Revokes the refresh token, forgets sign-in's saved state, then signs out of Managed
-    // Login too. False, still signed in, when the API couldn't be reached.
+    // Revokes the refresh token, forgets sign-in's saved state and the chosen team, then
+    // signs out of Managed Login too. False, still signed in, when the API couldn't be
+    // reached. A refresh already in flight finishes first: with refresh-token rotation, its
+    // response would otherwise set a new refresh cookie after sign-out cleared it.
     async signOut() {
-      try { await post("/auth/sign-out"); } catch { return false; }
+      clearTimeout(timer);
+      if (refreshing) await refreshing.catch(() => {});
+      clearTimeout(timer);
+      // Still signed in when it fails, so refresh again in a minute
+      try { await post("/auth/sign-out"); } catch { timer = setTimeout(background, 60_000); return false; }
       tokens = null;
       clearTimeout(timer);
       for (const key of [PKCE_KEY, INVITE_KEY]) sessionStorage.removeItem(key);
+      localStorage.removeItem(TEAM_KEY);
       location.assign(`${config.authUrl}/logout?${new URLSearchParams({ client_id: config.clientId, logout_uri: redirectUri })}`);
       return true;
     },

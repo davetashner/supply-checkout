@@ -59,6 +59,16 @@ export class FakeBackend {
     return () => { this.rules = this.rules.filter((x) => x.answer.wait !== wait); release(); };
   }
 
+  // Answers the next matching request as the API does when it arrives, but delivers the
+  // answer only when the returned function is called. A refresh's answer sets the refresh
+  // cookie when it's delivered, as the browser does, even after a sign-out cleared it.
+  delay(method, path) {
+    let release;
+    const wait = new Promise((r) => { release = r; });
+    this.rules.push({ method, path, answer: { wait, late: true }, times: 1 });
+    return release;
+  }
+
   // Another user's write, as the API would store it
   write(team, coll, id, data) {
     const key = `${team}/${coll}/${id}`, cur = this.docs.get(key);
@@ -83,6 +93,12 @@ export class FakeBackend {
     const rule = this.rules.find((r) => r.method === method && (typeof r.path === "string" ? r.path === path : r.path.test(path)));
     if (rule) {
       if (--rule.times <= 0) this.rules.splice(this.rules.indexOf(rule), 1);
+      if (rule.answer.late) {
+        const [status, body] = this.answer(method, path, call);
+        await rule.answer.wait;
+        if (path === "/auth/refresh" && status === 200) this.signedIn = true;
+        return this.reply(route, status, body);
+      }
       if (rule.answer.wait) await rule.answer.wait;
       if (rule.answer.abort) return route.abort();
       if (rule.answer.status) return this.reply(route, rule.answer.status, rule.answer.body);

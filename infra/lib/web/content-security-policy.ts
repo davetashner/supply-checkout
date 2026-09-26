@@ -12,6 +12,8 @@
 //   innerHTML, hence style-src-attr 'unsafe-inline'. <style> elements and
 //   inline scripts stay blocked.
 // - blob: images: barcode.js reads a photo through URL.createObjectURL.
+// - No web workers or service workers (ZXing decodes on the main thread), so
+//   worker-src is 'none'.
 // The API, realtime and sign-in hosts are allowed for connections ahead of the
 // real app (ADR 0006, 0007).
 
@@ -31,7 +33,7 @@ export function cspDirectives(hosts: CspHosts): Record<string, string[]> {
     "img-src": ["'self'", "data:", "blob:"],
     "connect-src": ["'self'", `https://${hosts.api}`, `https://${hosts.realtime}`, `wss://${hosts.realtime}`, `https://${hosts.auth}`],
     "manifest-src": ["'self'"],
-    "worker-src": ["'self'", "blob:"],
+    "worker-src": ["'none'"],
     "object-src": ["'none'"],
     "base-uri": ["'self'"],
     "form-action": ["'self'"],

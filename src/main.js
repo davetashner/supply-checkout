@@ -1,6 +1,6 @@
 import { use, help } from "./runtime.js";
 import { checkOut, recordReturn, setStock } from "./moves.js";
-import { esc, money, todayISO, fmtDate, keyOf, int, codeText, hasStock, newKey, uid, round2, numOrNull } from "./format.js";
+import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, newKey, uid, round2, numOrNull } from "./format.js";
 import { lines, totals } from "./sheet-math.js";
 import { $, toast, openModal, closeModal, armButton, stepperHTML, setText, setHTML, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
@@ -14,7 +14,9 @@ async function bumpStock(key, delta) {
 }
 
 let db = null, userNs = null, dl = null, myId = null, canWrite = true, connected = false;
-let products = {}, sheets = [], people = {};
+// Keyed by product key, which can be any barcode's: no prototype, so a key like
+// "constructor" finds nothing until there's a product with that key
+let products = Object.create(null), sheets = [], people = {};
 const ui = { tab: "sheets", sheetId: null, mode: "out", filter: "open", receipt: false };
 
 async function write(fn, okMsg) {
@@ -33,12 +35,12 @@ const currentSheet = () => sheets.find(s => s.id === ui.sheetId);
 const addLocalSheet = (id, body) => { if (!sheets.some(s => s.id === id)) sheets = [{ id, ...body }, ...sheets]; };
 function personHTML(s) {
   if (s.createdBy) {
-    const p = people[s.createdBy];
+    const p = own(people, s.createdBy);
     return `<span class="who">${p ? `<img src="${esc(p.avatarUrl)}" alt="">` : ""}${esc((p && p.name) || "Someone")}</span>`;
   }
   return `<span class="who">${esc(s.createdByName || "Unknown")}</span>`;
 }
-function personText(s) { return s.createdBy ? ((people[s.createdBy] || {}).name || "Someone") : (s.createdByName || "Unknown"); }
+function personText(s) { return s.createdBy ? ((own(people, s.createdBy) || {}).name || "Someone") : (s.createdByName || "Unknown"); }
 
 /* ---------- render ---------- */
 let seq = 0;
@@ -211,7 +213,7 @@ function newSheetModal(existing) {
 }
 
 function checkoutModal(s, code, key = keyOf(code)) {
-  const prod = products[key], line = (s.items || {})[key];
+  const prod = products[key], line = own(s.items || {}, key);
   openModal(`
     <h2>Check out</h2>
     <div class="code">${esc(codeText(code))}</div>
@@ -238,7 +240,7 @@ function checkoutModal(s, code, key = keyOf(code)) {
         const save = code || m.querySelector("#fSave").checked;
         if (save && !await write(() => db.doc("products/" + key).set({ code, name, price, updatedAt: new Date().toISOString() }))) return;
       }
-      const fresh = currentSheet() || s, cur = (fresh.items || {})[key];
+      const fresh = currentSheet() || s, cur = own(fresh.items || {}, key);
       const item = { code, name: cur ? cur.name : name, price: cur ? cur.price : price, out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) };
       if (await write(() => checkOut(db, s.id, key, item), `Checked out ${qty} × ${item.name}`)) { closeModal(); await bumpStock(key, -qty); }
     });
@@ -275,12 +277,12 @@ function pickReturnModal(s) {
     ${ls.length ? `<div class="pick">${ls.map(l => `<button type="button" data-k="${esc(l.key)}"><span>${esc(l.name)}<span class="code" style="display:block">${esc(codeText(l.code))}</span></span><span class="num">${int(l.out)} taken</span></button>`).join("")}</div>` : `<p>Nothing has been checked out on this sheet yet.</p>`}
     <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button></div>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
-    m.querySelectorAll("[data-k]").forEach(b => b.addEventListener("click", () => { const l = (s.items || {})[b.dataset.k] || {}; returnModal(s, l.code || "", b.dataset.k); }));
+    m.querySelectorAll("[data-k]").forEach(b => b.addEventListener("click", () => { const l = own(s.items || {}, b.dataset.k) || {}; returnModal(s, l.code || "", b.dataset.k); }));
   });
 }
 
 function returnModal(s, code, key = keyOf(code)) {
-  const line = (s.items || {})[key], prod = products[key];
+  const line = own(s.items || {}, key), prod = products[key];
   if (!line) {
     openModal(`
       <h2>Not on this sheet</h2>
@@ -323,7 +325,7 @@ function returnModal(s, code, key = keyOf(code)) {
       e.preventDefault();
       const r = getR(); if (!r) { toast("Choose at least 1."); return; }
       // Add to the latest count, in case someone else recorded a return meanwhile
-      const cur = ((currentSheet() || s).items || {})[key] || line;
+      const cur = own((currentSheet() || s).items || {}, key) || line;
       const out = int(cur.out), before = Math.min(int(cur.returned), out), back = Math.min(out, before + r);
       if (await write(() => recordReturn(db, s.id, key, back), `${back - before} returned · ${back} of ${out} back`)) { closeModal(); await bumpStock(key, back - before); }
     });
@@ -331,7 +333,7 @@ function returnModal(s, code, key = keyOf(code)) {
 }
 
 function lineModal(s, key) {
-  const l = (s.items || {})[key]; if (!l) return;
+  const l = own(s.items || {}, key); if (!l) return;
   openModal(`
     <h2>${esc(l.name || "Item")}</h2>
     <div class="code">${esc(codeText(l.code))}</div>
@@ -429,7 +431,7 @@ const saveDraft = () => { try { draft ? localStorage.setItem(DKEY, JSON.stringif
 
 function receiptPrompt() {
   const inv = Object.entries(products).slice(0, 500);
-  const ids = {};
+  const ids = Object.create(null);
   const list = inv.map(([k, p], i) => { ids["i" + (i + 1)] = k; return `i${i + 1} | ${String(p.name || "").replace(/\s+/g, " ").slice(0, 120)} | ${money(p.price)}`; }).join("\n");
   return { prompt: RECEIPT_PROMPT + "\n\nCurrent inventory (id | name | price):\n" + (list || "(empty)"), ids };
 }
@@ -466,7 +468,7 @@ async function startReceipt(file) {
   try {
     const { prompt, ids } = receiptPrompt();
     const res = await sampleFn.json(prompt, { images: file, signal: ctl.signal });
-    const items = res && Array.isArray(res.items) ? res.items.filter(i => i && i.name).map(i => ({ ...i, match: ids[i.match] || "" })) : [];
+    const items = res && Array.isArray(res.items) ? res.items.filter(i => i && i.name).map(i => ({ ...i, match: own(ids, i.match) || "" })) : [];
     if (!items.length) { receiptError("No line items were found in that photo. Lay the receipt flat, fill the frame, and make sure the text is in focus."); return; }
     draft = newDraft({ ...res, items }); saveDraft(); renderReceipt();
   } catch (e) {
@@ -655,16 +657,18 @@ async function saveReceipt(btn) {
   btn.disabled = true; btn.textContent = "Saving…";
   const done = () => { btn.disabled = false; btn.textContent = "Save"; };
 
-  const byName = {};
+  // Keyed by names, barcodes' keys and line ids: no prototype, so "constructor" and
+  // "__proto__" are ordinary keys
+  const byName = Object.create(null);
   for (const [k, p] of Object.entries(products)) byName[String(p.name || "").trim().toLowerCase()] = k;
-  const keyOfLine = {}, newByName = {};
+  const keyOfLine = Object.create(null), newByName = Object.create(null);
   for (const l of lines) {
     let k = lineProd(l) ? l.match : "";
     if (!k && l.code) k = keyForCode(l.code);
     if (!k) { const n = l.name.trim().toLowerCase(); k = byName[n] || newByName[n] || (newByName[n] = newKey()); }
     keyOfLine[l.id] = k;
   }
-  const groups = {};
+  const groups = Object.create(null);
   for (const l of lines) (groups[keyOfLine[l.id]] = groups[keyOfLine[l.id]] || []).push(l);
   for (const [k, ls] of Object.entries(groups)) {
     const ex = products[k], add = ls.filter(l => l.dest === "stock").reduce((a, l) => a + int(l.qty), 0);
@@ -682,14 +686,14 @@ async function saveReceipt(btn) {
     const ls = lines.filter(l => l.dest === x.id), items = {};
     for (const l of ls) {
       const k = keyOfLine[l.id];
-      const it = items[k] || (items[k] = { code: (products[k] && products[k].code) || l.code || "", name: effName(l), price: round2(effPrice(l)), out: 0, returned: 0 });
+      const it = own(items, k) || (items[k] = { code: (products[k] && products[k].code) || l.code || "", name: effName(l), price: round2(effPrice(l)), out: 0, returned: 0 });
       it.out += int(l.qty);
     }
     let ok;
     if (x.sheetId) {
       const s = sheets.find(s => s.id === x.sheetId);
       if (!s) { toast("One of the chosen sheets was deleted. Pick another and save again."); done(); renderReceipt(); return; }
-      for (const [k, it] of Object.entries(items)) { const cur = (s.items || {})[k]; if (cur) Object.assign(it, { name: cur.name, price: cur.price, out: it.out + int(cur.out), returned: int(cur.returned), code: cur.code || it.code }); }
+      for (const [k, it] of Object.entries(items)) { const cur = own(s.items || {}, k); if (cur) Object.assign(it, { name: cur.name, price: cur.price, out: it.out + int(cur.out), returned: int(cur.returned), code: cur.code || it.code }); }
       ok = await write(() => db.doc("sheets/" + s.id).update({ items }));
       if (ok) savedIds.push(s.id);
     } else {
@@ -738,7 +742,9 @@ draw();
   let got = 0; const ready = () => { if (++got >= 2) connected = true; render(); };
   let pFirst = true, sFirst = true;
   db.collection("products").onSnapshot(snap => {
-    products = {}; snap.docs.forEach(d => products[d.id] = d.data());
+    // Not a product saved as "__proto__" before keyOf avoided that key: it was never
+    // shown (it set the old map's prototype), and the API refuses it
+    products = Object.create(null); snap.docs.forEach(d => { if (d.id !== "__proto__") products[d.id] = d.data(); });
     if (pFirst) { pFirst = false; ready(); } else render();
   }, onErr);
   db.collection("sheets").orderBy("date", "desc").onSnapshot(snap => {
