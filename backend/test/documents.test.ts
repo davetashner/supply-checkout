@@ -111,6 +111,8 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
     const ctx = await team();
     await setDocument(db, ctx, "products", "p1", { name: "Gloves", stock: 5 });
     await adjustStock(db, ctx, "p1", -2);
+    // A new version, so a write made against the old one conflicts
+    await expect(updateDocument(db, ctx, "products", "p1", { stock: 5 }, { expectedVersion: 1 })).rejects.toThrow(ConflictError);
     // The write sees stock 3, not the 5 it might have read before
     const { after } = await updateDocument(db, ctx, "products", "p1", { price: 2 });
     expect(after.data).toEqual({ name: "Gloves", stock: 3, price: 2 });
