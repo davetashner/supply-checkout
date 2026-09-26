@@ -3,6 +3,7 @@
 // into another key (for example, a sheet ID containing "#").
 
 import { InvalidInputError } from "./errors.js";
+import { COMMITTING_IMPORTS_PARTITION } from "./schema.js";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
@@ -129,6 +130,11 @@ export const gsi1 = {
   }),
   sheetsPartition: (teamId: string) => `TEAM#${id(teamId, "team ID")}#SHEETS`,
   inviteToken: (tokenHash: string) => ({ GSI1PK: `INVITE#${tokenHash}`, GSI1SK: "INVITE" }),
+  /** An import job while it's committing: every team's in one index partition, oldest first. */
+  importCommitting: (createdAt: string, importId: string) => ({
+    GSI1PK: COMMITTING_IMPORTS_PARTITION,
+    GSI1SK: `${createdAt}#${id(importId, "import ID")}`,
+  }),
 };
 
 /** GSI2 keys: invites by the invitee's hashed email. */

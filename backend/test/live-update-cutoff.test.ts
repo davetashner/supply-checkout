@@ -51,6 +51,7 @@ describe.skipIf(!endpoint)("cutting off live updates", () => {
     region: REGION,
     logger: { info: () => {}, warn: () => {}, error: () => {}, addContext: () => {} } as unknown as Observability["logger"],
     count: () => {},
+    gauge: () => {},
     flush: () => {},
   } as Observability;
   const publish: Publish = async (channel, events) => {

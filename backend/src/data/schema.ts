@@ -11,6 +11,10 @@ export const SK = "SK";
  *
  * - Sheets by date: GSI1PK `TEAM#<teamId>#SHEETS`, GSI1SK `<date>#<sheetId>`.
  * - Invites by hashed token: GSI1PK `INVITE#<tokenHash>`, GSI1SK `INVITE`.
+ * - Imports still committing, across every team, for the stuck-import check:
+ *   GSI1PK `IMPORTS#COMMITTING` (COMMITTING_IMPORTS_PARTITION), GSI1SK
+ *   `<createdAt>#<importId>`. An import job has them only while it's
+ *   committing; the commit that finishes it removes them.
  */
 export const GSI1 = "GSI1";
 export const GSI1PK = "GSI1PK";
@@ -24,6 +28,18 @@ export const GSI1SK = "GSI1SK";
 export const GSI2 = "GSI2";
 export const GSI2PK = "GSI2PK";
 export const GSI2SK = "GSI2SK";
+
+/** The GSI1 partition of every import still committing (see GSI1). */
+export const COMMITTING_IMPORTS_PARTITION = "IMPORTS#COMMITTING";
+
+/**
+ * The only attributes the stuck-import check may name or read (ADR 0005): the
+ * table and GSI1 keys (the team is in PK, the import in SK, the start time in
+ * GSI1SK) and the job's progress. Its IAM policy allows exactly these
+ * (dynamodb:Attributes), on COMMITTING_IMPORTS_PARTITION of GSI1 only, so it
+ * can't read a team's data, a job's plan or who started it.
+ */
+export const STUCK_IMPORT_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "committed", "total"] as const;
 
 /** Epoch seconds. DynamoDB deletes the item some time after it passes. */
 export const TTL_ATTRIBUTE = "expiresAt";

@@ -240,6 +240,9 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | API slow | Every journey | P2 | API Gateway `Latency` p95 for the HTTP API over 10 minutes |
 | Database errors | Every journey | P1 | DynamoDB `SystemErrors` on the app table, summed over the operations the data module uses |
 | Database throttled | Every journey | P2 | DynamoDB `ReadThrottleEvents` + `WriteThrottleEvents` on the app table |
+| Sign-out not revoking | J0 | P2 | As below |
+| Imports stuck | J2 | P2 | As below, from the stuck-import check |
+| Email verification not saved, Near the sending limit | J3 | P2 | As below. Near the sending limit reads the SES quota check's gauge. |
 | Email bouncing, Email complaints | J3 | P1 | SES reputation metrics, as below |
 | Email events dropped | J3 | P2 | As below |
 | Writes rejected | J4 | P2 | `ConditionalWriteConflicts` ÷ `Writes`, at least 20 writes |
@@ -248,7 +251,7 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Receipt reading failing | J5 | P2 | As below |
 | Checkout broken, Webhook signature failures | J7 | P1 | As below |
 
-Every other alarm on this page waits for the resource or code it watches, and is added by the bead that builds it (the alarm goes in that region's `observability` stack, with `topics.notify(alarm, severity)`): the canaries (`supply-checkout-pkt`); Site down and Firewall blocking customers (CloudFront and WAF, `supply-checkout-qk1`); API unhealthy (it needs a `/health` route and a Route 53 health check, which the API doesn't have yet); Cognito alarms (`supply-checkout-zsm`); Bedrock alarms and Receipt cost spike (the receipt function); Near the sending limit (SES); the billing queue, reconciliation and deletion-job alarms; and Checkouts stopped, which compares with the same hour last week, and so needs something other than one CloudWatch alarm. The remaining P3 trends (No sign-ups, Invites not accepted, Failed payments rising, App checkouts abandoned) are read from the dashboard at the weekly review.
+Every other alarm on this page waits for the resource or code it watches, and is added by the bead that builds it (the alarm goes in that region's `observability` stack, with `topics.notify(alarm, severity)`): the canaries (`supply-checkout-pkt`); Site down and Firewall blocking customers (CloudFront and WAF, `supply-checkout-qk1`); API unhealthy (it needs a `/health` route and a Route 53 health check, which the API doesn't have yet); Cognito alarms (`supply-checkout-zsm`); Bedrock alarms and Receipt cost spike (the receipt function); the billing queue, reconciliation and deletion-job alarms; and Checkouts stopped, which compares with the same hour last week, and so needs something other than one CloudWatch alarm. The remaining P3 trends (No sign-ups, Invites not accepted, Failed payments rising, App checkouts abandoned) are read from the dashboard at the weekly review.
 
 ### Every journey
 
@@ -271,6 +274,9 @@ Every other alarm on this page waits for the resource or code it watches, and is
 | **Nobody can sign in** | Cognito `SignInSuccesses` and `TokenRefreshSuccesses` | zero for 15 minutes between 8am and 8pm Eastern while the core canary also fails (composite alarm) | P1 |
 | **Sign-in throttled** | Cognito `SignInThrottles` and `TokenRefreshThrottles` | any, for 5 minutes | P1 |
 | **Social sign-in failing** | Cognito `FederationSuccesses` against federated sign-in attempts, from our login logs | success rate below 90% over 30 minutes | P2 |
+| **Sign-out not revoking** | `SignOutRevokeFailures`: sign-outs whose refresh token Cognito didn't revoke (`backend/src/api/auth-handler.ts`). Sign-out still clears the cookie and answers 204, but the token stays valid at Cognito until it expires (30 days). | 3 or more in 15 minutes | P2 |
+
+**Sign-out not revoking: what to do.** Check Cognito's health in the AWS Health Dashboard and the auth function's logs (`Refresh token not revoked`, with Cognito's HTTP status; 0 means it wasn't reached). The tokens that weren't revoked are only on the devices that signed out, and those devices dropped their cookie, so there's nothing to hand to anyone. If a person asks to be signed out everywhere, run `aws cognito-idp admin-user-global-sign-out` for their user.
 
 ### J1. Sign up and start a trial
 
@@ -279,6 +285,31 @@ Every other alarm on this page waits for the resource or code it watches, and is
 | **Sign-up canary failing** | Synthetics canary every 15 minutes: load the landing and pricing pages, open sign-up, start a trial with a `+canary` test address in a canary team that's cleaned up afterwards | 2 failures in a row | P1 |
 | **No sign-ups** | `SignUps` business metric | zero for 24 hours when the 7-day average is above 1 a day | P3 |
 
+### J2. Set up the inventory
+
+| Alarm | Signal | Starting threshold | Severity |
+| --- | --- | --- | --- |
+| **Imports stuck** | `StuckImports`: CSV imports still committing an hour after they started, and so half applied. A scheduled check (`backend/src/ops/stuck-imports-handler.ts`, primary region, every 10 minutes) counts the jobs in GSI1's `IMPORTS#COMMITTING` partition, which a job is in until its last batch commits. | any (maximum over 15 minutes) | P2 |
+
+**Imports stuck: what to do.** An import stops part-way when its Lambda times out or items keep changing under it, and the owner didn't press **Try again**. Nothing is lost: every row already committed is complete, and the plan for the rest is staged.
+
+1. Find the import in the check's logs: in Logs Insights on `/aws/lambda/supply-checkout-<env>-stuck-imports`, `filter message = "Import stuck"` gives each one's `teamId`, `importId`, `startedAt` and `committed` of `total` rows. They're IDs only; look up the team's owners from the team ID.
+2. Tell an owner of the team that their import stopped part-way, and ask them to import the same file again. If the app still shows **Try again**, that carries on from the first row not committed. Otherwise, choosing the file again starts a new import that re-plans against the inventory as it is now, leaves the rows already imported unchanged and finishes the rest. We can't finish it for them: the job keeps the plan, not the file, and a retry must send the same file.
+3. If the owner finished it as a new import (or doesn't want it), take the old job out of the check so the alarm recovers. This leaves the job itself alone, so a retry of it still works until it expires:
+
+   ```bash
+   aws dynamodb update-item --profile supply-prod --region us-east-1 \
+     --table-name supply-checkout-prod-app \
+     --key '{"PK":{"S":"TEAM#<teamId>"},"SK":{"S":"IMPORT#<importId>"}}' \
+     --update-expression 'REMOVE GSI1PK, GSI1SK' \
+     --condition-expression '#s = :committing' \
+     --expression-attribute-names '{"#s":"status"}' \
+     --expression-attribute-values '{":committing":{"S":"committing"}}'
+   ```
+
+   Job records expire after 7 days anyway, which also clears the alarm.
+4. If imports keep getting stuck, look at the data function's logs for the import route (`POST /teams/{teamId}/imports`): timeouts mean the batches need to be smaller or the function's timeout longer.
+
 ### J3. Invite the crew
 
 | Alarm | Signal | Starting threshold | Severity |
@@ -286,8 +317,13 @@ Every other alarm on this page waits for the resource or code it watches, and is
 | **Email bouncing** | SES `Reputation.BounceRate` | above 4%. AWS reviews accounts at 5% and can pause sending at 10%. | P1 |
 | **Email complaints** | SES `Reputation.ComplaintRate` | above 0.08%. AWS reviews at 0.1%. | P1 |
 | **Email events dropped** | Messages in the email-events dead-letter queue (`supply-checkout-<env>-email-events-dlq`): a bounce or complaint the handler couldn't record, so a bounced invite may still look pending. SES has still suppressed the address. | any | P2 |
-| **Near the sending limit** | SES `Send` against the daily quota | above 80% of the quota | P2 |
+| **Near the sending limit** | `EmailQuotaUsedPercent`: SES's sends in the last 24 hours as a share of its 24-hour quota. SES has no metric for the quota, and its window is rolling, so a scheduled check (`backend/src/ops/email-quota-handler.ts`, primary region, every 10 minutes) asks SES (`GetAccount`) and sends the share. | above 80% (maximum over 15 minutes) | P2 |
+| **Email verification not saved** | `EmailVerifyFailures` + `EmailUnverifyFailures`: the pre token generation trigger couldn't copy a Google or Apple user's `email_verified` (`backend/src/identity/email-verified-handler.ts`, outcomes `failed` and `downgrade-failed`). It logs the error and lets the sign-in go ahead, so the Lambda errors alarm doesn't see it. A failed promotion leaves the user unverified, so they can't accept invites; a failed downgrade leaves them verified. The next sign-in retries. | any, over 15 minutes | P2 |
 | **Invites not accepted** | `InvitesAccepted` ÷ `InvitesSent` business metrics | below 30% over 7 days | P3 |
+
+**Near the sending limit: what to do.** Check the SES console's sending statistics for a burst (a bug resending invites, or abuse of invites), and fix that first. If it's real growth, request a higher sending quota in the SES console (Service Quotas, "Sending quota"), which usually takes a day.
+
+**Email verification not saved: what to do.** The pre token generation function's logs (the identity stack's email-verified trigger; filter on `outcome` `failed` or `downgrade-failed`) have Cognito's error. Throttling (`TooManyRequestsException`) clears on its own at the next sign-in; an access error means the trigger's IAM policy or the pool changed. A user left unverified can sign out and in again once it's fixed.
 
 ### J4. Check supplies out and back in
 
@@ -361,6 +397,6 @@ Added with us-west-2. Until then, none of these exist.
 
 Several alarms above rely on metrics our own code sends (CloudWatch embedded metric format from Lambda), not ones AWS provides:
 
-`Checkouts`, `Returns`, `LiveUpdates` and `LiveUpdateFailures` (the stream consumer's publishes, for "Live updates failing"), `ReceiptReads`, `ReceiptReadFailures`, `SignUps`, `InvitesSent`, `InvitesAccepted`, `CheckoutSessionErrors`, `WebhookSignatureFailures`, `ConditionalWriteConflicts`, `Writes` (the denominator for "Writes rejected"), and `ReceiptTokens` (receipt token usage, with the team ID as metadata rather than a dimension). Each has a `Region` dimension, even while there is only us-east-1, so they split cleanly when us-west-2 is added.
+`Checkouts`, `Returns`, `LiveUpdates` and `LiveUpdateFailures` (the stream consumer's publishes, for "Live updates failing"), `ReceiptReads`, `ReceiptReadFailures`, `SignUps`, `InvitesSent`, `InvitesAccepted`, `CheckoutSessionErrors`, `WebhookSignatureFailures`, `ConditionalWriteConflicts`, `Writes` (the denominator for "Writes rejected"), `ReceiptTokens` (receipt token usage, with the team ID as metadata rather than a dimension), `SignOutRevokeFailures`, `EmailVerifyFailures` and `EmailUnverifyFailures`. Two are gauges, levels a scheduled check measures and sends with `gauge()`, read at their maximum: `StuckImports` and `EmailQuotaUsedPercent`. Each has a `Region` dimension, even while there is only us-east-1, so they split cleanly when us-west-2 is added.
 
 The names are in `backend/src/observability/names.ts`, which both the Lambda code and the dashboard and alarms import. Send them with `count()` from `backend/src/observability`, in namespace `SupplyCheckout`. The dashboard already has a graph for each; until the handlers exist, the graphs are empty and the alarms stay OK.

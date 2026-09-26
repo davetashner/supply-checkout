@@ -19,7 +19,7 @@
 // secret beyond the tokens themselves, which are never logged.
 
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from "aws-lambda";
-import type { Observability } from "../observability/index.js";
+import { BusinessMetric, type Observability } from "../observability/index.js";
 import { ApiError, errorFor, errorResponse, header, json, jsonBody, noContent } from "./http.js";
 import { AUTH_ROUTES, REFRESH_COOKIE, REFRESH_COOKIE_PATH, routeKey } from "./routes.js";
 
@@ -150,7 +150,12 @@ export function createAuthHandler(deps: AuthHandlerDeps) {
       // Sign-out: revoke if we can, and always clear the cookie
       if (token) {
         const response = await post("/oauth2/revoke", { token }).catch(() => undefined);
-        if (!response?.ok) obs.logger.warn("Refresh token not revoked", { status: response?.status ?? 0 });
+        if (!response?.ok) {
+          // The token stays valid at Cognito until it expires; the "Sign-out not
+          // revoking" alarm (docs/journeys.md, J0) watches this count
+          obs.logger.warn("Refresh token not revoked", { status: response?.status ?? 0 });
+          obs.count(BusinessMetric.SignOutRevokeFailures);
+        }
       }
       return noContent([clearedCookie()]);
     } catch (error) {

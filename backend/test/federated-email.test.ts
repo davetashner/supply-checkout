@@ -15,7 +15,7 @@ import { authorizeTeam, createInvite } from "../src/data/index.js";
 import { cognitoAdmin, type UpdateUserAttributes } from "../src/identity/cognito-admin.js";
 import { createEmailVerifiedHandler, federatedProvider, providerSaysVerified } from "../src/identity/email-verified-handler.js";
 import { FEDERATED_PROVIDERS, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "../src/identity/names.js";
-import type { Observability } from "../src/observability/index.js";
+import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { REGION } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
@@ -26,12 +26,15 @@ const APPLE_ID = "001234.0a1b2c3d4e5f.1234";
 
 type Logged = { level: string; message: string; data: Record<string, unknown> };
 
-function fakeObservability(logs: Logged[] = []): Observability {
+function fakeObservability(logs: Logged[] = [], counted: string[] = []): Observability {
   const log = (level: string) => (message: string, data: Record<string, unknown> = {}) => logs.push({ level, message, data });
   return {
     region: REGION,
     logger: { info: log("info"), warn: log("warn"), error: log("error"), addContext: () => {} } as unknown as Observability["logger"],
-    count: () => {},
+    count: (metric, value = 1) => {
+      for (let i = 0; i < value; i++) counted.push(metric);
+    },
+    gauge: () => {},
     flush: () => {},
   };
 }
@@ -78,15 +81,16 @@ function triggerEvent(options: {
 function trigger(update?: UpdateUserAttributes) {
   const calls: { pool: string; user: string; attributes: Record<string, string> }[] = [];
   const logs: Logged[] = [];
+  const counted: string[] = [];
   const handler = createEmailVerifiedHandler({
-    obs: fakeObservability(logs),
+    obs: fakeObservability(logs, counted),
     updateUserAttributes:
       update ??
       (async (pool, user, attributes) => {
         calls.push({ pool, user, attributes: { ...attributes } });
       }),
   });
-  return { handler, calls, logs };
+  return { handler, calls, logs, counted };
 }
 
 describe("providerSaysVerified", () => {
@@ -206,7 +210,7 @@ describe("pre token generation trigger", () => {
   });
 
   it("logs a failed downgrade as its own outcome: the user stays verified until a later sign-in", async () => {
-    const { handler, logs } = trigger(async () => {
+    const { handler, logs, counted } = trigger(async () => {
       throw new Error("AdminUpdateUserAttributes failed: 500 InternalErrorException");
     });
     await handler(triggerEvent({ provider: "SignInWithApple", claim: "false", emailVerified: "true" }));
@@ -214,6 +218,8 @@ describe("pre token generation trigger", () => {
       ["error", "Couldn't mark email unverified; it stays verified", "downgrade-failed"],
       ["info", "Federated email", "downgrade-failed"],
     ]);
+    // Its own metric, for the "Email verification not saved" alarm
+    expect(counted).toEqual([BusinessMetric.EmailUnverifyFailures]);
   });
 
   it("acts only for users Cognito marks EXTERNAL_PROVIDER", async () => {
@@ -229,10 +235,12 @@ describe("pre token generation trigger", () => {
   it("uses the attribute's last value when a provider sign-in leaves the claim out (accepted risk: Google and Apple always send it)", async () => {
     // Cognito keeps an attribute the provider didn't send, so the event carries whatever was last written.
     // Here that's a stale "true": the trigger can't tell it from the provider's, and promotes.
-    const { handler, calls } = trigger();
+    const { handler, calls, counted } = trigger();
     const stale = triggerEvent({ claim: "true", emailVerified: "false" });
     await handler(stale);
     expect(calls).toEqual([{ pool: POOL, user: stale.userName, attributes: { email_verified: "true" } }]);
+    // A saved update counts no failure
+    expect(counted).toEqual([]);
     // A claim that was never mapped at all counts as unverified
     const { handler: again, calls: none } = trigger();
     await again(triggerEvent({ emailVerified: "false" }));
@@ -247,11 +255,12 @@ describe("pre token generation trigger", () => {
   });
 
   it("lets the sign-in go ahead unverified when Cognito refuses, logging no email or username", async () => {
-    const { handler, logs } = trigger(async () => {
+    const { handler, logs, counted } = trigger(async () => {
       throw new Error("AdminUpdateUserAttributes failed: 400 TooManyRequestsException");
     });
     const event = triggerEvent({ claim: "true" });
     expect(await handler(event)).toBe(event);
+    expect(counted).toEqual([BusinessMetric.EmailVerifyFailures]);
     expect(logs).toEqual([
       {
         level: "error",

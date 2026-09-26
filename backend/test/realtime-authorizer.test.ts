@@ -50,6 +50,7 @@ function fakeObservability(): Observability {
     region: REGION,
     logger: { info: log, warn: log, error: log, addContext: () => {} } as unknown as Observability["logger"],
     count: () => {},
+    gauge: () => {},
     flush: () => {},
   };
 }

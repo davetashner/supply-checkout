@@ -50,15 +50,16 @@
 // condition holds.
 
 import { createHash } from "node:crypto";
-import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
 import { type Movement, OPERATION_TTL_DAYS } from "./commands.js";
 import { parseCsv } from "./csv.js";
 import { MAX_DOCUMENT_BYTES, RESERVED_FIELDS } from "./documents.js";
 import { ConflictError, InvalidInputError, TooLargeError } from "./errors.js";
-import { MAX_CODE_LENGTH, keys, prefixes, teamPartition } from "./keys.js";
+import { MAX_CODE_LENGTH, gsi1, keys, prefixes, teamPartition } from "./keys.js";
 import { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
 import { queryAll } from "./query.js";
+import { COMMITTING_IMPORTS_PARTITION, GSI1, STUCK_IMPORT_ATTRIBUTES } from "./schema.js";
 import { type TeamContext, writable } from "./team-context.js";
 
 /** The largest file, as UTF-8. 1,000 rows of typical inventory are well under it. */
@@ -577,7 +578,8 @@ async function commit(db: Db, ctx: TeamContext, id: string, first: Item, now: Da
         Update: {
           TableName: db.tableName,
           Key: jobKey,
-          UpdateExpression: last ? "SET #committed = :next, #status = :done, finishedAt = :at" : "SET #committed = :next",
+          // Finished: out of the committing-imports index (see listStuckImports)
+          UpdateExpression: last ? "SET #committed = :next, #status = :done, finishedAt = :at REMOVE GSI1PK, GSI1SK" : "SET #committed = :next",
           ConditionExpression: "#committed = :r AND #status = :committing",
           ExpressionAttributeNames: { "#committed": "committed", "#status": "status" },
           ExpressionAttributeValues: { ":next": next, ":r": r, ":committing": "committing", ...(last ? { ":done": "done", ":at": at } : {}) },
@@ -660,6 +662,8 @@ export async function importProducts(db: Db, ctx: TeamContext, input: ImportInpu
   for (let i = 0; i < planned.length; i += ROWS_PER_CHUNK) chunks.push(planned.slice(i, i + ROWS_PER_CHUNK).map(staged));
   const job: Item = {
     ...(jobKey as Item),
+    // In the committing-imports index until the last batch commits
+    ...gsi1.importCommitting(now.toISOString(), id as string),
     type: "import",
     importId: id,
     request,
@@ -697,4 +701,53 @@ export async function importProducts(db: Db, ctx: TeamContext, input: ImportInpu
     return commit(db, ctx, id as string, checkJob(existing), now);
   }
   return commit(db, ctx, id as string, job, now);
+}
+
+/** An import still committing: half applied until an owner retries it. */
+export interface StuckImport {
+  readonly teamId: string;
+  readonly importId: string;
+  /** When it was staged (ISO 8601). */
+  readonly startedAt: string;
+  /** Rows committed so far, of total. */
+  readonly committed: number;
+  readonly total: number;
+}
+
+/**
+ * Every team's imports that started before `startedBefore` and are still
+ * committing, oldest first: the stuck-import check (backend/src/ops) counts
+ * them for the "Imports stuck" alarm. It reads GSI1's committing-imports
+ * partition, and only STUCK_IMPORT_ATTRIBUTES (its IAM policy allows no
+ * more). Not for team requests: it has no TeamContext.
+ */
+export async function listStuckImports(db: Db, startedBefore: Date): Promise<StuckImport[]> {
+  const out: StuckImport[] = [];
+  let ExclusiveStartKey: Record<string, unknown> | undefined;
+  do {
+    const page = await connection(db).doc.send(
+      new QueryCommand({
+        TableName: db.tableName,
+        IndexName: GSI1,
+        KeyConditionExpression: "GSI1PK = :pk AND GSI1SK < :before",
+        ExpressionAttributeValues: { ":pk": COMMITTING_IMPORTS_PARTITION, ":before": startedBefore.toISOString() },
+        // Placeholders for every name: some ("committed") are reserved words
+        ProjectionExpression: STUCK_IMPORT_ATTRIBUTES.map((_, i) => `#a${i}`).join(", "),
+        ExpressionAttributeNames: Object.fromEntries(STUCK_IMPORT_ATTRIBUTES.map((name, i) => [`#a${i}`, name])),
+        ExclusiveStartKey,
+      }),
+    );
+    for (const item of page.Items ?? []) {
+      const sortKey = String(item.GSI1SK);
+      out.push({
+        teamId: String(item.PK).slice("TEAM#".length),
+        importId: String(item.SK).slice("IMPORT#".length),
+        startedAt: sortKey.slice(0, sortKey.lastIndexOf("#")),
+        committed: Number(item.committed),
+        total: Number(item.total),
+      });
+    }
+    ExclusiveStartKey = page.LastEvaluatedKey;
+  } while (ExclusiveStartKey);
+  return out;
 }

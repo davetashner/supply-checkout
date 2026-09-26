@@ -356,10 +356,21 @@ describe("retries and resuming", () => {
     const failed = await post({ importId: id, csv });
     expect(failed).toMatchObject({ status: 500, body: { error: { code: "internal" } } });
     expect(products()).toHaveLength(2 * ROWS_PER_CHUNK);
-    expect(table.get("TEAM#team-a", `IMPORT#${id}`)).toMatchObject({ status: "committing", committed: 2 * ROWS_PER_CHUNK });
+    // Listed for the stuck-import check while it's committing
+    expect(table.get("TEAM#team-a", `IMPORT#${id}`)).toMatchObject({
+      status: "committing",
+      committed: 2 * ROWS_PER_CHUNK,
+      GSI1PK: "IMPORTS#COMMITTING",
+      GSI1SK: expect.stringMatching(new RegExp(`^\\d{4}-\\d\\d-\\d\\dT[^#]+#${id}$`)),
+    });
 
     const done = await post({ importId: id, csv });
     expect(done.body).toMatchObject({ status: "imported", replayed: false, summary: { created: 200 } });
+    // and not once it's done
+    const job = table.get("TEAM#team-a", `IMPORT#${id}`);
+    expect(job).toMatchObject({ status: "done" });
+    expect(job).not.toHaveProperty("GSI1PK");
+    expect(job).not.toHaveProperty("GSI1SK");
     expect(products()).toHaveLength(200);
     expect(movements()).toHaveLength(200);
     expect(new Set(movements().map((m) => m.productKey)).size).toBe(200);

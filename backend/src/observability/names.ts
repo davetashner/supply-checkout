@@ -16,7 +16,8 @@ export const REGION_DIMENSION = "Region";
 
 /**
  * Business metrics, from docs/journeys.md ("Business metrics the app must
- * publish"). Each is a count, sent with count().
+ * publish"). Each is a count, sent with count(), except the gauges at the
+ * end (a level measured by a scheduled check), sent with gauge().
  */
 export const BusinessMetric = {
   /** Items checked out to a sheet (J4). */
@@ -53,6 +54,16 @@ export const BusinessMetric = {
   CheckoutSessionErrors: "CheckoutSessionErrors",
   /** Stripe webhooks rejected for a bad signature (J7). */
   WebhookSignatureFailures: "WebhookSignatureFailures",
+  /** Sign-outs whose refresh token Cognito didn't revoke: it stays valid until it expires (J0). */
+  SignOutRevokeFailures: "SignOutRevokeFailures",
+  /** Federated sign-ins whose provider-verified email couldn't be marked verified: the user stays unverified (J3). */
+  EmailVerifyFailures: "EmailVerifyFailures",
+  /** Federated sign-ins whose email the provider no longer verifies but couldn't be marked unverified: it stays verified (J3). */
+  EmailUnverifyFailures: "EmailUnverifyFailures",
+  /** Gauge: inventory imports still committing an hour after they started, half applied (J2). */
+  StuckImports: "StuckImports",
+  /** Gauge: SES sends in the last 24 hours as a percentage of the daily sending quota (J3). */
+  EmailQuotaUsedPercent: "EmailQuotaUsedPercent",
 } as const;
 
 export type BusinessMetricName = (typeof BusinessMetric)[keyof typeof BusinessMetric];

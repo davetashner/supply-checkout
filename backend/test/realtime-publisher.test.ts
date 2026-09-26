@@ -230,6 +230,7 @@ describe("the stream handler", () => {
       count: (metric, value = 1) => {
         counts[metric] = (counts[metric] ?? 0) + value;
       },
+      gauge: () => {},
       flush: () => {},
     };
   }

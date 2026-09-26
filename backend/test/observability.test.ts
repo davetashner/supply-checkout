@@ -102,6 +102,26 @@ describe("business metrics", () => {
     expect(() => obs.count(BusinessMetric.Checkouts, Number.NaN)).toThrow(/0 or more/);
   });
 
+  it("sends gauges, zero included, in their unit beside counts", () => {
+    const obs = createObservability({ service: "ops", env });
+    obs.gauge(BusinessMetric.StuckImports, 0);
+    obs.gauge(BusinessMetric.EmailQuotaUsedPercent, 42.5, "Percent");
+    obs.flush();
+    const [blob] = emf();
+    expect(blob._aws.CloudWatchMetrics[0].Dimensions).toEqual([[REGION_DIMENSION]]);
+    expect(blob._aws.CloudWatchMetrics[0].Metrics).toEqual([
+      { Name: "StuckImports", Unit: "Count" },
+      { Name: "EmailQuotaUsedPercent", Unit: "Percent" },
+    ]);
+    expect(blob).toMatchObject({ Region: REGION, StuckImports: 0, EmailQuotaUsedPercent: 42.5 });
+  });
+
+  it("rejects negative and non-numeric gauges", () => {
+    const obs = createObservability({ env });
+    expect(() => obs.gauge(BusinessMetric.StuckImports, -1)).toThrow(/0 or more/);
+    expect(() => obs.gauge(BusinessMetric.EmailQuotaUsedPercent, Number.POSITIVE_INFINITY, "Percent")).toThrow(/0 or more/);
+  });
+
   it("takes the namespace and service from the environment the CDK app sets", () => {
     const obs = createObservability({
       env: { ...env, POWERTOOLS_SERVICE_NAME: "billing", POWERTOOLS_METRICS_NAMESPACE: "SupplyCheckoutTest" },
