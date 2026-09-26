@@ -343,3 +343,28 @@ test("keys other than Enter don't open a line; the return count can't exceed wha
   await expect(count).toHaveValue("2");
   await expect(modal(page).locator("#sum")).toContainText("Returned 3 of 3");
 });
+
+test("barcodes that are built-in object keys check out and return like any other", async ({ page }) => {
+  await openEcho(page);
+  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await enterBarcode(page, "constructor");
+  await expect(modal(page).getByRole("heading", { name: "Not on this sheet" })).toBeVisible();
+  await expect(modal(page)).toContainText("This item wasn't checked out");
+  await modal(page).getByRole("button", { name: "Check it out instead" }).click();
+
+  await expect(modal(page)).toContainText("New barcode.");
+  await expect(modal(page)).not.toContainText("Already on this sheet");
+  await modal(page).getByLabel("Item name").fill("Widget A");
+  await modal(page).getByLabel("Price each ($)").fill("2");
+  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await expect(lineRow(page, "Widget A")).toBeVisible();
+
+  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await enterBarcode(page, "constructor");
+  await expect(modal(page).getByRole("heading", { name: "Return" })).toBeVisible();
+  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await expect(lineRow(page, "Widget A").locator("td").nth(3)).toHaveText("1");
+  const doc = await page.evaluate(() => window.__mock.docs.get("sheets/s1").items.constructor);
+  expect(doc).toMatchObject({ code: "constructor", name: "Widget A", price: 2, out: 1, returned: 1 });
+  expect(await page.evaluate(() => [Object.prototype.out, Object.out])).toEqual([undefined, undefined]);
+});

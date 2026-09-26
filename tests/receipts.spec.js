@@ -345,6 +345,56 @@ test("reuses inventory items by barcode or name, and doesn't duplicate new ones"
   expect(Object.values(products).find((p) => p.name === "Sponges").stock).toBe(3);
 });
 
+test("barcodes and names that are built-in object keys save as ordinary items", async ({ page }) => {
+  // A product saved as "__proto__" by an older version stays out of the way
+  const seed = { ...usedState.seed, "products/__proto__": { code: "__proto__", name: "Old proto item", price: 1 } };
+  await seedDraft(page, {
+    dests: [{ id: "d1", sheetId: "", client: "Built-ins Co" }, { id: "d2", sheetId: "s1", client: "" }],
+    lines: [
+      draftLine({ name: "Widget A", code: "constructor", qty: 2, price: 1 }),
+      draftLine({ name: "Widget B", code: "toString", qty: 1, price: 2 }),
+      draftLine({ name: "Widget C", code: "__proto__", qty: 3, price: 3 }),
+      draftLine({ name: "constructor", qty: 1, price: 4 }),
+      draftLine({ name: "Widget A", code: "constructor", qty: 1, price: 1, dest: "d2" }),
+      draftLine({ name: "Widget D", code: "hasOwnProperty", qty: 5, price: 5, dest: "stock" }),
+    ],
+  }, { seed });
+  await saveBtn(page).click();
+  await expect(toast(page)).toHaveText("Saved to 2 sheets · 5 added to storage");
+
+  const products = await docs(page, "products/");
+  expect(products["products/constructor"]).toMatchObject({ code: "constructor", name: "Widget A", price: 1 });
+  expect(products["products/toString"]).toMatchObject({ code: "toString", name: "Widget B", price: 2 });
+  // "__proto__" gets a safe key, and keeps its barcode
+  expect(products["products/x__proto__"]).toMatchObject({ code: "__proto__", name: "Widget C", price: 3 });
+  expect(products["products/__proto__"].name).toBe("Old proto item");
+  expect(products["products/hasOwnProperty"]).toMatchObject({ name: "Widget D", stock: 5 });
+  const named = Object.entries(products).find(([, p]) => p.name === "constructor");
+  expect(named[0]).toMatch(/^products\/nb-/);
+
+  const sheets = await docs(page, "sheets/");
+  const [, fresh] = Object.entries(sheets).find(([, s]) => s.client === "Built-ins Co");
+  expect(Object.fromEntries(Object.entries(fresh.items).map(([k, it]) => [k.startsWith("nb-") ? "nb" : k, [it.code, it.name, it.out]]))).toEqual({
+    constructor: ["constructor", "Widget A", 2],
+    toString: ["toString", "Widget B", 1],
+    x__proto__: ["__proto__", "Widget C", 3],
+    nb: ["", "constructor", 1],
+  });
+  expect(sheets["sheets/s1"].items.constructor).toMatchObject({ code: "constructor", name: "Widget A", out: 1, returned: 0 });
+  expect(Object.keys(sheets["sheets/s1"].items)).toEqual(["SKU1", "nb-bins", "constructor"]);
+
+  // No built-in object was changed
+  expect(await page.evaluate(() => [Object.prototype.out, Object.out, Object.prototype.toString.out, Object.prototype.hasOwnProperty.out, Function.prototype.out, Object.getPrototypeOf({}) === Object.prototype])).toEqual([undefined, undefined, undefined, undefined, undefined, true]);
+
+  // They show like any other item, and the old "__proto__" product stays hidden
+  await page.getByRole("button", { name: "Inventory" }).click();
+  for (const name of ["Widget A", "Widget B", "Widget C", "Widget D"]) await expect(inventoryRow(page, name)).toBeVisible();
+  await expect(page.getByRole("row", { name: /^constructor No barcode/ })).toBeVisible();
+  // The two seeded items, five new ones, and not the old "__proto__" product
+  await expect(page.locator("#main tbody tr")).toHaveCount(7);
+  await expect(page.getByText("Old proto item")).toHaveCount(0);
+});
+
 test("a failed inventory write stops the save so it can be retried", async ({ page }) => {
   await scanReceipt(page, { writeErrorFor: { prefix: "products/", code: "unavailable" } });
   await page.getByLabel("Client name").fill("Yankee Co");

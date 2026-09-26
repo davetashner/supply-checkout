@@ -205,6 +205,36 @@ test.describe("sign-in", () => {
     await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
   });
 
+  test("signing out while a refresh is in flight waits for it, so the refresh can't sign the user back in", async ({ page }) => {
+    await page.clock.install();
+    const backend = new FakeBackend({ docs: seeded(), expiresIn: 360 });
+    await openAws(page, backend);
+    await connected(page);
+    // The scheduled refresh reaches the API, which rotates the refresh token, but its
+    // answer (and the new cookie) is slow to arrive
+    const deliver = backend.delay("POST", "/auth/refresh");
+    await page.clock.fastForward(61e3);
+    await expect.poll(() => backend.requests("POST", "/auth/refresh").length).toBe(2);
+    await page.locator(".teambar").getByRole("button", { name: "Sign out" }).click();
+    // Sign-out waits for the refresh...
+    await page.waitForTimeout(200);
+    expect(backend.requests("POST", "/auth/sign-out")).toHaveLength(0);
+    // ...then revokes the session the refresh left, and no timer refreshes it again
+    deliver();
+    await expect.poll(() => backend.authRequests.length).toBe(1);
+    expect(backend.requests("POST", "/auth/sign-out")).toHaveLength(1);
+    expect(backend.signedIn).toBe(false);
+    await page.clock.fastForward(600e3);
+    expect(backend.requests("POST", "/auth/refresh")).toHaveLength(2);
+
+    // Opening the app again shows sign-in
+    const again = await page.context().newPage();
+    backend.pageLoads = 0;
+    await openAws(again, backend);
+    await expect(again.getByRole("link", { name: "Sign in" })).toBeVisible();
+    await again.close();
+  });
+
   test("without an expiry, the access token is refreshed as if it lasts an hour", async ({ page }) => {
     await page.clock.install();
     const backend = new FakeBackend({ docs: seeded(), expiresIn: null });
@@ -223,7 +253,7 @@ test.describe("sign-in", () => {
     const backend = new FakeBackend({ docs: seeded() });
     await openAws(page, backend);
     await connected(page);
-    const saved = () => page.evaluate(() => [sessionStorage.getItem("supplyCheckout.invite"), sessionStorage.getItem("supplyCheckout.signIn")]);
+    const saved = () => page.evaluate(() => [sessionStorage.getItem("supplyCheckout.invite"), sessionStorage.getItem("supplyCheckout.signIn"), localStorage.getItem("supplyCheckout.team")]);
     await page.evaluate(() => {
       sessionStorage.setItem("supplyCheckout.invite", JSON.stringify({ id: "i1", token: "tok" }));
       sessionStorage.setItem("supplyCheckout.signIn", JSON.stringify({ verifier: "v", state: "s" }));
@@ -240,7 +270,8 @@ test.describe("sign-in", () => {
     await page.locator(".teambar").getByRole("button", { name: "Sign out" }).click();
     await expect.poll(() => backend.authRequests).toEqual([`${AUTH}/logout?client_id=test-client&logout_uri=${encodeURIComponent(ORIGIN + "/")}`]);
     expect(backend.requests("POST", "/auth/sign-out")).toHaveLength(2);
-    expect(await saved()).toEqual([null, null]);
+    // The chosen team is forgotten too, so the next person to sign in here doesn't open it
+    expect(await saved()).toEqual([null, null, null]);
   });
 });
 

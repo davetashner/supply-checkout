@@ -229,6 +229,8 @@ describe("content security policy", () => {
     expect(directives["style-src"]).not.toContain("'unsafe-inline'");
     expect(directives["frame-ancestors"]).toEqual(["'none'"]);
     expect(directives["object-src"]).toEqual(["'none'"]);
+    // The app starts no workers
+    expect(directives["worker-src"]).toEqual(["'none'"]);
     expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>\s*\S/);
   });
 

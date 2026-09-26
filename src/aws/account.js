@@ -4,10 +4,9 @@
 // there are several) and Sign out.
 import { esc } from "../format.js";
 import { toast } from "../dom.js";
-import { createSession, INVITE_KEY } from "./session.js";
+import { createSession, INVITE_KEY, TEAM_KEY } from "./session.js";
 import { createDb } from "./db.js";
 
-const TEAM_KEY = "supplyCheckout.team";
 const ROLE = { owner: "an owner", contributor: "a contributor", viewer: "a viewer" };
 
 // A plain circle for the signed-in user's avatar; the API has no pictures yet
