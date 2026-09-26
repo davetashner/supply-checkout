@@ -289,18 +289,19 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
     });
 
     it("is accepted only with the invited email, before it expires, and once", async () => {
+      // An address no other test in this file (and so this table) invites
       const { owner } = await team();
-      const { invite } = await createInvite(db, owner, { email: "pat@example.com", role: "viewer", ttlDays: 1 });
+      const { invite } = await createInvite(db, owner, { email: "quinn@example.com", role: "viewer", ttlDays: 1 });
       const pat = newUser();
       await expect(acceptInvite(db, { userId: pat, verifiedEmail: "mallory@example.com" }, invite)).rejects.toThrow(ForbiddenError);
       // A forged invite object naming another address still has to match the stored item
       await expect(acceptInvite(db, { userId: pat, verifiedEmail: "mallory@example.com" }, { ...invite, email: "mallory@example.com" })).rejects.toThrow(NotFoundError);
-      await expect(acceptInvite(db, { userId: pat, verifiedEmail: "pat@example.com" }, invite, new Date(Date.now() + 2 * 86400_000))).rejects.toThrow(NotFoundError);
-      await expect(acceptInvite(db, { userId: pat, verifiedEmail: "pat@example.com" }, { ...invite, role: "owner" })).rejects.toThrow(NotFoundError);
+      await expect(acceptInvite(db, { userId: pat, verifiedEmail: "quinn@example.com" }, invite, new Date(Date.now() + 2 * 86400_000))).rejects.toThrow(NotFoundError);
+      await expect(acceptInvite(db, { userId: pat, verifiedEmail: "quinn@example.com" }, { ...invite, role: "owner" })).rejects.toThrow(NotFoundError);
       await expect(authorizeTeam(db, pat, owner.teamId)).rejects.toThrow(ForbiddenError);
-      expect(await acceptInvite(db, { userId: pat, verifiedEmail: "pat@example.com" }, invite)).toMatchObject({ teamId: owner.teamId, role: "viewer" });
-      expect(await listInvitesForEmail(db, "pat@example.com")).toEqual([]);
-      await expect(acceptInvite(db, { userId: newUser(), verifiedEmail: "pat@example.com" }, invite)).rejects.toThrow(NotFoundError);
+      expect(await acceptInvite(db, { userId: pat, verifiedEmail: "quinn@example.com" }, invite)).toMatchObject({ teamId: owner.teamId, role: "viewer" });
+      expect(await listInvitesForEmail(db, "quinn@example.com")).toEqual([]);
+      await expect(acceptInvite(db, { userId: newUser(), verifiedEmail: "quinn@example.com" }, invite)).rejects.toThrow(NotFoundError);
     });
 
     it("ignores expired, revoked and unknown tokens, and only owners invite", async () => {
