@@ -60,6 +60,22 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
     await expect(updateDocument(db, ctx, "sheets", "missing", { a: 1 })).rejects.toThrow(NotFoundError);
   });
 
+  it("keeps each sheet line's barcode through set and deep-merge update", async () => {
+    const ctx = await team();
+    const gloves = { code: "0123456789", name: "Gloves", price: 12.5, out: 3, returned: 0 };
+    await setDocument(db, ctx, "sheets", "s1", { client: "Echo", date: "2026-09-01", status: "open", items: { "0123456789": gloves } });
+    expect((await getDocument(db, ctx, "sheets", "s1"))?.data.items).toEqual({ "0123456789": gloves });
+    // A checkout adds a line; a return changes one field and leaves the code
+    await updateDocument(db, ctx, "sheets", "s1", { items: { "nb-1": { code: "", name: "Rags", price: 1, out: 1, returned: 0 } } });
+    await updateDocument(db, ctx, "sheets", "s1", { items: { "0123456789": { returned: 2 } } });
+    expect((await getDocument(db, ctx, "sheets", "s1"))?.data.items).toEqual({ "0123456789": { ...gloves, returned: 2 }, "nb-1": { code: "", name: "Rags", price: 1, out: 1, returned: 0 } });
+    // The typed functions read it too
+    expect((await getSheet(db, ctx, "s1"))?.items["0123456789"]?.code).toBe("0123456789");
+    // A barcode is bounded like a product key, in either write
+    await expect(setDocument(db, ctx, "sheets", "s2", { items: { a: { ...gloves, code: "1".repeat(257) } } })).rejects.toThrow(InvalidInputError);
+    await expect(updateDocument(db, ctx, "sheets", "s1", { items: { a: { code: 5 } } })).rejects.toThrow(InvalidInputError);
+  });
+
   it("lists by ID (consistent) or by date (the index), a page at a time", async () => {
     const ctx = await team();
     await setDocument(db, ctx, "sheets", "s1", { date: "2026-09-01" });

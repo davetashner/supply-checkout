@@ -11,12 +11,15 @@ import { randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { InvalidInputError, conflictOnConditionFailure } from "./errors.js";
-import { date, gsi1, keys, prefixes, productKey, strip, teamPartition } from "./keys.js";
+import { barcode, date, gsi1, keys, prefixes, productKey, strip, teamPartition } from "./keys.js";
 import { type Page, queryAll, queryPage, versionedSet } from "./query.js";
 import { GSI1, GSI1PK } from "./schema.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
+/** One line of a sheet, as the app writes it: `{code, name, price, out, returned}`. */
 export interface SheetLine {
+  /** The item's barcode, empty for an item without one. The sheet CSV exports it as "Barcode". */
+  readonly code?: string;
   readonly name: string;
   readonly price: number;
   readonly out: number;
@@ -31,10 +34,28 @@ export interface Sheet {
   readonly status: "open" | "closed";
   readonly createdBy: string;
   readonly createdAt: string;
-  readonly preparedBy?: string;
+  /** Who prepared the sheet, when the app has no signed-in user to put in `createdBy`. */
+  readonly createdByName?: string;
   readonly closedAt?: string;
+  /** The receipt a sheet was made from (receipt scanning). */
+  readonly source?: SheetSource;
   readonly items: Record<string, SheetLine>;
   readonly version: number;
+}
+
+export interface SheetSource {
+  readonly store: string;
+  readonly receiptDate: string;
+}
+
+const text = (value: unknown, what: string): string => {
+  if (typeof value !== "string" || value.length > 200) throw new InvalidInputError(`Invalid ${what}`);
+  return value;
+};
+
+function source(value: SheetSource): SheetSource {
+  if (typeof value !== "object" || value === null) throw new InvalidInputError("Invalid source");
+  return { store: text(value.store, "store"), receiptDate: text(value.receiptDate, "receipt date") };
 }
 
 function client(value: unknown): string {
@@ -51,13 +72,25 @@ function line(value: SheetLine): SheetLine {
   ) {
     throw new InvalidInputError("Invalid sheet line");
   }
-  return { name: value.name, price: value.price, out: value.out, returned: value.returned };
+  return {
+    ...(value.code === undefined ? {} : { code: barcode(value.code) }),
+    name: value.name,
+    price: value.price,
+    out: value.out,
+    returned: value.returned,
+  };
 }
 
 export async function createSheet(
   db: Db,
   ctx: TeamContext,
-  input: { readonly client: string; readonly date: string; readonly preparedBy?: string; readonly items?: Record<string, SheetLine> },
+  input: {
+    readonly client: string;
+    readonly date: string;
+    readonly createdByName?: string;
+    readonly source?: SheetSource;
+    readonly items?: Record<string, SheetLine>;
+  },
 ): Promise<Sheet> {
   writable(db, ctx);
   const items: Record<string, SheetLine> = {};
@@ -70,7 +103,8 @@ export async function createSheet(
     status: "open",
     createdBy: ctx.userId,
     createdAt: new Date().toISOString(),
-    preparedBy: input.preparedBy,
+    ...(input.createdByName === undefined ? {} : { createdByName: text(input.createdByName, "name") }),
+    ...(input.source === undefined ? {} : { source: source(input.source) }),
     items,
     version: 1,
   };
@@ -132,7 +166,7 @@ export async function listSheetsByDate(
 }
 
 /**
- * Changes a sheet's client, date, status or preparer if nobody else has since
+ * Changes a sheet's client, date, status or preparer's name if nobody else has since
  * `expectedVersion`. A date change is one update: the key doesn't change, only
  * the index attribute does.
  */
@@ -140,7 +174,7 @@ export async function updateSheet(
   db: Db,
   ctx: TeamContext,
   sheetId: string,
-  changes: { readonly client?: string; readonly date?: string; readonly status?: "open" | "closed"; readonly preparedBy?: string },
+  changes: { readonly client?: string; readonly date?: string; readonly status?: "open" | "closed"; readonly createdByName?: string },
   expectedVersion: number,
 ): Promise<Sheet> {
   writable(db, ctx);
@@ -150,7 +184,7 @@ export async function updateSheet(
     fields.date = date(changes.date);
     fields.GSI1SK = gsi1.sheetsByDate(ctx.teamId, changes.date, sheetId).GSI1SK;
   }
-  if (changes.preparedBy !== undefined) fields.preparedBy = changes.preparedBy;
+  if (changes.createdByName !== undefined) fields.createdByName = text(changes.createdByName, "name");
   if (changes.status !== undefined) {
     if (changes.status !== "open" && changes.status !== "closed") throw new InvalidInputError("Invalid status");
     fields.status = changes.status;
