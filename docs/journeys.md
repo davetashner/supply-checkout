@@ -96,7 +96,7 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 2. Scan each item's barcode with the phone camera (or type the number, or pick an item that has no barcode) and choose how many.
 3. Back from the job, switch to **Return**, scan what came back unused, and tap **Finished Return**.
 
-**Expected:** each checkout takes storage counts down and each return puts them back. The sheet shows taken, returned, used and the charge. Other people's phones show the changes within 2 seconds. Nothing is lost if two people work on the same sheet.
+**Expected:** each checkout takes storage counts down and each return puts them back. The sheet shows taken, returned, used and the charge. Other people's phones show the changes within 2 seconds. Nothing is lost if two people work on the same sheet. On a slow or flaky connection, a checkout or return never shows as saved before the server confirms it, a double tap or a retry never counts twice, and one that didn't save keeps what was entered and says so, with Try again.
 
 **Status:** tested.
 
@@ -106,6 +106,7 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 - `sheets.spec.js`: editing sheets and lines, picking and returning items without barcodes, reopening and deleting
 - `concurrent.spec.js`: another person changing the same sheet at the same time
 - `failures.spec.js`: failed saves leave the screen as it was
+- `save-states.spec.js` and `aws-save-states.spec.js`: saving on a slow connection, double taps, timeouts, lost answers, and going offline and back
 
 ### J5. Read a receipt
 

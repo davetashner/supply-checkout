@@ -99,12 +99,13 @@ test.describe("data", () => {
     for (const answer of [error(400, "bad_request"), { status: 502, body: "<html>Bad gateway</html>" }, { abort: true }]) {
       await page.locator("#toast").evaluate((t) => { t.hidden = true; });
       backend.on("PUT", /^\/teams\/t1\/sheets\//, answer);
-      await page.getByRole("button", { name: "Create sheet" }).click();
+      // Try again after the first failure that trying again could fix
+      await page.getByRole("button", { name: /^(Create sheet|Try again)$/ }).click();
       await expect(page.locator("#toast")).toHaveText("That didn't save. Check your connection and try again.");
     }
     // A viewer's write (403 permission_denied, reason view_only): the app switches to view-only
     backend.on("PUT", /^\/teams\/t1\/sheets\//, { status: 403, body: { error: { code: "permission_denied", message: "x", reason: "view_only" } } });
-    await page.getByRole("button", { name: "Create sheet" }).click();
+    await page.getByRole("button", { name: "Try again" }).click();
     await expect(page.locator("#notice")).toContainText("You have view-only access.");
     expect(backend.requests("PUT", /^\/teams\/t1\/sheets\//)).toHaveLength(5);
   });
@@ -320,7 +321,7 @@ test.describe("checkout and return commands", () => {
     expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(9);
     // Tapping again retries the same action
     await hideToast(page);
-    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await modal(page).getByRole("button", { name: "Try again" }).click();
     await expect(toast(page)).toHaveText("Checked out 1 × Paper towels, 6 roll");
     const [first, retry] = backend.requests("POST", CHECKOUT).map((r) => r.body);
     expect(retry).toEqual(first);
@@ -336,7 +337,7 @@ test.describe("checkout and return commands", () => {
     await modal(page).getByRole("button", { name: "Save return" }).click();
     await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
     await modal(page).getByRole("button", { name: "More" }).click();
-    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await modal(page).getByRole("button", { name: "Try again" }).click();
     await expect(toast(page)).toHaveText("2 returned · 3 of 4 back");
     const [failed, changed] = backend.requests("POST", RETURN).map((r) => r.body);
     expect([failed.quantity, changed.quantity]).toEqual([1, 2]);
@@ -359,7 +360,7 @@ test.describe("checkout and return commands", () => {
     await emit(page, { v: 1, eventId: "e1", collection: "sheets", id: "s1", op: "put", version: backend.doc("t1", "sheets", "s1").version });
     await expect(lineRow(page, "Paper towels")).toContainText("3");
     await hideToast(page);
-    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await modal(page).getByRole("button", { name: "Try again" }).click();
     await expect(toast(page)).toHaveText("2 returned · 3 of 3 back");
     const [first, retry] = backend.requests("POST", RETURN).map((r) => r.body);
     expect(retry).toEqual(first);
@@ -380,7 +381,7 @@ test.describe("checkout and return commands", () => {
     // Someone else edits the new item meanwhile: saving it again would conflict
     backend.write("t1", "products", "NEW1", { code: "NEW1", name: "Floor wax", price: 0 });
     await hideToast(page);
-    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await modal(page).getByRole("button", { name: "Try again" }).click();
     await expect(toast(page)).toHaveText("Checked out 1 × Wax");
     expect(backend.requests("PUT", "/teams/t1/products/NEW1")).toHaveLength(1);
     expect(backend.operations.size).toBe(1);
@@ -686,17 +687,19 @@ test.describe("live updates", () => {
     // Back online: reconnect now instead of waiting
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
     await expect.poll(async () => (await sockets(page)).length).toBe(3);
-    // Already connected: nothing to do
     await expect.poll(() => lists(backend)).toEqual({ products: 4, sheets: 4 });
+    // Back online with a socket that looks open: it may have died without closing, and events
+    // sent while offline are gone, so a new socket and a re-list
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
-    expect(await sockets(page)).toHaveLength(3);
+    await expect.poll(async () => (await sockets(page)).map((s) => s.closed)).toEqual([true, true, true, false]);
+    await expect.poll(() => lists(backend)).toEqual({ products: 5, sheets: 5 });
 
     // Every 10 minutes while connected, and when the tab is shown again
     await page.clock.fastForward(600e3);
-    await expect.poll(() => lists(backend)).toEqual({ products: 5, sheets: 5 });
+    await expect.poll(() => lists(backend)).toEqual({ products: 6, sheets: 6 });
     await setVisible(page, false);
     await setVisible(page, true);
-    await expect.poll(() => lists(backend)).toEqual({ products: 6, sheets: 6 });
+    await expect.poll(() => lists(backend)).toEqual({ products: 7, sheets: 7 });
   });
 
   test("an acknowledgement without a timeout keeps the default keep-alive", async ({ page }) => {
@@ -863,7 +866,7 @@ test.describe("stock commands", () => {
     // One more save finishes it: the item is saved already, so the count is sent again, and
     // the server answers it from its record
     await hideToast(page);
-    await modal(page).getByRole("button", { name: "Save" }).click();
+    await modal(page).getByRole("button", { name: "Try again" }).click();
     await expect(toast(page)).toHaveText("Saved");
     expect(backend.requests("PUT", "/teams/t1/products/SKU1")).toHaveLength(1);
     const [lost, again] = backend.requests("POST", STOCK).map((r) => r.body);
@@ -924,7 +927,7 @@ test.describe("stock commands", () => {
     await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
     expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(10);
     await hideToast(page);
-    await modal(page).getByRole("button", { name: "Save" }).click();
+    await modal(page).getByRole("button", { name: "Try again" }).click();
     await expect(toast(page)).toHaveText("Saved");
     const [first, retry] = backend.requests("POST", STOCK).map((r) => r.body);
     expect(retry).toEqual(first);

@@ -26,8 +26,15 @@ const ui = { tab: "sheets", sheetId: null, mode: "out", filter: "open", receipt:
 // says so. claude.ai's db refuses an update to a missing document as invalid_argument, the
 // same code as a viewer's write, so that asks whether the sheet is still there; the web
 // build's db rejects it as not_found.
+//
+// Resolves to whether it saved. `retryable` then says whether it failed for the connection
+// (not refused or overtaken), so the same save is worth trying again (saving() below).
+// Offline, nothing is sent: it can't be confirmed, so it isn't tried.
+let retryable = false;
 async function write(fn, okMsg, sheetId) {
+  retryable = false;
   if (!db) { toast("Not connected to shared storage."); return false; }
+  if (!navigator.onLine) { retryable = true; toast(OFFLINE); return false; }
   try { await fn(); if (okMsg) toast(okMsg); return true; }
   catch (e) {
     if (sheetId && e && (e.code === "not_found" || (e.code === "invalid_argument" && await sheetGone(sheetId)))) {
@@ -42,9 +49,39 @@ async function write(fn, okMsg, sheetId) {
     // checkout and return commands, src/aws/db.js): the message says why. The latest is showing.
     // `refused` is that adapter's own code, so no other write shows a raw message.
     else if (e && e.code === "refused") { closeModal(); toast(e.message); }
-    else toast("That didn't save. Check your connection and try again.");
+    else { retryable = true; toast("That didn't save. Check your connection and try again."); }
     return false;
   }
+}
+const OFFLINE = "You're offline, so that wasn't saved. Try again when you're back online.";
+
+// Saves a modal's form. Until the server answers, the submit button says Saving… and nothing
+// in the form can be changed, sent again or closed (src/dom.js), so a second tap can't save
+// twice, and nothing shows as saved before it is. If it didn't save for the connection, what
+// was entered stays, the form says it isn't saved, and the button says Try again: the same
+// action again, with the same operation ID (src/moves.js), so a save whose answer was lost
+// counts once. fn resolves to whether it saved.
+const TRY = "Try again";
+// Wires a modal form's submit. Not while it's saving: the button is disabled then, so only a
+// submit that gets through anyway (a browser letting a very quick second tap through) is ignored.
+const onSubmit = (form, fn) => form.addEventListener("submit", e => { e.preventDefault(); if (!form.hasAttribute("aria-busy")) fn(); });
+// Closes the modal once the write saved, and resolves to whether it did
+const closing = async saved => { const ok = await saved; if (ok) closeModal(); return ok; };
+async function saving(form, fn) {
+  const go = form.querySelector("[type=submit]"), failed = form.querySelector(".save-failed");
+  const controls = [...form.querySelectorAll("input, select, button")].filter(c => !c.disabled);
+  if (go.textContent !== TRY) form.dataset.label = go.textContent;
+  if (failed) { failed.remove(); go.removeAttribute("aria-describedby"); }
+  form.setAttribute("aria-busy", "true"); controls.forEach(c => { c.disabled = true; }); go.textContent = "Saving…";
+  const ok = await fn();
+  form.removeAttribute("aria-busy"); controls.forEach(c => { c.disabled = false; });
+  go.textContent = form.dataset.label;
+  // Gone if it saved, or if the save closed it (someone else deleted or changed this)
+  if (ok || !form.isConnected || !retryable) return;
+  go.textContent = TRY;
+  form.querySelector(".modal-actions").insertAdjacentHTML("beforebegin", `<p class="save-failed" id="saveFailed">${navigator.onLine ? "Not saved. Check your connection, then tap Try again." : "Not saved: you're offline. Tap Try again when you're back online."}</p>`);
+  go.setAttribute("aria-describedby", "saveFailed");
+  go.focus();
 }
 
 const currentSheet = () => sheets.find(s => s.id === ui.sheetId);
@@ -74,13 +111,25 @@ async function render() {
   draw();
 }
 
+function paintNotice() {
+  const notice = $("#notice");
+  if (!navigator.onLine) { notice.hidden = false; notice.textContent = "You're offline. Nothing can be saved until the connection is back."; }
+  else if (!connected) { notice.hidden = false; notice.textContent = `Connecting to shared storage… If this doesn't clear, ${help().connecting}.`; }
+  else if (!canWrite) { notice.hidden = false; notice.textContent = "You have view-only access. Ask the owner to give you Contributor access to scan and edit."; }
+  else notice.hidden = true;
+}
+// Going offline and back: the notice says so, and a form that didn't save says it can be
+// tried again now. (The web build's db re-lists when the connection is back, src/aws/live.js.)
+window.addEventListener("offline", paintNotice);
+window.addEventListener("online", () => {
+  paintNotice();
+  const f = $("#saveFailed"); if (f) f.textContent = "Not saved yet. You're back online: tap Try again.";
+});
+
 function draw() {
   $("#tab-sheets").setAttribute("aria-pressed", ui.tab === "sheets");
   $("#tab-prices").setAttribute("aria-pressed", ui.tab === "prices");
-  const notice = $("#notice");
-  if (!connected) { notice.hidden = false; notice.textContent = `Connecting to shared storage… If this doesn't clear, ${help().connecting}.`; }
-  else if (!canWrite) { notice.hidden = false; notice.textContent = "You have view-only access. Ask the owner to give you Contributor access to scan and edit."; }
-  else notice.hidden = true;
+  paintNotice();
 
   $("#receiptView").hidden = !ui.receipt;
   if (ui.receipt) { $("#main").hidden = true; $("#sheetView").hidden = true; return; }
@@ -237,18 +286,25 @@ function newSheetModal(existing) {
       <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">${editing ? "Save" : "Create sheet"}</button></div>
     </form>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
-    m.querySelector("#f").addEventListener("submit", async e => {
-      e.preventDefault();
+    // One new sheet per form: trying again saves the same sheet, so a save whose answer was
+    // lost doesn't make a second one
+    let ref, createdAt;
+    const form = m.querySelector("#f");
+    onSubmit(form, () => {
       const client = m.querySelector("#fClient").value.trim(), date = m.querySelector("#fDate").value;
       if (!client || !date) return;
       if (editing) {
-        if (await write(() => db.doc("sheets/" + existing.id).update({ client, date }), "Saved", existing.id)) closeModal();
+        saving(form, () => closing(write(() => db.doc("sheets/" + existing.id).update({ client, date }), "Saved", existing.id)));
         return;
       }
-      const ref = db.collection("sheets").doc();
-      const body = { client, date, createdBy: myId || null, createdAt: new Date().toISOString(), status: "open", items: {} };
+      createdAt ||= new Date().toISOString();
+      const body = { client, date, createdBy: myId || null, createdAt, status: "open", items: {} };
       if (needName) body.createdByName = m.querySelector("#fBy").value.trim();
-      if (await write(() => ref.set(body), "Sheet created")) { addLocalSheet(ref.id, body); closeModal(); ui.sheetId = ref.id; ui.mode = "out"; draw(); }
+      saving(form, async () => {
+        const ok = await write(() => (ref ||= db.collection("sheets").doc()).set(body), "Sheet created");
+        if (ok) { addLocalSheet(ref.id, body); closeModal(); ui.sheetId = ref.id; ui.mode = "out"; draw(); }
+        return ok;
+      });
     });
   });
 }
@@ -271,28 +327,31 @@ function checkoutModal(s, code, key = keyOf(code)) {
     const getQty = wireStepper(m, "fQty", v => setText(m.querySelector("#go"), `Add ${v} to sheet`));
     m.querySelector("#go").textContent = "Add 1 to sheet";
     m.querySelector("#cancel").addEventListener("click", closeModal);
-    m.querySelector("#f").addEventListener("submit", async e => {
-      e.preventDefault();
+    const form = m.querySelector("#f");
+    onSubmit(form, () => {
       const qty = getQty(); if (!qty) { toast("Choose at least 1."); return; }
-      let name = prod && prod.name, price = prod ? Number(prod.price) || 0 : 0, oneOff = {};
+      let name = prod && prod.name, price = prod ? Number(prod.price) || 0 : 0, oneOff = {}, save = false;
       if (!prod) {
         name = m.querySelector("#fName").value.trim(); price = Math.max(0, Number(m.querySelector("#fPrice").value) || 0);
         if (!name) return;
-        const save = code || m.querySelector("#fSave").checked;
-        // Saved once per action: a retry after the checkout failed doesn't save it again
-        if (save && !action.saved) {
-          if (!await write(() => db.doc("products/" + key).set({ code, name, price, updatedAt: new Date().toISOString() }))) return;
-          action.saved = true;
-        }
+        save = code || m.querySelector("#fSave").checked;
         // Not saved to inventory: the line's name and price come from here (whole cents, as the API takes them)
         if (!save) oneOff = { name, price: round2(price), code };
       }
-      const fresh = currentSheet() || s, cur = own(fresh.items || {}, key);
-      // A new line copies the item's cost too (ADR 0014); an existing line keeps its snapshot
-      const from = cur || prod, cost = from && hasCost(from) ? { cost: from.cost } : {};
-      const item = { code, name: cur ? cur.name : name, price: cur ? cur.price : price, ...cost, out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) };
-      let after;
-      if (await write(async () => { ({ after } = await checkOut(db, action, s.id, key, qty, item, oneOff, bumpStock)); }, `Checked out ${qty} × ${item.name}`, s.id)) { closeModal(); await after(); }
+      saving(form, async () => {
+        // Saved once per action: a retry after the checkout failed doesn't save it again
+        if (save && !action.saved) {
+          if (!await write(() => db.doc("products/" + key).set({ code, name, price, updatedAt: new Date().toISOString() }))) return false;
+          action.saved = true;
+        }
+        const fresh = currentSheet() || s, cur = own(fresh.items || {}, key);
+        // A new line copies the item's cost too (ADR 0014); an existing line keeps its snapshot
+        const from = cur || prod, cost = from && hasCost(from) ? { cost: from.cost } : {};
+        const item = { code, name: cur ? cur.name : name, price: cur ? cur.price : price, ...cost, out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) };
+        let after;
+        if (!await write(async () => { ({ after } = await checkOut(db, action, s.id, key, qty, item, oneOff, bumpStock)); }, `Checked out ${qty} × ${item.name}`, s.id)) return false;
+        closeModal(); await after(); return true;
+      });
     });
   });
 }
@@ -371,16 +430,19 @@ function returnModal(s, code, key = keyOf(code)) {
     };
     const getR = wireStepper(m, "fRet", paint); paint(1);
     m.querySelector("#cancel").addEventListener("click", closeModal);
-    m.querySelector("#f").addEventListener("submit", async e => {
-      e.preventDefault();
+    const form = m.querySelector("#f");
+    onSubmit(form, () => {
       const r = getR(); if (!r) { toast("Choose at least 1."); return; }
-      const cur = own((currentSheet() || s).items || {}, key) || line;
-      let after;
-      if (await write(async () => {
-        const done = await recordReturn(db, action, s.id, key, r, cur, bumpStock);
-        after = done.after;
-        toast(`${done.quantity} returned · ${int(done.line.returned)} of ${int(done.line.out)} back`);
-      }, undefined, s.id)) { closeModal(); await after(); }
+      saving(form, async () => {
+        const cur = own((currentSheet() || s).items || {}, key) || line;
+        let after;
+        if (!await write(async () => {
+          const done = await recordReturn(db, action, s.id, key, r, cur, bumpStock);
+          after = done.after;
+          toast(`${done.quantity} returned · ${int(done.line.returned)} of ${int(done.line.out)} back`);
+        }, undefined, s.id)) return false;
+        closeModal(); await after(); return true;
+      });
     });
   });
 }
@@ -410,11 +472,11 @@ function lineModal(s, key) {
         await ref.set(body);
       }, "Removed", s.id)) closeModal();
     });
-    m.querySelector("#f").addEventListener("submit", async e => {
-      e.preventDefault();
+    const form = m.querySelector("#f");
+    onSubmit(form, () => {
       const out = int(m.querySelector("#fOut").value), returned = Math.min(int(m.querySelector("#fRet").value), out);
       const price = Math.max(0, Number(m.querySelector("#fPrice").value) || 0);
-      if (await write(() => db.doc("sheets/" + s.id).update({ items: { [key]: { out, returned, price } } }), "Saved", s.id)) closeModal();
+      saving(form, () => closing(write(() => db.doc("sheets/" + s.id).update({ items: { [key]: { out, returned, price } } }), "Saved", s.id)));
     });
   });
 }
@@ -426,8 +488,9 @@ const storageCents = p => hasStock(p) ? Math.round(p.stock * round2(unitValue(p)
 
 function productModal(key) {
   const p = key ? products[key] : null;
-  // One count per form: every attempt at saving the same count is the same stock command
-  const action = {};
+  // One count per form: every attempt at saving the same count is the same stock command.
+  // And one key for a new item without a barcode, so trying again doesn't make a second item.
+  const action = {}, newItemKey = newKey();
   openModal(`
     <h2>${p ? "Edit item" : "Add item"}</h2>
     <form id="f" style="display:grid;gap:14px">
@@ -449,12 +512,12 @@ function productModal(key) {
     scan && scan.addEventListener("change", async () => { const c = await scanFromInput(scan); if (c) m.querySelector("#fCode").value = c; });
     const rm = m.querySelector("#remove");
     rm && armButton(rm, "Tap to delete", async () => { if (await write(() => db.doc("products/" + key).delete(), "Item deleted")) closeModal(); });
-    m.querySelector("#f").addEventListener("submit", async e => {
-      e.preventDefault();
+    const form = m.querySelector("#f");
+    onSubmit(form, () => {
       const code = p ? (p.code || "") : m.querySelector("#fCode").value.trim();
       const name = m.querySelector("#fName").value.trim(), price = Math.max(0, round2(m.querySelector("#fPrice").value));
       if (!name) return;
-      const docKey = p ? key : (code ? keyOf(code) : newKey());
+      const docKey = p ? key : (code ? keyOf(code) : newItemKey);
       // set replaces the whole item, so start from what's there: fields this form doesn't
       // manage survive an edit (ADR 0014). A blank optional field removes it.
       const body = { ...(p || {}), code, name, price, updatedAt: new Date().toISOString() };
@@ -462,7 +525,7 @@ function productModal(key) {
       opt("#fStock", "stock", int);
       opt("#fCost", "cost", v => Math.max(0, round2(v)));
       opt("#fPack", "packSize", v => Math.min(MAX_PACK, Math.max(1, int(v))));
-      if (await write(() => saveItem(db, action, docKey, body, { reason: "count", count: body.stock }), "Saved")) closeModal();
+      saving(form, () => closing(write(() => saveItem(db, action, docKey, body, { reason: "count", count: body.stock }), "Saved")));
     });
   });
 }
