@@ -21,5 +21,6 @@ A record starts as **Proposed**. Change it to **Accepted** once we agree, or **S
 | [0013](0013-web-billing-only.md) | Web billing only; the mobile apps link to web checkout | Proposed |
 | [0014](0014-units-cost-and-rounding.md) | Count in eaches, keep cost apart from client price, and round money to cents | Accepted |
 | [0015](0015-platform-operator-role.md) | A platform operator role, separate from teams | Accepted |
+| [0016](0016-per-member-live-update-channels.md) | A live-update channel per member, not per team | Proposed |
 
 The architecture overview and diagrams are in [`docs/architecture/`](../architecture/README.md). The backlog that implements these decisions lives in beads (`bd list`, `bd ready`).

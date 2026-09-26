@@ -56,7 +56,7 @@ test.describe("sign-in", () => {
     expect(sock.protocols[0]).toBe("aws-appsync-event-ws");
     expect(sock.token).toBe("at-1");
     expect(sock.sent[0]).toEqual({ type: "connection_init" });
-    expect(sock.sent[1]).toMatchObject({ type: "subscribe", channel: "/teams/t1", authorization: { host: CONFIG.realtimeHost, Authorization: "at-1" } });
+    expect(sock.sent[1]).toMatchObject({ type: "subscribe", channel: "/users/u-pat", authorization: { host: CONFIG.realtimeHost, Authorization: "at-1" } });
     await expectAccessible(page);
   });
 
@@ -494,7 +494,7 @@ test.describe("first sign-in and teams", () => {
     const pick = page.getByLabel("Team");
     await expect(pick).toHaveValue("t2");
     await expect(pick.locator("option")).toHaveText(["Echo Cleaning", "Bravo Co"]);
-    expect((await lastSocket(page)).sent[1].channel).toBe("/teams/t2");
+    expect((await lastSocket(page)).sent[1].channel).toBe("/users/u-pat");
     await expectAccessible(page);
     // Switching remembers the team and loads the page again
     await pick.selectOption("t1");
