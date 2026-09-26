@@ -76,7 +76,17 @@ export const AUTH_ROUTES: readonly AuthRoute[] = [
 export interface AccountRoute {
   readonly method: "GET" | "POST" | "PATCH" | "DELETE";
   readonly path: string;
-  readonly action: "me" | "createTeam" | "acceptInvite" | "listMembers" | "setMemberRole" | "removeMember";
+  readonly action:
+    | "me"
+    | "createTeam"
+    | "acceptInvite"
+    | "listMembers"
+    | "setMemberRole"
+    | "removeMember"
+    | "listInvites"
+    | "createInvite"
+    | "revokeInvite"
+    | "resendInvite";
   /**
    * API Gateway's throttle for this route across all callers (requests a
    * second, and burst), below the stage's. /me assumes a role per team, so it
@@ -89,7 +99,9 @@ export interface AccountRoute {
  * The signed-in user's own account: their teams and pending invites, creating
  * a team, and accepting an invite (first sign-in, docs/api/onboarding.md).
  * And a team's members: owners list them, change their roles and remove them,
- * and any member can leave. Each needs a Cognito access token (the JWT
+ * and any member can leave. And a team's invites: owners invite people by
+ * email, see each invite as pending, failed or expired, revoke it and re-send
+ * it. Each needs a Cognito access token (the JWT
  * authorizer). They write the user's own `USER#` rows (or, for a member
  * change, that member's), which the team-scoped data function can't reach,
  * so they're served by the `account` function.
@@ -101,6 +113,12 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
   { method: "GET", path: "/teams/{teamId}/members", action: "listMembers", throttle: { rate: 20, burst: 40 } },
   { method: "PATCH", path: "/teams/{teamId}/members/{userId}", action: "setMemberRole", throttle: { rate: 10, burst: 20 } },
   { method: "DELETE", path: "/teams/{teamId}/members/{userId}", action: "removeMember", throttle: { rate: 10, burst: 20 } },
+  // Creating and re-sending an invite send an email, so they're the tightest; each team
+  // and each address also has a daily limit (INVITES_PER_TEAM_PER_DAY, INVITES_PER_ADDRESS_PER_DAY)
+  { method: "GET", path: "/teams/{teamId}/invites", action: "listInvites", throttle: { rate: 20, burst: 40 } },
+  { method: "POST", path: "/teams/{teamId}/invites", action: "createInvite", throttle: { rate: 5, burst: 10 } },
+  { method: "DELETE", path: "/teams/{teamId}/invites/{inviteId}", action: "revokeInvite", throttle: { rate: 10, burst: 20 } },
+  { method: "POST", path: "/teams/{teamId}/invites/{inviteId}/resend", action: "resendInvite", throttle: { rate: 5, burst: 10 } },
 ];
 
 /** The header that makes `POST /teams` idempotent: the client's key for one "create team" attempt. */
@@ -120,13 +138,15 @@ export const TEAM_SESSION_TAG = "teamId";
 /**
  * Session tags the account function puts on its role session. The
  * account-access role's policy allows only items whose partition key is
- * `USER#<userId>`, `TEAM#<teamId>` or (on GSI2) `INVITEE#<invitee>`, and, for
+ * `USER#<userId>`, `TEAM#<teamId>` or (on GSI2) `INVITEE#<invitee>`; for
  * `member`, only updating or deleting items in `USER#<member>` (another
  * member's team-switcher row, when an owner changes their role or removes
- * them). Every session carries all four; one that doesn't need a tag sets it
- * to ACCOUNT_TAG_UNUSED, which no key can match.
+ * them); and for `inviteLimit`, only updating the day's invite counter in
+ * `INVITELIMIT#<inviteLimit>` (the hashed address an owner is inviting).
+ * Every session carries all five; one that doesn't need a tag sets it to
+ * ACCOUNT_TAG_UNUSED, which no key can match.
  */
-export const ACCOUNT_SESSION_TAGS = { userId: "userId", teamId: "teamId", invitee: "invitee", member: "member" } as const;
+export const ACCOUNT_SESSION_TAGS = { userId: "userId", teamId: "teamId", invitee: "invitee", member: "member", inviteLimit: "inviteLimit" } as const;
 export const ACCOUNT_TAG_UNUSED = ".";
 
 /** Environment variables the api stack sets and the handlers read. */

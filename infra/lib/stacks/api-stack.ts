@@ -32,9 +32,10 @@ import {
   routeKey,
   TEAM_SESSION_TAG,
 } from "../../../backend/src/api/routes.js";
-import { GSI1, GSI2, MEMBER_ROW_ATTRIBUTES, tableName } from "../../../backend/src/data/schema.js";
+import { GSI1, GSI2, INVITE_LIMIT_ATTRIBUTES, INVITE_LIMIT_PREFIX, MEMBER_ROW_ATTRIBUTES, tableName } from "../../../backend/src/data/schema.js";
 import type { DeploymentConfig } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
+import { grantSendEmail } from "../email.js";
 import { cognitoJwtAuthorizer, identityOptionsFromContext, identityOutputParameters, LOCAL_DEV_ORIGIN } from "../identity.js";
 import { LOG_RETENTION } from "../observability/defaults.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
@@ -90,11 +91,13 @@ export const bundling: BundlingOptions = {
  * - The account function can't use the data-access role: creating a team or
  *   accepting an invite writes items outside any team the caller is in. It
  *   assumes the account-access role instead, with session tags `userId`
- *   (always the token's `sub`), `teamId`, `invitee` and `member`, and that
+ *   (always the token's `sub`), `teamId`, `invitee`, `member` and `inviteLimit`, and that
  *   role may only touch items whose partition key is `USER#<userId>` or
  *   `TEAM#<teamId>`, or GSI2's `INVITEE#<invitee>` (the hashed verified
  *   email), and only update or delete items in `USER#<member>` (another
- *   member's team-switcher row). The handler tags a team only when the
+ *   member's team-switcher row), and only update the day's invite counter in
+ *   `INVITELIMIT#<inviteLimit>` (the address an owner is inviting). It may
+ *   also send the invite emails (grantSendEmail). The handler tags a team only when the
  *   request is entitled to it, and a member only after an owner's checks
  *   (backend/src/api/account-db.ts).
  *   No Scan, no BatchWriteItem, and never another user's partition.
@@ -152,7 +155,7 @@ export class ApiStack extends SupplyCheckoutStack {
 
     this.accountFunction = this.handler("AccountFunction", "account", {
       memorySize: 512,
-      description: "The signed-in user's teams and invites; creates teams and accepts invites",
+      description: "The signed-in user's teams and invites; creates teams, manages members and invites, and accepts invites",
       environment: { [API_ENV.tableName]: table, [API_ENV.issuerUrl]: ssm(identity.issuerUrl) },
     });
     const tableKeyStatement = () =>
@@ -211,7 +214,7 @@ export class ApiStack extends SupplyCheckoutStack {
     const tag = (key: string) => `\${aws:PrincipalTag/${key}}`;
     const accountTags = Object.values(ACCOUNT_SESSION_TAGS);
     this.accountAccessRole = new Role(this, "AccountAccessRole", {
-      description: "Assumed by the account function per request, tagged with the user and at most one team and invitee; reaches only those partitions",
+      description: "Assumed by the account function per request, tagged with the user and at most one team, invitee, member and invited address; reaches only those partitions",
       maxSessionDuration: Duration.hours(1),
       assumedBy: new ArnPrincipal(accountRole.roleArn)
         .withConditions({
@@ -261,6 +264,25 @@ export class ApiStack extends SupplyCheckoutStack {
                 StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
               },
             }),
+            // The day's invite counter for the address an owner is inviting
+            // (the per-invitee rate limit), moved in the same transaction as
+            // the invite. Only UpdateItem, only the counter's attributes, and
+            // nothing returned, so a session with this tag can't read or
+            // write anything else about that address. The handler sets the
+            // tag only after an owner's checks, for the address in the invite
+            new PolicyStatement({
+              sid: "InviteLimitCounterOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:UpdateItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [`${INVITE_LIMIT_PREFIX}${tag(ACCOUNT_SESSION_TAGS.inviteLimit)}`],
+                  "dynamodb:Attributes": [...INVITE_LIMIT_ATTRIBUTES],
+                },
+                StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+              },
+            }),
             tableKeyStatement(),
           ],
         }),
@@ -270,6 +292,9 @@ export class ApiStack extends SupplyCheckoutStack {
       new PolicyStatement({ actions: ["sts:AssumeRole", "sts:TagSession"], resources: [this.accountAccessRole.roleArn] }),
     );
     this.accountFunction.addEnvironment(API_ENV.accountRoleArn, this.accountAccessRole.roleArn);
+    // Invite emails (supply-checkout-5tp): ses:SendEmail on the domain identity and the
+    // configuration set only, from noreply@<env domain> only (lib/email.ts)
+    grantSendEmail(this.accountFunction, config);
 
     // The API
     this.api = new HttpApi(this, "HttpApi", {

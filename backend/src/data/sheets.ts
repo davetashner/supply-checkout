@@ -12,16 +12,19 @@ import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/l
 import { type Db, connection, storable } from "./client.js";
 import { InvalidInputError, conflictOnConditionFailure } from "./errors.js";
 import { barcode, date, gsi1, keys, prefixes, productKey, strip, teamPartition } from "./keys.js";
+import { money } from "./money.js";
 import { type Page, queryAll, queryPage, versionedSet } from "./query.js";
 import { GSI1, GSI1PK } from "./schema.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
-/** One line of a sheet, as the app writes it: `{code, name, price, out, returned}`. */
+/** One line of a sheet, as the app writes it: `{code, name, price, cost, out, returned}`. */
 export interface SheetLine {
   /** The item's barcode, empty for an item without one. The sheet CSV exports it as "Barcode". */
   readonly code?: string;
   readonly name: string;
   readonly price: number;
+  /** What the business paid per each (ADR 0014), copied from the product or a receipt. Absent when unknown. */
+  readonly cost?: number;
   readonly out: number;
   readonly returned: number;
 }
@@ -76,6 +79,7 @@ function line(value: SheetLine): SheetLine {
     ...(value.code === undefined ? {} : { code: barcode(value.code) }),
     name: value.name,
     price: value.price,
+    ...(value.cost === undefined ? {} : { cost: money(value.cost, "cost") }),
     out: value.out,
     returned: value.returned,
   };

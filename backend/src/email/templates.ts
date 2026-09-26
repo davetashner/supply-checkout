@@ -13,7 +13,9 @@
 //
 // Everything that comes from a user (a team name) is escaped for HTML and has
 // control characters removed, and links must be on the app's own origin, so a
-// team name can't add markup or a link of its own.
+// team name can't add markup or a link of its own. Link-like text in a team
+// name is defanged too (teamLabel), and an invite quotes the name, so a
+// name can't pose as an instruction from us.
 
 import type { EmailKind } from "./names.js";
 
@@ -61,6 +63,22 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g;
 export function plainName(value: string, max = 80): string {
   const flat = String(value).replace(CONTROL, " ").replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat || "your team";
+}
+
+// Something a mail client might turn into a link: a scheme (https://, mailto:),
+// www., an address, or a dotted name ending in a TLD-like label (acme.com).
+const LINKISH = /\b[a-z][a-z0-9+.-]*:\/\/[^\s]*|\b(?:mailto|tel|sms|javascript|data):[^\s]*|\bwww\.[^\s]*|[^\s@]+@[^\s@]+|\b[\p{L}\p{N}_-]+(?:\.[\p{L}\p{N}_-]+)*\.\p{L}{2,}\b/giu;
+
+/**
+ * A team name as a message shows it: one line, bounded, and with anything
+ * that looks like a link or an address defanged ("evil.example" becomes
+ * "evil[.]example", "https://" becomes "https[:]//"), so mail clients don't
+ * link it. Team names are chosen by whoever made the team, and an invite
+ * goes to someone who isn't in it yet: a name like "Payroll - verify at
+ * evil.example" mustn't read as ours.
+ */
+export function teamLabel(value: string): string {
+  return plainName(value).replace(LINKISH, (token) => token.replaceAll(".", "[.]").replaceAll(":", "[:]").replaceAll("@", "[at]"));
 }
 
 export function escapeHtml(value: string): string {
@@ -155,16 +173,18 @@ function text(c: Content): string {
 }
 
 function content(input: EmailInput, appUrl: string): Content {
-  const team = plainName(input.teamName);
+  const team = teamLabel(input.teamName);
   switch (input.kind) {
     case "invite": {
       const expires = formatDate(input.expiresAt);
+      // Quoted, so the name reads as a name the team chose, not as our words
+      const quoted = `“${team}”`;
       return {
-        subject: `You're invited to join ${team} on Supply Checkout`,
-        preheader: `Join ${team} as ${ROLE_PHRASE[input.role]}. The invite expires on ${expires}.`,
-        heading: `Join ${team} on Supply Checkout`,
+        subject: `You're invited to join the team ${quoted} on Supply Checkout`,
+        preheader: `Join ${quoted} as ${ROLE_PHRASE[input.role]}. The invite expires on ${expires}.`,
+        heading: `Join the team ${quoted} on Supply Checkout`,
         paragraphs: [
-          `You've been invited to join ${team} as ${ROLE_PHRASE[input.role]}. ${ROLE_WHAT[input.role]}`,
+          `You've been invited to join the team ${quoted} as ${ROLE_PHRASE[input.role]}. ${ROLE_WHAT[input.role]}`,
           "Sign in or create an account with this email address, and you'll join the team.",
         ],
         button: { label: "Accept the invite", url: appLink(appUrl, "/", { invite: input.inviteId, token: input.token }) },

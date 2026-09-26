@@ -62,6 +62,7 @@ While working on a change, run just the file and browser you're touching, e.g. `
 | `aws-data.spec.js` | The web build's runtime (web runs only): the app's writes on the data routes, cursors, error codes, downloads (including exporting 1,000 sheets listed page by page, and owners only), live events, re-lists, reconnecting, the polling fallback and removal from a team (found by a read or a refused write) |
 | `aws-save-states.spec.js` | Saving on a slow or flaky connection in the web build (web runs only): one request per checkout however it's tapped, a return that times out (Playwright's clock) counted once on Try again, nothing sent offline and the latest shown when the connection is back, and a new sheet or item whose answer was lost saved once |
 | `aws-members.spec.js` | The members screen (web runs only): owners see members and roles, change roles and remove members, the last owner can't step down or leave, an owner stepping down or leaving starts again, refusals say why, only owners see it, accessibility and 320px layout |
+| `aws-invites.spec.js` | Invites on the members screen (web runs only): inviting an address with a role, each invite as pending, failed ("Couldn't deliver", with why) or expired, resending and revoking, an email that couldn't be sent, refusals and rate limits say why, removing a member drops their invites, accessibility and 320px layout |
 
 Every test also fails if the page throws an uncaught error or logs a console error.
 

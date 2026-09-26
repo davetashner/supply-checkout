@@ -1,6 +1,7 @@
 // The web build's CSV inventory import (src/aws/import.js): owners pick a file, see the
 // server's preview, and import it, against the fake backend in tests/fake-aws.js. The
 // server's side (parsing, validation, all or nothing) is tested in backend/test/imports*.
+import { readFile } from "node:fs/promises";
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./helpers.js";
 import { currentBuild } from "../scripts/builds.mjs";
@@ -162,6 +163,35 @@ test("refuses a file over 300 KB without sending it, ignores an empty choice, an
   expect(backend.requests("POST", PATH)).toEqual([]);
   await dialog(page).getByRole("button", { name: "Cancel" }).click();
   await expect(page.locator("#overlay")).toBeHidden();
+});
+
+test("offers a template with a column guide, and the template goes through the preview as it is", async ({ page }) => {
+  const backend = new FakeBackend();
+  backend.on("POST", PATH, ok({ ...PREVIEW, rows: PREVIEW.rows.slice(0, 2).map((r) => ({ ...r, action: "create" })), ignoredColumns: [], summary: { rows: 2, created: 2, updated: 0, unchanged: 0 } }));
+  await openImport(page, backend);
+  const guide = dialog(page).locator("details.import-guide");
+  await guide.getByText("What goes in each column").click();
+  for (const column of ["name", "price", "barcode", "cost", "stock", "pack_size"]) await expect(guide.locator("dt", { hasText: new RegExp(`^${column}$`) })).toBeVisible();
+  await expect(guide).toContainText("before tax. It isn't shown on client sheets.");
+  const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(violations.map((v) => v.id)).toEqual([]);
+
+  const download = page.waitForEvent("download");
+  await dialog(page).getByRole("button", { name: "Download a template" }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe("inventory-template.csv");
+  const text = await readFile(await file.path(), "utf8");
+  expect(text).toBe(await readFile(new URL("../src/aws/import-template.csv", import.meta.url), "utf8"));
+  const lines = text.trim().split("\n");
+  expect(lines[0]).toBe("name,barcode,price,cost,stock,pack_size");
+  expect(lines).toHaveLength(3);
+  expect(lines.slice(1).every((l) => l.startsWith("EXAMPLE "))).toBe(true);
+
+  // Fed back unchanged, the file is sent as it is and the preview offers the import
+  await choose(page, text, file.suggestedFilename());
+  await expect(page.locator("#importResult")).toContainText("2 rows: 2 new, 0 to update, 0 unchanged.");
+  await expect(dialog(page).getByRole("button", { name: "Import", exact: true })).toBeVisible();
+  expect(backend.requests("POST", PATH).map((c) => c.body)).toEqual([{ dryRun: true, csv: text }]);
 });
 
 test("only owners see Import CSV", async ({ page }) => {

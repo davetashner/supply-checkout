@@ -4,6 +4,7 @@
 // imports.test.ts runs the import against DynamoDB Local in CI.
 
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { DATA_ROUTES, routeKey } from "../src/api/routes.js";
@@ -598,6 +599,20 @@ describe("parsing", () => {
   it("parseInventoryCsv needs text, and a line break inside a name is a problem", () => {
     expect(() => parseInventoryCsv(undefined)).toThrow(/csv must be/);
     expect(parseInventoryCsv('name,price\n"A\nB",1').errors).toEqual([{ line: 2, column: "name", message: "name has a control character in it" }]);
+  });
+
+  it("the import dialog's template (src/aws/import-template.csv) passes as it is", () => {
+    const template = readFileSync(new URL("../../src/aws/import-template.csv", import.meta.url), "utf8");
+    const parsed = parseInventoryCsv(template);
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.ignoredColumns).toEqual([]);
+    expect(parsed.rows).toEqual([
+      { line: 2, name: "EXAMPLE Glass cleaner (sample row)", barcode: "EXAMPLE-0001", price: 6.5, cost: 4.25, stock: 24, packSize: 12 },
+      { line: 3, name: "EXAMPLE Trash bags (sample row)", barcode: "", price: 0.4, cost: 0.25, stock: 90, packSize: 45 },
+    ]);
+    const { planned, errors } = planImport(parsed.rows, []);
+    expect(errors).toEqual([]);
+    expect(planned.map((r) => r.action)).toEqual(["create", "create"]);
   });
 
   it("planImport skips an item without a usable name or barcode when indexing", () => {
