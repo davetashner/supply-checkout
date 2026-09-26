@@ -37,7 +37,7 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
     "AccessLogs8B620ECA": {
       "DeletionPolicy": "Retain",
       "Properties": {
-        "RetentionInDays": 731,
+        "RetentionInDays": 365,
         "Tags": [
           {
             "Key": "app",
@@ -326,7 +326,7 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
     "AccountFunctionLogs6EBC7204": {
       "DeletionPolicy": "Retain",
       "Properties": {
-        "RetentionInDays": 731,
+        "RetentionInDays": 365,
         "Tags": [
           {
             "Key": "app",
@@ -684,7 +684,7 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
     "AuthFunctionLogs58268913": {
       "DeletionPolicy": "Retain",
       "Properties": {
-        "RetentionInDays": 731,
+        "RetentionInDays": 365,
         "Tags": [
           {
             "Key": "app",
@@ -1056,7 +1056,7 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
     "DataFunctionLogs17A930A3": {
       "DeletionPolicy": "Retain",
       "Properties": {
-        "RetentionInDays": 731,
+        "RetentionInDays": 365,
         "Tags": [
           {
             "Key": "app",
@@ -7682,7 +7682,7 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
     "AccessLogs8B620ECA": {
       "DeletionPolicy": "Retain",
       "Properties": {
-        "RetentionInDays": 731,
+        "RetentionInDays": 365,
         "Tags": [
           {
             "Key": "app",
@@ -7971,7 +7971,7 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
     "AccountFunctionLogs6EBC7204": {
       "DeletionPolicy": "Retain",
       "Properties": {
-        "RetentionInDays": 731,
+        "RetentionInDays": 365,
         "Tags": [
           {
             "Key": "app",
@@ -8329,7 +8329,7 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
     "AuthFunctionLogs58268913": {
       "DeletionPolicy": "Retain",
       "Properties": {
-        "RetentionInDays": 731,
+        "RetentionInDays": 365,
         "Tags": [
           {
             "Key": "app",
@@ -8701,7 +8701,7 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
     "DataFunctionLogs17A930A3": {
       "DeletionPolicy": "Retain",
       "Properties": {
-        "RetentionInDays": 731,
+        "RetentionInDays": 365,
         "Tags": [
           {
             "Key": "app",

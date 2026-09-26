@@ -36,6 +36,7 @@ import { GSI1, GSI2, tableName } from "../../../backend/src/data/schema.js";
 import type { DeploymentConfig } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import { cognitoJwtAuthorizer, identityOptionsFromContext, identityOutputParameters, LOCAL_DEV_ORIGIN } from "../identity.js";
+import { LOG_RETENTION } from "../observability/defaults.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
 const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
@@ -256,7 +257,7 @@ export class ApiStack extends SupplyCheckoutStack {
         maxAge: Duration.hours(1),
       },
     });
-    const accessLogs = new LogGroup(this, "AccessLogs");
+    const accessLogs = new LogGroup(this, "AccessLogs", { retention: LOG_RETENTION });
     const stage = new HttpStage(this, "DefaultStage", {
       httpApi: this.api,
       stageName: "$default",
@@ -329,9 +330,8 @@ export class ApiStack extends SupplyCheckoutStack {
   /** A function from backend/src/api/<name>.ts. */
   private handler(id: string, name: string, props: { memorySize: number; description: string; environment: Record<string, string> }): NodejsFunction {
     // Its own log group and a role that can write only to it (instead of
-    // AWSLambdaBasicExecutionRole, which allows every log group). Retention
-    // comes from ObservabilityDefaults.
-    const logGroup = new LogGroup(this, `${id}Logs`);
+    // AWSLambdaBasicExecutionRole, which allows every log group)
+    const logGroup = new LogGroup(this, `${id}Logs`, { retention: LOG_RETENTION });
     const role = new Role(this, `${id}Role`, {
       assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
       description: `Execution role for the ${name} function`,
