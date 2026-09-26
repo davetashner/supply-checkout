@@ -30,7 +30,7 @@ test("a sheet with no date or items opens and takes checkouts", async ({ page })
 
   await page.getByRole("button", { name: "Download CSV" }).click();
   const save = await page.evaluate(() => window.__mock.saves[0]);
-  expect(save.filename.startsWith("Old Sheet")).toBe(true);
+  expect(save.filename).toBe("Old Sheet.csv");
   expect(save.data).toContain("Date,\n");
 });
 
