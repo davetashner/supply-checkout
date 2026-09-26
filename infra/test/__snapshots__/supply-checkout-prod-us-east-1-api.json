@@ -927,7 +927,15 @@
                     "ForAllValues:StringEquals": {
                       "dynamodb:LeadingKeys": [
                         "USER#${aws:PrincipalTag/member}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "role"
                       ]
+                    },
+                    "StringEqualsIfExists": {
+                      "dynamodb:ReturnValues": "NONE"
                     }
                   },
                   "Effect": "Allow",

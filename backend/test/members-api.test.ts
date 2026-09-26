@@ -9,6 +9,7 @@ import type { AccountScope, DbForAccount } from "../src/api/account-db.js";
 import { createAccountHandler } from "../src/api/account-handler.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ACCOUNT_ROUTES, ACCOUNT_TAG_UNUSED, routeKey } from "../src/api/routes.js";
+import { MEMBER_ROW_ATTRIBUTES } from "../src/data/schema.js";
 import type { Observability } from "../src/observability/index.js";
 import { MemoryTable } from "./memory-table.js";
 
@@ -91,6 +92,28 @@ const remove = (userId: string, user = OWNER, teamId = "team-a") => call("DELETE
 const owners = (teamId = "team-a") => table.get(`TEAM#${teamId}`, "META")?.owners;
 const roleOf = (userId: string, teamId = "team-a") => table.get(`TEAM#${teamId}`, `MEMBER#${userId}`)?.role;
 const switcherRole = (userId: string, teamId = "team-a") => table.get(`USER#${userId}`, `TEAM#${teamId}`)?.role;
+/**
+ * Every attribute a write names: its keys, the names behind #placeholders, and bare
+ * names in its expressions, as IAM's dynamodb:Attributes would see them.
+ */
+function attributesOf(body: Record<string, unknown>): string[] {
+  const names = new Set(Object.keys((body.Key ?? body.Item ?? {}) as object));
+  for (const n of Object.values((body.ExpressionAttributeNames ?? {}) as Record<string, string>)) names.add(n);
+  const text = [body.UpdateExpression, body.ConditionExpression].filter(Boolean).join(" ");
+  for (const [word] of text.matchAll(/(?<![#:\w])[A-Za-z_]\w*(?!\w*\s*\()/g)) if (!["SET", "ADD", "REMOVE", "DELETE", "AND", "OR", "NOT"].includes(word)) names.add(word);
+  return [...names].sort();
+}
+
+/** Each write the handler sent into `partition`, as [kind, the attributes it names, its ReturnValues]. */
+function writesTo(partition: string) {
+  return table.requests.flatMap((c) =>
+    ((c.input.TransactItems as Record<string, Record<string, unknown>>[] | undefined) ?? [{ [c.command]: c.input }])
+      .map((op) => Object.entries(op)[0] as [string, Record<string, unknown>])
+      .filter(([, body]) => (body.Key as { PK?: string } | undefined)?.PK === partition || (body.Item as { PK?: string } | undefined)?.PK === partition)
+      .map(([kind, body]) => [kind, attributesOf(body), body.ReturnValues ?? "NONE"]),
+  );
+}
+
 const lastOwner = { status: 409, body: { error: { code: "aborted", message: "A team needs at least one owner. Make someone else an owner first.", reason: "last_owner" } } };
 
 describe("GET /teams/{teamId}/members", () => {
@@ -186,6 +209,41 @@ describe("PATCH /teams/{teamId}/members/{userId}", () => {
     };
     expect(await setRole(VIEWER, "owner")).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
     expect(roleOf(VIEWER)).toBe("viewer");
+  });
+
+  it("writes another member's partition only within what the account-access role allows there", async () => {
+    // The member tag's IAM statement (MemberSwitcherRowOnly): UpdateItem or DeleteItem,
+    // naming only MEMBER_ROW_ATTRIBUTES, returning nothing
+    table.calls.length = 0;
+    table.requests.length = 0;
+    await setRole(VIEWER, "contributor");
+    await setRole(CONTRIBUTOR, "owner");
+    await setRole(CONTRIBUTOR, "viewer");
+    await remove(VIEWER);
+    const writes = [...writesTo(`USER#${VIEWER}`), ...writesTo(`USER#${CONTRIBUTOR}`)];
+    expect(writes.map(([kind]) => kind).sort()).toEqual(["Delete", "Update", "Update", "Update"]);
+    expect(writes.map(([, a]) => (a as string[]).join(","))).toContain("PK,SK,role");
+    for (const [, attributes, returns] of writes) {
+      expect((attributes as string[]).every((a) => (MEMBER_ROW_ATTRIBUTES as readonly string[]).includes(a)), String(attributes)).toBe(true);
+      expect(returns).toBe("NONE");
+    }
+    // The update is conditioned on the row existing, so it never creates one
+    const update = table.requests.flatMap((c) => (c.input.TransactItems as Record<string, Record<string, unknown>>[] | undefined) ?? []).find((op) => (op.Update?.Key as { PK: string } | undefined)?.PK === `USER#${CONTRIBUTOR}`);
+    expect(update?.Update?.ConditionExpression).toBe("attribute_exists(PK)");
+    // Everything else is in the caller's own team partition
+    expect(new Set(table.calls.flatMap((c) => c.partitions))).toEqual(new Set(["TEAM#team-a", `USER#${VIEWER}`, `USER#${CONTRIBUTOR}`]));
+  });
+
+  it("won't create a team-switcher row a member doesn't have", async () => {
+    table.items.delete(`USER#${VIEWER}\u0000TEAM#team-a`);
+    expect(await setRole(VIEWER, "contributor")).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
+    expect(table.get(`USER#${VIEWER}`, "TEAM#team-a")).toBeUndefined();
+    expect(roleOf(VIEWER)).toBe("viewer");
+  });
+
+  it("answers anyone but an owner 403 whatever the body", async () => {
+    for (const user of [CONTRIBUTOR, VIEWER]) expect(await call("PATCH", `/teams/team-a/members/${VIEWER}`, user, undefined, "not json")).toMatchObject({ status: 403 });
+    expect(await call("PATCH", `/teams/team-a/members/${VIEWER}`, OUTSIDER, { role: "admin" })).toMatchObject({ status: 403, body: { error: { reason: "not_member" } } });
   });
 
   it("reaches another member's partition only to update their team-switcher row, after the checks", async () => {

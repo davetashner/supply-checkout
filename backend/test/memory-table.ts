@@ -27,6 +27,8 @@ export interface Call {
 export class MemoryTable {
   readonly items = new Map<string, Item>();
   readonly calls: Call[] = [];
+  /** Each request as DynamoDB would get it, in the same order as `calls`. */
+  readonly requests: { readonly command: string; readonly input: Record<string, unknown> }[] = [];
   /** Runs after each GetCommand, before its result returns: a concurrent writer. */
   afterGet?: (item: Item | undefined) => void;
   /** Runs before each TransactWriteCommand is applied: a concurrent writer. */
@@ -123,6 +125,7 @@ export class MemoryTable {
     for (const op of (input.TransactItems as Record<string, Input>[] | undefined) ?? []) MemoryTable.checkExpressions(Object.values(op)[0] as Input);
     const record = (partitions: string[]) => {
       this.calls.push({ command: name, partitions });
+      this.requests.push({ command: name, input });
       this.allowed(team, partitions);
     };
     switch (name) {

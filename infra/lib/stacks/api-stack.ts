@@ -32,7 +32,7 @@ import {
   routeKey,
   TEAM_SESSION_TAG,
 } from "../../../backend/src/api/routes.js";
-import { GSI1, GSI2, tableName } from "../../../backend/src/data/schema.js";
+import { GSI1, GSI2, MEMBER_ROW_ATTRIBUTES, tableName } from "../../../backend/src/data/schema.js";
 import type { DeploymentConfig } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import { cognitoJwtAuthorizer, identityOptionsFromContext, identityOutputParameters, LOCAL_DEV_ORIGIN } from "../identity.js";
@@ -242,14 +242,23 @@ export class ApiStack extends SupplyCheckoutStack {
             }),
             // Another member's team-switcher row, which an owner's role change
             // or removal updates or deletes in the same transaction as the
-            // membership. Nothing else in that partition: no reads, no puts
+            // membership. No reads or puts in that partition, an update may
+            // name only the keys and `role` (so it can't write anything else,
+            // and with its attribute_exists(PK) condition can't create a row),
+            // and nothing is returned. IAM can't limit the sort key, so a
+            // delete could still reach the member's other rows in it; the
+            // handler sets the tag only after its checks (docs/infrastructure.md)
             new PolicyStatement({
               sid: "MemberSwitcherRowOnly",
               effect: Effect.ALLOW,
               actions: ["dynamodb:UpdateItem", "dynamodb:DeleteItem"],
               resources: [tableArn],
               conditions: {
-                "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`USER#${tag(ACCOUNT_SESSION_TAGS.member)}`] },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [`USER#${tag(ACCOUNT_SESSION_TAGS.member)}`],
+                  "dynamodb:Attributes": [...MEMBER_ROW_ATTRIBUTES],
+                },
+                StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
               },
             }),
             tableKeyStatement(),

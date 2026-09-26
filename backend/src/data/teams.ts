@@ -123,7 +123,17 @@ export async function setMemberRole(db: Db, ctx: TeamContext, userId: string, ro
               ExpressionAttributeValues: { ":role": role, ":from": from },
             },
           },
-          { Update: { TableName: db.tableName, Key: keys.userTeam(userId, ctx.teamId), ...set, ExpressionAttributeValues: { ":role": role } } },
+          // The member's team-switcher row: only `role`, and only if the row exists, so this
+          // can't create a partial row. MEMBER_ROW_ATTRIBUTES lists what it may name.
+          {
+            Update: {
+              TableName: db.tableName,
+              Key: keys.userTeam(userId, ctx.teamId),
+              ...set,
+              ConditionExpression: "attribute_exists(PK)",
+              ExpressionAttributeValues: { ":role": role },
+            },
+          },
           ...(from === "owner" ? [ownersUpdate(db.tableName, ctx.teamId, -1)] : []),
           ...(role === "owner" ? [ownersUpdate(db.tableName, ctx.teamId, 1)] : []),
           ...callerStillOwner(db, ctx, userId),

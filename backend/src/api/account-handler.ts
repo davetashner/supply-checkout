@@ -239,10 +239,10 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
   }
 
   async function changeRole(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
-    const body = jsonBody(event, ["role"]);
-    const role = memberRole(body.role);
+    // Membership and role first, so anyone else gets the same 403 whatever they send
     const { teamId, ctx } = await teamContext(event, userId);
     requireRole(ctx.role, "owner");
+    const role = memberRole(jsonBody(event, ["role"]).role);
     const { target, db } = await targetMember(event, userId, teamId, ctx);
     await setMemberRole(db, ctx, target, role);
     const member = await getMember(db, ctx, target);
