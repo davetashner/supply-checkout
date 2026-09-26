@@ -6,8 +6,8 @@ const day = (n) => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
 export function demoState() {
   return {
     seed: {
-      "products/012345678905": { code: "012345678905", name: "Nitrile gloves, box of 100", price: 12.5, stock: 8 },
-      "products/SKU-TOWEL": { code: "SKU-TOWEL", name: "Paper towels, 6 roll", price: 8.5, stock: 14 },
+      "products/012345678905": { code: "012345678905", name: "Nitrile gloves, box of 100", price: 12.5, cost: 9.75, packSize: 10, stock: 8 },
+      "products/SKU-TOWEL": { code: "SKU-TOWEL", name: "Paper towels, 6 roll", price: 8.5, cost: 6.4, stock: 14 },
       "products/nb-bins": { code: "", name: "Storage bins, 12 qt", price: 5, stock: 4 },
       "products/nb-cloth": { code: "", name: "Microfiber cloths, 24 pack", price: 18 },
       "sheets/demo-open": {

@@ -628,3 +628,22 @@ test.describe("live updates", () => {
     expect((await sockets(page)).at(-1).closed).toBe(true);
   });
 });
+
+test.describe("inventory edits", () => {
+  // ADR 0014: the edit form replaces the whole item, so it must carry what it doesn't show
+  test("an edit sends the item's cost, pack size and other fields back", async ({ page }) => {
+    const docs = seeded();
+    docs["t1/products/SKU1"] = { ...docs["t1/products/SKU1"], cost: 6.25, packSize: 12, note: "keep me" };
+    const backend = await open(page, new FakeBackend({ docs }));
+    await page.getByRole("button", { name: "Inventory" }).click();
+    await inventoryRow(page, "Paper towels").click();
+    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(inventoryRow(page, "Paper towels").locator("td").nth(2)).toHaveText("$9.00");
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1")[0].body).toEqual({
+      data: { code: "SKU1", name: "Paper towels, 6 roll", price: 9, cost: 6.25, packSize: 12, stock: 10, note: "keep me", updatedAt: expect.any(String) },
+      expectedVersion: 1,
+    });
+    expect(backend.doc("t1", "products", "SKU1").data).toMatchObject({ cost: 6.25, packSize: 12, note: "keep me" });
+  });
+});
