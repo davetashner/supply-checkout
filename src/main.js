@@ -449,6 +449,7 @@ function exportAllModal() {
 $("#tab-sheets").addEventListener("click", () => { ui.tab = "sheets"; ui.sheetId = null; ui.receipt = false; draw(); });
 $("#tab-prices").addEventListener("click", () => { ui.tab = "prices"; ui.receipt = false; draw(); });
 /* ---------- receipts ---------- */
+// Forgotten on sign-out in the web build (DRAFT_KEY in src/aws/session.js)
 const DKEY = "supplyCheckout.receiptDraft";
 let sampleFn = null, receiptOK = false, draft = null;
 try { draft = JSON.parse(localStorage.getItem(DKEY) || "null"); } catch {}
