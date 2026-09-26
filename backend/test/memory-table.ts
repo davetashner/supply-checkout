@@ -34,6 +34,12 @@ export class MemoryTable {
 
   private static id = (k: Item) => `${String(k.PK)}\u0000${String(k.SK)}`;
 
+  /** DynamoDB's limit on one transaction's size. A test can lower it. */
+  maxTransactionBytes = 4_000_000;
+
+  /** The number of items in each transaction that got past the size check, in order. */
+  readonly transactions: number[] = [];
+
   /** DynamoDB's item size limit. The table measures an item as JSON, which is close enough. */
   static readonly MAX_ITEM_BYTES = 400_000;
 
@@ -212,6 +218,11 @@ export class MemoryTable {
       return { kind, body, key: (body.Item ?? body.Key) as Item };
     });
     record(ops.map((o) => String(o.key.PK)));
+    // DynamoDB refuses a transaction over 4 MB before looking at any condition
+    if (Buffer.byteLength(JSON.stringify(input.TransactItems), "utf8") > this.maxTransactionBytes) {
+      throw Object.assign(new Error("Transaction request cannot be larger than 4 MB"), { name: "ValidationException" });
+    }
+    this.transactions.push(ops.length);
     const reasons = ops.map(({ body, key }) => {
       try {
         this.check(body, this.items.get(MemoryTable.id(key)));
