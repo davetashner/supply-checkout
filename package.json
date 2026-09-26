@@ -29,6 +29,7 @@
     "check:regions": "node scripts/check-region-strings.mjs",
     "hooks:install": "git config core.hooksPath scripts/git-hooks",
     "dev": "node scripts/dev-server.mjs",
+    "icons": "node scripts/render-icons.mjs",
     "land": "bash scripts/land-pr.sh",
     "test:scripts": "shellcheck scripts/*.sh && bash scripts/land-pr.test.sh && node --test scripts/publish-web.test.mjs",
     "publish:web": "node scripts/publish-web.mjs",

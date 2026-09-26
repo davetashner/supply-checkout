@@ -30,7 +30,7 @@ export async function buildApp(build) {
 // Built with the web build, for tests/demo.spec.js
 export const DEMO = "demo";
 
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".map": "application/json" };
+const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".map": "application/json", ".svg": "image/svg+xml", ".png": "image/png" };
 
 // What a server hosting the build would serve, by URL path. The artifact is only
 // the page, in the document skeleton claude.ai adds when it's published.
