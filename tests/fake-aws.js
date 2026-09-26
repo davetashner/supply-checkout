@@ -36,6 +36,11 @@ export class FakeBackend {
     Object.assign(this, { teams: clone(teams), invites: clone(invites), user, signedIn, claims, config, expiresIn });
     this.docs = new Map(Object.entries(docs).map(([k, data]) => [k, { version: 1, data: clone(data) }]));
     this.calls = [];
+    // Checkout, return and stock operations: "<teamId>/<operationId>" -> { request, result }
+    this.operations = new Map();
+    // Accept every access token issued, not only the latest, for tests with two pages signed in
+    this.shareTokens = false;
+    this.issued = new Set();
     this.authRequests = [];
     this.rules = [];
     this.token = null;
@@ -45,8 +50,10 @@ export class FakeBackend {
     this.cors = null;
   }
 
-  // The next `times` requests matching method and path get this answer instead.
-  // { status, body } or { abort: true }, and optionally { wait: promise } first.
+  // The next `times` requests matching method and path get this answer instead. path is a
+  // string, a RegExp, or a function of (path, call), where call is as in requests().
+  // { status, body }, { abort: true }, or { lost: true } (the API handles the request, but
+  // the answer never arrives), and optionally { wait: promise } first.
   on(method, path, answer, times = 1) {
     this.rules.push({ method, path, answer, times });
   }
@@ -80,6 +87,7 @@ export class FakeBackend {
 
   issue() {
     this.token = `at-${++this.tokens}`;
+    this.issued.add(this.token);
     return { accessToken: this.token, idToken: jwt({ sub: this.user.id, ...this.claims }), expiresIn: this.expiresIn };
   }
 
@@ -90,7 +98,7 @@ export class FakeBackend {
     if (method === "OPTIONS") return route.fulfill({ status: 204, headers: this.corsHeaders() });
     const call = { method, path, query: Object.fromEntries(url.searchParams), headers: req.headers(), body: req.postDataJSON() };
     this.calls.push(call);
-    const rule = this.rules.find((r) => r.method === method && (typeof r.path === "string" ? r.path === path : r.path.test(path)));
+    const rule = this.rules.find((r) => r.method === method && (typeof r.path === "string" ? r.path === path : typeof r.path === "function" ? r.path(path, call) : r.path.test(path)));
     if (rule) {
       if (--rule.times <= 0) this.rules.splice(this.rules.indexOf(rule), 1);
       if (rule.answer.late) {
@@ -101,6 +109,7 @@ export class FakeBackend {
       }
       if (rule.answer.wait) await rule.answer.wait;
       if (rule.answer.abort) return route.abort();
+      if (rule.answer.lost) { this.answer(method, path, call); return route.abort(); }
       if (rule.answer.status) return this.reply(route, rule.answer.status, rule.answer.body);
     }
     const [status, body] = this.answer(method, path, call);
@@ -142,7 +151,8 @@ export class FakeBackend {
     }
     if (path === "/auth/refresh") return this.signedIn ? [200, this.issue()] : err(401, "unauthenticated");
     if (path === "/auth/sign-out") { this.signedIn = false; return [204]; }
-    if (!this.token || call.headers.authorization !== "Bearer " + this.token) return [401, { message: "Unauthorized" }];
+    const bearer = call.headers.authorization || "";
+    if (!this.token || (bearer !== "Bearer " + this.token && !(this.shareTokens && this.issued.has(bearer.slice(7))))) return [401, { message: "Unauthorized" }];
 
     if (path === "/me") return [200, { user: this.user, teams: this.teams, invites: this.invites }];
     if (path === "/teams" && method === "POST") {
@@ -161,6 +171,12 @@ export class FakeBackend {
       this.invites = this.invites.filter((i) => i !== invite);
       return [200, { team }];
     }
+
+    m = path.match(/^\/teams\/([^/]+)\/sheets\/([^/]+)\/(checkout|return)$/);
+    if (m && method === "POST") return this.command(decodeURIComponent(m[1]), decodeURIComponent(m[2]), m[3], call.body);
+
+    m = path.match(/^\/teams\/([^/]+)\/products\/([^/]+)\/stock$/);
+    if (m && method === "POST") return this.adjustStock(decodeURIComponent(m[1]), decodeURIComponent(m[2]), call.body);
 
     m = path.match(/^\/teams\/([^/]+)\/([^/]+)(?:\/([^/]+))?$/);
     if (!m) return err(404, "not_found");
@@ -188,6 +204,87 @@ export class FakeBackend {
     merge(data, call.body.data);
     this.write(team, coll, id, data);
     return [200, out()];
+  }
+
+  // Checkout and return as the API runs them (docs/api/commands.md, backend/src/data/commands.ts):
+  // the line and the stock change together, by adding to what's stored, and each gives the
+  // sheet (and a product that tracks stock) a new version. An operation ID that's been used
+  // returns its first result and changes nothing; used for another request, it's refused.
+  command(team, sheetId, name, body) {
+    // With the API's messages where the app shows them (a refused checkout or return)
+    const err = (status, code, message = code) => [status, { error: { code, message } }];
+    const member = this.teams.find((t) => t.id === team);
+    if (!member) return err(403, "permission_denied");
+    if (member.role === "viewer") return err(403, "invalid_argument");
+    const { operationId, productKey: key, quantity: qty, ...oneOff } = body;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId) || typeof key !== "string" || !Number.isInteger(qty) || qty < 1) return err(400, "bad_request");
+    const sheetKey = `${team}/sheets/${sheetId}`, productKey = `${team}/products/${key}`;
+    const out = (k) => { const d = this.docs.get(k); return d ? { id: k.slice(k.lastIndexOf("/") + 1), version: d.version, data: d.data } : null; };
+    const answer = (result, replayed) => [200, { operationId, replayed, result, sheet: out(sheetKey), product: out(productKey) }];
+    const request = JSON.stringify([name, sheetId, key, qty, oneOff]);
+    const prior = this.operations.get(`${team}/${operationId}`);
+    if (prior) return prior.request === request ? answer(prior.result, true) : err(400, "bad_request");
+
+    const sheet = this.docs.get(sheetKey), product = this.docs.get(productKey);
+    if (!sheet) return err(404, "not_found", "No such sheet");
+    if (sheet.data.status === "closed") return err(409, "aborted");
+    const items = (sheet.data.items ||= {});
+    const line = Object.hasOwn(items, key) ? items[key] : undefined;
+    let delta;
+    if (name === "checkout") {
+      if (line) line.out += qty;
+      else {
+        const from = product ? product.data : oneOff;
+        if (!product && (oneOff.name === undefined || oneOff.price === undefined)) return err(400, "bad_request", "This item isn't in inventory; send its name and price");
+        items[key] = { code: from.code ?? "", name: from.name ?? "", price: from.price ?? 0, ...(from.cost === undefined ? {} : { cost: from.cost }), out: qty, returned: 0 };
+      }
+      delta = -qty;
+    } else {
+      if (!line) return err(400, "bad_request", "This item isn't on this sheet");
+      const left = line.out - (line.returned || 0);
+      if (qty > left) return err(400, "bad_request", `Only ${left} of this item ${left === 1 ? "is" : "are"} left to return`);
+      line.returned = (line.returned || 0) + qty;
+      delta = qty;
+    }
+    sheet.version++;
+    const tracked = !!product && typeof product.data.stock === "number";
+    if (tracked) { product.data.stock += delta; product.version++; }
+    const result = { operationId, command: name, reason: name, productKey: key, sheetId, quantity: qty, stockDelta: tracked ? delta : 0, userId: this.user.id, at: new Date().toISOString() };
+    this.operations.set(`${team}/${operationId}`, { request, result });
+    return answer(result, false);
+  }
+
+  // A stock adjustment as the API runs it (adjustStockCommand in backend/src/data/commands.ts):
+  // a receipt adds `quantity` (an item that wasn't counted starts at it), a count sets stock to
+  // `count`. Either gives the item a new version. Replays and reused IDs as for checkout.
+  adjustStock(team, key, body) {
+    const err = (status, code) => [status, { error: { code, message: code } }];
+    const member = this.teams.find((t) => t.id === team);
+    if (!member) return err(403, "permission_denied");
+    if (member.role === "viewer") return err(403, "invalid_argument");
+    const { operationId, reason, quantity, unitCost, count, ...rest } = body;
+    const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
+    const whole = (n, min) => Number.isInteger(n) && n >= min && n <= 1e6;
+    const valid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId) && !Object.keys(rest).length
+      && (reason === "receipt" ? whole(quantity, 1) && cents(unitCost) && count === undefined : reason === "count" && whole(count, 0) && quantity === undefined && unitCost === undefined);
+    if (!valid) return err(400, "bad_request");
+    const productKey = `${team}/products/${key}`;
+    const answer = (result, replayed) => {
+      const d = this.docs.get(productKey);
+      return [200, { operationId, replayed, result, product: d ? { id: key, version: d.version, data: d.data } : null }];
+    };
+    const request = JSON.stringify([key, reason, quantity, unitCost, count]);
+    const prior = this.operations.get(`${team}/${operationId}`);
+    if (prior) return prior.request === request ? answer(prior.result, true) : err(400, "bad_request");
+    const product = this.docs.get(productKey);
+    if (!product) return err(404, "not_found");
+    const before = typeof product.data.stock === "number" ? product.data.stock : 0;
+    const delta = reason === "receipt" ? quantity : count - before;
+    product.data.stock = before + delta;
+    product.version++;
+    const result = { operationId, command: "stockAdjust", reason, productKey: key, ...(reason === "receipt" ? { quantity, unitCost } : { count }), stockDelta: delta, userId: this.user.id, at: new Date().toISOString() };
+    this.operations.set(`${team}/${operationId}`, { request, result });
+    return answer(result, false);
   }
 }
 
@@ -256,7 +353,8 @@ export const connected = (page) => page.waitForFunction(() => {
 export const sockets = (page) => page.evaluate(() => window.__sockets.map((s) => ({ closed: s.closed, token: s.protocols[1] && s.token, sent: s.sent, url: s.url, protocols: s.protocols })));
 export const lastSocket = async (page) => (await sockets(page)).at(-1);
 // Sends a live event (an object, or raw text) on the latest socket
-export const emit = (page, ev) => page.evaluate((e) => window.__sockets.at(-1).event(e), ev);
+// Live events are for team t1 unless they say otherwise
+export const emit = (page, ev) => page.evaluate((e) => window.__sockets.at(-1).event(e), ev && typeof ev === "object" && !("teamId" in ev) ? { teamId: "t1", ...ev } : ev);
 // Any other message from AppSync on the latest socket
 export const receive = (page, msg) => page.evaluate((m) => window.__sockets.at(-1).receive(m), msg);
 export const dropSocket = (page) => page.evaluate(() => window.__sockets.at(-1).close());

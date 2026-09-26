@@ -1802,6 +1802,60 @@
         }
       }
     },
+    "HttpApiPOSTteamsteamIdimportsDataIntegrationPermission8AC0ABAB": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "DataFunctionLive5A545D6E"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/imports"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTteamsteamIdimportsA904FDBB": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /teams/{teamId}/imports",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETteamsteamIdproductsDataIntegration012ABD77"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiGETmeAccountIntegration0EFB5255": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -2194,6 +2248,10 @@
           "ThrottlingRateLimit": 200
         },
         "RouteSettings": {
+          "POST /teams/{teamId}/imports": {
+            "ThrottlingRateLimit": 5,
+            "ThrottlingBurstLimit": 10
+          },
           "GET /me": {
             "ThrottlingRateLimit": 50,
             "ThrottlingBurstLimit": 100
@@ -2222,6 +2280,8 @@
         "HttpApiGETme466879BE",
         "HttpApiPOSTinvitesinviteIdacceptAccountIntegrationPermission862E8450",
         "HttpApiPOSTinvitesinviteIdacceptD95AE303",
+        "HttpApiPOSTteamsteamIdimportsDataIntegrationPermission8AC0ABAB",
+        "HttpApiPOSTteamsteamIdimportsA904FDBB",
         "HttpApiPOSTteamsAccountIntegrationPermission37B4CDE2",
         "HttpApiPOSTteams93EBE9A5"
       ]

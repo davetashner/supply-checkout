@@ -23,7 +23,7 @@ The design below is partly built. This table says which parts are on `main` toda
 | Billing: Stripe Checkout, webhook, SQS worker, access rules (beads `x0l`, `2kl`, `qdx`) | Planned | |
 | Receipt reading with Bedrock | Planned | |
 | Synthetics canaries, automated deploys to staging and prod | Planned | |
-| Faster cut-off of live updates for removed members (bead `4zn`) | Planned | |
+| Faster cut-off of live updates for removed members and canceled teams: a channel per member (bead `4zn`, [ADR 0016](../adr/0016-per-member-live-update-channels.md)) | Built | |
 | iOS and Android apps, us-west-2 | Phase 2 | |
 
 ## 1. System context
@@ -77,7 +77,7 @@ flowchart TB
     s3e[(S3 web bundle)]
     apie[HTTP API<br/>JWT authorizer]
     lame[Lambda: data, teams,<br/>billing, receipts]
-    evte[AppSync Events<br/>channel per team]
+    evte[AppSync Events<br/>channel per member]
     streame[DynamoDB Streams<br/>→ publisher Lambda]
     ddbe[(DynamoDB<br/>global table, one replica)]
     cog[Cognito user pool<br/>us-east-1 only]
@@ -89,7 +89,7 @@ flowchart TB
     s3w[(S3 web bundle)]
     apiw[HTTP API<br/>JWT authorizer]
     lamw[Lambda: data, teams,<br/>billing, receipts]
-    evtw[AppSync Events<br/>channel per team]
+    evtw[AppSync Events<br/>channel per member]
     streamw[DynamoDB Streams<br/>→ publisher Lambda]
     ddbw[(DynamoDB<br/>second replica)]
     brw[Bedrock]
@@ -167,7 +167,7 @@ sequenceDiagram
 
 ## 4. Checking out and returning
 
-Built in bead `supply-checkout-1dg.1`; the web app switches to it with the runtime adapter (bead `a2b`). The artifact saves the sheet line and then changes stock in a second, separate read-then-write (`bumpStock` in `src/main.js`), so a retry or a double tap can take stock down twice and two people checking out the same line at once can lose a count. The commands make each checkout, return or stock adjustment one DynamoDB transaction with an operation ID, so a retry is safe. They sit next to the generic document routes, which the edit screens keep using. The claude.ai artifact build keeps its two-write path ([ADR 0004](../adr/0004-runtime-adapter.md)); the commands extend [ADR 0006](../adr/0006-api-and-realtime-sync.md). The client contract is [docs/api/commands.md](../api/commands.md); the code is `backend/src/data/commands.ts`.
+Built in bead `supply-checkout-1dg.1`; the web build uses it for every checkout and return (bead `supply-checkout-1dg.6`, `src/moves.js`). The artifact saves the sheet line and then changes stock in a second, separate read-then-write (`bumpStock` in `src/main.js`), so a retry or a double tap can take stock down twice and two people checking out the same line at once can lose a count. The commands make each checkout, return or stock adjustment one DynamoDB transaction with an operation ID, so a retry is safe. They sit next to the generic document routes, which the edit screens keep using. The claude.ai artifact build keeps its two-write path ([ADR 0004](../adr/0004-runtime-adapter.md)); the commands extend [ADR 0006](../adr/0006-api-and-realtime-sync.md). The client contract is [docs/api/commands.md](../api/commands.md); the code is `backend/src/data/commands.ts`.
 
 ```mermaid
 sequenceDiagram
@@ -269,9 +269,10 @@ sequenceDiagram
   API-->>App: The document, or 403 if no longer a member
 ```
 
-- **Connect and subscribe.** The authorizer allows a connection with a valid Cognito access token, and a subscription only to exactly `/teams/<teamId>` for a member of that team (any role), using the same membership check as the data API. Its answers aren't cached. Clients can't publish: the `teams` namespace takes publishes only from the stream consumer's IAM role, and the authorizer refuses publishes too.
+- **Connect and subscribe.** The authorizer allows a connection with a valid Cognito access token, and a subscription only to exactly `/users/<sub>`, the token's own user's channel ([ADR 0016](../adr/0016-per-member-live-update-channels.md)). Its answers aren't cached. Clients can't publish: the `users` namespace takes publishes only from the stream consumer's IAM role, and the authorizer refuses publishes too.
+- **Who gets a change.** The consumer publishes each change to the channel of every current member of the team, and to nobody once the team's subscription has ended. It reads the members and status with a 30-second cache, and rereads them as soon as the stream shows a change to them.
 - **Events are refetch hints.** Each carries a collection, an ID, an operation and a version, never document data. The app fetches the document from the data API, which reads the caller's `MEMBER` item on every request.
-- **Revocation.** When a member is removed (or a team is canceled), their next fetch gets `403` at once and a new subscription is refused at once. AppSync Events can't end or filter a subscription that's already open, so that connection keeps receiving change notices (not contents) until it closes: in practice at the client's hourly reconnect on token refresh, and at most 24 hours. Cutting notices off within about a minute is bead `supply-checkout-4zn`; the options are in [docs/api/realtime.md](../api/realtime.md#cutting-off-notices-faster).
+- **Revocation.** When a member is removed, their next fetch gets `403` at once. AppSync Events can't end or filter a subscription that's already open, so the cut-off comes from publishing: the consumer stops sending the team's changes to their channel, at once in practice and within 30 seconds at worst. The same happens for every member when a team's subscription ends. See [docs/api/realtime.md](../api/realtime.md#how-the-cut-off-works).
 - **Missed events.** AppSync doesn't replay events, so the app re-lists both collections after every subscribe, when the tab becomes visible, and every 10 minutes. Batches the consumer can't publish go to a dead-letter queue, which alarms.
 
 ## 6. Billing and access (planned)

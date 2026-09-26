@@ -10,8 +10,9 @@
 //
 // Every document write is one PutItem or DeleteItem on the document's item
 // (documents.ts), so each write is exactly one stream record. A product's
-// `stock` can also change through adjustStock's atomic ADD, which doesn't bump
-// `version`; that is an ordinary MODIFY record here, with the same version.
+// `stock` can also change through a command (commands.ts) or products.ts's
+// adjustStock, which give it a new `version`; either is an ordinary MODIFY
+// record here.
 
 import type { DynamoDBRecord } from "aws-lambda";
 import type { Collection } from "./documents.js";
@@ -45,6 +46,20 @@ function versionOf(image: Record<string, { N?: string }> | undefined): number | 
   const raw = image?.version?.N;
   const n = raw === undefined ? NaN : Number(raw);
   return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * The team whose live-update audience a stream record changes: a write to its
+ * META item (billing status) or to one of its MEMBER items. Undefined for
+ * anything else. Only the keys are read; the member's details never leave
+ * this function.
+ */
+export function audienceChangeFromStream(record: DynamoDBRecord): string | undefined {
+  const pk = record.dynamodb?.Keys?.PK?.S;
+  const sk = record.dynamodb?.Keys?.SK?.S;
+  if (typeof pk !== "string" || typeof sk !== "string") return undefined;
+  if (sk !== "META" && !sk.startsWith(prefixes.member)) return undefined;
+  return valid(() => checkId(TEAM_PK.exec(pk)?.[1], "team ID"));
 }
 
 /**

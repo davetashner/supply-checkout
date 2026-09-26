@@ -19,7 +19,7 @@ export {
   teamContextForStripeCustomer,
   type Role,
 } from "./team-context.js";
-export { MAX_TEAMS_PER_USER, normalizeEmail, TEAMS_PER_USER_PER_DAY, teamIdForRequest, TRIAL_DAYS } from "./model.js";
+export { ENDED_STATUSES, hasEnded, MAX_TEAMS_PER_USER, normalizeEmail, TEAMS_PER_USER_PER_DAY, teamIdForRequest, TRIAL_DAYS } from "./model.js";
 export type { Page } from "./query.js";
 export * from "./teams.js";
 export * from "./invites.js";
@@ -30,5 +30,7 @@ export * from "./audit.js";
 export * from "./billing.js";
 export * from "./documents.js";
 export * from "./commands.js";
+export * from "./imports.js";
 export { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
-export { documentChangeFromStream, type DocumentChange } from "./changes.js";
+export { audienceChangeFromStream, documentChangeFromStream, type DocumentChange } from "./changes.js";
+export { liveUpdateRecipients } from "./live-audience.js";

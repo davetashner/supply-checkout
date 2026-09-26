@@ -32,11 +32,12 @@
 // Apple always send email_verified with the email scope, so this doesn't
 // happen with them; a missing attribute (never mapped) counts as unverified.
 //
-// A native user linked to a provider (supply-checkout-0b1) doesn't meet the
-// second condition and is left alone: its email was verified with Cognito's
-// own code, and a Managed Login sign-in for it may not have gone through the
-// provider. 0b1's pre sign-up trigger can reuse providerSaysVerified(), since
-// Cognito puts the mapped attributes in that event too.
+// A native user linked to a provider (account-link-handler.ts,
+// supply-checkout-0b1) doesn't meet the second condition and is left alone:
+// its email was verified with Cognito's own code, and a Managed Login sign-in
+// for it may not have gone through the provider. The linking trigger reuses
+// providerSaysVerified(), since Cognito puts the mapped attributes in the pre
+// sign-up event too.
 //
 // What it does: email_verified becomes "true" when the provider says the email
 // is verified (Google sends a boolean, Apple a boolean or the string

@@ -16,8 +16,11 @@
 //    the sheet's `version`, only while the sheet is open, and for a return
 //    only while returned stays at or below out. A new line snapshots `code`,
 //    `name`, `price` and `cost` from the product (ADR 0014).
-// 3. The product: ADD to `stock` when the product tracks stock (has a numeric
-//    `stock`), otherwise a condition check that it still doesn't. Checking
+// 3. The product: ADD to `stock` and 1 to `version` when the product tracks
+//    stock (has a numeric `stock`), otherwise a condition check that it still
+//    doesn't. The new version makes a document write made against the old one
+//    (an edit screen's PATCH with `stock`) fail with a conflict instead of
+//    overwriting the command's change. Checking
 //    out a new line also checks the product's version, so the snapshot is the
 //    product as it is when the transaction commits.
 // 4. Put a movement record `MOVE#<escaped key>#<at>#<operationId>`: the
@@ -41,8 +44,8 @@ import { type TeamContext, readable, writable } from "./team-context.js";
 
 export type CommandName = "checkout" | "return" | "stockAdjust";
 
-/** Why a product's stock moved. */
-export type MovementReason = "checkout" | "return" | "receipt" | "count";
+/** Why a product's stock moved. `import` is a CSV inventory import setting stock (imports.ts). */
+export type MovementReason = "checkout" | "return" | "receipt" | "count" | "import";
 
 /** How long a retry with the same operation ID returns the first result. */
 export const OPERATION_TTL_DAYS = 7;
@@ -269,7 +272,18 @@ function movementPut(db: Db, ctx: TeamContext, movement: Omit<Movement, "type">)
 }
 
 /**
- * The product's part of a checkout or return: ADD to stock when it tracks
+ * Adds 1 to a product's version, with every change to its stock. An item with
+ * no version reads as version 1 (documents.ts), so it goes to 2.
+ */
+const BUMP_VERSION = "#version = if_not_exists(#version, :one) + :one";
+
+/** Refuses a product whose stored version DynamoDB couldn't add to (it would answer ValidationError, a 500). */
+function checkVersion(product: Item): void {
+  if (product.version !== undefined && typeof product.version !== "number") throw new InvalidInputError("This item's version isn't a number");
+}
+
+/**
+ * The product's part of a checkout or return: ADD to stock (and a new version) when it tracks
  * stock, otherwise a check that it still doesn't (or still doesn't exist).
  * `extra` adds conditions for a tracked or untracked product that exists.
  */
@@ -288,15 +302,16 @@ function productWrite(
   const tracked = typeof product.stock === "number";
   const names = { "#stock": "stock", ...extra.names };
   if (tracked) {
+    checkVersion(product);
     return {
       item: {
         Update: {
           TableName: db.tableName,
           Key,
-          UpdateExpression: "ADD #stock :delta",
+          UpdateExpression: `SET ${BUMP_VERSION} ADD #stock :delta`,
           ConditionExpression: ["attribute_exists(#stock)", ...extra.clauses].join(" AND "),
-          ExpressionAttributeNames: names,
-          ExpressionAttributeValues: { ":delta": delta, ...extra.values },
+          ExpressionAttributeNames: { ...names, "#version": "version" },
+          ExpressionAttributeValues: { ":delta": delta, ":one": 1, ...extra.values },
         },
       },
       tracked,
@@ -416,7 +431,9 @@ export async function checkout(db: Db, ctx: TeamContext, input: CheckoutInput, n
       }
     }
 
-    // A new line's snapshot must be the product as the transaction finds it
+    // A new line's snapshot must be the product as the transaction finds it. A version that
+    // isn't a number could never match, so refuse it now, not as a conflict after retries.
+    if (!existing && product) checkVersion(product);
     const version = product?.version;
     const fresh = existing
       ? NO_EXTRA
@@ -544,6 +561,7 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
   return execute(db, ctx, opId, "stockAdjust", request, now, async () => {
     const product = await getItem(db, Key);
     if (!product) throw new NotFoundError("No such item");
+    checkVersion(product);
     const base = { operationId: opId, command: "stockAdjust" as const, productKey: key, userId: ctx.userId, at };
     if (parsed.reason === "receipt") {
       const { qty, unitCost } = parsed;
@@ -554,10 +572,10 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
             Update: {
               TableName: db.tableName,
               Key,
-              UpdateExpression: "ADD #stock :qty",
+              UpdateExpression: `SET ${BUMP_VERSION} ADD #stock :qty`,
               ConditionExpression: "attribute_exists(PK)",
-              ExpressionAttributeNames: { "#stock": "stock" },
-              ExpressionAttributeValues: { ":qty": qty },
+              ExpressionAttributeNames: { "#stock": "stock", "#version": "version" },
+              ExpressionAttributeValues: { ":qty": qty, ":one": 1 },
             },
           },
           movementPut(db, ctx, { productKey: key, reason: "receipt", delta: qty, tracked: true, quantity: qty, unitCost, operationId: opId, userId: ctx.userId, at }),
@@ -574,11 +592,11 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
           Update: {
             TableName: db.tableName,
             Key,
-            UpdateExpression: "SET #stock = :count",
+            UpdateExpression: `SET #stock = :count, ${BUMP_VERSION}`,
             // Set from the level just read, so the movement's delta is exact
             ConditionExpression: current === undefined ? "attribute_exists(PK) AND attribute_not_exists(#stock)" : "attribute_exists(PK) AND #stock = :current",
-            ExpressionAttributeNames: { "#stock": "stock" },
-            ExpressionAttributeValues: { ":count": parsed.counted, ...(current === undefined ? {} : { ":current": current }) },
+            ExpressionAttributeNames: { "#stock": "stock", "#version": "version" },
+            ExpressionAttributeValues: { ":count": parsed.counted, ":one": 1, ...(current === undefined ? {} : { ":current": current }) },
           },
         },
         movementPut(db, ctx, { productKey: key, reason: "count", delta, tracked: true, count: parsed.counted, operationId: opId, userId: ctx.userId, at }),

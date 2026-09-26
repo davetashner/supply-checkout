@@ -1,7 +1,7 @@
 import "./theme.js";
 import { use, help } from "./runtime.js";
-import { checkOut, recordReturn, setStock } from "./moves.js";
-import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, newKey, uid, round2, numOrNull } from "./format.js";
+import { checkOut, recordReturn, setStock, saveItem } from "./moves.js";
+import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, newKey, uid, round2, numOrNull } from "./format.js";
 import { lines, totals } from "./sheet-math.js";
 import { $, toast, openModal, closeModal, armButton, stepperHTML, setText, setHTML, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
@@ -10,6 +10,7 @@ import { sheetCsv, sheetsCsv, inventoryCsv, allJson } from "./export.js";
 
 async function bumpStock(key, delta) {
   // Adds (or removes) units from the storage count. Items nobody has counted stay uncounted when removing.
+  // The artifact build only: in the web build, checkouts and returns move stock on the server (src/moves.js).
   const p = products[key]; if (!p || !delta) return true;
   if (!hasStock(p) && delta < 0) return true;
   return write(() => setStock(db, key, Math.max(0, (hasStock(p) ? p.stock : 0) + delta)));
@@ -30,6 +31,10 @@ async function write(fn, okMsg) {
     // Someone else saved this first (the web build's versioned writes, ADR 0006). Close the
     // editor so the latest values show, rather than an edit made on the old ones.
     else if (e && e.code === "aborted") { closeModal(); toast("Someone else changed this just now, so your change wasn't saved. The latest is showing; make your change again if it's still needed."); }
+    // Refused for what's saved now, such as returning more than are left (the web build's
+    // checkout and return commands, src/aws/db.js): the message says why. The latest is showing.
+    // `refused` is that adapter's own code, so no other write shows a raw message.
+    else if (e && e.code === "refused") { closeModal(); toast(e.message); }
     else toast("That didn't save. Check your connection and try again.");
     return false;
   }
@@ -177,9 +182,9 @@ function drawPrices() {
       ${canWrite ? `<button type="button" class="btn primary" id="addProduct">+ Add item</button>` : ""}
     </div>
     ${list.length ? `<div class="table-wrap"><table class="prices">
-      <thead><tr><th>Item</th><th>In storage</th><th>Price each</th><th>Value</th></tr></thead>
-      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || "Unnamed item")}<span class="code">${esc(codeText(p.code))}</span></td><td class="${hasStock(p) ? "" : "muted"}">${hasStock(p) ? p.stock : "—"}</td><td>${money(p.price)}</td><td>${hasStock(p) ? money(p.stock * (Number(p.price) || 0)) : "—"}</td></tr>`).join("")}</tbody>
-      <tfoot><tr><td>Total in storage</td><td>${list.reduce((a, p) => a + (hasStock(p) ? p.stock : 0), 0)}</td><td></td><td>${money(list.reduce((a, p) => a + (hasStock(p) ? p.stock * (Number(p.price) || 0) : 0), 0))}</td></tr></tfoot>
+      <thead><tr><th>Item</th><th>In storage</th><th>Price each</th><th>Cost each</th><th>Value</th></tr></thead>
+      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || "Unnamed item")}<span class="code">${esc(codeText(p.code))}</span></td><td class="${hasStock(p) ? "" : "muted"}">${hasStock(p) ? p.stock : "—"}</td><td>${money(p.price)}</td><td class="${hasCost(p) ? "" : "muted"}">${hasCost(p) ? money(p.cost) : "—"}</td><td>${hasStock(p) ? money(storageCents(p) / 100) : "—"}</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td>Total in storage</td><td>${list.reduce((a, p) => a + (hasStock(p) ? p.stock : 0), 0)}</td><td></td><td></td><td>${money(list.reduce((a, p) => a + storageCents(p), 0) / 100)}</td></tr></tfoot>
     </table></div>` : `<div class="empty">${connected ? "No items yet. Add one, or scan a barcode on a sheet." : "Loading…"}</div>`}`;
   const ap = $("#addProduct"); ap && ap.addEventListener("click", () => productModal(null));
   $("#main").querySelectorAll("tr[data-prod]").forEach(tr => {
@@ -220,7 +225,7 @@ function newSheetModal(existing) {
 }
 
 function checkoutModal(s, code, key = keyOf(code)) {
-  const prod = products[key], line = own(s.items || {}, key);
+  const prod = products[key], line = own(s.items || {}, key), action = {};
   openModal(`
     <h2>Check out</h2>
     <div class="code">${esc(codeText(code))}</div>
@@ -240,16 +245,23 @@ function checkoutModal(s, code, key = keyOf(code)) {
     m.querySelector("#f").addEventListener("submit", async e => {
       e.preventDefault();
       const qty = getQty(); if (!qty) { toast("Choose at least 1."); return; }
-      let name = prod && prod.name, price = prod ? Number(prod.price) || 0 : 0;
+      let name = prod && prod.name, price = prod ? Number(prod.price) || 0 : 0, oneOff = {};
       if (!prod) {
         name = m.querySelector("#fName").value.trim(); price = Math.max(0, Number(m.querySelector("#fPrice").value) || 0);
         if (!name) return;
         const save = code || m.querySelector("#fSave").checked;
-        if (save && !await write(() => db.doc("products/" + key).set({ code, name, price, updatedAt: new Date().toISOString() }))) return;
+        // Saved once per action: a retry after the checkout failed doesn't save it again
+        if (save && !action.saved) {
+          if (!await write(() => db.doc("products/" + key).set({ code, name, price, updatedAt: new Date().toISOString() }))) return;
+          action.saved = true;
+        }
+        // Not saved to inventory: the line's name and price come from here (whole cents, as the API takes them)
+        if (!save) oneOff = { name, price: round2(price), code };
       }
       const fresh = currentSheet() || s, cur = own(fresh.items || {}, key);
       const item = { code, name: cur ? cur.name : name, price: cur ? cur.price : price, out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) };
-      if (await write(() => checkOut(db, s.id, key, item), `Checked out ${qty} × ${item.name}`)) { closeModal(); await bumpStock(key, -qty); }
+      let after;
+      if (await write(async () => { ({ after } = await checkOut(db, action, s.id, key, qty, item, oneOff, bumpStock)); }, `Checked out ${qty} × ${item.name}`)) { closeModal(); await after(); }
     });
   });
 }
@@ -289,7 +301,7 @@ function pickReturnModal(s) {
 }
 
 function returnModal(s, code, key = keyOf(code)) {
-  const line = own(s.items || {}, key), prod = products[key];
+  const line = own(s.items || {}, key), prod = products[key], action = {};
   if (!line) {
     openModal(`
       <h2>Not on this sheet</h2>
@@ -331,10 +343,13 @@ function returnModal(s, code, key = keyOf(code)) {
     m.querySelector("#f").addEventListener("submit", async e => {
       e.preventDefault();
       const r = getR(); if (!r) { toast("Choose at least 1."); return; }
-      // Add to the latest count, in case someone else recorded a return meanwhile
       const cur = own((currentSheet() || s).items || {}, key) || line;
-      const out = int(cur.out), before = Math.min(int(cur.returned), out), back = Math.min(out, before + r);
-      if (await write(() => recordReturn(db, s.id, key, back), `${back - before} returned · ${back} of ${out} back`)) { closeModal(); await bumpStock(key, back - before); }
+      let after;
+      if (await write(async () => {
+        const done = await recordReturn(db, action, s.id, key, r, cur, bumpStock);
+        after = done.after;
+        toast(`${done.quantity} returned · ${int(done.line.returned)} of ${int(done.line.out)} back`);
+      })) { closeModal(); await after(); }
     });
   });
 }
@@ -367,8 +382,15 @@ function lineModal(s, key) {
   });
 }
 
+// An item's storage value in whole cents (ADR 0014): its count times its cost each, or
+// its price each where the cost isn't known
+const MAX_PACK = 10000;
+const storageCents = p => hasStock(p) ? Math.round(p.stock * round2(unitValue(p)) * 100) : 0;
+
 function productModal(key) {
   const p = key ? products[key] : null;
+  // One count per form: every attempt at saving the same count is the same stock command
+  const action = {};
   openModal(`
     <h2>${p ? "Edit item" : "Add item"}</h2>
     <form id="f" style="display:grid;gap:14px">
@@ -377,8 +399,11 @@ function productModal(key) {
             : `<div class="manual"><input type="text" id="fCode" inputmode="numeric" autocomplete="off" placeholder="Type, scan, or leave blank"><label class="btn" for="fScan">Scan</label></div><input class="vh" type="file" id="fScan" accept="image/*" capture="environment">`}
       </div>
       <div class="field"><label for="fName">Item name</label><input type="text" id="fName" required value="${esc(p ? p.name : "")}" ${p ? "autofocus" : ""}></div>
-      <div class="field"><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" step="0.01" inputmode="decimal" value="${p ? (Number(p.price) || 0) : ""}" placeholder="0.00"></div>
+      <div class="field"><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" step="0.01" inputmode="decimal" value="${p ? round2(p.price) : ""}" placeholder="0.00"></div>
+      <div class="field"><label for="fCost">Cost each ($)</label><input type="number" id="fCost" min="0" step="0.01" inputmode="decimal" value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="Leave blank if not known"></div>
       <div class="field"><label for="fStock">In storage now</label><input type="number" id="fStock" min="0" inputmode="numeric" value="${hasStock(p) ? p.stock : ""}" placeholder="Leave blank if not counted"></div>
+      <div class="field"><label for="fPack">Comes in packs of</label><input type="number" id="fPack" min="1" max="${MAX_PACK}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.packSize) ? p.packSize : ""}" placeholder="1"></div>
+      <p class="hint">Price is what a client is charged. Cost is what you paid each, before tax, and isn't shown on sheets. Storage counts single items, not packs.</p>
       ${p ? `<p class="hint">Price changes apply to new checkouts. Sheets keep the price they were checked out at; change it on a sheet by tapping the row.</p>` : ""}
       <div class="modal-actions">${p ? `<button type="button" class="btn danger" id="remove">Delete</button><span class="spacer"></span>` : ""}<button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div>
     </form>`, m => {
@@ -390,12 +415,17 @@ function productModal(key) {
     m.querySelector("#f").addEventListener("submit", async e => {
       e.preventDefault();
       const code = p ? (p.code || "") : m.querySelector("#fCode").value.trim();
-      const name = m.querySelector("#fName").value.trim(), price = Math.max(0, Number(m.querySelector("#fPrice").value) || 0);
+      const name = m.querySelector("#fName").value.trim(), price = Math.max(0, round2(m.querySelector("#fPrice").value));
       if (!name) return;
       const docKey = p ? key : (code ? keyOf(code) : newKey());
-      const body = { code, name, price, updatedAt: new Date().toISOString() };
-      const st = m.querySelector("#fStock").value.trim(); if (st !== "") body.stock = int(st);
-      if (await write(() => db.doc("products/" + docKey).set(body), "Saved")) closeModal();
+      // set replaces the whole item, so start from what's there: fields this form doesn't
+      // manage survive an edit (ADR 0014). A blank optional field removes it.
+      const body = { ...(p || {}), code, name, price, updatedAt: new Date().toISOString() };
+      const opt = (id, field, val) => { const v = m.querySelector(id).value.trim(); if (v === "") delete body[field]; else body[field] = val(v); };
+      opt("#fStock", "stock", int);
+      opt("#fCost", "cost", v => Math.max(0, round2(v)));
+      opt("#fPack", "packSize", v => Math.min(MAX_PACK, Math.max(1, int(v))));
+      if (await write(() => saveItem(db, action, docKey, body, { reason: "count", count: body.stock }), "Saved")) closeModal();
     });
   });
 }
@@ -669,6 +699,11 @@ function rerenderLine(l) {
   old.replaceWith(tmp.firstElementChild); paintSum();
 }
 
+// What a general-inventory line adds to storage: its quantity in eaches at the receipt's price
+// each. The line is the action, so saving the same line again (a retry after a failure) is the
+// same stock command.
+const stockIn = l => ({ action: l, quantity: int(l.qty), unitCost: Math.max(0, round2(l.price)) });
+
 async function saveReceipt(btn) {
   const d = draft;
   const lines = d.lines.filter(l => (lineProd(l) || l.name.trim()) && int(l.qty) > 0);
@@ -697,12 +732,12 @@ async function saveReceipt(btn) {
   const groups = Object.create(null);
   for (const l of lines) (groups[keyOfLine[l.id]] = groups[keyOfLine[l.id]] || []).push(l);
   for (const [k, ls] of Object.entries(groups)) {
-    const ex = products[k], add = ls.filter(l => l.dest === "stock").reduce((a, l) => a + int(l.qty), 0);
+    const ex = products[k], stocked = ls.filter(l => l.dest === "stock"), add = stocked.reduce((a, l) => a + int(l.qty), 0);
     if (!ex && !add && !d.savePrices) continue;
     const l0 = ls[0], code = (ex && ex.code) || (ls.find(l => l.code) || {}).code || "";
     const body = { ...(ex || {}), code, name: effName(l0), price: round2(effPrice(l0)), updatedAt: new Date().toISOString() };
     if (add) body.stock = (hasStock(ex) ? ex.stock : 0) + add;
-    if (!await write(() => db.doc("products/" + k).set(body))) { done(); return; }
+    if (!await write(() => saveItem(db, null, k, body, { reason: "receipt", lines: stocked.map(stockIn) }))) { done(); return; }
   }
   // Inventory is written; drop those lines so a retry can't add them twice
   d.lines = d.lines.filter(l => l.dest !== "stock"); saveDraft();

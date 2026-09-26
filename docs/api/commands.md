@@ -24,11 +24,19 @@ The claude.ai artifact build keeps its two-write path ([ADR 0004](../adr/0004-ru
 
 ## What the adapter switches
 
-| App action (src/main.js) | Today | With the AWS adapter |
+`src/moves.js` sends every checkout and return: through the commands when the
+db has `command` (the web build's adapter, `src/aws/db.js`), otherwise as the
+artifact's two writes. It saves an item whose stock changes outside a sheet
+(`saveItem`) through the adapter's `saveItem` when there is one, otherwise as
+the artifact's document write.
+
+| App action (src/main.js) | Artifact build | Web build (AWS adapter) |
 | --- | --- | --- |
 | Check out (`checkoutModal`) | `PATCH sheets/<id>` with the whole line, then `bumpStock(key, -qty)` | `POST /teams/{teamId}/sheets/{sheetId}/checkout`. No `bumpStock`. |
 | Return (`returnModal`) | `PATCH sheets/<id>` with `returned`, then `bumpStock(key, back - before)` | `POST /teams/{teamId}/sheets/{sheetId}/return`. No `bumpStock`. |
-| Item history (new) | none | `GET /teams/{teamId}/products/{key}/movements` |
+| Inventory form, "In storage now" (`productModal`) | `PUT products/<key>` with the new `stock` | `PUT products/<key>` with the stock it already has, then, if the count differs, `POST /teams/{teamId}/products/{key}/stock` with `reason: "count"`. A blank count leaves stock as it is. |
+| Receipt save, General inventory lines (`saveReceipt`) | `PUT products/<key>` with `stock` plus the lines' quantities | `PUT products/<key>` with the stock it already has (price and name updates), then one `POST .../products/{key}/stock` with `reason: "receipt"` per line: its quantity in eaches and its receipt price as `unitCost` |
+| Item history (new) | none | `GET /teams/{teamId}/products/{key}/movements` (not used by the app yet) |
 
 Everything else stays on the document routes: creating, editing and deleting
 sheets and products, closing and reopening sheets, and **correcting a line's
@@ -36,15 +44,16 @@ counts or price** (the line edit, a `PATCH` that doesn't move stock). A new
 item scanned at checkout is still saved to inventory with `PUT products/<key>`
 first, as today; the checkout then copies it.
 
-Two stock writes can move to commands later, and should before the nightly
-drift check goes live (see [Reconciling stock](#reconciling-stock)):
-
-- The inventory form's "In storage now" field: `POST .../products/{key}/stock`
-  with `reason: "count"`.
-- The receipt save's stock-in for general inventory: `reason: "receipt"` with
-  the quantity in eaches and the unit cost (after any pack conversion,
-  [ADR 0014](../adr/0014-units-cost-and-rounding.md)). Its price and cost
-  updates stay a document write.
+In the web build no document write changes `stock`. A `PUT` replaces the whole
+item, so the inventory form and the receipt save send the stock of the copy
+they're made against, unchanged: `expectedVersion` refuses the write if a
+command changed stock since. The item is saved first (a new item has to exist
+before the stock command), then the stock command runs. Each count is one
+operation per form, and each receipt line is its own operation, so saving
+again after a failure sends the same IDs and nothing is added twice. The
+receipt's pack conversion ([ADR 0014](../adr/0014-units-cost-and-rounding.md))
+comes later, in the line's quantity and `unitCost` (`stockIn` in
+`src/main.js`); the item's price and cost updates stay a document write.
 
 ## Requests
 
@@ -131,8 +140,10 @@ starts at `quantity`) and records `unitCost`; it doesn't change the item's
 - `stockDelta` is 0 when the item doesn't track stock (it has no numeric
   `stock`), and for a one-off item.
 - The sheet's `version` goes up by one with each checkout or return, so an
-  edit screen that sends `expectedVersion` sees the change. Product `version`
-  doesn't change: stock moves without a new version, as with the documents.
+  edit screen that sends `expectedVersion` sees the change. So does the
+  product's with every change to its `stock` (not for an item that doesn't
+  track stock), so an inventory edit made against the version before a
+  command gets `409` instead of overwriting the command's stock change.
 - Live updates: the sheet and product each produce a change event, as a
   document write does.
 
@@ -151,6 +162,15 @@ The toast text the app shows today still works: "Checked out 3 × <name>" from
 - Make a **new ID** for a new action, including the person tapping the button
   again after a result was shown. Two taps that each produce their own confirmed
   action are two checkouts.
+- The web build's adapter does this with an `action` object per confirmed
+  form (`src/moves.js`, `src/aws/db.js`): the first attempt makes the ID, and
+  every attempt with the same request reuses it, including a second tap while
+  the first is still on its way. If the person changes the request after a
+  failure (another quantity, say), it's a new operation with a new ID.
+  The request is only what the person entered (a return sends the quantity
+  they're returning, not a count worked out from the latest copy of the
+  line), so a live update that arrives before a retry doesn't change it, and
+  a new item saved to inventory on the first attempt isn't saved again.
 - The server keeps the result for **7 days**. A retry within that returns the
   first result and changes nothing. After that the ID is forgotten, so don't
   queue retries for longer.
@@ -166,10 +186,10 @@ movement or the operation record changed.
 | --- | --- | --- |
 | `200`, `replayed: false` | Done now | Update the cache from `sheet` and `product` |
 | `200`, `replayed: true` | An earlier attempt did it | The same |
-| `400 bad_request` | Refused: malformed, a non-whole or zero quantity, money with more than two decimals, more returned than is out, an item not on the sheet, an item not in inventory without `name` and `price`, or a reused ID | Show the message; don't retry unchanged |
+| `400 bad_request` | Refused: malformed, a non-whole or zero quantity, money with more than two decimals, more returned than is out, an item not on the sheet, an item not in inventory without `name` and `price`, an item whose stored version isn't a number, or a reused ID | Show the message; don't retry unchanged. The web build fetches the sheet and item, closes the form and shows the message |
 | `403 invalid_argument` | The caller is a viewer | Switch to view-only, as for document writes |
 | `403 permission_denied` | Not a member of the team | As for document writes |
-| `404 not_found` | No such sheet, or (stock adjustment) no such item | Show the message |
+| `404 not_found` | No such sheet, or (stock adjustment) no such item | Show the message (the web build handles it as for `400`) |
 | `409 aborted` | The sheet is closed ("Reopen it to …"), or the line or item changed on every retry | Show the message. Safe to retry with the same ID |
 | `429`, `5xx`, timeout, network error | Unknown whether it ran | Retry with the same ID, with backoff |
 
@@ -217,8 +237,8 @@ drifting") is a separate bead. It reconciles each item from the movements:
   it had summed. Each night it reads the item's movements after that one: the
   new `stock` should equal the old one plus their deltas. A mismatch means
   stock changed without a movement: a document write that set `stock` (the
-  inventory form or the receipt save, until they move to the stock command),
-  or a bug.
+  artifact's writes, or a client that doesn't use the stock command), or a
+  bug.
 - It reads the product, then the movements, and on a mismatch reads both again
   before alarming, so a command that commits between the two reads isn't
   reported as drift.

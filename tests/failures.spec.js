@@ -46,6 +46,25 @@ test("an edit someone else saved over first closes the editor and says so", asyn
   await expect(page.getByRole("heading", { name: "Echo Studio" })).toBeVisible();
 });
 
+// `refused` is the web build's code for a checkout or return the API refused (src/aws/db.js)
+test("a return refused for what's saved now closes the form and says why, not to check the connection", async ({ page }) => {
+  await openEcho(page, { ...usedState, writeErrorFor: { prefix: "sheets/", code: "refused" } });
+  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await enterBarcode(page, "SKU1");
+  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await expect(page.locator("#toast")).toHaveText("simulated refused");
+  await expect(modal(page)).toBeEmpty();
+});
+
+test("any other refusal from the runtime keeps the form open with the usual message", async ({ page }) => {
+  await openEcho(page, { ...usedState, writeErrorFor: { prefix: "sheets/", code: "failed_precondition" } });
+  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await enterBarcode(page, "SKU1");
+  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await failed(page);
+  await expect(modal(page).getByRole("button", { name: "Save return" })).toBeVisible();
+});
+
 test("a new item that can't be saved to inventory isn't added to the sheet", async ({ page }) => {
   await openEcho(page, { ...usedState, writeErrorFor: { prefix: "products/", code: "unavailable" } });
   await enterBarcode(page, "NEW1");
@@ -54,6 +73,21 @@ test("a new item that can't be saved to inventory isn't added to the sheet", asy
   await failed(page);
   await expect(lineRow(page, "Wax")).toHaveCount(0);
   await expect(modal(page).getByLabel("Item name")).toHaveValue("Wax");
+});
+
+test("a checkout that fails after saving a new item doesn't save the item again on retry", async ({ page }) => {
+  await openEcho(page, { ...usedState, writeErrorFor: { prefix: "sheets/", code: "unavailable" } });
+  await enterBarcode(page, "NEW1");
+  await modal(page).getByLabel("Item name").fill("Wax");
+  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await failed(page);
+  expect(await page.evaluate(() => window.__mock.docs.get("products/NEW1").name)).toBe("Wax");
+  // Gone by the retry: if the retry saved it again, it would be back
+  await page.evaluate(() => window.__mock.docs.delete("products/NEW1"));
+  await page.locator("#toast").evaluate((t) => { t.hidden = true; });
+  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await failed(page);
+  expect(await page.evaluate(() => window.__mock.docs.has("products/NEW1"))).toBe(false);
 });
 
 test("a failed item delete keeps the item", async ({ page }) => {

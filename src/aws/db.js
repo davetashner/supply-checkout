@@ -27,7 +27,7 @@ function querySnap(docs, order) {
   return { docs: out, size: out.length, empty: !out.length, docChanges: () => [], metadata: META };
 }
 
-export function createDb({ api, config, teamId, token, onRemoved }) {
+export function createDb({ api, config, teamId, userId, token, onRemoved }) {
   const base = `/teams/${encodeURIComponent(teamId)}`;
   const colls = {};
   const inflight = new Map();
@@ -126,18 +126,21 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
   }
 
   function onEvent(ev) {
+    // The user's channel carries every team they're in; this page shows one
+    if (ev.teamId !== teamId) return;
     // Only the collections this page reads (not "__proto__", "constructor" and the like)
     if (!Object.hasOwn(colls, ev.collection)) return;
     const c = colls[ev.collection];
     if (ev.op === "delete") { put(ev.collection, ev.id, null); return; }
     const held = c.docs.get(ev.id);
     // Skip what's already here: an older version, or (for sheets) the same one, such as
-    // the echo of this user's own write. A product's stock changes without a new version.
+    // the echo of this user's own write. A product's is fetched again on the same version,
+    // for data stored before every stock change gave the product a new version.
     if (held && (ev.version < held.version || (ev.version === held.version && ev.collection === "sheets"))) return;
     fetchDoc(ev.collection, ev.id);
   }
 
-  const live = createLive({ url: config.realtimeUrl, host: config.realtimeHost, channel: `/teams/${teamId}`, token, onEvent, onResync: resync });
+  const live = createLive({ url: config.realtimeUrl, host: config.realtimeHost, channel: `/users/${userId}`, token, onEvent, onResync: resync });
   live.start();
 
   // Calls render with the collection whenever it changes, once it has loaded
@@ -179,6 +182,73 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
     };
   }
 
+  // Checkout and return (docs/api/commands.md): one POST that changes the sheet line and the
+  // stock together. The answer has the sheet and the product as they are now (null if gone),
+  // so the screen updates before the live events arrive. Resolves to how many the command
+  // moved and the line as it is now. A 409 fetches both, as a document write's does, and
+  // passes the error on. So does a 400 or 404, which the command refuses for what the sheet
+  // holds now; it rejects as `refused` (a code only this adapter uses) with the server's message, for the app to show.
+  //
+  // `action` stands for one action the person confirmed. It keeps one operation ID for as long
+  // as the request stays the same, so every attempt at it (a retry, or a second tap while the
+  // first is still on its way) is applied once, and a changed request is a new operation.
+  const operations = new WeakMap();
+  function operationId(action, request) {
+    const key = JSON.stringify(request), held = operations.get(action);
+    if (held && held.key === key) return held.id;
+    const id = crypto.randomUUID();
+    operations.set(action, { key, id });
+    return id;
+  }
+  async function command(name, sheetId, body, action) {
+    const operation = operationId(action, [name, sheetId, body]);
+    try {
+      const res = await api("POST", `${docPath("sheets", sheetId)}/${name}`, { operationId: operation, ...body });
+      put("sheets", sheetId, res.sheet);
+      put("products", body.productKey, res.product);
+      // The line as the sheet has it now; {} if the sheet or the line is gone (or has no items)
+      const items = res.sheet?.data.items;
+      return { quantity: res.result.quantity, line: (items && Object.hasOwn(items, body.productKey) && items[body.productKey]) || {} };
+    } catch (e) {
+      const refused = e.code === "bad_request" || e.code === "not_found";
+      if (refused || e.code === "aborted") await Promise.all([fetchDoc("sheets", sheetId), fetchDoc("products", body.productKey)]);
+      // Refused for what the sheet holds now (only so many left to return, the line or the
+      // sheet gone): the server's message says why, with the latest now showing
+      if (refused) throw { code: "refused", message: `${String(e.message).replace(/\.$/, "")}. The latest is showing.`, status: e.status };
+      throw e;
+    }
+  }
+
+  // Stock outside a sheet (docs/api/commands.md): POST products/<key>/stock, one transaction
+  // that changes the stock and records a movement saying why. A 409 fetches the item, as a
+  // document write's does, and passes the error on.
+  async function adjustStock(key, body, action) {
+    const operation = operationId(action, ["stock", key, body]);
+    try {
+      put("products", key, (await api("POST", `${docPath("products", key)}/stock`, { operationId: operation, ...body })).product);
+    } catch (e) {
+      if (e.code === "aborted") await fetchDoc("products", key);
+      throw e;
+    }
+  }
+
+  // An item saved from the inventory form or a receipt (src/moves.js saveItem). A PUT replaces
+  // the whole item, so it carries the stock of the copy it's made against, unchanged (the
+  // version check refuses it if stock changed since); the new stock goes through the stock
+  // command, after the item exists. A count that matches what's stored changes nothing. The
+  // web build doesn't stop counting an item: a blank count leaves its stock as it is.
+  async function saveItem(key, body, change, action) {
+    const data = { ...body }, held = coll("products").docs.get(key);
+    delete data.stock;
+    if (held && typeof held.data.stock === "number") data.stock = held.data.stock;
+    await docRef("products/" + key).set(data);
+    const stored = coll("products").docs.get(key).data.stock;
+    const changes = change.reason === "receipt"
+      ? change.lines.map((l) => [l.action, { reason: "receipt", quantity: l.quantity, unitCost: l.unitCost }])
+      : change.count === undefined || change.count === stored ? [] : [[action, { reason: "count", count: change.count }]];
+    for (const [a, b] of changes) await adjustStock(key, b, a);
+  }
+
   function query(name, order) {
     return {
       orderBy: (field, dir = "asc") => query(name, { field, dir }),
@@ -199,6 +269,8 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
       return ref;
     },
     doc: docRef,
+    command,
+    saveItem,
     // A new access token: reconnect live updates with it
     reconnect: () => live.reconnect(),
   };
