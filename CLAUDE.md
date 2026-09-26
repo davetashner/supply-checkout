@@ -33,7 +33,8 @@ Beads are labeled `mvp` or `phase-2` (native mobile apps, full active-active fai
 - `main` is protected by a ruleset: PR required, **squash merge only**, `CI passed` must be green, and the branch must be up to date. No bypass.
 - Work in a worktree: `git worktree add .claude/worktrees/<type>/<name> -b <type>/<name> origin/main`.
 - PR titles are Conventional Commits; release-please turns `fix:` / `feat:` into releases. Keep app fixes in their own `fix:` PR, separate from `test:` or `docs:` work.
-- Sign off commits (`git commit -s`). Put a `Closes <bead-id>` line in the PR body for each finished bead, and `bd close <id> --reason "Completed in PR #N"` after merge.
+- Sign off commits (`git commit -s`). Put a `Closes <bead-id>` line in the PR body for each finished bead.
+- Land a PR with `npm run land -- <pr>` from the main checkout. It updates a branch that's behind, waits for CI (printing the failing log if it fails), squash-merges, removes the worktree and branch, pulls main, closes the `Closes` beads, and says whether the beads export is stale.
 
 ## Tests
 
@@ -50,6 +51,7 @@ npm run test:coverage    # desktop Chrome with the 98% coverage gate
 - Before interacting, wait until the page has connected: the "Connecting…" notice clears once both collections have loaded, and the page redraws. See `openEcho` in `tests/sheets.spec.js`.
 - Load the page once per test. Coverage from before a navigation or reload is lost.
 - Every test fails on an uncaught page error or console error.
+- To see the app, run `npm run dev` (http://localhost:5173, demo data, mock runtime). Query options are listed at the top of `scripts/dev-server.mjs`. `tests/dev-server.spec.js` keeps it working.
 
 ## AWS
 
