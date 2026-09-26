@@ -40,7 +40,7 @@ export default defineConfig({
     // Phones and tablets, against the web build only. Android Chrome also covers
     // Samsung Internet (the same Blink engine); Firefox for Android can't be
     // automated, so it's covered by desktop-firefox (Gecko) and the real-device
-    // release check in README.md.
+    // release check in docs/releases.md.
     { name: "android-chrome", use: { ...devices["Pixel 7"] } },
     { name: "android-chrome-landscape", use: { ...devices["Pixel 7 landscape"] } },
     // 360px wide, the most common Android width

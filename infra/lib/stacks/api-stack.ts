@@ -97,7 +97,7 @@ export const bundling: BundlingOptions = {
  * - Functions are NodejsFunction (Node.js 24, arm64) behind a `live` alias,
  *   ready for CodeDeploy canaries (ADR 0012). The data function has 1 GB of
  *   memory for CPU: its work is JSON and TLS, and more memory means less
- *   latency (the README's "Data API" says how to measure p95).
+ *   latency ("Data API" in docs/infrastructure.md says how to measure p95).
  * - Access logs as JSON, and stage throttling as a ceiling against abuse
  *   (per-user limits are supply-checkout-wxx).
  * - The execute-api endpoint is off: the only way in is the custom domain.
@@ -270,7 +270,7 @@ export class ApiStack extends SupplyCheckoutStack {
       accessLogSettings: {
         destination: new LogGroupLogDestination(accessLogs),
         // One JSON object per request. Status and latency are bare numbers, so
-        // Logs Insights can take percentiles of them (see the README's "Data API")
+        // Logs Insights can take percentiles of them (see "Data API" in docs/infrastructure.md)
         format: AccessLogFormat.custom(
           [
             '{"requestId":"$context.requestId"',

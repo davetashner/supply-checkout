@@ -96,4 +96,4 @@ answer a viewer's write with `403 invalid_argument`). Use `status` and
   `email_verified`.
 - Every DynamoDB call runs on a role session scoped by IAM to the caller's own
   `USER#` partition, plus at most the one team and the one invitee partition
-  the request is entitled to (see the README's "Data API").
+  the request is entitled to (see "Data API" in docs/infrastructure.md).

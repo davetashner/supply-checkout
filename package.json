@@ -18,7 +18,7 @@
     "build:artifact": "vite build --mode artifact",
     "build:web": "vite build --mode web",
     "build:demo": "vite build --mode demo",
-    "lint": "eslint . && npm run build && node scripts/validate-html.mjs",
+    "lint": "eslint . && node scripts/check-links.mjs && npm run build && node scripts/validate-html.mjs",
     "test": "npm run test:artifact && npm run test:web",
     "test:artifact": "BUILD=artifact playwright test --project=desktop-chrome --project=iphone-safari",
     "test:web": "BUILD=web playwright test",

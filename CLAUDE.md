@@ -3,7 +3,12 @@
 A supply checkout tracker (sheets per client job, inventory, barcode and receipt scanning). Today it's published as a claude.ai artifact: `npm run build:artifact` builds the Vite project in `src/` into one self-contained `dist/artifact/index.html`, and `npm run build:web` builds the static bundle for AWS. We're turning it into a paid, multi-tenant product on AWS at $3/user/month.
 
 Read these before planning work:
-- `README.md`: repo layout, development, tests, CI, releases
+- `README.md`: overview, repo layout, development, CI, releases, and links to the pages below
+- `docs/infrastructure.md`: the CDK stacks, deploying, domain and email, sign-in, the data API, live updates, template snapshots
+- `docs/backend.md`: the Lambda code and the data-access module
+- `docs/web-app.md`: web hosting and publishing, and the web build's runtime on AWS
+- `docs/observability.md`: alarms, the dashboard and alarm recipients
+- `docs/testing.md` and `docs/releases.md`: supported browsers, test suites, coverage, the real-device check, publishing to claude.ai
 - `docs/adr/`: architecture decisions (0010 is Accepted; the rest of 0002–0013 are still **Proposed** until bead `supply-checkout-y94` is done)
 - `docs/architecture/README.md`: the AWS design and diagrams
 - `docs/journeys.md`: customer journeys that must never break, their tests, and production alarms

@@ -1,0 +1,705 @@
+{
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Supply Checkout web stack (stateless)",
+        "Name": "/supply-checkout/prod/web/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "web",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": "{\"stackName\":\"supply-checkout-prod-us-east-1-web\",\"layer\":\"stateless\"}"
+      }
+    },
+    "LiveVersionsFE59744A": {
+      "Type": "AWS::CloudFront::KeyValueStore",
+      "Properties": {
+        "Comment": "Live release per channel (scripts/publish-web.mjs)",
+        "ImportSource": {
+          "SourceArn": {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition"
+                },
+                ":s3:::",
+                {
+                  "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
+                },
+                "/4be496da25ce450f9ea2d67a6a0fab23e0dd0a0403055fba67e625a86e1bd548.json"
+              ]
+            ]
+          },
+          "SourceType": "S3"
+        },
+        "Name": "supplycheckoutproduseast1webLiveVersionsDD9D8C1B",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "web"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "Router16807C72": {
+      "Type": "AWS::CloudFront::Function",
+      "Properties": {
+        "AutoPublish": true,
+        "FunctionCode": {
+          "Fn::Join": [
+            "",
+            [
+              "import cf from \"cloudfront\";\n\nconst kvs = cf.kvs(\"",
+              {
+                "Fn::GetAtt": [
+                  "LiveVersionsFE59744A",
+                  "Id"
+                ]
+              },
+              "\");\nconst VERSION = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;\n\nasync function handler(event) {\n  const request = event.request;\n  const host = ((request.headers.host && request.headers.host.value) || \"\").toLowerCase();\n\n  if (host.startsWith(\"www.\")) {\n    return {\n      statusCode: 301,\n      statusDescription: \"Moved Permanently\",\n      headers: { location: { value: \"https://\" + host.slice(4) + request.uri } },\n    };\n  }\n\n  const channel = host.startsWith(\"app.\") ? \"app\" : \"demo\";\n  const version = await kvs.get(channel).catch(() => null);\n  if (!version || version === \"none\" || !VERSION.test(version)) {\n    return {\n      statusCode: 503,\n      statusDescription: \"Service Unavailable\",\n      headers: { \"cache-control\": { value: \"no-store\" }, \"retry-after\": { value: \"60\" } },\n    };\n  }\n\n  const uri = request.uri.endsWith(\"/\") ? request.uri + \"index.html\" : request.uri;\n  request.uri = \"/releases/\" + version + uri;\n  return request;\n}\n"
+            ]
+          ]
+        },
+        "FunctionConfig": {
+          "Comment": "Serves the live release for the host's channel",
+          "KeyValueStoreAssociations": [
+            {
+              "KeyValueStoreARN": {
+                "Fn::GetAtt": [
+                  "LiveVersionsFE59744A",
+                  "Arn"
+                ]
+              }
+            }
+          ],
+          "Runtime": "cloudfront-js-2.0"
+        },
+        "Name": "us-east-1supply-checkout-east-1-webRouter4298395D",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "web"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "SecurityHeadersE66B69D3": {
+      "Type": "AWS::CloudFront::ResponseHeadersPolicy",
+      "Properties": {
+        "ResponseHeadersPolicyConfig": {
+          "Comment": "CSP, HSTS and the other security headers for the web app",
+          "CustomHeadersConfig": {
+            "Items": [
+              {
+                "Header": "Permissions-Policy",
+                "Override": true,
+                "Value": "camera=(self), microphone=(), geolocation=(), usb=()"
+              },
+              {
+                "Header": "Cross-Origin-Opener-Policy",
+                "Override": true,
+                "Value": "same-origin"
+              }
+            ]
+          },
+          "Name": "supplycheckoutproduseast1webSecurityHeadersE7D0AE58",
+          "SecurityHeadersConfig": {
+            "ContentSecurityPolicy": {
+              "ContentSecurityPolicy": "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.supplycheckout.com https://realtime.supplycheckout.com wss://realtime.supplycheckout.com https://auth.supplycheckout.com; manifest-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests",
+              "Override": true
+            },
+            "ContentTypeOptions": {
+              "Override": true
+            },
+            "FrameOptions": {
+              "FrameOption": "DENY",
+              "Override": true
+            },
+            "ReferrerPolicy": {
+              "Override": true,
+              "ReferrerPolicy": "strict-origin-when-cross-origin"
+            },
+            "StrictTransportSecurity": {
+              "AccessControlMaxAgeSec": 63072000,
+              "IncludeSubdomains": true,
+              "Override": true
+            }
+          }
+        }
+      }
+    },
+    "WebAcl": {
+      "Type": "AWS::WAFv2::WebACL",
+      "Properties": {
+        "DefaultAction": {
+          "Allow": {}
+        },
+        "Name": "supply-checkout-prod-web",
+        "Rules": [
+          {
+            "Action": {
+              "Block": {}
+            },
+            "Name": "RateLimitPerIp",
+            "Priority": 0,
+            "Statement": {
+              "RateBasedStatement": {
+                "AggregateKeyType": "IP",
+                "Limit": 2000
+              }
+            },
+            "VisibilityConfig": {
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": "RateLimitPerIp",
+              "SampledRequestsEnabled": true
+            }
+          },
+          {
+            "Name": "AWSManagedRulesAmazonIpReputationList",
+            "OverrideAction": {
+              "None": {}
+            },
+            "Priority": 1,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "Name": "AWSManagedRulesAmazonIpReputationList",
+                "VendorName": "AWS"
+              }
+            },
+            "VisibilityConfig": {
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": "AWSManagedRulesAmazonIpReputationList",
+              "SampledRequestsEnabled": true
+            }
+          },
+          {
+            "Name": "AWSManagedRulesCommonRuleSet",
+            "OverrideAction": {
+              "None": {}
+            },
+            "Priority": 2,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "Name": "AWSManagedRulesCommonRuleSet",
+                "VendorName": "AWS"
+              }
+            },
+            "VisibilityConfig": {
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": "AWSManagedRulesCommonRuleSet",
+              "SampledRequestsEnabled": true
+            }
+          },
+          {
+            "Name": "AWSManagedRulesKnownBadInputsRuleSet",
+            "OverrideAction": {
+              "None": {}
+            },
+            "Priority": 3,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "Name": "AWSManagedRulesKnownBadInputsRuleSet",
+                "VendorName": "AWS"
+              }
+            },
+            "VisibilityConfig": {
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": "AWSManagedRulesKnownBadInputsRuleSet",
+              "SampledRequestsEnabled": true
+            }
+          }
+        ],
+        "Scope": "CLOUDFRONT",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "web"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "VisibilityConfig": {
+          "CloudWatchMetricsEnabled": true,
+          "MetricName": "supply-checkout-prod-web",
+          "SampledRequestsEnabled": true
+        }
+      }
+    },
+    "DistributionOrigin1S3OriginAccessControlEB606076": {
+      "Type": "AWS::CloudFront::OriginAccessControl",
+      "Properties": {
+        "OriginAccessControlConfig": {
+          "Name": "supplycheckoutproduseast1webOrigin1S3OriginAccessControl75A47E74",
+          "OriginAccessControlOriginType": "s3",
+          "SigningBehavior": "always",
+          "SigningProtocol": "sigv4"
+        }
+      }
+    },
+    "Distribution830FAC52": {
+      "Type": "AWS::CloudFront::Distribution",
+      "Properties": {
+        "DistributionConfig": {
+          "Aliases": [
+            "supplycheckout.com",
+            "www.supplycheckout.com",
+            "app.supplycheckout.com"
+          ],
+          "Comment": "Supply Checkout prod: app, demo",
+          "DefaultCacheBehavior": {
+            "AllowedMethods": [
+              "GET",
+              "HEAD"
+            ],
+            "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6",
+            "Compress": true,
+            "FunctionAssociations": [
+              {
+                "EventType": "viewer-request",
+                "FunctionARN": {
+                  "Fn::GetAtt": [
+                    "Router16807C72",
+                    "FunctionARN"
+                  ]
+                }
+              }
+            ],
+            "ResponseHeadersPolicyId": {
+              "Ref": "SecurityHeadersE66B69D3"
+            },
+            "TargetOriginId": "supplycheckoutproduseast1webDistributionOrigin1A8E8A77E",
+            "ViewerProtocolPolicy": "redirect-to-https"
+          },
+          "Enabled": true,
+          "HttpVersion": "http2and3",
+          "IPV6Enabled": true,
+          "Logging": {
+            "Bucket": {
+              "Fn::Join": [
+                "",
+                [
+                  "supply-checkout-prod-logs-us-east-1-",
+                  {
+                    "Ref": "AWS::AccountId"
+                  },
+                  ".s3.us-east-1.amazonaws.com"
+                ]
+              ]
+            },
+            "Prefix": "cloudfront/web/"
+          },
+          "Origins": [
+            {
+              "DomainName": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "supply-checkout-prod-web-us-east-1-",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ".s3.us-east-1.amazonaws.com"
+                  ]
+                ]
+              },
+              "Id": "supplycheckoutproduseast1webDistributionOrigin1A8E8A77E",
+              "OriginAccessControlId": {
+                "Fn::GetAtt": [
+                  "DistributionOrigin1S3OriginAccessControlEB606076",
+                  "Id"
+                ]
+              },
+              "S3OriginConfig": {
+                "OriginAccessIdentity": ""
+              }
+            }
+          ],
+          "PriceClass": "PriceClass_100",
+          "ViewerCertificate": {
+            "AcmCertificateArn": {
+              "Ref": "SsmParameterValuesupplycheckoutproddomainwebcertificatearnC96584B6F00A464EAD1953AFF4B05118Parameter"
+            },
+            "MinimumProtocolVersion": "TLSv1.2_2021",
+            "SslSupportMethod": "sni-only"
+          },
+          "WebACLId": {
+            "Fn::GetAtt": [
+              "WebAcl",
+              "Arn"
+            ]
+          }
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "web"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "ApexACFD474A9": {
+      "Type": "AWS::Route53::RecordSet",
+      "Properties": {
+        "AliasTarget": {
+          "DNSName": {
+            "Fn::GetAtt": [
+              "Distribution830FAC52",
+              "DomainName"
+            ]
+          },
+          "HostedZoneId": {
+            "Fn::FindInMap": [
+              "AWSCloudFrontPartitionHostedZoneIdMap",
+              {
+                "Ref": "AWS::Partition"
+              },
+              "zoneId"
+            ]
+          }
+        },
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "Name": "supplycheckout.com.",
+        "Type": "A"
+      }
+    },
+    "ApexAaaaB007CDD0": {
+      "Type": "AWS::Route53::RecordSet",
+      "Properties": {
+        "AliasTarget": {
+          "DNSName": {
+            "Fn::GetAtt": [
+              "Distribution830FAC52",
+              "DomainName"
+            ]
+          },
+          "HostedZoneId": {
+            "Fn::FindInMap": [
+              "AWSCloudFrontPartitionHostedZoneIdMap",
+              {
+                "Ref": "AWS::Partition"
+              },
+              "zoneId"
+            ]
+          }
+        },
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "Name": "supplycheckout.com.",
+        "Type": "AAAA"
+      }
+    },
+    "WwwA1EFC0D36": {
+      "Type": "AWS::Route53::RecordSet",
+      "Properties": {
+        "AliasTarget": {
+          "DNSName": {
+            "Fn::GetAtt": [
+              "Distribution830FAC52",
+              "DomainName"
+            ]
+          },
+          "HostedZoneId": {
+            "Fn::FindInMap": [
+              "AWSCloudFrontPartitionHostedZoneIdMap",
+              {
+                "Ref": "AWS::Partition"
+              },
+              "zoneId"
+            ]
+          }
+        },
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "Name": "www.supplycheckout.com.",
+        "Type": "A"
+      }
+    },
+    "WwwAaaaDBE5206D": {
+      "Type": "AWS::Route53::RecordSet",
+      "Properties": {
+        "AliasTarget": {
+          "DNSName": {
+            "Fn::GetAtt": [
+              "Distribution830FAC52",
+              "DomainName"
+            ]
+          },
+          "HostedZoneId": {
+            "Fn::FindInMap": [
+              "AWSCloudFrontPartitionHostedZoneIdMap",
+              {
+                "Ref": "AWS::Partition"
+              },
+              "zoneId"
+            ]
+          }
+        },
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "Name": "www.supplycheckout.com.",
+        "Type": "AAAA"
+      }
+    },
+    "AppAC703F718": {
+      "Type": "AWS::Route53::RecordSet",
+      "Properties": {
+        "AliasTarget": {
+          "DNSName": {
+            "Fn::GetAtt": [
+              "Distribution830FAC52",
+              "DomainName"
+            ]
+          },
+          "HostedZoneId": {
+            "Fn::FindInMap": [
+              "AWSCloudFrontPartitionHostedZoneIdMap",
+              {
+                "Ref": "AWS::Partition"
+              },
+              "zoneId"
+            ]
+          }
+        },
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "Name": "app.supplycheckout.com.",
+        "Type": "A"
+      }
+    },
+    "AppAaaa656A187D": {
+      "Type": "AWS::Route53::RecordSet",
+      "Properties": {
+        "AliasTarget": {
+          "DNSName": {
+            "Fn::GetAtt": [
+              "Distribution830FAC52",
+              "DomainName"
+            ]
+          },
+          "HostedZoneId": {
+            "Fn::FindInMap": [
+              "AWSCloudFrontPartitionHostedZoneIdMap",
+              {
+                "Ref": "AWS::Partition"
+              },
+              "zoneId"
+            ]
+          }
+        },
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "Name": "app.supplycheckout.com.",
+        "Type": "AAAA"
+      }
+    },
+    "DistributionIdParam86E45413": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Web distribution ID",
+        "Name": "/supply-checkout/prod/web/distribution-id",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "web",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "Distribution830FAC52"
+        }
+      }
+    },
+    "LiveVersionStoreParam7C9D5B16": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "KeyValueStore holding the live release per channel",
+        "Name": "/supply-checkout/prod/web/live-version-store-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "web",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "LiveVersionsFE59744A",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "BucketNameParam6E67D012": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Bucket holding web releases",
+        "Name": "/supply-checkout/prod/web/bucket-name",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "web",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::Join": [
+            "",
+            [
+              "supply-checkout-prod-web-us-east-1-",
+              {
+                "Ref": "AWS::AccountId"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "BucketRegionParamF05AAC37": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Region of the web releases bucket",
+        "Name": "/supply-checkout/prod/web/bucket-region",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "web",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": "us-east-1"
+      }
+    }
+  },
+  "Parameters": {
+    "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/dns/hosted-zone-id"
+    },
+    "SsmParameterValuesupplycheckoutproddomainwebcertificatearnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/domain/web-certificate-arn"
+    },
+    "BootstrapVersion": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+    }
+  },
+  "Mappings": {
+    "AWSCloudFrontPartitionHostedZoneIdMap": {
+      "aws": {
+        "zoneId": "Z2FDTNDATAQYW2"
+      },
+      "aws-cn": {
+        "zoneId": "Z3RFFRIM2A3IF5"
+      }
+    }
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5"
+                  ],
+                  {
+                    "Ref": "BootstrapVersion"
+                  }
+                ]
+              }
+            ]
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+        }
+      ]
+    }
+  }
+}

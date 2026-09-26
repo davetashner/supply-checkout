@@ -1,3 +1,6 @@
+import { readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { App, type Stack, Token, Validations } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { Bucket } from "aws-cdk-lib/aws-s3";
@@ -118,18 +121,28 @@ describe("stack layout", () => {
       });
     }
   });
+});
 
-  it("matches the template snapshots", () => {
-    const { stacks } = build();
-    for (const stack of stacks.all) {
-      // Lambda asset hashes, and the function version IDs made from them,
-      // depend on the checkout's path (bundling is skipped in tests, and CDK
-      // hashes the bundling command instead), so mask them
-      const json = JSON.stringify(Template.fromStack(stack).toJSON())
-        .replace(/"[0-9a-f]{64}\.zip"/g, '"<asset hash>.zip"')
-        .replace(/(CurrentVersion[0-9A-F]{8})[0-9a-f]{32}/g, "$1<code hash>");
-      expect(JSON.parse(json)).toMatchSnapshot(stack.stackName);
-    }
+// One snapshot file per stack (test/__snapshots__/<stack name>.json), so a
+// change to one stack doesn't touch the others'. `npm run test:update` rewrites them.
+describe("template snapshots", () => {
+  const { stacks } = build();
+  const snapshots = join(dirname(fileURLToPath(import.meta.url)), "__snapshots__");
+
+  it.each(stacks.all.map((stack) => [stack.stackName, stack] as const))("%s matches its snapshot", async (name, stack) => {
+    // Lambda asset hashes, and the function version IDs made from them,
+    // depend on the checkout's path (bundling is skipped in tests, and CDK
+    // hashes the bundling command instead), so mask them
+    const json = JSON.stringify(Template.fromStack(stack).toJSON(), null, 2)
+      .replace(/"[0-9a-f]{64}\.zip"/g, '"<asset hash>.zip"')
+      .replace(/(CurrentVersion[0-9A-F]{8})[0-9a-f]{32}/g, "$1<code hash>");
+    await expect(`${json}\n`).toMatchFileSnapshot(join(snapshots, `${name}.json`));
+  });
+
+  it("has no snapshot for a stack that no longer exists", () => {
+    // (A missing snapshot fails its own test in CI, which never writes one.)
+    const current = new Set(names(stacks.all).map((n) => `${n}.json`));
+    expect(readdirSync(snapshots).filter((f) => !current.has(f))).toEqual([]);
   });
 });
 
