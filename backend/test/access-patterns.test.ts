@@ -408,8 +408,9 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await Promise.all(Array.from({ length: 10 }, () => adjustStock(db, contributor, "towels", -1)));
       expect((await getProduct(db, contributor, "towels"))?.stock).toBe(0);
       expect(await adjustStock(db, contributor, "towels", 4)).toBe(4);
-      // The version didn't move, so an edit opened before the count changes still saves
-      expect(await updateProduct(db, contributor, "towels", { code: "", name: "Bath towels", price: 2 }, 1)).toMatchObject({ stock: 4, version: 2 });
+      // Every stock change is a new version, so an edit opened before the count changes conflicts
+      await expect(updateProduct(db, contributor, "towels", { code: "", name: "Bath towels", price: 2 }, 1)).rejects.toThrow(ConflictError);
+      expect(await updateProduct(db, contributor, "towels", { code: "", name: "Bath towels", price: 2 }, 12)).toMatchObject({ stock: 4, version: 13 });
       await expect(adjustStock(db, contributor, "missing", 1)).rejects.toThrow(ConflictError);
       await expect(adjustStock(db, contributor, "towels", 0.5)).rejects.toThrow(InvalidInputError);
     });

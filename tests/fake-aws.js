@@ -36,6 +36,11 @@ export class FakeBackend {
     Object.assign(this, { teams: clone(teams), invites: clone(invites), user, signedIn, claims, config, expiresIn });
     this.docs = new Map(Object.entries(docs).map(([k, data]) => [k, { version: 1, data: clone(data) }]));
     this.calls = [];
+    // Checkout and return operations: "<teamId>/<operationId>" -> { request, result }
+    this.operations = new Map();
+    // Accept every access token issued, not only the latest, for tests with two pages signed in
+    this.shareTokens = false;
+    this.issued = new Set();
     this.authRequests = [];
     this.rules = [];
     this.token = null;
@@ -47,7 +52,8 @@ export class FakeBackend {
 
   // The next `times` requests matching method and path get this answer instead. path is a
   // string, a RegExp, or a function of (path, call), where call is as in requests().
-  // { status, body } or { abort: true }, and optionally { wait: promise } first.
+  // { status, body }, { abort: true }, or { lost: true } (the API handles the request, but
+  // the answer never arrives), and optionally { wait: promise } first.
   on(method, path, answer, times = 1) {
     this.rules.push({ method, path, answer, times });
   }
@@ -81,6 +87,7 @@ export class FakeBackend {
 
   issue() {
     this.token = `at-${++this.tokens}`;
+    this.issued.add(this.token);
     return { accessToken: this.token, idToken: jwt({ sub: this.user.id, ...this.claims }), expiresIn: this.expiresIn };
   }
 
@@ -102,6 +109,7 @@ export class FakeBackend {
       }
       if (rule.answer.wait) await rule.answer.wait;
       if (rule.answer.abort) return route.abort();
+      if (rule.answer.lost) { this.answer(method, path, call); return route.abort(); }
       if (rule.answer.status) return this.reply(route, rule.answer.status, rule.answer.body);
     }
     const [status, body] = this.answer(method, path, call);
@@ -143,7 +151,8 @@ export class FakeBackend {
     }
     if (path === "/auth/refresh") return this.signedIn ? [200, this.issue()] : err(401, "unauthenticated");
     if (path === "/auth/sign-out") { this.signedIn = false; return [204]; }
-    if (!this.token || call.headers.authorization !== "Bearer " + this.token) return [401, { message: "Unauthorized" }];
+    const bearer = call.headers.authorization || "";
+    if (!this.token || (bearer !== "Bearer " + this.token && !(this.shareTokens && this.issued.has(bearer.slice(7))))) return [401, { message: "Unauthorized" }];
 
     if (path === "/me") return [200, { user: this.user, teams: this.teams, invites: this.invites }];
     if (path === "/teams" && method === "POST") {
@@ -162,6 +171,9 @@ export class FakeBackend {
       this.invites = this.invites.filter((i) => i !== invite);
       return [200, { team }];
     }
+
+    m = path.match(/^\/teams\/([^/]+)\/sheets\/([^/]+)\/(checkout|return)$/);
+    if (m && method === "POST") return this.command(decodeURIComponent(m[1]), decodeURIComponent(m[2]), m[3], call.body);
 
     m = path.match(/^\/teams\/([^/]+)\/([^/]+)(?:\/([^/]+))?$/);
     if (!m) return err(404, "not_found");
@@ -189,6 +201,51 @@ export class FakeBackend {
     merge(data, call.body.data);
     this.write(team, coll, id, data);
     return [200, out()];
+  }
+
+  // Checkout and return as the API runs them (docs/api/commands.md, backend/src/data/commands.ts):
+  // the line and the stock change together, by adding to what's stored, and each gives the
+  // sheet (and a product that tracks stock) a new version. An operation ID that's been used
+  // returns its first result and changes nothing; used for another request, it's refused.
+  command(team, sheetId, name, body) {
+    const err = (status, code) => [status, { error: { code, message: code } }];
+    const member = this.teams.find((t) => t.id === team);
+    if (!member) return err(403, "permission_denied");
+    if (member.role === "viewer") return err(403, "invalid_argument");
+    const { operationId, productKey: key, quantity: qty, ...oneOff } = body;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId) || typeof key !== "string" || !Number.isInteger(qty) || qty < 1) return err(400, "bad_request");
+    const sheetKey = `${team}/sheets/${sheetId}`, productKey = `${team}/products/${key}`;
+    const out = (k) => { const d = this.docs.get(k); return d ? { id: k.slice(k.lastIndexOf("/") + 1), version: d.version, data: d.data } : null; };
+    const answer = (result, replayed) => [200, { operationId, replayed, result, sheet: out(sheetKey), product: out(productKey) }];
+    const request = JSON.stringify([name, sheetId, key, qty, oneOff]);
+    const prior = this.operations.get(`${team}/${operationId}`);
+    if (prior) return prior.request === request ? answer(prior.result, true) : err(400, "bad_request");
+
+    const sheet = this.docs.get(sheetKey), product = this.docs.get(productKey);
+    if (!sheet) return err(404, "not_found");
+    if (sheet.data.status === "closed") return err(409, "aborted");
+    const items = (sheet.data.items ||= {});
+    const line = Object.hasOwn(items, key) ? items[key] : undefined;
+    let delta;
+    if (name === "checkout") {
+      if (line) line.out += qty;
+      else {
+        const from = product ? product.data : oneOff;
+        if (!product && (oneOff.name === undefined || oneOff.price === undefined)) return err(400, "bad_request");
+        items[key] = { code: from.code ?? "", name: from.name ?? "", price: from.price ?? 0, ...(from.cost === undefined ? {} : { cost: from.cost }), out: qty, returned: 0 };
+      }
+      delta = -qty;
+    } else {
+      if (!line || (line.returned || 0) + qty > line.out) return err(400, "bad_request");
+      line.returned = (line.returned || 0) + qty;
+      delta = qty;
+    }
+    sheet.version++;
+    const tracked = !!product && typeof product.data.stock === "number";
+    if (tracked) { product.data.stock += delta; product.version++; }
+    const result = { operationId, command: name, reason: name, productKey: key, sheetId, quantity: qty, stockDelta: tracked ? delta : 0, userId: this.user.id, at: new Date().toISOString() };
+    this.operations.set(`${team}/${operationId}`, { request, result });
+    return answer(result, false);
   }
 }
 

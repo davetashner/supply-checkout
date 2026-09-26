@@ -10,8 +10,9 @@
 //
 // Every document write is one PutItem or DeleteItem on the document's item
 // (documents.ts), so each write is exactly one stream record. A product's
-// `stock` can also change through adjustStock's atomic ADD, which doesn't bump
-// `version`; that is an ordinary MODIFY record here, with the same version.
+// `stock` can also change through a command (commands.ts) or products.ts's
+// adjustStock, which give it a new `version`; either is an ordinary MODIFY
+// record here.
 
 import type { DynamoDBRecord } from "aws-lambda";
 import type { Collection } from "./documents.js";
