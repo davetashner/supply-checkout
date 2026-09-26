@@ -74,9 +74,10 @@ export const bundling: BundlingOptions = {
  *   products and sheets documents, and the checkout, return and stock
  *   commands next to them, behind the Cognito JWT authorizer, served by the
  *   `data` function.
- * - Account routes (/me, POST /teams, POST /invites/{inviteId}/accept): the
- *   signed-in user's teams and invites, creating a team and accepting an
- *   invite, behind the same authorizer, served by the `account` function.
+ * - Account routes (/me, POST /teams, POST /invites/{inviteId}/accept, and a
+ *   team's members): the signed-in user's teams and invites, creating a team
+ *   and accepting an invite, and owners managing members and roles, behind
+ *   the same authorizer, served by the `account` function.
  * - Auth routes: the sign-in session endpoints, which keep the refresh token
  *   in an HttpOnly cookie, served by the `auth` function. No authorizer: they
  *   run on the cookie, with SameSite=Strict and an Origin check.
@@ -89,10 +90,13 @@ export const bundling: BundlingOptions = {
  * - The account function can't use the data-access role: creating a team or
  *   accepting an invite writes items outside any team the caller is in. It
  *   assumes the account-access role instead, with session tags `userId`
- *   (always the token's `sub`), `teamId` and `invitee`, and that role may only
- *   touch items whose partition key is `USER#<userId>` or `TEAM#<teamId>`, or
- *   GSI2's `INVITEE#<invitee>` (the hashed verified email). The handler tags a
- *   team only when the request is entitled to it (backend/src/api/account-db.ts).
+ *   (always the token's `sub`), `teamId`, `invitee` and `member`, and that
+ *   role may only touch items whose partition key is `USER#<userId>` or
+ *   `TEAM#<teamId>`, or GSI2's `INVITEE#<invitee>` (the hashed verified
+ *   email), and only update or delete items in `USER#<member>` (another
+ *   member's team-switcher row). The handler tags a team only when the
+ *   request is entitled to it, and a member only after an owner's checks
+ *   (backend/src/api/account-db.ts).
  *   No Scan, no BatchWriteItem, and never another user's partition.
  * - Functions are NodejsFunction (Node.js 24, arm64) behind a `live` alias,
  *   ready for CodeDeploy canaries (ADR 0012). The data function has 1 GB of
@@ -234,6 +238,18 @@ export class ApiStack extends SupplyCheckoutStack {
                     `INVITEE#${tag(ACCOUNT_SESSION_TAGS.invitee)}`,
                   ],
                 },
+              },
+            }),
+            // Another member's team-switcher row, which an owner's role change
+            // or removal updates or deletes in the same transaction as the
+            // membership. Nothing else in that partition: no reads, no puts
+            new PolicyStatement({
+              sid: "MemberSwitcherRowOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:UpdateItem", "dynamodb:DeleteItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`USER#${tag(ACCOUNT_SESSION_TAGS.member)}`] },
               },
             }),
             tableKeyStatement(),

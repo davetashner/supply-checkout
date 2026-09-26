@@ -102,8 +102,8 @@ test.describe("data", () => {
       await page.getByRole("button", { name: "Create sheet" }).click();
       await expect(page.locator("#toast")).toHaveText("That didn't save. Check your connection and try again.");
     }
-    // A viewer's write: the app switches to view-only
-    backend.on("PUT", /^\/teams\/t1\/sheets\//, error(403, "invalid_argument"));
+    // A viewer's write (403 permission_denied, reason view_only): the app switches to view-only
+    backend.on("PUT", /^\/teams\/t1\/sheets\//, { status: 403, body: { error: { code: "permission_denied", message: "x", reason: "view_only" } } });
     await page.getByRole("button", { name: "Create sheet" }).click();
     await expect(page.locator("#notice")).toContainText("You have view-only access.");
     expect(backend.requests("PUT", /^\/teams\/t1\/sheets\//)).toHaveLength(5);
@@ -617,6 +617,16 @@ test.describe("live updates", () => {
     await page.getByRole("button", { name: "Continue" }).click();
     await expect.poll(() => backend.pageLoads).toBe(2);
     expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.team"))).toBeNull();
+  });
+
+  test("a member removed before a write finds out from the refused write", async ({ page }) => {
+    const backend = await open(page);
+    backend.teams = [];
+    await page.getByRole("button", { name: "+ New sheet" }).click();
+    await page.getByLabel("Client", { exact: true }).fill("Foxtrot Dental");
+    await page.getByRole("button", { name: "Create sheet" }).click();
+    await expect(page.getByRole("heading", { name: "You're no longer in Echo Cleaning" })).toBeVisible();
+    expect(backend.requests("PUT", /^\/teams\/t1\/sheets\//)).toHaveLength(1);
   });
 
   test("a member removed while connected finds out from the next fetch", async ({ page }) => {

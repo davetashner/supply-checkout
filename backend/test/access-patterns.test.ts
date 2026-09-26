@@ -23,6 +23,7 @@ import {
   getSheet,
   getTeam,
   InvalidInputError,
+  LastOwnerError,
   LimitReachedError,
   linkStripeCustomer,
   listAudit,
@@ -192,8 +193,9 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
     it("keeps the last owner from leaving or demoting themselves", async () => {
       const { owner } = await team();
       expect(await owners(owner)).toEqual({ counted: 1, actual: 1 });
-      await expect(removeMember(db, owner, owner.userId)).rejects.toThrow(ConflictError);
-      await expect(setMemberRole(db, owner, owner.userId, "contributor")).rejects.toThrow(ConflictError);
+      // DynamoDB's cancellation reasons say which condition failed: the owner count
+      await expect(removeMember(db, owner, owner.userId)).rejects.toThrow(LastOwnerError);
+      await expect(setMemberRole(db, owner, owner.userId, "contributor")).rejects.toThrow(LastOwnerError);
       expect(await owners(owner)).toEqual({ counted: 1, actual: 1 });
       expect((await getMember(db, owner, owner.userId))?.role).toBe("owner");
     });
@@ -229,6 +231,8 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       // `stale` still says owner and two owners remain, but the write re-checks the caller's MEMBER item
       await expect(removeMember(db, stale, viewer.userId)).rejects.toThrow(ConflictError);
       await expect(setMemberRole(db, stale, viewer.userId, "contributor")).rejects.toThrow(ConflictError);
+      // That's someone changing the team, not the last owner
+      await expect(removeMember(db, stale, viewer.userId)).rejects.not.toThrow(LastOwnerError);
       expect(await owners(owner)).toEqual({ counted: 2, actual: 2 });
     });
 

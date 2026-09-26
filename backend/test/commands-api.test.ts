@@ -440,7 +440,7 @@ describe("validation and roles", () => {
       ["/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "0123", quantity: 1 }],
       ["/teams/team-a/products/0123/stock", { operationId: op(), reason: "count", count: 1 }],
     ] as const) {
-      expect(await call("POST", path, body, VIEWER)).toMatchObject({ status: 403, body: { error: { code: "invalid_argument" } } });
+      expect(await call("POST", path, body, VIEWER)).toMatchObject({ status: 403, body: { error: { code: "permission_denied", reason: "view_only" } } });
     }
     expect(line()).toMatchObject({ out: 1 });
     // Viewers can read the history

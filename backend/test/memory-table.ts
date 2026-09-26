@@ -77,7 +77,8 @@ export class MemoryTable {
 
   /** A team with members, as createTeam and acceptInvite would leave it. */
   seedTeam(teamId: string, members: Record<string, "owner" | "contributor" | "viewer">): void {
-    this.put({ PK: `TEAM#${teamId}`, SK: "META", type: "team", teamId, name: teamId, homeRegion: REGION, version: 1 });
+    const owners = Object.values(members).filter((role) => role === "owner").length;
+    this.put({ PK: `TEAM#${teamId}`, SK: "META", type: "team", teamId, name: teamId, homeRegion: REGION, owners, version: 1 });
     for (const [userId, role] of Object.entries(members)) this.put({ PK: `TEAM#${teamId}`, SK: `MEMBER#${userId}`, type: "member", teamId, userId, role });
   }
 

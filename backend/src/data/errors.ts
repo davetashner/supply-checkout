@@ -7,7 +7,12 @@ export class ForbiddenError extends Error {
 
 /** A version check or an existence check failed: someone else changed it first. (409) */
 export class ConflictError extends Error {
-  override readonly name = "ConflictError";
+  override readonly name: string = "ConflictError";
+}
+
+/** The change would leave the team without an owner. (409) */
+export class LastOwnerError extends ConflictError {
+  override readonly name = "LastOwnerError";
 }
 
 /** The team has used its monthly allowance. (429) */

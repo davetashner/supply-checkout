@@ -6,7 +6,7 @@
 // The Db handle is opaque: it exposes no DynamoDB client.
 
 export { closeDb, createDb, type Db, type DbOptions } from "./client.js";
-export { ConflictError, ForbiddenError, InvalidInputError, LimitReachedError, NotFoundError, TooLargeError } from "./errors.js";
+export { ConflictError, ForbiddenError, InvalidInputError, LastOwnerError, LimitReachedError, NotFoundError, TooLargeError } from "./errors.js";
 export { localRegion, writeRegionFor, type HomedTeam } from "./region.js";
 export {
   acceptInvite,
@@ -17,7 +17,7 @@ export {
   teamContextForStripeCustomer,
   type Role,
 } from "./team-context.js";
-export { MAX_TEAMS_PER_USER, normalizeEmail, TEAMS_PER_USER_PER_DAY, teamIdForRequest, TRIAL_DAYS } from "./model.js";
+export { MAX_TEAMS_PER_USER, memberRole, normalizeEmail, TEAMS_PER_USER_PER_DAY, teamIdForRequest, TRIAL_DAYS } from "./model.js";
 export type { Page } from "./query.js";
 export * from "./teams.js";
 export * from "./invites.js";

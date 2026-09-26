@@ -43,6 +43,16 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
     onRemoved();
   }
 
+  // A write the API refused (403 permission_denied): a viewer's is rejected with the
+  // artifact runtime's view-only code, which the app acts on (src/main.js); anything
+  // else means this user is no longer in the team.
+  function refused(e) {
+    if (e.code !== "permission_denied") return e;
+    if (e.reason === "view_only") return { ...e, code: "invalid_argument" };
+    lost();
+    return e;
+  }
+
   // Delivers the collection to its listeners, at most once per tick
   function notify(name) {
     const c = coll(name);
@@ -163,7 +173,7 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
         put(name, id, await (body ? api(method, path, { ...body, expectedVersion }) : api(method, `${path}?expectedVersion=${expectedVersion}`)));
       } catch (e) {
         if (e.code === "aborted") await fetchDoc(name, id);
-        throw e;
+        throw refused(e);
       }
     };
     return {
@@ -206,7 +216,7 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
       return { quantity: res.result.quantity, line: res.sheet ? res.sheet.data.items[body.productKey] : {} };
     } catch (e) {
       if (e.code === "aborted") await Promise.all([fetchDoc("sheets", sheetId), fetchDoc("products", body.productKey)]);
-      throw e;
+      throw refused(e);
     }
   }
 

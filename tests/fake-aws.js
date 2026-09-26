@@ -32,8 +32,9 @@ function merge(target, patch) {
 
 export class FakeBackend {
   // docs: { "<teamId>/<collection>/<id>": data }
-  constructor({ teams = [TEAM], invites = [], user = USER, docs = {}, signedIn = true, claims = { given_name: "Pat", family_name: "Lee", email: USER.email }, config = CONFIG, expiresIn = 3600 } = {}) {
-    Object.assign(this, { teams: clone(teams), invites: clone(invites), user, signedIn, claims, config, expiresIn });
+  // members: { "<teamId>": [{ userId, email, role, joinedAt }] }, for the members screen
+  constructor({ teams = [TEAM], invites = [], members = {}, user = USER, docs = {}, signedIn = true, claims = { given_name: "Pat", family_name: "Lee", email: USER.email }, config = CONFIG, expiresIn = 3600 } = {}) {
+    Object.assign(this, { teams: clone(teams), invites: clone(invites), members: clone(members), user, signedIn, claims, config, expiresIn });
     this.docs = new Map(Object.entries(docs).map(([k, data]) => [k, { version: 1, data: clone(data) }]));
     this.calls = [];
     // Checkout and return operations: "<teamId>/<operationId>" -> { request, result }
@@ -142,7 +143,7 @@ export class FakeBackend {
   }
 
   answer(method, path, call) {
-    const err = (status, code) => [status, { error: { code, message: code } }];
+    const err = (status, code, reason) => [status, { error: { code, message: code, ...(reason ? { reason } : {}) } }];
     if (path === "/auth/session") {
       if (call.body.code !== "good-code") return err(401, "unauthenticated");
       this.signedIn = true;
@@ -171,6 +172,9 @@ export class FakeBackend {
       return [200, { team }];
     }
 
+    m = path.match(/^\/teams\/([^/]+)\/members(?:\/([^/]+))?$/);
+    if (m) return this.member(decodeURIComponent(m[1]), m[2] && decodeURIComponent(m[2]), method, call.body, err);
+
     m = path.match(/^\/teams\/([^/]+)\/sheets\/([^/]+)\/(checkout|return)$/);
     if (m && method === "POST") return this.command(decodeURIComponent(m[1]), decodeURIComponent(m[2]), m[3], call.body);
 
@@ -188,7 +192,7 @@ export class FakeBackend {
     const key = prefix + id, cur = this.docs.get(key);
     const out = () => ({ id, version: this.docs.get(key).version, data: this.docs.get(key).data });
     if (method === "GET") return cur ? [200, out()] : err(404, "not_found");
-    if (member.role === "viewer") return err(403, "invalid_argument");
+    if (member.role === "viewer") return err(403, "permission_denied", "view_only");
     // Every write names the version it was made against (ADR 0006); 0: it doesn't exist yet
     const expected = method === "DELETE" ? call.query.expectedVersion : call.body.expectedVersion;
     if (expected === undefined) return err(400, "bad_request");
@@ -206,11 +210,29 @@ export class FakeBackend {
   // the line and the stock change together, by adding to what's stored, and each gives the
   // sheet (and a product that tracks stock) a new version. An operation ID that's been used
   // returns its first result and changes nothing; used for another request, it's refused.
+  // The members routes as the API runs them: owners list, change roles and remove; anyone
+  // can leave; the team always keeps an owner
+  member(team, userId, method, body, err) {
+    const mine = this.teams.find((t) => t.id === team);
+    if (!mine) return err(403, "permission_denied", "not_member");
+    if (mine.role !== "owner" && !(method === "DELETE" && userId === this.user.id)) return err(403, "permission_denied", "owners_only");
+    const list = (this.members[team] ||= []);
+    if (method === "GET") return [200, { members: clone(list) }];
+    const target = list.find((x) => x.userId === userId);
+    if (!target) return err(404, "not_found");
+    const owners = list.filter((x) => x.role === "owner").length;
+    const demoting = target.role === "owner" && (method === "DELETE" || body.role !== "owner");
+    if (demoting && owners === 1) return [409, { error: { code: "aborted", message: "A team needs at least one owner. Make someone else an owner first.", reason: "last_owner" } }];
+    if (method === "DELETE") { this.members[team] = list.filter((x) => x !== target); return [204]; }
+    target.role = body.role;
+    return [200, { member: clone(target) }];
+  }
+
   command(team, sheetId, name, body) {
-    const err = (status, code) => [status, { error: { code, message: code } }];
+    const err = (status, code, reason) => [status, { error: { code, message: code, ...(reason ? { reason } : {}) } }];
     const member = this.teams.find((t) => t.id === team);
     if (!member) return err(403, "permission_denied");
-    if (member.role === "viewer") return err(403, "invalid_argument");
+    if (member.role === "viewer") return err(403, "permission_denied", "view_only");
     const { operationId, productKey: key, quantity: qty, ...oneOff } = body;
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId) || typeof key !== "string" || !Number.isInteger(qty) || qty < 1) return err(400, "bad_request");
     const sheetKey = `${team}/sheets/${sheetId}`, productKey = `${team}/products/${key}`;

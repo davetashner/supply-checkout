@@ -832,13 +832,15 @@
                 "StringLike": {
                   "aws:RequestTag/userId": "?*",
                   "aws:RequestTag/teamId": "?*",
-                  "aws:RequestTag/invitee": "?*"
+                  "aws:RequestTag/invitee": "?*",
+                  "aws:RequestTag/member": "?*"
                 },
                 "ForAllValues:StringEquals": {
                   "aws:TagKeys": [
                     "userId",
                     "teamId",
-                    "invitee"
+                    "invitee",
+                    "member"
                   ]
                 }
               },
@@ -915,6 +917,37 @@
                     }
                   ],
                   "Sid": "CallerItemsOnly"
+                },
+                {
+                  "Action": [
+                    "dynamodb:UpdateItem",
+                    "dynamodb:DeleteItem"
+                  ],
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "USER#${aws:PrincipalTag/member}"
+                      ]
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-west-2:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "MemberSwitcherRowOnly"
                 },
                 {
                   "Action": [
@@ -2031,6 +2064,168 @@
         }
       }
     },
+    "HttpApiGETteamsteamIdmembersAccountIntegrationPermission8330B349": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/members"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiGETteamsteamIdmembersC3ACF5A2": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "GET /teams/{teamId}/members",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPATCHteamsteamIdmembersuserIdAccountIntegrationPermission15C68DE8": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/members/{userId}"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPATCHteamsteamIdmembersuserIdEF500EC2": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "PATCH /teams/{teamId}/members/{userId}",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiDELETEteamsteamIdmembersuserIdAccountIntegrationPermission2D5A21C0": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/members/{userId}"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiDELETEteamsteamIdmembersuserId904CD60C": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "DELETE /teams/{teamId}/members/{userId}",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiPOSTauthsessionAuthIntegration113028DA": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -2263,6 +2458,18 @@
           "POST /invites/{inviteId}/accept": {
             "ThrottlingRateLimit": 10,
             "ThrottlingBurstLimit": 20
+          },
+          "GET /teams/{teamId}/members": {
+            "ThrottlingRateLimit": 20,
+            "ThrottlingBurstLimit": 40
+          },
+          "PATCH /teams/{teamId}/members/{userId}": {
+            "ThrottlingRateLimit": 10,
+            "ThrottlingBurstLimit": 20
+          },
+          "DELETE /teams/{teamId}/members/{userId}": {
+            "ThrottlingRateLimit": 10,
+            "ThrottlingBurstLimit": 20
           }
         },
         "StageName": "$default",
@@ -2275,9 +2482,15 @@
         }
       },
       "DependsOn": [
+        "HttpApiDELETEteamsteamIdmembersuserIdAccountIntegrationPermission2D5A21C0",
+        "HttpApiDELETEteamsteamIdmembersuserId904CD60C",
         "HttpApiGETmeAccountIntegrationPermission45713A73",
         "HttpApiGETmeAccountIntegration0EFB5255",
         "HttpApiGETme466879BE",
+        "HttpApiGETteamsteamIdmembersAccountIntegrationPermission8330B349",
+        "HttpApiGETteamsteamIdmembersC3ACF5A2",
+        "HttpApiPATCHteamsteamIdmembersuserIdAccountIntegrationPermission15C68DE8",
+        "HttpApiPATCHteamsteamIdmembersuserIdEF500EC2",
         "HttpApiPOSTinvitesinviteIdacceptAccountIntegrationPermission862E8450",
         "HttpApiPOSTinvitesinviteIdacceptD95AE303",
         "HttpApiPOSTteamsteamIdimportsDataIntegrationPermission8AC0ABAB",
