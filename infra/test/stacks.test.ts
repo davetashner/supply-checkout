@@ -7,7 +7,7 @@ import { Bucket } from "aws-cdk-lib/aws-s3";
 import { AwsSolutionsChecks } from "cdk-nag";
 import { describe, expect, it } from "vitest";
 import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
-import { addSupplyCheckout, type SupplyCheckoutStacks } from "../lib/supply-checkout.js";
+import { addBackupAccount, addSupplyCheckout, type SupplyCheckoutStacks } from "../lib/supply-checkout.js";
 
 // No account: tests synth account-agnostic templates, exactly as CI does, so
 // snapshots never contain an account ID.
@@ -31,10 +31,11 @@ function inRegion(stacks: SupplyCheckoutStacks, region: string) {
 const names = (stacks: Stack[]) => stacks.map((s) => s.stackName).sort();
 
 describe("stack layout", () => {
-  it("creates domain, data, api, realtime and observability per region, plus identity and web in the primary", () => {
+  it("creates domain, data, api, realtime and observability per region, plus identity, backup and web in the primary", () => {
     const { stacks } = build();
     expect(names(stacks.all)).toEqual([
       `supply-checkout-prod-${EAST}-api`,
+      `supply-checkout-prod-${EAST}-backup`,
       `supply-checkout-prod-${EAST}-data`,
       `supply-checkout-prod-${EAST}-domain`,
       `supply-checkout-prod-${EAST}-identity`,
@@ -52,6 +53,7 @@ describe("stack layout", () => {
     }
     for (const [region, stack] of Object.entries(stacks.domain)) expect(stack.region).toBe(region);
     expect(stacks.identity.region).toBe(EAST);
+    expect(stacks.backup.region).toBe(EAST);
     expect(stacks.web.region).toBe(EAST);
   });
 
@@ -62,6 +64,7 @@ describe("stack layout", () => {
       `supply-checkout-staging-${GLOBAL_SERVICES_REGION}-domain`,
       `supply-checkout-staging-${GLOBAL_SERVICES_REGION}-web`,
       `supply-checkout-staging-${WEST}-api`,
+      `supply-checkout-staging-${WEST}-backup`,
       `supply-checkout-staging-${WEST}-data`,
       `supply-checkout-staging-${WEST}-domain`,
       `supply-checkout-staging-${WEST}-identity`,
@@ -83,13 +86,14 @@ describe("stack layout", () => {
       expect(stack.terminationProtection, stack.stackName).toBe(stack.layer === "stateful");
     }
     expect(stacks.all.filter((s) => s.layer === "stateful").map((s) => s.component).sort()).toEqual([
+      "backup",
       "data",
       "data",
       "identity",
     ]);
   });
 
-  it("orders deploys: domain first, data and identity before api, api and realtime before observability, all data before web", () => {
+  it("orders deploys: domain first, data and identity before api, api and realtime before observability, all data before web, backup last", () => {
     const { stacks } = build();
     const deps = (s: Stack) => s.dependencies.map((d) => d.stackName).sort();
     const globalDomain = stacks.domain[GLOBAL_SERVICES_REGION]?.stackName;
@@ -102,6 +106,8 @@ describe("stack layout", () => {
     expect(deps(stacks.identity)).toEqual([globalDomain, stacks.web.stackName].sort());
     expect(deps(stacks.web)).toEqual([globalDomain, ...Object.values(stacks.regions).map((r) => r.data.stackName)].sort());
     for (const domain of Object.values(stacks.domain)) expect(deps(domain)).toEqual([]);
+    const east = inRegion(stacks, EAST);
+    expect(deps(stacks.backup)).toEqual([east.data.stackName, east.observability.stackName].sort());
   });
 
   it("tags every stack and resource with the app, environment and component", () => {
@@ -127,9 +133,13 @@ describe("stack layout", () => {
 // change to one stack doesn't touch the others'. `npm run test:update` rewrites them.
 describe("template snapshots", () => {
   const { stacks } = build();
+  // The backup account's vault stack is a separate app (bin/backup-account.ts)
+  const backupAccountApp = new App({ context: { "aws:cdk:version-reporting": false } });
+  const backupAccount = addBackupAccount(backupAccountApp, config);
+  const snapshotted: Stack[] = [...stacks.all, backupAccount];
   const snapshots = join(dirname(fileURLToPath(import.meta.url)), "__snapshots__");
 
-  it.each(stacks.all.map((stack) => [stack.stackName, stack] as const))("%s matches its snapshot", async (name, stack) => {
+  it.each(snapshotted.map((stack) => [stack.stackName, stack] as const))("%s matches its snapshot", async (name, stack) => {
     // Lambda asset hashes, and the function version IDs made from them,
     // depend on the checkout's path (bundling is skipped in tests, and CDK
     // hashes the bundling command instead), so mask them
@@ -141,7 +151,7 @@ describe("template snapshots", () => {
 
   it("has no snapshot for a stack that no longer exists", () => {
     // (A missing snapshot fails its own test in CI, which never writes one.)
-    const current = new Set(names(stacks.all).map((n) => `${n}.json`));
+    const current = new Set(names(snapshotted).map((n) => `${n}.json`));
     expect(readdirSync(snapshots).filter((f) => !current.has(f))).toEqual([]);
   });
 });
@@ -271,7 +281,7 @@ describe("cdk-nag", () => {
     // other stack runs in the one region.
     const global: Stack[] = [stacks.domain[GLOBAL_SERVICES_REGION] as Stack, stacks.web];
     const regional = stacks.all.filter((s) => region === GLOBAL_SERVICES_REGION || !global.includes(s));
-    expect(regional).toHaveLength(region === GLOBAL_SERVICES_REGION ? 7 : 6);
+    expect(regional).toHaveLength(region === GLOBAL_SERVICES_REGION ? 8 : 7);
     for (const stack of global) expect(stack?.region).toBe(GLOBAL_SERVICES_REGION);
     for (const stack of regional) expect(stack.region, stack.stackName).toBe(region);
     const report = new AwsSolutionsChecks(app).validateScope(app);

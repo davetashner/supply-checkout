@@ -297,6 +297,8 @@ jobs:
       # synths every stack, identity and web included, in each region with cdk-nag.
       - run: npm run synth
       - run: npm run synth:all-regions
+      # The backup account's vault stack is a separate CDK app (bin/backup-account.ts)
+      - run: npm run synth:backup-account
 
   backend:
     name: Backend (lint, DynamoDB Local tests, audit)
