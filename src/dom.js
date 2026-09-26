@@ -14,8 +14,11 @@ export function openModal(html, mount) {
   const f = m.querySelector("[autofocus]") || m.querySelector("input,button"); f && f.focus();
 }
 export function closeModal() { $("#overlay").hidden = true; $("#modal").innerHTML = ""; }
-$("#overlay").addEventListener("click", e => { if (e.target.id === "overlay") closeModal(); });
-document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#overlay").hidden) closeModal(); });
+// Not while the modal's form is saving (saving() in src/main.js): closing it would lose what
+// was entered if the save then failed
+const dismiss = () => { if (!$("#modal [aria-busy]")) closeModal(); };
+$("#overlay").addEventListener("click", e => { if (e.target.id === "overlay") dismiss(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#overlay").hidden) dismiss(); });
 
 // Two-tap confirm, since the viewer can't show confirm() dialogs. arm() is one tap, for a
 // delegated handler; armButton wires it to a button.

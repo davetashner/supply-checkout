@@ -20,19 +20,28 @@ export function installMockClaude(opts) {
   const clone = (o) => (o === undefined ? undefined : JSON.parse(JSON.stringify(o)));
   const docs = new Map(Object.entries(clone(seed)));
   const listeners = new Set();
-  const mock = { docs, saves: [], sampleCalls: [] };
+  const mock = { docs, saves: [], sampleCalls: [], failWrites: null };
   window.__mock = mock;
 
   const denied = () => ({ code: "invalid_argument", message: "write not allowed" });
   const guard = (path) => {
     if (!canWrite) throw denied();
     if (writeError) throw { code: writeError, message: "simulated " + writeError };
+    // Set by a test while the page is open: writes fail with this code until it's cleared
+    if (mock.failWrites) throw { code: mock.failWrites, message: "simulated " + mock.failWrites };
     if (writeErrorFor && path.startsWith(writeErrorFor.prefix)) throw { code: writeErrorFor.code, message: "simulated " + writeErrorFor.code };
   };
   const fire = () => listeners.forEach((l) => l());
   const notify = () => (instantUpdates ? fire() : setTimeout(fire, 0));
   // Tests call this after changing mock.docs directly, to act as another user
   mock.notify = notify;
+  // A slow connection: after hold(), writes wait until release(), then go through (or fail) as usual.
+  // mock.writes counts every write call, held or not.
+  let held = null;
+  mock.writes = 0;
+  mock.hold = () => { let release; held = { wait: new Promise((r) => { release = r; }), release }; };
+  mock.release = () => { const h = held; held = null; if (h) h.release(); };
+  const arrive = async () => { mock.writes++; if (held) await held.wait; };
   const merge = (target, src) => {
     for (const [k, v] of Object.entries(src)) {
       const both = v && typeof v === "object" && !Array.isArray(v) && target[k] && typeof target[k] === "object" && !Array.isArray(target[k]);
@@ -57,13 +66,13 @@ export function installMockClaude(opts) {
       id: path.split("/").pop(),
       path,
       get: async () => snap(path),
-      set: async (data) => { guard(path); docs.set(path, clone(data)); notify(); },
+      set: async (data) => { await arrive(); guard(path); docs.set(path, clone(data)); notify(); },
       update: async (data) => {
-        guard(path);
+        await arrive(); guard(path);
         if (!docs.has(path)) throw { code: "invalid_argument", message: "no such document" };
         merge(docs.get(path), data); notify();
       },
-      delete: async () => { guard(path); docs.delete(path); notify(); },
+      delete: async () => { await arrive(); guard(path); docs.delete(path); notify(); },
       onSnapshot: (next) => listen(() => snap(path), next),
       collection: (sub) => collRef(path + "/" + sub),
     };
