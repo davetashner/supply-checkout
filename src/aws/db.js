@@ -168,14 +168,16 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
     // Every write names the version it was made against (ADR 0006): the one held, or 0 for
     // a document this page doesn't have. If someone else changed it first (409 aborted),
     // fetch the latest so the app redraws with it, and pass the error on for the app to say so.
+    // If what changed is that someone deleted it, that's the error: not_found.
     const write = async (method, body) => {
       const held = coll(name).docs.get(id), expectedVersion = held ? held.version : 0;
       try {
         const path = docPath(name, id);
         put(name, id, await (body ? api(method, path, { ...body, expectedVersion }) : api(method, `${path}?expectedVersion=${expectedVersion}`)));
       } catch (e) {
-        if (e.code === "aborted") await fetchDoc(name, id);
-        throw denied(e);
+        if (e.code !== "aborted") throw denied(e);
+        await fetchDoc(name, id);
+        throw coll(name).docs.has(id) ? e : { code: "not_found", message: "Not found", status: 404 };
       }
     };
     return {

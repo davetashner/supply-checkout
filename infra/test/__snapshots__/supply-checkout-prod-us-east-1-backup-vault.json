@@ -1,0 +1,412 @@
+{
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Supply Checkout backup-vault stack (stateful)",
+        "Name": "/supply-checkout/prod/backup-vault/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "backup-vault",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": "{\"stackName\":\"supply-checkout-prod-us-east-1-backup-vault\",\"layer\":\"stateful\"}"
+      }
+    },
+    "VaultKey6B75F33E": {
+      "Type": "AWS::KMS::Key",
+      "Properties": {
+        "Description": "Encrypts the Supply Checkout prod backup copies",
+        "EnableKeyRotation": true,
+        "KeyPolicy": {
+          "Statement": [
+            {
+              "Action": "kms:*",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Resource": "*"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey",
+                "kms:GenerateDataKey"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "aws:PrincipalAccount": {
+                    "Ref": "RestoreAccountIds"
+                  },
+                  "aws:PrincipalOrgID": {
+                    "Ref": "OrganizationId"
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Resource": "*",
+              "Sid": "RestoreAccountsCopyRecoveryPoints"
+            },
+            {
+              "Action": "kms:CreateGrant",
+              "Condition": {
+                "StringEquals": {
+                  "aws:PrincipalAccount": {
+                    "Ref": "RestoreAccountIds"
+                  },
+                  "aws:PrincipalOrgID": {
+                    "Ref": "OrganizationId"
+                  }
+                },
+                "Bool": {
+                  "kms:GrantIsForAWSResource": "true"
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Resource": "*",
+              "Sid": "RestoreAccountsGrantToAwsBackup"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup-vault"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "VaultKeyAlias6C40A5EE": {
+      "Type": "AWS::KMS::Alias",
+      "Properties": {
+        "AliasName": "alias/supply-checkout-prod-backup-copies",
+        "TargetKeyId": {
+          "Fn::GetAtt": [
+            "VaultKey6B75F33E",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "Vault23237E5B": {
+      "Type": "AWS::Backup::BackupVault",
+      "Properties": {
+        "AccessPolicy": {
+          "Statement": [
+            {
+              "Action": [
+                "backup:DeleteRecoveryPoint",
+                "backup:UpdateRecoveryPointLifecycle"
+              ],
+              "Effect": "Deny",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Resource": "*"
+            },
+            {
+              "Action": "backup:CopyIntoBackupVault",
+              "Condition": {
+                "StringEquals": {
+                  "aws:PrincipalAccount": {
+                    "Ref": "SourceAccountIds"
+                  },
+                  "aws:PrincipalOrgID": {
+                    "Ref": "OrganizationId"
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Resource": "*",
+              "Sid": "SourceAccountsCopyIn"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "BackupVaultName": "supply-checkout-prod-backup-copies",
+        "BackupVaultTags": {
+          "app": "supply-checkout",
+          "component": "backup-vault",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "EncryptionKeyArn": {
+          "Fn::GetAtt": [
+            "VaultKey6B75F33E",
+            "Arn"
+          ]
+        },
+        "LockConfiguration": {
+          "ChangeableForDays": 3,
+          "MaxRetentionDays": 365,
+          "MinRetentionDays": 30
+        }
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "CopyOutRoleF510A237": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "backup.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "AWS Backup copies a Supply Checkout recovery point to a restore account's vault",
+        "RoleName": "supply-checkout-prod-backup-copy-out",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup-vault"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "CopyOutRoleDefaultPolicyEECD9293": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "kms:Decrypt",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "VaultKey6B75F33E",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "backup:CopyFromBackupVault",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":backup:",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":recovery-point:*"
+                  ]
+                ]
+              },
+              "Sid": "CopyFromThisVault"
+            },
+            {
+              "Action": [
+                "backup:CopyIntoBackupVault",
+                "backup:DescribeBackupVault"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "aws:ResourceAccount": {
+                    "Ref": "RestoreAccountIds"
+                  },
+                  "aws:ResourceOrgID": {
+                    "Ref": "OrganizationId"
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":backup:",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    ":*:backup-vault:supply-checkout-*"
+                  ]
+                ]
+              },
+              "Sid": "CopyIntoRestoreAccountVaults"
+            },
+            {
+              "Action": "kms:CreateGrant",
+              "Condition": {
+                "Bool": {
+                  "kms:GrantIsForAWSResource": "true"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "VaultKey6B75F33E",
+                  "Arn"
+                ]
+              },
+              "Sid": "GrantTheVaultKeyToAwsBackup"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "CopyOutRoleDefaultPolicyEECD9293",
+        "Roles": [
+          {
+            "Ref": "CopyOutRoleF510A237"
+          }
+        ]
+      }
+    }
+  },
+  "Parameters": {
+    "SourceAccountIds": {
+      "Type": "CommaDelimitedList",
+      "AllowedPattern": "^\\d{12}$",
+      "ConstraintDescription": "must be comma-separated 12-digit account IDs",
+      "Description": "Workload account IDs whose backups are copied into this vault (the prod account; staging when it exists)"
+    },
+    "RestoreAccountIds": {
+      "Type": "CommaDelimitedList",
+      "Default": "",
+      "AllowedPattern": "^(\\d{12})?$",
+      "ConstraintDescription": "must be empty, or comma-separated 12-digit account IDs",
+      "Description": "Account IDs a copy may be sent to for a restore or restore drill (empty for none)"
+    },
+    "OrganizationId": {
+      "Type": "String",
+      "AllowedPattern": "^o-[a-z0-9]{10,32}$",
+      "ConstraintDescription": "must be an organization ID like o-abcdefghij",
+      "Description": "The AWS Organization ID (o-...) the source and restore accounts belong to"
+    },
+    "BootstrapVersion": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+    }
+  },
+  "Outputs": {
+    "CopyVaultArn": {
+      "Description": "Put this in /supply-checkout/prod/backup/copy-vault-arn in each source account",
+      "Value": {
+        "Fn::GetAtt": [
+          "Vault23237E5B",
+          "BackupVaultArn"
+        ]
+      }
+    },
+    "CopyOutRoleArn": {
+      "Description": "Pass this role to copy jobs that send a recovery point to a restore account",
+      "Value": {
+        "Fn::GetAtt": [
+          "CopyOutRoleF510A237",
+          "Arn"
+        ]
+      }
+    }
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5"
+                  ],
+                  {
+                    "Ref": "BootstrapVersion"
+                  }
+                ]
+              }
+            ]
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+        }
+      ]
+    }
+  }
+}
