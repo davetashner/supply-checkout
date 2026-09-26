@@ -10,6 +10,14 @@
 # Usage: npm run land -- <pr-number>     (or scripts/land-pr.sh <pr-number>)
 set -euo pipefail
 
+# Run from a temporary copy: this script removes worktrees and pulls main,
+# either of which can change or delete the file bash is still reading.
+if [ -z "${LAND_PR_COPY:-}" ]; then
+  copy="$(mktemp)"; cp "$0" "$copy"
+  LAND_PR_COPY="$copy" exec bash "$copy" "$@"
+fi
+trap 'rm -f "$LAND_PR_COPY"' EXIT
+
 pr="${1:?usage: scripts/land-pr.sh <pr-number>}"
 main="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
 cd "$main"
@@ -55,9 +63,13 @@ wt="$(git worktree list --porcelain | awk -v b="refs/heads/$branch" '/^worktree 
 if [ -n "$wt" ]; then
   if git worktree remove "$wt" 2>/dev/null; then echo "Removed worktree $wt"
   else echo "Kept worktree $wt: it has uncommitted changes. Remove it with: git worktree remove --force $wt"; fi
+else
+  echo "No worktree left for $branch"
 fi
 git worktree prune
-git branch -D "$branch" >/dev/null 2>&1 && echo "Deleted local branch $branch" || true
+# Drop the empty .claude/worktrees/<type>/ folders left behind
+[ -d .claude/worktrees ] && find .claude/worktrees -mindepth 1 -type d -empty -delete
+if git branch -D "$branch" >/dev/null 2>&1; then echo "Deleted local branch $branch"; else echo "No local branch $branch left"; fi
 if [ "$(git branch --show-current)" = "main" ] && [ -z "$(git status --porcelain --untracked-files=no)" ]; then
   git pull -q --ff-only origin main && echo "main is at $(git log --oneline -1)"
 else
