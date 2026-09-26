@@ -20,24 +20,48 @@
 //   but here the user doesn't exist yet: the value is the provider's, fresh
 //   from this sign-in. providerSaysVerified() is the email_verified trigger's
 //   own test.
+// - The provider is authoritative for the address, not just someone who once
+//   checked it. A Google or Apple account can carry an address its owner
+//   verified years ago and no longer controls (a former employee's
+//   purchasing address at a customer's domain); the provider still says "verified", but
+//   linking on that would hand the current owner's account to them. So
+//   (authoritative()):
+//   - Google: @gmail.com or @googlemail.com, or a Google Workspace account
+//     whose `hd` claim (mapped into `custom:idp_hd`, fresh here for the same
+//     reason as the flag) equals the email's domain: the domain's own Google
+//     tenant owns that mailbox.
+//   - Apple: an Apple private relay address (@privaterelay.appleid.com, unique
+//     to one Apple ID and this app), or @icloud.com, @me.com or @mac.com.
+//   Anyone else gets a separate account; linking those is the settings-based
+//   flow (supply-checkout-b4g), where the person is already signed in.
 // - The event's username is `<Google|SignInWithApple>_<provider user ID>`,
 //   which is how Cognito names a provider sign-up; the ID is what gets linked.
-// - The email is a plausible address with no quotation mark or backslash (it
-//   goes into a ListUsers filter). An Apple private relay address
-//   (@privaterelay.appleid.com) links only for Sign in with Apple: the relay is
-//   Apple's, a relay address is unique to one Apple ID and this app, and only
-//   Apple can vouch for it. A person who hides their email from Apple gets a
-//   relay address that won't match their existing account, so they get a
-//   separate account (see the PR for the follow-up).
+// - The email is a plausible ASCII address with no quotation mark or
+//   backslash (it goes into a ListUsers filter). Emails and domains are
+//   compared after lowering ASCII letters only, so no Unicode case folding
+//   (the Kelvin sign to "k", say) can make two addresses match.
 // - Exactly one native user (not federated-only, see isFederatedOnly()) has
-//   that email, compared case-insensitively. Several native users sharing it,
-//   or more than one page of users, is refused rather than guessed at.
+//   that email. Several native users sharing it, or more than one page of
+//   users, is refused rather than guessed at.
 // - That user is CONFIRMED, enabled, and its email_verified is "true": its
 //   address was proven with Cognito's own code. An unconfirmed or unverified
 //   native user is never a target, so signing up natively with someone
 //   else's address can't capture their later Google or Apple sign-in.
 // - That user has no identity from the same provider linked already (Cognito
 //   links one identity per provider to a user).
+// - If that user already has a Google or Apple identity linked, its email is
+//   still the one recorded when that identity was linked
+//   (`custom:linked_email`). Cognito rewrites a linked user's `email` from the
+//   provider at every provider sign-in and leaves email_verified "true", so an
+//   account whose linked provider email changed to someone else's address
+//   mustn't capture that person's first sign-in. The rest of keeping a linked
+//   user's email_verified right is supply-checkout-kgw.
+//
+// Linking records the email in `custom:linked_email` (which no IdP maps and no
+// client can write) first, then calls AdminLinkProviderForUser. If recording
+// works and linking doesn't, the recorded email matches the user's email and
+// no identity is linked, so nothing changes; if a link ever exists without a
+// matching record, the user stops being a target (safe).
 //
 // After linking, the trigger fails the sign-up on purpose with linkedError(),
 // which names only the provider. Cognito would otherwise try to create the
@@ -49,30 +73,34 @@
 // (`identity_provider`). The second sign-in finds the linked identity and
 // lands in the existing user, without a pre sign-up.
 //
-// When ListUsers or AdminLinkProviderForUser fails, the sign-up fails too
-// (FAILED_ERROR): going ahead would make a separate account for good, since
-// pre sign-up doesn't run again for that identity.
+// When a Cognito call fails, the sign-up fails too (FAILED_ERROR): going ahead
+// would make a separate account for good, since pre sign-up doesn't run again
+// for that identity.
 //
 // Linked users afterwards: the username is still the native one, and Cognito
 // keeps the user CONFIRMED, so the pre authentication guard lets them sign in
 // natively too (email code, password, passkey), and the email_verified trigger
-// leaves their email_verified alone (it was verified by Cognito). Cognito does
-// apply the provider's attribute mapping to the linked user at each provider
-// sign-in, so a changed provider email would overwrite `email`; keeping
-// email_verified right then is supply-checkout-kgw.
+// leaves their email_verified alone (it was verified by Cognito).
 //
 // Logs carry the provider and the outcome, never the email, a username or the
 // provider's user ID.
 
 import type { PreSignUpTriggerEvent } from "aws-lambda";
 import type { Observability } from "../observability/index.js";
-import type { LinkProviderForUser, ListUsersByEmail, PoolUser } from "./cognito-admin.js";
+import type { LinkProviderForUser, ListUsersByEmail, PoolUser, UpdateUserAttributes } from "./cognito-admin.js";
 import { providerSaysVerified } from "./email-verified-handler.js";
-import { FEDERATED_PROVIDERS, type FederatedProvider, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "./names.js";
+import {
+  FEDERATED_PROVIDERS,
+  type FederatedProvider,
+  LINKED_EMAIL_ATTRIBUTE,
+  PROVIDER_EMAIL_VERIFIED_ATTRIBUTE,
+  PROVIDER_HOSTED_DOMAIN_ATTRIBUTE,
+} from "./names.js";
 import { isFederatedOnly } from "./sign-in-guard-handler.js";
 
 export interface AccountLinkDeps {
   readonly listUsersByEmail: ListUsersByEmail;
+  readonly updateUserAttributes: UpdateUserAttributes;
   readonly linkProviderForUser: LinkProviderForUser;
   readonly obs: Observability;
 }
@@ -84,23 +112,34 @@ export const linkedError = (provider: FederatedProvider) => `${LINKED_MARKER}:${
 /** Thrown when Cognito couldn't be asked or couldn't link: the sign-in fails and can be tried again. */
 export const FAILED_ERROR = "Sign-in couldn't finish. Try again.";
 
-const RELAY_DOMAIN = "privaterelay.appleid.com";
-// A local part, an @ and a dotted domain, with none of the characters a ListUsers filter would need escaped
-const EMAIL = /^[^\s"\\@]+@[^\s"\\@]+\.[^\s"\\@]+$/;
+/** Domains whose mailboxes the provider itself runs. */
+const AUTHORITATIVE_DOMAINS: Readonly<Record<FederatedProvider, readonly string[]>> = {
+  Google: ["gmail.com", "googlemail.com"],
+  SignInWithApple: ["privaterelay.appleid.com", "icloud.com", "me.com", "mac.com"],
+};
+// Printable ASCII only, with none of the characters a ListUsers filter would
+// need escaped (space, ", \), one @ and a dotted domain
+const ADDRESS_CHAR = "[\\x21\\x23-\\x3f\\x41-\\x5b\\x5d-\\x7e]";
+const EMAIL = new RegExp(`^${ADDRESS_CHAR}+@${ADDRESS_CHAR}+\\.${ADDRESS_CHAR}+$`);
 const PROVIDER_USER_ID = /^[A-Za-z0-9._-]{1,255}$/;
+
+/** Lowers A–Z only: no Unicode case folding, so only ASCII-identical addresses match. */
+export const asciiLower = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
 
 export type Outcome =
   | "not-provider-sign-up"
   | "unknown-provider"
   | "unverified-email"
   | "unusable-email"
-  | "relay-email"
+  | "not-authoritative"
   | "no-account"
   | "ambiguous"
   | "not-eligible"
   | "already-linked"
+  | "email-changed"
   | "linked"
   | "lookup-failed"
+  | "record-failed"
   | "link-failed";
 
 /** The provider and its user ID from a provider sign-up's username, `<providerName>_<userId>` (any case). */
@@ -108,31 +147,52 @@ export function providerIdentity(userName: unknown): { provider: FederatedProvid
   if (typeof userName !== "string") return undefined;
   const at = userName.indexOf("_");
   if (at < 0) return undefined;
-  const prefix = userName.slice(0, at).toLowerCase();
-  const provider = FEDERATED_PROVIDERS.find((p) => p.toLowerCase() === prefix);
+  const prefix = asciiLower(userName.slice(0, at));
+  const provider = FEDERATED_PROVIDERS.find((p) => asciiLower(p) === prefix);
   const userId = userName.slice(at + 1);
   return provider && PROVIDER_USER_ID.test(userId) ? { provider, userId } : undefined;
 }
 
-/** True when `identities` (Cognito's JSON list) already has an identity from `provider`. */
-function hasProvider(identities: string | undefined, provider: FederatedProvider): boolean {
+/**
+ * Whether `provider` runs the mailbox of `email` (already lowered, and valid):
+ * Gmail, or a Workspace account whose `hd` is the email's domain, for Google;
+ * a private relay or iCloud address for Apple.
+ */
+export function authoritative(provider: FederatedProvider, email: string, hostedDomain: string | undefined): boolean {
+  const domain = email.slice(email.lastIndexOf("@") + 1);
+  if (AUTHORITATIVE_DOMAINS[provider].includes(domain)) return true;
+  return provider === "Google" && hostedDomain !== undefined && asciiLower(hostedDomain.trim()) === domain;
+}
+
+/** The Google and Apple providers in `identities` (Cognito's JSON list); undefined when it can't be read. */
+function linkedProviders(identities: string | undefined): string[] | undefined {
   try {
     const list: unknown = JSON.parse(identities ?? "[]");
-    return Array.isArray(list) && list.some((e: { providerName?: unknown } | null) => e?.providerName === provider);
+    if (!Array.isArray(list)) return undefined;
+    return list
+      .map((e: { providerName?: unknown } | null) => e?.providerName)
+      .filter((p): p is string => typeof p === "string" && (FEDERATED_PROVIDERS as readonly string[]).includes(p));
   } catch {
-    // Unreadable: don't guess that linking would succeed
-    return true;
+    return undefined;
   }
 }
 
-/** Whether `user` can have a provider identity linked to it for `email`. */
-function eligible(user: PoolUser, provider: FederatedProvider): Outcome | undefined {
+/** Why `user` can't have `provider` linked to it, if it can't. */
+function refusal(user: PoolUser, provider: FederatedProvider, email: string): Outcome | undefined {
   if (user.status !== "CONFIRMED" || !user.enabled || user.attributes.email_verified !== "true") return "not-eligible";
-  if (hasProvider(user.attributes.identities, provider)) return "already-linked";
+  const linked = linkedProviders(user.attributes.identities);
+  // Unreadable: don't guess that linking would succeed
+  if (!linked || linked.includes(provider)) return "already-linked";
+  if (linked.length && asciiLower(user.attributes[LINKED_EMAIL_ATTRIBUTE] ?? "") !== email) return "email-changed";
   return undefined;
 }
 
 export function createAccountLinkHandler(deps: AccountLinkDeps) {
+  const fail = (message: string, provider: FederatedProvider, outcome: Outcome, error: unknown): never => {
+    deps.obs.logger.error(message, { provider, outcome, error: (error as Error).message });
+    throw new Error(FAILED_ERROR, { cause: error });
+  };
+
   const handle = async (event: PreSignUpTriggerEvent): Promise<{ outcome: Outcome; provider?: FederatedProvider }> => {
     if (event.triggerSource !== "PreSignUp_ExternalProvider") return { outcome: "not-provider-sign-up" };
     const identity = providerIdentity(event.userName);
@@ -140,30 +200,33 @@ export function createAccountLinkHandler(deps: AccountLinkDeps) {
     const { provider, userId } = identity;
     const attributes: Record<string, string | undefined> = event.request?.userAttributes ?? {};
     if (!providerSaysVerified(attributes[PROVIDER_EMAIL_VERIFIED_ATTRIBUTE])) return { outcome: "unverified-email", provider };
-    const email = attributes.email?.trim() ?? "";
-    if (email.length > 254 || !EMAIL.test(email)) return { outcome: "unusable-email", provider };
-    if (email.toLowerCase().endsWith(`@${RELAY_DOMAIN}`) && provider !== "SignInWithApple") return { outcome: "relay-email", provider };
+    const given = attributes.email?.trim() ?? "";
+    if (given.length > 254 || !EMAIL.test(given)) return { outcome: "unusable-email", provider };
+    const email = asciiLower(given);
+    if (!authoritative(provider, email, attributes[PROVIDER_HOSTED_DOMAIN_ATTRIBUTE])) return { outcome: "not-authoritative", provider };
 
-    let found: Awaited<ReturnType<ListUsersByEmail>>;
+    let found: Awaited<ReturnType<ListUsersByEmail>> = { users: [], more: false };
     try {
-      found = await deps.listUsersByEmail(event.userPoolId, email);
+      found = await deps.listUsersByEmail(event.userPoolId, given);
     } catch (error) {
-      deps.obs.logger.error("Couldn't look for an account to link", { provider, outcome: "lookup-failed", error: (error as Error).message });
-      throw new Error(FAILED_ERROR, { cause: error });
+      fail("Couldn't look for an account to link", provider, "lookup-failed", error);
     }
-    const wanted = email.toLowerCase();
-    const native = found.users.filter((u) => u.attributes.email?.toLowerCase() === wanted && !isFederatedOnly(u.username, { ...u.attributes, "cognito:user_status": u.status }));
+    const native = found.users.filter((u) => asciiLower(u.attributes.email ?? "") === email && !isFederatedOnly(u.username, { ...u.attributes, "cognito:user_status": u.status }));
     if (found.more || native.length > 1) return { outcome: "ambiguous", provider };
     const [target] = native;
     if (!target) return { outcome: "no-account", provider };
-    const refused = eligible(target, provider);
+    const refused = refusal(target, provider, email);
     if (refused) return { outcome: refused, provider };
 
     try {
+      await deps.updateUserAttributes(event.userPoolId, target.username, { [LINKED_EMAIL_ATTRIBUTE]: email });
+    } catch (error) {
+      fail("Couldn't record the email being linked", provider, "record-failed", error);
+    }
+    try {
       await deps.linkProviderForUser(event.userPoolId, target.username, provider, userId);
     } catch (error) {
-      deps.obs.logger.error("Couldn't link the sign-in to the existing account", { provider, outcome: "link-failed", error: (error as Error).message });
-      throw new Error(FAILED_ERROR, { cause: error });
+      fail("Couldn't link the sign-in to the existing account", provider, "link-failed", error);
     }
     return { outcome: "linked", provider };
   };

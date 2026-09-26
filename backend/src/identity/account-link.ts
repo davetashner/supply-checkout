@@ -6,7 +6,8 @@ import { answerCognito, createAccountLinkHandler } from "./account-link-handler.
 import { cognitoLinking } from "./cognito-admin.js";
 
 const obs = createObservability({ service: "sign-in" });
-// Two calls at most, within the 5 seconds Cognito gives a trigger
-const { listUsersByEmail, linkProviderForUser } = cognitoLinking({ region: obs.region, timeoutMs: 2_000 });
-const decide = withObservability(obs, createAccountLinkHandler({ listUsersByEmail, linkProviderForUser, obs }));
+// Three calls at most (ListUsers, recording the email, the link), each capped
+// so all of them fit in the 5 seconds Cognito gives a trigger
+const { listUsersByEmail, updateUserAttributes, linkProviderForUser } = cognitoLinking({ region: obs.region, timeoutMs: 1_500 });
+const decide = withObservability(obs, createAccountLinkHandler({ listUsersByEmail, updateUserAttributes, linkProviderForUser, obs }));
 export const handler = async (event: PreSignUpTriggerEvent, context: Context): Promise<PreSignUpTriggerEvent> => answerCognito(await decide(event, context));

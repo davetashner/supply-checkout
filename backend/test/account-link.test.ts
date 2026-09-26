@@ -5,10 +5,20 @@
 
 import type { PreAuthenticationTriggerEvent, PreSignUpTriggerEvent, PreTokenGenerationTriggerEvent } from "aws-lambda";
 import { describe, expect, it } from "vitest";
-import { answerCognito, createAccountLinkHandler, FAILED_ERROR, LINKED_MARKER, linkedError, type LinkResult, providerIdentity } from "../src/identity/account-link-handler.js";
-import { cognitoLinking, type LinkProviderForUser, type ListUsersByEmail, type PoolUser } from "../src/identity/cognito-admin.js";
+import {
+  answerCognito,
+  asciiLower,
+  authoritative,
+  createAccountLinkHandler,
+  FAILED_ERROR,
+  LINKED_MARKER,
+  linkedError,
+  type LinkResult,
+  providerIdentity,
+} from "../src/identity/account-link-handler.js";
+import { cognitoLinking, type LinkProviderForUser, type ListUsersByEmail, type PoolUser, type UpdateUserAttributes } from "../src/identity/cognito-admin.js";
 import { createEmailVerifiedHandler } from "../src/identity/email-verified-handler.js";
-import { PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "../src/identity/names.js";
+import { LINKED_EMAIL_ATTRIBUTE, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE, PROVIDER_HOSTED_DOMAIN_ATTRIBUTE } from "../src/identity/names.js";
 import { createSignInGuardHandler } from "../src/identity/sign-in-guard-handler.js";
 import type { Observability } from "../src/observability/index.js";
 import { REGION } from "./helpers.js";
@@ -17,12 +27,19 @@ const POOL = `${REGION}_pool`;
 const GOOGLE_ID = "107691234567890123456";
 const APPLE_ID = "001234.0a1b2c3d4e5f.1234";
 const NATIVE = "8f0e5b1c-0000-4000-8000-000000000001";
+// A Google Workspace address: Google is authoritative for it when `hd` is example.com
 const EMAIL = "pat@example.com";
+const HD = "example.com";
+// Made-up addresses at the providers' own domains, for the authority rules
+const GMAIL = "pat.lee.test@gmail.com"; // public-safety: allow (made-up address)
+const ICLOUD = "pat.lee.test@icloud.com"; // public-safety: allow (made-up address)
 const RELAY = "x7k2q9m4ab@privaterelay.appleid.com"; // public-safety: allow (a made-up relay address)
 const PROVIDERS = [
   ["Google", GOOGLE_ID],
   ["SignInWithApple", APPLE_ID],
 ] as const;
+/** An address the provider is authoritative for: the Workspace address for Google (with its hd), iCloud for Apple. */
+const emailFor = (provider: string) => (provider === "Google" ? EMAIL : ICLOUD);
 
 type Logged = { level: string; message: string; data: Record<string, unknown> };
 
@@ -56,10 +73,15 @@ const federatedUser = (provider = "Google", id = GOOGLE_ID): PoolUser => ({
 });
 
 /** A provider sign-up, as Cognito sends it after applying the attribute mapping. */
-function signUpEvent(options: { provider?: string; id?: string; userName?: string; claim?: unknown; email?: string | null; triggerSource?: string } = {}): PreSignUpTriggerEvent {
+function signUpEvent(
+  options: { provider?: string; id?: string; userName?: string; claim?: unknown; email?: string | null; hd?: string | null; triggerSource?: string } = {},
+): PreSignUpTriggerEvent {
   const provider = options.provider ?? "Google";
   const userAttributes: Record<string, string> = {};
-  if (options.email !== null) userAttributes.email = options.email ?? EMAIL;
+  if (options.email !== null) userAttributes.email = options.email ?? emailFor(provider);
+  // Google sends hd only for Workspace accounts; Apple never does
+  const hd = options.hd === undefined ? (provider === "Google" ? HD : null) : options.hd;
+  if (hd !== null) userAttributes[PROVIDER_HOSTED_DOMAIN_ATTRIBUTE] = hd;
   if (options.claim !== undefined) userAttributes[PROVIDER_EMAIL_VERIFIED_ATTRIBUTE] = options.claim as string;
   return {
     version: "1",
@@ -73,12 +95,20 @@ function signUpEvent(options: { provider?: string; id?: string; userName?: strin
   } as PreSignUpTriggerEvent;
 }
 
-function linker(options: { users?: PoolUser[]; more?: boolean; list?: ListUsersByEmail; link?: LinkProviderForUser } = {}) {
+function linker(options: { users?: PoolUser[]; more?: boolean; list?: ListUsersByEmail; update?: UpdateUserAttributes; link?: LinkProviderForUser } = {}) {
   const lookups: { pool: string; email: string }[] = [];
   const links: { pool: string; user: string; provider: string; id: string }[] = [];
+  const updates: { pool: string; user: string; attributes: Record<string, string> }[] = [];
+  const order: string[] = [];
   const logs: Logged[] = [];
   const handler = createAccountLinkHandler({
     obs: fakeObservability(logs),
+    updateUserAttributes:
+      options.update ??
+      (async (pool, user, attributes) => {
+        order.push("record");
+        updates.push({ pool, user, attributes: { ...attributes } });
+      }),
     listUsersByEmail:
       options.list ??
       (async (pool, email) => {
@@ -88,11 +118,12 @@ function linker(options: { users?: PoolUser[]; more?: boolean; list?: ListUsersB
     linkProviderForUser:
       options.link ??
       (async (pool, user, provider, id) => {
+        order.push("link");
         links.push({ pool, user, provider, id });
       }),
   });
   const outcome = () => logs.find((l) => l.message === "Account link")?.data.outcome;
-  return { handler, lookups, links, logs, outcome };
+  return { handler, lookups, links, updates, order, logs, outcome };
 }
 
 const eventOf = (result: LinkResult) => {
@@ -115,16 +146,33 @@ describe("providerIdentity", () => {
   });
 });
 
+describe("authoritative", () => {
+  it("is true only for mailboxes the provider runs", () => {
+    expect(authoritative("Google", GMAIL, undefined)).toBe(true);
+    expect(authoritative("Google", EMAIL, HD)).toBe(true);
+    expect(authoritative("Google", EMAIL, undefined)).toBe(false);
+    expect(authoritative("Google", EMAIL, "example.org")).toBe(false);
+    expect(authoritative("SignInWithApple", ICLOUD, undefined)).toBe(true);
+    expect(authoritative("SignInWithApple", RELAY, undefined)).toBe(true);
+    // Apple has no hosted domain
+    expect(authoritative("SignInWithApple", EMAIL, HD)).toBe(false);
+  });
+});
+
 describe("pre sign-up trigger", () => {
   for (const [provider, id] of PROVIDERS) {
     const yes = provider === "Google" ? [true, "true"] : ["true", "TRUE"];
     it(`links a ${provider} sign-up with a verified email to the one confirmed, verified account with it, and stops the sign-up`, async () => {
       for (const claim of yes) {
-        const { handler, lookups, links, logs, outcome } = linker({ users: [nativeUser()] });
+        const email = emailFor(provider);
+        const { handler, lookups, links, updates, order, logs, outcome } = linker({ users: [nativeUser({ attributes: { email } })] });
         const result = await handler(signUpEvent({ provider, id, claim }));
         expect(result).toEqual({ linked: provider });
-        expect(lookups).toEqual([{ pool: POOL, email: EMAIL }]);
+        expect(lookups).toEqual([{ pool: POOL, email }]);
+        // The email is recorded where no client can write it, then the identity is linked
+        expect(updates).toEqual([{ pool: POOL, user: NATIVE, attributes: { [LINKED_EMAIL_ATTRIBUTE]: email } }]);
         expect(links).toEqual([{ pool: POOL, user: NATIVE, provider, id }]);
+        expect(order).toEqual(["record", "link"]);
         expect(outcome()).toBe("linked");
         expect(logs.find((l) => l.message === "Account link")?.data).toEqual({ triggerSource: "PreSignUp_ExternalProvider", outcome: "linked", provider });
         // Cognito shows this in error_description; the web app signs in again with that provider
@@ -134,7 +182,7 @@ describe("pre sign-up trigger", () => {
 
     it(`never links a ${provider} sign-up whose provider doesn't say the email is verified`, async () => {
       for (const claim of [false, "false", "", "yes", "1", undefined]) {
-        const { handler, lookups, links, outcome } = linker({ users: [nativeUser()] });
+        const { handler, lookups, links, outcome } = linker({ users: [nativeUser({ attributes: { email: emailFor(provider) } })] });
         const event = signUpEvent({ provider, id, claim });
         const result = await handler(event);
         expect(answerCognito(result)).toBe(event);
@@ -179,16 +227,63 @@ describe("pre sign-up trigger", () => {
     expect(outcome()).toBe("unverified-email");
   });
 
-  it("links an Apple private relay address only for Sign in with Apple", async () => {
-    const relayUser = nativeUser({ attributes: { email: RELAY } });
-    const google = linker({ users: [relayUser] });
-    await google.handler(signUpEvent({ provider: "Google", claim: "true", email: RELAY.toUpperCase() }));
-    expect(google.lookups).toEqual([]);
-    expect(google.outcome()).toBe("relay-email");
+  it("links a Google sign-in only for Gmail, or a Workspace account whose hd is the email's domain", async () => {
+    const cases: [string, string | null, string][] = [
+      [GMAIL, null, "linked"],
+      [GMAIL.replace("gmail.com", "googlemail.com"), null, "linked"],
+      [EMAIL, HD, "linked"],
+      [EMAIL, " Example.COM ", "linked"],
+      // An old personal Google account still carrying a work address it once verified
+      [EMAIL, null, "not-authoritative"],
+      [EMAIL, "", "not-authoritative"],
+      // Another Workspace tenant vouching for this domain's address
+      [EMAIL, "other.example.org", "not-authoritative"],
+      [EMAIL, "sub.example.com", "not-authoritative"],
+      ["pat@sub.example.com", HD, "not-authoritative"], // public-safety: allow (made-up address)
+      [RELAY, null, "not-authoritative"],
+      [ICLOUD, null, "not-authoritative"],
+    ];
+    for (const [email, hd, expected] of cases) {
+      const { handler, lookups, links, outcome } = linker({ users: [nativeUser({ attributes: { email } })] });
+      await handler(signUpEvent({ claim: "true", email, hd }));
+      expect(outcome(), `${email} ${String(hd)}`).toBe(expected);
+      expect(links).toHaveLength(expected === "linked" ? 1 : 0);
+      if (expected !== "linked") expect(lookups).toEqual([]);
+    }
+  });
 
-    const apple = linker({ users: [relayUser] });
-    expect(await apple.handler(signUpEvent({ provider: "SignInWithApple", id: APPLE_ID, claim: "true", email: RELAY }))).toEqual({ linked: "SignInWithApple" });
-    expect(apple.links).toEqual([{ pool: POOL, user: NATIVE, provider: "SignInWithApple", id: APPLE_ID }]);
+  it("links an Apple sign-in only for a private relay or iCloud address", async () => {
+    const cases: [string, string][] = [
+      [RELAY, "linked"],
+      [RELAY.toUpperCase(), "linked"],
+      [ICLOUD, "linked"],
+      [ICLOUD.replace("icloud.com", "me.com"), "linked"],
+      [ICLOUD.replace("icloud.com", "mac.com"), "linked"],
+      // A company address on an Apple ID: Apple doesn't run that mailbox
+      [EMAIL, "not-authoritative"],
+      [GMAIL, "not-authoritative"],
+      ["pat@icloud.com.example.org", "not-authoritative"], // public-safety: allow (made-up address)
+    ];
+    for (const [email, expected] of cases) {
+      const { handler, links, outcome } = linker({ users: [nativeUser({ attributes: { email: email.toLowerCase() } })] });
+      // hd means nothing from Apple
+      await handler(signUpEvent({ provider: "SignInWithApple", id: APPLE_ID, claim: "true", email, hd: expected === "linked" ? null : "example.com" }));
+      expect(outcome(), email).toBe(expected);
+      expect(links).toEqual(expected === "linked" ? [{ pool: POOL, user: NATIVE, provider: "SignInWithApple", id: APPLE_ID }] : []);
+    }
+  });
+
+  it("compares addresses with ASCII case only, so Unicode case folding can't make two match", async () => {
+    expect(asciiLower("Pat.K@Example.COM")).toBe("pat.k@example.com");
+    expect(asciiLower("PAT\u212A")).toBe("pat\u212A");
+    // A provider address with a non-ASCII character isn't used at all
+    const unicode = linker({ users: [nativeUser()] });
+    await unicode.handler(signUpEvent({ claim: "true", email: "pat\u212A@example.com" }));
+    expect(unicode.outcome()).toBe("unusable-email");
+    // A listed account whose address only folds to the provider's isn't a match
+    const folded = linker({ users: [nativeUser({ attributes: { email: "pat\u212A@example.com" } })] });
+    await folded.handler(signUpEvent({ claim: "true", email: "patk@example.com" }));
+    expect(folded.outcome()).toBe("no-account");
   });
 
   it("makes a separate account when no native account has the email, ignoring federated-only users and other addresses", async () => {
@@ -207,10 +302,11 @@ describe("pre sign-up trigger", () => {
   });
 
   it("matches the email case-insensitively, as the pool does", async () => {
-    const { handler, lookups, links } = linker({ users: [nativeUser({ attributes: { email: "Pat@Example.com" } })] });
-    expect(await handler(signUpEvent({ claim: "true", email: " pat@example.com " }))).toEqual({ linked: "Google" });
-    expect(lookups[0]?.email).toBe(EMAIL);
+    const { handler, lookups, links, updates } = linker({ users: [nativeUser({ attributes: { email: "Pat@Example.com" } })] });
+    expect(await handler(signUpEvent({ claim: "true", email: " Pat@Example.com " }))).toEqual({ linked: "Google" });
+    expect(lookups[0]?.email).toBe("Pat@Example.com");
     expect(links).toHaveLength(1);
+    expect(updates[0]?.attributes).toEqual({ [LINKED_EMAIL_ATTRIBUTE]: EMAIL });
   });
 
   it("links to the native account even when a federated-only user shares the email", async () => {
@@ -254,25 +350,43 @@ describe("pre sign-up trigger", () => {
     }
   });
 
-  it("doesn't link a second identity from the same provider, but links another provider", async () => {
-    const withGoogle = nativeUser({ attributes: { identities: identities(["Google", "999"]) } });
+  it("doesn't link a second identity from the same provider, or when the linked identities can't be read", async () => {
+    const withGoogle = nativeUser({ attributes: { identities: identities(["Google", "999"]), [LINKED_EMAIL_ATTRIBUTE]: EMAIL } });
     const again = linker({ users: [withGoogle] });
     await again.handler(signUpEvent({ claim: "true" }));
     expect(again.links).toEqual([]);
+    expect(again.updates).toEqual([]);
     expect(again.outcome()).toBe("already-linked");
-
-    const apple = linker({ users: [withGoogle] });
-    expect(await apple.handler(signUpEvent({ provider: "SignInWithApple", id: APPLE_ID, claim: "true" }))).toEqual({ linked: "SignInWithApple" });
 
     for (const unreadable of ["not json", JSON.stringify({ providerName: "Google" })]) {
       const { handler, links, outcome } = linker({ users: [nativeUser({ attributes: { identities: unreadable } })] });
       await handler(signUpEvent({ claim: "true" }));
-      expect(outcome()).toBe(unreadable === "not json" ? "already-linked" : "linked");
-      expect(links).toHaveLength(unreadable === "not json" ? 0 : 1);
+      expect(outcome()).toBe("already-linked");
+      expect(links).toEqual([]);
     }
-    const { handler, outcome } = linker({ users: [nativeUser({ attributes: { identities: JSON.stringify([null, { providerName: "SignInWithApple" }]) } })] });
+    // Entries that aren't Google or Apple identities don't count
+    const { handler, outcome } = linker({ users: [nativeUser({ attributes: { identities: JSON.stringify([null, { providerName: "Facebook" }, { providerName: 7 }]) } })] });
     await handler(signUpEvent({ claim: "true" }));
     expect(outcome()).toBe("linked");
+  });
+
+  it("links another provider only while the account's email is still the one recorded at its first link", async () => {
+    const linkedGoogle = (attributes: Record<string, string>) => nativeUser({ attributes: { email: ICLOUD, identities: identities(["Google", GOOGLE_ID]), ...attributes } });
+    const apple = () => signUpEvent({ provider: "SignInWithApple", id: APPLE_ID, claim: "true" });
+
+    const same = linker({ users: [linkedGoogle({ [LINKED_EMAIL_ATTRIBUTE]: ICLOUD.toUpperCase() })] });
+    expect(await same.handler(apple())).toEqual({ linked: "SignInWithApple" });
+
+    // Cognito rewrote the email from the linked Google account, which now carries someone else's address
+    const recordings: Record<string, string>[] = [{ [LINKED_EMAIL_ATTRIBUTE]: GMAIL }, {}, { [LINKED_EMAIL_ATTRIBUTE]: "" }];
+    for (const recorded of recordings) {
+      const changed = linker({ users: [linkedGoogle(recorded)] });
+      const event = apple();
+      expect(answerCognito(await changed.handler(event))).toBe(event);
+      expect(changed.updates).toEqual([]);
+      expect(changed.links).toEqual([]);
+      expect(changed.outcome()).toBe("email-changed");
+    }
   });
 
   it("fails the sign-in, making no account, when Cognito can't be asked or can't link, and logs no email, username or provider ID", async () => {
@@ -280,14 +394,19 @@ describe("pre sign-up trigger", () => {
     await expect(lookupFails.handler(signUpEvent({ claim: "true" }))).rejects.toThrow(new Error(FAILED_ERROR));
     expect(lookupFails.logs).toEqual([{ level: "error", message: "Couldn't look for an account to link", data: { provider: "Google", outcome: "lookup-failed", error: "ListUsers failed: 500 InternalErrorException" } }]);
 
-    const linkFails = linker({ users: [nativeUser()], link: async () => { throw new Error("AdminLinkProviderForUser failed: 400 InvalidParameterException"); } });
+    const recordFails = linker({ users: [nativeUser()], update: async () => { throw new Error("AdminUpdateUserAttributes failed: 400 InvalidParameterException"); } });
+    await expect(recordFails.handler(signUpEvent({ claim: "true" }))).rejects.toThrow(new Error(FAILED_ERROR));
+    expect(recordFails.links).toEqual([]);
+    expect(recordFails.logs).toEqual([{ level: "error", message: "Couldn't record the email being linked", data: { provider: "Google", outcome: "record-failed", error: "AdminUpdateUserAttributes failed: 400 InvalidParameterException" } }]);
+
+    const linkFails = linker({ users: [nativeUser({ attributes: { email: ICLOUD } })], link: async () => { throw new Error("AdminLinkProviderForUser failed: 400 InvalidParameterException"); } });
     await expect(linkFails.handler(signUpEvent({ provider: "SignInWithApple", id: APPLE_ID, claim: "true" }))).rejects.toThrow(new Error(FAILED_ERROR));
     expect(linkFails.logs).toEqual([{ level: "error", message: "Couldn't link the sign-in to the existing account", data: { provider: "SignInWithApple", outcome: "link-failed", error: "AdminLinkProviderForUser failed: 400 InvalidParameterException" } }]);
 
     const { handler, logs } = linker({ users: [nativeUser()] });
     await handler(signUpEvent({ claim: "true" }));
-    const text = JSON.stringify([...logs, ...lookupFails.logs, ...linkFails.logs]);
-    for (const secret of [EMAIL, NATIVE, GOOGLE_ID, APPLE_ID, "pat"]) expect(text).not.toContain(secret);
+    const text = JSON.stringify([...logs, ...lookupFails.logs, ...recordFails.logs, ...linkFails.logs]);
+    for (const secret of [EMAIL, ICLOUD, NATIVE, GOOGLE_ID, APPLE_ID, "pat", HD]) expect(text).not.toContain(secret);
     expect(FAILED_ERROR).not.toMatch(/Google|Apple|@/);
     expect(linkedError("Google")).toBe("ACCOUNT_LINKED:Google");
   });
@@ -346,6 +465,15 @@ describe("cognitoLinking", () => {
     expect(c.calls).toEqual([]);
   });
 
+  it("records attributes with AdminUpdateUserAttributes", async () => {
+    const c = client(() => new Response("{}"));
+    await c.updateUserAttributes(POOL, NATIVE, { [LINKED_EMAIL_ATTRIBUTE]: EMAIL });
+    expect(c.sent()).toEqual({
+      target: "AWSCognitoIdentityProviderService.AdminUpdateUserAttributes",
+      body: { UserPoolId: POOL, Username: NATIVE, UserAttributes: [{ Name: LINKED_EMAIL_ATTRIBUTE, Value: EMAIL }] },
+    });
+  });
+
   it("links the provider identity to the native user by its username", async () => {
     const c = client(() => new Response("{}"));
     await c.linkProviderForUser(POOL, NATIVE, "Google", GOOGLE_ID);
@@ -376,6 +504,11 @@ describe("signing in with Google or Apple to an existing account", () => {
   function fakePool(initial: User[]) {
     const users = new Map(initial.map((u) => [u.username, u]));
     const listUsersByEmail: ListUsersByEmail = async (_pool, email) => ({ users: [...users.values()].filter((u) => u.attributes.email === email), more: false });
+    const updateUserAttributes: UpdateUserAttributes = async (_pool, username, attributes) => {
+      const user = users.get(username);
+      if (!user) throw new Error("AdminUpdateUserAttributes failed: 400 UserNotFoundException");
+      Object.assign(user.attributes, attributes);
+    };
     const linkProviderForUser: LinkProviderForUser = async (_pool, nativeUsername, providerName, providerUserId) => {
       const user = users.get(nativeUsername);
       if (!user) throw new Error("AdminLinkProviderForUser failed: 400 UserNotFoundException");
@@ -386,37 +519,41 @@ describe("signing in with Google or Apple to an existing account", () => {
       [...users.values()].find((u) => (JSON.parse(u.attributes.identities ?? "[]") as { providerName: string; userId: string }[]).some((i) => i.providerName === provider && i.userId === id));
 
     /** A provider sign-in as Cognito runs it: an identity it knows signs in as its user; a new one goes through pre sign-up first. */
-    async function providerSignIn(provider: string, id: string, email: string, claim: string): Promise<{ user?: User; error?: string }> {
+    async function providerSignIn(provider: string, id: string, email: string, claim: string, hd: string | null = provider === "Google" ? HD : null): Promise<{ user?: User; error?: string; outcome?: unknown }> {
       const existing = linkedTo(provider, id);
       if (existing) {
-        // Cognito applies the attribute mapping at every provider sign-in
+        // Cognito applies the attribute mapping at every provider sign-in, email included
         existing.attributes[PROVIDER_EMAIL_VERIFIED_ATTRIBUTE] = claim;
+        existing.attributes.email = email;
         return { user: existing };
       }
       const logs: Logged[] = [];
-      const handler = createAccountLinkHandler({ listUsersByEmail, linkProviderForUser, obs: fakeObservability(logs) });
+      const handler = createAccountLinkHandler({ listUsersByEmail, updateUserAttributes, linkProviderForUser, obs: fakeObservability(logs) });
       try {
-        answerCognito(await handler(signUpEvent({ provider, id, email, claim })));
+        answerCognito(await handler(signUpEvent({ provider, id, email, claim, hd })));
       } catch (error) {
         return { error: `PreSignUp failed with error ${(error as Error).message}.` };
       }
+      const outcome = logs.find((l) => l.message === "Account link")?.data.outcome;
       const user: User = { username: `${provider}_${id}`.toLowerCase(), status: "EXTERNAL_PROVIDER", enabled: true, attributes: { sub: "new-sub", email, identities: identities([provider, id]) } };
       users.set(user.username, user);
-      return { user };
+      return { user, outcome };
     }
     return { users, providerSignIn };
   }
 
-  const existing = (): User => ({ username: NATIVE, status: "CONFIRMED", enabled: true, attributes: { sub: NATIVE, email: EMAIL, email_verified: "true" } });
+  const existing = (email = EMAIL, username = NATIVE): User => ({ username, status: "CONFIRMED", enabled: true, attributes: { sub: username, email, email_verified: "true" } });
 
   for (const [provider, id] of PROVIDERS) {
+    const email = emailFor(provider);
     it(`lands a ${provider} sign-in in the existing account after one retry, which stays a native user`, async () => {
-      const pool = fakePool([existing()]);
-      const first = await pool.providerSignIn(provider, id, EMAIL, "true");
+      const pool = fakePool([existing(email)]);
+      const first = await pool.providerSignIn(provider, id, email, "true");
       expect(first).toEqual({ error: `PreSignUp failed with error ACCOUNT_LINKED:${provider}.` });
       expect(pool.users.size).toBe(1);
+      expect(pool.users.get(NATIVE)?.attributes[LINKED_EMAIL_ATTRIBUTE]).toBe(email);
 
-      const { user } = await pool.providerSignIn(provider, id, EMAIL, "true");
+      const { user } = await pool.providerSignIn(provider, id, email, "true");
       if (!user) throw new Error("The retry didn't sign in");
       expect(user.username).toBe(NATIVE);
       expect(user.attributes.sub).toBe(NATIVE);
@@ -439,12 +576,35 @@ describe("signing in with Google or Apple to an existing account", () => {
     });
 
     it(`gives a ${provider} sign-in with an unverified email its own account, never the existing one`, async () => {
-      const pool = fakePool([existing()]);
-      const result = await pool.providerSignIn(provider, id, EMAIL, "false");
+      const pool = fakePool([existing(email)]);
+      const result = await pool.providerSignIn(provider, id, email, "false");
       expect(result.user?.username).toBe(`${provider}_${id}`.toLowerCase());
       expect(pool.users.get(NATIVE)?.attributes.identities).toBeUndefined();
     });
   }
+
+  it("gives an old Google account still carrying a work address its own account, not the address's current owner's", async () => {
+    // A former employee's personal Google account, no Workspace hd, still "verified" for the address
+    const pool = fakePool([existing()]);
+    const result = await pool.providerSignIn("Google", GOOGLE_ID, EMAIL, "true", null);
+    expect(result.outcome).toBe("not-authoritative");
+    expect(result.user?.username).toBe(`google_${GOOGLE_ID}`);
+    expect(pool.users.get(NATIVE)?.attributes.identities).toBeUndefined();
+  });
+
+  it("doesn't let an account whose linked provider email changed capture that address's owner's sign-in", async () => {
+    const attacker = "8f0e5b1c-0000-4000-8000-00000000000a";
+    const pool = fakePool([existing(ICLOUD, attacker)]);
+    // The attacker links their Apple ID, whose email then changes to the victim's Gmail address
+    expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, ICLOUD, "true")).error).toContain("ACCOUNT_LINKED");
+    expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, GMAIL, "true")).user?.username).toBe(attacker);
+    expect(pool.users.get(attacker)?.attributes).toMatchObject({ email: GMAIL, email_verified: "true", [LINKED_EMAIL_ATTRIBUTE]: ICLOUD });
+    // The victim's first Google sign-in isn't linked into the attacker's account
+    const victim = await pool.providerSignIn("Google", GOOGLE_ID, GMAIL, "true", null);
+    expect(victim.error).toBeUndefined();
+    expect(victim.outcome).toBe("email-changed");
+    expect(victim.user?.username).toBe(`google_${GOOGLE_ID}`);
+  });
 
   it("doesn't let an unconfirmed sign-up with someone's address capture their Google sign-in", async () => {
     const squatter: User = { username: NATIVE, status: "UNCONFIRMED", enabled: true, attributes: { sub: NATIVE, email: EMAIL, email_verified: "false" } };

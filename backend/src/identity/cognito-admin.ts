@@ -80,7 +80,10 @@ export function cognitoRequest(options: CognitoAdminOptions): (action: string, b
 }
 
 export function cognitoAdmin(options: CognitoAdminOptions): UpdateUserAttributes {
-  const call = cognitoRequest(options);
+  return updateWith(cognitoRequest(options));
+}
+
+function updateWith(call: ReturnType<typeof cognitoRequest>): UpdateUserAttributes {
   return async (userPoolId, username, attributes) => {
     await call("AdminUpdateUserAttributes", {
       UserPoolId: userPoolId,
@@ -97,10 +100,15 @@ interface ListedUser {
   readonly Attributes?: unknown;
 }
 
-/** ListUsers and AdminLinkProviderForUser, for the account-linking trigger. */
-export function cognitoLinking(options: CognitoAdminOptions): { listUsersByEmail: ListUsersByEmail; linkProviderForUser: LinkProviderForUser } {
+/** ListUsers, AdminUpdateUserAttributes (to record the linked email) and AdminLinkProviderForUser, for the account-linking trigger. */
+export function cognitoLinking(options: CognitoAdminOptions): {
+  listUsersByEmail: ListUsersByEmail;
+  updateUserAttributes: UpdateUserAttributes;
+  linkProviderForUser: LinkProviderForUser;
+} {
   const call = cognitoRequest(options);
   return {
+    updateUserAttributes: updateWith(call),
     async listUsersByEmail(userPoolId, email) {
       if (/["\\]/.test(email)) throw new Error("An email for a ListUsers filter can't contain a quotation mark or backslash");
       // 60 is ListUsers' largest page: more than that sharing one email is refused anyway
