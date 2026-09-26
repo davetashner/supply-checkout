@@ -1,5 +1,6 @@
 import "./theme.js";
 import { use, help } from "./runtime.js";
+import { WEB } from "./build.js";
 import { checkOut, recordReturn, setStock, saveItem } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, newKey, uid, round2, numOrNull } from "./format.js";
 import { lines, lineCharge, totals } from "./sheet-math.js";
@@ -518,10 +519,13 @@ function exportAllModal() {
 $("#tab-sheets").addEventListener("click", () => { ui.tab = "sheets"; ui.sheetId = null; ui.receipt = false; draw(); });
 $("#tab-prices").addEventListener("click", () => { ui.tab = "prices"; ui.receipt = false; draw(); });
 /* ---------- receipts ---------- */
-// Forgotten on sign-out in the web build (DRAFT_KEY in src/aws/session.js)
-const DKEY = "supplyCheckout.receiptDraft";
+// The artifact keeps one draft. The web build's runtime names a key per team (use("drafts"),
+// src/aws/account.js), so it's read once the team is known; its drafts are forgotten on
+// sign-out and when someone else signs in (src/aws/session.js).
+let DKEY = "supplyCheckout.receiptDraft";
 let sampleFn = null, receiptOK = false, draft = null;
-try { draft = JSON.parse(localStorage.getItem(DKEY) || "null"); } catch {}
+const loadDraft = () => { try { draft = JSON.parse(localStorage.getItem(DKEY) || "null"); } catch {} };
+if (!WEB) loadDraft();
 const saveDraft = () => { try { draft ? localStorage.setItem(DKEY, JSON.stringify(draft)) : localStorage.removeItem(DKEY); } catch {} };
 
 function receiptPrompt() {
@@ -856,6 +860,7 @@ draw();
 
 (async () => {
   [db, userNs, dl, sampleFn] = await Promise.all([use("db"), use("user"), use("downloads"), use("sample")]);
+  if (WEB) { const drafts = await use("drafts"); if (drafts) DKEY = drafts.key; loadDraft(); }
   if (sampleFn) { try { const lim = await sampleFn.limits(); receiptOK = !!(lim && lim.images); } catch {} }
   if (userNs) {
     try { myId = await userNs.id(); } catch {}
