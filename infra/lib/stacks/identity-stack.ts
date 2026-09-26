@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { Duration, RemovalPolicy, SecretValue, Validations } from "aws-cdk-lib";
 import { Certificate } from "aws-cdk-lib/aws-certificatemanager";
 import {
@@ -10,6 +11,7 @@ import {
   OAuthScope,
   PasskeyUserVerification,
   ProviderAttribute,
+  StringAttribute,
   UserPool,
   type UserPoolClient,
   UserPoolClientIdentityProvider,
@@ -17,12 +19,18 @@ import {
   UserPoolEmail,
   UserPoolIdentityProviderApple,
   UserPoolIdentityProviderGoogle,
+  UserPoolOperation,
   type IUserPoolIdentityProvider,
 } from "aws-cdk-lib/aws-cognito";
+import { Policy, PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
+import { Architecture, Runtime } from "aws-cdk-lib/aws-lambda";
+import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
+import { LogGroup } from "aws-cdk-lib/aws-logs";
 import { AaaaRecord, ARecord, RecordTarget } from "aws-cdk-lib/aws-route53";
 import { CloudFrontTarget } from "aws-cdk-lib/aws-route53-targets";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
+import { PROVIDER_EMAIL_VERIFIED, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "../../../backend/src/identity/names.js";
 import type { DeploymentConfig } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import {
@@ -33,7 +41,11 @@ import {
   identityProviderSecrets,
   managedLoginBranding,
 } from "../identity.js";
+import { LOG_RETENTION } from "../observability/defaults.js";
+import { bundling } from "./api-stack.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
+
+const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
 
 /**
  * The Cognito user pool, in the primary region only (ADR 0007,
@@ -57,9 +69,17 @@ import { SupplyCheckoutStack } from "./base-stack.js";
  * with 403 `mfa_required` unless `UserMFASettingList` contains
  * `SOFTWARE_TOKEN_MFA`. The web app sets TOTP up with AssociateSoftwareToken
  * and VerifySoftwareToken, which is why the client grants the
- * `aws.cognito.signin.user.admin` scope. No trigger Lambda is needed for the
- * MVP. Later: a pre sign-up trigger to link an Apple or Google sign-in to an
- * existing account with the same email (AdminLinkProviderForUser).
+ * `aws.cognito.signin.user.admin` scope.
+ *
+ * Verified emails from Google and Apple: with either provider on, a pre token
+ * generation trigger (backend/src/identity/email-verified-handler.ts) sets
+ * email_verified from the provider's own claim, which the providers map to
+ * `custom:idp_email_verified` (they can't map email_verified itself: it would
+ * have to be client-writable). A pre authentication trigger keeps Google and
+ * Apple users to their provider, so that claim is fresh whenever it's read
+ * (see addFederatedTriggers). Later: a pre sign-up trigger to link an Apple
+ * or Google sign-in to an existing account with the same email
+ * (AdminLinkProviderForUser, supply-checkout-0b1).
  *
  * The auth. certificate is read from the domain stack's SSM output in this
  * region. When the primary region isn't GLOBAL_SERVICES_REGION, copy that
@@ -70,6 +90,8 @@ export class IdentityStack extends SupplyCheckoutStack {
   readonly webClient: UserPoolClient;
   readonly domain: UserPoolDomain;
   readonly options: IdentityOptions;
+  /** The pre authentication and pre token generation triggers, when Google or Apple sign-in is on. */
+  readonly federatedTriggers?: { readonly signInGuard: NodejsFunction; readonly emailVerified: NodejsFunction };
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "identity", layer: "stateful" });
@@ -90,6 +112,10 @@ export class IdentityStack extends SupplyCheckoutStack {
       autoVerify: { email: true },
       keepOriginal: { email: true },
       standardAttributes: { email: { required: true, mutable: true } },
+      // Google's and Apple's email_verified claim, for the trigger. Defined even
+      // with both providers off, since a custom attribute can't be removed.
+      // Mutable: Cognito rewrites it from the provider at every sign-in.
+      customAttributes: { [PROVIDER_EMAIL_VERIFIED]: new StringAttribute({ mutable: true }) },
       accountRecovery: AccountRecovery.EMAIL_ONLY,
       userVerification: {
         emailSubject: "Your Supply Checkout verification code",
@@ -154,7 +180,9 @@ export class IdentityStack extends SupplyCheckoutStack {
     new AaaaRecord(this, "AuthAliasIpv6", { zone, recordName: names.auth, target });
 
     const providers = this.addSocialProviders(secrets);
+    if (providers.length) this.federatedTriggers = this.addFederatedTriggers();
 
+    const writable = new ClientAttributes().withStandardAttributes({ email: true, givenName: true, familyName: true });
     const appUrl = `https://${names.app}/`;
     const urls = this.options.localhostCallbacks ? [appUrl, `${LOCAL_DEV_ORIGIN}/`] : [appUrl];
     this.webClient = this.userPool.addClient("WebClient", {
@@ -177,8 +205,12 @@ export class IdentityStack extends SupplyCheckoutStack {
       // phone_number_verified: the API trusts a verified email to list and
       // accept invites. Changing `email` keeps the old, verified address until
       // the new one is confirmed with a code (keepOriginal). Attributes an IdP
-      // maps must be in this list, so the IdPs don't map emailVerified.
-      writeAttributes: new ClientAttributes().withStandardAttributes({ email: true, givenName: true, familyName: true }),
+      // maps must be in this list, so the IdPs don't map emailVerified; they
+      // map their claim to custom:idp_email_verified, which the trigger reads
+      // only at a provider sign-in, right after Cognito has rewritten it.
+      writeAttributes: providers.length
+        ? writable.withCustomAttributes(PROVIDER_EMAIL_VERIFIED)
+        : writable,
       preventUserExistenceErrors: true,
       enableTokenRevocation: true,
       accessTokenValidity: Duration.minutes(60),
@@ -224,6 +256,7 @@ export class IdentityStack extends SupplyCheckoutStack {
             email: ProviderAttribute.GOOGLE_EMAIL,
             givenName: ProviderAttribute.GOOGLE_GIVEN_NAME,
             familyName: ProviderAttribute.GOOGLE_FAMILY_NAME,
+            custom: { [PROVIDER_EMAIL_VERIFIED_ATTRIBUTE]: ProviderAttribute.GOOGLE_EMAIL_VERIFIED },
           },
         }),
       );
@@ -241,10 +274,72 @@ export class IdentityStack extends SupplyCheckoutStack {
             email: ProviderAttribute.APPLE_EMAIL,
             givenName: ProviderAttribute.APPLE_FIRST_NAME,
             familyName: ProviderAttribute.APPLE_LAST_NAME,
+            custom: { [PROVIDER_EMAIL_VERIFIED_ATTRIBUTE]: ProviderAttribute.APPLE_EMAIL_VERIFIED },
           },
         }),
       );
     }
     return providers;
+  }
+
+  /**
+   * The triggers for Google and Apple users (backend/src/identity):
+   *
+   * - Pre authentication (sign-in-guard-handler.ts) refuses every native
+   *   sign-in (password, email code, passkey) by a federated-only user, so
+   *   they sign in only through their provider. It needs no AWS permissions.
+   * - Pre token generation (email-verified-handler.ts) sets email_verified
+   *   from the provider's claim at each provider sign-in. It relies on the
+   *   guard: the attribute it reads is user-writable, and is fresh from the
+   *   provider only at a provider sign-in. Its role may also call
+   *   AdminUpdateUserAttributes on this pool.
+   *
+   * The pool names each function (LambdaConfig), so a function can't name
+   * the pool: the grant is a separate policy attached to the role after the
+   * pool exists, and the function doesn't wait for it. The trigger's first
+   * call comes with a sign-in, after the deploy.
+   */
+  private addFederatedTriggers(): { signInGuard: NodejsFunction; emailVerified: NodejsFunction } {
+    const signInGuard = this.trigger("SignInGuard", "sign-in-guard", "Refuses password, email-code and passkey sign-ins by Google and Apple users");
+    this.userPool.addTrigger(UserPoolOperation.PRE_AUTHENTICATION, signInGuard);
+
+    const emailVerified = this.trigger("EmailVerified", "email-verified", "Sets email_verified for Google and Apple users from the provider's own claim");
+    this.userPool.addTrigger(UserPoolOperation.PRE_TOKEN_GENERATION, emailVerified);
+    new Policy(this, "EmailVerifiedUpdateUser", {
+      roles: [emailVerified.role as Role],
+      statements: [
+        new PolicyStatement({
+          sid: "SetEmailVerified",
+          actions: ["cognito-idp:AdminUpdateUserAttributes"],
+          resources: [this.userPool.userPoolArn],
+        }),
+      ],
+    });
+    return { signInGuard, emailVerified };
+  }
+
+  /** A function from backend/src/identity/<name>.ts, with its own log group and a role that can write only to it. */
+  private trigger(id: string, name: string, description: string): NodejsFunction {
+    const logGroup = new LogGroup(this, `${id}Logs`, { retention: LOG_RETENTION });
+    const role = new Role(this, `${id}Role`, {
+      assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
+      description: `Execution role for the user pool's ${name} trigger`,
+    });
+    role.addToPolicy(new PolicyStatement({ actions: ["logs:CreateLogStream", "logs:PutLogEvents"], resources: [logGroup.logGroupArn] }));
+    return new NodejsFunction(this, id, {
+      role,
+      logGroup,
+      entry: `${BACKEND}src/identity/${name}.ts`,
+      projectRoot: BACKEND,
+      depsLockFilePath: `${BACKEND}package-lock.json`,
+      runtime: Runtime.NODEJS_24_X,
+      architecture: Architecture.ARM_64,
+      memorySize: 256,
+      // Cognito waits 5 seconds for a trigger
+      timeout: Duration.seconds(5),
+      description,
+      environment: { NODE_OPTIONS: "--enable-source-maps" },
+      bundling,
+    });
   }
 }
