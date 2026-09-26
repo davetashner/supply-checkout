@@ -3,12 +3,14 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import { Bucket } from "aws-cdk-lib/aws-s3";
 import { AwsSolutionsChecks } from "cdk-nag";
 import { describe, expect, it } from "vitest";
-import type { DeploymentConfig } from "../lib/config.js";
+import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
 import { addSupplyCheckout, type SupplyCheckoutStacks } from "../lib/supply-checkout.js";
 
 // No account: tests synth account-agnostic templates, exactly as CI does, so
 // snapshots never contain an account ID.
-const config: DeploymentConfig = { envName: "prod", regions: ["us-east-1", "us-west-2"], primaryRegion: "us-east-1" };
+// Region names live only in lib/config.ts (ADR 0010); tests use its constants.
+const [EAST, WEST] = APPROVED_REGIONS;
+const config: DeploymentConfig = { envName: "prod", regions: [EAST, WEST], primaryRegion: EAST };
 
 function build(overrides: Partial<DeploymentConfig> = {}) {
   // Version reporting off keeps snapshots stable across CDK upgrades
@@ -29,35 +31,35 @@ describe("stack layout", () => {
   it("creates data, api, realtime and observability per region, plus identity and web in the primary", () => {
     const { stacks } = build();
     expect(names(stacks.all)).toEqual([
-      "supply-checkout-prod-us-east-1-api",
-      "supply-checkout-prod-us-east-1-data",
-      "supply-checkout-prod-us-east-1-identity",
-      "supply-checkout-prod-us-east-1-observability",
-      "supply-checkout-prod-us-east-1-realtime",
-      "supply-checkout-prod-us-east-1-web",
-      "supply-checkout-prod-us-west-2-api",
-      "supply-checkout-prod-us-west-2-data",
-      "supply-checkout-prod-us-west-2-observability",
-      "supply-checkout-prod-us-west-2-realtime",
+      `supply-checkout-prod-${EAST}-api`,
+      `supply-checkout-prod-${EAST}-data`,
+      `supply-checkout-prod-${EAST}-identity`,
+      `supply-checkout-prod-${EAST}-observability`,
+      `supply-checkout-prod-${EAST}-realtime`,
+      `supply-checkout-prod-${EAST}-web`,
+      `supply-checkout-prod-${WEST}-api`,
+      `supply-checkout-prod-${WEST}-data`,
+      `supply-checkout-prod-${WEST}-observability`,
+      `supply-checkout-prod-${WEST}-realtime`,
     ]);
     for (const [region, r] of Object.entries(stacks.regions)) {
       for (const stack of [r.data, r.api, r.realtime, r.observability]) expect(stack.region).toBe(region);
     }
-    expect(stacks.identity.region).toBe("us-east-1");
-    expect(stacks.web.region).toBe("us-east-1");
+    expect(stacks.identity.region).toBe(EAST);
+    expect(stacks.web.region).toBe(EAST);
   });
 
   it("takes the environment and regions as parameters", () => {
-    const { stacks } = build({ envName: "staging", regions: ["us-west-2"], primaryRegion: "us-west-2" });
+    const { stacks } = build({ envName: "staging", regions: [WEST], primaryRegion: WEST });
     expect(names(stacks.all)).toEqual([
-      "supply-checkout-staging-us-west-2-api",
-      "supply-checkout-staging-us-west-2-data",
-      "supply-checkout-staging-us-west-2-identity",
-      "supply-checkout-staging-us-west-2-observability",
-      "supply-checkout-staging-us-west-2-realtime",
-      "supply-checkout-staging-us-west-2-web",
+      `supply-checkout-staging-${WEST}-api`,
+      `supply-checkout-staging-${WEST}-data`,
+      `supply-checkout-staging-${WEST}-identity`,
+      `supply-checkout-staging-${WEST}-observability`,
+      `supply-checkout-staging-${WEST}-realtime`,
+      `supply-checkout-staging-${WEST}-web`,
     ]);
-    expect(inRegion(stacks, "us-west-2").data.isPrimaryRegion).toBe(true);
+    expect(inRegion(stacks, WEST).data.isPrimaryRegion).toBe(true);
   });
 
   it("uses the account from config when given, and none otherwise", () => {
@@ -81,7 +83,7 @@ describe("stack layout", () => {
   it("orders deploys: data and identity before api, api and realtime before observability, all data before web", () => {
     const { stacks } = build();
     const deps = (s: Stack) => s.dependencies.map((d) => d.stackName).sort();
-    const east = inRegion(stacks, "us-east-1");
+    const east = inRegion(stacks, EAST);
     expect(deps(east.api)).toEqual([east.data.stackName, stacks.identity.stackName].sort());
     expect(deps(east.realtime)).toEqual([east.data.stackName]);
     expect(deps(east.observability)).toEqual([east.api.stackName, east.realtime.stackName].sort());
@@ -124,7 +126,7 @@ describe("app table (ADR 0005, ADR 0010)", () => {
 
   it("is one global table in the primary region's data stack, with one replica there", () => {
     const { stacks } = build();
-    const east = inRegion(stacks, "us-east-1");
+    const east = inRegion(stacks, EAST);
     const table = tableProps(east.data);
     expect(table.Properties.Replicas).toHaveLength(1);
     expect(table.Properties.Replicas[0].Region).toBe(east.data.region);
@@ -137,8 +139,8 @@ describe("app table (ADR 0005, ADR 0010)", () => {
   });
 
   it("follows the primary region when that is the other region", () => {
-    const { stacks } = build({ envName: "staging", regions: ["us-west-2"], primaryRegion: "us-west-2" });
-    const west = inRegion(stacks, "us-west-2");
+    const { stacks } = build({ envName: "staging", regions: [WEST], primaryRegion: WEST });
+    const west = inRegion(stacks, WEST);
     const table = tableProps(west.data);
     expect(table.Properties.Replicas.map((r: { Region: string }) => r.Region)).toEqual([west.data.region]);
     expect(table.Properties.TableName).toBe("supply-checkout-staging-app");
@@ -146,7 +148,7 @@ describe("app table (ADR 0005, ADR 0010)", () => {
 
   it("is on-demand, streamed, keyed PK/SK with GSI1, TTL on expiresAt, and retained", () => {
     const { stacks } = build();
-    const template = Template.fromStack(inRegion(stacks, "us-east-1").data);
+    const template = Template.fromStack(inRegion(stacks, EAST).data);
     template.hasResource("AWS::DynamoDB::GlobalTable", {
       DeletionPolicy: "Retain",
       UpdateReplacePolicy: "Retain",
@@ -177,7 +179,7 @@ describe("app table (ADR 0005, ADR 0010)", () => {
 
   it("has PITR, deletion protection and a customer-managed key with rotation on its replica", () => {
     const { stacks } = build();
-    const template = Template.fromStack(inRegion(stacks, "us-east-1").data);
+    const template = Template.fromStack(inRegion(stacks, EAST).data);
     const keys = template.findResources("AWS::KMS::Key");
     const [keyId, ...otherKeys] = Object.keys(keys);
     expect(otherKeys).toEqual([]);
@@ -201,7 +203,7 @@ describe("app table (ADR 0005, ADR 0010)", () => {
 
   it("publishes the table name, ARNs and key ARN to SSM for the other stacks", () => {
     const { stacks } = build();
-    const template = Template.fromStack(inRegion(stacks, "us-east-1").data);
+    const template = Template.fromStack(inRegion(stacks, EAST).data);
     for (const name of ["table-name", "table-arn", "table-stream-arn", "table-key-arn"]) {
       template.hasResourceProperties("AWS::SSM::Parameter", { Name: `/supply-checkout/prod/data/${name}`, Type: "String" });
     }
@@ -209,7 +211,7 @@ describe("app table (ADR 0005, ADR 0010)", () => {
 
   it("keeps the data stack termination-protected", () => {
     const { stacks } = build();
-    expect(inRegion(stacks, "us-east-1").data.terminationProtection).toBe(true);
+    expect(inRegion(stacks, EAST).data.terminationProtection).toBe(true);
   });
 });
 
@@ -221,9 +223,21 @@ describe("cdk-nag", () => {
     expect(report.success).toBe(true);
   });
 
+  // The default build puts identity and web in EAST only. Synth every stack in
+  // each region, as the primary and as the only region, so no stack assumes
+  // where it runs (ADR 0010).
+  it.each(APPROVED_REGIONS)("synths every stack in %s, cdk-nag clean", (region) => {
+    const { app, stacks } = build({ regions: [region], primaryRegion: region });
+    expect(stacks.all).toHaveLength(6);
+    for (const stack of stacks.all) expect(stack.region, stack.stackName).toBe(region);
+    const report = new AwsSolutionsChecks(app).validateScope(app);
+    expect(report.violations).toEqual([]);
+    expect(() => app.synth()).not.toThrow();
+  });
+
   it("is wired into synth and fails it on a finding", () => {
     const { app, stacks } = build();
-    new Bucket(inRegion(stacks, "us-east-1").data, "UnloggedBucket");
+    new Bucket(inRegion(stacks, EAST).data, "UnloggedBucket");
     const report = new AwsSolutionsChecks(app).validateScope(app);
     expect(report.success).toBe(false);
     expect(report.violations.map((v) => v.ruleName)).toContain("AwsSolutions-S1");
@@ -232,7 +246,7 @@ describe("cdk-nag", () => {
 
   it("honours an acknowledged finding", () => {
     const { app, stacks } = build();
-    const bucket = new Bucket(inRegion(stacks, "us-east-1").data, "UnloggedBucket", { enforceSSL: true });
+    const bucket = new Bucket(inRegion(stacks, EAST).data, "UnloggedBucket", { enforceSSL: true });
     Validations.of(bucket).acknowledge({ id: "AwsSolutions-S1", reason: "Test: access logs not needed" });
     const report = new AwsSolutionsChecks(app).validateScope(app);
     expect(report.violations).toEqual([]);

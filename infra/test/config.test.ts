@@ -1,16 +1,34 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { APPROVED_REGIONS, configFromContext, validateConfig } from "../lib/config.js";
+import {
+  ALL_REGIONS,
+  APPROVED_REGIONS,
+  DEFAULT_REGIONS,
+  GLOBAL_SERVICES_REGION,
+  configFromContext,
+  validateConfig,
+} from "../lib/config.js";
+
+// Region names live only in lib/config.ts (ADR 0010); tests use its constants.
+const [EAST, WEST] = APPROVED_REGIONS;
 
 const context = (values: Record<string, unknown>) => ({ tryGetContext: (key: string) => values[key] });
 
+describe("region constants", () => {
+  it("approves two regions, deploys one of them, and keeps global services in the first", () => {
+    expect(APPROVED_REGIONS).toHaveLength(2);
+    expect(DEFAULT_REGIONS).toEqual([EAST]);
+    expect(GLOBAL_SERVICES_REGION).toBe(EAST);
+  });
+});
+
 describe("configFromContext", () => {
-  it("defaults to prod in us-east-1 only, no account", () => {
+  it("defaults to prod in the deployed regions only, no account", () => {
     expect(configFromContext(context({}), {})).toEqual({
       envName: "prod",
       account: undefined,
-      regions: ["us-east-1"],
-      primaryRegion: "us-east-1",
+      regions: [...DEFAULT_REGIONS],
+      primaryRegion: DEFAULT_REGIONS[0],
     });
   });
 
@@ -20,34 +38,41 @@ describe("configFromContext", () => {
   });
 
   it("accepts regions as a comma-separated -c value", () => {
-    const config = configFromContext(context({ envName: "staging", regions: "us-west-2, us-east-1" }), {});
-    expect(config).toMatchObject({ envName: "staging", regions: ["us-west-2", "us-east-1"], primaryRegion: "us-west-2" });
+    const config = configFromContext(context({ envName: "staging", regions: `${WEST}, ${EAST}` }), {});
+    expect(config).toMatchObject({ envName: "staging", regions: [WEST, EAST], primaryRegion: WEST });
+  });
+
+  it("accepts -c regions=all for every approved region", () => {
+    const config = configFromContext(context({ regions: ALL_REGIONS }), {});
+    expect(config).toMatchObject({ regions: [...APPROVED_REGIONS], primaryRegion: EAST });
   });
 
   it("accepts a single region with an explicit primary", () => {
-    const config = configFromContext(context({ envName: "dev", regions: ["us-east-1"], primaryRegion: "us-east-1" }), {});
-    expect(config.regions).toEqual(["us-east-1"]);
+    const config = configFromContext(context({ envName: "dev", regions: [EAST], primaryRegion: EAST }), {});
+    expect(config.regions).toEqual([EAST]);
   });
 });
 
 describe("cdk.json", () => {
-  it("deploys us-east-1 only, with us-west-2 approved for later", () => {
+  it("sets the environment and leaves the regions to lib/config.ts", () => {
     const { context: ctx } = JSON.parse(readFileSync(new URL("../cdk.json", import.meta.url), "utf8"));
-    expect(configFromContext(context(ctx), {})).toMatchObject({ envName: "prod", regions: ["us-east-1"], primaryRegion: "us-east-1" });
-    expect(APPROVED_REGIONS).toContain("us-west-2");
+    expect(ctx).not.toHaveProperty("regions");
+    expect(ctx).not.toHaveProperty("primaryRegion");
+    expect(configFromContext(context(ctx), {})).toMatchObject({ envName: "prod", regions: [EAST], primaryRegion: EAST });
   });
 });
 
 describe("validateConfig", () => {
-  const good = { envName: "prod", regions: ["us-east-1", "us-west-2"], primaryRegion: "us-east-1" };
+  const good = { envName: "prod", regions: [EAST, WEST], primaryRegion: EAST };
+  const unapproved = "xx-nowhere-1";
 
   it.each([
     [{ ...good, envName: "Prod" }, /envName/],
     [{ ...good, envName: "" }, /envName/],
     [{ ...good, regions: [] }, /At least one region/],
-    [{ ...good, regions: ["us-east-1", "us-east-1"] }, /must not repeat/],
-    [{ ...good, regions: ["eu-west-1"], primaryRegion: "eu-west-1" }, /not approved/],
-    [{ ...good, primaryRegion: "eu-west-1" }, /primaryRegion/],
+    [{ ...good, regions: [EAST, EAST] }, /must not repeat/],
+    [{ ...good, regions: [unapproved], primaryRegion: unapproved }, /not approved/],
+    [{ ...good, primaryRegion: unapproved }, /primaryRegion/],
     [{ ...good, account: "123" }, /12-digit/],
   ])("rejects %o", (config, message) => {
     expect(() => validateConfig(config)).toThrow(message);
