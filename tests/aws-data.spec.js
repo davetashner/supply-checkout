@@ -742,5 +742,157 @@ test.describe("inventory edits", () => {
       expectedVersion: 1,
     });
     expect(backend.doc("t1", "products", "SKU1").data).toMatchObject({ cost: 6.25, packSize: 12, note: "keep me" });
+    // The count didn't change, so there's no stock command
+    expect(backend.requests("POST", "/teams/t1/products/SKU1/stock")).toEqual([]);
+  });
+});
+
+// docs/api/commands.md: stock outside a sheet changes only through the stock command, which
+// records why. A PUT replaces the whole item, so it carries the stock it was made against.
+test.describe("stock commands", () => {
+  const STOCK = "/teams/t1/products/SKU1/stock";
+  const toast = (page) => page.locator("#toast");
+  const hideToast = (page) => toast(page).evaluate((t) => { t.hidden = true; });
+  const editStock = async (page, value) => {
+    await page.getByRole("button", { name: "Inventory" }).click();
+    await inventoryRow(page, "Paper towels").click();
+    await modal(page).getByLabel("In storage now").fill(value);
+    await modal(page).getByRole("button", { name: "Save" }).click();
+  };
+  const stockCell = (page, name) => inventoryRow(page, name).locator("td").nth(1);
+
+  test("a new count in the inventory form is a count command, not a document write", async ({ page }) => {
+    const backend = await open(page);
+    await editStock(page, "7");
+    await expect(toast(page)).toHaveText("Saved");
+    await expect(stockCell(page, "Paper towels")).toHaveText("7");
+    // The item keeps the stock it had; the count comes after it's saved
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1").map((r) => r.body)).toEqual([
+      { data: { code: "SKU1", name: "Paper towels, 6 roll", price: 8.5, stock: 10, updatedAt: expect.any(String) }, expectedVersion: 1 },
+    ]);
+    expect(backend.requests("POST", STOCK).map((r) => r.body)).toEqual([{ operationId: expect.stringMatching(/^[0-9a-f-]{36}$/), reason: "count", count: 7 }]);
+    expect(backend.doc("t1", "products", "SKU1")).toMatchObject({ version: 3, data: { stock: 7 } });
+    expect([...backend.operations.values()][0].result).toMatchObject({ reason: "count", count: 7, stockDelta: -3 });
+  });
+
+  test("a new item counted in the form is saved without stock, then counted", async ({ page }) => {
+    const backend = await open(page);
+    await page.getByRole("button", { name: "Inventory" }).click();
+    await page.getByRole("button", { name: "+ Add item" }).click();
+    await modal(page).getByLabel("Barcode (optional)").fill("MOP1");
+    await modal(page).getByLabel("Item name").fill("Mop heads");
+    await modal(page).getByLabel("In storage now").fill("5");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(stockCell(page, "Mop heads")).toHaveText("5");
+    const key = backend.requests("PUT", /^\/teams\/t1\/products\//)[0].path.split("/").pop();
+    const [put] = backend.requests("PUT", `/teams/t1/products/${key}`);
+    expect(put.body.data).not.toHaveProperty("stock");
+    expect(put.body.expectedVersion).toBe(0);
+    expect(backend.requests("POST", `/teams/t1/products/${key}/stock`).map((r) => r.body)).toEqual([{ operationId: expect.any(String), reason: "count", count: 5 }]);
+    expect(backend.doc("t1", "products", key).data.stock).toBe(5);
+  });
+
+  test("clearing the count of a counted item leaves its stock as it is", async ({ page }) => {
+    const backend = await open(page);
+    await editStock(page, "");
+    await expect(toast(page)).toHaveText("Saved");
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1")[0].body.data.stock).toBe(10);
+    expect(backend.requests("POST", STOCK)).toEqual([]);
+    await expect(stockCell(page, "Paper towels")).toHaveText("10");
+  });
+
+  test("counting an item that wasn't counted starts its stock", async ({ page }) => {
+    const docs = seeded();
+    docs["t1/products/SKU1"] = { ...docs["t1/products/SKU1"], stock: undefined };
+    const backend = await open(page, new FakeBackend({ docs }));
+    await editStock(page, "6");
+    await expect(stockCell(page, "Paper towels")).toHaveText("6");
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1")[0].body.data).not.toHaveProperty("stock");
+    expect([...backend.operations.values()][0].result).toMatchObject({ reason: "count", count: 6, stockDelta: 6 });
+  });
+
+  test("a count that failed is sent again with the same operation ID", async ({ page }) => {
+    const backend = await open(page);
+    backend.on("POST", STOCK, { status: 503, body: { error: { code: "unavailable", message: "try again" } } });
+    await editStock(page, "7");
+    await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(10);
+    await hideToast(page);
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(toast(page)).toHaveText("Saved");
+    const [first, retry] = backend.requests("POST", STOCK).map((r) => r.body);
+    expect(retry).toEqual(first);
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(7);
+    // A new edit is a new count
+    await editStock(page, "4");
+    await expect(stockCell(page, "Paper towels")).toHaveText("4");
+    expect(backend.requests("POST", STOCK).at(-1).body.operationId).not.toBe(first.operationId);
+  });
+
+  test("a count refused because the item changed meanwhile shows the latest", async ({ page }) => {
+    const backend = await open(page);
+    backend.on("POST", STOCK, { status: 409, body: { error: { code: "aborted", message: "busy" } } });
+    await editStock(page, "7");
+    await expect(toast(page)).toContainText("Someone else changed this just now");
+    expect(backend.requests("GET", "/teams/t1/products/SKU1")).toHaveLength(1);
+  });
+
+  const draftLine = (o) => ({ name: "", raw: "", qty: 1, price: 0, dest: "stock", code: "", match: "", suggested: false, useName: "inv", usePrice: "receipt", ...o });
+  const openDraft = (page, backend, lines) => open(page, backend, {
+    storage: { local: { "supplyCheckout.receiptDraft": JSON.stringify({ store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines }) } },
+  });
+
+  test("a receipt's general-inventory lines are receipt commands, one per line", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded() });
+    await openDraft(page, backend, [
+      draftLine({ id: "l1", name: "Paper towels", qty: 2, price: 7.994, match: "SKU1" }),
+      draftLine({ id: "l2", name: "Paper towels", qty: 3, price: 8.25, match: "SKU1" }),
+      draftLine({ id: "l3", name: "Mop heads", qty: 4, price: 4.5 }),
+    ]);
+    await connected(page);
+    await page.getByRole("button", { name: "Continue review" }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(toast(page)).toHaveText("9 added to storage");
+    // The item keeps its stock; each line adds its eaches at its price each
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1")[0].body.data.stock).toBe(10);
+    expect(backend.requests("POST", STOCK).map((r) => r.body)).toEqual([
+      { operationId: expect.any(String), reason: "receipt", quantity: 2, unitCost: 7.99 },
+      { operationId: expect.any(String), reason: "receipt", quantity: 3, unitCost: 8.25 },
+    ]);
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(15);
+    const put = backend.requests("PUT", /^\/teams\/t1\/products\/nb-/)[0], key = put.path.split("/").pop();
+    expect(put.body.data).not.toHaveProperty("stock");
+    expect(backend.requests("POST", `/teams/t1/products/${key}/stock`).map((r) => r.body)).toEqual([{ operationId: expect.any(String), reason: "receipt", quantity: 4, unitCost: 4.5 }]);
+    expect(backend.doc("t1", "products", key).data.stock).toBe(4);
+    expect(backend.requests("PATCH", /^\/teams\/t1\//)).toEqual([]);
+  });
+
+  test("saving a receipt again after a failed line adds each line once", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded() });
+    await openDraft(page, backend, [
+      draftLine({ id: "l1", name: "Paper towels", qty: 2, price: 8, match: "SKU1" }),
+      draftLine({ id: "l2", name: "Paper towels", qty: 3, price: 8, match: "SKU1" }),
+    ]);
+    await connected(page);
+    await page.getByRole("button", { name: "Continue review" }).click();
+    // The first line is saved, but its answer is lost
+    backend.on("POST", STOCK, { lost: true });
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(12);
+    // Saving again meets the item as that line left it, and fetches it
+    await hideToast(page);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(toast(page)).toContainText("Someone else changed this just now");
+    expect(backend.requests("GET", "/teams/t1/products/SKU1")).toHaveLength(1);
+    // Then the same two operations: the first is answered from the server's record
+    await hideToast(page);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(toast(page)).toHaveText("5 added to storage");
+    const [lost, again1, again2] = backend.requests("POST", STOCK).map((r) => r.body);
+    expect(again1).toEqual(lost);
+    expect(again2.operationId).not.toBe(lost.operationId);
+    expect(backend.operations.size).toBe(2);
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(15);
   });
 });
