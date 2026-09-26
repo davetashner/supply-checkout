@@ -9,7 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { type Db, connection } from "./client.js";
+import { type Db, connection, storable } from "./client.js";
 import { InvalidInputError, conflictOnConditionFailure } from "./errors.js";
 import { barcode, date, gsi1, keys, prefixes, productKey, strip, teamPartition } from "./keys.js";
 import { type Page, queryAll, queryPage, versionedSet } from "./query.js";
@@ -111,7 +111,7 @@ export async function createSheet(
   await connection(db).doc.send(
     new PutCommand({
       TableName: db.tableName,
-      Item: { ...keys.sheet(ctx.teamId, sheet.id), ...gsi1.sheetsByDate(ctx.teamId, sheet.date, sheet.id), ...sheet },
+      Item: storable({ ...keys.sheet(ctx.teamId, sheet.id), ...gsi1.sheetsByDate(ctx.teamId, sheet.date, sheet.id), ...sheet }),
       ConditionExpression: "attribute_not_exists(PK)",
     }),
   );

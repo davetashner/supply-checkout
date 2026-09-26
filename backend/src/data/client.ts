@@ -75,6 +75,30 @@ export function createDb(options: DbOptions = {}): Db {
   return dbFromConnection({ client, doc, tableName, region });
 }
 
+const isPlainMap = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v) && [Object.prototype, null].includes(Object.getPrototypeOf(v));
+
+/**
+ * An item (or an ExpressionAttributeValues map) in a form the document client
+ * stores as it is. The SDK's marshaller picks a value's type from its
+ * `constructor` property, so a nested map with a "constructor" key (a sheet
+ * line for a product keyed "constructor") would be refused, or stored as the
+ * wrong type if that line's `name` were "String", say. Such a map goes as a
+ * Map, whose entries can't hide its constructor. The item's own attributes
+ * are marshalled one by one, so only nested maps need it. (A "__proto__" key
+ * would be dropped on the way; productKey() and the document checks refuse it.)
+ */
+export function storable(item: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(item).map(([k, v]) => [k, storableValue(v)]));
+}
+
+function storableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(storableValue);
+  if (!isPlainMap(value)) return value;
+  const entries = Object.entries(value).map(([k, v]) => [k, storableValue(v)] as const);
+  return Object.hasOwn(value, "constructor") ? new Map(entries) : Object.fromEntries(entries);
+}
+
 /** Closes the handle's connections. For a cache that evicts handles. */
 export function closeDb(db: Db): void {
   connection(db).client.destroy();
