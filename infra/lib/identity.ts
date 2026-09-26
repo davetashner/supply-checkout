@@ -27,7 +27,7 @@ export const identityOutputParameters = (envName: string) => {
 
 /**
  * Secrets Manager secrets the operator creates before turning on a social
- * provider (see the README's "Sign-in" section). Each is a JSON object; the
+ * provider (see "Sign-in" in docs/infrastructure.md). Each is a JSON object; the
  * stack reads the fields with CloudFormation dynamic references at deploy
  * time, so no value is ever in a template or this repository.
  */

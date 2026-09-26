@@ -63,7 +63,7 @@ import { SupplyCheckoutStack } from "./base-stack.js";
  *
  * The auth. certificate is read from the domain stack's SSM output in this
  * region. When the primary region isn't GLOBAL_SERVICES_REGION, copy that
- * parameter here first (see the README).
+ * parameter here first (see "Sign-in" in docs/infrastructure.md).
  */
 export class IdentityStack extends SupplyCheckoutStack {
   readonly userPool: UserPool;

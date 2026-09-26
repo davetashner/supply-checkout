@@ -4,7 +4,7 @@
 // created by hand in the prod account when the domain was delegated from
 // Namecheap. Every other environment serves `<envName>.<domain>` from a zone
 // in its own account, delegated from the prod zone with an NS record (see
-// DomainStack and the README's "Domain and email" section).
+// DomainStack and "Domain and email" in docs/infrastructure.md).
 import { type IPublicHostedZone, PublicHostedZone } from "aws-cdk-lib/aws-route53";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";

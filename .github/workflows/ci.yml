@@ -213,7 +213,7 @@ jobs:
           # build runs on claude.ai, which Chrome and iPhone Safari cover. Edge is
           # branded Microsoft Edge (a system package), not Playwright's Chromium.
           # Samsung Internet shares Android Chrome's engine; see "Supported
-          # browsers" in README.md.
+          # browsers" in docs/testing.md.
           more='[
             {"build": "web", "project": "desktop-firefox", "browser": "firefox", "coverage": ""},
             {"build": "web", "project": "desktop-safari", "browser": "webkit", "coverage": ""},

@@ -1,0 +1,1796 @@
+{
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Supply Checkout observability stack (stateless)",
+        "Name": "/supply-checkout/prod/observability/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "observability",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": "{\"stackName\":\"supply-checkout-prod-us-east-1-observability\",\"layer\":\"stateless\"}"
+      }
+    },
+    "AlarmTopicsKey1622932D": {
+      "Type": "AWS::KMS::Key",
+      "Properties": {
+        "Description": "Encrypts the Supply Checkout prod alarm topics",
+        "EnableKeyRotation": true,
+        "KeyPolicy": {
+          "Statement": [
+            {
+              "Action": "kms:*",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Resource": "*"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:GenerateDataKey*"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudwatch.amazonaws.com"
+              },
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
+    },
+    "AlarmTopicsP1E7C597D3": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "DisplayName": "Supply Checkout P1",
+        "KmsMasterKeyId": {
+          "Fn::GetAtt": [
+            "AlarmTopicsKey1622932D",
+            "Arn"
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "TopicName": "supply-checkout-prod-alarms-p1"
+      }
+    },
+    "AlarmTopicsP1Policy93E4769E": {
+      "Type": "AWS::SNS::TopicPolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              },
+              "Effect": "Deny",
+              "Principal": "*",
+              "Resource": {
+                "Ref": "AlarmTopicsP1E7C597D3"
+              },
+              "Sid": "AllowPublishThroughSSLOnly"
+            },
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":cloudwatch:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":alarm:*"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudwatch.amazonaws.com"
+              },
+              "Resource": {
+                "Ref": "AlarmTopicsP1E7C597D3"
+              },
+              "Sid": "AllowCloudWatchAlarmsToPublish"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Topics": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ]
+      }
+    },
+    "AlarmTopicsP213C63151": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "DisplayName": "Supply Checkout P2",
+        "KmsMasterKeyId": {
+          "Fn::GetAtt": [
+            "AlarmTopicsKey1622932D",
+            "Arn"
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "TopicName": "supply-checkout-prod-alarms-p2"
+      }
+    },
+    "AlarmTopicsP2Policy8BE19EA4": {
+      "Type": "AWS::SNS::TopicPolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              },
+              "Effect": "Deny",
+              "Principal": "*",
+              "Resource": {
+                "Ref": "AlarmTopicsP213C63151"
+              },
+              "Sid": "AllowPublishThroughSSLOnly"
+            },
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":cloudwatch:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":alarm:*"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudwatch.amazonaws.com"
+              },
+              "Resource": {
+                "Ref": "AlarmTopicsP213C63151"
+              },
+              "Sid": "AllowCloudWatchAlarmsToPublish"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Topics": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ]
+      }
+    },
+    "AlarmTopicsP1email1FEE43FED": {
+      "Type": "AWS::SNS::Subscription",
+      "Properties": {
+        "Endpoint": {
+          "Ref": "SsmParameterValuesupplycheckoutprodalarmsemail1C96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "Protocol": "email",
+        "TopicArn": {
+          "Ref": "AlarmTopicsP1E7C597D3"
+        }
+      }
+    },
+    "AlarmTopicsP1sms142D9F5F2": {
+      "Type": "AWS::SNS::Subscription",
+      "Properties": {
+        "Endpoint": {
+          "Ref": "SsmParameterValuesupplycheckoutprodalarmssms1C96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "Protocol": "sms",
+        "TopicArn": {
+          "Ref": "AlarmTopicsP1E7C597D3"
+        }
+      }
+    },
+    "AlarmTopicsP2email1BAD7C8A1": {
+      "Type": "AWS::SNS::Subscription",
+      "Properties": {
+        "Endpoint": {
+          "Ref": "SsmParameterValuesupplycheckoutprodalarmsemail1C96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "Protocol": "email",
+        "TopicArn": {
+          "Ref": "AlarmTopicsP213C63151"
+        }
+      }
+    },
+    "JourneyAlarmsfunctionsfailing65AA3C89": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "AlarmDescription": "P1 Functions failing (Every journey, us-east-1). Lambda Errors above 1% of invocations for 5 minutes, across every function in the region, once there are at least 20 invocations. Per-function alarms come with the functions. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p1-functions-failing",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Expression": "IF(d >= 20, 100 * FILL(n, 0) / d, 0)",
+            "Id": "expr_1",
+            "Label": "Lambda error rate % (us-east-1)",
+            "ReturnData": true
+          },
+          {
+            "Id": "n",
+            "Label": "Lambda Errors (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "MetricName": "Errors",
+                "Namespace": "AWS/Lambda"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "d",
+            "Label": "Lambda Invocations (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "MetricName": "Invocations",
+                "Namespace": "AWS/Lambda"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 1,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsfunctionsthrottled402B6771": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Functions throttled (Every journey, us-east-1). Any Lambda throttles for 5 minutes, across every function in the region. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-functions-throttled",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "Lambda Throttles (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "MetricName": "Throttles",
+                "Namespace": "AWS/Lambda"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsapierrorsF3DBF597": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "AlarmDescription": "P1 API errors (Every journey, us-east-1). API Gateway 5xx above 2% of requests for 5 minutes, once there are at least 20 requests. Across all of the API's routes: per-route metrics need detailed metrics, billed per route; the access logs have the route. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p1-api-errors",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Expression": "IF(d >= 20, 100 * FILL(n, 0) / d, 0)",
+            "Id": "expr_1",
+            "Label": "API 5xx rate % (us-east-1)",
+            "ReturnData": true
+          },
+          {
+            "Id": "n",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "ApiId",
+                    "Value": {
+                      "Ref": "SsmParameterValuesupplycheckoutprodapiapiidC96584B6F00A464EAD1953AFF4B05118Parameter"
+                    }
+                  }
+                ],
+                "MetricName": "5xx",
+                "Namespace": "AWS/ApiGateway"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "d",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "ApiId",
+                    "Value": {
+                      "Ref": "SsmParameterValuesupplycheckoutprodapiapiidC96584B6F00A464EAD1953AFF4B05118Parameter"
+                    }
+                  }
+                ],
+                "MetricName": "Count",
+                "Namespace": "AWS/ApiGateway"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 2,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsapislow4CCA5606": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 API slow (Every journey, us-east-1). API Gateway Latency p95 above 2 seconds over 10 minutes. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-api-slow",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "ApiId",
+            "Value": {
+              "Ref": "SsmParameterValuesupplycheckoutprodapiapiidC96584B6F00A464EAD1953AFF4B05118Parameter"
+            }
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "ExtendedStatistic": "p95",
+        "MetricName": "Latency",
+        "Namespace": "AWS/ApiGateway",
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Period": 600,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 2000,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsdatabaseerrors566EB9EC": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "AlarmDescription": "P1 Database errors (Every journey, us-east-1). Any DynamoDB SystemErrors on the app table for 5 minutes. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p1-database-errors",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Expression": "FILL(e0_us_east_1, 0) + FILL(e1_us_east_1, 0) + FILL(e2_us_east_1, 0) + FILL(e3_us_east_1, 0) + FILL(e4_us_east_1, 0) + FILL(e5_us_east_1, 0) + FILL(e6_us_east_1, 0)",
+            "Id": "expr_1",
+            "Label": "DynamoDB system errors (us-east-1)",
+            "ReturnData": true
+          },
+          {
+            "Id": "e0_us_east_1",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Operation",
+                    "Value": "GetItem"
+                  },
+                  {
+                    "Name": "TableName",
+                    "Value": "supply-checkout-prod-app"
+                  }
+                ],
+                "MetricName": "SystemErrors",
+                "Namespace": "AWS/DynamoDB"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "e1_us_east_1",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Operation",
+                    "Value": "PutItem"
+                  },
+                  {
+                    "Name": "TableName",
+                    "Value": "supply-checkout-prod-app"
+                  }
+                ],
+                "MetricName": "SystemErrors",
+                "Namespace": "AWS/DynamoDB"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "e2_us_east_1",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Operation",
+                    "Value": "UpdateItem"
+                  },
+                  {
+                    "Name": "TableName",
+                    "Value": "supply-checkout-prod-app"
+                  }
+                ],
+                "MetricName": "SystemErrors",
+                "Namespace": "AWS/DynamoDB"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "e3_us_east_1",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Operation",
+                    "Value": "DeleteItem"
+                  },
+                  {
+                    "Name": "TableName",
+                    "Value": "supply-checkout-prod-app"
+                  }
+                ],
+                "MetricName": "SystemErrors",
+                "Namespace": "AWS/DynamoDB"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "e4_us_east_1",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Operation",
+                    "Value": "Query"
+                  },
+                  {
+                    "Name": "TableName",
+                    "Value": "supply-checkout-prod-app"
+                  }
+                ],
+                "MetricName": "SystemErrors",
+                "Namespace": "AWS/DynamoDB"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "e5_us_east_1",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Operation",
+                    "Value": "TransactGetItems"
+                  },
+                  {
+                    "Name": "TableName",
+                    "Value": "supply-checkout-prod-app"
+                  }
+                ],
+                "MetricName": "SystemErrors",
+                "Namespace": "AWS/DynamoDB"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "e6_us_east_1",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Operation",
+                    "Value": "TransactWriteItems"
+                  },
+                  {
+                    "Name": "TableName",
+                    "Value": "supply-checkout-prod-app"
+                  }
+                ],
+                "MetricName": "SystemErrors",
+                "Namespace": "AWS/DynamoDB"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsdatabasethrottledBEF69ED0": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Database throttled (Every journey, us-east-1). Any read or write throttle events on the app table for 5 minutes. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-database-throttled",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Expression": "FILL(r_us_east_1, 0) + FILL(w_us_east_1, 0)",
+            "Id": "expr_1",
+            "Label": "DynamoDB throttles (us-east-1)",
+            "ReturnData": true
+          },
+          {
+            "Id": "r_us_east_1",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "TableName",
+                    "Value": "supply-checkout-prod-app"
+                  }
+                ],
+                "MetricName": "ReadThrottleEvents",
+                "Namespace": "AWS/DynamoDB"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "w_us_east_1",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "TableName",
+                    "Value": "supply-checkout-prod-app"
+                  }
+                ],
+                "MetricName": "WriteThrottleEvents",
+                "Namespace": "AWS/DynamoDB"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsemailbouncing4BE2ED7E": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "AlarmDescription": "P1 Email bouncing (J3, us-east-1). SES Reputation.BounceRate above 4%. AWS reviews accounts at 5% and can pause sending at 10%. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p1-email-bouncing",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "MetricName": "Reputation.BounceRate",
+        "Namespace": "AWS/SES",
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Period": 900,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0.04,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsemailcomplaintsCE6F6B33": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "AlarmDescription": "P1 Email complaints (J3, us-east-1). SES Reputation.ComplaintRate above 0.08%. AWS reviews at 0.1%. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p1-email-complaints",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "MetricName": "Reputation.ComplaintRate",
+        "Namespace": "AWS/SES",
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Period": 900,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0.0008,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmswritesrejected25F2F667": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Writes rejected (J4, us-east-1). ConditionalWriteConflicts above 5% of Writes over 15 minutes, once there are at least 20 writes. A spike means a sync bug. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-writes-rejected",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Expression": "IF(d >= 20, 100 * FILL(n, 0) / d, 0)",
+            "Id": "expr_1",
+            "Label": "Write conflict rate % (us-east-1)",
+            "ReturnData": true
+          },
+          {
+            "Id": "n",
+            "Label": "ConditionalWriteConflicts (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "ConditionalWriteConflicts",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 900,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "d",
+            "Label": "Writes (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "Writes",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 900,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 5,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsliveupdatesfailing1E8DF5CD": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Live updates failing (J4, us-east-1). LiveUpdateFailures above 1% of LiveUpdates over 10 minutes, once there are at least 20 events: the stream consumer can't publish to AppSync Events. Failed batches are retried; see Live updates dropped. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-live-updates-failing",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Expression": "IF(d >= 20, 100 * FILL(n, 0) / d, 0)",
+            "Id": "expr_1",
+            "Label": "Live update failure rate % (us-east-1)",
+            "ReturnData": true
+          },
+          {
+            "Id": "n",
+            "Label": "LiveUpdateFailures (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "LiveUpdateFailures",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 600,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "d",
+            "Label": "LiveUpdates (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "LiveUpdates",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 600,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 1,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsliveupdatesdelayed49176275": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Live updates delayed (J4, us-east-1). The stream consumer's IteratorAge above 30 seconds at its maximum for 5 minutes: changes reach other devices late (the goal is 2 seconds). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-live-updates-delayed",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "FunctionName",
+            "Value": "supply-checkout-prod-live-updates"
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "IteratorAge",
+        "Namespace": "AWS/Lambda",
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Period": 300,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 30000,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsliveupdatesdroppedD01A2248": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Live updates dropped (J4, us-east-1). Any message in the stream consumer's dead-letter queue: a batch of changes was never published. Clients catch up when they reconnect or resync; the message says which stream records to look at. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-live-updates-dropped",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "QueueName",
+            "Value": "supply-checkout-prod-live-updates-dlq"
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Namespace": "AWS/SQS",
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Period": 300,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsreceiptreadingfailing0B24FC36": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Receipt reading failing (J5, us-east-1). ReceiptReadFailures above 10% of ReceiptReads over 15 minutes, once there are at least 5 reads. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-receipt-reading-failing",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Expression": "IF(d >= 5, 100 * FILL(n, 0) / d, 0)",
+            "Id": "expr_1",
+            "Label": "Receipt failure rate % (us-east-1)",
+            "ReturnData": true
+          },
+          {
+            "Id": "n",
+            "Label": "ReceiptReadFailures (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "ReceiptReadFailures",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 900,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "d",
+            "Label": "ReceiptReads (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "ReceiptReads",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 900,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 10,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmscheckoutbroken12502696": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "AlarmDescription": "P1 Checkout broken (J7, us-east-1). Any CheckoutSessionErrors for 5 minutes. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p1-checkout-broken",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "CheckoutSessionErrors (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "CheckoutSessionErrors",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmswebhooksignaturefailures49B70E3B": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "AlarmDescription": "P1 Webhook signature failures (J7, us-east-1). Any WebhookSignatureFailures. Usually a rotated or wrong signing secret. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p1-webhook-signature-failures",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "WebhookSignatureFailures (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "WebhookSignatureFailures",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "AlarmTopicP1ParamCE612988": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "SNS topic for P1 alarms in this region",
+        "Name": "/supply-checkout/prod/observability/alarm-topic-p1-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "observability",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "AlarmTopicsP1E7C597D3"
+        }
+      }
+    },
+    "AlarmTopicP2ParamF092D49E": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "SNS topic for P2 alarms in this region",
+        "Name": "/supply-checkout/prod/observability/alarm-topic-p2-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "observability",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "AlarmTopicsP213C63151"
+        }
+      }
+    },
+    "Dashboard7A714131": {
+      "Type": "AWS::CloudWatch::Dashboard",
+      "Properties": {
+        "DashboardBody": {
+          "Fn::Join": [
+            "",
+            [
+              "{\"widgets\":[{\"type\":\"text\",\"width\":24,\"height\":3,\"x\":0,\"y\":0,\"properties\":{\"markdown\":\"# Supply Checkout prod\\n\\nRegions: us-east-1, us-west-2. Every line is labelled with its region.\\n\\nAlarms and thresholds: docs/journeys.md, *Alarms for blocked journeys*.\"}},{\"type\":\"alarm\",\"width\":24,\"height\":4,\"x\":0,\"y\":3,\"properties\":{\"title\":\"Alarms\",\"alarms\":[\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmsfunctionsfailing65AA3C89",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmsfunctionsthrottled402B6771",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmsapierrorsF3DBF597",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmsapislow4CCA5606",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmsdatabaseerrors566EB9EC",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmsdatabasethrottledBEF69ED0",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmsemailbouncing4BE2ED7E",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmsemailcomplaintsCE6F6B33",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmswritesrejected25F2F667",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmsliveupdatesfailing1E8DF5CD",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmsliveupdatesdelayed49176275",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmsliveupdatesdroppedD01A2248",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmsreceiptreadingfailing0B24FC36",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmscheckoutbroken12502696",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmswebhooksignaturefailures49B70E3B",
+                  "Arn"
+                ]
+              },
+              "\"]}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":7,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Traffic: API requests\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[{\"label\":\"API requests (us-east-1)\",\"expression\":\"SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"Count\\\"', 'Sum', 300))\"}],[{\"label\":\"API requests (us-west-2)\",\"expression\":\"SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"Count\\\"', 'Sum', 300))\",\"region\":\"us-west-2\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":8,\"y\":7,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Traffic: Lambda invocations\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"AWS/Lambda\",\"Invocations\",{\"label\":\"Lambda Invocations (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Invocations\",{\"label\":\"Lambda Invocations (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":16,\"y\":7,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Traffic: API 4xx\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[{\"label\":\"API 4xx (us-east-1)\",\"expression\":\"SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"4xx\\\"', 'Sum', 300))\"}],[{\"label\":\"API 4xx (us-west-2)\",\"expression\":\"SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"4xx\\\"', 'Sum', 300))\",\"region\":\"us-west-2\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Errors: API 5xx rate %\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[{\"label\":\"API 5xx rate % (us-east-1)\",\"expression\":\"100 * SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"5xx\\\"', 'Sum', 300)) / SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"Count\\\"', 'Sum', 300))\"}],[{\"label\":\"API 5xx rate % (us-west-2)\",\"expression\":\"100 * SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"5xx\\\"', 'Sum', 300)) / SUM(SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"Count\\\"', 'Sum', 300))\",\"region\":\"us-west-2\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":8,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Errors: Lambda errors and throttles\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"AWS/Lambda\",\"Errors\",{\"label\":\"Lambda Errors (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Throttles\",{\"label\":\"Lambda Throttles (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Errors\",{\"label\":\"Lambda Errors (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Throttles\",{\"label\":\"Lambda Throttles (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":16,\"y\":13,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Errors: DynamoDB system errors and throttles\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[{\"label\":\"DynamoDB system errors (us-east-1)\",\"expression\":\"FILL(e0_us_east_1, 0) + FILL(e1_us_east_1, 0) + FILL(e2_us_east_1, 0) + FILL(e3_us_east_1, 0) + FILL(e4_us_east_1, 0) + FILL(e5_us_east_1, 0) + FILL(e6_us_east_1, 0)\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"GetItem\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e0_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"PutItem\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e1_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"UpdateItem\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e2_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"DeleteItem\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e3_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"Query\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e4_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"TransactGetItems\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e5_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"TransactWriteItems\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e6_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[{\"label\":\"DynamoDB throttles (us-east-1)\",\"expression\":\"FILL(r_us_east_1, 0) + FILL(w_us_east_1, 0)\"}],[\"AWS/DynamoDB\",\"ReadThrottleEvents\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"r_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"WriteThrottleEvents\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"w_us_east_1\",\"visible\":false,\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[{\"label\":\"DynamoDB system errors (us-west-2)\",\"expression\":\"FILL(e0_us_west_2, 0) + FILL(e1_us_west_2, 0) + FILL(e2_us_west_2, 0) + FILL(e3_us_west_2, 0) + FILL(e4_us_west_2, 0) + FILL(e5_us_west_2, 0) + FILL(e6_us_west_2, 0)\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"GetItem\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e0_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"PutItem\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e1_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"UpdateItem\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e2_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"DeleteItem\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e3_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"Query\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e4_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"TransactGetItems\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e5_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"SystemErrors\",\"Operation\",\"TransactWriteItems\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"e6_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[{\"label\":\"DynamoDB throttles (us-west-2)\",\"expression\":\"FILL(r_us_west_2, 0) + FILL(w_us_west_2, 0)\"}],[\"AWS/DynamoDB\",\"ReadThrottleEvents\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"r_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"WriteThrottleEvents\",\"TableName\",\"supply-checkout-prod-app\",{\"id\":\"w_us_west_2\",\"visible\":false,\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":12,\"height\":6,\"x\":0,\"y\":19,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Latency: API p95 (ms)\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[{\"label\":\"API p95 latency (us-east-1)\",\"expression\":\"SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"Latency\\\"', 'p95', 300)\"}],[{\"label\":\"API p95 latency (us-west-2)\",\"expression\":\"SEARCH('{AWS/ApiGateway,ApiId} MetricName=\\\"Latency\\\"', 'p95', 300)\",\"region\":\"us-west-2\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":12,\"height\":6,\"x\":12,\"y\":19,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Latency: Lambda duration p95 (ms)\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"AWS/Lambda\",\"Duration\",{\"label\":\"Lambda Duration (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"p95\"}],[\"AWS/Lambda\",\"Duration\",{\"label\":\"Lambda Duration (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"p95\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":25,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J4: checkouts and returns\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"Checkouts\",\"Region\",\"us-east-1\",{\"label\":\"Checkouts (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"Returns\",\"Region\",\"us-east-1\",{\"label\":\"Returns (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"Checkouts\",\"Region\",\"us-west-2\",{\"label\":\"Checkouts (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"Returns\",\"Region\",\"us-west-2\",{\"label\":\"Returns (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":25,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J4: writes and conflicts\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"Writes\",\"Region\",\"us-east-1\",{\"label\":\"Writes (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ConditionalWriteConflicts\",\"Region\",\"us-east-1\",{\"label\":\"ConditionalWriteConflicts (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"Writes\",\"Region\",\"us-west-2\",{\"label\":\"Writes (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ConditionalWriteConflicts\",\"Region\",\"us-west-2\",{\"label\":\"ConditionalWriteConflicts (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":25,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J5: receipt reads\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"ReceiptReads\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptReads (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptReadFailures\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptReadFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptReads\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptReads (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptReadFailures\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptReadFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":25,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J5: receipt tokens\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"ReceiptTokens\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptTokens (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptTokens\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptTokens (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":31,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J1: sign-ups\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"SignUps\",\"Region\",\"us-east-1\",{\"label\":\"SignUps (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SignUps\",\"Region\",\"us-west-2\",{\"label\":\"SignUps (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":31,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: invites\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"InvitesSent\",\"Region\",\"us-east-1\",{\"label\":\"InvitesSent (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesAccepted\",\"Region\",\"us-east-1\",{\"label\":\"InvitesAccepted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesSent\",\"Region\",\"us-west-2\",{\"label\":\"InvitesSent (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"InvitesAccepted\",\"Region\",\"us-west-2\",{\"label\":\"InvitesAccepted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":31,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: billing errors\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"CheckoutSessionErrors\",\"Region\",\"us-east-1\",{\"label\":\"CheckoutSessionErrors (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WebhookSignatureFailures\",\"Region\",\"us-east-1\",{\"label\":\"WebhookSignatureFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"CheckoutSessionErrors\",\"Region\",\"us-west-2\",{\"label\":\"CheckoutSessionErrors (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WebhookSignatureFailures\",\"Region\",\"us-west-2\",{\"label\":\"WebhookSignatureFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":31,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J4: live updates\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdates (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdateFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdates (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdateFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
+            ]
+          ]
+        },
+        "DashboardName": "supply-checkout-prod",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    }
+  },
+  "Parameters": {
+    "SsmParameterValuesupplycheckoutprodalarmsemail1C96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/alarms/email-1"
+    },
+    "SsmParameterValuesupplycheckoutprodalarmssms1C96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/alarms/sms-1"
+    },
+    "SsmParameterValuesupplycheckoutprodapiapiidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/api/api-id"
+    },
+    "BootstrapVersion": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+    }
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5"
+                  ],
+                  {
+                    "Ref": "BootstrapVersion"
+                  }
+                ]
+              }
+            ]
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,1119 @@
+{
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Supply Checkout realtime stack (stateless)",
+        "Name": "/supply-checkout/prod/realtime/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "realtime",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": "{\"stackName\":\"supply-checkout-prod-us-east-1-realtime\",\"layer\":\"stateless\"}"
+      }
+    },
+    "AuthorizerLogsBA5DABC9": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "realtime"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "AuthorizerRole8EA4615E": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the realtime authorizer function",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "realtime"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "AuthorizerRoleDefaultPolicyE4B7F89A": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "AuthorizerLogsBA5DABC9",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "dynamodb:GetItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "TEAM#*"
+                  ]
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "TeamMembershipReads"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "dynamodb.",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ".amazonaws.com"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "AuthorizerRoleDefaultPolicyE4B7F89A",
+        "Roles": [
+          {
+            "Ref": "AuthorizerRole8EA4615E"
+          }
+        ]
+      }
+    },
+    "AuthorizerBD825682": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "AppSync Events authorizer: Cognito access token, and team membership to subscribe",
+        "Environment": {
+          "Variables": {
+            "NODE_OPTIONS": "--enable-source-maps",
+            "TABLE_NAME": "supply-checkout-prod-app",
+            "USER_POOL_ID": {
+              "Ref": "SsmParameterValuesupplycheckoutprodidentityuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter"
+            },
+            "CLIENT_ID": {
+              "Ref": "SsmParameterValuesupplycheckoutprodidentitywebclientidC96584B6F00A464EAD1953AFF4B05118Parameter"
+            },
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "SUPPLY_CHECKOUT_ENV": "prod"
+          }
+        },
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "AuthorizerLogsBA5DABC9"
+          }
+        },
+        "MemorySize": 512,
+        "Role": {
+          "Fn::GetAtt": [
+            "AuthorizerRole8EA4615E",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "realtime"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 10,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "AuthorizerRoleDefaultPolicyE4B7F89A",
+        "AuthorizerRole8EA4615E"
+      ]
+    },
+    "AuthorizerEventApiappsync2CB983BD": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "AuthorizerBD825682",
+            "Arn"
+          ]
+        },
+        "Principal": "appsync.amazonaws.com",
+        "SourceArn": {
+          "Fn::GetAtt": [
+            "EventApiE141E6C0",
+            "ApiArn"
+          ]
+        }
+      }
+    },
+    "AuthorizerXRayWrite84C0A21E": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTraceSegments",
+                "xray:PutTelemetryRecords"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "AuthorizerXRayWrite84C0A21E",
+        "Roles": [
+          {
+            "Ref": "AuthorizerRole8EA4615E"
+          }
+        ]
+      }
+    },
+    "ApiLogsRole096B25EE": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "appsync.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Lets the Event API write its own log group",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "realtime"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "ApiLogsRoleDefaultPolicy0C788AA4": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "ApiLogs3D05D88B",
+                  "Arn"
+                ]
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "ApiLogsRoleDefaultPolicy0C788AA4",
+        "Roles": [
+          {
+            "Ref": "ApiLogsRole096B25EE"
+          }
+        ]
+      }
+    },
+    "EventApiE141E6C0": {
+      "Type": "AWS::AppSync::Api",
+      "Properties": {
+        "EventConfig": {
+          "AuthProviders": [
+            {
+              "AuthType": "AWS_IAM"
+            },
+            {
+              "AuthType": "AWS_LAMBDA",
+              "LambdaAuthorizerConfig": {
+                "AuthorizerResultTtlInSeconds": 0,
+                "AuthorizerUri": {
+                  "Fn::GetAtt": [
+                    "AuthorizerBD825682",
+                    "Arn"
+                  ]
+                }
+              }
+            }
+          ],
+          "ConnectionAuthModes": [
+            {
+              "AuthType": "AWS_LAMBDA"
+            }
+          ],
+          "DefaultPublishAuthModes": [
+            {
+              "AuthType": "AWS_IAM"
+            }
+          ],
+          "DefaultSubscribeAuthModes": [
+            {
+              "AuthType": "AWS_LAMBDA"
+            }
+          ],
+          "LogConfig": {
+            "CloudWatchLogsRoleArn": {
+              "Fn::GetAtt": [
+                "ApiLogsRole096B25EE",
+                "Arn"
+              ]
+            },
+            "LogLevel": "ERROR"
+          }
+        },
+        "Name": "supply-checkout-prod-realtime",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "realtime"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "EventApiDomainName1C1CA3FD": {
+      "Type": "AWS::AppSync::DomainName",
+      "Properties": {
+        "CertificateArn": {
+          "Ref": "SsmParameterValuesupplycheckoutproddomainrealtimecertificatearnC96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "Description": "domain for supply-checkout-prod-realtime Event API",
+        "DomainName": "realtime.supplycheckout.com",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "realtime"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "EventApiDomainAssociationECB84F09": {
+      "Type": "AWS::AppSync::DomainNameApiAssociation",
+      "Properties": {
+        "ApiId": {
+          "Fn::GetAtt": [
+            "EventApiE141E6C0",
+            "ApiId"
+          ]
+        },
+        "DomainName": "realtime.supplycheckout.com"
+      },
+      "DependsOn": [
+        "EventApiDomainName1C1CA3FD"
+      ]
+    },
+    "EventApiTeams337BF52D": {
+      "Type": "AWS::AppSync::ChannelNamespace",
+      "Properties": {
+        "ApiId": {
+          "Fn::GetAtt": [
+            "EventApiE141E6C0",
+            "ApiId"
+          ]
+        },
+        "HandlerConfigs": {},
+        "Name": "teams",
+        "PublishAuthModes": [
+          {
+            "AuthType": "AWS_IAM"
+          }
+        ],
+        "SubscribeAuthModes": [
+          {
+            "AuthType": "AWS_LAMBDA"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "realtime"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "ApiLogs3D05D88B": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Join": [
+            "",
+            [
+              "/aws/appsync/apis/",
+              {
+                "Fn::GetAtt": [
+                  "EventApiE141E6C0",
+                  "ApiId"
+                ]
+              }
+            ]
+          ]
+        },
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "realtime"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "RealtimeAliasE871C85C": {
+      "Type": "AWS::Route53::RecordSet",
+      "Properties": {
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "Name": "realtime.supplycheckout.com.",
+        "ResourceRecords": [
+          {
+            "Fn::GetAtt": [
+              "EventApiDomainName1C1CA3FD",
+              "AppSyncDomainName"
+            ]
+          }
+        ],
+        "TTL": "300",
+        "Type": "CNAME"
+      }
+    },
+    "WebsocketUrlParam30A8E592": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Where clients connect for live updates",
+        "Name": "/supply-checkout/prod/realtime/websocket-url",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "realtime",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": "wss://realtime.supplycheckout.com/event/realtime"
+      }
+    },
+    "HostParam8F483EBA": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Live updates host for the authorization header",
+        "Name": "/supply-checkout/prod/realtime/host",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "realtime",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": "realtime.supplycheckout.com"
+      }
+    },
+    "ApiIdParamFAECE402": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "AppSync Event API ID in this region",
+        "Name": "/supply-checkout/prod/realtime/api-id",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "realtime",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "EventApiE141E6C0",
+            "ApiId"
+          ]
+        }
+      }
+    },
+    "DeadLetterQueue9F481546": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "MessageRetentionPeriod": 1209600,
+        "QueueName": "supply-checkout-prod-live-updates-dlq",
+        "SqsManagedSseEnabled": true,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "realtime"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
+    },
+    "DeadLetterQueuePolicyB1FB890C": {
+      "Type": "AWS::SQS::QueuePolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sqs:*",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              },
+              "Effect": "Deny",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Resource": {
+                "Fn::GetAtt": [
+                  "DeadLetterQueue9F481546",
+                  "Arn"
+                ]
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Queues": [
+          {
+            "Ref": "DeadLetterQueue9F481546"
+          }
+        ]
+      }
+    },
+    "PublisherLogsF6EE885C": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "realtime"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "PublisherRoleFDE2F285": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the realtime publisher function",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "realtime"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "PublisherRoleDefaultPolicy04D6B219": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "PublisherLogsF6EE885C",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "appsync:EventPublish",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":appsync:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":apis/",
+                    {
+                      "Fn::GetAtt": [
+                        "EventApiE141E6C0",
+                        "ApiId"
+                      ]
+                    },
+                    "/channelNamespace/teams"
+                  ]
+                ]
+              }
+            },
+            {
+              "Action": [
+                "dynamodb:DescribeStream",
+                "dynamodb:GetRecords",
+                "dynamodb:GetShardIterator"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutproddatatablestreamarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "Sid": "ReadTableStream"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "dynamodb.",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ".amazonaws.com"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              }
+            },
+            {
+              "Action": [
+                "sqs:SendMessage",
+                "sqs:GetQueueAttributes",
+                "sqs:GetQueueUrl"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "DeadLetterQueue9F481546",
+                  "Arn"
+                ]
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "PublisherRoleDefaultPolicy04D6B219",
+        "Roles": [
+          {
+            "Ref": "PublisherRoleFDE2F285"
+          }
+        ]
+      }
+    },
+    "PublisherF0355618": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "Publishes product and sheet changes from the table's stream to each team's AppSync Events channel",
+        "Environment": {
+          "Variables": {
+            "NODE_OPTIONS": "--enable-source-maps",
+            "EVENTS_HTTP_HOST": {
+              "Fn::GetAtt": [
+                "EventApiE141E6C0",
+                "Dns.Http"
+              ]
+            },
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "SUPPLY_CHECKOUT_ENV": "prod"
+          }
+        },
+        "FunctionName": "supply-checkout-prod-live-updates",
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "PublisherLogsF6EE885C"
+          }
+        },
+        "MemorySize": 512,
+        "Role": {
+          "Fn::GetAtt": [
+            "PublisherRoleFDE2F285",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "realtime"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 10,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "PublisherRoleDefaultPolicy04D6B219",
+        "PublisherRoleFDE2F285"
+      ]
+    },
+    "PublisherXRayWrite6834EA72": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTraceSegments",
+                "xray:PutTelemetryRecords"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "PublisherXRayWrite6834EA72",
+        "Roles": [
+          {
+            "Ref": "PublisherRoleFDE2F285"
+          }
+        ]
+      }
+    },
+    "PublisherListStreams4F669B54": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "dynamodb:ListStreams",
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "PublisherListStreams4F669B54",
+        "Roles": [
+          {
+            "Ref": "PublisherRoleFDE2F285"
+          }
+        ]
+      }
+    },
+    "TableStream8DEAEA6B": {
+      "Type": "AWS::Lambda::EventSourceMapping",
+      "Properties": {
+        "BatchSize": 100,
+        "BisectBatchOnFunctionError": true,
+        "DestinationConfig": {
+          "OnFailure": {
+            "Destination": {
+              "Fn::GetAtt": [
+                "DeadLetterQueue9F481546",
+                "Arn"
+              ]
+            }
+          }
+        },
+        "EventSourceArn": {
+          "Ref": "SsmParameterValuesupplycheckoutproddatatablestreamarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "FilterCriteria": {
+          "Filters": [
+            {
+              "Pattern": "{\"dynamodb\":{\"Keys\":{\"SK\":{\"S\":[{\"prefix\":\"PRODUCT#\"}]}}}}"
+            },
+            {
+              "Pattern": "{\"dynamodb\":{\"Keys\":{\"SK\":{\"S\":[{\"prefix\":\"SHEET#\"}]}}}}"
+            }
+          ]
+        },
+        "FunctionName": {
+          "Ref": "PublisherF0355618"
+        },
+        "FunctionResponseTypes": [
+          "ReportBatchItemFailures"
+        ],
+        "MaximumBatchingWindowInSeconds": 0,
+        "MaximumRecordAgeInSeconds": 3600,
+        "MaximumRetryAttempts": 10,
+        "ParallelizationFactor": 1,
+        "StartingPosition": "LATEST",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "realtime"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    }
+  },
+  "Parameters": {
+    "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/data/table-key-arn"
+    },
+    "SsmParameterValuesupplycheckoutprodidentityuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/identity/user-pool-id"
+    },
+    "SsmParameterValuesupplycheckoutprodidentitywebclientidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/identity/web-client-id"
+    },
+    "SsmParameterValuesupplycheckoutproddomainrealtimecertificatearnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/domain/realtime-certificate-arn"
+    },
+    "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/dns/hosted-zone-id"
+    },
+    "SsmParameterValuesupplycheckoutproddatatablestreamarnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/data/table-stream-arn"
+    },
+    "BootstrapVersion": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+    }
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5"
+                  ],
+                  {
+                    "Ref": "BootstrapVersion"
+                  }
+                ]
+              }
+            ]
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+        }
+      ]
+    }
+  }
+}

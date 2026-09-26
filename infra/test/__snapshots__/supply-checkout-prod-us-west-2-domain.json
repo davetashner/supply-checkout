@@ -1,0 +1,133 @@
+{
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Supply Checkout domain stack (stateless)",
+        "Name": "/supply-checkout/prod/domain/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "domain",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": "{\"stackName\":\"supply-checkout-prod-us-west-2-domain\",\"layer\":\"stateless\"}"
+      }
+    },
+    "EnvDomainParamE40C6E1D": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Zone apex this environment serves",
+        "Name": "/supply-checkout/prod/domain/env-domain",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "domain",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": "supplycheckout.com"
+      }
+    },
+    "ApiCertificate1D5B2B3B": {
+      "Type": "AWS::CertificateManager::Certificate",
+      "Properties": {
+        "DomainName": "api.supplycheckout.com",
+        "DomainValidationOptions": [
+          {
+            "DomainName": "api.supplycheckout.com",
+            "HostedZoneId": {
+              "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter"
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "domain"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          },
+          {
+            "Key": "Name",
+            "Value": "supply-checkout-prod-us-west-2-domain/ApiCertificate"
+          }
+        ],
+        "ValidationMethod": "DNS"
+      }
+    },
+    "ApiCertificateParamBA7053FC": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Certificate for api.supplycheckout.com in this region",
+        "Name": "/supply-checkout/prod/domain/api-certificate-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "domain",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "ApiCertificate1D5B2B3B"
+        }
+      }
+    }
+  },
+  "Parameters": {
+    "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/dns/hosted-zone-id"
+    },
+    "BootstrapVersion": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+    }
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5"
+                  ],
+                  {
+                    "Ref": "BootstrapVersion"
+                  }
+                ]
+              }
+            ]
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+        }
+      ]
+    }
+  }
+}

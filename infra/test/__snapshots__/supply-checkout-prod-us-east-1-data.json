@@ -1,0 +1,665 @@
+{
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Supply Checkout data stack (stateful)",
+        "Name": "/supply-checkout/prod/data/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "data",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": "{\"stackName\":\"supply-checkout-prod-us-east-1-data\",\"layer\":\"stateful\"}"
+      }
+    },
+    "TableKeyF581D96F": {
+      "Type": "AWS::KMS::Key",
+      "Properties": {
+        "Description": "Encrypts the Supply Checkout app table (ADR 0005)",
+        "EnableKeyRotation": true,
+        "KeyPolicy": {
+          "Statement": [
+            {
+              "Action": "kms:*",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "data"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "TableKeyAlias2D661624": {
+      "Type": "AWS::KMS::Alias",
+      "Properties": {
+        "AliasName": "alias/supply-checkout-prod-app-table",
+        "TargetKeyId": {
+          "Fn::GetAtt": [
+            "TableKeyF581D96F",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "AppTable815C50BC": {
+      "Type": "AWS::DynamoDB::GlobalTable",
+      "Properties": {
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "PK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "SK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "GSI1PK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "GSI1SK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "GSI2PK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "GSI2SK",
+            "AttributeType": "S"
+          }
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+        "GlobalSecondaryIndexes": [
+          {
+            "IndexName": "GSI1",
+            "KeySchema": [
+              {
+                "AttributeName": "GSI1PK",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "GSI1SK",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            }
+          },
+          {
+            "IndexName": "GSI2",
+            "KeySchema": [
+              {
+                "AttributeName": "GSI2PK",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "GSI2SK",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            }
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "PK",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "SK",
+            "KeyType": "RANGE"
+          }
+        ],
+        "Replicas": [
+          {
+            "DeletionProtectionEnabled": true,
+            "GlobalSecondaryIndexes": [
+              {
+                "IndexName": "GSI1"
+              },
+              {
+                "IndexName": "GSI2"
+              }
+            ],
+            "PointInTimeRecoverySpecification": {
+              "PointInTimeRecoveryEnabled": true
+            },
+            "Region": "us-east-1",
+            "SSESpecification": {
+              "KMSMasterKeyId": {
+                "Fn::GetAtt": [
+                  "TableKeyF581D96F",
+                  "Arn"
+                ]
+              }
+            },
+            "Tags": [
+              {
+                "Key": "app",
+                "Value": "supply-checkout"
+              },
+              {
+                "Key": "component",
+                "Value": "data"
+              },
+              {
+                "Key": "env",
+                "Value": "prod"
+              },
+              {
+                "Key": "layer",
+                "Value": "stateful"
+              },
+              {
+                "Key": "managed-by",
+                "Value": "cdk"
+              }
+            ]
+          }
+        ],
+        "SSESpecification": {
+          "SSEEnabled": true,
+          "SSEType": "KMS"
+        },
+        "StreamSpecification": {
+          "StreamViewType": "NEW_AND_OLD_IMAGES"
+        },
+        "TableName": "supply-checkout-prod-app",
+        "TimeToLiveSpecification": {
+          "AttributeName": "expiresAt",
+          "Enabled": true
+        }
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "TableNameParam3E3123DC": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "App table name",
+        "Name": "/supply-checkout/prod/data/table-name",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "data",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "AppTable815C50BC"
+        }
+      }
+    },
+    "TableArnParamC3B0EFCC": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "App table ARN in this region",
+        "Name": "/supply-checkout/prod/data/table-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "data",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "AppTable815C50BC",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "TableStreamArnParam15549A4C": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "App table stream ARN in this region",
+        "Name": "/supply-checkout/prod/data/table-stream-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "data",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "AppTable815C50BC",
+            "StreamArn"
+          ]
+        }
+      }
+    },
+    "TableKeyArnParam30791791": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "KMS key ARN for the app table in this region",
+        "Name": "/supply-checkout/prod/data/table-key-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "data",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "TableKeyF581D96F",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "LogsBucket9C4D8843": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "AccessControl": "LogDeliveryWrite",
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "BucketName": {
+          "Fn::Join": [
+            "",
+            [
+              "supply-checkout-prod-logs-us-east-1-",
+              {
+                "Ref": "AWS::AccountId"
+              }
+            ]
+          ]
+        },
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "ExpirationInDays": 365,
+              "Status": "Enabled"
+            }
+          ]
+        },
+        "OwnershipControls": {
+          "Rules": [
+            {
+              "ObjectOwnership": "BucketOwnerPreferred"
+            }
+          ]
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "data"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "LogsBucketPolicyD70D9252": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {
+          "Ref": "LogsBucket9C4D8843"
+        },
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "s3:*",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              },
+              "Effect": "Deny",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "LogsBucket9C4D8843",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "LogsBucket9C4D8843",
+                          "Arn"
+                        ]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            }
+          ],
+          "Version": "2012-10-17"
+        }
+      }
+    },
+    "WebBucket12880F5B": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "BucketName": {
+          "Fn::Join": [
+            "",
+            [
+              "supply-checkout-prod-web-us-east-1-",
+              {
+                "Ref": "AWS::AccountId"
+              }
+            ]
+          ]
+        },
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "NoncurrentVersionExpiration": {
+                "NoncurrentDays": 30
+              },
+              "Status": "Enabled"
+            }
+          ]
+        },
+        "LoggingConfiguration": {
+          "DestinationBucketName": {
+            "Ref": "LogsBucket9C4D8843"
+          },
+          "LogFilePrefix": "s3/web/"
+        },
+        "OwnershipControls": {
+          "Rules": [
+            {
+              "ObjectOwnership": "BucketOwnerEnforced"
+            }
+          ]
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "data"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "VersioningConfiguration": {
+          "Status": "Enabled"
+        }
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "WebBucketPolicy95D08FAA": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {
+          "Ref": "WebBucket12880F5B"
+        },
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "s3:*",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              },
+              "Effect": "Deny",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "WebBucket12880F5B",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "WebBucket12880F5B",
+                          "Arn"
+                        ]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            },
+            {
+              "Action": [
+                "s3:GetObject",
+                "s3:ListBucket"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "AWS:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnLike": {
+                  "AWS:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":cloudfront::",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":distribution/*"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudfront.amazonaws.com"
+              },
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "WebBucket12880F5B",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "WebBucket12880F5B",
+                          "Arn"
+                        ]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ],
+              "Sid": "CloudFrontReadsReleases"
+            }
+          ],
+          "Version": "2012-10-17"
+        }
+      }
+    },
+    "WebBucketParam96B928F3": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Web releases bucket in this region",
+        "Name": "/supply-checkout/prod/data/web-bucket-name",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "data",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "WebBucket12880F5B"
+        }
+      }
+    }
+  },
+  "Parameters": {
+    "BootstrapVersion": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+    }
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5"
+                  ],
+                  {
+                    "Ref": "BootstrapVersion"
+                  }
+                ]
+              }
+            ]
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+        }
+      ]
+    }
+  }
+}
