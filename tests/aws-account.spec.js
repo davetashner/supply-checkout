@@ -5,7 +5,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./helpers.js";
 import { currentBuild } from "../scripts/builds.mjs";
 import { usedState } from "./fixtures.js";
-import { FakeBackend, TEAM, USER, ORIGIN, AUTH, CONFIG, openAws, connected, lastSocket } from "./fake-aws.js";
+import { FakeBackend, TEAM, USER, ORIGIN, AUTH, CONFIG, openAws, connected, lastSocket, emit } from "./fake-aws.js";
 
 test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 
@@ -253,10 +253,11 @@ test.describe("sign-in", () => {
     const backend = new FakeBackend({ docs: seeded() });
     await openAws(page, backend);
     await connected(page);
-    const saved = () => page.evaluate(() => [sessionStorage.getItem("supplyCheckout.invite"), sessionStorage.getItem("supplyCheckout.signIn"), localStorage.getItem("supplyCheckout.team")]);
+    const saved = () => page.evaluate(() => [sessionStorage.getItem("supplyCheckout.invite"), sessionStorage.getItem("supplyCheckout.signIn"), localStorage.getItem("supplyCheckout.team"), localStorage.getItem("supplyCheckout.receiptDraft")]);
     await page.evaluate(() => {
       sessionStorage.setItem("supplyCheckout.invite", JSON.stringify({ id: "i1", token: "tok" }));
       sessionStorage.setItem("supplyCheckout.signIn", JSON.stringify({ verifier: "v", state: "s" }));
+      localStorage.setItem("supplyCheckout.receiptDraft", JSON.stringify({ vendor: "Costco", items: [{ name: "Paper towels", price: 8.5 }] }));
     });
 
     // The API can't be reached: still signed in, and says so
@@ -270,8 +271,100 @@ test.describe("sign-in", () => {
     await page.locator(".teambar").getByRole("button", { name: "Sign out" }).click();
     await expect.poll(() => backend.authRequests).toEqual([`${AUTH}/logout?client_id=test-client&logout_uri=${encodeURIComponent(ORIGIN + "/")}`]);
     expect(backend.requests("POST", "/auth/sign-out")).toHaveLength(2);
-    // The chosen team is forgotten too, so the next person to sign in here doesn't open it
-    expect(await saved()).toEqual([null, null, null]);
+    // The chosen team and the receipt draft are forgotten too, so the next person to sign
+    // in here doesn't open the team or see the draft's items, prices and sheets
+    expect(await saved()).toEqual([null, null, null, null]);
+  });
+
+  test("a live update's 401 while signing out doesn't refresh, so it can't sign the user back in", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded() });
+    await openAws(page, backend);
+    await connected(page);
+    const signOut = page.locator(".teambar").getByRole("button", { name: "Sign out" });
+
+    // The sign-out's answer is slow, and meanwhile a live update's fetch gets a 401
+    const release = backend.hold("POST", "/auth/sign-out");
+    await signOut.click();
+    await expect(signOut).toBeDisabled();
+    await expect.poll(() => backend.requests("POST", "/auth/sign-out").length).toBe(1);
+    backend.token = "expired";
+    await emit(page, { v: 1, eventId: "e1", collection: "sheets", id: "s1", op: "put", version: 9 });
+    await expect.poll(() => backend.requests("GET", "/teams/t1/sheets/s1").length).toBe(1);
+    await page.waitForTimeout(200);
+    expect(backend.requests("POST", "/auth/refresh")).toHaveLength(1);
+
+    release();
+    await expect.poll(() => backend.authRequests.length).toBe(1);
+    expect(backend.signedIn).toBe(false);
+    expect(backend.requests("POST", "/auth/refresh")).toHaveLength(1);
+  });
+
+  test("a stalled sign-out times out, says so, and can be tried again", async ({ page }) => {
+    await page.clock.install();
+    const backend = new FakeBackend({ docs: seeded() });
+    await openAws(page, backend);
+    await connected(page);
+    const signOut = page.locator(".teambar").getByRole("button", { name: "Sign out" });
+
+    // The API never answers: the button stays off until the request gives up at 15 seconds
+    const release = backend.hold("POST", "/auth/sign-out");
+    await signOut.click();
+    await expect.poll(() => backend.requests("POST", "/auth/sign-out").length).toBe(1);
+    await expect(signOut).toBeDisabled();
+    await page.clock.fastForward(14e3);
+    await expect(signOut).toBeDisabled();
+    await page.clock.fastForward(1e3);
+    await expect(page.locator("#toast")).toHaveText("Couldn't sign out. Try again.");
+    await expect(signOut).toBeEnabled();
+    expect(backend.authRequests).toEqual([]);
+    expect(backend.signedIn).toBe(true);
+
+    // Still signed in, so the refresh a minute later runs; and the next try goes through
+    expect(backend.requests("POST", "/auth/refresh")).toHaveLength(1);
+    await page.clock.fastForward(60e3);
+    await expect.poll(() => backend.requests("POST", "/auth/refresh").length).toBe(2);
+    release();
+    await signOut.click();
+    await expect.poll(() => backend.authRequests.length).toBe(1);
+    expect(backend.requests("POST", "/auth/sign-out")).toHaveLength(2);
+  });
+
+  test("a refresh whose answer stalls partway times out as unavailable, and the session carries on", async ({ page }) => {
+    await page.clock.install();
+    const backend = new FakeBackend({ docs: seeded(), expiresIn: 360 });
+    await openAws(page, backend);
+    await connected(page);
+    // The next refresh's headers arrive, but its body never finishes (until the request is aborted)
+    await page.evaluate(() => {
+      const real = window.fetch;
+      window.fetch = (url, init) => {
+        if (!String(url).endsWith("/auth/refresh")) return real(url, init);
+        window.fetch = real;
+        window.__stalled = true;
+        const body = new ReadableStream({ start(c) { init.signal.addEventListener("abort", () => c.error(new DOMException("The operation was aborted.", "AbortError"))); } });
+        return Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "application/json" } }));
+      };
+    });
+    await page.clock.fastForward(61e3);
+    await expect.poll(() => page.evaluate(() => window.__stalled)).toBe(true);
+    await page.clock.fastForward(15e3);
+    // Not read as an empty success: still signed in with the token it had, and writes work
+    await page.getByRole("button", { name: "+ New sheet" }).click();
+    await page.getByLabel("Client", { exact: true }).fill("Still here");
+    await page.getByRole("button", { name: "Create sheet" }).click();
+    await expect(page.getByRole("heading", { name: "Still here" })).toBeVisible();
+    expect(backend.requests("PUT", /^\/teams\/t1\/sheets\//).map((c) => c.headers.authorization)).toEqual(["Bearer at-1"]);
+    await expect(page.getByRole("link", { name: "Sign in" })).toHaveCount(0);
+  });
+
+  test("storage that can't be written doesn't stop sign-out", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded() });
+    await openAws(page, backend);
+    await connected(page);
+    await page.evaluate(() => { Storage.prototype.removeItem = () => { throw new DOMException("Blocked", "SecurityError"); }; });
+    await page.locator(".teambar").getByRole("button", { name: "Sign out" }).click();
+    await expect.poll(() => backend.authRequests.length).toBe(1);
+    expect(backend.signedIn).toBe(false);
   });
 });
 

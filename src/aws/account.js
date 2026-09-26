@@ -61,9 +61,12 @@ export async function start(config) {
     return until(() => {});
   }
 
-  // Leaves the page once the session is revoked; otherwise stays signed in and says so
-  async function signOut() {
-    if (!(await session.signOut())) toast("Couldn't sign out. Try again.", 5000);
+  // Leaves the page once the session is revoked; otherwise stays signed in and says so.
+  // The button is off while it runs, so it can't be pressed again meanwhile.
+  async function signOut(e) {
+    const button = e.currentTarget;
+    button.disabled = true;
+    if (!(await session.signOut())) { button.disabled = false; toast("Couldn't sign out. Try again.", 5000); }
   }
 
   // Who's signed in, with a way out, on the screens before a team is open
