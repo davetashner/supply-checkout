@@ -4,11 +4,11 @@ A supply checkout tracker (sheets per client job, inventory, barcode and receipt
 
 Read these before planning work:
 - `README.md`: repo layout, development, tests, CI, releases
-- `docs/adr/`: architecture decisions (0002–0013 are still **Proposed** until bead `supply-checkout-y94` is done)
+- `docs/adr/`: architecture decisions (0010 is Accepted; the rest of 0002–0013 are still **Proposed** until bead `supply-checkout-y94` is done)
 - `docs/architecture/README.md`: the AWS design and diagrams
 - `docs/journeys.md`: customer journeys that must never break, their tests, and production alarms
 
-Decisions already made: Stripe web billing only, with no App Store or Play in-app purchase (ADR 0013). The core journey canary runs 8am–8pm Eastern only.
+Decisions already made: Stripe web billing only, with no App Store or Play in-app purchase (ADR 0013). The MVP runs in us-east-1 only and is region-ready for us-west-2, which is phase 2 (ADR 0010, accepted). The core journey canary runs 8am–8pm Eastern only.
 
 ## Starting a session
 

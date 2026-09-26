@@ -212,6 +212,8 @@ These alarms tell us when a customer can't finish a journey in production. They 
 
 Thresholds are starting points. Tune them after a few weeks of real traffic, and write down every change in the alarm's description.
 
+The MVP runs in us-east-1 only ([ADR 0010](adr/0010-multi-region-active-active.md)), so the alarms and canaries below are in us-east-1. When us-west-2 is added in phase 2, the per-region alarms are copied to it, and the alarms in [Phase 2: second region](#phase-2-second-region) are added.
+
 ### Severity and who is told
 
 | Severity | Meaning | Who is told, and how | Response |
@@ -222,7 +224,7 @@ Thresholds are starting points. Tune them after a few weeks of real traffic, and
 
 Crews start early, so "business hours" means 5am–8pm US Eastern, every day.
 
-**Core canary hours.** The core journey canary runs only from 8am to 8pm Eastern. Canary schedules are UTC cron, which doesn't follow daylight saving time, so EventBridge Scheduler starts and stops the canary on an `America/New_York` schedule. Its alarm treats missing data as not breaching, so the overnight gap doesn't page anyone. Between 8pm and 8am, a blocked journey is caught by the metric alarms below (API errors, site down, region health). From 6am to 8am, "Checkouts stopped" also covers J4.
+**Core canary hours.** The core journey canary runs only from 8am to 8pm Eastern. Canary schedules are UTC cron, which doesn't follow daylight saving time, so EventBridge Scheduler starts and stops the canary on an `America/New_York` schedule. Its alarm treats missing data as not breaching, so the overnight gap doesn't page anyone. Between 8pm and 8am, a blocked journey is caught by the metric alarms below (API errors, site down, API health check). From 6am to 8am, "Checkouts stopped" also covers J4.
 
 Alarms that fire during a deploy also trigger the automatic rollback (`supply-checkout-9lj`). The page should say whether a rollback already ran.
 
@@ -230,15 +232,14 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 
 | Alarm | Signal | Starting threshold | Severity |
 | --- | --- | --- | --- |
-| **Core journey canary failing** | CloudWatch Synthetics canary in each region, every 5 minutes from 8am to 8pm Eastern: sign in as a test crew member, open the test sheet, check out and return one item, confirm the live update arrives | 2 failed runs out of 3 in either region | P1 |
+| **Core journey canary failing** | CloudWatch Synthetics canary in us-east-1, every 5 minutes from 8am to 8pm Eastern: sign in as a test crew member, open the test sheet, check out and return one item, confirm the live update arrives | 2 failed runs out of 3 | P1 |
 | **Site down** | CloudFront `5xxErrorRate` | above 1% for 5 minutes | P1 |
 | **API errors** | API Gateway `5xx` per route | above 2% of requests for 5 minutes (at least 20 requests) | P1 |
 | **API slow** | API Gateway `Latency` p95 | above 2 seconds for 10 minutes | P2 |
-| **Region unhealthy** | Route 53 health check on `/health` in each region | unhealthy for 2 minutes | P1 |
+| **API unhealthy** | Route 53 health check on `/health` in us-east-1 | unhealthy for 2 minutes | P1 |
 | **Functions failing or throttled** | Lambda `Errors` and `Throttles` per function | errors above 1% for 5 minutes, or any throttles for 5 minutes | P1 errors, P2 throttles |
 | **Database errors** | DynamoDB `SystemErrors` | any, for 5 minutes | P1 |
 | **Database throttled** | DynamoDB `ThrottledRequests` | any, for 5 minutes | P2 |
-| **Regions out of sync** | DynamoDB global table `ReplicationLatency` | above 60 seconds for 10 minutes | P2 |
 | **Firewall blocking customers** | AWS WAF `BlockedRequests` | more than 3× the usual rate (anomaly detection) for 15 minutes | P2 |
 
 ### J0. Sign in
@@ -320,8 +321,19 @@ Receipt reading is not critical: people can still enter items by hand.
 | --- | --- | --- | --- |
 | **App checkouts abandoned** | Stripe Checkout sessions started from the apps against completed ones | completion below half the web rate over 7 days | P3 |
 
+### Phase 2: second region
+
+Added with us-west-2. Until then, none of these exist.
+
+| Alarm | Signal | Starting threshold | Severity |
+| --- | --- | --- | --- |
+| **Core journey canary failing** | The core canary also runs in us-west-2 | 2 failed runs out of 3 in either region | P1 |
+| **Region unhealthy** | Route 53 health check on `/health` in each region (also drives failover) | unhealthy for 2 minutes | P1 |
+| **Regions out of sync** | DynamoDB global table `ReplicationLatency` | above 60 seconds for 10 minutes | P2 |
+| **Forwarded writes failing** | Errors forwarding a team's writes to its home region | above 1% for 5 minutes | P1 |
+
 ### Business metrics the app must publish
 
 Several alarms above rely on metrics our own code sends (CloudWatch embedded metric format from Lambda), not ones AWS provides:
 
-`Checkouts`, `Returns`, `ReceiptReads`, `ReceiptReadFailures`, `SignUps`, `InvitesSent`, `InvitesAccepted`, `CheckoutSessionErrors`, `WebhookSignatureFailures`, `ConditionalWriteConflicts`, plus per-team receipt token usage. Record these per region, and add them to `supply-checkout-7pe` as its dashboards are built.
+`Checkouts`, `Returns`, `ReceiptReads`, `ReceiptReadFailures`, `SignUps`, `InvitesSent`, `InvitesAccepted`, `CheckoutSessionErrors`, `WebhookSignatureFailures`, `ConditionalWriteConflicts`, plus per-team receipt token usage. Give each one a region dimension, even while there is only us-east-1, so they split cleanly when us-west-2 is added. Add them to `supply-checkout-7pe` as its dashboards are built.

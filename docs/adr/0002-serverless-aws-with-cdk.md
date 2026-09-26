@@ -5,7 +5,7 @@
 
 ## Context
 
-At $3 per user per month, fixed hosting costs have to stay near zero while there are few customers, and costs have to grow only with usage. We have one AWS account available, and no one on the team to run servers. [ADR 0010](0010-multi-region-active-active.md) also requires two active regions, so the infrastructure tool has to deploy the same stack to more than one region.
+At $3 per user per month, fixed hosting costs have to stay near zero while there are few customers, and costs have to grow only with usage. We have one AWS account available, and no one on the team to run servers. [ADR 0010](0010-multi-region-active-active.md) runs the MVP in us-east-1 and adds us-west-2 later, so the infrastructure tool has to deploy the same stack to more than one region.
 
 ## Decision
 
