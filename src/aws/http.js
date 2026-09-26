@@ -14,7 +14,8 @@ export async function request(url, init) {
     try { res = await fetch(url, { ...init, signal: abort.signal }); }
     catch (e) { throw { code: "unavailable", message: abort.signal.aborted ? "Timed out" : String(e) }; }
     if (res.status === 204) return null;
-    const body = await res.json().catch(() => null);
+    // The timeout covers the body too: a body that stalls rejects, rather than reading as null
+    const body = await res.json().catch(() => { if (abort.signal.aborted) throw { code: "unavailable", message: "Timed out" }; return null; });
     if (res.ok) return body;
     // API Gateway's own 401 is {"message":"Unauthorized"}, with no error code
     const err = (body && body.error) || {};

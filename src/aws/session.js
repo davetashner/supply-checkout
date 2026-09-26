@@ -102,16 +102,19 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
     // reached. A refresh already in flight finishes first: with refresh-token rotation, its
     // response would otherwise set a new refresh cookie after sign-out cleared it.
     async signOut() {
+      signingOut = true;
       clearTimeout(timer);
       if (refreshing) await refreshing.catch(() => {});
       clearTimeout(timer);
-      signingOut = true;
       // Still signed in when it fails, so refresh again in a minute
       try { await post("/auth/sign-out"); } catch { signingOut = false; timer = setTimeout(background, 60_000); return false; }
       tokens = null;
       clearTimeout(timer);
-      for (const key of [PKCE_KEY, INVITE_KEY]) sessionStorage.removeItem(key);
-      for (const key of [TEAM_KEY, DRAFT_KEY]) localStorage.removeItem(key);
+      // Storage that can't be written (blocked site data) mustn't stop the Managed Login sign-out
+      try {
+        for (const key of [PKCE_KEY, INVITE_KEY]) sessionStorage.removeItem(key);
+        for (const key of [TEAM_KEY, DRAFT_KEY]) localStorage.removeItem(key);
+      } catch { /* nothing more to do: the session is revoked */ }
       location.assign(`${config.authUrl}/logout?${new URLSearchParams({ client_id: config.clientId, logout_uri: redirectUri })}`);
       return true;
     },

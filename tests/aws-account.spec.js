@@ -319,11 +319,52 @@ test.describe("sign-in", () => {
     expect(backend.authRequests).toEqual([]);
     expect(backend.signedIn).toBe(true);
 
-    // Still signed in, so a refresh can run again; and the next try goes through
+    // Still signed in, so the refresh a minute later runs; and the next try goes through
+    expect(backend.requests("POST", "/auth/refresh")).toHaveLength(1);
+    await page.clock.fastForward(60e3);
+    await expect.poll(() => backend.requests("POST", "/auth/refresh").length).toBe(2);
     release();
     await signOut.click();
     await expect.poll(() => backend.authRequests.length).toBe(1);
     expect(backend.requests("POST", "/auth/sign-out")).toHaveLength(2);
+  });
+
+  test("a refresh whose answer stalls partway times out as unavailable, and the session carries on", async ({ page }) => {
+    await page.clock.install();
+    const backend = new FakeBackend({ docs: seeded(), expiresIn: 360 });
+    await openAws(page, backend);
+    await connected(page);
+    // The next refresh's headers arrive, but its body never finishes (until the request is aborted)
+    await page.evaluate(() => {
+      const real = window.fetch;
+      window.fetch = (url, init) => {
+        if (!String(url).endsWith("/auth/refresh")) return real(url, init);
+        window.fetch = real;
+        window.__stalled = true;
+        const body = new ReadableStream({ start(c) { init.signal.addEventListener("abort", () => c.error(new DOMException("The operation was aborted.", "AbortError"))); } });
+        return Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "application/json" } }));
+      };
+    });
+    await page.clock.fastForward(61e3);
+    await expect.poll(() => page.evaluate(() => window.__stalled)).toBe(true);
+    await page.clock.fastForward(15e3);
+    // Not read as an empty success: still signed in with the token it had, and writes work
+    await page.getByRole("button", { name: "+ New sheet" }).click();
+    await page.getByLabel("Client", { exact: true }).fill("Still here");
+    await page.getByRole("button", { name: "Create sheet" }).click();
+    await expect(page.getByRole("heading", { name: "Still here" })).toBeVisible();
+    expect(backend.requests("PUT", /^\/teams\/t1\/sheets\//).map((c) => c.headers.authorization)).toEqual(["Bearer at-1"]);
+    await expect(page.getByRole("link", { name: "Sign in" })).toHaveCount(0);
+  });
+
+  test("storage that can't be written doesn't stop sign-out", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded() });
+    await openAws(page, backend);
+    await connected(page);
+    await page.evaluate(() => { Storage.prototype.removeItem = () => { throw new DOMException("Blocked", "SecurityError"); }; });
+    await page.locator(".teambar").getByRole("button", { name: "Sign out" }).click();
+    await expect.poll(() => backend.authRequests.length).toBe(1);
+    expect(backend.signedIn).toBe(false);
   });
 });
 
