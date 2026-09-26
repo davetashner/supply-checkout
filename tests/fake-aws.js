@@ -349,7 +349,8 @@ export const connected = (page) => page.waitForFunction(() => {
 export const sockets = (page) => page.evaluate(() => window.__sockets.map((s) => ({ closed: s.closed, token: s.protocols[1] && s.token, sent: s.sent, url: s.url, protocols: s.protocols })));
 export const lastSocket = async (page) => (await sockets(page)).at(-1);
 // Sends a live event (an object, or raw text) on the latest socket
-export const emit = (page, ev) => page.evaluate((e) => window.__sockets.at(-1).event(e), ev);
+// Live events are for team t1 unless they say otherwise
+export const emit = (page, ev) => page.evaluate((e) => window.__sockets.at(-1).event(e), ev && typeof ev === "object" && !("teamId" in ev) ? { teamId: "t1", ...ev } : ev);
 // Any other message from AppSync on the latest socket
 export const receive = (page, msg) => page.evaluate((m) => window.__sockets.at(-1).receive(m), msg);
 export const dropSocket = (page) => page.evaluate(() => window.__sockets.at(-1).close());

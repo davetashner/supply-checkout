@@ -450,10 +450,12 @@ test.describe("live updates", () => {
     // Names an object has without owning them: no error (the page fixture fails on one)
     await emit(page, { v: 1, collection: "constructor", id: "c1", op: "put", version: 1 });
     await emit(page, { v: 1, collection: "__proto__", id: "p1", op: "delete", version: 1 });
+    // Another team's change (the user's channel carries all their teams): not this page's
+    await emit(page, { v: 1, teamId: "t2", collection: "sheets", id: "s7", op: "put", version: 1 });
     await receive(page, { type: "data", id: "another-subscription", event: JSON.stringify({ v: 1, collection: "sheets", id: "s6", op: "put", version: 1 }) });
     await receive(page, { type: "connection_error", errors: [] });
     await expect.poll(() => gets("s3") + gets("s4")).toBe(2);
-    expect(gets("s5") + gets("s6")).toBe(0);
+    expect(gets("s5") + gets("s6") + gets("s7")).toBe(0);
     await expect(card(page, "Echo Studio")).toBeVisible();
   });
 

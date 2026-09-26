@@ -2,7 +2,6 @@
 // The verifier caches the user pool's signing keys per container.
 
 import { CognitoJwtVerifier } from "aws-jwt-verify";
-import { createDb } from "../data/index.js";
 import { createObservability, withObservability } from "../observability/index.js";
 import { createAuthorizerHandler } from "./authorizer-handler.js";
 import { REALTIME_ENV } from "./channels.js";
@@ -19,5 +18,4 @@ const verifier = CognitoJwtVerifier.create({
   tokenUse: "access",
 });
 const obs = createObservability({ service: "realtime-authorizer" });
-const db = createDb({ tableName: required(REALTIME_ENV.tableName) });
-export const handler = withObservability(obs, createAuthorizerHandler({ verifier, db, obs }));
+export const handler = withObservability(obs, createAuthorizerHandler({ verifier, obs }));
