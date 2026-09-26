@@ -210,11 +210,13 @@ test.describe("sign-in", () => {
     const backend = new FakeBackend({ docs: seeded(), expiresIn: null });
     await openAws(page, backend);
     await connected(page);
-    // Five minutes before the hour
+    // Not right away (a NaN delay would refresh at once, and again and again)...
     await page.clock.fastForward(3290e3);
     expect(backend.requests("POST", "/auth/refresh")).toHaveLength(1);
+    // ...but five minutes before the hour. (The re-list after a reconnect can race it
+    // and refresh once more with the rotated token, so this counts at least one.)
     await page.clock.fastForward(20e3);
-    await expect.poll(() => backend.requests("POST", "/auth/refresh").length).toBe(2);
+    await expect.poll(() => backend.requests("POST", "/auth/refresh").length).toBeGreaterThanOrEqual(2);
   });
 
   test("signing out revokes the session, forgets sign-in's saved state and signs out of Managed Login", async ({ page }) => {
