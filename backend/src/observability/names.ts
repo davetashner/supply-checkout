@@ -27,6 +27,10 @@ export const BusinessMetric = {
   Writes: "Writes",
   /** Writes rejected because the item changed since it was read (409 responses, J4). */
   ConditionalWriteConflicts: "ConditionalWriteConflicts",
+  /** Change events the stream consumer tried to publish to team channels: the denominator for LiveUpdateFailures (J4). */
+  LiveUpdates: "LiveUpdates",
+  /** Change events that didn't go out on the first try; the batch is retried (J4). */
+  LiveUpdateFailures: "LiveUpdateFailures",
   /** Receipt reads attempted, not counting cancels, limit hits and unreadable photos (J5). */
   ReceiptReads: "ReceiptReads",
   /** Receipt reads that failed on our side or Bedrock's (J5). */

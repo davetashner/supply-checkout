@@ -41,6 +41,9 @@ const ALARM_IDS = [
   "email-bouncing",
   "email-complaints",
   "writes-rejected",
+  "live-updates-failing",
+  "live-updates-delayed",
+  "live-updates-dropped",
   "receipt-reading-failing",
   "checkout-broken",
   "webhook-signature-failures",
@@ -127,7 +130,7 @@ describe("journey alarms (docs/journeys.md)", () => {
     for (const r of config.regions) {
       const t = observability(r);
       const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties);
-      const specs = journeyAlarmSpecs(r, "t", "api");
+      const specs = journeyAlarmSpecs(r, "t", "api", "prod");
       expect(alarms.map((a) => a.AlarmName).sort()).toEqual(
         specs.map((s) => `supply-checkout-prod-${s.severity.toLowerCase()}-${s.id}`).sort(),
       );
@@ -187,6 +190,43 @@ describe("journey alarms (docs/journeys.md)", () => {
     for (const m of metrics) {
       expect(m.MetricStat.Metric.Dimensions).toContainEqual({ Name: "TableName", Value: "supply-checkout-prod-app" });
     }
+  });
+});
+
+describe("live update alarms", () => {
+  it("watch the stream consumer's publishes, its iterator age and its dead-letter queue, by name", () => {
+    const t = observability();
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-live-updates-failing",
+      Threshold: 1,
+      Metrics: Match.arrayWith([
+        Match.objectLike({ Expression: "IF(d >= 20, 100 * FILL(n, 0) / d, 0)" }),
+        Match.objectLike({ Id: "n", MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: "LiveUpdateFailures" }), Period: 600 }) }),
+        Match.objectLike({ Id: "d", MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: "LiveUpdates" }), Period: 600 }) }),
+      ]),
+    });
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-live-updates-delayed",
+      Namespace: "AWS/Lambda",
+      MetricName: "IteratorAge",
+      Dimensions: [{ Name: "FunctionName", Value: "supply-checkout-prod-live-updates" }],
+      Statistic: "Maximum",
+      Threshold: 30000,
+    });
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-live-updates-dropped",
+      Namespace: "AWS/SQS",
+      MetricName: "ApproximateNumberOfMessagesVisible",
+      Dimensions: [{ Name: "QueueName", Value: "supply-checkout-prod-live-updates-dlq" }],
+      Threshold: 0,
+    });
+  });
+
+  it("use the names the realtime stack gives its consumer and queue", () => {
+    const stacks = build();
+    const realtime = Template.fromStack(stacks.region(EAST).realtime);
+    realtime.hasResourceProperties("AWS::Lambda::Function", { FunctionName: "supply-checkout-prod-live-updates" });
+    realtime.hasResourceProperties("AWS::SQS::Queue", { QueueName: "supply-checkout-prod-live-updates-dlq" });
   });
 });
 
@@ -254,8 +294,8 @@ describe("defaults for every function and log group", () => {
 
   function withFunctions() {
     const { app, region } = build({ [MANAGED_LOG_GROUPS]: true });
-    // The realtime stack has no functions of its own yet (the api stack has the API's)
-    const stack = region(EAST).realtime;
+    // The observability stack has no functions or log groups of its own
+    const stack = region(EAST).observability;
     testFunction(stack, "Plain");
     testFunction(stack, "PassThrough", Tracing.PASS_THROUGH);
     new LogGroup(stack, "Kept", { retention: RetentionDays.ONE_WEEK });

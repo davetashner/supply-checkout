@@ -9,6 +9,7 @@ import {
 } from "aws-cdk-lib/aws-cloudwatch";
 import { Construct } from "constructs";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
+import { realtimeResourceNames } from "../../../backend/src/realtime/channels.js";
 import type { AlarmTopics, Severity } from "./alarm-topics.js";
 import { apiGateway, business, dynamoDbSystemErrors, dynamoDbThrottles, FIVE_MINUTES, lambda } from "./metrics.js";
 
@@ -55,7 +56,8 @@ function percent(numerator: Metric, denominator: Metric, minimum: number, label:
   });
 }
 
-export function journeyAlarmSpecs(region: string, tableName: string, apiId: string): JourneyAlarmSpec[] {
+export function journeyAlarmSpecs(region: string, tableName: string, apiId: string, envName: string): JourneyAlarmSpec[] {
+  const realtime = realtimeResourceNames(envName);
   return [
     // Every journey
     {
@@ -146,6 +148,52 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       ),
       threshold: 5,
     },
+    {
+      id: "live-updates-failing",
+      title: "Live updates failing",
+      journeys: "J4",
+      severity: "P2",
+      rule: "LiveUpdateFailures above 1% of LiveUpdates over 10 minutes, once there are at least 20 events: the stream consumer can't publish to AppSync Events. Failed batches are retried; see Live updates dropped.",
+      metric: percent(
+        business(BusinessMetric.LiveUpdateFailures, region, TEN_MINUTES),
+        business(BusinessMetric.LiveUpdates, region, TEN_MINUTES),
+        20,
+        `Live update failure rate % (${region})`,
+      ),
+      threshold: 1,
+    },
+    {
+      id: "live-updates-delayed",
+      title: "Live updates delayed",
+      journeys: "J4",
+      severity: "P2",
+      rule: "The stream consumer's IteratorAge above 30 seconds at its maximum for 5 minutes: changes reach other devices late (the goal is 2 seconds).",
+      metric: new Metric({
+        namespace: "AWS/Lambda",
+        metricName: "IteratorAge",
+        dimensionsMap: { FunctionName: realtime.consumerFunction },
+        statistic: "Maximum",
+        period: FIVE_MINUTES,
+        region,
+      }),
+      threshold: 30_000,
+    },
+    {
+      id: "live-updates-dropped",
+      title: "Live updates dropped",
+      journeys: "J4",
+      severity: "P2",
+      rule: "Any message in the stream consumer's dead-letter queue: a batch of changes was never published. Clients catch up when they reconnect or resync; the message says which stream records to look at.",
+      metric: new Metric({
+        namespace: "AWS/SQS",
+        metricName: "ApproximateNumberOfMessagesVisible",
+        dimensionsMap: { QueueName: realtime.deadLetterQueue },
+        statistic: "Maximum",
+        period: FIVE_MINUTES,
+        region,
+      }),
+      threshold: 0,
+    },
     // J5. Read a receipt
     {
       id: "receipt-reading-failing",
@@ -193,7 +241,7 @@ export class JourneyAlarms extends Construct {
 
   constructor(scope: Construct, id: string, props: JourneyAlarmsProps) {
     super(scope, id);
-    for (const spec of journeyAlarmSpecs(props.region, props.tableName, props.apiId)) {
+    for (const spec of journeyAlarmSpecs(props.region, props.tableName, props.apiId, props.envName)) {
       const alarm = new Alarm(this, spec.id, {
         alarmName: `supply-checkout-${props.envName}-${spec.severity.toLowerCase()}-${spec.id}`,
         alarmDescription: [

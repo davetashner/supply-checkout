@@ -242,10 +242,12 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Database throttled | Every journey | P2 | DynamoDB `ReadThrottleEvents` + `WriteThrottleEvents` on the app table |
 | Email bouncing, Email complaints | J3 | P1 | SES reputation metrics, as below |
 | Writes rejected | J4 | P2 | `ConditionalWriteConflicts` ÷ `Writes`, at least 20 writes |
+| Live updates failing | J4 | P2 | `LiveUpdateFailures` ÷ `LiveUpdates` from the stream consumer (`supply-checkout-dpc`), at least 20 events, over 10 minutes. The canary's live-update check comes with the canary. |
+| Live updates delayed, Live updates dropped | J4 | P2 | As below |
 | Receipt reading failing | J5 | P2 | As below |
 | Checkout broken, Webhook signature failures | J7 | P1 | As below |
 
-Every other alarm on this page waits for the resource or code it watches, and is added by the bead that builds it (the alarm goes in that region's `observability` stack, with `topics.notify(alarm, severity)`): the canaries (`supply-checkout-pkt`); Site down and Firewall blocking customers (CloudFront and WAF, `supply-checkout-qk1`); API unhealthy (it needs a `/health` route and a Route 53 health check, which the API doesn't have yet); Cognito alarms (`supply-checkout-zsm`); Live updates failing (AppSync Events); Bedrock alarms and Receipt cost spike (the receipt function); Near the sending limit (SES); the billing queue, reconciliation and deletion-job alarms; and Checkouts stopped, which compares with the same hour last week, and so needs something other than one CloudWatch alarm. The remaining P3 trends (No sign-ups, Invites not accepted, Failed payments rising, App checkouts abandoned) are read from the dashboard at the weekly review.
+Every other alarm on this page waits for the resource or code it watches, and is added by the bead that builds it (the alarm goes in that region's `observability` stack, with `topics.notify(alarm, severity)`): the canaries (`supply-checkout-pkt`); Site down and Firewall blocking customers (CloudFront and WAF, `supply-checkout-qk1`); API unhealthy (it needs a `/health` route and a Route 53 health check, which the API doesn't have yet); Cognito alarms (`supply-checkout-zsm`); Bedrock alarms and Receipt cost spike (the receipt function); Near the sending limit (SES); the billing queue, reconciliation and deletion-job alarms; and Checkouts stopped, which compares with the same hour last week, and so needs something other than one CloudWatch alarm. The remaining P3 trends (No sign-ups, Invites not accepted, Failed payments rising, App checkouts abandoned) are read from the dashboard at the weekly review.
 
 ### Every journey
 
@@ -292,7 +294,9 @@ Every other alarm on this page waits for the resource or code it watches, and is
 | **Core journey canary failing** | See "Every journey" | | P1 |
 | **Checkouts stopped** | `Checkouts` business metric across all teams | zero for 30 minutes between 6am and 11am Eastern on weekdays, when the same hour last week had more than 10 | P1 |
 | **Writes rejected** | `ConditionalWriteConflicts` (409 responses) | above 5% of writes for 15 minutes. Normal conflicts are rare; a spike means a sync bug. | P2 |
-| **Live updates failing** | AppSync Events connection and publish server errors, and the canary's live-update check | publish errors above 1% for 10 minutes, or the canary's update takes more than 5 seconds twice in a row | P2 |
+| **Live updates failing** | The stream consumer's publishes to AppSync Events (`LiveUpdateFailures` ÷ `LiveUpdates`), and the canary's live-update check | publish failures above 1% for 10 minutes (at least 20 events), or the canary's update takes more than 5 seconds twice in a row | P2 |
+| **Live updates delayed** | The stream consumer's Lambda `IteratorAge` (maximum) | above 30 seconds for 5 minutes (the goal is 2 seconds end to end) | P2 |
+| **Live updates dropped** | Messages in the consumer's dead-letter queue (`supply-checkout-<env>-live-updates-dlq`): a batch it gave up on after retries | any | P2 |
 | **Stock counts drifting** | Nightly job comparing each item's storage count with its checkout and return history | any team with a mismatch | P3 |
 
 ### J5. Read a receipt
@@ -355,6 +359,6 @@ Added with us-west-2. Until then, none of these exist.
 
 Several alarms above rely on metrics our own code sends (CloudWatch embedded metric format from Lambda), not ones AWS provides:
 
-`Checkouts`, `Returns`, `ReceiptReads`, `ReceiptReadFailures`, `SignUps`, `InvitesSent`, `InvitesAccepted`, `CheckoutSessionErrors`, `WebhookSignatureFailures`, `ConditionalWriteConflicts`, `Writes` (the denominator for "Writes rejected"), and `ReceiptTokens` (receipt token usage, with the team ID as metadata rather than a dimension). Each has a `Region` dimension, even while there is only us-east-1, so they split cleanly when us-west-2 is added.
+`Checkouts`, `Returns`, `LiveUpdates` and `LiveUpdateFailures` (the stream consumer's publishes, for "Live updates failing"), `ReceiptReads`, `ReceiptReadFailures`, `SignUps`, `InvitesSent`, `InvitesAccepted`, `CheckoutSessionErrors`, `WebhookSignatureFailures`, `ConditionalWriteConflicts`, `Writes` (the denominator for "Writes rejected"), and `ReceiptTokens` (receipt token usage, with the team ID as metadata rather than a dimension). Each has a `Region` dimension, even while there is only us-east-1, so they split cleanly when us-west-2 is added.
 
 The names are in `backend/src/observability/names.ts`, which both the Lambda code and the dashboard and alarms import. Send them with `count()` from `backend/src/observability`, in namespace `SupplyCheckout`. The dashboard already has a graph for each; until the handlers exist, the graphs are empty and the alarms stay OK.

@@ -371,6 +371,23 @@ filter routeKey like /teams/ | stats count(*), pct(latencyMs, 50), pct(latencyMs
 
 or the whole API's from CloudWatch: `aws cloudwatch get-metric-statistics $P --namespace AWS/ApiGateway --metric-name Latency --dimensions Name=ApiId,Value=<api id> --extended-statistics p95 --period 300 --start-time … --end-time …`. Cold starts show up in the first minute only; X-Ray traces break a slow request down by DynamoDB and STS call. Delete the test items afterwards.
 
+### Live updates
+
+The `realtime` stack (`lib/stacks/realtime-stack.ts`, [ADR 0006](docs/adr/0006-api-and-realtime-sync.md), `supply-checkout-dpc`) is an AppSync Events API with one channel per team, `/teams/<teamId>`, at `realtime.<env domain>`. [docs/api/realtime.md](docs/api/realtime.md) is the client contract: how to connect, the event shape, reconnecting and the polling fallback.
+
+- **Subscribing.** Clients connect and subscribe with their Cognito access token. A Lambda authorizer (`backend/src/realtime/authorizer-handler.ts`) verifies the token (signature, issuer, expiry, the web client, `token_use=access`) and allows a subscription only to exactly `/teams/<teamId>`, and only if `authorizeTeam`, the data API's membership check, passes. Nothing is cached. Publishing takes IAM, and only the stream consumer's role may.
+- **Publishing.** A consumer (`backend/src/realtime/publisher-handler.ts`) reads the table's stream, filtered to `PRODUCT#` and `SHEET#` items, and publishes `{collection, id, op, version}` for each write, with no document data: clients fetch through the data API, which checks membership on every request, so a member removed while connected gets no more contents. Partial batch failures are retried from the first unsent record; a batch that keeps failing goes to `supply-checkout-<env>-live-updates-dlq`. Alarms: Live updates failing, delayed and dropped ([docs/journeys.md](docs/journeys.md)).
+- **Regions.** The custom domain is added where its certificate is (`GLOBAL_SERVICES_REGION`). The consumer runs in the primary region, which has the table's stream; the second region's consumer is phase 2.
+
+**Deploying.** The realtime stack reads, from SSM in its region: the table's stream and key ARNs (data stack), the user pool ID and web client ID (identity stack) and the `realtime.` certificate (the domain stack in `GLOBAL_SERVICES_REGION`). Deploy it after those, and before observability:
+
+```bash
+npx cdk diff supply-checkout-staging-us-east-1-realtime --profile <staging profile>
+npx cdk deploy supply-checkout-staging-us-east-1-realtime supply-checkout-staging-us-east-1-observability --profile <staging profile>
+```
+
+Then measure the 2-second p95 and the reconnect behavior in staging as described in [docs/api/realtime.md](docs/api/realtime.md#measuring-after-a-deploy).
+
 ## Backend
 
 `backend/` holds the Lambda code (ADR 0002, 0006). It is a separate npm package with its own lockfile. `backend/src/observability` gives every handler structured JSON logs and business metrics ([Powertools for AWS Lambda](https://docs.powertools.aws.dev/lambda/typescript/)): `createObservability()` returns a `logger` and `count(metric, n, metadata)`, and `withObservability(obs, handler)` adds the request ID to every log line and flushes metrics after each invocation. Metrics go out as CloudWatch embedded metric format in namespace `SupplyCheckout`, with `Region` as their only dimension; per-team detail goes in metadata, never a dimension.

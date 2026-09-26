@@ -102,6 +102,7 @@ export class OpsDashboard extends Construct {
       businessGraph("J1: sign-ups", [BusinessMetric.SignUps]),
       businessGraph("J3: invites", [BusinessMetric.InvitesSent, BusinessMetric.InvitesAccepted]),
       businessGraph("J7: billing errors", [BusinessMetric.CheckoutSessionErrors, BusinessMetric.WebhookSignatureFailures]),
+      businessGraph("J4: live updates", [BusinessMetric.LiveUpdates, BusinessMetric.LiveUpdateFailures]),
     );
   }
 }
