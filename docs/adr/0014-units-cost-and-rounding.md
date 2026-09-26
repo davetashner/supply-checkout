@@ -1,6 +1,6 @@
 # 0014. Count in eaches, keep cost apart from client price, and round money to cents
 
-- Status: Proposed
+- Status: Accepted (2026-09-26)
 - Date: 2026-09-26
 
 ## Context
