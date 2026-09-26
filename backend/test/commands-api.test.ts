@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { DATA_ROUTES, routeKey } from "../src/api/routes.js";
 import { InvalidInputError } from "../src/data/index.js";
+import { MAX_DOCUMENT_BYTES } from "../src/data/documents.js";
 import type { Observability } from "../src/observability/index.js";
 import { MemoryTable } from "./memory-table.js";
 
@@ -453,5 +454,117 @@ describe("stock history", () => {
     expect((await call("GET", "/teams/team-a/products/0123/movements", undefined, CONTRIBUTOR, { limit: "0" })).status).toBe(400);
     expect((await call("GET", "/teams/team-a/products/0123/movements", undefined, CONTRIBUTOR, { limit: "abc" })).status).toBe(400);
     expect((await call("GET", "/teams/team-a/products/0123/movements", undefined, CONTRIBUTOR, { limit: "101" })).status).toBe(400);
+  });
+});
+
+describe("product keys that are built-in object names", () => {
+  const sheet = () => table.get("TEAM#team-a", "SHEET#s1") as Record<string, unknown> & { items: Record<string, Record<string, unknown>> };
+  const stockOf = (key: string) => table.get("TEAM#team-a", `PRODUCT#${key}`)?.stock;
+  const addProduct = (key: string, name: string) => table.put({ PK: "TEAM#team-a", SK: `PRODUCT#${key}`, type: "product", key, version: 1, code: key, name, price: 2, stock: 20 });
+
+  it("refuses __proto__, which would be the items map's prototype rather than a line", async () => {
+    seed({ sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 1, returned: 0 } } } });
+    for (const [method, path, body] of [
+      ["POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "__proto__", quantity: 1, name: "x", price: 1 }],
+      ["POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "__proto__", quantity: 1 }],
+      ["POST", "/teams/team-a/products/__proto__/stock", { operationId: op(), reason: "count", count: 1 }],
+      ["GET", "/teams/team-a/products/__proto__/movements", undefined],
+      ["PUT", "/teams/team-a/products/__proto__", { data: { code: "", name: "x", price: 1 } }],
+    ] as const) {
+      expect(await call(method, path, body)).toMatchObject({ status: 400, body: { error: { code: "bad_request" } } });
+    }
+    expect(sheet().version).toBe(1);
+    expect(movements()).toEqual([]);
+    expect(operations()).toEqual([]);
+  });
+
+  it.each(["constructor", "toString", "hasOwnProperty"])("checks out and returns a product keyed %s on a sheet that already has lines", async (key) => {
+    seed({ sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 1, returned: 0 } } } });
+    // Named "String": the SDK would store a map with its own `constructor` field as a string
+    addProduct(key, "String");
+    const checkout = (quantity: number) => call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: key, quantity });
+    expect((await checkout(2)).body.result).toMatchObject({ lineCreated: true, stockDelta: -2 });
+    expect((await checkout(3)).body.result).toMatchObject({ lineCreated: false, stockDelta: -3 });
+    const ret = await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: key, quantity: 4 });
+    expect(ret).toMatchObject({ status: 200, body: { result: { stockDelta: 4 } } });
+    expect(ret.body.sheet.data.items[key]).toEqual({ code: key, name: "String", price: 2, out: 5, returned: 4 });
+    expect(sheet().items[key]).toEqual({ code: key, name: "String", price: 2, out: 5, returned: 4 });
+    expect(sheet().items["0123"]).toEqual({ code: "0123", name: "Nitrile gloves", price: 12.5, out: 1, returned: 0 });
+    expect(sheet().version).toBe(4);
+    expect(stockOf(key)).toBe(19);
+    expect(movements().map((m) => m.delta)).toEqual([-2, -3, 4]);
+    expect(await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: key, quantity: 2 })).toMatchObject({
+      status: 400,
+      body: { error: { message: expect.stringMatching(/Only 1 of this item is left/) } },
+    });
+  });
+
+  it("creates the items map with a line keyed constructor", async () => {
+    seed({ sheet: { items: undefined } });
+    addProduct("constructor", "String");
+    expect((await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "constructor", quantity: 1 })).status).toBe(200);
+    expect(sheet().items).toEqual({ constructor: { code: "constructor", name: "String", price: 2, out: 1, returned: 0 } });
+  });
+
+  it("refuses a return of a built-in name that isn't on the sheet", async () => {
+    seed();
+    addProduct("toString", "Rags");
+    expect(await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "toString", quantity: 1 })).toMatchObject({
+      status: 400,
+      body: { error: { message: expect.stringMatching(/isn't on this sheet/) } },
+    });
+  });
+
+  it("saves and merges sheet documents with a line keyed constructor", async () => {
+    seed();
+    const items = { constructor: { code: "c", name: "String", price: 1, out: 2, returned: 0 } };
+    const put = await call("PUT", "/teams/team-a/sheets/s1", { data: { client: "Echo", date: "2026-09-26", status: "open", items } });
+    expect(put.status).toBe(200);
+    expect(sheet().items).toEqual(items);
+    // The merge adds to the stored line, not to Object
+    const patch = await call("PATCH", "/teams/team-a/sheets/s1", { data: { items: { constructor: { out: 3 }, toString: { name: "Rags", price: 1, out: 1, returned: 0 } } } });
+    expect(patch.status).toBe(200);
+    expect(sheet().items).toEqual({ constructor: { code: "c", name: "String", price: 1, out: 3, returned: 0 }, toString: { name: "Rags", price: 1, out: 1, returned: 0 } });
+    expect(counts).toMatchObject({ Checkouts: 4 });
+  });
+});
+
+describe("sheet size", () => {
+  const sheetBytes = () => Buffer.byteLength(JSON.stringify(table.get("TEAM#team-a", "SHEET#s1")), "utf8");
+  /** Pads the sheet to exactly `bytes` of JSON. */
+  function padSheet(bytes: number) {
+    table.put({ ...table.get("TEAM#team-a", "SHEET#s1"), pad: "" });
+    table.put({ ...table.get("TEAM#team-a", "SHEET#s1"), pad: "x".repeat(bytes - sheetBytes()) });
+    expect(sheetBytes()).toBe(bytes);
+  }
+
+  it("refuses a new line that would take the sheet past the document limit, with 413 and nothing written", async () => {
+    seed();
+    padSheet(MAX_DOCUMENT_BYTES - 200);
+    table.put({ PK: "TEAM#team-a", SK: "PRODUCT#nb-1", type: "product", key: "nb-1", version: 1, code: "nb-1", name: "N".repeat(200), price: 1, stock: 5 });
+    expect(await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "nb-1", quantity: 1 })).toMatchObject({
+      status: 413,
+      body: { error: { code: "quota_exceeded", message: expect.stringMatching(/start another sheet/) } },
+    });
+    expect(table.get("TEAM#team-a", "PRODUCT#nb-1")?.stock).toBe(5);
+    expect(table.get("TEAM#team-a", "SHEET#s1")?.version).toBe(1);
+    expect(movements()).toEqual([]);
+    expect(operations()).toEqual([]);
+    // A small line still fits
+    expect((await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "x", quantity: 1, name: "x", price: 1 })).status).toBe(200);
+  });
+
+  it("maps DynamoDB's item size refusal to 413, not 500", async () => {
+    // A sheet already at DynamoDB's limit, which a line's count growing by a digit passes
+    seed({ sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 1 } } } });
+    padSheet(MemoryTable.MAX_ITEM_BYTES);
+    for (const [path, quantity] of [["/teams/team-a/sheets/s1/checkout", 9], ["/teams/team-a/sheets/s1/return", 1]] as const) {
+      const res = await call("POST", path, { operationId: op(), productKey: "0123", quantity });
+      expect({ status: res.status, code: res.body.error?.code }).toEqual({ status: 413, code: "quota_exceeded" });
+    }
+    expect(stock()).toBe(10);
+    expect(line()).toEqual({ code: "0123", name: "Nitrile gloves", price: 12.5, out: 1 });
+    expect(movements()).toEqual([]);
+    expect(operations()).toEqual([]);
   });
 });

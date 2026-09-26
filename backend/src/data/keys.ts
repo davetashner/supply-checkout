@@ -17,9 +17,15 @@ export function id(value: unknown, what: string): string {
   return value;
 }
 
-/** Product keys come from the app (a barcode or a generated key), so they allow more. */
+/**
+ * Product keys come from the app (a barcode or a generated key), so they allow
+ * more. Not "__proto__": a product key is also a field name in a sheet's
+ * `items` map, and JavaScript (and the SDK's marshaller) would treat that one
+ * as the map's prototype, not a field. Other built-in names ("constructor",
+ * "toString") are fine; code that reads a line by key uses Object.hasOwn.
+ */
 export function productKey(value: unknown): string {
-  if (typeof value !== "string" || value.length === 0 || value.length > 256 || CONTROL.test(value)) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 256 || CONTROL.test(value) || value === "__proto__") {
     throw new InvalidInputError("Invalid product key");
   }
   return value;
