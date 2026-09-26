@@ -18,6 +18,7 @@ The app runs as a [Claude artifact](https://claude.ai/artifact/LcSb29dTE99AK4N6i
 | `tests/` | Playwright end-to-end tests, run against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`). |
 | `docs/adr/` | Architecture decision records for the AWS subscription product. |
 | `docs/architecture/` | Architecture overview and diagrams (Mermaid). |
+| `docs/journeys.md` | The customer journeys the product must never break, the tests that cover them, and the production alarms for when one is blocked. |
 | `.beads/` | The [beads](https://github.com/steveyegge/beads) backlog. `issues.jsonl` is an export; run `bd ready` to see what's next. |
 
 ## Development
