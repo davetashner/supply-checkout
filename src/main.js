@@ -1,309 +1,20 @@
-<title>Supply Checkout</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@500&family=Public+Sans:wght@400;500;600&display=swap">
-<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
-<style>
-:root{
-  --ground:#EDF1EE; --surface:#FFFFFF; --sunk:#E3E9E5; --ink:#17211E; --muted:#56655F; --line:#D2DBD6;
-  --accent:#0E6B58; --accent-ink:#FFFFFF; --accent-soft:#D5EBE4;
-  --out:#8F450B; --out-soft:#F6E4D3; --danger:#B3261E; --danger-soft:#F7DEDB;
-  --shadow:0 10px 40px rgba(18,33,28,.18);
-  --display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
-  --body:"Public Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
-  --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
-}
-@media (prefers-color-scheme: dark){
-  :root:not([data-theme="light"]){
-    color-scheme:dark;
-    --ground:#101614; --surface:#18201D; --sunk:#131A18; --ink:#E3ECE8; --muted:#95A69F; --line:#2B3632;
-    --accent:#43C3A0; --accent-ink:#06231C; --accent-soft:#16352D;
-    --out:#EA9F57; --out-soft:#3A2717; --danger:#F08A80; --danger-soft:#3C1C19;
-    --shadow:0 10px 40px rgba(0,0,0,.5);
-  }
-}
-:root[data-theme="dark"]{
-  color-scheme:dark;
-  --ground:#101614; --surface:#18201D; --sunk:#131A18; --ink:#E3ECE8; --muted:#95A69F; --line:#2B3632;
-  --accent:#43C3A0; --accent-ink:#06231C; --accent-soft:#16352D;
-  --out:#EA9F57; --out-soft:#3A2717; --danger:#F08A80; --danger-soft:#3C1C19;
-  --shadow:0 10px 40px rgba(0,0,0,.5);
-}
-*{box-sizing:border-box}
-body{background:var(--ground);color:var(--ink);font:15px/1.5 var(--body);padding-inline:16px;padding-block:0 64px}
-.wrap{max-width:860px;margin:0 auto}
-h1,h2,h3{font-family:var(--display);font-weight:700;letter-spacing:.01em;line-height:1.1;text-wrap:balance;margin:0}
-button,input,select{font:inherit;color:inherit}
-.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
-.muted{color:var(--muted)}
-.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+import { use } from "./runtime.js";
+import { esc, money, todayISO, fmtDate, keyOf, int, codeText, hasStock, newKey, uid, round2, numOrNull } from "./format.js";
+import { lines, totals } from "./sheet-math.js";
+import { $, toast, openModal, closeModal, armButton, stepperHTML, setText, setHTML, wireStepper } from "./dom.js";
+import { scanFromInput } from "./barcode.js";
+import { RECEIPT_PROMPT, sampleErr } from "./receipt-prompt.js";
 
-/* Top bar */
-.top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding-block:18px 14px}
-.brand{display:flex;align-items:center;gap:10px}
-.bars{display:flex;gap:2px;height:26px;align-items:stretch}
-.bars i{display:block;background:var(--ink);border-radius:1px}
-.brand h1{font-size:26px;text-transform:uppercase;letter-spacing:.04em}
-.tabs{display:flex;background:var(--sunk);border:1px solid var(--line);border-radius:10px;padding:3px;gap:2px}
-.tabs button{border:0;background:none;padding:6px 14px;border-radius:7px;cursor:pointer;font-weight:600;color:var(--muted)}
-.tabs button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.08)}
-
-/* Buttons */
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:9px 14px;font-weight:600;cursor:pointer;text-decoration:none;white-space:nowrap}
-.btn:hover{border-color:var(--muted)}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
-.btn.primary:hover{filter:brightness(1.07)}
-.btn.danger{color:var(--danger);border-color:var(--danger)}
-.btn.danger.armed{background:var(--danger);color:var(--surface)}
-.btn.ghost{background:none;border-color:transparent;padding-inline:8px}
-.btn.big{padding:14px 20px;font-size:17px;border-radius:12px}
-.btn:disabled{opacity:.5;cursor:not-allowed}
-:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.btn svg{width:20px;height:20px;flex:none}
-
-/* Notices */
-.notice{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:10px 14px;margin-block:0 14px;color:var(--muted)}
-.notice[hidden]{display:none}
-.notice.resume{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;color:var(--ink);border-color:var(--out);background:var(--out-soft)}
-#receiptView{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
-#receiptView[hidden]{display:none}
-#rBody{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
-.reading{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:22px;display:grid;gap:10px;justify-items:start}
-.reading h2{font-size:30px}
-.reading p{margin:0}
-.panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px;display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
-.panel h3,.rhead{font-size:20px;text-transform:uppercase;letter-spacing:.05em}
-.panel > .btn{justify-self:start}
-.dests{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}
-.dest{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.dest select{flex:1 1 180px}
-.dest input{flex:2 1 200px;width:auto;min-width:0}
-select{background:var(--ground);border:1px solid var(--line);border-radius:9px;padding:9px 10px;min-width:0;max-width:100%}
-.rlines{display:grid;gap:10px}
-.rline{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px;display:grid;grid-template-columns:minmax(0,1fr);gap:8px}
-.rline.matched{border-color:var(--accent)}
-.rline .lbl{display:grid;gap:3px;font-size:12px;font-weight:600;color:var(--muted)}
-.rline .lbl select,.rline .lbl input{font-size:15px;font-weight:400;color:var(--ink)}
-.rline .lbl select{width:100%}
-.raw{font-size:12px;color:var(--muted)}
-.raw span{font-family:var(--mono)}
-.tag{display:inline-block;background:var(--out-soft);color:var(--out);border-radius:4px;padding:0 6px;font-size:11px;font-weight:600}
-.choice{display:grid;grid-template-columns:1fr 1fr;gap:6px}
-.choice .lbl{grid-column:1 / -1}
-.choice button{border:1px solid var(--line);background:var(--ground);border-radius:9px;padding:8px 10px;text-align:left;cursor:pointer;font-size:14px;display:grid;gap:2px;min-width:0;overflow-wrap:anywhere}
-.choice button small{font-size:11px;color:var(--muted);font-weight:600}
-.choice button[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent)}
-.choice.warn .lbl{color:var(--out)}
-.rrow{display:grid;grid-template-columns:80px 110px minmax(0,1fr);gap:8px}
-.rrow label{display:grid;gap:3px;font-size:12px;font-weight:600;color:var(--muted);min-width:0}
-.rrow input{font-family:var(--mono)}
-.rrow select{width:100%}
-@media (max-width:440px){.rrow{grid-template-columns:repeat(2,minmax(0,1fr))}.rrow .grow{grid-column:1 / -1}}
-.ractions{display:flex;align-items:center;gap:4px}
-.ractions .num{font-weight:500}
-.spacer{flex:1}
-#rBody > .btn{justify-self:start}
-.sumtable{width:100%;min-width:0;border-collapse:collapse}
-.sumtable td{padding:6px 0;border-bottom:1px solid var(--line);font-family:var(--body);text-align:right}
-.sumtable td:first-child{text-align:left}
-.sumtable td:last-child{font-family:var(--mono);width:1%;white-space:nowrap;padding-left:16px}
-.sumtable tr.strong td{font-weight:600;border-bottom-width:2px}
-.hint.warn{color:var(--out)}
-
-/* Sheet list */
-.bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-block:6px 14px}
-.chips{display:flex;gap:6px;flex-wrap:wrap}
-.chip{border:1px solid var(--line);background:none;border-radius:999px;padding:4px 12px;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)}
-.chip[aria-pressed="true"]{background:var(--ink);border-color:var(--ink);color:var(--ground)}
-.list{display:grid;gap:10px}
-.sheet-card{display:grid;grid-template-columns:1fr auto;gap:4px 16px;align-items:center;width:100%;text-align:left;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;cursor:pointer}
-.sheet-card:hover{border-color:var(--muted)}
-.sheet-card h3{font-size:21px}
-.sheet-card .meta{grid-column:1;display:flex;flex-wrap:wrap;gap:4px 12px;font-size:13px;color:var(--muted);align-items:center}
-.sheet-card .right{grid-row:1 / span 2;grid-column:2;text-align:right;display:grid;gap:6px;justify-items:end}
-.pill{display:inline-block;font-family:var(--display);font-weight:700;text-transform:uppercase;letter-spacing:.06em;font-size:12.5px;padding:2px 9px;border-radius:5px}
-.pill.open{background:var(--out-soft);color:var(--out)}
-.pill.closed{background:var(--accent-soft);color:var(--accent)}
-.who{display:inline-flex;align-items:center;gap:6px}
-.who img{width:18px;height:18px;border-radius:50%}
-.empty{border:1.5px dashed var(--line);border-radius:12px;padding:28px 18px;text-align:center;color:var(--muted)}
-
-/* Sheet detail */
-.back{margin-block:4px 8px;margin-left:-8px}
-.sheet-head{display:grid;gap:8px;margin-block:0 16px}
-.sheet-head h2{font-size:clamp(28px,6vw,40px)}
-.sheet-head .meta{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;color:var(--muted)}
-.sheet-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
-.scanbar{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px;display:grid;gap:12px;margin-block:0 16px}
-.scanbar[hidden]{display:none}
-.mode{display:grid;grid-template-columns:1fr 1fr;background:var(--sunk);border-radius:10px;padding:3px;gap:3px}
-.mode button{border:0;background:none;border-radius:8px;padding:9px;font-family:var(--display);font-weight:700;font-size:17px;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;color:var(--muted)}
-.mode button[aria-pressed="true"][data-mode="out"]{background:var(--out);color:var(--surface)}
-.mode button[aria-pressed="true"][data-mode="return"]{background:var(--accent);color:var(--accent-ink)}
-.scan-row{display:flex;gap:10px;flex-wrap:wrap}
-.scan-row .btn.big{flex:1 1 220px}
-.manual{display:flex;gap:8px;flex:1 1 240px}
-.manual input{flex:1;min-width:0}
-.hint{font-size:13px;color:var(--muted);margin:0}
-#noCodeBtn{justify-self:start}
-.check{display:flex;gap:8px;align-items:center;font-size:14px}
-.check input{width:18px;height:18px;accent-color:var(--accent)}
-.pick{display:grid;gap:6px;max-height:320px;overflow:auto}
-.pick button{display:flex;justify-content:space-between;gap:12px;align-items:baseline;text-align:left;border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:10px 12px;cursor:pointer}
-.pick button:hover{border-color:var(--muted)}
-.pick .code{margin:0;font-size:12px}
-
-input[type=text],input[type=number],input[type=date],input[type=search]{background:var(--ground);border:1px solid var(--line);border-radius:9px;padding:9px 12px;width:100%}
-input:focus{outline:2px solid var(--accent);outline-offset:0;border-color:transparent}
-
-.totals{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-block:0 14px}
-.totals div{background:var(--surface);padding:10px 14px}
-.totals .k{font-family:var(--display);font-weight:600;text-transform:uppercase;letter-spacing:.07em;font-size:13px;color:var(--muted)}
-.totals .v{font-family:var(--mono);font-size:20px}
-.totals .v.charge{color:var(--accent)}
-@media (max-width:520px){.totals{grid-template-columns:repeat(2,1fr)}}
-
-.table-wrap{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:12px}
-table{width:100%;border-collapse:collapse;min-width:560px}
-th{font-family:var(--display);font-weight:600;text-transform:uppercase;letter-spacing:.07em;font-size:13px;color:var(--muted);text-align:right;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
-th:first-child,td:first-child{text-align:left}
-td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;vertical-align:top}
-td:first-child{font-family:var(--body)}
-td .code{display:block;font-family:var(--mono);font-size:12px;color:var(--muted)}
-tbody tr.click{cursor:pointer}
-tbody tr.click:hover td{background:var(--sunk)}
-tfoot td{border-bottom:0;font-weight:600}
-td.pending{color:var(--out)}
-td.charge{color:var(--ink);font-weight:500}
-
-/* Price list */
-.prices td:first-child{width:50%}
-
-/* Modal */
-.overlay{position:fixed;inset:0;background:rgba(10,18,15,.45);display:flex;align-items:flex-end;justify-content:center;z-index:20;padding:16px;padding-bottom:calc(16px + env(safe-area-inset-bottom,0px))}
-.overlay[hidden]{display:none}
-@media (min-width:600px){.overlay{align-items:center}}
-.modal{background:var(--surface);border-radius:16px;box-shadow:var(--shadow);width:100%;max-width:440px;max-height:90%;overflow:auto;padding:20px;display:grid;gap:14px}
-.modal h2{font-size:28px}
-.modal .code{font-family:var(--mono);color:var(--muted);font-size:13px;margin-top:-8px;word-break:break-all}
-.field{display:grid;gap:5px}
-.field label{font-size:13px;font-weight:600;color:var(--muted)}
-.row2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-.stepper{display:grid;grid-template-columns:56px 1fr 56px;gap:8px}
-.stepper button{border:1px solid var(--line);background:var(--sunk);border-radius:10px;font-size:24px;font-weight:600;cursor:pointer}
-.stepper input{text-align:center;font-family:var(--mono);font-size:24px;padding:10px}
-.summary{background:var(--sunk);border-radius:10px;padding:10px 14px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:14px}
-.summary b{font-family:var(--mono);font-weight:500}
-.modal-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
-.modal-actions .spacer{flex:1}
-.item-known{display:flex;justify-content:space-between;gap:12px;align-items:baseline;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
-.item-known strong{font-size:16px}
-
-.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--ground);padding:10px 16px;border-radius:10px;box-shadow:var(--shadow);z-index:30;max-width:calc(100% - 32px);font-weight:500}
-.toast[hidden]{display:none}
-@media (prefers-reduced-motion:no-preference){.modal{animation:rise .16s ease-out}@keyframes rise{from{transform:translateY(10px);opacity:.6}}}
-</style>
-
-<div class="wrap">
-  <header class="top">
-    <div class="brand">
-      <div class="bars" aria-hidden="true"><i style="width:3px"></i><i style="width:1px"></i><i style="width:2px"></i><i style="width:1px"></i><i style="width:4px"></i><i style="width:1px"></i><i style="width:2px"></i></div>
-      <h1>Supply Checkout</h1>
-    </div>
-    <nav class="tabs" aria-label="Sections">
-      <button type="button" id="tab-sheets" aria-pressed="true">Sheets</button>
-      <button type="button" id="tab-prices" aria-pressed="false">Inventory</button>
-    </nav>
-  </header>
-
-  <p class="notice" id="notice" hidden></p>
-
-  <main id="main"></main>
-
-  <section id="sheetView" hidden>
-    <button type="button" class="btn ghost back" id="backBtn">← All sheets</button>
-    <div id="sheetHead"></div>
-    <div class="scanbar" id="scanbar">
-      <div class="mode" role="group" aria-label="What are you doing?">
-        <button type="button" data-mode="out" aria-pressed="true">Check out</button>
-        <button type="button" data-mode="return" aria-pressed="false">Return</button>
-      </div>
-      <div class="scan-row">
-        <label class="btn primary big" for="scanFile">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 7V4h3M21 7V4h-3M3 17v3h3M21 17v3h-3"/><path d="M7 8v8M10 8v8M13 8v8M17 8v8"/></svg>
-          <span id="scanLabel">Scan barcode</span>
-        </label>
-        <input class="vh" type="file" id="scanFile" accept="image/*" capture="environment" aria-label="Barcode photo">
-        <form class="manual" id="manualForm">
-          <label class="vh" for="manualCode">Barcode number</label>
-          <input type="text" id="manualCode" inputmode="numeric" autocomplete="off" placeholder="Or type the barcode">
-          <button type="submit" class="btn">Enter</button>
-        </form>
-      </div>
-      <button type="button" class="btn" id="noCodeBtn">Add item without a barcode</button>
-      <p class="hint" id="modeHint">Take a photo of the barcode, then choose how many you're taking.</p>
-    </div>
-    <div id="sheetBody"></div>
-  </section>
-
-  <section id="receiptView" hidden>
-    <button type="button" class="btn ghost back" id="rBack">← All sheets</button>
-    <div id="rBody"></div>
-  </section>
-  <input class="vh" type="file" id="receiptFile" accept="image/*" aria-label="Receipt photo">
-</div>
-
-<div class="overlay" id="overlay" hidden><div class="modal" id="modal" role="dialog" aria-modal="true"></div></div>
-<div class="toast" id="toast" role="status" hidden></div>
-
-<script>
-(() => {
-const $ = s => document.querySelector(s);
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const usd = new Intl.NumberFormat("en-US", {style:"currency", currency:"USD"});
-const money = n => usd.format(Number(n) || 0);
-const use = n => (window.claude && window.claude.use) ? window.claude.use(n).catch(() => null) : Promise.resolve(null);
-const todayISO = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0,10); };
-const fmtDate = iso => { if (!iso) return ""; const [y,m,d] = iso.split("-").map(Number); return new Date(y, m-1, d).toLocaleDateString("en-US", {month:"short", day:"numeric", year:"numeric"}); };
-const keyOf = code => { let k = String(code).trim().replace(/[^A-Za-z0-9_\-.~:@+]/g, "_").slice(0, 150); if (/^\.+$/.test(k)) k = "x" + k; return k; };
-const int = v => Math.max(0, Math.floor(Number(v) || 0));
-const codeText = c => c ? "Barcode " + c : "No barcode";
-const hasStock = p => p && typeof p.stock === "number";
 async function bumpStock(key, delta) {
   // Adds (or removes) units from the storage count. Items nobody has counted stay uncounted when removing.
   const p = products[key]; if (!p || !delta) return true;
   if (!hasStock(p) && delta < 0) return true;
   return write(() => db.doc("products/" + key).update({ stock: Math.max(0, (hasStock(p) ? p.stock : 0) + delta) }));
 }
-const newKey = () => "nb-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
 let db = null, userNs = null, dl = null, myId = null, canWrite = true, connected = false;
 let products = {}, sheets = [], people = {};
 const ui = { tab: "sheets", sheetId: null, mode: "out", filter: "open", receipt: false };
-
-/* ---------- toast & modal ---------- */
-let toastTimer;
-function toast(msg, ms = 3200) {
-  const t = $("#toast"); t.textContent = msg; t.hidden = false;
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.hidden = true, ms);
-}
-function openModal(html, mount) {
-  const m = $("#modal"); m.innerHTML = html; $("#overlay").hidden = false;
-  mount && mount(m);
-  const f = m.querySelector("[autofocus]") || m.querySelector("input,button"); f && f.focus();
-}
-function closeModal() { $("#overlay").hidden = true; $("#modal").innerHTML = ""; }
-$("#overlay").addEventListener("click", e => { if (e.target.id === "overlay") closeModal(); });
-document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#overlay").hidden) closeModal(); });
-
-function armButton(btn, label, action) {
-  // Two-tap confirm, since the viewer can't show confirm() dialogs
-  btn.addEventListener("click", () => {
-    if (btn.classList.contains("armed")) { action(); return; }
-    btn.classList.add("armed"); const old = btn.textContent; btn.textContent = label;
-    setTimeout(() => { btn.classList.remove("armed"); btn.textContent = old; }, 3500);
-  });
-}
 
 async function write(fn, okMsg) {
   if (!db) { toast("Not connected to shared storage."); return false; }
@@ -316,19 +27,6 @@ async function write(fn, okMsg) {
   }
 }
 
-/* ---------- math ---------- */
-function lines(sheet) {
-  return Object.entries(sheet.items || {}).map(([key, it]) => ({ key, ...it }))
-    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
-}
-function totals(sheet) {
-  let out = 0, ret = 0, used = 0, charge = 0, value = 0;
-  for (const l of lines(sheet)) {
-    const o = int(l.out), r = Math.min(int(l.returned), o), u = o - r, p = Number(l.price) || 0;
-    out += o; ret += r; used += u; charge += u * p; value += o * p;
-  }
-  return { out, ret, used, charge, value, count: Object.keys(sheet.items || {}).length };
-}
 const currentSheet = () => sheets.find(s => s.id === ui.sheetId);
 // Show a sheet we just created right away; the next snapshot replaces this copy
 const addLocalSheet = (id, body) => { if (!sheets.some(s => s.id === id)) sheets = [{ id, ...body }, ...sheets]; };
@@ -481,23 +179,6 @@ function drawPrices() {
     // preventDefault: otherwise this Enter press also submits the editor's form
     tr.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
   });
-}
-
-/* ---------- modals ---------- */
-function stepperHTML(id, val, max) {
-  return `<div class="stepper"><button type="button" data-step="-1" aria-label="Fewer">−</button><input type="number" id="${id}" min="0" ${max != null ? `max="${max}"` : ""} value="${val}" inputmode="numeric"><button type="button" data-step="1" aria-label="More">+</button></div>`;
-}
-const setText = (el, t) => { if (el.textContent !== t) el.textContent = t; };
-const setHTML = (el, h) => { if (el.innerHTML !== h) el.innerHTML = h; };
-function wireStepper(m, id, onChange) {
-  const inp = m.querySelector("#" + id);
-  // Only touch the DOM when something changed: iOS Safari drops a tap if the page
-  // changes under it, and blurring this field fires "change" mid-tap.
-  const clamp = () => { let v = int(inp.value); if (inp.max !== "") v = Math.min(v, int(inp.max)); if (inp.value !== String(v)) inp.value = v; onChange && onChange(v); };
-  m.querySelectorAll("[data-step]").forEach(b => b.addEventListener("click", () => { inp.value = int(inp.value) + Number(b.dataset.step); clamp(); }));
-  inp.addEventListener("input", () => onChange && onChange(int(inp.value)));
-  inp.addEventListener("change", clamp);
-  return () => { clamp(); return int(inp.value); };
 }
 
 function newSheetModal(existing) {
@@ -709,51 +390,6 @@ function productModal(key) {
   });
 }
 
-/* ---------- barcode reading ---------- */
-async function loadBitmap(file) {
-  if (window.createImageBitmap) { try { return await createImageBitmap(file); } catch {} }
-  return new Promise((res, rej) => { const img = new Image(); img.onload = () => res(img); img.onerror = rej; img.src = URL.createObjectURL(file); });
-}
-let zxReader = null, zxHints = null;
-function zxDecode(canvas) {
-  const Z = window.ZXing; if (!Z) return null;
-  if (!zxReader) {
-    zxReader = new Z.MultiFormatReader(); zxHints = new Map();
-    const F = Z.BarcodeFormat;
-    zxHints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.CODE_128, F.CODE_39, F.CODE_93, F.ITF, F.CODABAR, F.QR_CODE, F.DATA_MATRIX]);
-    zxHints.set(Z.DecodeHintType.TRY_HARDER, true);
-    zxReader.setHints(zxHints);
-  }
-  try {
-    const bmp = new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)));
-    return zxReader.decode(bmp, zxHints).getText();
-  } catch { return null; } finally { try { zxReader.reset(); } catch {} }
-}
-async function decodeImage(file) {
-  const bmp = await loadBitmap(file);
-  if ("BarcodeDetector" in window) {
-    try { const found = await new BarcodeDetector().detect(bmp); if (found && found.length) return found[0].rawValue; } catch {}
-  }
-  const w = bmp.width, h = bmp.height;
-  for (const max of [1280, 900, 1800, 2600]) {
-    const k = Math.min(1, max / Math.max(w, h));
-    const c = document.createElement("canvas"); c.width = Math.round(w * k); c.height = Math.round(h * k);
-    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
-    const txt = zxDecode(c); if (txt) return txt;
-    if (k === 1) break;
-  }
-  return null;
-}
-async function scanFromInput(input) {
-  const file = input.files && input.files[0]; input.value = "";
-  if (!file) return null;
-  toast("Reading barcode…", 8000);
-  let code = null;
-  try { code = await decodeImage(file); } catch {}
-  if (!code) { toast("No barcode found. Fill the frame with the barcode, keep it flat and well lit, or type the number.", 5000); return null; }
-  $("#toast").hidden = true;
-  return code.trim();
-}
 function keyForCode(code) {
   const k = keyOf(code); if (products[k]) return k;
   return Object.keys(products).find(x => products[x].code === code) || k;
@@ -789,22 +425,6 @@ const DKEY = "supplyCheckout.receiptDraft";
 let sampleFn = null, receiptOK = false, draft = null;
 try { draft = JSON.parse(localStorage.getItem(DKEY) || "null"); } catch {}
 const saveDraft = () => { try { draft ? localStorage.setItem(DKEY, JSON.stringify(draft)) : localStorage.removeItem(DKEY); } catch {} };
-const uid = () => Math.random().toString(36).slice(2, 9);
-const round2 = n => Math.round((Number(n) || 0) * 100) / 100;
-const numOrNull = n => (n === null || n === undefined || n === "" || isNaN(Number(n))) ? null : round2(n);
-
-const RECEIPT_PROMPT = `The image is a photo of a store receipt for supplies. Extract the purchased line items.
-Reply with only JSON in this shape:
-{"store": "Home Depot", "date": "2026-09-24", "items": [{"raw": "GLAD KTCH 13G 45CT", "name": "Glad kitchen trash bags, 13 gal, 45 ct", "qty": 2, "price": 11.97, "match": "i3"}], "subtotal": 23.94, "tax": 1.68, "total": 25.62}
-Rules:
-- "price" is the price of ONE unit after any discount or coupon printed for that item. If a line shows a quantity and a line total, divide.
-- Expand abbreviated receipt text into a plain, readable product name. Keep brand, size and count details.
-- Leave out subtotal, tax, total, payment, change, rewards, and bag or deposit fee lines.
-- If the same item appears on several lines, list it once with the combined quantity.
-- Use null for store, date, subtotal, tax or total when you can't read them. Date must be YYYY-MM-DD.
-- "raw" is the item text exactly as printed on the receipt.
-- "match": the id of the inventory item below that is the same product, even if it's described differently. Use null if none is clearly the same. Don't match items that differ in size, count, color or type.
-- If the image is not a readable receipt, reply {"items": []}.`;
 
 function receiptPrompt() {
   const inv = Object.entries(products).slice(0, 500);
@@ -812,16 +432,6 @@ function receiptPrompt() {
   const list = inv.map(([k, p], i) => { ids["i" + (i + 1)] = k; return `i${i + 1} | ${String(p.name || "").replace(/\s+/g, " ").slice(0, 120)} | ${money(p.price)}`; }).join("\n");
   return { prompt: RECEIPT_PROMPT + "\n\nCurrent inventory (id | name | price):\n" + (list || "(empty)"), ids };
 }
-
-const sampleErr = code => ({
-  not_granted: "Receipt reading needs permission to use Claude. Reload the page and allow it to try again.",
-  sampling_disabled: "Receipt reading isn't available for this account.",
-  rate_limited: "Too many requests right now. Wait a minute and try again.",
-  image_rejected: "That image couldn't be used. Try a JPEG or PNG photo.",
-  images_unavailable: "Receipt reading isn't available in this view.",
-  invalid_json: "The receipt couldn't be read cleanly. Try again, or take a sharper photo.",
-  session_expired: "Your sign-in expired. Reload the page and sign in again.",
-}[code] || "Reading the receipt failed. Check your connection and try again.");
 
 function receiptError(msg) {
   $("#rBody").innerHTML = `<div class="reading"><h2>Couldn't read that receipt</h2><p>${esc(msg)}</p>
@@ -1135,5 +745,3 @@ draw();
     if (sFirst) { sFirst = false; ready(); } else render();
   }, onErr);
 })();
-})();
-</script>

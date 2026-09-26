@@ -1,6 +1,6 @@
 # Supply Checkout
 
-A supply checkout tracker (sheets per client job, inventory, barcode and receipt scanning). Today it's a single `index.html` published as a claude.ai artifact. We're turning it into a paid, multi-tenant product on AWS at $3/user/month.
+A supply checkout tracker (sheets per client job, inventory, barcode and receipt scanning). Today it's published as a claude.ai artifact: `npm run build:artifact` builds the Vite project in `src/` into one self-contained `dist/artifact/index.html`, and `npm run build:web` builds the static bundle for AWS. We're turning it into a paid, multi-tenant product on AWS at $3/user/month.
 
 Read these before planning work:
 - `README.md`: repo layout, development, tests, CI, releases
@@ -42,16 +42,17 @@ Beads are labeled `mvp` or `phase-2` (native mobile apps, full active-active fai
 npm ci
 npm run hooks:install    # once per clone: pre-commit check for AWS IDs, emails and keys
 npx playwright install chromium webkit
-npm run check            # lint + all suites in desktop Chrome and iPhone Safari
-npm run test:coverage    # desktop Chrome with the 98% coverage gate
+npm run check            # lint + all suites in desktop Chrome and iPhone Safari, against both builds
+npm run test:coverage    # desktop Chrome with the 98% coverage gate, for both builds
 ```
 
-- CI fails if lines, statements, functions or branches of the app script drop below 98%. When it does, `coverage/uncovered.txt` lists every gap by `index.html` line. Branch coverage has little headroom, so new code needs tests that take both sides of each condition.
+- Playwright builds the app before each run. `BUILD=artifact` (the default) or `BUILD=web` picks which build the tests load.
+- CI fails if lines, statements, functions or branches of `src/` drop below 98%, in either build. When it does, `coverage/<build>/uncovered.txt` lists every gap by `src/` file and line. Branch coverage has little headroom, so new code needs tests that take both sides of each condition.
 - Tests run against `tests/mock-claude.js`. It has opt-in failure modes (see the options at its top), and `window.__mock.notify()` acts as another user after a test edits `window.__mock.docs`.
 - Before interacting, wait until the page has connected: the "Connecting…" notice clears once both collections have loaded, and the page redraws. See `openEcho` in `tests/sheets.spec.js`.
 - Load the page once per test. Coverage from before a navigation or reload is lost.
 - Every test fails on an uncaught page error or console error.
-- To see the app, run `npm run dev` (http://localhost:5173, demo data, mock runtime). Query options are listed at the top of `scripts/dev-server.mjs`. `tests/dev-server.spec.js` keeps it working.
+- To see the app, run `npm run dev` (Vite dev server at http://localhost:5173, demo data, mock runtime). Query options are listed at the top of `scripts/dev-server.mjs`. `tests/dev-server.spec.js` keeps it working.
 
 ## AWS
 

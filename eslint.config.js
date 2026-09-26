@@ -3,7 +3,7 @@ import html from "eslint-plugin-html";
 import globals from "globals";
 
 export default [
-  { ignores: ["node_modules/", "playwright-report/", "test-results/", "coverage/"] },
+  { ignores: ["node_modules/", "playwright-report/", "test-results/", "coverage/", "dist/"] },
   js.configs.recommended,
   {
     rules: {
@@ -26,6 +26,11 @@ export default [
       sourceType: "module",
       globals: { ...globals.node },
     },
+  },
+  {
+    // The app runs in the browser, with ZXing loaded from a CDN script tag
+    files: ["src/**/*.js"],
+    languageOptions: { globals: { ...globals.browser, ZXing: "readonly", BarcodeDetector: "readonly" } },
   },
   {
     // The mock and page.evaluate callbacks run inside the browser
