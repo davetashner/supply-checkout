@@ -1,7 +1,7 @@
-// Sign-in for the web build (the auth routes in docs/api/openapi.yaml, and the README's
-// "Sign-in"): Managed Login with the authorization code flow and PKCE. The API redeems
-// the code at /auth/session and keeps the refresh token in an HttpOnly cookie; the access
-// and ID tokens live only in this module's memory, never in storage.
+// Sign-in for the web build (the auth routes in docs/api/openapi.yaml, and "Sign-in" in
+// docs/infrastructure.md): Managed Login with the authorization code flow and PKCE. The
+// API redeems the code at /auth/session and keeps the refresh token in an HttpOnly cookie;
+// the access and ID tokens live only in this module's memory, never in storage.
 import { request, json } from "./http.js";
 
 const PKCE_KEY = "supplyCheckout.signIn";
