@@ -71,8 +71,9 @@ export const bundling: BundlingOptions = {
  * every region (ADR 0006, 0010), at `api.<env domain>`.
  *
  * - Data routes (backend/src/api/routes.ts, docs/api/openapi.yaml): the app's
- *   products and sheets documents, behind the Cognito JWT authorizer, served
- *   by the `data` function.
+ *   products and sheets documents, and the checkout, return and stock
+ *   commands next to them, behind the Cognito JWT authorizer, served by the
+ *   `data` function.
  * - Account routes (/me, POST /teams, POST /invites/{inviteId}/accept): the
  *   signed-in user's teams and invites, creating a team and accepting an
  *   invite, behind the same authorizer, served by the `account` function.
@@ -179,8 +180,11 @@ export class ApiStack extends SupplyCheckoutStack {
             new PolicyStatement({
               sid: "TeamItemsOnly",
               effect: Effect.ALLOW,
-              // GetItem also covers TransactGetItems (the membership check)
-              actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query"],
+              // GetItem also covers TransactGetItems (the membership check).
+              // Put, Update and ConditionCheck cover the inventory commands'
+              // TransactWriteItems (backend/src/data/commands.ts), whose items
+              // are all in the team's partition.
+              actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:Query"],
               resources: [tableArn, `${tableArn}/index/${GSI1}`],
               conditions: {
                 "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`TEAM#${teamTag}`, `TEAM#${teamTag}#SHEETS`] },

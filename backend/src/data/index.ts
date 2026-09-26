@@ -27,4 +27,6 @@ export * from "./usage.js";
 export * from "./audit.js";
 export * from "./billing.js";
 export * from "./documents.js";
+export * from "./commands.js";
+export { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
 export { documentChangeFromStream, type DocumentChange } from "./changes.js";

@@ -18,7 +18,7 @@ The design below is partly built. This table says which parts are on `main` toda
 | Live updates: AppSync Events, subscribe authorizer, stream consumer with a dead-letter queue | Built | PR #41 |
 | CI gates (lint, tests, cdk-nag synth, CodeQL, audit, secret scan) and release-please | Built | `.github/workflows/` |
 | Runtime adapter: the web app on the AWS API (bead `a2b`) | Planned | |
-| Atomic checkout, return and stock-adjust commands (bead `1dg.1`, [section 4](#4-checking-out-and-returning-planned)) | Planned | |
+| Atomic checkout, return and stock-adjust commands, stock history (bead `1dg.1`, [section 4](#4-checking-out-and-returning)) | Built | This PR; the app switches to them with the adapter (`a2b`) |
 | Sending invites, member removal | Planned | |
 | Billing: Stripe Checkout, webhook, SQS worker, access rules (beads `x0l`, `2kl`, `qdx`) | Planned | |
 | Receipt reading with Bedrock | Planned | |
@@ -165,9 +165,9 @@ sequenceDiagram
   end
 ```
 
-## 4. Checking out and returning (planned)
+## 4. Checking out and returning
 
-**Not built yet** (bead `supply-checkout-1dg.1`). Today the app saves the sheet line and then changes stock in a second, separate read-then-write (`bumpStock` in `src/main.js`), so a retry or a double tap can take stock down twice and two people checking out the same line at once can lose a count. The planned commands make each checkout, return or stock adjustment one DynamoDB transaction with an operation ID, so a retry is safe. They sit next to the generic document routes, which the edit screens keep using. Route names aren't final. The claude.ai artifact build keeps its two-write path ([ADR 0004](../adr/0004-runtime-adapter.md)); the commands extend [ADR 0006](../adr/0006-api-and-realtime-sync.md).
+Built in bead `supply-checkout-1dg.1`; the web app switches to it with the runtime adapter (bead `a2b`). The artifact saves the sheet line and then changes stock in a second, separate read-then-write (`bumpStock` in `src/main.js`), so a retry or a double tap can take stock down twice and two people checking out the same line at once can lose a count. The commands make each checkout, return or stock adjustment one DynamoDB transaction with an operation ID, so a retry is safe. They sit next to the generic document routes, which the edit screens keep using. The claude.ai artifact build keeps its two-write path ([ADR 0004](../adr/0004-runtime-adapter.md)); the commands extend [ADR 0006](../adr/0006-api-and-realtime-sync.md). The client contract is [docs/api/commands.md](../api/commands.md); the code is `backend/src/data/commands.ts`.
 
 ```mermaid
 sequenceDiagram
@@ -180,30 +180,43 @@ sequenceDiagram
 
   U->>App: Scan item, choose how many
   App->>App: New operation ID, kept until the call settles
-  App->>API: POST checkout: sheet, product, quantity, operation ID
-  API->>API: Verify JWT, check membership (contributor or owner),<br/>validate a whole-number quantity
-  API->>DB: TransactWriteItems, all or nothing
-  Note over API,DB: 1. Put the operation record, only if the ID is new<br/>2. Sheet line: ADD out, only if the sheet is open<br/>3. Product: ADD stock minus the quantity<br/>4. Put a movement record: product, sheet, change, user, time
-  alt All four written
-    DB-->>API: OK
-    API-->>App: New line and stock, with versions
-    DB-->>RT: Stream records
-    RT-->>App: Change notices to the team's other devices
-  else Operation ID already used (a retry)
-    DB-->>API: Transaction canceled on the operation record
-    API->>DB: Read the operation record
-    API-->>App: The first call's outcome, nothing changed again
-  else Any other check fails
-    DB-->>API: Transaction canceled, nothing written
-    API-->>App: 400 or 409 with a clear message
+  App->>API: POST /teams/{teamId}/sheets/{sheetId}/checkout:<br/>product key, quantity, operation ID
+  API->>API: Verify JWT, check membership (contributor or owner),<br/>validate a whole-number quantity and any prices
+  API->>DB: Read the operation record
+  alt Operation ID already used (a retry)
+    DB-->>API: The first call's result
+    API-->>App: 200, replayed: the first result, nothing changed again
+  else New operation ID
+    API->>DB: Read the sheet and the product (strongly consistent)
+    API->>API: Sheet open? Line new or existing?<br/>New line: copy code, name, price, cost from the product
+    API->>DB: TransactWriteItems, all or nothing
+    Note over API,DB: 1. Put the operation record, only if the ID is new<br/>2. Sheet: out = out + quantity (or add the new line), version + 1,<br/>only if the sheet is open and the line is as read<br/>3. Product: ADD stock minus the quantity if it tracks stock,<br/>else check it still doesn't; a new line also checks the product's version<br/>4. Put a movement record: product, sheet, change, reason, user, time, operation ID
+    alt All four written
+      DB-->>API: OK
+      API->>DB: Read the sheet and product
+      API-->>App: 200: the result, and the sheet and product as they are now
+      DB-->>RT: Stream records for the sheet and product
+      RT-->>App: Change notices to the team's other devices
+    else Operation record exists (a concurrent retry got in first)
+      DB-->>API: Canceled on the operation record, nothing written
+      API-->>App: 200, replayed: the first result
+    else Another write changed the line or product since the read
+      DB-->>API: Canceled, nothing written
+      API->>API: Read again and retry (up to 6 attempts)
+    else A rule fails on the fresh read
+      API-->>App: 400 (more returned than out, bad input), 404 (no sheet)<br/>or 409 (sheet closed, still busy after every retry)
+    end
   end
   Note over App,API: After a timeout or a dropped connection the app<br/>retries with the same operation ID
 ```
 
-- **Return** is the same transaction with `ADD returned` on the line (only while the total returned stays at or below the total taken out) and stock going up by the quantity.
-- **Stock adjust** (buying for general inventory, a count correction) has no sheet line: operation record, stock and movement record.
-- The movement records are the inventory history: a per-item stock history view and the nightly stock-drift check ([docs/journeys.md](../journeys.md), J4) reconcile stock against them.
-- IAM: the data Lambda's per-team role gains `UpdateItem` and `ConditionCheckItem`, under the same `dynamodb:LeadingKeys` condition it has now.
+- **Return** is the same transaction with `returned = returned + quantity` on the line, only while the returned total stays at or below `out` (the condition checks `out` against the target and `returned` against the value read), and stock going up by the quantity.
+- **Stock adjust** (a receipt stock-in with its unit cost, or a count) has no sheet line: operation record, stock and movement record. A count sets stock from the level just read, so its movement's change is exact.
+- The line's counts are added on the server (`SET out = out + :qty`; DynamoDB's `ADD` works only on top-level attributes, and a line is nested in the sheet's `items` map), never written as a value computed on the client, so concurrent checkouts on one line never lose a count. Stock uses `ADD`.
+- Operation records (`OP#<operationId>`) keep the result for replay and expire after 7 days (the table's TTL). A retry with the same ID and a different request is refused.
+- The movement records (`MOVE#<product key>#<time>#<operationId>`) are the inventory history: `GET /teams/{teamId}/products/{key}/movements` pages them newest first, and the nightly stock-drift check ([docs/journeys.md](../journeys.md), J4) reconciles stock against them ([how](../api/commands.md#reconciling-stock)).
+- A closed sheet takes no checkouts or returns ([section 4a](#4a-sheet-states)); the server answers 409 and the person reopens it first.
+- IAM: the data Lambda's per-team role has `UpdateItem` and `ConditionCheckItem` as well as `GetItem`, `PutItem`, `DeleteItem` and `Query`, all under the same `dynamodb:LeadingKeys` condition. Every item in a command's transaction is in the team's partition.
 
 ### 4a. Sheet states
 
@@ -222,7 +235,7 @@ stateDiagram-v2
 
 - A reopened sheet is simply `open` again; `closedAt` keeps the time it was last closed.
 - Closing or reopening doesn't change stock. Only checkouts and returns do.
-- A closed sheet hides the scan bar, so nothing new is checked out or returned on it. Owners and contributors can still correct a line's counts and price, edit the sheet's details, or delete it. The planned commands (section 4) enforce closed-sheet rules on the server as well.
+- A closed sheet hides the scan bar, so nothing new is checked out or returned on it. Owners and contributors can still correct a line's counts and price, edit the sheet's details, or delete it. The checkout and return commands (section 4) enforce this on the server: they refuse a closed sheet with 409, so a late return means reopening the sheet (or correcting the line, which doesn't move stock).
 
 ## 5. Live updates: authorization and revocation
 
@@ -394,7 +407,7 @@ sequenceDiagram
 
 ## 8. Data model
 
-One DynamoDB table ([ADR 0005](../adr/0005-multi-tenant-dynamodb.md)). Everything a team owns shares the `TEAM#<teamId>` partition key. Built in PRs #24 and #26. The planned checkout commands (section 4) add an operation record and an inventory movement record per change, in the team's partition.
+One DynamoDB table ([ADR 0005](../adr/0005-multi-tenant-dynamodb.md)). Everything a team owns shares the `TEAM#<teamId>` partition key. Built in PRs #24 and #26. The checkout, return and stock commands (section 4) add an operation record per command and an inventory movement record per stock change, in the team's partition.
 
 ```mermaid
 erDiagram
@@ -405,6 +418,8 @@ erDiagram
   TEAM ||--o{ SHEET : records
   SHEET ||--o{ SHEET_LINE : "items map"
   PRODUCT ||--o{ SHEET_LINE : "checked out as"
+  PRODUCT ||--o{ MOVEMENT : "stock history"
+  TEAM ||--o{ OPERATION : "replays retries"
   TEAM ||--o{ USAGE : "counts receipts"
   TEAM ||--o{ AUDIT : logs
   TEAM ||--|| STRIPE_CUSTOMER : "billed as"
@@ -437,6 +452,7 @@ erDiagram
     string code
     string name
     number price
+    number cost
     int stock
     int version
   }
@@ -444,16 +460,34 @@ erDiagram
     string id
     string client
     string date
-    string preparedBy
+    string createdBy
+    string createdByName
     string status
     int version
   }
   SHEET_LINE {
     string productKey
+    string code
+    string name
+    number price
+    number cost
     int out
     int returned
-    number price
-    string name
+  }
+  MOVEMENT {
+    string productKey
+    string at "sort key with operationId"
+    string reason
+    int delta
+    string sheetId
+    number unitCost
+    string userId
+  }
+  OPERATION {
+    string operationId "sort key"
+    string command
+    string result
+    int expiresAt
   }
   USAGE {
     string month

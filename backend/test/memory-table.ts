@@ -28,6 +28,8 @@ export class MemoryTable {
   readonly calls: Call[] = [];
   /** Runs after each GetCommand, before its result returns: a concurrent writer. */
   afterGet?: (item: Item | undefined) => void;
+  /** Runs before each TransactWriteCommand is applied: a concurrent writer. */
+  beforeTransactWrite?: () => void;
 
   private static id = (k: Item) => `${String(k.PK)}\u0000${String(k.SK)}`;
 
@@ -62,9 +64,25 @@ export class MemoryTable {
     }
   }
 
+  /** DynamoDB refuses empty name or value maps, and any name or value the expressions don't use. */
+  private static checkExpressions(input: Input): void {
+    const text = ["UpdateExpression", "ConditionExpression", "KeyConditionExpression", "ProjectionExpression", "FilterExpression"]
+      .map((k) => input[k])
+      .filter((e): e is string => typeof e === "string")
+      .join(" ");
+    for (const map of ["ExpressionAttributeNames", "ExpressionAttributeValues"] as const) {
+      const keys = input[map] === undefined ? undefined : Object.keys(input[map] as object);
+      if (keys?.length === 0) throw Object.assign(new Error(`${map} must not be empty`), { name: "ValidationException" });
+      const unused = keys?.filter((k) => !new RegExp(`${k}(?![A-Za-z0-9_])`).test(text));
+      if (unused?.length) throw Object.assign(new Error(`Value provided in ${map} unused in expressions: ${unused.join(", ")}`), { name: "ValidationException" });
+    }
+  }
+
   private send(command: { constructor: { name: string }; input: Input }, team: Set<string> | undefined): unknown {
     const name = command.constructor.name;
     const input = command.input;
+    MemoryTable.checkExpressions(input);
+    for (const op of (input.TransactItems as Record<string, Input>[] | undefined) ?? []) MemoryTable.checkExpressions(Object.values(op)[0] as Input);
     const record = (partitions: string[]) => {
       this.calls.push({ command: name, partitions });
       this.allowed(team, partitions);
@@ -108,22 +126,23 @@ export class MemoryTable {
 
   private check(input: Input, item: Item | undefined): void {
     if (!input.ConditionExpression) return;
-    const names = input.ExpressionAttributeNames ?? {};
     const values = input.ExpressionAttributeValues ?? {};
-    const attr = (s: string) => names[s] ?? s;
+    const at = (path: string) => (item ? MemoryTable.resolve(item, MemoryTable.path(path, input.ExpressionAttributeNames)) : undefined);
     const clause = (c: string): boolean => {
       const notExists = /^attribute_not_exists\((.+)\)$/.exec(c);
-      if (notExists) return !item || item[attr(notExists[1] as string)] === undefined;
+      if (notExists) return at(notExists[1] as string) === undefined;
       const exists = /^attribute_exists\((.+)\)$/.exec(c);
-      if (exists) return !!item && item[attr(exists[1] as string)] !== undefined;
-      const compare = /^(\S+) (=|<|>) (:\S+)$/.exec(c);
+      if (exists) return at(exists[1] as string) !== undefined;
+      const compare = /^(\S+) (=|<>|<=|>=|<|>) (:\S+)$/.exec(c);
       if (compare) {
-        if (!item) return false;
         const [, name, op, value] = compare as unknown as [string, string, string, string];
-        const [a, b] = [item[attr(name)], values[value]];
-        if (op === "=") return JSON.stringify(a) === JSON.stringify(b);
+        const [a, b] = [at(name), values[value]];
+        // DynamoDB: a comparison with a missing attribute is false
         if (a === undefined) return false;
-        return op === "<" ? (a as number) < (b as number) : (a as number) > (b as number);
+        if (op === "=") return JSON.stringify(a) === JSON.stringify(b);
+        if (op === "<>") return JSON.stringify(a) !== JSON.stringify(b);
+        const [x, y] = [a as number, b as number];
+        return op === "<" ? x < y : op === ">" ? x > y : op === "<=" ? x <= y : x >= y;
       }
       throw new Error(`MemoryTable can't evaluate ${c}`);
     };
@@ -131,12 +150,29 @@ export class MemoryTable {
     if (!ok) throw Object.assign(new Error("The conditional request failed"), { name: "ConditionalCheckFailedException" });
   }
 
+  /** `#a.#b` with its names resolved: ["items", "gloves"]. */
+  private static path(expression: string, names: Record<string, string> = {}): string[] {
+    return expression.split(".").map((part) => names[part] ?? part);
+  }
+
+  private static resolve(item: Item, path: string[]): unknown {
+    let value: unknown = item;
+    for (const part of path) {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+      value = (value as Item)[part];
+    }
+    return value;
+  }
+
   /**
    * All or nothing, like DynamoDB: every condition is checked first, and a
    * failure cancels the lot with a reason per item. Update understands
-   * `ADD a :v` and `SET a = :v, ...`.
+   * `ADD a :v, ...` and `SET a = :v, b = b + :v, c = if_not_exists(c, :z) + :v`, on paths (`#items.#line.#out`)
+   * whose parent exists, as DynamoDB requires. ConditionCheck only checks.
+   * `beforeTransactWrite` runs first: a concurrent writer.
    */
   private transactWrite(input: Input, record: (partitions: string[]) => void): unknown {
+    this.beforeTransactWrite?.();
     type Op = { Put?: Input; Delete?: Input; Update?: Input; ConditionCheck?: Input };
     const ops = (input.TransactItems as Op[]).map((op) => {
       const [kind, body] = Object.entries(op)[0] as [string, Input];
@@ -164,18 +200,40 @@ export class MemoryTable {
   }
 
   private update(input: Input & { UpdateExpression?: string }, item: Item): Item {
-    const names = input.ExpressionAttributeNames ?? {};
     const values = input.ExpressionAttributeValues ?? {};
-    const attr = (s: string) => names[s] ?? s;
     const next = structuredClone(item);
+    const parentOf = (path: string[]): Item => {
+      const parent = MemoryTable.resolve(next, path.slice(0, -1));
+      if (typeof parent !== "object" || parent === null) {
+        throw Object.assign(new Error("The document path provided in the update expression is invalid for update"), { name: "ValidationException" });
+      }
+      return parent as Item;
+    };
+    const number = (path: string[]) => (MemoryTable.resolve(next, path) as number | undefined) ?? 0;
     for (const [, verb, rest] of (input.UpdateExpression ?? "").matchAll(/(ADD|SET) (.+?)(?= (?:ADD|SET) |$)/g)) {
-      for (const part of (rest as string).split(",").map((p) => p.trim())) {
+      // Split on commas outside parentheses: if_not_exists(a, :b) is one operand
+      for (const part of (rest as string).split(/,(?![^(]*\))/).map((p) => p.trim())) {
         if (verb === "ADD") {
           const [name, value] = part.split(" ") as [string, string];
-          next[attr(name)] = ((next[attr(name)] as number | undefined) ?? 0) + (values[value] as number);
+          const path = MemoryTable.path(name, input.ExpressionAttributeNames);
+          const parent = parentOf(path);
+          parent[path[path.length - 1] as string] = number(path) + (values[value] as number);
         } else {
-          const [name, value] = part.split(" = ") as [string, string];
-          next[attr(name)] = values[value];
+          const [name, expression] = part.split(" = ") as [string, string];
+          const path = MemoryTable.path(name, input.ExpressionAttributeNames);
+          // `:v`, `a + :v` or `if_not_exists(a, :z) + :v`
+          const sum = /^(?:if_not_exists\((\S+), (:\S+)\)|(\S+)) \+ (:\S+)$/.exec(expression);
+          let value: unknown;
+          if (!sum) value = structuredClone(values[expression]);
+          else if (sum[1]) {
+            const current = MemoryTable.resolve(next, MemoryTable.path(sum[1], input.ExpressionAttributeNames));
+            value = ((current ?? values[sum[2] as string]) as number) + (values[sum[4] as string] as number);
+          } else {
+            const current = MemoryTable.resolve(next, MemoryTable.path(sum[3] as string, input.ExpressionAttributeNames));
+            if (typeof current !== "number") throw Object.assign(new Error("An operand in the update expression has an incorrect data type"), { name: "ValidationException" });
+            value = current + (values[sum[4] as string] as number);
+          }
+          parentOf(path)[path[path.length - 1] as string] = value;
         }
       }
     }
