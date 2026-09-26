@@ -1,0 +1,36 @@
+{
+  "name": "supply-checkout-infra",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AWS CDK app for the Supply Checkout SaaS (see docs/adr/0002).",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "lint": "tsc --noEmit && eslint .",
+    "test": "vitest run",
+    "test:update": "vitest run --update",
+    "synth": "cdk synth --quiet",
+    "synth:all-regions": "cdk synth --quiet -c regions=us-east-1,us-west-2 -o cdk.out/all-regions",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy --all",
+    "check": "npm run lint && npm test && npm run synth && npm run synth:all-regions",
+    "cdk": "cdk"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.271.0",
+    "cdk-nag": "^3.0.2",
+    "constructs": "^10.8.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.0.0",
+    "aws-cdk": "^2.1143.0",
+    "eslint": "^10.11.0",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.70.1",
+    "vitest": "^5.0.2"
+  }
+}

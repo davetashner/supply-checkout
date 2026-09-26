@@ -1,0 +1,571 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`stack layout > matches the template snapshots > supply-checkout-prod-us-east-1-api 1`] = `
+{
+  "Parameters": {
+    "BootstrapVersion": {
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+  },
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Properties": {
+        "Description": "Supply Checkout api stack (stateless)",
+        "Name": "/supply-checkout/prod/api/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "api",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": "{"stackName":"supply-checkout-prod-us-east-1-api","layer":"stateless"}",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                  ],
+                  {
+                    "Ref": "BootstrapVersion",
+                  },
+                ],
+              },
+            ],
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI.",
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`stack layout > matches the template snapshots > supply-checkout-prod-us-east-1-data 1`] = `
+{
+  "Parameters": {
+    "BootstrapVersion": {
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+  },
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Properties": {
+        "Description": "Supply Checkout data stack (stateful)",
+        "Name": "/supply-checkout/prod/data/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "data",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": "{"stackName":"supply-checkout-prod-us-east-1-data","layer":"stateful"}",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                  ],
+                  {
+                    "Ref": "BootstrapVersion",
+                  },
+                ],
+              },
+            ],
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI.",
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`stack layout > matches the template snapshots > supply-checkout-prod-us-east-1-identity 1`] = `
+{
+  "Parameters": {
+    "BootstrapVersion": {
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+  },
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Properties": {
+        "Description": "Supply Checkout identity stack (stateful)",
+        "Name": "/supply-checkout/prod/identity/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "identity",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": "{"stackName":"supply-checkout-prod-us-east-1-identity","layer":"stateful"}",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                  ],
+                  {
+                    "Ref": "BootstrapVersion",
+                  },
+                ],
+              },
+            ],
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI.",
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`stack layout > matches the template snapshots > supply-checkout-prod-us-east-1-observability 1`] = `
+{
+  "Parameters": {
+    "BootstrapVersion": {
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+  },
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Properties": {
+        "Description": "Supply Checkout observability stack (stateless)",
+        "Name": "/supply-checkout/prod/observability/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "observability",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": "{"stackName":"supply-checkout-prod-us-east-1-observability","layer":"stateless"}",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                  ],
+                  {
+                    "Ref": "BootstrapVersion",
+                  },
+                ],
+              },
+            ],
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI.",
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`stack layout > matches the template snapshots > supply-checkout-prod-us-east-1-realtime 1`] = `
+{
+  "Parameters": {
+    "BootstrapVersion": {
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+  },
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Properties": {
+        "Description": "Supply Checkout realtime stack (stateless)",
+        "Name": "/supply-checkout/prod/realtime/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "realtime",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": "{"stackName":"supply-checkout-prod-us-east-1-realtime","layer":"stateless"}",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                  ],
+                  {
+                    "Ref": "BootstrapVersion",
+                  },
+                ],
+              },
+            ],
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI.",
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`stack layout > matches the template snapshots > supply-checkout-prod-us-east-1-web 1`] = `
+{
+  "Parameters": {
+    "BootstrapVersion": {
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+  },
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Properties": {
+        "Description": "Supply Checkout web stack (stateless)",
+        "Name": "/supply-checkout/prod/web/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "web",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": "{"stackName":"supply-checkout-prod-us-east-1-web","layer":"stateless"}",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                  ],
+                  {
+                    "Ref": "BootstrapVersion",
+                  },
+                ],
+              },
+            ],
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI.",
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`stack layout > matches the template snapshots > supply-checkout-prod-us-west-2-api 1`] = `
+{
+  "Parameters": {
+    "BootstrapVersion": {
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+  },
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Properties": {
+        "Description": "Supply Checkout api stack (stateless)",
+        "Name": "/supply-checkout/prod/api/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "api",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": "{"stackName":"supply-checkout-prod-us-west-2-api","layer":"stateless"}",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                  ],
+                  {
+                    "Ref": "BootstrapVersion",
+                  },
+                ],
+              },
+            ],
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI.",
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`stack layout > matches the template snapshots > supply-checkout-prod-us-west-2-data 1`] = `
+{
+  "Parameters": {
+    "BootstrapVersion": {
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+  },
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Properties": {
+        "Description": "Supply Checkout data stack (stateful)",
+        "Name": "/supply-checkout/prod/data/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "data",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": "{"stackName":"supply-checkout-prod-us-west-2-data","layer":"stateful"}",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                  ],
+                  {
+                    "Ref": "BootstrapVersion",
+                  },
+                ],
+              },
+            ],
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI.",
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`stack layout > matches the template snapshots > supply-checkout-prod-us-west-2-observability 1`] = `
+{
+  "Parameters": {
+    "BootstrapVersion": {
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+  },
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Properties": {
+        "Description": "Supply Checkout observability stack (stateless)",
+        "Name": "/supply-checkout/prod/observability/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "observability",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": "{"stackName":"supply-checkout-prod-us-west-2-observability","layer":"stateless"}",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                  ],
+                  {
+                    "Ref": "BootstrapVersion",
+                  },
+                ],
+              },
+            ],
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI.",
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`stack layout > matches the template snapshots > supply-checkout-prod-us-west-2-realtime 1`] = `
+{
+  "Parameters": {
+    "BootstrapVersion": {
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+  },
+  "Resources": {
+    "StackInfoC49BCBCF": {
+      "Properties": {
+        "Description": "Supply Checkout realtime stack (stateless)",
+        "Name": "/supply-checkout/prod/realtime/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "realtime",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": "{"stackName":"supply-checkout-prod-us-west-2-realtime","layer":"stateless"}",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                  ],
+                  {
+                    "Ref": "BootstrapVersion",
+                  },
+                ],
+              },
+            ],
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI.",
+        },
+      ],
+    },
+  },
+}
+`;
