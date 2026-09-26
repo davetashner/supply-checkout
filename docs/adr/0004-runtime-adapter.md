@@ -5,7 +5,7 @@
 
 ## Context
 
-All of the app's data, identity and AI calls go through `window.claude.use(name)` (`index.html`, the `use()` helper and `init`), which asks for four capabilities:
+All of the app's data, identity and AI calls go through `window.claude.use(name)` (the `use()` helper in `src/runtime.js`, called by the startup code at the end of `src/main.js`), which asks for four capabilities:
 
 | Capability | What the app calls |
 | --- | --- |
@@ -18,10 +18,10 @@ All of the app's data, identity and AI calls go through `window.claude.use(name)
 
 ## Decision
 
-- Keep **one** copy of the app's UI and logic. Add a small `runtime/` layer that provides the `window.claude` interface in two builds:
+- Keep **one** copy of the app's UI and logic. Grow `src/runtime.js` into a small runtime layer that provides the `window.claude` interface in two builds:
   - `claude` – the current behavior, unchanged. Published to the claude.ai artifact.
   - `aws` – implements the same calls against our API ([ADR 0006](0006-api-and-realtime-sync.md)), Cognito ([ADR 0007](0007-identity-cognito.md)) and the receipt endpoint ([ADR 0008](0008-receipt-reading-bedrock.md)). `downloads` becomes a plain browser download.
-- Move the app from a single `index.html` into a small Vite project (still no UI framework). The build outputs `index.html` for the artifact and a hashed static bundle for CloudFront.
+- Move the app from a single `index.html` into a small Vite project (still no UI framework). Done: the page source is `src/index.html`, and the build outputs `dist/artifact/index.html` for the artifact and a hashed static bundle in `dist/web/` for CloudFront.
 - The SaaS build adds the screens the artifact doesn't need: sign-in, team switcher, invites, members and roles, billing, and account settings. The adapter tells the app which of these to show.
 - Replace the read-then-write stock update (`bumpStock`) with an `increment` operation in the adapter, so two people checking out at once can't lose a count. The claude.ai build keeps its current behavior.
 
