@@ -5,7 +5,7 @@
 // events sent while disconnected are gone. If the socket can't get going three times in
 // a row, it polls by re-listing instead, and keeps trying the socket every 2 minutes.
 const PROTOCOL = "aws-appsync-event-ws";
-const ACK_WAIT = 10e3, RESYNC = 600e3, RETRY_WHILE_POLLING = 120e3, POLL = 15e3, POLL_HIDDEN = 60e3;
+const ACK_WAIT = 10e3, KEEP_ALIVE = 300e3, RESYNC = 600e3, RETRY_WHILE_POLLING = 120e3, POLL = 15e3, POLL_HIDDEN = 60e3;
 const b64url = (s) => btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
 export function createLive({ url, host, channel, token, onEvent, onResync }) {
@@ -17,13 +17,15 @@ export function createLive({ url, host, channel, token, onEvent, onResync }) {
     const auth = { host, Authorization: token() };
     const sock = ws = new WebSocket(url, [PROTOCOL, "header-" + b64url(JSON.stringify(auth))]);
     const subId = crypto.randomUUID();
-    let subscribed = false, kaMs = 300e3, kaTimer = setTimeout(() => sock.close(), ACK_WAIT);
+    let subscribed = false, kaMs = KEEP_ALIVE, kaTimer = setTimeout(() => sock.close(), ACK_WAIT);
     const alive = () => { clearTimeout(kaTimer); kaTimer = setTimeout(() => sock.close(), kaMs); };
     sock.onopen = () => sock.send(JSON.stringify({ type: "connection_init" }));
     sock.onmessage = (m) => {
       const msg = JSON.parse(m.data);
       if (msg.type === "connection_ack") {
-        kaMs = msg.connectionTimeoutMs || kaMs;
+        // AppSync says 5 minutes; anything missing or longer is held to that
+        const t = Number(msg.connectionTimeoutMs);
+        kaMs = t > 0 && t <= KEEP_ALIVE ? t : KEEP_ALIVE;
         alive();
         sock.send(JSON.stringify({ type: "subscribe", id: subId, channel, authorization: auth }));
       } else if (msg.type === "ka") alive();
