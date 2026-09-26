@@ -469,7 +469,7 @@ describe("product keys that are built-in object names", () => {
       ["POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "__proto__", quantity: 1 }],
       ["POST", "/teams/team-a/products/__proto__/stock", { operationId: op(), reason: "count", count: 1 }],
       ["GET", "/teams/team-a/products/__proto__/movements", undefined],
-      ["PUT", "/teams/team-a/products/__proto__", { data: { code: "", name: "x", price: 1 } }],
+      ["PUT", "/teams/team-a/products/__proto__", { data: { code: "", name: "x", price: 1 }, expectedVersion: 0 }],
     ] as const) {
       expect(await call(method, path, body)).toMatchObject({ status: 400, body: { error: { code: "bad_request" } } });
     }
@@ -518,11 +518,11 @@ describe("product keys that are built-in object names", () => {
   it("saves and merges sheet documents with a line keyed constructor", async () => {
     seed();
     const items = { constructor: { code: "c", name: "String", price: 1, out: 2, returned: 0 } };
-    const put = await call("PUT", "/teams/team-a/sheets/s1", { data: { client: "Echo", date: "2026-09-26", status: "open", items } });
+    const put = await call("PUT", "/teams/team-a/sheets/s1", { data: { client: "Echo", date: "2026-09-26", status: "open", items }, expectedVersion: 1 });
     expect(put.status).toBe(200);
     expect(sheet().items).toEqual(items);
     // The merge adds to the stored line, not to Object
-    const patch = await call("PATCH", "/teams/team-a/sheets/s1", { data: { items: { constructor: { out: 3 }, toString: { name: "Rags", price: 1, out: 1, returned: 0 } } } });
+    const patch = await call("PATCH", "/teams/team-a/sheets/s1", { data: { items: { constructor: { out: 3 }, toString: { name: "Rags", price: 1, out: 1, returned: 0 } } }, expectedVersion: 2 });
     expect(patch.status).toBe(200);
     expect(sheet().items).toEqual({ constructor: { code: "c", name: "String", price: 1, out: 3, returned: 0 }, toString: { name: "Rags", price: 1, out: 1, returned: 0 } });
     expect(counts).toMatchObject({ Checkouts: 4 });
