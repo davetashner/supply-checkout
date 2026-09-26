@@ -27,6 +27,15 @@ describe("HTTP API routes", () => {
     const { template } = api();
     const keys = resources(template, "AWS::ApiGatewayV2::Route").map(([, r]) => r.Properties.RouteKey).sort();
     expect(keys).toEqual([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...AUTH_ROUTES].map(routeKey).sort());
+    // The inventory commands and the stock history, next to the document routes
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        "POST /teams/{teamId}/sheets/{sheetId}/checkout",
+        "POST /teams/{teamId}/sheets/{sheetId}/return",
+        "POST /teams/{teamId}/products/{key}/stock",
+        "GET /teams/{teamId}/products/{key}/movements",
+      ]),
+    );
   });
 
   it("puts the Cognito JWT authorizer on every data and account route and none on the auth routes", () => {
@@ -162,7 +171,8 @@ describe("data-access role (LeadingKeys)", () => {
     expect(items).toMatchObject({
       Sid: "TeamItemsOnly",
       Effect: "Allow",
-      Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query"],
+      // UpdateItem and ConditionCheckItem: the inventory commands' transactions. No Scan, no batch writes.
+      Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:Query"],
       Condition: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}", "TEAM#${aws:PrincipalTag/teamId}#SHEETS"] } },
     });
     const resourcesJson = JSON.stringify(items?.Resource);

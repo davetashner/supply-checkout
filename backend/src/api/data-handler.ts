@@ -12,6 +12,10 @@
 //    `invalid_argument`, the code the app reads as "view-only access".
 // 5. Every DynamoDB call runs on a role session tagged with the path's team,
 //    whose IAM policy allows only that team's partition (team-db.ts).
+//
+// Next to the document routes are the inventory commands (checkout, return,
+// stock adjust), each one transaction that's idempotent by operation ID, and
+// a product's stock history (backend/src/data/commands.ts, docs/api/commands.md).
 
 import type {
   APIGatewayProxyEventV2WithJWTAuthorizer,
@@ -19,8 +23,11 @@ import type {
   Context,
 } from "aws-lambda";
 import {
+  adjustStockCommand,
   authorizeTeam,
+  checkout,
   type Collection,
+  type CommandOutcome,
   ConflictError,
   deleteDocument,
   ForbiddenError,
@@ -28,7 +35,9 @@ import {
   InvalidInputError,
   LimitReachedError,
   listDocuments,
+  listMovements,
   NotFoundError,
+  returnItems,
   setDocument,
   type StoredDocument,
   type TeamContext,
@@ -50,7 +59,7 @@ export interface DataHandlerDeps {
 }
 
 const ROUTES = new Map(DATA_ROUTES.map((r) => [routeKey(r), r]));
-const WRITES = new Set(["set", "update", "delete"]);
+const WRITES = new Set(["set", "update", "delete", "checkout", "return", "adjustStock"]);
 /** Roles that may write through the API. Anything else (viewer, or a role we don't know) is read-only. */
 const WRITERS = new Set(["contributor", "owner"]);
 const SUB = /^[A-Za-z0-9_-]{1,128}$/;
@@ -89,8 +98,9 @@ export function callerId(event: DataEvent, now: number): string {
  * decoded once. The raw path is used because API Gateway's decoded path
  * parameters would make a key containing "%" ambiguous.
  */
-export function documentId(event: DataEvent): string {
-  const raw = event.rawPath.split("/").pop() ?? "";
+export function documentId(event: DataEvent, fromEnd = 0): string {
+  const segments = event.rawPath.split("/");
+  const raw = segments[segments.length - 1 - fromEnd] ?? "";
   let id: string;
   try {
     id = decodeURIComponent(raw);
@@ -132,7 +142,66 @@ export function sheetMovement(result: WriteResult): { checkouts: number; returns
   return { checkouts, returns };
 }
 
+const CHECKOUT_FIELDS = ["operationId", "productKey", "quantity", "name", "price", "code", "cost"];
+const RETURN_FIELDS = ["operationId", "productKey", "quantity"];
+const STOCK_FIELDS = ["operationId", "reason", "quantity", "unitCost", "count"];
+
+/**
+ * A command's response: what it did (the same on a replay), and the sheet and
+ * product as they are now, read after the write.
+ */
+async function commandResponse(deps: DataHandlerDeps, ctx: TeamContext, outcome: CommandOutcome): Promise<APIGatewayProxyStructuredResultV2> {
+  const db = deps.dbForTeam(ctx.teamId);
+  const { result, replayed } = outcome;
+  const metadata = { teamId: ctx.teamId };
+  if (!replayed) {
+    deps.obs.count(BusinessMetric.Writes, 1, metadata);
+    if (result.command === "checkout") deps.obs.count(BusinessMetric.Checkouts, result.quantity ?? 0, metadata);
+    if (result.command === "return") deps.obs.count(BusinessMetric.Returns, result.quantity ?? 0, metadata);
+  }
+  const [sheet, product] = await Promise.all([
+    result.sheetId === undefined ? undefined : getDocument(db, ctx, "sheets", result.sheetId),
+    getDocument(db, ctx, "products", result.productKey),
+  ]);
+  return json(200, {
+    operationId: result.operationId,
+    replayed,
+    result,
+    ...(result.sheetId === undefined ? {} : { sheet: sheet ? toBody(sheet) : null }),
+    product: product ? toBody(product) : null,
+  });
+}
+
+async function runCommand(deps: DataHandlerDeps, route: DataRoute, event: DataEvent, ctx: TeamContext): Promise<APIGatewayProxyStructuredResultV2> {
+  const db = deps.dbForTeam(ctx.teamId);
+  const at = new Date((deps.now ?? Date.now)());
+  if (route.operation === "movements") {
+    const q = event.queryStringParameters ?? {};
+    let limit: number | undefined;
+    if (q.limit !== undefined) {
+      if (!/^\d{1,3}$/.test(q.limit)) throw new ApiError(400, "bad_request", "limit is a number from 1 to 100");
+      limit = Number(q.limit);
+    }
+    const page = await listMovements(db, ctx, documentId(event, 1), { limit, cursor: q.cursor });
+    return json(200, { movements: page.items, ...(page.cursor ? { cursor: page.cursor } : {}) });
+  }
+  if (route.operation === "adjustStock") {
+    const body = jsonBody(event, STOCK_FIELDS);
+    return commandResponse(deps, ctx, await adjustStockCommand(db, ctx, { ...body, productKey: documentId(event, 1) } as Parameters<typeof adjustStockCommand>[2], at));
+  }
+  const sheetId = documentId(event, 1);
+  if (route.operation === "checkout") {
+    const body = jsonBody(event, CHECKOUT_FIELDS);
+    return commandResponse(deps, ctx, await checkout(db, ctx, { ...body, sheetId } as Parameters<typeof checkout>[2], at));
+  }
+  const body = jsonBody(event, RETURN_FIELDS);
+  return commandResponse(deps, ctx, await returnItems(db, ctx, { ...body, sheetId } as Parameters<typeof returnItems>[2], at));
+}
+
+const COMMANDS = new Set(["checkout", "return", "adjustStock", "movements"]);
+
 async function run(deps: DataHandlerDeps, route: DataRoute, event: DataEvent, ctx: TeamContext): Promise<APIGatewayProxyStructuredResultV2> {
+  if (COMMANDS.has(route.operation)) return runCommand(deps, route, event, ctx);
   const db = deps.dbForTeam(ctx.teamId);
   const collection: Collection = route.collection;
   const metadata = { teamId: ctx.teamId };
