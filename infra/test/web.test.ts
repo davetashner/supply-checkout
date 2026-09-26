@@ -15,7 +15,7 @@ const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.
 const names = hostNames(config);
 
 function build(overrides: Partial<DeploymentConfig> = {}) {
-  const app = new App({ context: { "aws:cdk:version-reporting": false } });
+  const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [] } });
   const stacks = addSupplyCheckout(app, { ...config, ...overrides });
   const data = (region: string) => {
     const r = stacks.regions[region];

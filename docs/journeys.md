@@ -236,6 +236,8 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | --- | --- | --- | --- |
 | Functions failing | Every journey | P1 | Lambda `Errors` ÷ `Invocations` across every function in the region, at least 20 invocations. Per-function alarms come with the functions. |
 | Functions throttled | Every journey | P2 | Lambda `Throttles` across every function in the region |
+| API errors | Every journey | P1 | API Gateway `5xx` ÷ `Count` for the HTTP API (`supply-checkout-d8b`), at least 20 requests. Across all routes, not per route: per-route metrics need detailed metrics, billed per route, and the access logs have the route. |
+| API slow | Every journey | P2 | API Gateway `Latency` p95 for the HTTP API over 10 minutes |
 | Database errors | Every journey | P1 | DynamoDB `SystemErrors` on the app table, summed over the operations the data module uses |
 | Database throttled | Every journey | P2 | DynamoDB `ReadThrottleEvents` + `WriteThrottleEvents` on the app table |
 | Email bouncing, Email complaints | J3 | P1 | SES reputation metrics, as below |
@@ -243,7 +245,7 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Receipt reading failing | J5 | P2 | As below |
 | Checkout broken, Webhook signature failures | J7 | P1 | As below |
 
-Every other alarm on this page waits for the resource or code it watches, and is added by the bead that builds it (the alarm goes in that region's `observability` stack, with `topics.notify(alarm, severity)`): the canaries (`supply-checkout-pkt`); Site down and Firewall blocking customers (CloudFront and WAF, `supply-checkout-qk1`); API errors, API slow and API unhealthy (they need the API's ID); Cognito alarms (`supply-checkout-zsm`); Live updates failing (AppSync Events); Bedrock alarms and Receipt cost spike (the receipt function); Near the sending limit (SES); the billing queue, reconciliation and deletion-job alarms; and Checkouts stopped, which compares with the same hour last week, and so needs something other than one CloudWatch alarm. The remaining P3 trends (No sign-ups, Invites not accepted, Failed payments rising, App checkouts abandoned) are read from the dashboard at the weekly review.
+Every other alarm on this page waits for the resource or code it watches, and is added by the bead that builds it (the alarm goes in that region's `observability` stack, with `topics.notify(alarm, severity)`): the canaries (`supply-checkout-pkt`); Site down and Firewall blocking customers (CloudFront and WAF, `supply-checkout-qk1`); API unhealthy (it needs a `/health` route and a Route 53 health check, which the API doesn't have yet); Cognito alarms (`supply-checkout-zsm`); Live updates failing (AppSync Events); Bedrock alarms and Receipt cost spike (the receipt function); Near the sending limit (SES); the billing queue, reconciliation and deletion-job alarms; and Checkouts stopped, which compares with the same hour last week, and so needs something other than one CloudWatch alarm. The remaining P3 trends (No sign-ups, Invites not accepted, Failed payments rising, App checkouts abandoned) are read from the dashboard at the weekly review.
 
 ### Every journey
 

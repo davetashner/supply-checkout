@@ -1,0 +1,447 @@
+openapi: 3.1.0
+info:
+  title: Supply Checkout API
+  version: 1.0.0
+  summary: Team data (products and sheets) and sign-in sessions for the web app.
+  description: |
+    The HTTP API in front of the data Lambdas (ADR 0006). The browser adapter
+    (supply-checkout-a2b) implements the app's `window.claude.use("db")` on
+    these routes; the handlers are in `backend/src/api/` and the route table
+    they share with the CDK app is `backend/src/api/routes.ts`. A test
+    (`backend/test/openapi.test.ts`) keeps this file and that table in step.
+
+    ## Mapping the app's db calls
+
+    | App call (src/main.js) | Request |
+    | --- | --- |
+    | `db.collection("products").onSnapshot(cb)` | `GET /teams/{teamId}/products`, following `cursor` until absent; `snap.docs[i].id` = `id`, `.data()` = `data` |
+    | `db.collection("sheets").orderBy("date", "desc").onSnapshot(cb)` | `GET /teams/{teamId}/sheets?orderBy=date&direction=desc`, following `cursor` |
+    | `db.doc("<coll>/<id>").get()` | `GET /teams/{teamId}/<coll>/<id>`; 404 `not_found` means `exists: false` |
+    | `db.doc("<coll>/<id>").set(data)` | `PUT /teams/{teamId}/<coll>/<id>` with `{"data": data}` |
+    | `db.doc("<coll>/<id>").update(patch)` | `PATCH /teams/{teamId}/<coll>/<id>` with `{"data": patch}` (deep merge) |
+    | `db.doc("<coll>/<id>").delete()` | `DELETE /teams/{teamId}/<coll>/<id>` |
+    | `db.collection("sheets").doc()` | no request: the adapter makes the ID (e.g. `crypto.randomUUID()`), then `set` PUTs it |
+
+    - Percent-encode the document ID as one path segment
+      (`encodeURIComponent`). Product keys are what the app's `keyOf` or
+      `newKey` makes; any key without `/` or control characters works.
+    - Reject a call with the error body's `code` as the error's `code`, so the
+      app's existing handling applies unchanged: `invalid_argument` (403)
+      makes it switch to view-only, `quota_exceeded` (413) shows "storage is
+      full", and anything else shows the generic "didn't save" message.
+    - `teamId` is the team the user picked (the teams API, supply-checkout-l5y,
+      lists them). The server checks membership on every request; the body
+      never names a team.
+    - Live updates (`onSnapshot` after the first load) come from AppSync Events
+      (supply-checkout-dpc), not from polling these routes. Every write here is
+      a single PutItem or DeleteItem on the document's item, so each produces
+      exactly one DynamoDB stream record (NEW_AND_OLD_IMAGES) with the new
+      `version`.
+
+    ## Document semantics
+
+    - A document is any JSON object up to 350,000 bytes (UTF-8 JSON), nested
+      at most 16 levels, with numbers DynamoDB can store. These top-level
+      fields are the server's and are refused in a body: `PK`, `SK`, `GSI1PK`,
+      `GSI1SK`, `type`, `id`, `key`, `version`, `teamId`. For products,
+      `stock` must be a number if present; for sheets, `date` must be a string
+      and `items` an object.
+    - `update` merges like the artifact runtime: where the patch and the
+      document both have an object at the same key, they merge key by key;
+      any other value (including `null` and arrays) replaces.
+    - Every write increments `version`. Send `expectedVersion` to make a write
+      conditional (409 `aborted` if the document changed; `0` means "only if
+      it doesn't exist"). Without it, a write that races another is retried on
+      the fresh document, so the last writer wins, as in the artifact runtime.
+    - Sheets ordered by date come from an index, which can lag a write by a
+      moment. Unordered lists and single reads are strongly consistent. A
+      sheet without a valid `YYYY-MM-DD` date sorts after every dated sheet
+      when newest-first.
+
+    ## Isolation
+
+    Every data route needs a Cognito access token. The Lambda checks the
+    caller's membership of the path's team on every request (roles:
+    viewer reads; contributor and owner also write), and makes every DynamoDB
+    call through a role session tagged with that team, whose IAM policy allows
+    only that team's partition (`dynamodb:LeadingKeys`).
+servers:
+  - url: https://api.{envDomain}
+    variables:
+      envDomain:
+        default: supplycheckout.com
+        description: The environment's domain; staging and dev use `<env>.supplycheckout.com`.
+security:
+  - cognito: []
+tags:
+  - name: products
+    description: The team's inventory, the app's `products` collection.
+  - name: sheets
+    description: Checkout sheets per client job, the app's `sheets` collection.
+  - name: auth
+    description: Sign-in sessions for the web app, with the refresh token in an HttpOnly cookie.
+paths:
+  /teams/{teamId}/products:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    get:
+      tags: [products]
+      operationId: listProducts
+      summary: List the team's products (inventory), in key order.
+      parameters:
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200": { $ref: "#/components/responses/DocumentList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /teams/{teamId}/products/{key}:
+    parameters:
+      - $ref: "#/components/parameters/teamId"
+      - name: key
+        in: path
+        required: true
+        description: The product key, percent-encoded. Up to 256 characters, no `/` or control characters.
+        schema: { type: string, minLength: 1, maxLength: 256 }
+    get:
+      tags: [products]
+      operationId: getProduct
+      summary: Read one product.
+      responses:
+        "200": { $ref: "#/components/responses/Document" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [products]
+      operationId: setProduct
+      summary: Create or replace a product (the app's `set`).
+      requestBody: { $ref: "#/components/requestBodies/Write" }
+      responses:
+        "200": { $ref: "#/components/responses/Document" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+    patch:
+      tags: [products]
+      operationId: updateProduct
+      summary: Deep-merge into an existing product (the app's `update`).
+      requestBody: { $ref: "#/components/requestBodies/Write" }
+      responses:
+        "200": { $ref: "#/components/responses/Document" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+    delete:
+      tags: [products]
+      operationId: deleteProduct
+      summary: Delete a product. Deleting one that doesn't exist succeeds.
+      parameters: [{ $ref: "#/components/parameters/expectedVersion" }]
+      responses:
+        "204": { description: "Deleted, or already gone." }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /teams/{teamId}/sheets:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    get:
+      tags: [sheets]
+      operationId: listSheets
+      summary: List the team's sheets, by ID (consistent) or by date (from an index).
+      parameters:
+        - name: orderBy
+          in: query
+          description: "`date` for date order, which the app's sheet list uses."
+          schema: { type: string, enum: [date] }
+        - name: direction
+          in: query
+          description: With `orderBy`. Default `asc`.
+          schema: { type: string, enum: [asc, desc] }
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200": { $ref: "#/components/responses/DocumentList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /teams/{teamId}/sheets/{sheetId}:
+    parameters:
+      - $ref: "#/components/parameters/teamId"
+      - name: sheetId
+        in: path
+        required: true
+        schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
+    get:
+      tags: [sheets]
+      operationId: getSheet
+      summary: Read one sheet.
+      responses:
+        "200": { $ref: "#/components/responses/Document" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [sheets]
+      operationId: setSheet
+      summary: Create or replace a sheet (the app's `set`).
+      requestBody: { $ref: "#/components/requestBodies/Write" }
+      responses:
+        "200": { $ref: "#/components/responses/Document" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+    patch:
+      tags: [sheets]
+      operationId: updateSheet
+      summary: Deep-merge into an existing sheet (the app's `update`), e.g. `{"data":{"items":{"<key>":{"returned":3}}}}`.
+      requestBody: { $ref: "#/components/requestBodies/Write" }
+      responses:
+        "200": { $ref: "#/components/responses/Document" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+    delete:
+      tags: [sheets]
+      operationId: deleteSheet
+      summary: Delete a sheet. Deleting one that doesn't exist succeeds.
+      parameters: [{ $ref: "#/components/parameters/expectedVersion" }]
+      responses:
+        "204": { description: "Deleted, or already gone." }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /auth/session:
+    post:
+      tags: [auth]
+      operationId: createSession
+      summary: Exchange the Managed Login authorization code for tokens.
+      description: |
+        Call after Managed Login redirects back with `?code=`, with
+        `credentials: "include"`. Redeems the code and PKCE verifier at
+        Cognito's `/oauth2/token`, returns the access and ID tokens (keep them
+        in memory only), and sets the refresh token as an HttpOnly cookie.
+      security: []
+      parameters: [{ $ref: "#/components/parameters/origin" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code, codeVerifier, redirectUri]
+              properties:
+                code: { type: string, pattern: "^[A-Za-z0-9_-]{1,2048}$" }
+                codeVerifier: { type: string, pattern: "^[A-Za-z0-9._~-]{43,128}$" }
+                redirectUri: { type: string, description: The redirect URI used to sign in; must be on the calling origin. }
+      responses:
+        "200": { $ref: "#/components/responses/Tokens" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/SignInAgain" }
+        "403": { $ref: "#/components/responses/OriginRefused" }
+        "502": { $ref: "#/components/responses/Unavailable" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /auth/refresh:
+    post:
+      tags: [auth]
+      operationId: refreshSession
+      summary: New access and ID tokens from the refresh-token cookie.
+      description: |
+        Call with `credentials: "include"` before the access token expires
+        (60 minutes) or after a 401. Refresh-token rotation is on: the cookie
+        is replaced with the new refresh token on every call. A 401 clears the
+        cookie; show sign-in.
+      security: [{ refreshCookie: [] }]
+      parameters: [{ $ref: "#/components/parameters/origin" }]
+      responses:
+        "200": { $ref: "#/components/responses/Tokens" }
+        "401": { $ref: "#/components/responses/SignInAgain" }
+        "403": { $ref: "#/components/responses/OriginRefused" }
+        "502": { $ref: "#/components/responses/Unavailable" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /auth/sign-out:
+    post:
+      tags: [auth]
+      operationId: signOut
+      summary: Revoke the refresh token and clear the cookie.
+      description: Always clears the cookie, even if revoking fails. Then send the user to Managed Login's `/logout`.
+      security: [{ refreshCookie: [] }, {}]
+      parameters: [{ $ref: "#/components/parameters/origin" }]
+      responses:
+        "204":
+          description: Signed out.
+          headers:
+            Set-Cookie: { $ref: "#/components/headers/ClearCookie" }
+        "403": { $ref: "#/components/responses/OriginRefused" }
+components:
+  securitySchemes:
+    cognito:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        A Cognito **access token** from the environment's user pool and the web
+        app client (`Authorization: Bearer <token>`). API Gateway checks the
+        signature, expiry, issuer and client; the Lambda also requires
+        `token_use: access` and an unexpired `exp`. ID tokens are refused.
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: __Secure-sc_refresh
+      description: |
+        The refresh token, set by `/auth/session` and `/auth/refresh`:
+        `HttpOnly; Secure; SameSite=Strict; Path=/auth; Max-Age=2592000`.
+        Requests must also carry an allowed `Origin` (CSRF protection).
+  parameters:
+    teamId:
+      name: teamId
+      in: path
+      required: true
+      description: The team. The caller must be a member; the body can't name a team.
+      schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
+    limit:
+      name: limit
+      in: query
+      description: At most this many documents. A page also stops at about 1 MB.
+      schema: { type: integer, minimum: 1, maximum: 1000 }
+    cursor:
+      name: cursor
+      in: query
+      description: The `cursor` from the previous page, as is. Only valid for the same listing.
+      schema: { type: string }
+    expectedVersion:
+      name: expectedVersion
+      in: query
+      description: Delete only if the document is at this version.
+      schema: { type: integer, minimum: 0 }
+    origin:
+      name: Origin
+      in: header
+      required: true
+      description: Must be one of the environment's app origins (`https://app.<env domain>`, and `http://localhost:5173` outside prod).
+      schema: { type: string }
+  headers:
+    SetCookie:
+      description: The rotated refresh token.
+      schema: { type: string, example: "__Secure-sc_refresh=<token>; Path=/auth; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict" }
+    ClearCookie:
+      description: Clears the refresh-token cookie.
+      schema: { type: string, example: "__Secure-sc_refresh=; Path=/auth; Max-Age=0; HttpOnly; Secure; SameSite=Strict" }
+  requestBodies:
+    Write:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [data]
+            properties:
+              data:
+                type: object
+                description: The document (PUT) or the patch to merge (PATCH).
+              expectedVersion:
+                type: integer
+                minimum: 0
+                description: Write only if the document is at this version (0 = doesn't exist).
+          examples:
+            checkout:
+              summary: Check out 3 of an item (PATCH a sheet)
+              value: { data: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 3, returned: 0 } } } }
+  schemas:
+    Document:
+      type: object
+      required: [id, version, data]
+      properties:
+        id: { type: string, description: The product key or sheet ID. }
+        version: { type: integer, minimum: 1 }
+        data: { type: object, description: The document's fields as the app wrote them. }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [bad_request, unauthenticated, permission_denied, invalid_argument, not_found, aborted, quota_exceeded, internal]
+            message: { type: string }
+  responses:
+    Document:
+      description: The document after the request.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Document" }
+    DocumentList:
+      description: A page of documents.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [documents]
+            properties:
+              documents:
+                type: array
+                items: { $ref: "#/components/schemas/Document" }
+              cursor: { type: string, description: Absent on the last page. }
+    Tokens:
+      description: Tokens for the app to keep in memory. The refresh token is only in the cookie.
+      headers:
+        Set-Cookie: { $ref: "#/components/headers/SetCookie" }
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [accessToken, idToken, expiresIn]
+            properties:
+              accessToken: { type: string }
+              idToken: { type: string }
+              expiresIn: { type: integer, description: Seconds. }
+    BadRequest:
+      description: "`bad_request`: malformed JSON, ID, field, query or cursor."
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Unauthenticated:
+      description: "`unauthenticated`: no token, an expired or ID token. (API Gateway's own 401 has the body `{\"message\":\"Unauthorized\"}`.)"
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Forbidden:
+      description: |
+        `permission_denied`: not a member of this team (the same answer if the
+        team doesn't exist). `invalid_argument`: a viewer tried to write; the
+        app reads this as view-only access.
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    NotFound:
+      description: "`not_found`: no such document."
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Conflict:
+      description: "`aborted`: the document isn't at `expectedVersion`, or changed during every retry."
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    TooLarge:
+      description: "`quota_exceeded`: the document would be over 350,000 bytes (or the body over 1 MB)."
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    SignInAgain:
+      description: "`unauthenticated`: no cookie, or Cognito refused the code or refresh token. Clears the cookie."
+      headers:
+        Set-Cookie: { $ref: "#/components/headers/ClearCookie" }
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    OriginRefused:
+      description: "`permission_denied`: missing or unknown `Origin`."
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Unavailable:
+      description: "`internal`: Cognito didn't answer, or answered without tokens. Try again."
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }

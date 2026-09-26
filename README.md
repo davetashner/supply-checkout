@@ -36,7 +36,8 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `scripts/export-beads.mjs` | Writes the beads backlog export without owner emails (`npm run beads:export`). |
 | `tests/` | Playwright end-to-end tests, run against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`). |
 | `infra/` | The AWS CDK app (TypeScript) for the SaaS version. Its own npm package; see [Infrastructure](#infrastructure). |
-| `backend/` | Lambda code for the SaaS version (TypeScript). `backend/src/data` is the data-access module, the only code that talks to DynamoDB. `backend/src/observability` is logging and business metrics. Its own npm package; see [Backend](#backend). |
+| `backend/` | Lambda code for the SaaS version (TypeScript). `backend/src/data` is the data-access module, the only code that talks to DynamoDB. `backend/src/api` is the HTTP API's handlers (data and sign-in sessions). `backend/src/observability` is logging and business metrics. Its own npm package; see [Backend](#backend). |
+| `docs/api/openapi.yaml` | The HTTP API's OpenAPI description, including how the app's `db` calls map onto it. |
 | `docs/adr/` | Architecture decision records for the AWS subscription product. |
 | `docs/architecture/` | Architecture overview and diagrams (Mermaid). |
 | `docs/journeys.md` | The customer journeys the product must never break, the tests that cover them, and the production alarms for when one is blocked. |
@@ -306,16 +307,79 @@ If the first deploy fails after the pool is created, CloudFormation rolls back b
 
 The stack reads each field with a CloudFormation dynamic reference at deploy time, so no ID or secret is ever in a template or this repository. Other environments use `supply-checkout/<env>/identity/{google,apple}` in their own accounts, with `auth.<env>.supplycheckout.com` in the redirect URIs. Apple's App Store rules (guideline 4.8) require Sign in with Apple wherever Google sign-in is offered in the iOS app, so turn both on before the app ships.
 
+### Data API
+
+The `api` stack (`lib/stacks/api-stack.ts`, [ADR 0006](docs/adr/0006-api-and-realtime-sync.md), `supply-checkout-d8b`) is the HTTP API at `api.<env domain>`, in every region. [docs/api/openapi.yaml](docs/api/openapi.yaml) describes its routes, errors and the mapping from the app's `window.claude.use("db")` calls; `backend/src/api/routes.ts` is the route table the handlers and the stack share, and a test keeps the two in step.
+
+| Route | Auth | Function |
+| --- | --- | --- |
+| `GET /teams/{teamId}/products`, `GET /teams/{teamId}/sheets` (`?orderBy=date&direction=desc`, `limit`, `cursor`) | Cognito access token | `data` |
+| `GET`, `PUT` (set), `PATCH` (deep-merge update), `DELETE` `/teams/{teamId}/products/{key}` and `/teams/{teamId}/sheets/{sheetId}` | Cognito access token | `data` |
+| `POST /auth/session`, `/auth/refresh`, `/auth/sign-out` | Refresh-token cookie and `Origin` | `auth` |
+
+**Team isolation**, two layers:
+
+1. **Membership, in the handler.** API Gateway's JWT authorizer checks the token; the handler also requires an unexpired access token and takes the user from `sub`. The team comes only from the path: `authorizeTeam` reads the caller's `MEMBER` item on every request (so a role change applies at once) and issues the `TeamContext` every data function needs. A body that names a team, or any server-owned field, is refused. Viewers can read; a viewer's write gets 403 `invalid_argument`, which the app shows as view-only access.
+2. **IAM, `dynamodb:LeadingKeys`.** The data function's own role has no DynamoDB access. For each team it assumes the `DataAccessRole` with the session tag `teamId=<path team>` (cached for up to an hour per team), and that role allows `GetItem`, `PutItem`, `DeleteItem` and `Query` only on items whose partition key is `TEAM#${aws:PrincipalTag/teamId}`, or the team's date index partition `TEAM#…#SHEETS`. Every item a team route touches is in one of those two partitions, so a bug that built another team's key would be refused by IAM too.
+
+**Sign-in sessions.** The web app keeps access and ID tokens in memory. `/auth/session` redeems the Managed Login code (with its PKCE verifier) at Cognito's `/oauth2/token` and sets the refresh token as `__Secure-sc_refresh` (`HttpOnly; Secure; SameSite=Strict; Path=/auth`, 30 days). `/auth/refresh` redeems it, and because rotation is on, stores the new refresh token each time. `/auth/sign-out` revokes it and clears the cookie. Each checks that `Origin` is the app's (`https://app.<env domain>`, plus `http://localhost:5173` outside prod), and CORS allows only those origins, with credentials.
+
+**Latency.** Functions run Node.js 24 on arm64, bundled by esbuild (ESM, minified, the AWS SDK v3 clients tree-shaken into the bundle) with their clients created once per container. The data function has 1 GB of memory, for CPU. A warm read is a membership check (one `TransactGetItems`) and one `GetItem` or `Query`; a write adds a `PutItem`.
+
+**Deploying.** The api stack reads, from SSM in its region: the `api.` certificate (the domain stack), the table's KMS key ARN (the data stack) and the issuer, web client ID and auth URL (the identity stack). So deploy those first. The synth bundles the handlers, so install the backend's dependencies too:
+
+```bash
+aws sso login --profile supply-prod
+(cd backend && npm ci)
+cd infra && npm ci
+npx cdk diff supply-checkout-prod-us-east-1-api --profile supply-prod
+npx cdk deploy supply-checkout-prod-us-east-1-api supply-checkout-prod-us-east-1-observability --profile supply-prod
+# No token: API Gateway answers 401 {"message":"Unauthorized"}
+curl -si https://api.supplycheckout.com/teams/t/products | head -1
+```
+
+The observability stack adds the API errors and API slow alarms, reading the API's ID from `/supply-checkout/<env>/api/api-id`.
+
+**Measuring p95** (the acceptance target is under 300 ms, warm). Until onboarding (`supply-checkout-l5y`) creates teams, add a test team by hand for a test user (their `sub` is in the Cognito console), then sign in and time requests:
+
+```bash
+# The environment being measured (dev): its profile, region and table
+P="--profile <dev profile> --region us-east-1"; T=supply-checkout-dev-app; TEAM=perf-team; SUB=<test user's sub>
+aws dynamodb put-item $P --table-name $T --item '{"PK":{"S":"TEAM#'$TEAM'"},"SK":{"S":"META"},"type":{"S":"team"},"teamId":{"S":"'$TEAM'"},"name":{"S":"Perf"},"homeRegion":{"S":"us-east-1"},"owners":{"N":"1"},"version":{"N":"1"}}'
+aws dynamodb put-item $P --table-name $T --item '{"PK":{"S":"TEAM#'$TEAM'"},"SK":{"S":"MEMBER#'$SUB'"},"type":{"S":"member"},"teamId":{"S":"'$TEAM'"},"userId":{"S":"'$SUB'"},"role":{"S":"owner"}}'
+# An access token for the test user (password sign-in through the web client)
+TOKEN=$(aws cognito-idp initiate-auth $P --auth-flow USER_AUTH --client-id <web client ID> \
+  --auth-parameters USERNAME=<email>,PREFERRED_CHALLENGE=PASSWORD,PASSWORD=<password> \
+  --query AuthenticationResult.AccessToken --output text)
+API=https://api.dev.supplycheckout.com/teams/$TEAM
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"data":{"client":"Perf","date":"2026-09-26","status":"open","items":{}}}' $API/sheets/perf-1
+# 30 seconds to warm up, then 2 minutes at 10 connections, reads and writes
+npx autocannon -d 30 -c 10 -H "Authorization=Bearer $TOKEN" "$API/sheets?orderBy=date&direction=desc" > /dev/null
+npx autocannon -d 120 -c 10 -H "Authorization=Bearer $TOKEN" "$API/sheets?orderBy=date&direction=desc"
+npx autocannon -d 120 -c 10 -m PATCH -H "Authorization=Bearer $TOKEN" -H content-type=application/json \
+  -b '{"data":{"items":{"x":{"out":1,"returned":0}}}}' "$API/sheets/perf-1"
+```
+
+Read the server-side p95 per route from the access logs (Logs Insights on the api stack's `AccessLogs` group, over the run's window), which leaves out network time to the laptop:
+
+```
+filter routeKey like /teams/ | stats count(*), pct(latencyMs, 50), pct(latencyMs, 95), pct(integrationLatencyMs, 95) by routeKey
+```
+
+or the whole API's from CloudWatch: `aws cloudwatch get-metric-statistics $P --namespace AWS/ApiGateway --metric-name Latency --dimensions Name=ApiId,Value=<api id> --extended-statistics p95 --period 300 --start-time … --end-time …`. Cold starts show up in the first minute only; X-Ray traces break a slow request down by DynamoDB and STS call. Delete the test items afterwards.
+
 ## Backend
 
 `backend/` holds the Lambda code (ADR 0002, 0006). It is a separate npm package with its own lockfile. `backend/src/observability` gives every handler structured JSON logs and business metrics ([Powertools for AWS Lambda](https://docs.powertools.aws.dev/lambda/typescript/)): `createObservability()` returns a `logger` and `count(metric, n, metadata)`, and `withObservability(obs, handler)` adds the request ID to every log line and flushes metrics after each invocation. Metrics go out as CloudWatch embedded metric format in namespace `SupplyCheckout`, with `Region` as their only dimension; per-team detail goes in metadata, never a dimension.
 
-So far it also has the data-access module, `backend/src/data`:
+It also has the HTTP API's handlers in `backend/src/api` (see [Data API](#data-api)), and the data-access module, `backend/src/data`:
 
 - **Team-scoped access.** Every read and write of a team's data takes a `TeamContext`. Every function that can issue one lives in `src/data/team-context.ts`, and the issuer itself isn't exported. `authorizeTeam(db, userId, teamId)` checks the MEMBER item; the authorizer calls it with the user ID from the verified token. `createTeam`, `acceptInvite` and `teamContextForStripeCustomer` issue a context for the new owner, the new member and the billing webhook. Each function checks the role (viewer, contributor, owner, system) before it writes. The `Db` handle from `createDb` is opaque: it exposes no DynamoDB client.
 - **At least one owner.** The team item keeps an `owners` count. Every change to an owner membership updates it in the same transaction, and a decrease is conditioned on `owners > 1`. Owner actions on other members also re-check the caller's own MEMBER item at write time.
 - **One way in.** Outside `src/data`, ESLint (`backend/eslint.config.js`) bans any `@aws-sdk/*dynamodb*` package or path inside one, and any file under `data/` except `data/index.js`. This covers static imports, re-exports, `import()` and `require`. Tests are exempt, to inspect stored items.
 - **Region-ready** ([ADR 0010](docs/adr/0010-multi-region-active-active.md)). Every team gets `homeRegion` when it's created, from `AWS_REGION`. `writeRegionFor` in `src/data/region.ts` is the one function that decides where a team's writes go; in the MVP it always returns the local region.
+- **Documents.** `src/data/documents.ts` serves the app's document model (`products/<key>`, `sheets/<id>`: get, set, deep-merge update, delete, list) on the same items the typed functions use. Every write reads the item and puts the new one on the condition that its version (and a product's `stock`) hasn't changed, so each write is one stream record with a new version.
 - **Keys.** As in ADR 0005, except sheets: `SHEET#<sheetId>` instead of `SHEET#<date>#<id>`, because the date is editable and a key can't change. Date order comes from `GSI1` (`TEAM#<teamId>#SHEETS`, `<date>#<sheetId>`), which one update can change. `GSI1` also finds invites by the SHA-256 hash of their token.
 
 ```bash
@@ -325,7 +389,7 @@ npm run lint        # tsc type-check and ESLint, including the DynamoDB ban
 npm test            # vitest; the access-pattern tests need DynamoDB Local
 ```
 
-The access-pattern tests run every entity in ADR 0005 against [DynamoDB Local](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBLocal.html), each test file in a fresh table. They're skipped unless `DYNAMODB_ENDPOINT` is set. To run them locally with Docker:
+`test/data-api.test.ts` runs the data handler against an in-memory table that refuses calls outside the request's team partitions, as the IAM policy does; it has the isolation negative tests. The access-pattern tests (and `test/documents.test.ts`) run every entity in ADR 0005 against [DynamoDB Local](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBLocal.html), each test file in a fresh table. They're skipped unless `DYNAMODB_ENDPOINT` is set. To run them locally with Docker:
 
 ```bash
 docker run --rm -d -p 8000:8000 amazon/dynamodb-local:3.0.0
@@ -425,8 +489,8 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | Secret scan | gitleaks on every commit in the history, and `scripts/check-public-safety.mjs` on every file (AWS account and SSO identifiers, email addresses, AWS and Stripe keys, private keys) |
 | Dependency audit | `npm audit` fails on high-severity advisories; dependency review fails a PR that adds a moderate-or-worse vulnerable package |
 | CodeQL (javascript-typescript), CodeQL (actions) | CodeQL `security-extended` queries on the app, scripts, tests and workflows (`.github/workflows/codeql.yml`, which also runs weekly). Results go to the repository's code scanning alerts |
-| Backend | Only when `backend/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint (with the DynamoDB ban), and the data-access tests against DynamoDB Local, which runs as a service container |
-| Infra | Only when `infra/`, `backend/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint, the CDK unit and snapshot tests, and a synth with cdk-nag for the deployed region and for both regions; the tests also synth every stack, identity and web included, in each region on its own |
+| Backend | Only when `backend/`, `docs/api/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint (with the DynamoDB ban), the handler and OpenAPI tests, and the data-access tests against DynamoDB Local, which runs as a service container |
+| Infra | Only when `infra/`, `backend/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint, the CDK unit and snapshot tests (which skip Lambda bundling), and a synth with cdk-nag (which bundles the handlers with esbuild from `backend/`) for the deployed region and for both regions; the tests also synth every stack, identity and web included, in each region on its own |
 | Tests (browser, artifact or web build) | All test suites, in twelve parallel jobs: desktop Chrome and iPhone Safari against each build, and desktop Firefox, Safari and Edge, Android Chrome (Pixel portrait and landscape, Galaxy) and iPad Safari (portrait and landscape) against the web build. The web jobs also test the demo build. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
 
 ## Releases

@@ -15,6 +15,16 @@ export class LimitReachedError extends Error {
   override readonly name = "LimitReachedError";
 }
 
+/** The document doesn't exist, for an operation that needs it to. (404) */
+export class NotFoundError extends Error {
+  override readonly name = "NotFoundError";
+}
+
+/** The item would be bigger than DynamoDB's 400 KB item limit allows. (413) */
+export class TooLargeError extends Error {
+  override readonly name = "TooLargeError";
+}
+
 /** A key or field the caller supplied is malformed. (400) */
 export class InvalidInputError extends Error {
   override readonly name = "InvalidInputError";

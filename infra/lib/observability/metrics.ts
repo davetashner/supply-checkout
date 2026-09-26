@@ -34,6 +34,11 @@ export function lambda(name: "Invocations" | "Errors" | "Throttles" | "Duration"
   return new Metric({ namespace: "AWS/Lambda", metricName: name, statistic, period: FIVE_MINUTES, region, label: `Lambda ${name} (${region})` });
 }
 
+/** A metric of one HTTP API, across its routes (the ApiId dimension alone). */
+export function apiGateway(name: "Count" | "5xx" | "4xx" | "Latency", apiId: string, region: string, statistic = "Sum", period = FIVE_MINUTES): Metric {
+  return new Metric({ namespace: "AWS/ApiGateway", metricName: name, dimensionsMap: { ApiId: apiId }, statistic, period, region });
+}
+
 /**
  * DynamoDB operations the data-access module uses (backend/src/data). Some
  * DynamoDB metrics exist only per operation, so alarms add them up.

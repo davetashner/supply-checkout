@@ -22,7 +22,7 @@ const [EAST, WEST] = APPROVED_REGIONS;
 const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.com", regions: [EAST], primaryRegion: EAST };
 
 function build(overrides: Partial<DeploymentConfig> = {}, context: Record<string, unknown> = {}) {
-  const app = new App({ context: { "aws:cdk:version-reporting": false, ...context } });
+  const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [], ...context } });
   const stacks = addSupplyCheckout(app, { ...config, ...overrides });
   return { app, stacks, template: Template.fromStack(stacks.identity) };
 }

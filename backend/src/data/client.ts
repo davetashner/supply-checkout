@@ -1,4 +1,4 @@
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, type DynamoDBClientConfig } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { localRegion } from "./region.js";
 
@@ -48,6 +48,11 @@ export interface DbOptions {
   /** DynamoDB Local for tests, e.g. http://localhost:8000. Defaults to DYNAMODB_ENDPOINT. */
   readonly endpoint?: string;
   readonly env?: NodeJS.ProcessEnv;
+  /**
+   * Credentials for this handle. Defaults to the Lambda's own role. The data
+   * API passes a role session scoped to one team (ADR 0005's LeadingKeys layer).
+   */
+  readonly credentials?: DynamoDBClientConfig["credentials"];
 }
 
 /** Creates the one DynamoDB client. Create it once per Lambda container, outside the handler. */
@@ -62,9 +67,15 @@ export function createDb(options: DbOptions = {}): Db {
     endpoint,
     // DynamoDB Local accepts any credentials; real AWS uses the Lambda role.
     ...(endpoint ? { credentials: { accessKeyId: "local", secretAccessKey: "local" } } : {}),
+    ...(options.credentials ? { credentials: options.credentials } : {}),
   });
   const doc = DynamoDBDocumentClient.from(client, {
     marshallOptions: { removeUndefinedValues: true, convertClassInstanceToMap: false },
   });
   return dbFromConnection({ client, doc, tableName, region });
+}
+
+/** Closes the handle's connections. For a cache that evicts handles. */
+export function closeDb(db: Db): void {
+  connection(db).client.destroy();
 }
