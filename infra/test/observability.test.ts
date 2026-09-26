@@ -80,6 +80,76 @@ describe("alarm topics", () => {
     });
   });
 
+  it("lets only this account's alarms in this region publish to each topic, in every region", () => {
+    for (const r of [EAST, WEST]) {
+      const t = observability(r);
+      const policies = t.findResources("AWS::SNS::TopicPolicy");
+      const statements = Object.values(policies).map((p) => {
+        const doc = p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] };
+        const topics = p.Properties.Topics as { Ref: string }[];
+        return { topics: topics.map((x) => x.Ref), allow: doc.Statement.filter((s) => s.Effect === "Allow") };
+      });
+      // One policy per topic, P1 and P2, each with exactly one Allow
+      expect(statements.map((s) => s.topics).flat().sort()).toEqual([
+        expect.stringMatching(/^AlarmTopicsP1/),
+        expect.stringMatching(/^AlarmTopicsP2/),
+      ]);
+      for (const { topics, allow } of statements) {
+        expect(allow).toEqual([
+          {
+            Sid: "AllowCloudWatchAlarmsToPublish",
+            Effect: "Allow",
+            Principal: { Service: "cloudwatch.amazonaws.com" },
+            Action: "sns:Publish",
+            Resource: { Ref: topics[0] },
+            Condition: {
+              StringEquals: { "aws:SourceAccount": { Ref: "AWS::AccountId" } },
+              ArnLike: {
+                "aws:SourceArn": {
+                  "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":cloudwatch:", { Ref: "AWS::Region" }, ":", { Ref: "AWS::AccountId" }, ":alarm:*"]],
+                },
+              },
+            },
+          },
+        ]);
+      }
+      // The topics' key lets CloudWatch encrypt what it publishes
+      t.hasResourceProperties("AWS::KMS::Key", {
+        KeyPolicy: {
+          Statement: Match.arrayWith([
+            {
+              Effect: "Allow",
+              Principal: { Service: "cloudwatch.amazonaws.com" },
+              Action: ["kms:Decrypt", "kms:GenerateDataKey*"],
+              Resource: "*",
+              Condition: { StringEquals: { "aws:SourceAccount": { Ref: "AWS::AccountId" } } },
+            },
+          ]),
+        },
+      });
+    }
+  });
+
+  it("points every alarm action at a topic whose policy lets CloudWatch publish", () => {
+    const t = observability();
+    const allowed = new Set(
+      Object.values(t.findResources("AWS::SNS::TopicPolicy"))
+        .filter((p) =>
+          (p.Properties.PolicyDocument as { Statement: { Effect: string; Principal?: { Service?: string } }[] }).Statement.some(
+            (s) => s.Effect === "Allow" && s.Principal?.Service === "cloudwatch.amazonaws.com",
+          ),
+        )
+        .flatMap((p) => (p.Properties.Topics as { Ref: string }[]).map((x) => x.Ref)),
+    );
+    const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm"));
+    expect(alarms.length).toBeGreaterThan(0);
+    for (const a of alarms) {
+      for (const action of [...(a.Properties.AlarmActions as { Ref: string }[]), ...(a.Properties.OKActions as { Ref: string }[])]) {
+        expect(allowed.has(action.Ref)).toBe(true);
+      }
+    }
+  });
+
   it("subscribes P1 to email and SMS and P2 to email, from SSM parameters resolved at deploy time", () => {
     const t = observability();
     const subs = Object.values(t.findResources("AWS::SNS::Subscription")).map((r) => r.Properties);
