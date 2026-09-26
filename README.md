@@ -16,6 +16,9 @@ The app runs as a [Claude artifact](https://claude.ai/artifact/LcSb29dTE99AK4N6i
 | `scripts/page.mjs` | Wraps `index.html` in the same document skeleton claude.ai adds at publish time. |
 | `scripts/validate-html.mjs` | HTML validation (html-validate). |
 | `tests/` | Playwright end-to-end tests, run against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`). |
+| `docs/adr/` | Architecture decision records for the AWS subscription product. |
+| `docs/architecture/` | Architecture overview and diagrams (Mermaid). |
+| `.beads/` | The [beads](https://github.com/steveyegge/beads) backlog. `issues.jsonl` is an export; run `bd ready` to see what's next. |
 
 ## Development
 

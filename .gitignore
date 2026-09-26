@@ -9,3 +9,6 @@ playwright-report/
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Local git worktrees
+.claude/worktrees/
