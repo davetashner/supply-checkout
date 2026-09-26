@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Lands a pull request the way this repo expects, then tidies up:
-#   1. brings the branch up to date with main if it's behind
+#   1. brings the branch up to date with main if it's behind, again if it
+#      falls behind while CI runs, and stops if it has conflicts
 #   2. waits for CI, and prints the failing job's log if it fails
 #   3. squash-merges and deletes the remote branch
 #   4. removes the local worktree and branch, and pulls main
@@ -30,27 +31,56 @@ body="$(view body)"
 if [ "$(view state)" != "MERGED" ]; then
   [ "$(view state)" = "OPEN" ] || { echo "PR #$pr is $(view state)."; exit 1; }
 
-  if [ "$(view mergeStateStatus)" = "BEHIND" ]; then
-    say "Branch is behind main: updating it"
-    gh pr update-branch "$pr"
-    sleep 5
-  fi
+  # Right after another PR merges, GitHub reports UNKNOWN for a while before
+  # it works out whether this branch is behind. Wait that out before deciding.
+  merge_state() {
+    local state tries=0
+    state="$(view mergeStateStatus)"
+    while [ "$state" = "UNKNOWN" ] && [ "$tries" -lt 30 ]; do
+      sleep 2; tries=$((tries + 1)); state="$(view mergeStateStatus)"
+    done
+    printf '%s\n' "$state"
+  }
 
-  say "Waiting for CI on #$pr ($branch)"
-  until gh pr checks "$pr" 2>/dev/null | grep -q 'CI passed'; do sleep 10; done
-  if ! gh pr checks "$pr" --watch --interval 15 >/dev/null; then
-    gh pr checks "$pr" || true
-    run="$(gh run list --branch "$branch" --workflow CI -L 1 --json databaseId -q '.[0].databaseId')"
-    say "CI failed. Failing steps from run $run:"
-    gh run view "$run" --log-failed | tail -80
-    exit 1
-  fi
+  wait_for_ci() {
+    say "Waiting for CI on #$pr ($branch)"
+    until gh pr checks "$pr" 2>/dev/null | grep -q 'CI passed'; do sleep 10; done
+    if ! gh pr checks "$pr" --watch --interval 15 >/dev/null; then
+      gh pr checks "$pr" || true
+      run="$(gh run list --branch "$branch" --workflow CI -L 1 --json databaseId -q '.[0].databaseId')"
+      say "CI failed. Failing steps from run $run:"
+      gh run view "$run" --log-failed | tail -80
+      exit 1
+    fi
+  }
 
-  status="$(view mergeStateStatus)"
-  if [ "$status" != "CLEAN" ]; then
-    echo "PR #$pr can't be merged yet: merge state is $status."
-    exit 1
-  fi
+  # main can move while CI runs, so after each green run check again and, if
+  # the branch has fallen behind, update it and wait for CI once more.
+  max_updates=3 updates=0
+  status="$(merge_state)"
+  while :; do
+    case "$status" in
+      DIRTY)
+        echo "PR #$pr has conflicts with main. Rebase $branch onto origin/main, push, and run this again."
+        exit 1 ;;
+      BEHIND)
+        if [ "$updates" -ge "$max_updates" ]; then
+          echo "PR #$pr is still behind main after $max_updates updates. Run this again once main is quiet."
+          exit 1
+        fi
+        say "Branch is behind main: updating it"
+        gh pr update-branch "$pr"
+        updates=$((updates + 1))
+        sleep 5 ;;
+    esac
+    wait_for_ci
+    status="$(merge_state)"
+    case "$status" in
+      CLEAN) break ;;
+      BEHIND|DIRTY) ;;
+      *) echo "PR #$pr can't be merged yet: merge state is $status."; exit 1 ;;
+    esac
+  done
 
   say "Squash-merging #$pr"
   gh pr merge "$pr" --squash --delete-branch >/dev/null 2>&1 || true
