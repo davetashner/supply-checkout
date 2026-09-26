@@ -193,7 +193,7 @@ export async function start(config) {
     bar.querySelector("#signOut").addEventListener("click", signOut);
     if (team.role === "owner") {
       bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed));
-      bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id));
+      bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id, download));
     }
   }
 

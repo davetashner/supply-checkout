@@ -1,0 +1,3 @@
+name,barcode,price,cost,stock,pack_size
+EXAMPLE Glass cleaner (sample row),EXAMPLE-0001,6.50,4.25,24,12
+EXAMPLE Trash bags (sample row),,0.40,0.25,90,45
