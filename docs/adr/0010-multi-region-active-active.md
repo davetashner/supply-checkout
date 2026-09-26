@@ -52,7 +52,7 @@ In the MVP, a us-east-1 outage takes the app down until the region recovers. Dat
 
 ### Moves to phase 2
 
-- Deploying staging and prod to us-west-2 (including CDK bootstrap there), and the prod release order of us-west-2 first.
+- Deploying staging and prod to us-west-2, and the prod release order of us-west-2 first. (CDK bootstrap there is cheap and can happen early.)
 - The table's us-west-2 replica, its KMS key, and the replication-lag alarm.
 - The second S3 origin, bucket replication and the CloudFront origin group.
 - The HTTP API, AppSync Events, stream publisher and Stripe webhook endpoint in us-west-2.
