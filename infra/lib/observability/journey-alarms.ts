@@ -10,7 +10,7 @@ import {
 import { Construct } from "constructs";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import type { AlarmTopics, Severity } from "./alarm-topics.js";
-import { business, dynamoDbSystemErrors, dynamoDbThrottles, FIVE_MINUTES, lambda } from "./metrics.js";
+import { apiGateway, business, dynamoDbSystemErrors, dynamoDbThrottles, FIVE_MINUTES, lambda } from "./metrics.js";
 
 /**
  * One alarm from docs/journeys.md, "Alarms for blocked journeys". Only alarms
@@ -37,9 +37,12 @@ export interface JourneyAlarmsProps {
   readonly region: string;
   /** The app table's name in this region (a global table has the same name in every region). */
   readonly tableName: string;
+  /** The HTTP API's ID in this region (the api stack publishes it to SSM). */
+  readonly apiId: string;
   readonly topics: AlarmTopics;
 }
 
+const TEN_MINUTES = Duration.minutes(10);
 const FIFTEEN_MINUTES = Duration.minutes(15);
 
 /** `numerator / denominator` as a percentage, or 0 while the denominator is below `minimum`. */
@@ -52,7 +55,7 @@ function percent(numerator: Metric, denominator: Metric, minimum: number, label:
   });
 }
 
-export function journeyAlarmSpecs(region: string, tableName: string): JourneyAlarmSpec[] {
+export function journeyAlarmSpecs(region: string, tableName: string, apiId: string): JourneyAlarmSpec[] {
   return [
     // Every journey
     {
@@ -72,6 +75,24 @@ export function journeyAlarmSpecs(region: string, tableName: string): JourneyAla
       rule: "Any Lambda throttles for 5 minutes, across every function in the region.",
       metric: lambda("Throttles", region),
       threshold: 0,
+    },
+    {
+      id: "api-errors",
+      title: "API errors",
+      journeys: "Every journey",
+      severity: "P1",
+      rule: "API Gateway 5xx above 2% of requests for 5 minutes, once there are at least 20 requests. Across all of the API's routes: per-route metrics need detailed metrics, billed per route; the access logs have the route.",
+      metric: percent(apiGateway("5xx", apiId, region), apiGateway("Count", apiId, region), 20, `API 5xx rate % (${region})`),
+      threshold: 2,
+    },
+    {
+      id: "api-slow",
+      title: "API slow",
+      journeys: "Every journey",
+      severity: "P2",
+      rule: "API Gateway Latency p95 above 2 seconds over 10 minutes.",
+      metric: apiGateway("Latency", apiId, region, "p95", TEN_MINUTES),
+      threshold: 2000,
     },
     {
       id: "database-errors",
@@ -172,7 +193,7 @@ export class JourneyAlarms extends Construct {
 
   constructor(scope: Construct, id: string, props: JourneyAlarmsProps) {
     super(scope, id);
-    for (const spec of journeyAlarmSpecs(props.region, props.tableName)) {
+    for (const spec of journeyAlarmSpecs(props.region, props.tableName, props.apiId)) {
       const alarm = new Alarm(this, spec.id, {
         alarmName: `supply-checkout-${props.envName}-${spec.severity.toLowerCase()}-${spec.id}`,
         alarmDescription: [

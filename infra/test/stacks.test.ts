@@ -14,7 +14,7 @@ const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.
 
 function build(overrides: Partial<DeploymentConfig> = {}) {
   // Version reporting off keeps snapshots stable across CDK upgrades
-  const app = new App({ context: { "aws:cdk:version-reporting": false } });
+  const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [] } });
   const stacks = addSupplyCheckout(app, { ...config, ...overrides });
   return { app, stacks };
 }
@@ -122,7 +122,13 @@ describe("stack layout", () => {
   it("matches the template snapshots", () => {
     const { stacks } = build();
     for (const stack of stacks.all) {
-      expect(Template.fromStack(stack).toJSON()).toMatchSnapshot(stack.stackName);
+      // Lambda asset hashes, and the function version IDs made from them,
+      // depend on the checkout's path (bundling is skipped in tests, and CDK
+      // hashes the bundling command instead), so mask them
+      const json = JSON.stringify(Template.fromStack(stack).toJSON())
+        .replace(/"[0-9a-f]{64}\.zip"/g, '"<asset hash>.zip"')
+        .replace(/(CurrentVersion[0-9A-F]{8})[0-9a-f]{32}/g, "$1<code hash>");
+      expect(JSON.parse(json)).toMatchSnapshot(stack.stackName);
     }
   });
 });

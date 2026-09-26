@@ -252,7 +252,8 @@ jobs:
           else
             echo "infra=false" >> "$GITHUB_OUTPUT"
           fi
-          if grep -Eq '^(backend/|\.github/workflows/ci\.yml$)' <<< "$changed"; then
+          # docs/api/openapi.yaml is checked against the routes by a backend test
+          if grep -Eq '^(backend/|docs/api/|\.github/workflows/ci\.yml$)' <<< "$changed"; then
             echo "backend=true" >> "$GITHUB_OUTPUT"
           else
             echo "backend=false" >> "$GITHUB_OUTPUT"
@@ -273,8 +274,14 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: infra/package-lock.json
+          cache-dependency-path: |
+            infra/package-lock.json
+            backend/package-lock.json
       - run: npm ci
+      # The synth bundles the Lambda handlers with esbuild from backend/
+      - name: Install backend dependencies for bundling
+        run: npm ci
+        working-directory: backend
       - run: npm audit --audit-level=high
       - run: npm run lint
       - run: npm test

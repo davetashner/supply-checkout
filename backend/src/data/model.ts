@@ -63,6 +63,11 @@ export interface Invite {
   readonly expiresAt: number;
 }
 
+/** True for a role a MEMBER item may hold. */
+export function isMemberRole(value: unknown): value is MemberRole {
+  return MEMBER_ROLES.includes(value as MemberRole);
+}
+
 export function memberRole(value: unknown): MemberRole {
   if (!MEMBER_ROLES.includes(value as MemberRole)) throw new InvalidInputError("Invalid role");
   return value as MemberRole;

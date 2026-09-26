@@ -5,8 +5,8 @@
 // authorizeTeam, createTeam, acceptInvite and teamContextForStripeCustomer.
 // The Db handle is opaque: it exposes no DynamoDB client.
 
-export { createDb, type Db, type DbOptions } from "./client.js";
-export { ConflictError, ForbiddenError, InvalidInputError, LimitReachedError } from "./errors.js";
+export { closeDb, createDb, type Db, type DbOptions } from "./client.js";
+export { ConflictError, ForbiddenError, InvalidInputError, LimitReachedError, NotFoundError, TooLargeError } from "./errors.js";
 export { localRegion, writeRegionFor, type HomedTeam } from "./region.js";
 export {
   acceptInvite,
@@ -25,3 +25,4 @@ export * from "./sheets.js";
 export * from "./usage.js";
 export * from "./audit.js";
 export * from "./billing.js";
+export * from "./documents.js";

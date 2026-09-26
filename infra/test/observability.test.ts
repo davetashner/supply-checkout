@@ -18,7 +18,7 @@ const [EAST, WEST] = APPROVED_REGIONS;
 const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.com", regions: [EAST, WEST], primaryRegion: EAST };
 
 function build(context: Record<string, unknown> = {}, overrides: Partial<DeploymentConfig> = {}) {
-  const app = new App({ context: { "aws:cdk:version-reporting": false, ...context } });
+  const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [], ...context } });
   const stacks = addSupplyCheckout(app, { ...config, ...overrides });
   const region = (r: string) => {
     const s = stacks.regions[r];
@@ -33,6 +33,8 @@ const observability = (r: string = EAST, context: Record<string, unknown> = {}) 
 
 const ALARM_IDS = [
   "functions-failing",
+  "api-errors",
+  "api-slow",
   "functions-throttled",
   "database-errors",
   "database-throttled",
@@ -125,7 +127,7 @@ describe("journey alarms (docs/journeys.md)", () => {
     for (const r of config.regions) {
       const t = observability(r);
       const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties);
-      const specs = journeyAlarmSpecs(r, "t");
+      const specs = journeyAlarmSpecs(r, "t", "api");
       expect(alarms.map((a) => a.AlarmName).sort()).toEqual(
         specs.map((s) => `supply-checkout-prod-${s.severity.toLowerCase()}-${s.id}`).sort(),
       );
@@ -252,11 +254,12 @@ describe("defaults for every function and log group", () => {
 
   function withFunctions() {
     const { app, region } = build({ [MANAGED_LOG_GROUPS]: true });
-    const api = region(EAST).api;
-    testFunction(api, "Plain");
-    testFunction(api, "PassThrough", Tracing.PASS_THROUGH);
-    new LogGroup(api, "Kept", { retention: RetentionDays.ONE_WEEK });
-    return { app, api };
+    // The realtime stack has no functions of its own yet (the api stack has the API's)
+    const stack = region(EAST).realtime;
+    testFunction(stack, "Plain");
+    testFunction(stack, "PassThrough", Tracing.PASS_THROUGH);
+    new LogGroup(stack, "Kept", { retention: RetentionDays.ONE_WEEK });
+    return { app, api: stack };
   }
 
   it("turns on X-Ray tracing and JSON logs, with the X-Ray permissions in a policy of their own", () => {

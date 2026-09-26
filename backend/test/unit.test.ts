@@ -124,13 +124,22 @@ describe("TeamContext (ADR 0005)", () => {
     const viewer = await contextFor("viewer");
     const contributor = await contextFor("contributor");
     const owner = await contextFor("owner");
-    const system = await contextFor("system");
+    // Only the Stripe issuer makes a system context; a MEMBER item can't hold that role
+    const replies = [{ Item: { teamId: "t1" } }, { Item: { homeRegion: REGION } }];
+    const system = (await teamContextForStripeCustomer(fakeDb(async () => replies.shift()), "cus_1")) as TeamContext;
     expect(() => writable(offline, viewer)).toThrow(ForbiddenError);
     expect(writable(offline, contributor)).toBe(contributor);
     expect(() => writable(offline, contributor, "owner")).toThrow(ForbiddenError);
     expect(writable(offline, owner, "owner")).toBe(owner);
     expect(() => writable(offline, owner, "system")).toThrow(ForbiddenError);
     expect(writable(offline, system, "owner")).toBe(system);
+  });
+
+  it("treats a MEMBER item with a missing, unknown or system role as no membership", async () => {
+    for (const role of [undefined, "superuser", "system", "", 2]) {
+      const db = fakeDb(async () => ({ Responses: [{ Item: { homeRegion: REGION } }, { Item: role === undefined ? {} : { role } }] }));
+      await expect(data.authorizeTeam(db, "u1", "t1"), String(role)).rejects.toThrow(ForbiddenError);
+    }
   });
 
   it("rejects a viewer's write before it reaches DynamoDB", async () => {
