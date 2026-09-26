@@ -14,9 +14,10 @@
     "last 2 Safari major versions"
   ],
   "scripts": {
-    "build": "npm run build:artifact && npm run build:web",
+    "build": "npm run build:artifact && npm run build:web && npm run build:demo",
     "build:artifact": "vite build --mode artifact",
     "build:web": "vite build --mode web",
+    "build:demo": "vite build --mode demo",
     "lint": "eslint . && npm run build && node scripts/validate-html.mjs",
     "test": "npm run test:artifact && npm run test:web",
     "test:artifact": "BUILD=artifact playwright test --project=desktop-chrome --project=iphone-safari",

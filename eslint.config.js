@@ -34,6 +34,11 @@ export default [
     languageOptions: { globals: { ...globals.browser, ZXing: "readonly", BarcodeDetector: "readonly" } },
   },
   {
+    // The demo build's entry runs in the browser (demo/data.js also runs in the dev server)
+    files: ["demo/**/*.js"],
+    languageOptions: { globals: { ...globals.browser } },
+  },
+  {
     // The mock and page.evaluate callbacks run inside the browser
     files: ["tests/**/*.js"],
     languageOptions: { globals: { ...globals.browser } },

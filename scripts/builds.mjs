@@ -1,9 +1,12 @@
-// The app's two builds (see vite.config.js), for the tests and HTML validation.
+// The app's builds (see vite.config.js), for the tests and HTML validation.
 //
 //   artifact   dist/artifact/index.html, the self-contained page published to claude.ai
 //   web        dist/web/, index.html plus hashed assets, for CloudFront
+//   demo       dist/demo/, the web build in demo mode, for supplycheckout.com
 //
-// Tests pick one with BUILD=artifact (the default) or BUILD=web.
+// Tests pick artifact or web with BUILD=artifact (the default) or BUILD=web. The
+// demo isn't a BUILD of its own: it's built and tested alongside the web build
+// (tests/demo.spec.js), because it brings its own runtime.
 import { readdirSync, readFileSync } from "node:fs";
 import { extname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +26,9 @@ export async function buildApp(build) {
   const { build: viteBuild } = await import("vite");
   await viteBuild({ configFile: fileURLToPath(new URL("../vite.config.js", import.meta.url)), mode: build, logLevel: "warn" });
 }
+
+// Built with the web build, for tests/demo.spec.js
+export const DEMO = "demo";
 
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".map": "application/json" };
 

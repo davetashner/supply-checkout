@@ -17,6 +17,7 @@ const validator = new HtmlValidate({
 const pages = {
   "dist/artifact/index.html (as published)": buildPage(),
   "dist/web/index.html": readFileSync(distDir("web") + "index.html", "utf8"),
+  "dist/demo/index.html": readFileSync(distDir("demo") + "index.html", "utf8"),
 };
 let valid = true;
 for (const [name, html] of Object.entries(pages)) {
