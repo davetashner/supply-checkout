@@ -15,7 +15,9 @@ flowchart LR
     apps[iOS and Android apps<br/>Capacitor]
     backend[AWS backend<br/>us-east-1 + us-west-2]
   end
-  stripe[(Stripe<br/>billing, invoices, tax)]
+  stripe[(Stripe<br/>web billing, invoices, tax)]
+  stores[(App Store + Google Play<br/>in-app subscriptions)]
+  rc[(RevenueCat<br/>store receipts + webhooks)]
   bedrock[(Amazon Bedrock<br/>Claude)]
   mail[(Amazon SES<br/>email)]
   support[(Support inbox)]
@@ -28,6 +30,9 @@ flowchart LR
   apps --> backend
   backend --> bedrock
   backend <--> stripe
+  apps -->|owner buys plan| stores
+  stores --> rc
+  rc -->|webhook| backend
   owner -->|Checkout, Customer Portal| stripe
   backend --> mail
   owner -.-> support
@@ -165,6 +170,42 @@ sequenceDiagram
   Note over S,W: invoice.payment_failed → status past_due →<br/>7-day grace, then read-only
 ```
 
+## 4a. Subscribing in the mobile app
+
+Owners can buy a seat-bundle plan in the iOS or Android app ([ADR 0013](../adr/0013-in-app-subscriptions.md)). Store and web purchases end up in the same team fields.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor O as Team owner
+  participant App as iOS / Android app
+  participant API as HTTP API
+  participant Store as App Store / Google Play
+  participant RC as RevenueCat
+  participant W as billing worker
+  participant DB as DynamoDB
+
+  O->>App: Open Plans
+  App->>API: GET /teams/{id}/billing
+  API-->>App: billingSource, plan, status
+  alt Team already billed through Stripe or another store
+    App-->>O: Show current plan and where to manage it
+  else No active subscription
+    App->>RC: Fetch offerings (seat bundles, monthly and annual)
+    O->>App: Choose "Crew 10, monthly"
+    App->>Store: Purchase (RevenueCat app user ID = teamId)
+    Store-->>App: Transaction
+    App->>RC: Sync purchase
+    RC->>RC: Validate with the store
+    RC->>API: Webhook INITIAL_PURCHASE (signed)
+    API->>DB: Record event ID (skip if already seen)
+    API->>W: Queue event (SQS)
+    W->>DB: Team: billingSource=app_store, plan, seatLimit, status, periodEnd
+    DB-->>App: Live update: plan active
+  end
+  Note over Store,W: Renewals, billing retry, refunds and cancellations<br/>arrive as RevenueCat webhooks and use the same path
+```
+
 ## 5. Sign-in and team access
 
 ```mermaid
@@ -204,14 +245,15 @@ erDiagram
   PRODUCT ||--o{ SHEET_LINE : "checked out as"
   TEAM ||--o{ USAGE : "counts receipts"
   TEAM ||--o{ AUDIT : logs
-  TEAM ||--|| STRIPE_CUSTOMER : "billed as"
+  TEAM ||--o| STRIPE_CUSTOMER : "billed on web as"
 
   TEAM {
     string teamId PK
     string name
     string plan
-    int seats
+    int seatLimit
     string status
+    string billingSource
     string homeRegion
   }
   MEMBER {

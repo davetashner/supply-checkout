@@ -18,5 +18,6 @@ A record starts as **Proposed**. Change it to **Accepted** once we agree, or **S
 | [0010](0010-multi-region-active-active.md) | Active-active in two US regions | Proposed |
 | [0011](0011-mobile-apps-capacitor.md) | Native iOS and Android apps wrap the web app with Capacitor | Proposed |
 | [0012](0012-cicd-releases-rollbacks.md) | CI/CD with GitHub Actions, canary deploys and automatic rollback | Proposed |
+| [0013](0013-in-app-subscriptions.md) | In-app subscriptions on iOS and Android through RevenueCat | Proposed |
 
 The architecture overview and diagrams are in [`docs/architecture/`](../architecture/README.md). The backlog that implements these decisions lives in beads (`bd list`, `bd ready`).

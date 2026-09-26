@@ -18,7 +18,7 @@ Use **one DynamoDB table** (`app`), on-demand capacity, point-in-time recovery o
 
 | Entity | PK | SK | Notes |
 | --- | --- | --- | --- |
-| Team | `TEAM#<teamId>` | `META` | name, plan, seats, subscription status, home region |
+| Team | `TEAM#<teamId>` | `META` | name, plan, seat limit, subscription status, billing source (`stripe`, `app_store`, `play`), home region |
 | Member | `TEAM#<teamId>` | `MEMBER#<userId>` | role: owner, contributor, viewer |
 | User's teams | `USER#<userId>` | `TEAM#<teamId>` | reverse lookup for the team switcher |
 | Invite | `TEAM#<teamId>` | `INVITE#<inviteId>` | email, role, expiry (TTL); GSI on hashed token |
@@ -27,7 +27,7 @@ Use **one DynamoDB table** (`app`), on-demand capacity, point-in-time recovery o
 | Receipt usage | `TEAM#<teamId>` | `USAGE#<yyyy-mm>` | atomic counter for the monthly limit |
 | Audit event | `TEAM#<teamId>` | `AUDIT#<ts>#<id>` | who changed what; TTL after the retention period |
 | Stripe link | `STRIPE#<customerId>` | `TEAM` | maps webhook events to a team |
-| Processed webhook | `WEBHOOK#<eventId>` | `DONE` | idempotency; TTL 30 days |
+| Processed webhook | `WEBHOOK#<source>#<eventId>` | `DONE` | idempotency for Stripe and RevenueCat events; TTL 30 days |
 
 - **The server sets `teamId` from the caller's verified membership. The client never supplies it.** Every data-access function takes a `TeamContext` that can only be built by the authorizer. A lint rule bans calling the DynamoDB client from anywhere else.
 - Each Lambda runs with an IAM policy that uses `dynamodb:LeadingKeys` to limit it to the caller's partition. This is a second line of defense behind the application check.

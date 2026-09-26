@@ -10,9 +10,9 @@ Crews use the app on phones in storage rooms and trucks. They want an icon on th
 ## Decision
 
 - Build the iOS and Android apps with **Capacitor**, loading the same web bundle as the website ([ADR 0004](0004-runtime-adapter.md)).
-- Native plugins: camera, barcode scanning (ML Kit on Android, VisionKit on iOS) in place of the web barcode reader, secure token storage, share sheet for CSV export, and app/deep links for invites.
+- Native plugins: in-app purchases (RevenueCat), camera, barcode scanning (ML Kit on Android, VisionKit on iOS) in place of the web barcode reader, secure token storage, share sheet for CSV export, and app/deep links for invites.
 - Build and sign with **fastlane** in GitHub Actions on macOS runners. Upload to TestFlight and the Play internal track on every release; promote to production by hand at first.
-- **No in-app purchases at launch.** Teams subscribe on the website. The apps are for signing in to an existing team. This fits the App Store rule for apps sold to organizations for their own staff (guideline 3.1.3(c)), and in the US apps may now also link to web purchases. Google Play allows the same through its business-tool rules. Confirm both during the first review; if Apple rejects it, add IAP through RevenueCat as a follow-up.
+- **Owners can choose and buy a subscription inside both apps** with App Store and Google Play billing through RevenueCat. Teams already subscribed on the web just sign in. See [ADR 0013](0013-in-app-subscriptions.md).
 - Includes in-app account deletion ([ADR 0007](0007-identity-cognito.md)) and privacy details (App Store privacy labels, Play data safety form).
 
 ## Alternatives considered
