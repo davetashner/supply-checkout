@@ -40,6 +40,28 @@ export const AUTH_ROUTES: readonly AuthRoute[] = [
   { method: "POST", path: "/auth/sign-out", action: "signOut" },
 ];
 
+export interface AccountRoute {
+  readonly method: "GET" | "POST";
+  readonly path: string;
+  readonly action: "me" | "createTeam" | "acceptInvite";
+}
+
+/**
+ * The signed-in user's own account: their teams and pending invites, creating
+ * a team, and accepting an invite (first sign-in, docs/api/onboarding.md).
+ * Each needs a Cognito access token (the JWT authorizer). None names a team
+ * the caller is already in, so they're served by the `account` function, not
+ * the team-scoped data function.
+ */
+export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
+  { method: "GET", path: "/me", action: "me" },
+  { method: "POST", path: "/teams", action: "createTeam" },
+  { method: "POST", path: "/invites/{inviteId}/accept", action: "acceptInvite" },
+];
+
+/** The header that makes `POST /teams` idempotent: the client's key for one "create team" attempt. */
+export const IDEMPOTENCY_HEADER = "idempotency-key";
+
 /** API Gateway's route key for a route, e.g. `GET /teams/{teamId}/products`. */
 export const routeKey = (route: { readonly method: string; readonly path: string }) => `${route.method} ${route.path}`;
 
@@ -51,11 +73,25 @@ export const routeKey = (route: { readonly method: string; readonly path: string
  */
 export const TEAM_SESSION_TAG = "teamId";
 
+/**
+ * Session tags the account function puts on its role session. The
+ * account-access role's policy allows only items whose partition key is
+ * `USER#<userId>`, `TEAM#<teamId>` or (on GSI2) `INVITEE#<invitee>`. Every
+ * session carries all three; one that doesn't need a team or an invitee tags
+ * it ACCOUNT_TAG_UNUSED, which no key can match.
+ */
+export const ACCOUNT_SESSION_TAGS = { userId: "userId", teamId: "teamId", invitee: "invitee" } as const;
+export const ACCOUNT_TAG_UNUSED = ".";
+
 /** Environment variables the api stack sets and the handlers read. */
 export const API_ENV = {
   tableName: "TABLE_NAME",
   /** The role the data Lambda assumes, tagged with the team, for every team's reads and writes. */
   dataRoleArn: "DATA_ROLE_ARN",
+  /** The role the account function assumes, tagged with the user (and a team or invitee). */
+  accountRoleArn: "ACCOUNT_ROLE_ARN",
+  /** `https://cognito-idp.<region>.amazonaws.com/<pool>`: the JWT issuer, and where GetUser is called. */
+  issuerUrl: "ISSUER_URL",
   /** `https://auth.<env domain>`: Cognito's OAuth endpoints. */
   authUrl: "AUTH_URL",
   /** The web app's public client ID. */

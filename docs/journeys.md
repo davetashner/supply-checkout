@@ -61,7 +61,7 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Expected:** an empty team ready to use in under a minute, with a 14-day trial and no card needed. The terms acceptance time is stored.
 
-**Status:** planned. `supply-checkout-21q` (landing and sign-up), `supply-checkout-zsm` (sign-in), `supply-checkout-l5y` (team creation), `supply-checkout-x0l` (trial).
+**Status:** planned. `supply-checkout-21q` (landing and sign-up), `supply-checkout-zsm` (sign-in), `supply-checkout-l5y` (team creation: `GET /me` and `POST /teams`, see [docs/api/onboarding.md](api/onboarding.md)), `supply-checkout-x0l` (trial).
 
 ### J2. Set up the inventory
 

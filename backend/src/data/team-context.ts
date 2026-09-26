@@ -12,9 +12,23 @@
 import { randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactGetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
-import { ForbiddenError, InvalidInputError, conflictOnConditionFailure } from "./errors.js";
+import { ConflictError, ForbiddenError, LimitReachedError, NotFoundError, conflictOnConditionFailure } from "./errors.js";
 import { gsi1, id, keys, strip } from "./keys.js";
-import { type Invite, type Member, type Role, type Team, type UserTeam, hashInviteToken, isMemberRole, ownersUpdate, teamName } from "./model.js";
+import {
+  type Invite,
+  type Member,
+  type Role,
+  type Team,
+  type UserTeam,
+  TEAMS_PER_USER_PER_DAY,
+  TRIAL_DAYS,
+  hashInviteToken,
+  isMemberRole,
+  normalizeEmail,
+  ownersUpdate,
+  teamIdForRequest,
+  teamName,
+} from "./model.js";
 import { writeRegionFor } from "./region.js";
 import { GSI1 } from "./schema.js";
 
@@ -108,43 +122,101 @@ export async function authorizeTeam(db: Db, userId: string, teamId: string): Pro
   return issue(teamId, userId, membership.role, meta.homeRegion as string);
 }
 
+/** The per-item reasons DynamoDB gave for cancelling a transaction, if it did. */
+function cancellationCodes(error: unknown): (string | undefined)[] | undefined {
+  if ((error as { name?: string } | null)?.name !== "TransactionCanceledException") return undefined;
+  return ((error as { CancellationReasons?: { Code?: string }[] }).CancellationReasons ?? []).map((r) => r.Code);
+}
+
+const DAY_SECONDS = 24 * 60 * 60;
+
 /**
  * Creates a team with the verified caller as its owner, and returns the owner's
- * context. The home region is the region this runs in (ADR 0010).
+ * context. The home region is the region this runs in (ADR 0010), and the
+ * team starts a TRIAL_DAYS free trial (ADR 0009).
+ *
+ * With a `requestKey` (the client's idempotency key), the team's ID is derived
+ * from the user and the key, so a double-click or a retry makes one team: the
+ * repeat finds the team it already made and returns it with `created: false`.
+ * A user can create TEAMS_PER_USER_PER_DAY teams a UTC day; the counter is in
+ * the user's own partition and moves in the same transaction.
  */
 export async function createTeam(
   db: Db,
   owner: { readonly userId: string; readonly email?: string },
-  input: { readonly name: string; readonly plan?: string; readonly seats?: number },
-): Promise<{ team: Team; context: TeamContext }> {
+  input: { readonly name: string; readonly plan?: string; readonly seats?: number; readonly requestKey?: string },
+  now = new Date(),
+): Promise<{ team: Team; context: TeamContext; created: boolean }> {
   const userId = id(owner.userId, "user ID");
-  const now = new Date().toISOString();
+  const name = teamName(input.name);
+  const teamId = input.requestKey === undefined ? randomUUID() : teamIdForRequest(userId, input.requestKey);
+  const createdAt = now.toISOString();
   const team: Team = {
     type: "team",
-    teamId: randomUUID(),
-    name: teamName(input.name),
+    teamId,
+    name,
     plan: input.plan ?? "trial",
     seats: input.seats ?? 1,
     status: "trialing",
     homeRegion: db.region,
+    trialEndsAt: new Date(now.getTime() + TRIAL_DAYS * DAY_SECONDS * 1000).toISOString(),
     owners: 1,
-    createdAt: now,
+    createdAt,
     version: 1,
   };
-  const member: Member = { type: "member", teamId: team.teamId, userId, role: "owner", email: owner.email, joinedAt: now };
-  const userTeam: UserTeam = { type: "userTeam", userId, teamId: team.teamId, teamName: team.name, role: "owner" };
-  await connection(db)
-    .doc.send(
+  const member: Member = { type: "member", teamId, userId, role: "owner", email: owner.email, joinedAt: createdAt };
+  const userTeam: UserTeam = { type: "userTeam", userId, teamId, teamName: team.name, role: "owner" };
+  const epoch = Math.floor(now.getTime() / 1000);
+  const write = () =>
+    connection(db).doc.send(
       new TransactWriteCommand({
         TransactItems: [
-          { Put: { TableName: db.tableName, Item: { ...keys.team(team.teamId), ...team }, ConditionExpression: "attribute_not_exists(PK)" } },
-          { Put: { TableName: db.tableName, Item: { ...keys.member(team.teamId, userId), ...member } } },
-          { Put: { TableName: db.tableName, Item: { ...keys.userTeam(userId, team.teamId), ...userTeam } } },
+          { Put: { TableName: db.tableName, Item: { ...keys.team(teamId), ...team }, ConditionExpression: "attribute_not_exists(PK)" } },
+          { Put: { TableName: db.tableName, Item: { ...keys.member(teamId, userId), ...member } } },
+          { Put: { TableName: db.tableName, Item: { ...keys.userTeam(userId, teamId), ...userTeam } } },
+          {
+            Update: {
+              TableName: db.tableName,
+              Key: keys.teamsCreated(userId, createdAt.slice(0, 10)),
+              UpdateExpression: "ADD #count :one SET #type = :type, expiresAt = :expires",
+              ConditionExpression: "attribute_not_exists(#count) OR #count < :max",
+              ExpressionAttributeNames: { "#count": "count", "#type": "type" },
+              ExpressionAttributeValues: { ":one": 1, ":max": TEAMS_PER_USER_PER_DAY, ":type": "teamsCreated", ":expires": epoch + 2 * DAY_SECONDS },
+            },
+          },
         ],
       }),
-    )
-    .catch(conflictOnConditionFailure("Team already exists"));
-  return { team, context: issue(team.teamId, userId, "owner", team.homeRegion) };
+    );
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await write();
+      return { team, context: issue(teamId, userId, "owner", team.homeRegion), created: true };
+    } catch (error) {
+      const codes = cancellationCodes(error);
+      // Two creates with the same key at once (a double-click): the loser
+      // retries, and then finds the winner's team
+      if (codes?.includes("TransactionConflict") && attempt < 4) {
+        await new Promise((resolve) => setTimeout(resolve, 25 * attempt));
+        continue;
+      }
+      if (codes?.[0] === "ConditionalCheckFailed") break;
+      if (codes?.[3] === "ConditionalCheckFailed") throw new LimitReachedError(`You can create up to ${TEAMS_PER_USER_PER_DAY} teams a day`);
+      return conflictOnConditionFailure("Someone else changed this; try again")(error);
+    }
+  }
+  // The team exists. With a request key, that's this user's earlier create:
+  // hand back what it made, as long as they're still a member.
+  if (input.requestKey !== undefined) {
+    const context = await authorizeTeam(db, userId, teamId).catch((e: unknown) => {
+      if (e instanceof ForbiddenError) return undefined;
+      throw e;
+    });
+    if (context) {
+      const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: keys.team(teamId), ConsistentRead: true }));
+      return { team: strip<Team>(Item) as Team, context, created: false };
+    }
+  }
+  throw new ConflictError("Team already exists");
 }
 
 /**
@@ -167,31 +239,49 @@ export async function findInvite(db: Db, token: string, now = new Date()): Promi
 }
 
 /**
- * Accepts an invite for the verified user: deletes it and adds the membership
- * in one transaction, so a token works once. Returns the new member's context.
+ * Accepts an invite for the verified user and returns the new member's
+ * context. `verifiedEmail` must be an address the identity provider has
+ * verified for this user: it has to match the invite's. The invite comes from
+ * findInviteForEmail (or findInvite); the transaction re-checks it against the
+ * stored item, so it works once, only before it expires, and only for that
+ * email. Deleting the invite and adding the membership happen together.
  */
 export async function acceptInvite(
   db: Db,
-  user: { readonly userId: string; readonly email?: string },
-  token: string,
+  user: { readonly userId: string; readonly verifiedEmail: string },
+  invite: Invite,
+  now = new Date(),
 ): Promise<TeamContext> {
   const userId = id(user.userId, "user ID");
-  const invite = await findInvite(db, token);
-  if (!invite) throw new InvalidInputError("This invite has expired or was already used");
-  const member: Member = { type: "member", teamId: invite.teamId, userId, role: invite.role, email: user.email, joinedAt: new Date().toISOString() };
+  const email = normalizeEmail(user.verifiedEmail);
+  if (invite.email !== email) throw new ForbiddenError("This invite is for another email address");
+  const member: Member = { type: "member", teamId: invite.teamId, userId, role: invite.role, email, joinedAt: now.toISOString() };
   const userTeam: UserTeam = { type: "userTeam", userId, teamId: invite.teamId, teamName: invite.teamName, role: invite.role };
-  await connection(db)
-    .doc.send(
+  try {
+    await connection(db).doc.send(
       new TransactWriteCommand({
         TransactItems: [
-          { Delete: { TableName: db.tableName, Key: keys.invite(invite.teamId, invite.inviteId), ConditionExpression: "attribute_exists(PK)" } },
+          {
+            Delete: {
+              TableName: db.tableName,
+              Key: keys.invite(invite.teamId, invite.inviteId),
+              ConditionExpression: "attribute_exists(PK) AND #type = :invite AND email = :email AND #role = :role AND expiresAt > :now",
+              ExpressionAttributeNames: { "#type": "type", "#role": "role" },
+              ExpressionAttributeValues: { ":invite": "invite", ":email": email, ":role": invite.role, ":now": Math.floor(now.getTime() / 1000) },
+            },
+          },
           { Put: { TableName: db.tableName, Item: { ...keys.member(invite.teamId, userId), ...member }, ConditionExpression: "attribute_not_exists(PK)" } },
           { Put: { TableName: db.tableName, Item: { ...keys.userTeam(userId, invite.teamId), ...userTeam } } },
           ...(invite.role === "owner" ? [ownersUpdate(db.tableName, invite.teamId, 1)] : []),
         ],
       }),
-    )
-    .catch(conflictOnConditionFailure("This invite was already used, or you're already a member"));
+    );
+  } catch (error) {
+    const codes = cancellationCodes(error);
+    if (codes?.[0] === "ConditionalCheckFailed") throw new NotFoundError("This invite has expired or was already used");
+    if (codes?.[1] === "ConditionalCheckFailed") throw new ConflictError("You're already a member of this team");
+    return conflictOnConditionFailure("Someone else changed this team; try again")(error);
+  }
   return authorizeTeam(db, userId, invite.teamId);
 }
 

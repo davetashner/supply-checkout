@@ -69,7 +69,7 @@ export interface ListOptions {
  * document's ID and version, and the team (which comes from the path, never
  * the body). A document can't contain them.
  */
-export const RESERVED_FIELDS: readonly string[] = ["PK", "SK", "GSI1PK", "GSI1SK", "type", "id", "key", "version", "teamId"];
+export const RESERVED_FIELDS: readonly string[] = ["PK", "SK", "GSI1PK", "GSI1SK", "GSI2PK", "GSI2SK", "type", "id", "key", "version", "teamId"];
 const RESERVED = new Set(RESERVED_FIELDS);
 
 /**

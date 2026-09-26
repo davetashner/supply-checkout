@@ -17,6 +17,7 @@ export {
   teamContextForStripeCustomer,
   type Role,
 } from "./team-context.js";
+export { normalizeEmail, TEAMS_PER_USER_PER_DAY, teamIdForRequest, TRIAL_DAYS } from "./model.js";
 export type { Page } from "./query.js";
 export * from "./teams.js";
 export * from "./invites.js";

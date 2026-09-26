@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Supply Checkout API
   version: 1.0.0
-  summary: Team data (products and sheets) and sign-in sessions for the web app.
+  summary: Team data (products and sheets), the signed-in user's teams and invites, and sign-in sessions for the web app.
   description: |
     The HTTP API in front of the data Lambdas (ADR 0006). The browser adapter
     (supply-checkout-a2b) implements the app's `window.claude.use("db")` on
@@ -29,9 +29,10 @@ info:
       app's existing handling applies unchanged: `invalid_argument` (403)
       makes it switch to view-only, `quota_exceeded` (413) shows "storage is
       full", and anything else shows the generic "didn't save" message.
-    - `teamId` is the team the user picked (the teams API, supply-checkout-l5y,
-      lists them). The server checks membership on every request; the body
-      never names a team.
+    - `teamId` is the team the user picked (`GET /me` lists them; see
+      [onboarding.md](onboarding.md) for first sign-in and the team switcher).
+      The server checks membership on every request; the body never names a
+      team.
     - Live updates (`onSnapshot` after the first load) come from AppSync Events
       (supply-checkout-dpc), not from polling these routes. Every write here is
       a single PutItem or DeleteItem on the document's item, so each produces
@@ -43,7 +44,7 @@ info:
     - A document is any JSON object up to 350,000 bytes (UTF-8 JSON), nested
       at most 16 levels, with numbers DynamoDB can store. These top-level
       fields are the server's and are refused in a body: `PK`, `SK`, `GSI1PK`,
-      `GSI1SK`, `type`, `id`, `key`, `version`, `teamId`. For products,
+      `GSI1SK`, `GSI2PK`, `GSI2SK`, `type`, `id`, `key`, `version`, `teamId`. For products,
       `stock` must be a number if present; for sheets, `date` must be a string
       and `items` an object.
     - `update` merges like the artifact runtime: where the patch and the
@@ -65,6 +66,12 @@ info:
     viewer reads; contributor and owner also write), and makes every DynamoDB
     call through a role session tagged with that team, whose IAM policy allows
     only that team's partition (`dynamodb:LeadingKeys`).
+
+    The account routes (`/me`, `POST /teams`, `POST /invites/{inviteId}/accept`)
+    need the same token. They name no team the caller is already in, so they
+    run on a separate role session tagged with the caller's `sub` and at most
+    one team and one invitee the request is entitled to (the new team, or the
+    team whose invite matched the caller's verified email).
 servers:
   - url: https://api.{envDomain}
     variables:
@@ -78,6 +85,8 @@ tags:
     description: The team's inventory, the app's `products` collection.
   - name: sheets
     description: Checkout sheets per client job, the app's `sheets` collection.
+  - name: account
+    description: The signed-in user's teams and pending invites, creating a team, and accepting an invite (first sign-in).
   - name: auth
     description: Sign-in sessions for the web app, with the refresh token in an HttpOnly cookie.
 paths:
@@ -224,6 +233,113 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
+  /me:
+    get:
+      tags: [account]
+      operationId: getMe
+      summary: The caller's teams (for the switcher) and pending invites.
+      description: |
+        Call after sign-in, before loading any team. `teams` lists every team
+        the caller is a member of, sorted by name. `invites` lists live
+        invites addressed to the caller's email, only if Cognito has verified
+        it, leaving out teams the caller is already in. The user is always the
+        token's `sub`: there is no way to ask about anyone else. Needs the
+        `aws.cognito.signin.user.admin` scope in the access token (the server
+        reads the email with Cognito's GetUser).
+      responses:
+        "200":
+          description: The caller's account.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, teams, invites]
+                properties:
+                  user:
+                    type: object
+                    required: [id, email, emailVerified]
+                    properties:
+                      id: { type: string, description: "The user's `sub`." }
+                      email: { type: [string, "null"] }
+                      emailVerified: { type: boolean, description: Invites are listed and accepted only when this is true. }
+                  teams:
+                    type: array
+                    items: { $ref: "#/components/schemas/Team" }
+                  invites:
+                    type: array
+                    items: { $ref: "#/components/schemas/Invite" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /teams:
+    post:
+      tags: [account]
+      operationId: createTeam
+      summary: Create a team, with the caller as its owner, on a 14-day trial.
+      description: |
+        The team's home region is the region that served the request (ADR
+        0010), and its free trial starts now (ADR 0009: 14 days, no card).
+        Idempotent: send a new `Idempotency-Key` for each "create team"
+        attempt, and the same one on retries. A repeat with the same key
+        returns the team the first request made (200) instead of making
+        another. A user can create 5 teams a day (429 `quota_exceeded`).
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: A new random value per attempt, e.g. `crypto.randomUUID()`, reused on retries and double-clicks.
+          schema: { type: string, pattern: "^[A-Za-z0-9_-]{8,128}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 200, description: Trimmed. }
+      responses:
+        "201": { $ref: "#/components/responses/TeamCreated" }
+        "200": { $ref: "#/components/responses/TeamCreated" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyTeams" }
+  /invites/{inviteId}/accept:
+    parameters:
+      - name: inviteId
+        in: path
+        required: true
+        description: "`id` from an invite in `GET /me`."
+        schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
+    post:
+      tags: [account]
+      operationId: acceptInvite
+      summary: Join the team that invited the caller's verified email address.
+      description: |
+        The invite must be addressed to the caller's email, which Cognito must
+        have verified; it must not have expired; and it works once. The
+        caller joins with the invite's role.
+      responses:
+        "200":
+          description: The team the caller joined.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [team]
+                properties:
+                  team: { $ref: "#/components/schemas/Team" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403":
+          description: "`permission_denied`: the caller's email isn't verified yet."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: "`not_found`: no such invite for the caller's email, or it expired or was already used."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: "`aborted`: the caller is already a member of the team."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /auth/session:
     post:
       tags: [auth]
@@ -370,6 +486,26 @@ components:
         id: { type: string, description: The product key or sheet ID. }
         version: { type: integer, minimum: 1 }
         data: { type: object, description: The document's fields as the app wrote them. }
+    Team:
+      type: object
+      required: [id, name, role, plan, status, trialEndsAt, homeRegion]
+      properties:
+        id: { type: string, description: "The `teamId` for the data routes." }
+        name: { type: string }
+        role: { type: string, enum: [owner, contributor, viewer], description: The caller's role in this team. }
+        plan: { type: string, description: "`trial` until the team subscribes." }
+        status: { type: string, description: "Subscription status (ADR 0009): `trialing`, `active`, `past_due`, `canceled`." }
+        trialEndsAt: { type: [string, "null"], format: date-time, description: When the free trial ends. }
+        homeRegion: { type: string, description: The region the team was created in (ADR 0010). }
+    Invite:
+      type: object
+      required: [id, teamId, teamName, role, expiresAt]
+      properties:
+        id: { type: string, description: "Accept with `POST /invites/{id}/accept`." }
+        teamId: { type: string }
+        teamName: { type: string }
+        role: { type: string, enum: [owner, contributor, viewer], description: The role the caller joins with. }
+        expiresAt: { type: string, format: date-time }
     Error:
       type: object
       required: [error]
@@ -413,6 +549,18 @@ components:
               accessToken: { type: string }
               idToken: { type: string }
               expiresIn: { type: integer, description: Seconds. }
+    TeamCreated:
+      description: The team. 201 when this request made it, 200 when an earlier request with the same `Idempotency-Key` did.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [team]
+            properties:
+              team: { $ref: "#/components/schemas/Team" }
+    TooManyTeams:
+      description: "`quota_exceeded`: the caller has created 5 teams today (UTC)."
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     BadRequest:
       description: "`bad_request`: malformed JSON, ID, field, query or cursor."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }

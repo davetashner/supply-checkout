@@ -1,0 +1,288 @@
+// The account API (first sign-in: /me, POST /teams, accepting invites) against
+// the in-memory table. Each request's Db handles only reach the partitions its
+// session tags would allow (account-db.ts), so a call outside them fails the
+// way IAM would refuse it. test/access-patterns.test.ts runs the same data
+// functions against DynamoDB Local in CI.
+
+import { beforeEach, describe, expect, it } from "vitest";
+import type { AccountScope, DbForAccount } from "../src/api/account-db.js";
+import { createAccountHandler } from "../src/api/account-handler.js";
+import type { CognitoUser } from "../src/api/cognito-user.js";
+import type { DataEvent } from "../src/api/data-handler.js";
+import { ApiError } from "../src/api/http.js";
+import { ACCOUNT_ROUTES, ACCOUNT_TAG_UNUSED, routeKey } from "../src/api/routes.js";
+import { authorizeTeam, createInvite, hashEmail, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS } from "../src/data/index.js";
+import type { Observability } from "../src/observability/index.js";
+import { REGION } from "./helpers.js";
+import { MemoryTable } from "./memory-table.js";
+
+const ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_pool";
+const DAY = 86400_000;
+const OWNER = "user-owner";
+const PAT = "user-pat";
+const MALLORY = "user-mallory";
+const UNVERIFIED = "user-unverified";
+
+const USERS: Record<string, CognitoUser> = {
+  [OWNER]: { sub: OWNER, email: "owner@example.com", emailVerified: true },
+  [PAT]: { sub: PAT, email: "Pat@Example.com", emailVerified: true },
+  [MALLORY]: { sub: MALLORY, email: "mallory@example.com", emailVerified: true },
+  // Signed up with Pat's address but never confirmed it
+  [UNVERIFIED]: { sub: UNVERIFIED, email: "pat@example.com", emailVerified: false },
+};
+
+let table: MemoryTable;
+let now: number;
+let counts: Record<string, number>;
+let scopes: AccountScope[];
+let cognitoDown: boolean;
+let handler: ReturnType<typeof createAccountHandler>;
+
+function fakeObservability(): Observability {
+  counts = {};
+  return {
+    region: REGION,
+    logger: { info: () => {}, warn: () => {}, error: () => {}, addContext: () => {} } as unknown as Observability["logger"],
+    count: (metric, value = 1) => {
+      counts[metric] = (counts[metric] ?? 0) + value;
+    },
+    flush: () => {},
+  };
+}
+
+beforeEach(() => {
+  now = Date.now();
+  cognitoDown = false;
+  scopes = [];
+  table = new MemoryTable();
+  table.seedTeam("team-a", { [OWNER]: "owner", [PAT]: "contributor" });
+  table.put({ PK: `USER#${PAT}`, SK: "TEAM#team-a", type: "userTeam", userId: PAT, teamId: "team-a", teamName: "team-a", role: "contributor" });
+  table.put({ PK: `USER#${OWNER}`, SK: "TEAM#team-a", type: "userTeam", userId: OWNER, teamId: "team-a", teamName: "team-a", role: "owner" });
+  // Like accountScopedDbs: each handle reaches only its session tags' partitions
+  const dbFor: DbForAccount = (scope) => {
+    scopes.push(scope);
+    return table.scoped([`USER#${scope.userId}`, `TEAM#${scope.teamId ?? ACCOUNT_TAG_UNUSED}`, `INVITEE#${scope.invitee ?? ACCOUNT_TAG_UNUSED}`]);
+  };
+  const userInfo = async (token: string) => {
+    if (cognitoDown) throw new Error("GetUser failed: 500");
+    const user = USERS[token.replace(/^token-/, "")];
+    if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
+    return user;
+  };
+  handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs: fakeObservability(), now: () => now });
+});
+
+interface Request {
+  readonly user?: string;
+  readonly claims?: Record<string, unknown>;
+  readonly headers?: Record<string, string>;
+  readonly body?: unknown;
+  readonly query?: Record<string, string>;
+}
+
+function event(method: string, path: string, request: Request = {}): DataEvent {
+  const segments = path.split("/");
+  const route = ACCOUNT_ROUTES.find((r) => {
+    const parts = r.path.split("/");
+    return r.method === method && parts.length === segments.length && parts.every((p, i) => p.startsWith("{") || p === segments[i]);
+  });
+  const user = request.user ?? OWNER;
+  const claims = request.claims ?? { sub: user, token_use: "access", exp: String(Math.floor(now / 1000) + 600), iss: ISSUER, client_id: "web" };
+  const pathParameters: Record<string, string> = {};
+  route?.path.split("/").forEach((p, i) => {
+    if (p.startsWith("{")) pathParameters[p.slice(1, -1)] = segments[i] as string;
+  });
+  return {
+    version: "2.0",
+    routeKey: route ? routeKey(route) : `${method} ${path}`,
+    rawPath: path,
+    rawQueryString: "",
+    headers: { authorization: `Bearer token-${user}`, ...request.headers },
+    queryStringParameters: request.query,
+    pathParameters,
+    body: request.body === undefined ? undefined : JSON.stringify(request.body),
+    isBase64Encoded: false,
+    requestContext: {
+      http: { method, path, protocol: "HTTP/1.1", sourceIp: "192.0.2.1", userAgent: "test" },
+      authorizer: { principalId: "", integrationLatency: 0, jwt: { claims, scopes: null } },
+    },
+  } as unknown as DataEvent;
+}
+
+async function call(method: string, path: string, request: Request = {}) {
+  const response = await handler(event(method, path, request));
+  return { status: response.statusCode, body: response.body ? JSON.parse(response.body) : undefined };
+}
+
+const create = (user: string, name: string, key: string) => call("POST", "/teams", { user, body: { name }, headers: { "Idempotency-Key": key } });
+
+/** An invite from team-a's owner, made through the data layer (the invite route is supply-checkout-5tp). */
+async function invite(email: string, options: { role?: "contributor" | "viewer" | "owner"; ttlDays?: number; team?: string } = {}) {
+  const team = options.team ?? "team-a";
+  const owner = await authorizeTeam(table.db(), OWNER, team);
+  return (await createInvite(table.db(), owner, { email, role: options.role ?? "viewer", ttlDays: options.ttlDays })).invite;
+}
+
+describe("POST /teams", () => {
+  it("creates a team on a 14-day trial with the caller as its only owner, in this region", async () => {
+    const { status, body } = await create(MALLORY, "  Mallory Cleaning  ", "create-key-1");
+    expect(status).toBe(201);
+    expect(body.team).toEqual({
+      id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      name: "Mallory Cleaning",
+      role: "owner",
+      plan: "trial",
+      status: "trialing",
+      trialEndsAt: new Date(now + TRIAL_DAYS * DAY).toISOString(),
+      homeRegion: REGION,
+    });
+    const id = body.team.id as string;
+    expect(table.get(`TEAM#${id}`, "META")).toMatchObject({ owners: 1, homeRegion: REGION, createdAt: new Date(now).toISOString() });
+    expect(table.get(`TEAM#${id}`, `MEMBER#${MALLORY}`)).toMatchObject({ role: "owner", email: "mallory@example.com" });
+    expect(table.get(`USER#${MALLORY}`, `TEAM#${id}`)).toMatchObject({ role: "owner", teamName: "Mallory Cleaning" });
+    expect(counts.SignUps).toBe(1);
+    // The new owner can use the team's data routes at once
+    expect((await authorizeTeam(table.db(id), MALLORY, id)).role).toBe("owner");
+  });
+
+  it("makes one team from a double submit, and another only with a new key", async () => {
+    const [a, b] = await Promise.all([create(MALLORY, "Echo", "double-click"), create(MALLORY, "Echo", "double-click")]);
+    expect([a.status, b.status].sort()).toEqual([200, 201]);
+    expect(a.body.team).toEqual(b.body.team);
+    expect((await create(MALLORY, "Echo", "double-click")).status).toBe(200);
+    expect((await call("GET", "/me", { user: MALLORY })).body.teams).toHaveLength(1);
+    expect(counts.SignUps).toBe(1);
+    const other = await create(MALLORY, "Echo", "second-team");
+    expect(other.status).toBe(201);
+    expect(other.body.team.id).not.toBe(a.body.team.id);
+  });
+
+  it("needs a well-formed idempotency key and a name, and nothing else", async () => {
+    for (const headers of [{}, { "Idempotency-Key": "short" }, { "Idempotency-Key": "has spaces in it" }] as Record<string, string>[]) {
+      expect(await call("POST", "/teams", { user: MALLORY, body: { name: "Echo" }, headers }), JSON.stringify(headers)).toMatchObject({ status: 400, body: { error: { code: "bad_request" } } });
+    }
+    for (const body of [{}, { name: " " }, { name: "x".repeat(201) }, { name: "Echo", teamId: "team-a" }, { name: "Echo", owner: OWNER }]) {
+      expect((await call("POST", "/teams", { user: MALLORY, body, headers: { "Idempotency-Key": "valid-key-1" } })).status, JSON.stringify(body)).toBe(400);
+    }
+    expect(scopes.every((s) => s.userId === MALLORY)).toBe(true);
+  });
+
+  it("limits how many teams a user creates a day", async () => {
+    for (let i = 0; i < TEAMS_PER_USER_PER_DAY; i++) expect((await create(MALLORY, `Team ${i}`, `limit-key-${i}`)).status).toBe(201);
+    expect(await create(MALLORY, "One more", "limit-key-x")).toMatchObject({ status: 429, body: { error: { code: "quota_exceeded" } } });
+    // Someone else can still create one
+    expect((await create(PAT, "Pat's", "limit-key-x")).status).toBe(201);
+  });
+});
+
+describe("GET /me", () => {
+  it("lists every team the caller is in, with role and trial status, for the switcher", async () => {
+    const created = (await create(PAT, "Bravo Co", "pat-team-1")).body.team;
+    const { status, body } = await call("GET", "/me", { user: PAT });
+    expect(status).toBe(200);
+    expect(body.user).toEqual({ id: PAT, email: "Pat@Example.com", emailVerified: true });
+    expect(body.teams).toEqual([
+      created,
+      { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION },
+    ].map((t) => JSON.parse(JSON.stringify(t))));
+    expect(body.invites).toEqual([]);
+  });
+
+  it("shows a new user no teams and no invites", async () => {
+    expect(await call("GET", "/me", { user: MALLORY })).toEqual({
+      status: 200,
+      body: { user: { id: MALLORY, email: "mallory@example.com", emailVerified: true }, teams: [], invites: [] },
+    });
+  });
+
+  it("shows only the caller's own teams and invites, whatever the request says", async () => {
+    await invite("owner-two@example.com");
+    const mine = await call("GET", "/me", { user: MALLORY, query: { userId: OWNER, email: "owner@example.com" } });
+    expect(mine.body.teams).toEqual([]);
+    expect(mine.body.user.id).toBe(MALLORY);
+    // Someone else's token for the same sub can't happen, but if Cognito ever disagreed with the JWT, fail closed
+    expect((await call("GET", "/me", { user: MALLORY, headers: { authorization: `Bearer token-${OWNER}` } })).status).toBe(401);
+    // Every session was for the caller
+    expect(scopes.length).toBeGreaterThan(0);
+    expect(scopes.every((s) => s.userId === MALLORY)).toBe(true);
+  });
+
+  it("skips a switcher row for a team the caller was removed from", async () => {
+    table.put({ PK: `USER#${MALLORY}`, SK: "TEAM#team-a", type: "userTeam", userId: MALLORY, teamId: "team-a", teamName: "team-a", role: "viewer" });
+    expect((await call("GET", "/me", { user: MALLORY })).body.teams).toEqual([]);
+  });
+
+  it("lists live invites for the caller's verified email only", async () => {
+    await table.seedTeam("team-b", { [OWNER]: "owner" });
+    const fromA = await invite("pat@example.com", { role: "contributor" });
+    const fromB = await invite("PAT@example.com", { team: "team-b" });
+    await invite("someone@example.com", { team: "team-b" });
+    await invite("mallory@example.com", { ttlDays: 1, team: "team-b" });
+
+    const pat = (await call("GET", "/me", { user: PAT })).body;
+    // Pat is already in team-a, so that invite isn't offered
+    expect(pat.invites).toEqual([
+      { id: fromB.inviteId, teamId: "team-b", teamName: "team-b", role: "viewer", expiresAt: new Date(fromB.expiresAt * 1000).toISOString() },
+    ]);
+    expect(fromA.teamId).toBe("team-a");
+    // Same address, not verified: nothing, and no invitee session at all
+    const unverified = (await call("GET", "/me", { user: UNVERIFIED })).body;
+    expect(unverified).toMatchObject({ user: { emailVerified: false }, invites: [] });
+    expect(scopes.filter((s) => s.userId === UNVERIFIED).every((s) => s.invitee === undefined)).toBe(true);
+    // Expired invites aren't listed
+    expect((await call("GET", "/me", { user: MALLORY })).body.invites).toHaveLength(1);
+    now += 2 * DAY;
+    expect((await call("GET", "/me", { user: MALLORY })).body.invites).toEqual([]);
+  });
+});
+
+describe("POST /invites/{inviteId}/accept", () => {
+  it("adds the caller to the team with the invited role, once", async () => {
+    await table.seedTeam("team-b", { [OWNER]: "owner" });
+    const { inviteId } = await invite("pat@example.com", { team: "team-b", role: "owner" });
+    const accepted = await call("POST", `/invites/${inviteId}/accept`, { user: PAT });
+    expect(accepted).toMatchObject({ status: 200, body: { team: { id: "team-b", role: "owner" } } });
+    expect(table.get("TEAM#team-b", `MEMBER#${PAT}`)).toMatchObject({ role: "owner", email: "pat@example.com" });
+    expect(table.get("TEAM#team-b", "META")?.owners).toBe(1);
+    expect(counts.InvitesAccepted).toBe(1);
+    const me = (await call("GET", "/me", { user: PAT })).body;
+    expect(me.teams.map((t: { id: string }) => t.id)).toEqual(["team-a", "team-b"]);
+    expect(me.invites).toEqual([]);
+    // Used: it's gone
+    expect(await call("POST", `/invites/${inviteId}/accept`, { user: PAT })).toMatchObject({ status: 404, body: { error: { code: "not_found" } } });
+  });
+
+  it("refuses another email address, an unverified one, and an expired invite", async () => {
+    await table.seedTeam("team-b", { [OWNER]: "owner" });
+    const { inviteId } = await invite("pat@example.com", { team: "team-b", ttlDays: 1 });
+    expect((await call("POST", `/invites/${inviteId}/accept`, { user: MALLORY })).status).toBe(404);
+    expect(await call("POST", `/invites/${inviteId}/accept`, { user: UNVERIFIED })).toMatchObject({ status: 403, body: { error: { code: "permission_denied" } } });
+    now += 2 * DAY;
+    expect((await call("POST", `/invites/${inviteId}/accept`, { user: PAT })).status).toBe(404);
+    for (const user of [MALLORY, UNVERIFIED, PAT]) expect(table.get("TEAM#team-b", `MEMBER#${user}`)).toBeUndefined();
+    // Mallory's lookups ran on her own invitee partition, never Pat's
+    expect(scopes.filter((s) => s.userId === MALLORY && s.invitee).map((s) => s.invitee)).toEqual([hashEmail("mallory@example.com")]);
+    expect(scopes.some((s) => s.userId === MALLORY && s.teamId === "team-b")).toBe(false);
+  });
+
+  it("answers 409 to someone already in the team, and 400 to a malformed ID", async () => {
+    const { inviteId } = await invite("pat@example.com");
+    expect(await call("POST", `/invites/${inviteId}/accept`, { user: PAT })).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
+    expect(table.get("TEAM#team-a", `INVITE#${inviteId}`)).toBeDefined();
+    expect((await call("POST", "/invites/not%20an%20id/accept", { user: PAT })).status).toBe(400);
+  });
+});
+
+describe("authentication", () => {
+  it("requires an unexpired access token from our issuer, and a working Cognito", async () => {
+    const claims = (over: Record<string, unknown>) => ({ sub: PAT, token_use: "access", exp: String(Math.floor(now / 1000) + 600), iss: ISSUER, ...over });
+    for (const over of [{ token_use: "id" }, { exp: String(Math.floor(now / 1000) - 1) }, { iss: "https://cognito-idp.test-local-1.amazonaws.com/other" }, { sub: "bad sub" }]) {
+      expect(await call("GET", "/me", { user: PAT, claims: claims(over) }), JSON.stringify(over)).toMatchObject({ status: 401, body: { error: { code: "unauthenticated" } } });
+    }
+    expect((await call("GET", "/me", { user: PAT, headers: { authorization: "" } })).status).toBe(401);
+    expect((await call("GET", "/me", { user: "user-unknown" })).status).toBe(401);
+    cognitoDown = true;
+    expect(await call("GET", "/me", { user: PAT })).toMatchObject({ status: 500, body: { error: { code: "internal" } } });
+    expect((await call("GET", "/nope")).status).toBe(404);
+  });
+});

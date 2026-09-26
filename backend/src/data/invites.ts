@@ -1,18 +1,20 @@
 // Invites (ADR 0005, ADR 0007). Only a SHA-256 hash of the token is stored;
-// GSI1 finds the invite from the hash when someone opens the link. Accepting
-// an invite issues a context, so findInvite and acceptInvite live in
-// team-context.ts.
+// GSI1 finds the invite from the hash when someone opens the link. GSI2 finds
+// the invites for a verified email address, for the "pending invites" list at
+// first sign-in. Accepting an invite issues a context, so findInvite and
+// acceptInvite live in team-context.ts.
 
 import { randomBytes, randomUUID } from "node:crypto";
-import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { ConflictError, InvalidInputError } from "./errors.js";
-import { gsi1, keys, prefixes, teamPartition } from "./keys.js";
-import { type Invite, type MemberRole, hashInviteToken, memberRole } from "./model.js";
+import { gsi1, gsi2, id, inviteePartition, keys, prefixes, strip, teamPartition } from "./keys.js";
+import { type Invite, type MemberRole, hashEmail, hashInviteToken, memberRole, normalizeEmail } from "./model.js";
 import { queryAll } from "./query.js";
+import { GSI2 } from "./schema.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
-export { hashInviteToken } from "./model.js";
+export { hashEmail, hashInviteToken } from "./model.js";
 
 const DAY = 24 * 60 * 60;
 export const INVITE_TTL_DAYS = { min: 1, max: 30, default: 7 } as const;
@@ -28,9 +30,7 @@ export async function createInvite(
   input: { readonly email: string; readonly role: MemberRole; readonly ttlDays?: number },
 ): Promise<{ invite: Invite; token: string }> {
   writable(db, ctx, "owner");
-  if (typeof input.email !== "string" || !/^[^\s@]+@[^\s@]+$/.test(input.email) || input.email.length > 254) {
-    throw new InvalidInputError("Invalid email");
-  }
+  const email = normalizeEmail(input.email);
   const ttlDays = input.ttlDays ?? INVITE_TTL_DAYS.default;
   if (!Number.isInteger(ttlDays) || ttlDays < INVITE_TTL_DAYS.min || ttlDays > INVITE_TTL_DAYS.max) {
     throw new InvalidInputError(`Invites last ${INVITE_TTL_DAYS.min} to ${INVITE_TTL_DAYS.max} days`);
@@ -48,7 +48,7 @@ export async function createInvite(
     teamId: ctx.teamId,
     teamName: team.name as string,
     inviteId: randomUUID(),
-    email: input.email.toLowerCase(),
+    email,
     role,
     invitedBy: ctx.userId,
     createdAt: new Date(now).toISOString(),
@@ -57,7 +57,7 @@ export async function createInvite(
   await doc.send(
     new PutCommand({
       TableName: db.tableName,
-      Item: { ...keys.invite(ctx.teamId, invite.inviteId), ...gsi1.inviteToken(hashInviteToken(token)), ...invite },
+      Item: { ...keys.invite(ctx.teamId, invite.inviteId), ...gsi1.inviteToken(hashInviteToken(token)), ...gsi2.invitee(hashEmail(email), invite.inviteId), ...invite },
       ConditionExpression: "attribute_not_exists(PK)",
     }),
   );
@@ -72,4 +72,44 @@ export async function listInvites(db: Db, ctx: TeamContext): Promise<Invite[]> {
 export async function revokeInvite(db: Db, ctx: TeamContext, inviteId: string): Promise<void> {
   writable(db, ctx, "owner");
   await connection(db).doc.send(new DeleteCommand({ TableName: db.tableName, Key: keys.invite(ctx.teamId, inviteId) }));
+}
+
+/** An unexpired invite item. (Only invites carry GSI2 keys, and documents can't set them; the type check is belt and braces.) */
+const live = (invite: Invite | undefined, now: Date): invite is Invite =>
+  invite !== undefined && invite.type === "invite" && typeof invite.expiresAt === "number" && invite.expiresAt > now.getTime() / 1000;
+
+/**
+ * The live invites for an email address, across teams, for the signed-in
+ * user's first-sign-in screen. Pass only an email the identity provider has
+ * verified: the address is what entitles the caller to these invites.
+ * Reads GSI2, so an invite made a moment ago may not show yet.
+ */
+export async function listInvitesForEmail(db: Db, verifiedEmail: string, now = new Date()): Promise<Invite[]> {
+  const pk = inviteePartition(hashEmail(verifiedEmail));
+  const out: Invite[] = [];
+  let ExclusiveStartKey: Record<string, unknown> | undefined;
+  do {
+    const page = await connection(db).doc.send(
+      new QueryCommand({ TableName: db.tableName, IndexName: GSI2, KeyConditionExpression: "GSI2PK = :pk", ExpressionAttributeValues: { ":pk": pk }, ExclusiveStartKey }),
+    );
+    for (const item of page.Items ?? []) out.push(strip<Invite>(item) as Invite);
+    ExclusiveStartKey = page.LastEvaluatedKey;
+  } while (ExclusiveStartKey);
+  // TTL deletion can lag by days, so check expiry here too
+  return out.filter((invite) => live(invite, now) && invite.email === normalizeEmail(verifiedEmail));
+}
+
+/** One live invite for a verified email address, by its ID, or undefined. */
+export async function findInviteForEmail(db: Db, verifiedEmail: string, inviteId: string, now = new Date()): Promise<Invite | undefined> {
+  const { GSI2PK, GSI2SK } = gsi2.invitee(hashEmail(verifiedEmail), id(inviteId, "invite ID"));
+  const { Items } = await connection(db).doc.send(
+    new QueryCommand({
+      TableName: db.tableName,
+      IndexName: GSI2,
+      KeyConditionExpression: "GSI2PK = :pk AND GSI2SK = :sk",
+      ExpressionAttributeValues: { ":pk": GSI2PK, ":sk": GSI2SK },
+    }),
+  );
+  const invite = strip<Invite>(Items?.[0]);
+  return live(invite, now) && invite.email === normalizeEmail(verifiedEmail) ? invite : undefined;
 }

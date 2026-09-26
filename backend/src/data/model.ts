@@ -20,6 +20,8 @@ export interface Team {
   readonly status: string;
   /** Region the team was created in; its writes go there once there are two (ADR 0010). */
   readonly homeRegion: string;
+  /** When the free trial ends (ISO 8601): TRIAL_DAYS after creation (ADR 0009). Absent on teams made before trials. */
+  readonly trialEndsAt?: string;
   /**
    * How many members are owners. Every change to an owner membership updates it
    * in the same transaction, with the condition `owners > 1` on a decrease, so
@@ -80,6 +82,43 @@ export function teamName(value: unknown): string {
 
 export function hashInviteToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+/** The free trial every new team starts with: 14 days, no card (ADR 0009). */
+export const TRIAL_DAYS = 14;
+
+/** Teams one user may create per UTC day: a guard against scripts and runaway retries. */
+export const TEAMS_PER_USER_PER_DAY = 5;
+
+/** An email address as invites store and match it: trimmed and lowercased. */
+export function normalizeEmail(value: unknown): string {
+  if (typeof value !== "string") throw new InvalidInputError("Invalid email");
+  const email = value.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+$/.test(email) || email.length > 254) throw new InvalidInputError("Invalid email");
+  return email;
+}
+
+/**
+ * The GSI2 partition value for an email: its SHA-256, so the address itself
+ * isn't a key, and so it fits an IAM session tag (which can't hold every
+ * character an email address can).
+ */
+export function hashEmail(email: string): string {
+  return createHash("sha256").update(normalizeEmail(email), "utf8").digest("hex");
+}
+
+/** A client's idempotency key for creating a team. */
+const REQUEST_KEY = /^[A-Za-z0-9_-]{8,128}$/;
+
+/**
+ * The ID of the team a user's create request makes. It is derived from the
+ * user and their idempotency key, so a double-click or a retry names the same
+ * team, and the create's `attribute_not_exists` condition makes one team.
+ */
+export function teamIdForRequest(userId: string, requestKey: string): string {
+  if (typeof requestKey !== "string" || !REQUEST_KEY.test(requestKey)) throw new InvalidInputError("Invalid idempotency key");
+  const h = createHash("sha256").update(`team\n${userId}\n${requestKey}`, "utf8").digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
 
 /**

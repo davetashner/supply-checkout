@@ -1,7 +1,7 @@
 import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { AUTH_ROUTES, DATA_ROUTES, routeKey } from "../../backend/src/api/routes.js";
+import { ACCOUNT_ROUTES, AUTH_ROUTES, DATA_ROUTES, routeKey } from "../../backend/src/api/routes.js";
 import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
 import { apiOutputParameters } from "../lib/stacks/api-stack.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
@@ -23,19 +23,19 @@ type Resource = { Properties: Record<string, unknown>; [k: string]: unknown };
 const resources = (t: Template, type: string) => Object.entries(t.findResources(type)) as [string, Resource][];
 
 describe("HTTP API routes", () => {
-  it("serves every data and auth route, and no others", () => {
+  it("serves every data, account and auth route, and no others", () => {
     const { template } = api();
     const keys = resources(template, "AWS::ApiGatewayV2::Route").map(([, r]) => r.Properties.RouteKey).sort();
-    expect(keys).toEqual([...DATA_ROUTES, ...AUTH_ROUTES].map(routeKey).sort());
+    expect(keys).toEqual([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...AUTH_ROUTES].map(routeKey).sort());
   });
 
-  it("puts the Cognito JWT authorizer on every data route and none on the auth routes", () => {
+  it("puts the Cognito JWT authorizer on every data and account route and none on the auth routes", () => {
     const { template } = api();
     const [[authorizerId, authorizer]] = resources(template, "AWS::ApiGatewayV2::Authorizer") as [[string, Resource]];
     expect(authorizer.Properties).toMatchObject({ AuthorizerType: "JWT", IdentitySource: ["$request.header.Authorization"] });
     for (const [, route] of resources(template, "AWS::ApiGatewayV2::Route")) {
       const key = route.Properties.RouteKey as string;
-      if (DATA_ROUTES.some((r) => routeKey(r) === key)) {
+      if ([...DATA_ROUTES, ...ACCOUNT_ROUTES].some((r) => routeKey(r) === key)) {
         expect(route.Properties, key).toMatchObject({ AuthorizationType: "JWT", AuthorizerId: { Ref: authorizerId } });
       } else {
         expect(route.Properties.AuthorizationType ?? "NONE", key).toBe("NONE");
@@ -43,18 +43,19 @@ describe("HTTP API routes", () => {
     }
   });
 
-  it("routes data to the data function's live alias and auth to the auth function's", () => {
+  it("routes data, account and auth requests to their functions' live aliases", () => {
     const { template } = api();
     const integrations = resources(template, "AWS::ApiGatewayV2::Integration").map(([, r]) => JSON.stringify(r.Properties.IntegrationUri));
-    expect(integrations).toHaveLength(2);
+    expect(integrations).toHaveLength(3);
     expect(integrations.some((i) => /DataFunctionLive/.test(i))).toBe(true);
+    expect(integrations.some((i) => /AccountFunctionLive/.test(i))).toBe(true);
     expect(integrations.some((i) => /AuthFunctionLive/.test(i))).toBe(true);
-    template.resourcePropertiesCountIs("AWS::Lambda::Alias", { Name: "live" }, 2);
+    template.resourcePropertiesCountIs("AWS::Lambda::Alias", { Name: "live" }, 3);
   });
 
   it("allows only the app's origin (and localhost outside prod), with credentials for the cookie", () => {
     const cors = (t: Template) => (resources(t, "AWS::ApiGatewayV2::Api")[0]?.[1].Properties.CorsConfiguration ?? {}) as Record<string, unknown>;
-    expect(cors(api().template)).toMatchObject({ AllowOrigins: ["https://app.supplycheckout.com"], AllowCredentials: true, AllowHeaders: ["authorization", "content-type"] });
+    expect(cors(api().template)).toMatchObject({ AllowOrigins: ["https://app.supplycheckout.com"], AllowCredentials: true, AllowHeaders: ["authorization", "content-type", "idempotency-key"] });
     const staging = api(WEST, {}, { envName: "staging", regions: [WEST], primaryRegion: WEST }).template;
     expect(cors(staging).AllowOrigins).toEqual(["https://app.staging.supplycheckout.com", "http://localhost:5173"]);
   });
@@ -96,7 +97,7 @@ describe("functions", () => {
   it("run Node.js 24 on arm64, with the data function at 1 GB", () => {
     const { template } = api();
     const fns = resources(template, "AWS::Lambda::Function").map(([id, r]) => [id, r.Properties] as const);
-    expect(fns).toHaveLength(2);
+    expect(fns).toHaveLength(3);
     for (const [, p] of fns) expect(p).toMatchObject({ Runtime: "nodejs24.x", Architectures: ["arm64"], Timeout: 10, TracingConfig: { Mode: "Active" } });
     expect(fns.find(([id]) => id.startsWith("DataFunction"))?.[1].MemorySize).toBe(1024);
   });
@@ -107,10 +108,15 @@ describe("functions", () => {
       (resources(template, "AWS::Lambda::Function").find(([id]) => id.startsWith(prefix))?.[1].Properties.Environment as { Variables: Record<string, unknown> })
         .Variables;
     expect(env("DataFunction")).toMatchObject({ TABLE_NAME: "supply-checkout-prod-app", DATA_ROLE_ARN: { "Fn::GetAtt": [expect.stringMatching(/^DataAccessRole/), "Arn"] } });
+    expect(env("AccountFunction")).toMatchObject({
+      TABLE_NAME: "supply-checkout-prod-app",
+      ISSUER_URL: { Ref: expect.stringMatching(/issuerurl/i) },
+      ACCOUNT_ROLE_ARN: { "Fn::GetAtt": [expect.stringMatching(/^AccountAccessRole/), "Arn"] },
+    });
     expect(env("AuthFunction")).toMatchObject({ AUTH_URL: { Ref: expect.stringMatching(/authurl/i) }, CLIENT_ID: { Ref: expect.stringMatching(/webclientid/i) }, ALLOWED_ORIGINS: "https://app.supplycheckout.com" });
   });
 
-  it("don't give either function's own role any DynamoDB access", () => {
+  it("don't give any function's own role DynamoDB access", () => {
     const { template } = api();
     for (const [id, policy] of resources(template, "AWS::IAM::Policy")) {
       expect(JSON.stringify(policy.Properties.PolicyDocument), id).not.toContain("dynamodb:");
@@ -163,5 +169,59 @@ describe("data-access role (LeadingKeys)", () => {
         ]),
       },
     });
+  });
+});
+
+describe("account-access role (LeadingKeys)", () => {
+  const role = () => {
+    const { template } = api();
+    const [[, r]] = resources(template, "AWS::IAM::Role").filter(([id]) => id.startsWith("AccountAccessRole")) as [[string, Resource]];
+    return r.Properties as { AssumeRolePolicyDocument: { Statement: Record<string, unknown>[] }; Policies: { PolicyDocument: { Statement: Record<string, unknown>[] } }[]; MaxSessionDuration: number };
+  };
+
+  it("can be assumed only by the account function's role, with the user, team and invitee tags and no others", () => {
+    const r = role();
+    expect(r.MaxSessionDuration).toBe(3600);
+    const [trust, ...rest] = r.AssumeRolePolicyDocument.Statement;
+    expect(rest).toEqual([]);
+    expect(trust).toMatchObject({
+      Effect: "Allow",
+      Action: ["sts:AssumeRole", "sts:TagSession"],
+      Principal: { AWS: { "Fn::GetAtt": [expect.stringMatching(/^AccountFunctionRole/), "Arn"] } },
+      Condition: {
+        StringLike: { "aws:RequestTag/userId": "?*", "aws:RequestTag/teamId": "?*", "aws:RequestTag/invitee": "?*" },
+        "ForAllValues:StringEquals": { "aws:TagKeys": ["userId", "teamId", "invitee"] },
+      },
+    });
+  });
+
+  it("reaches only the tagged user, team and invitee partitions, with item, transaction and query actions and no scan", () => {
+    const [policy] = role().Policies;
+    const [items, kms] = policy?.PolicyDocument.Statement ?? [];
+    expect(items).toMatchObject({
+      Sid: "CallerItemsOnly",
+      Effect: "Allow",
+      Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:Query"],
+      Condition: {
+        "ForAllValues:StringEquals": {
+          "dynamodb:LeadingKeys": ["USER#${aws:PrincipalTag/userId}", "TEAM#${aws:PrincipalTag/teamId}", "INVITEE#${aws:PrincipalTag/invitee}"],
+        },
+      },
+    });
+    const resourcesJson = JSON.stringify(items?.Resource);
+    expect(resourcesJson).toContain(":table/supply-checkout-prod-app");
+    expect(resourcesJson).toContain("/index/GSI2");
+    expect(resourcesJson).not.toContain("GSI1");
+    expect(resourcesJson).not.toContain("*");
+    expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } });
+  });
+
+  it("is the only thing the account function may assume, and the data function can't", () => {
+    const { template } = api();
+    const assumes = resources(template, "AWS::IAM::Policy").flatMap(([id, p]) =>
+      (p.Properties.PolicyDocument as { Statement: { Action: unknown; Resource: unknown }[] }).Statement.filter((s) => JSON.stringify(s.Action).includes("sts:AssumeRole")).map((s) => [id, JSON.stringify(s.Resource)]),
+    );
+    expect(assumes.filter(([, r]) => /AccountAccessRole/.test(r as string)).map(([id]) => id)).toEqual([expect.stringMatching(/^AccountFunctionRole/)]);
+    expect(assumes.filter(([, r]) => /DataAccessRole/.test(r as string)).map(([id]) => id)).toEqual([expect.stringMatching(/^DataFunctionRole/)]);
   });
 });

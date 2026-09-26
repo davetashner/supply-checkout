@@ -7,6 +7,7 @@ import { InvalidInputError } from "./errors.js";
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
+const HASH = /^[0-9a-f]{64}$/;
 // eslint-disable-next-line no-control-regex -- rejecting control characters is the point
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
@@ -61,6 +62,8 @@ export const keys = {
     SK: `AUDIT#${ts}#${id(eventId, "event ID")}`,
   }),
   stripe: (customerId: string) => ({ PK: `STRIPE#${id(customerId, "Stripe customer ID")}`, SK: "TEAM" }),
+  /** How many teams the user created on a UTC day (YYYY-MM-DD): the per-user rate limit. */
+  teamsCreated: (userId: string, day: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: `LIMIT#TEAMS#${date(day)}` }),
   webhook: (eventId: string) => ({ PK: `WEBHOOK#${id(eventId, "webhook event ID")}`, SK: "DONE" }),
 };
 
@@ -85,6 +88,17 @@ export const gsi1 = {
   inviteToken: (tokenHash: string) => ({ GSI1PK: `INVITE#${tokenHash}`, GSI1SK: "INVITE" }),
 };
 
+/** GSI2 keys: invites by the invitee's hashed email. */
+export const gsi2 = {
+  invitee: (emailHash: string, inviteId: string) => ({ GSI2PK: inviteePartition(emailHash), GSI2SK: `INVITE#${id(inviteId, "invite ID")}` }),
+};
+
+/** The GSI2 partition that holds the invites for one email address. */
+export function inviteePartition(emailHash: string): string {
+  if (typeof emailHash !== "string" || !HASH.test(emailHash)) throw new InvalidInputError("Invalid email hash");
+  return `INVITEE#${emailHash}`;
+}
+
 /** The partition that holds everything a team owns. */
 export function teamPartition(teamId: string): string {
   return `TEAM#${id(teamId, "team ID")}`;
@@ -93,7 +107,7 @@ export function teamPartition(teamId: string): string {
 /** Removes key and index attributes before an item leaves the data layer. */
 export function strip<T>(item: Record<string, unknown> | undefined): T | undefined {
   if (!item) return undefined;
-  const { PK: _pk, SK: _sk, GSI1PK: _gpk, GSI1SK: _gsk, ...rest } = item;
-  void _pk; void _sk; void _gpk; void _gsk;
+  const { PK: _pk, SK: _sk, GSI1PK: _gpk, GSI1SK: _gsk, GSI2PK: _g2pk, GSI2SK: _g2sk, ...rest } = item;
+  void _pk; void _sk; void _gpk; void _gsk; void _g2pk; void _g2sk;
   return rest as T;
 }
