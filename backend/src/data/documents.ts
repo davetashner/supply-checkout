@@ -14,9 +14,10 @@
 // products the atomically adjusted `stock`). That gives `update` the app's
 // exact deep-merge semantics, gives every write a new version (ADR 0006), and
 // makes each write one PutItem or DeleteItem, which is one stream record for
-// live updates (supply-checkout-dpc). Without an expected version, a write that
-// loses a race is retried on the fresh item (last writer wins, as in the
-// artifact runtime); with one, it fails with ConflictError.
+// live updates (supply-checkout-dpc). With an expected version, a write that
+// finds another version, or loses a race, fails with ConflictError. The data
+// API always passes one (ADR 0006); without one, a lost race is retried on
+// the fresh item (last writer wins), for callers inside the backend.
 
 import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";

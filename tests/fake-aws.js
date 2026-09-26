@@ -177,6 +177,10 @@ export class FakeBackend {
     const out = () => ({ id, version: this.docs.get(key).version, data: this.docs.get(key).data });
     if (method === "GET") return cur ? [200, out()] : err(404, "not_found");
     if (member.role === "viewer") return err(403, "invalid_argument");
+    // Every write names the version it was made against (ADR 0006); 0: it doesn't exist yet
+    const expected = method === "DELETE" ? call.query.expectedVersion : call.body.expectedVersion;
+    if (expected === undefined) return err(400, "bad_request");
+    if (Number(expected) !== (cur ? cur.version : 0)) return err(409, "aborted");
     if (method === "DELETE") { this.docs.delete(key); return [204]; }
     if (method === "PUT") { this.write(team, coll, id, call.body.data); return [200, out()]; }
     if (!cur) return err(404, "not_found");

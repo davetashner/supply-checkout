@@ -51,6 +51,8 @@ interface Request {
   readonly query?: Record<string, string>;
   readonly body?: unknown;
   readonly rawBody?: string;
+  /** Send a write as is. Otherwise a write without expectedVersion gets the stored one. */
+  readonly unversioned?: boolean;
 }
 
 function safeDecode(s: string): string {
@@ -92,8 +94,30 @@ function event(method: string, path: string, request: Request = {}): DataEvent {
   } as unknown as DataEvent;
 }
 
+const WRITES = ["PUT", "PATCH", "DELETE"];
+
+/** The stored version of the document at `path` (0 if there's none), read from the table. */
+function storedVersion(path: string): number {
+  const [, , team, collection, id] = path.split("/");
+  const sk = `${collection === "products" ? "PRODUCT" : "SHEET"}#${safeDecode(id ?? "")}`;
+  const version = table.get(`TEAM#${team}`, sk)?.version;
+  return typeof version === "number" ? version : 0;
+}
+
+/**
+ * Every write needs an expected version (ADR 0006). Most tests are about something else,
+ * so a write that doesn't name one is sent with the stored version, as the app would.
+ */
+function versioned(method: string, path: string, request: Request): Request {
+  if (request.unversioned || !WRITES.includes(method) || request.rawBody !== undefined) return request;
+  if (method === "DELETE") return request.query?.expectedVersion === undefined ? { ...request, query: { ...request.query, expectedVersion: String(storedVersion(path)) } } : request;
+  const body = request.body;
+  if (typeof body !== "object" || body === null || Array.isArray(body) || "expectedVersion" in body) return request;
+  return { ...request, body: { ...body, expectedVersion: storedVersion(path) } };
+}
+
 async function call(method: string, path: string, request: Request = {}) {
-  const response = await handler(event(method, path, request));
+  const response = await handler(event(method, path, versioned(method, path, request)));
   return { status: response.statusCode, body: response.body ? JSON.parse(response.body) : undefined };
 }
 
@@ -233,25 +257,52 @@ describe("documents (the app's db contract)", () => {
     expect((await call("DELETE", "/teams/team-a/sheets/s1", { query: { expectedVersion: "x" } })).status).toBe(400);
   });
 
-  it("retries a write that lost a race, so the last writer wins without an expected version", async () => {
+  it("refuses a write without an expected version", async () => {
+    await call("PUT", "/teams/team-a/sheets/s1", { body: { data: sheet("2026-09-01") } });
+    const required = { status: 400, body: { error: { code: "bad_request", message: "expectedVersion is required" } } };
+    expect(await call("PUT", "/teams/team-a/sheets/s2", { unversioned: true, body: { data: sheet("2026-09-01") } })).toEqual(required);
+    expect(await call("PUT", "/teams/team-a/sheets/s1", { unversioned: true, body: { data: sheet("2026-09-02") } })).toEqual(required);
+    expect(await call("PATCH", "/teams/team-a/sheets/s1", { unversioned: true, body: { data: { client: "X" } } })).toEqual(required);
+    expect(await call("DELETE", "/teams/team-a/sheets/s1", { unversioned: true })).toEqual(required);
+    expect(await call("DELETE", "/teams/team-a/sheets/s1", { unversioned: true, query: { other: "1" } })).toEqual(required);
+    // Nothing was written
+    expect(table.get("TEAM#team-a", "SHEET#s1")).toMatchObject({ client: "Echo", date: "2026-09-01", version: 1 });
+    expect(table.get("TEAM#team-a", "SHEET#s2")).toBeUndefined();
+    // Membership and role are still checked first: another team's route is refused as before
+    expect((await call("PATCH", "/teams/team-b/sheets/b1", { unversioned: true, body: { data: { client: "X" } } })).body.error.code).toBe("permission_denied");
+    expect((await call("DELETE", "/teams/team-a/sheets/s1", { unversioned: true, user: VIEWER })).body.error.code).toBe("invalid_argument");
+  });
+
+  it("answers 409 when another write lands between the read and the put, without retrying", async () => {
     await call("PUT", "/teams/team-a/sheets/s1", { body: { data: sheet("2026-09-01", { a: { out: 1, returned: 0 } }) } });
-    let raced = false;
+    let raced = 0;
     table.afterGet = (item) => {
-      if (raced || !item) return;
-      raced = true;
+      if (raced++ || !item) return;
       // Another user's write lands between our read and our put
       table.put({ ...item, version: 2, items: { a: { out: 1, returned: 0 }, b: { out: 5, returned: 0 } } });
     };
-    const { body } = await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { items: { a: { returned: 1 } } } } });
-    expect(body.version).toBe(3);
-    // The merge was redone on the other user's version: nothing lost
-    expect(body.data.items).toEqual({ a: { out: 1, returned: 1 }, b: { out: 5, returned: 0 } });
+    const lost = await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { items: { a: { returned: 1 } } }, expectedVersion: 1 } });
+    expect(lost).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
+    expect(raced).toBe(1);
+    // The other user's write stands; ours can be made again on their version
+    expect(table.get("TEAM#team-a", "SHEET#s1")).toMatchObject({ version: 2, items: { a: { out: 1, returned: 0 }, b: { out: 5, returned: 0 } } });
+    const { body } = await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { items: { a: { returned: 1 } } }, expectedVersion: 2 } });
+    expect(body).toMatchObject({ version: 3, data: { items: { a: { out: 1, returned: 1 }, b: { out: 5, returned: 0 } } } });
   });
 
-  it("gives up with 409 when every retry loses", async () => {
-    await call("PUT", "/teams/team-a/products/p", { body: { data: product } });
-    table.afterGet = (item) => item && table.put({ ...item, version: Number(item.version) + 1 });
-    expect((await call("PUT", "/teams/team-a/products/p", { body: { data: product } })).status).toBe(409);
+  it("never loses a count when two people check out the same line at once", async () => {
+    await call("PUT", "/teams/team-a/sheets/s1", { body: { data: sheet("2026-09-01", { a: { out: 2, returned: 0 } }) } });
+    // Both read version 1 with 2 taken, and each adds their own to it, as the app does
+    const [first, second] = await Promise.all([
+      call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { items: { a: { out: 3 } } }, expectedVersion: 1 } }),
+      call("PATCH", "/teams/team-a/sheets/s1", { user: CONTRIBUTOR, body: { data: { items: { a: { out: 5 } } }, expectedVersion: 1 } }),
+    ]);
+    expect([first.status, second.status].sort()).toEqual([200, 409]);
+    // The loser reads the latest and adds to it
+    const latest = (await call("GET", "/teams/team-a/sheets/s1")).body;
+    const add = first.status === 409 ? 1 : 3;
+    const retry = await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { items: { a: { out: latest.data.items.a.out + add } } }, expectedVersion: latest.version } });
+    expect(retry.body).toMatchObject({ version: 3, data: { items: { a: { out: 6 } } } });
   });
 
   it("rejects malformed input with bad_request, which the app doesn't mistake for view-only", async () => {
@@ -288,7 +339,7 @@ describe("documents (the app's db contract)", () => {
 
   it("answers 400, not 500, for a body nested far too deeply", async () => {
     const depth = 200_000;
-    const rawBody = `{"data":{"a":${"[".repeat(depth)}${"]".repeat(depth)}}}`;
+    const rawBody = `{"expectedVersion":0,"data":{"a":${"[".repeat(depth)}${"]".repeat(depth)}}}`;
     for (const method of ["PUT", "PATCH"]) {
       const response = await call(method, "/teams/team-a/sheets/s1", { rawBody });
       expect(response, method).toMatchObject({ status: 400, body: { error: { code: "bad_request", message: "Document is nested too deeply" } } });
@@ -317,7 +368,7 @@ describe("documents (the app's db contract)", () => {
   });
 
   it("reads a base64-encoded body", async () => {
-    const e = event("PUT", "/teams/team-a/products/p", { body: { data: product } });
+    const e = event("PUT", "/teams/team-a/products/p", { body: { data: product, expectedVersion: 0 } });
     const response = await handler({ ...e, body: Buffer.from(e.body as string).toString("base64"), isBase64Encoded: true });
     expect(response.statusCode).toBe(200);
   });

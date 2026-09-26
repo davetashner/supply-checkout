@@ -152,7 +152,19 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
 
   function docRef(path) {
     const [name, id] = [path.slice(0, path.indexOf("/")), path.slice(path.indexOf("/") + 1)];
-    const write = async (method, body) => put(name, id, await api(method, docPath(name, id), body));
+    // Every write names the version it was made against (ADR 0006): the one held, or 0 for
+    // a document this page doesn't have. If someone else changed it first (409 aborted),
+    // fetch the latest so the app redraws with it, and pass the error on for the app to say so.
+    const write = async (method, body) => {
+      const held = coll(name).docs.get(id), expectedVersion = held ? held.version : 0;
+      try {
+        const path = docPath(name, id);
+        put(name, id, await (body ? api(method, path, { ...body, expectedVersion }) : api(method, `${path}?expectedVersion=${expectedVersion}`)));
+      } catch (e) {
+        if (e.code === "aborted") await fetchDoc(name, id);
+        throw e;
+      }
+    };
     return {
       id,
       path,
