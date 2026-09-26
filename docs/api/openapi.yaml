@@ -32,7 +32,12 @@ info:
     - Reject a call with the error body's `code` as the error's `code`, so the
       app's existing handling applies unchanged: `invalid_argument` (403)
       makes it switch to view-only, `quota_exceeded` (413) shows "storage is
-      full", and anything else shows the generic "didn't save" message.
+      full", `aborted` (409) says someone else changed it first (the adapter
+      fetches the latest document before rejecting, so it shows), and anything
+      else shows the generic "didn't save" message.
+    - Send `expectedVersion` on every `set`, `update` and `delete`: the
+      version of the copy held from the last list, fetch or write, or `0` for
+      a document not held.
     - `teamId` is the team the user picked (`GET /me` lists them; see
       [onboarding.md](onboarding.md) for first sign-in and the team switcher).
       The server checks membership on every request; the body never names a
@@ -59,10 +64,13 @@ info:
     - `update` merges like the artifact runtime: where the patch and the
       document both have an object at the same key, they merge key by key;
       any other value (including `null` and arrays) replaces.
-    - Every write increments `version`. Send `expectedVersion` to make a write
-      conditional (409 `aborted` if the document changed; `0` means "only if
-      it doesn't exist"). Without it, a write that races another is retried on
-      the fresh document, so the last writer wins, as in the artifact runtime.
+    - Every write increments `version`, and every write must send
+      `expectedVersion` (ADR 0006): the version it was made against, or `0`
+      for a document that shouldn't exist yet. If the document is at another
+      version, or changes between the server's read and its write, the write
+      fails with 409 `aborted` and changes nothing; fetch the document and
+      make the change again on the latest values. A write without it is 400
+      `bad_request`.
     - Sheets ordered by date come from an index, which can lag a write by a
       moment. Unordered lists and single reads are strongly consistent. A
       sheet without a valid `YYYY-MM-DD` date sorts after every dated sheet
@@ -164,7 +172,7 @@ paths:
     delete:
       tags: [products]
       operationId: deleteProduct
-      summary: Delete a product. Deleting one that doesn't exist succeeds.
+      summary: Delete a product. Deleting one that doesn't exist succeeds with `expectedVersion=0`.
       parameters: [{ $ref: "#/components/parameters/expectedVersion" }]
       responses:
         "204": { description: "Deleted, or already gone." }
@@ -294,7 +302,7 @@ paths:
     delete:
       tags: [sheets]
       operationId: deleteSheet
-      summary: Delete a sheet. Deleting one that doesn't exist succeeds.
+      summary: Delete a sheet. Deleting one that doesn't exist succeeds with `expectedVersion=0`.
       parameters: [{ $ref: "#/components/parameters/expectedVersion" }]
       responses:
         "204": { description: "Deleted, or already gone." }
@@ -590,7 +598,8 @@ components:
     expectedVersion:
       name: expectedVersion
       in: query
-      description: Delete only if the document is at this version.
+      required: true
+      description: Delete only if the document is at this version (0 = only if it doesn't exist, so deleting a missing document succeeds).
       schema: { type: integer, minimum: 0 }
     origin:
       name: Origin
@@ -613,7 +622,7 @@ components:
           schema:
             type: object
             additionalProperties: false
-            required: [data]
+            required: [data, expectedVersion]
             properties:
               data:
                 type: object
@@ -625,7 +634,7 @@ components:
           examples:
             checkout:
               summary: Check out 3 of an item (PATCH a sheet)
-              value: { data: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 3, returned: 0 } } } }
+              value: { data: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 3, returned: 0 } } }, expectedVersion: 7 }
     Checkout:
       required: true
       content:
@@ -920,7 +929,7 @@ components:
       description: "`not_found`: no such document (for a command: no such sheet, or for a stock adjustment no such item)."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     Conflict:
-      description: "`aborted`: the document isn't at `expectedVersion`, or changed during every retry."
+      description: "`aborted`: the document isn't at `expectedVersion` (for a command: it changed during every retry)."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     TooLarge:
       description: "`quota_exceeded`: the document would be over 350,000 bytes (or the body over 1 MB)."
