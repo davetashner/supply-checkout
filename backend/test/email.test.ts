@@ -10,7 +10,7 @@ import { type Invite, type Member, type Team, hashEmail, markInviteFailed, teamC
 import { createEmailEventsHandler } from "../src/email/events-handler.js";
 import { EmailNotSentError, createMailer, mailerFromEnv, sendInviteEmail, sendTeamNotice, type SesSender } from "../src/email/mailer.js";
 import { EMAIL_ENV, EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, EMAIL_KINDS, EMAIL_TAGS, configurationSetName } from "../src/email/names.js";
-import { type EmailInput, escapeHtml, formatDate, plainName, renderEmail } from "../src/email/templates.js";
+import { type EmailInput, escapeHtml, formatDate, plainName, renderEmail, teamLabel } from "../src/email/templates.js";
 import type { Observability } from "../src/observability/index.js";
 import { contextFor, fakeDb } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -114,10 +114,25 @@ describe("templates", () => {
   it("escapes a team name with markup, and keeps it on one line in the subject", () => {
     const email = renderEmail({ kind: "readOnly", teamName: '<a href="https://evil.example.com">Win</a>\r\nBcc: x' }, { appUrl: APP });
     expect(email.html).not.toContain('<a href="https://evil');
-    expect(email.html).toContain("&lt;a href=&quot;https://evil.example.com&quot;&gt;");
+    // Escaped, and the link-like part defanged so no mail client links it
+    expect(email.html).toContain("&lt;a href=&quot;https[:]//evil[.]example[.]com&quot;&gt;");
     expect(email.subject).not.toMatch(/[\r\n]/);
     expect(email.text.split("\n")[0]).toContain("Bcc: x");
     expect([...email.html.matchAll(/href="([^"]+)"/g)].every((m) => new URL((m[1] as string).replaceAll("&amp;", "&")).origin === APP)).toBe(true);
+  });
+
+  it("quotes the team name in an invite, and defangs anything in it a mail client could link", () => {
+    const teamName = "Payroll: verify at https://evil.example/login or www.evil.example, or mail help@example.com";
+    const email = renderEmail({ ...(samples[0] as Extract<EmailInput, { kind: "invite" }>), teamName }, { appUrl: APP });
+    for (const part of [email.subject, email.html, email.text]) expect(part).not.toMatch(/evil\.example|example\.com|https:\/\/evil|help@/);
+    expect(email.subject).toMatch(/^You're invited to join the team \u201cPayroll: verify at https\[:\]\/\/evil\[\.\]example/);
+    expect(email.text).toContain("\u201d as a contributor");
+    // Only the one link, to the app
+    expect([...email.html.matchAll(/href="([^"]+)"/g)].every((m) => new URL((m[1] as string).replaceAll("&amp;", "&")).origin === APP)).toBe(true);
+    // Ordinary names are left alone
+    for (const name of ["Echo Cleaning", "J.R. Cleaning", "Crew: north", "3.5 Stars", "A & B, Inc.", "Café Ltd."]) expect(teamLabel(name)).toBe(name);
+    expect(teamLabel("Acme.co")).toBe("Acme[.]co");
+    expect(teamLabel("mailto:x")).toBe("mailto[:]x");
   });
 
   it("shortens long names and names a blank one", () => {
@@ -188,8 +203,15 @@ describe("mailer", () => {
   it("normalizes the recipient and refuses one that isn't an address", async () => {
     await mailer().send(" Pat@Example.COM ", samples[3] as EmailInput);
     expect(ses.sent[0]?.input.Destination?.ToAddresses).toEqual([INVITEE]);
-    await expect(mailer().send("pat@example.com\r\nBcc: x@example.com", samples[3] as EmailInput)).rejects.toThrow("Invalid email");
+    // Only a bare addr-spec: a display name, a quoted local part, a list or a header
+    // would let SES deliver somewhere other than the address that was checked
+    for (const to of ["pat@example.com\r\nBcc: x@example.com", "x<v@example.com>", "Pat <v@example.com>", '"a"@b.com', "a,b@c.com", "a@b", "a@b.com, v@example.com", "a@-b.com", "a..b@c.com", "(c)a@b.com"]) { // public-safety: allow (deliberate test addresses)
+      await expect(mailer().send(to, samples[3] as EmailInput), to).rejects.toThrow(expect.objectContaining({ name: "EmailNotSentError", code: "InvalidRecipient" }));
+    }
     expect(ses.sent).toHaveLength(1);
+    // Unusual but plain addresses still go
+    await mailer().send("O'Neil+jobs@xn--bcher-kva.example", samples[3] as EmailInput); // public-safety: allow (deliberate test addresses)
+    expect(ses.sent[1]?.input.Destination?.ToAddresses).toEqual(["o'neil+jobs@xn--bcher-kva.example"]); // public-safety: allow (deliberate test addresses)
   });
 
   it("tags a notice with its team only", async () => {

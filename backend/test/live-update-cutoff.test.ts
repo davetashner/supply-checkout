@@ -92,8 +92,10 @@ describe.skipIf(!endpoint)("cutting off live updates", () => {
     const created = await createTeam(db, { userId: ownerId, email: "owner@example.com" }, { name: "Echo Cleaning" });
     teamId = created.team.teamId;
     owner = created.context;
-    const { invite, token } = await createInvite(db, owner, { email: "crew@example.com", role: "contributor" });
-    await acceptInvite(db, { userId: crewId, verifiedEmail: "crew@example.com" }, invite, token);
+    // An address per test: each address can be sent only so many invites a day
+    const email = `crew.${crewId}@example.com`;
+    const { invite, token } = await createInvite(db, owner, { email, role: "contributor" });
+    await acceptInvite(db, { userId: crewId, verifiedEmail: email }, invite, token);
   });
 
   it("reaches every member while they're in the team, and each event names the team", async () => {

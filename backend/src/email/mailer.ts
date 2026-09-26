@@ -11,7 +11,7 @@
 // - Recipients, names and tokens never go in a log line, an error or a metric.
 
 import { SESv2Client, SendEmailCommand, type SendEmailCommandInput } from "@aws-sdk/client-sesv2";
-import { type Invite, normalizeEmail } from "../data/index.js";
+import { type Invite, mailAddress } from "../data/index.js";
 import { EMAIL_ENV, EMAIL_TAGS, FROM_NAME } from "./names.js";
 import { type EmailInput, renderEmail } from "./templates.js";
 
@@ -61,7 +61,13 @@ export function createMailer(options: MailerOptions): Mailer {
   if (!fromAddress || !configurationSet || !appUrl) throw new Error("The mailer needs a From address, a configuration set and the app URL");
   return {
     async send(to, input, tags = {}) {
-      const recipient = normalizeEmail(to);
+      // A bare addr-spec only: SES would read a display name or a list as more than one address
+      let recipient: string;
+      try {
+        recipient = mailAddress(to);
+      } catch {
+        throw new EmailNotSentError("InvalidRecipient");
+      }
       const message = renderEmail(input, { appUrl });
       const params: SendEmailCommandInput = {
         FromEmailAddress: `${FROM_NAME} <${fromAddress}>`,
