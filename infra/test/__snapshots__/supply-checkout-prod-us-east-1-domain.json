@@ -284,9 +284,272 @@
         }
       }
     },
+    "ConfigurationSet3DD38186": {
+      "Type": "AWS::SES::ConfigurationSet",
+      "Properties": {
+        "Name": "supply-checkout-prod-transactional",
+        "ReputationOptions": {
+          "ReputationMetricsEnabled": true
+        },
+        "SendingOptions": {
+          "SendingEnabled": true
+        },
+        "SuppressionOptions": {
+          "SuppressedReasons": [
+            "BOUNCE",
+            "COMPLAINT"
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "domain"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "ConfigurationSetBouncesAndComplaintsB986F6E4": {
+      "Type": "AWS::SES::ConfigurationSetEventDestination",
+      "Properties": {
+        "ConfigurationSetName": {
+          "Ref": "ConfigurationSet3DD38186"
+        },
+        "EventDestination": {
+          "Enabled": true,
+          "MatchingEventTypes": [
+            "bounce",
+            "complaint"
+          ],
+          "SnsDestination": {
+            "TopicARN": {
+              "Ref": "EmailEvents257CFA9C"
+            }
+          }
+        }
+      },
+      "DependsOn": [
+        "EmailEventsPolicy4CF4885F"
+      ]
+    },
+    "EmailEventsKey619540BF": {
+      "Type": "AWS::KMS::Key",
+      "Properties": {
+        "Description": "Encrypts SES bounce and complaint events",
+        "EnableKeyRotation": true,
+        "KeyPolicy": {
+          "Statement": [
+            {
+              "Action": "kms:*",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Resource": "*"
+            },
+            {
+              "Action": [
+                "kms:GenerateDataKey*",
+                "kms:Decrypt"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  },
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":ses:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":configuration-set/supply-checkout-prod-transactional"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ses.amazonaws.com"
+              },
+              "Resource": "*",
+              "Sid": "SesPublishesEvents"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "domain"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "EmailEvents257CFA9C": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "DisplayName": "SES bounces and complaints",
+        "KmsMasterKeyId": {
+          "Fn::GetAtt": [
+            "EmailEventsKey619540BF",
+            "Arn"
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "domain"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "TopicName": "supply-checkout-prod-email-events"
+      }
+    },
+    "EmailEventsPolicy4CF4885F": {
+      "Type": "AWS::SNS::TopicPolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              },
+              "Effect": "Deny",
+              "Principal": "*",
+              "Resource": {
+                "Ref": "EmailEvents257CFA9C"
+              },
+              "Sid": "AllowPublishThroughSSLOnly"
+            },
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "StringEquals": {
+                  "AWS:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  },
+                  "AWS:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":ses:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":configuration-set/",
+                        {
+                          "Ref": "ConfigurationSet3DD38186"
+                        }
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ses.amazonaws.com"
+              },
+              "Resource": {
+                "Ref": "EmailEvents257CFA9C"
+              },
+              "Sid": "1"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Topics": [
+          {
+            "Ref": "EmailEvents257CFA9C"
+          }
+        ]
+      }
+    },
     "EmailIdentity7187767D": {
       "Type": "AWS::SES::EmailIdentity",
       "Properties": {
+        "ConfigurationSetAttributes": {
+          "ConfigurationSetName": {
+            "Ref": "ConfigurationSet3DD38186"
+          }
+        },
         "EmailIdentity": "supplycheckout.com",
         "MailFromAttributes": {
           "MailFromDomain": "mail.supplycheckout.com"

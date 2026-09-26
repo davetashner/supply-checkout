@@ -22,6 +22,7 @@ import {
   getReceiptUsage,
   getSheet,
   getTeam,
+  hashEmail,
   InvalidInputError,
   LimitReachedError,
   linkStripeCustomer,
@@ -33,6 +34,7 @@ import {
   listSheets,
   listSheetsByDate,
   listTeamsForUser,
+  markInviteFailed,
   markWebhookProcessed,
   MAX_TEAMS_PER_USER,
   NotFoundError,
@@ -43,6 +45,7 @@ import {
   revokeInvite,
   setMemberRole,
   setSheetLine,
+  teamContextForEmailEvent,
   teamContextForStripeCustomer,
   teamIdForRequest,
   TEAMS_PER_USER_PER_DAY,
@@ -374,6 +377,25 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await expect(acceptInvite(db, { userId: viewer.userId, verifiedEmail: "v@example.com" }, invite, token)).rejects.toThrow(ConflictError);
       // The failed transaction left the invite in place
       expect(await findInvite(db, token)).toBeDefined();
+    });
+    it("is marked failed when its email bounces, for its own address only, and owners see it", async () => {
+      const { team: t, owner } = await team();
+      const { invite, token } = await createInvite(db, owner, { email: "bounce@example.com", role: "viewer" });
+      const system = await teamContextForEmailEvent(db, t.teamId);
+      if (!system) throw new Error("no context");
+      const at = new Date("2026-09-27T08:00:00.000Z");
+      // Another address's bounce, or an invite that's gone, changes nothing
+      expect(await markInviteFailed(db, system, { inviteId: invite.inviteId, emailHash: hashEmail("other@example.com"), reason: "bounced", at })).toBe(false);
+      expect(await markInviteFailed(db, system, { inviteId: "no-such-invite", emailHash: hashEmail("bounce@example.com"), reason: "bounced", at })).toBe(false);
+      expect(await markInviteFailed(db, system, { inviteId: invite.inviteId, emailHash: hashEmail("bounce@example.com"), reason: "bounced", at })).toBe(true);
+      const listed = (await listInvites(db, owner)).find((i) => i.inviteId === invite.inviteId);
+      expect(listed).toMatchObject({ inviteStatus: "failed", failureReason: "bounced", failedAt: at.toISOString() });
+      await expect(markInviteFailed(db, owner, { inviteId: invite.inviteId, emailHash: hashEmail("bounce@example.com"), reason: "bounced", at })).rejects.toThrow(ForbiddenError);
+      // A failed invite keeps its keys, so it can still be revoked
+      expect(await findInvite(db, token)).toBeDefined();
+      await revokeInvite(db, owner, invite.inviteId);
+      expect(await markInviteFailed(db, system, { inviteId: invite.inviteId, emailHash: hashEmail("bounce@example.com"), reason: "complained", at })).toBe(false);
+      expect(await rawItem(db, `TEAM#${t.teamId}`, `INVITE#${invite.inviteId}`)).toBeUndefined();
     });
   });
 

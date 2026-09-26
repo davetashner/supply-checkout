@@ -45,12 +45,14 @@ function qrPng(text, scale = 8) {
 // (the app draws the photo to a canvas at each size; ZXing's own drawing, to
 // rotate, takes three arguments). ZXing itself is the real, bundled one.
 //   detector: "none" | "empty" | "throws" | a code to return
+//   held:     the detector waits for window.__releaseDetect() before answering
 //   bitmap:   "real" | "big" (3000×1000 blank canvas) | "throws" | "missing"
-function installScanner({ detector = "none", bitmap = "real" }) {
+function installScanner({ detector = "none", bitmap = "real", held = false }) {
   delete window.BarcodeDetector;
   if (detector !== "none") {
     window.BarcodeDetector = class {
       async detect() {
+        if (held) await new Promise((resolve) => { window.__releaseDetect = resolve; });
         if (detector === "throws") throw new Error("detector failed");
         return detector === "empty" ? [] : [{ rawValue: detector }];
       }
@@ -155,6 +157,20 @@ test("cancelling the camera does nothing", async ({ page }) => {
   await page.setInputFiles("#scanFile", []);
   await expect(page.locator("#overlay")).toBeHidden();
   await expect(page.locator("#toast")).toBeHidden();
+});
+
+test("a photo read while someone else deletes the sheet opens nothing", async ({ page }) => {
+  await openSheet(page, { detector: "SKU1", held: true });
+  await page.setInputFiles("#scanFile", png);
+  await page.waitForFunction(() => window.__releaseDetect);
+  await page.evaluate(() => { window.__mock.docs.delete("sheets/s1"); window.__mock.notify(); });
+  await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
+  await expect(page.locator("#toast")).toHaveText("Reading barcode…");
+  await page.evaluate(() => window.__releaseDetect());
+  // The read is done when its "Reading barcode…" notice goes
+  await expect(page.locator("#toast")).toBeHidden();
+  await expect(page.locator("#overlay")).toBeHidden();
+  await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
 });
 
 test("scanning in return mode opens the return for that item", async ({ page }) => {
