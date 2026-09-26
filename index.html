@@ -777,7 +777,7 @@ async function exportCsv(s) {
     ["Total", "", "", t.out, t.ret, t.used, t.charge.toFixed(2)]
   ];
   const data = rows.map(r => r.map(q).join(",")).join("\n");
-  try { await dl.save({ filename: `${(s.client || "sheet").replace(/[\\/:*?"<>|]/g, "")} ${s.date || ""}.csv`.trim(), data }); }
+  try { await dl.save({ filename: `${[(s.client || "sheet").replace(/[\\/:*?"<>|]/g, ""), s.date].filter(Boolean).join(" ").trim()}.csv`, data }); }
   catch (e) { if (e && e.code !== "declined") toast("Couldn't prepare the download here."); }
 }
 
