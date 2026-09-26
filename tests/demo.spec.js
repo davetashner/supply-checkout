@@ -12,9 +12,9 @@ test.skip(currentBuild() !== "web", "The demo is built and tested with the web b
 // from the other suites', so coverage (of src/ in the web build) ignores it.
 const BASE = "https://demo.supply-checkout.test/some/path/";
 const ORIGIN = new URL(BASE).origin;
-// The only places the demo may reach: itself, Google Fonts and ZXing's CDN
-const ALLOWED = [ORIGIN, "https://fonts.googleapis.com", "https://fonts.gstatic.com", "https://cdn.jsdelivr.net"];
-const THIRD_PARTY = /^https:\/\/(fonts\.(googleapis|gstatic)\.com|cdn\.jsdelivr\.net)\//;
+// The only places the demo may reach: itself and Google Fonts
+const ALLOWED = [ORIGIN, "https://fonts.googleapis.com", "https://fonts.gstatic.com"];
+const THIRD_PARTY = /^https:\/\/fonts\.(googleapis|gstatic)\.com\//;
 
 const files = currentBuild() === "web" ? builtFiles(DEMO) : new Map();
 
@@ -22,7 +22,7 @@ const files = currentBuild() === "web" ? builtFiles(DEMO) : new Map();
 async function openDemo(page) {
   const requests = [];
   page.on("request", (r) => requests.push(r.url()));
-  // Record fonts and CDN requests, but keep tests offline
+  // Record font requests, but keep tests offline
   await page.route(THIRD_PARTY, (r) => r.abort());
   await page.route(ORIGIN + "/**", (r) => {
     const { pathname } = new URL(r.request().url());
@@ -39,7 +39,7 @@ async function openDemo(page) {
 const expectOnlyAllowed = (requests) => {
   // blob: URLs (the CSV download) carry the page's own origin
   const elsewhere = requests.filter((url) => !url.startsWith("data:") && !ALLOWED.includes(new URL(url).origin));
-  expect(elsewhere, "requests outside the page, Google Fonts and cdn.jsdelivr.net").toEqual([]);
+  expect(elsewhere, "requests outside the page and Google Fonts").toEqual([]);
   expect(requests.filter((url) => url.startsWith(ORIGIN)).length, "the page and its assets").toBeGreaterThan(1);
 };
 

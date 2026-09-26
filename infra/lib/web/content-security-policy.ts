@@ -6,8 +6,8 @@
 // What the app loads today (src/index.html):
 // - Google Fonts: the stylesheet from fonts.googleapis.com, the font files from
 //   fonts.gstatic.com.
-// - ZXing from cdn.jsdelivr.net (a classic script tag, pinned version).
-// - Its own hashed script, stylesheet and favicons (src/icons/).
+// - Its own hashed scripts (including ZXing, bundled from npm and loaded when a
+//   photo needs it), stylesheet and favicons (src/icons/). No third-party scripts.
 // - Inline style="" attributes in markup that src/main.js renders with
 //   innerHTML, hence style-src-attr 'unsafe-inline'. <style> elements and
 //   inline scripts stay blocked.
@@ -24,7 +24,7 @@ export interface CspHosts {
 export function cspDirectives(hosts: CspHosts): Record<string, string[]> {
   return {
     "default-src": ["'self'"],
-    "script-src": ["'self'", "https://cdn.jsdelivr.net"],
+    "script-src": ["'self'"],
     "style-src": ["'self'", "https://fonts.googleapis.com"],
     "style-src-attr": ["'unsafe-inline'"],
     "font-src": ["'self'", "https://fonts.gstatic.com"],

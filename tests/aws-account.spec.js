@@ -205,15 +205,42 @@ test.describe("sign-in", () => {
     await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
   });
 
-  test("signing out revokes the session and signs out of Managed Login", async ({ page }) => {
-    const backend = new FakeBackend({ docs: seeded() });
-    // Sign-out still leaves when the API can't be reached
-    backend.on("POST", "/auth/sign-out", { abort: true });
+  test("without an expiry, the access token is refreshed as if it lasts an hour", async ({ page }) => {
+    await page.clock.install();
+    const backend = new FakeBackend({ docs: seeded(), expiresIn: null });
     await openAws(page, backend);
     await connected(page);
+    // Not right away (a NaN delay would refresh at once, and again and again)...
+    await page.clock.fastForward(3290e3);
+    expect(backend.requests("POST", "/auth/refresh")).toHaveLength(1);
+    // ...but five minutes before the hour. (The re-list after a reconnect can race it
+    // and refresh once more with the rotated token, so this counts at least one.)
+    await page.clock.fastForward(20e3);
+    await expect.poll(() => backend.requests("POST", "/auth/refresh").length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("signing out revokes the session, forgets sign-in's saved state and signs out of Managed Login", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded() });
+    await openAws(page, backend);
+    await connected(page);
+    const saved = () => page.evaluate(() => [sessionStorage.getItem("supplyCheckout.invite"), sessionStorage.getItem("supplyCheckout.signIn")]);
+    await page.evaluate(() => {
+      sessionStorage.setItem("supplyCheckout.invite", JSON.stringify({ id: "i1", token: "tok" }));
+      sessionStorage.setItem("supplyCheckout.signIn", JSON.stringify({ verifier: "v", state: "s" }));
+    });
+
+    // The API can't be reached: still signed in, and says so
+    backend.on("POST", "/auth/sign-out", { abort: true });
+    await page.locator(".teambar").getByRole("button", { name: "Sign out" }).click();
+    await expect(page.locator("#toast")).toHaveText("Couldn't sign out. Try again.");
+    expect(backend.authRequests).toEqual([]);
+    expect(await saved()).not.toContain(null);
+    await expect(page.locator(".teambar")).toContainText(TEAM.name);
+
     await page.locator(".teambar").getByRole("button", { name: "Sign out" }).click();
     await expect.poll(() => backend.authRequests).toEqual([`${AUTH}/logout?client_id=test-client&logout_uri=${encodeURIComponent(ORIGIN + "/")}`]);
-    expect(backend.requests("POST", "/auth/sign-out")).toHaveLength(1);
+    expect(backend.requests("POST", "/auth/sign-out")).toHaveLength(2);
+    expect(await saved()).toEqual([null, null]);
   });
 });
 

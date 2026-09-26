@@ -42,7 +42,7 @@ test("the demo links a barcode favicon that loads under any path", async ({ page
   // Its own origin, so coverage of src/ ignores it
   const base = "https://favicon-demo.supply-checkout.test/some/path/";
   const files = builtFiles(DEMO);
-  await page.route(/^https:\/\/(fonts\.(googleapis|gstatic)\.com|cdn\.jsdelivr\.net)\//, (r) => r.abort());
+  await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, (r) => r.abort());
   await page.route(new URL(base).origin + "/**", (r) => {
     const { pathname } = new URL(r.request().url());
     const file = pathname.startsWith("/some/path/") && files.get("/" + pathname.slice("/some/path/".length));

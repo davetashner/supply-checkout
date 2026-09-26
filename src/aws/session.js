@@ -7,8 +7,11 @@ import { request, json } from "./http.js";
 const PKCE_KEY = "supplyCheckout.signIn";
 // The admin scope lets the API read the user's email for invites (docs/api/onboarding.md)
 const SCOPES = "openid email profile aws.cognito.signin.user.admin";
-// Refresh this long before the access token expires (it lasts 60 minutes)
-const EARLY = 300;
+// Refresh this long before the access token expires (it lasts 60 minutes, the
+// default when a response doesn't say)
+const EARLY = 300, LIFETIME = 3600;
+// The invite from a link, kept across sign-in (account.js)
+export const INVITE_KEY = "supplyCheckout.invite";
 
 const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const random = (n) => b64url(crypto.getRandomValues(new Uint8Array(n)));
@@ -22,7 +25,8 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
   function accept(t) {
     tokens = t;
     clearTimeout(timer);
-    timer = setTimeout(() => refresh().catch(() => {}), Math.max(60, t.expiresIn - EARLY) * 1000);
+    const life = t.expiresIn > 0 ? t.expiresIn : LIFETIME;
+    timer = setTimeout(() => refresh().catch(() => {}), Math.max(60, life - EARLY) * 1000);
   }
 
   // One refresh at a time; a 401 means the session is over
@@ -83,12 +87,15 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
       }
     },
 
-    // Revokes the refresh token, then signs out of Managed Login too
+    // Revokes the refresh token, forgets sign-in's saved state, then signs out of Managed
+    // Login too. False, still signed in, when the API couldn't be reached.
     async signOut() {
-      await post("/auth/sign-out").catch(() => {});
+      try { await post("/auth/sign-out"); } catch { return false; }
       tokens = null;
       clearTimeout(timer);
+      for (const key of [PKCE_KEY, INVITE_KEY]) sessionStorage.removeItem(key);
       location.assign(`${config.authUrl}/logout?${new URLSearchParams({ client_id: config.clientId, logout_uri: redirectUri })}`);
+      return true;
     },
   };
 }

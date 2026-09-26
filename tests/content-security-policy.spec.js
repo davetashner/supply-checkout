@@ -15,7 +15,7 @@ const CSP = contentSecurityPolicy({ api: "api.supplycheckout.com", realtime: "re
 // Their own origins, so coverage of the other suites isn't affected
 const APP = "https://csp-app.supply-checkout.test";
 const DEMO_SITE = "https://csp-demo.supply-checkout.test";
-const THIRD_PARTY = /^https:\/\/(fonts\.(googleapis|gstatic)\.com|cdn\.jsdelivr\.net)\//;
+const THIRD_PARTY = /^https:\/\/fonts\.(googleapis|gstatic)\.com\//;
 const png = {
   name: "barcode.png",
   mimeType: "image/png",
@@ -30,7 +30,7 @@ async function serve(page, origin, files) {
       window.__cspViolations.push(`${e.effectiveDirective} blocked ${e.blockedURI || "inline"} (${e.sourceFile}:${e.lineNumber})`),
     );
   });
-  // Fonts and ZXing pass the policy before the request is made; then they're aborted
+  // Fonts pass the policy before the request is made; then they're aborted
   // to keep tests offline, as in the other suites.
   await page.route(THIRD_PARTY, (r) => r.abort());
   await page.route(origin + "/**", (r) => {
@@ -65,6 +65,10 @@ test("the web app runs under the policy", async ({ page }) => {
   // A blob: image (the barcode photo), then markup with inline style attributes in a modal
   await createSheet(page, "Policy Test");
   await page.setInputFiles("#scanFile", png);
+  // No barcode in the photo, so ZXing was loaded: its own chunk, from the app's origin (script-src 'self')
+  await expect(page.locator("#toast")).toContainText("No barcode found");
+  const scripts = await page.evaluate(() => performance.getEntriesByType("resource").map((e) => e.name).filter((u) => u.endsWith(".js")));
+  expect(scripts.some((u) => u.startsWith(APP + "/assets/zxing-"))).toBe(true);
   await enterBarcode(page, "012345678905");
   const form = modal(page).locator("form#f");
   await expect(form).toBeVisible();

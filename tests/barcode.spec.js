@@ -1,4 +1,6 @@
 import { test, expect, openApp, createSheet, modal, lineRow } from "./helpers.js";
+import { crc32, deflateSync } from "node:zlib";
+import { BarcodeFormat, QRCodeWriter } from "@zxing/library";
 import { usedState } from "./fixtures.js";
 
 // A real 1×1 PNG, so the browser can decode it
@@ -9,12 +11,42 @@ const png = {
 };
 const notAnImage = { name: "barcode.jpg", mimeType: "image/jpeg", buffer: Buffer.from("not an image") };
 
-// Controls both barcode readers the app can use, so results don't depend on
-// whether this browser has a built-in BarcodeDetector.
+// A PNG of a QR code, drawn with ZXing's own writer (which adds the quiet zone):
+// black modules on white, scale pixels each.
+function qrPng(text, scale = 8) {
+  const matrix = new QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, 0, 0, new Map());
+  const size = matrix.getWidth() * scale;
+  const rows = Buffer.alloc(size * (size + 1), 255);
+  for (let y = 0; y < size; y++) {
+    rows[y * (size + 1)] = 0; // filter: none
+    for (let x = 0; x < size; x++) {
+      if (matrix.get(Math.floor(x / scale), Math.floor(y / scale))) rows[y * (size + 1) + 1 + x] = 0;
+    }
+  }
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4), crc = Buffer.alloc(4), body = Buffer.concat([Buffer.from(type), data]);
+    len.writeUInt32BE(data.length);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([len, body, crc]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(size, 0);
+  header.writeUInt32BE(size, 4);
+  header[8] = 8; // 8-bit grayscale
+  return {
+    name: "barcode.png",
+    mimeType: "image/png",
+    buffer: Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), chunk("IHDR", header), chunk("IDAT", deflateSync(rows)), chunk("IEND", Buffer.alloc(0))]),
+  };
+}
+
+// Controls the browser's barcode reader, so results don't depend on whether this
+// browser has a built-in BarcodeDetector, and counts the sizes ZXing is given
+// (the app draws the photo to a canvas at each size; ZXing's own drawing, to
+// rotate, takes three arguments). ZXing itself is the real, bundled one.
 //   detector: "none" | "empty" | "throws" | a code to return
-//   zxing:    "none" | "fail" | "fail-reset" | a code to return
-//   bitmap:   "real" | "big" (3000×1000 canvas) | "throws" | "missing"
-function installScanner({ detector = "none", zxing = "none", bitmap = "real" }) {
+//   bitmap:   "real" | "big" (3000×1000 blank canvas) | "throws" | "missing"
+function installScanner({ detector = "none", bitmap = "real" }) {
   delete window.BarcodeDetector;
   if (detector !== "none") {
     window.BarcodeDetector = class {
@@ -24,22 +56,9 @@ function installScanner({ detector = "none", zxing = "none", bitmap = "real" }) 
       }
     };
   }
-  window.__zxingDecodes = 0;
-  if (zxing !== "none") {
-    window.ZXing = {
-      BarcodeFormat: {}, DecodeHintType: { POSSIBLE_FORMATS: 2, TRY_HARDER: 3 },
-      BinaryBitmap: class {}, HybridBinarizer: class {}, HTMLCanvasElementLuminanceSource: class {},
-      MultiFormatReader: class {
-        setHints() {}
-        decode() {
-          window.__zxingDecodes++;
-          if (zxing.startsWith("fail")) throw new Error("NotFoundException");
-          return { getText: () => zxing };
-        }
-        reset() { if (zxing === "fail-reset") throw new Error("reset failed"); }
-      },
-    };
-  }
+  window.__zxingTries = 0;
+  const draw = CanvasRenderingContext2D.prototype.drawImage;
+  CanvasRenderingContext2D.prototype.drawImage = function (...args) { if (args.length === 5) window.__zxingTries++; return draw.apply(this, args); };
   if (bitmap === "big") {
     window.createImageBitmap = async () => Object.assign(document.createElement("canvas"), { width: 3000, height: 1000 });
   } else if (bitmap === "throws") {
@@ -64,42 +83,53 @@ test("reads a barcode photo with the browser's built-in detector", async ({ page
   await expect(page.locator("#toast")).toBeHidden();
 });
 
-test("falls back to ZXing when the detector finds nothing or fails", async ({ page }) => {
-  await openSheet(page, { detector: "empty", zxing: "0123" });
-  await page.setInputFiles("#scanFile", png);
+const tries = (page) => page.evaluate(() => window.__zxingTries);
+
+test("without a built-in detector, reads the photo with ZXing", async ({ page }) => {
+  await openSheet(page, {});
+  await page.setInputFiles("#scanFile", qrPng("0789"));
+  await expect(modal(page)).toContainText("Barcode 0789");
+  expect(await tries(page)).toBe(1);
+});
+
+test("falls back to ZXing when the detector finds nothing", async ({ page }) => {
+  await openSheet(page, { detector: "empty" });
+  await page.setInputFiles("#scanFile", qrPng("0123"));
   await expect(modal(page)).toContainText("Barcode 0123");
   await page.keyboard.press("Escape");
 
-  // The ZXing reader is set up once and reused
-  await page.setInputFiles("#scanFile", png);
-  await expect(modal(page)).toContainText("Barcode 0123");
-  expect(await page.evaluate(() => window.__zxingDecodes)).toBe(2);
+  // ZXing is loaded and set up once, then reused
+  await page.setInputFiles("#scanFile", qrPng("0124"));
+  await expect(modal(page)).toContainText("Barcode 0124");
+  expect(await tries(page)).toBe(2);
 });
 
 test("a detector error also falls back to ZXing", async ({ page }) => {
-  await openSheet(page, { detector: "throws", zxing: "0456" });
-  await page.setInputFiles("#scanFile", png);
+  await openSheet(page, { detector: "throws" });
+  await page.setInputFiles("#scanFile", qrPng("0456"));
   await expect(modal(page)).toContainText("Barcode 0456");
 });
 
+test("a large photo is read at a smaller size", async ({ page }) => {
+  // 2,088 pixels square (29 modules of 72), read at 1,280
+  await openSheet(page, {});
+  await page.setInputFiles("#scanFile", qrPng("0321", 72));
+  await expect(modal(page)).toContainText("Barcode 0321");
+  expect(await tries(page)).toBe(1);
+});
+
 test("tries several sizes of a large photo before giving up", async ({ page }) => {
-  await openSheet(page, { zxing: "fail-reset", bitmap: "big" });
+  await openSheet(page, { bitmap: "big" });
   await page.setInputFiles("#scanFile", png);
   await noBarcode(page);
-  expect(await page.evaluate(() => window.__zxingDecodes)).toBe(4);
+  expect(await tries(page)).toBe(4);
 });
 
-test("a small photo is tried once at full size", async ({ page }) => {
-  await openSheet(page, { zxing: "fail" });
-  await page.setInputFiles("#scanFile", png);
-  await noBarcode(page);
-  expect(await page.evaluate(() => window.__zxingDecodes)).toBe(1);
-});
-
-test("without any barcode reader, says no barcode was found", async ({ page }) => {
+test("a small photo without a barcode is tried once at full size", async ({ page }) => {
   await openSheet(page, {});
   await page.setInputFiles("#scanFile", png);
   await noBarcode(page);
+  expect(await tries(page)).toBe(1);
 });
 
 test("loads the photo another way when createImageBitmap fails", async ({ page }) => {

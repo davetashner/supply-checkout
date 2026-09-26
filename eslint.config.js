@@ -17,7 +17,7 @@ export default [
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",
-      globals: { ...globals.browser, ZXing: "readonly", BarcodeDetector: "readonly" },
+      globals: { ...globals.browser, BarcodeDetector: "readonly" },
     },
   },
   {
@@ -29,9 +29,9 @@ export default [
     },
   },
   {
-    // The app runs in the browser, with ZXing loaded from a CDN script tag
+    // The app runs in the browser
     files: ["src/**/*.js"],
-    languageOptions: { globals: { ...globals.browser, ZXing: "readonly", BarcodeDetector: "readonly" } },
+    languageOptions: { globals: { ...globals.browser, BarcodeDetector: "readonly" } },
   },
   {
     // The demo build's entry runs in the browser (demo/data.js also runs in the dev server)

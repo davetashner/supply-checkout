@@ -13,7 +13,7 @@ export const API = ORIGIN + "/_api";
 export const AUTH = "https://auth.supply-checkout.test";
 export const REALTIME_HOST = "realtime.supply-checkout.test";
 export const CONFIG = { apiUrl: API, authUrl: AUTH, clientId: "test-client", realtimeUrl: `wss://${REALTIME_HOST}/event/realtime`, realtimeHost: REALTIME_HOST };
-const ABORTED = /^https:\/\/(fonts\.(googleapis|gstatic)\.com|cdn\.jsdelivr\.net)\//;
+const ABORTED = /^https:\/\/fonts\.(googleapis|gstatic)\.com\//;
 let files;
 
 const b64url = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
