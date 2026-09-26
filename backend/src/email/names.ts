@@ -54,4 +54,7 @@ export type EmailKind = (typeof EMAIL_KINDS)[number];
  * these (dynamodb:Attributes); a test checks the data calls stay within them.
  */
 export const EMAIL_EVENTS_READS = ["PK", "SK", "homeRegion"] as const;
-export const EMAIL_EVENTS_WRITES = ["PK", "SK", "status", "failureReason", "failedAt", "type", "GSI2PK"] as const;
+// None of the written names may be an attribute other items in a team's
+// partition have (a team's `status` is its subscription): the policy pins the
+// partition, not the item. GSI2PK is only read, by the update's condition.
+export const EMAIL_EVENTS_WRITES = ["PK", "SK", "inviteStatus", "failureReason", "failedAt", "GSI2PK"] as const;

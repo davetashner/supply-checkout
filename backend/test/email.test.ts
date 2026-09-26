@@ -6,7 +6,7 @@
 import type { SNSEvent } from "aws-lambda";
 import { SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { beforeEach, describe, expect, it } from "vitest";
-import { type Invite, hashEmail, markInviteFailed, teamContextForEmailEvent } from "../src/data/index.js";
+import { type Invite, type Member, type Team, hashEmail, markInviteFailed, teamContextForEmailEvent } from "../src/data/index.js";
 import { createEmailEventsHandler } from "../src/email/events-handler.js";
 import { EmailNotSentError, createMailer, mailerFromEnv, sendInviteEmail, sendTeamNotice, type SesSender } from "../src/email/mailer.js";
 import { EMAIL_ENV, EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, EMAIL_KINDS, EMAIL_TAGS, configurationSetName } from "../src/email/names.js";
@@ -284,7 +284,7 @@ describe("email events", () => {
 
   it("marks the invite failed on a permanent bounce, without logging the address", async () => {
     const { logs, counts } = await run(sns(bounce("Permanent", ["Pat@Example.com"], inviteTags())));
-    expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)).toMatchObject({ status: "failed", failureReason: "bounced", failedAt: NOW.toISOString() });
+    expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)).toMatchObject({ inviteStatus: "failed", failureReason: "bounced", failedAt: NOW.toISOString() });
     expect(counts).toEqual([
       { metric: "EmailBounces", value: 1, metadata: { kind: "invite", reason: "bounced", detail: "General" } },
       { metric: "InvitesFailed", value: 1, metadata: { teamId: TEAM, reason: "bounced" } },
@@ -301,7 +301,7 @@ describe("email events", () => {
         bounce("Undetermined", [INVITEE], inviteTags(), "Undetermined"),
       ),
     );
-    expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)?.status).toBeUndefined();
+    expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)?.inviteStatus).toBeUndefined();
     expect(counts).toEqual([
       { metric: "EmailBounces", value: 1, metadata: { kind: "invite", reason: "transient", detail: "MailboxFull" } },
       { metric: "EmailBounces", value: 1, metadata: { kind: "invite", reason: "transient", detail: "General" } },
@@ -313,18 +313,18 @@ describe("email events", () => {
 
   it("marks a complaint as complained", async () => {
     const { counts } = await run(sns(complaint([INVITEE], inviteTags())));
-    expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)).toMatchObject({ status: "failed", failureReason: "complained" });
+    expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)).toMatchObject({ inviteStatus: "failed", failureReason: "complained" });
     expect(counts[0]).toMatchObject({ metric: "EmailComplaints", value: 1 });
   });
 
   it("marks a send to a suppressed address failed too", async () => {
     await run(sns(bounce("Permanent", [INVITEE], inviteTags(), "OnAccountSuppressionList")));
-    expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)).toMatchObject({ status: "failed", failureReason: "bounced" });
+    expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)).toMatchObject({ inviteStatus: "failed", failureReason: "bounced" });
   });
 
   it("marks nothing when the bounced address isn't the invite's", async () => {
     const { logs, counts } = await run(sns(bounce("Permanent", ["someone@example.com"], inviteTags())));
-    expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)?.status).toBeUndefined();
+    expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)?.inviteStatus).toBeUndefined();
     expect(logs.map((l) => l.message)).toContain("No pending invite for this bounce");
     expect(counts.map((c) => c.metric)).toEqual(["EmailBounces"]);
   });
@@ -345,7 +345,7 @@ describe("email events", () => {
         bounce("Permanent", [INVITEE], { [EMAIL_TAGS.kind]: "invite" as never }),
       ),
     );
-    expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)?.status).toBeUndefined();
+    expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)?.inviteStatus).toBeUndefined();
     expect(counts.map((c) => (c.metadata as { kind: string }).kind)).toEqual(["trialEnding", "unknown", "invite", "unknown"]);
     expect(table.calls).toEqual([]);
   });
@@ -360,7 +360,7 @@ describe("email events", () => {
     );
     expect(logs.filter((l) => l.message === "Ignoring an email event that isn't a bounce or complaint")).toHaveLength(4);
     expect(logs.map((l) => l.message)).toContain("Ignoring a recipient that isn't an email address");
-    expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)?.status).toBeUndefined();
+    expect(table.get(`TEAM#${TEAM}`, `INVITE#${INVITE}`)?.inviteStatus).toBeUndefined();
     const empty = await run({} as SNSEvent);
     expect(empty.logs).toEqual([]);
   });
@@ -414,6 +414,18 @@ describe("email events", () => {
     for (const a of attributes(update.input)) expect(EMAIL_EVENTS_WRITES).toContain(a);
     expect(attributes(update.input)).toEqual(new Set(EMAIL_EVENTS_WRITES));
     expect(update.input.ReturnValues).toBeUndefined();
+  });
+
+  it("writes only names no other item in a team's partition has, so it can't change a team's billing status", () => {
+    const team: Required<Team> = {
+      type: "team", teamId: "t", name: "n", plan: "p", seats: 1, status: "active", homeRegion: "r", trialEndsAt: "d", owners: 1, stripeCustomerId: "c", createdAt: "d", version: 1,
+    };
+    const member: Required<Member> = { type: "member", teamId: "t", userId: "u", role: "owner", email: "e", joinedAt: "d" };
+    // Sheets and products carry status, type, version and their document fields
+    const others = [...Object.keys(team), ...Object.keys(member), "status", "type", "version", "GSI1PK", "GSI1SK", "GSI2SK", "expiresAt"];
+    const written = EMAIL_EVENTS_WRITES.filter((a) => !["PK", "SK", "GSI2PK"].includes(a));
+    expect(written).toEqual(["inviteStatus", "failureReason", "failedAt"]);
+    for (const a of written) expect(others).not.toContain(a);
   });
 
   it("rethrows a DynamoDB error that isn't a failed condition", async () => {

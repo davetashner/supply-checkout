@@ -67,8 +67,10 @@ export interface Invite {
    * "failed" once the invite's email bounced or its recipient marked it as
    * spam (the email-events handler); absent while it's pending. The owner
    * sees it and can correct the address. Nothing re-sends it automatically.
+   * Not called `status`: the team's META item has one (its subscription), and
+   * the email-events role may write these names anywhere in a team's partition.
    */
-  readonly status?: "failed";
+  readonly inviteStatus?: "failed";
   readonly failureReason?: InviteFailure;
   /** When the failure was reported (ISO 8601). */
   readonly failedAt?: string;

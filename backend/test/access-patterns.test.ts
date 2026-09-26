@@ -389,7 +389,7 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       expect(await markInviteFailed(db, system, { inviteId: "no-such-invite", emailHash: hashEmail("bounce@example.com"), reason: "bounced", at })).toBe(false);
       expect(await markInviteFailed(db, system, { inviteId: invite.inviteId, emailHash: hashEmail("bounce@example.com"), reason: "bounced", at })).toBe(true);
       const listed = (await listInvites(db, owner)).find((i) => i.inviteId === invite.inviteId);
-      expect(listed).toMatchObject({ status: "failed", failureReason: "bounced", failedAt: at.toISOString() });
+      expect(listed).toMatchObject({ inviteStatus: "failed", failureReason: "bounced", failedAt: at.toISOString() });
       await expect(markInviteFailed(db, owner, { inviteId: invite.inviteId, emailHash: hashEmail("bounce@example.com"), reason: "bounced", at })).rejects.toThrow(ForbiddenError);
       // A failed invite keeps its keys, so it can still be revoked
       expect(await findInvite(db, token)).toBeDefined();

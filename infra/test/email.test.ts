@@ -127,7 +127,7 @@ describe("email stack", () => {
         Action: "dynamodb:UpdateItem",
         Condition: {
           "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
-          "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "status", "failureReason", "failedAt", "type", "GSI2PK"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "inviteStatus", "failureReason", "failedAt", "GSI2PK"] },
           StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
         },
       }),

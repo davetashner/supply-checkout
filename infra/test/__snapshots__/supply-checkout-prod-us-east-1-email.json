@@ -388,10 +388,9 @@
                   "dynamodb:Attributes": [
                     "PK",
                     "SK",
-                    "status",
+                    "inviteStatus",
                     "failureReason",
                     "failedAt",
-                    "type",
                     "GSI2PK"
                   ]
                 },

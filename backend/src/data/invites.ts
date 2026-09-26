@@ -93,10 +93,12 @@ export async function markInviteFailed(
       new UpdateCommand({
         TableName: db.tableName,
         Key: keys.invite(ctx.teamId, input.inviteId),
-        UpdateExpression: "SET #status = :failed, failureReason = :reason, failedAt = :at",
-        ConditionExpression: "attribute_exists(PK) AND #type = :invite AND GSI2PK = :invitee",
-        ExpressionAttributeNames: { "#status": "status", "#type": "type" },
-        ExpressionAttributeValues: { ":failed": "failed", ":reason": input.reason, ":at": input.at.toISOString(), ":invite": "invite", ":invitee": GSI2PK },
+        // inviteStatus, not status: a team's META item has a status (its
+        // subscription), and this role's policy pins the partition, not the item
+        UpdateExpression: "SET inviteStatus = :failed, failureReason = :reason, failedAt = :at",
+        // Only invites have GSI2 keys, and this one must be for the address that bounced
+        ConditionExpression: "attribute_exists(PK) AND GSI2PK = :invitee",
+        ExpressionAttributeValues: { ":failed": "failed", ":reason": input.reason, ":at": input.at.toISOString(), ":invitee": GSI2PK },
       }),
     );
     return true;
