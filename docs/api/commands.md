@@ -24,11 +24,15 @@ The claude.ai artifact build keeps its two-write path ([ADR 0004](../adr/0004-ru
 
 ## What the adapter switches
 
-| App action (src/main.js) | Today | With the AWS adapter |
+`src/moves.js` sends every checkout and return: through the commands when the
+db has `command` (the web build's adapter, `src/aws/db.js`), otherwise as the
+artifact's two writes.
+
+| App action (src/main.js) | Artifact build | Web build (AWS adapter) |
 | --- | --- | --- |
 | Check out (`checkoutModal`) | `PATCH sheets/<id>` with the whole line, then `bumpStock(key, -qty)` | `POST /teams/{teamId}/sheets/{sheetId}/checkout`. No `bumpStock`. |
 | Return (`returnModal`) | `PATCH sheets/<id>` with `returned`, then `bumpStock(key, back - before)` | `POST /teams/{teamId}/sheets/{sheetId}/return`. No `bumpStock`. |
-| Item history (new) | none | `GET /teams/{teamId}/products/{key}/movements` |
+| Item history (new) | none | `GET /teams/{teamId}/products/{key}/movements` (not used by the app yet) |
 
 Everything else stays on the document routes: creating, editing and deleting
 sheets and products, closing and reopening sheets, and **correcting a line's
@@ -131,8 +135,10 @@ starts at `quantity`) and records `unitCost`; it doesn't change the item's
 - `stockDelta` is 0 when the item doesn't track stock (it has no numeric
   `stock`), and for a one-off item.
 - The sheet's `version` goes up by one with each checkout or return, so an
-  edit screen that sends `expectedVersion` sees the change. Product `version`
-  doesn't change: stock moves without a new version, as with the documents.
+  edit screen that sends `expectedVersion` sees the change. So does the
+  product's with every change to its `stock` (not for an item that doesn't
+  track stock), so an inventory edit made against the version before a
+  command gets `409` instead of overwriting the command's stock change.
 - Live updates: the sheet and product each produce a change event, as a
   document write does.
 
@@ -151,6 +157,11 @@ The toast text the app shows today still works: "Checked out 3 × <name>" from
 - Make a **new ID** for a new action, including the person tapping the button
   again after a result was shown. Two taps that each produce their own confirmed
   action are two checkouts.
+- The web build's adapter does this with an `action` object per confirmed
+  form (`src/moves.js`, `src/aws/db.js`): the first attempt makes the ID, and
+  every attempt with the same request reuses it, including a second tap while
+  the first is still on its way. If the person changes the request after a
+  failure (another quantity, say), it's a new operation with a new ID.
 - The server keeps the result for **7 days**. A retry within that returns the
   first result and changes nothing. After that the ID is forgotten, so don't
   queue retries for longer.

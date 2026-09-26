@@ -115,7 +115,8 @@ describe("checkout", () => {
         at: "2026-09-26T12:00:00.000Z",
       },
       sheet: { id: "s1", version: 2 },
-      product: { id: "0123", version: 3, data: { stock: 7 } },
+      // Every stock change is a new product version, for the edit screens' conditional writes
+      product: { id: "0123", version: 4, data: { stock: 7 } },
     });
     expect(line()).toEqual({ code: "0123", name: "Nitrile gloves", price: 12.5, cost: 9.99, out: 3, returned: 0 });
     expect(res.body.sheet.data.items["0123"]).toEqual(line());
@@ -194,6 +195,7 @@ describe("return", () => {
     expect(res).toMatchObject({ status: 200, body: { replayed: false, result: { command: "return", reason: "return", quantity: 3, stockDelta: 3 } } });
     expect(line()).toMatchObject({ out: 5, returned: 4 });
     expect(stock()).toBe(13);
+    expect(table.get("TEAM#team-a", "PRODUCT#0123")?.version).toBe(4);
     expect(movements()).toEqual([expect.objectContaining({ reason: "return", delta: 3, sheetId: "s1" })]);
     expect(counts).toMatchObject({ Returns: 3, Writes: 1 });
   });
@@ -230,6 +232,7 @@ describe("stock adjust", () => {
     const res = await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "receipt", quantity: 24, unitCost: 0.42 });
     expect(res).toMatchObject({ status: 200, body: { result: { command: "stockAdjust", reason: "receipt", quantity: 24, stockDelta: 24, unitCost: 0.42 }, product: { data: { stock: 34, price: 12.5, cost: 9.99 } } } });
     expect(res.body.sheet).toBeUndefined();
+    expect(res.body.product.version).toBe(4);
     expect(movements()).toEqual([expect.objectContaining({ reason: "receipt", delta: 24, unitCost: 0.42, tracked: true })]);
   });
 
@@ -237,6 +240,7 @@ describe("stock adjust", () => {
     const res = await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "count", count: 4 });
     expect(res.body.result).toMatchObject({ reason: "count", count: 4, stockDelta: -6 });
     expect(stock()).toBe(4);
+    expect(res.body.product.version).toBe(4);
     expect(movements()).toEqual([expect.objectContaining({ reason: "count", count: 4, delta: -6 })]);
   });
 
@@ -245,10 +249,36 @@ describe("stock adjust", () => {
     expect((await call("POST", "/teams/team-a/products/nb-1/stock", { operationId: op(), reason: "count", count: 3 })).body.result.stockDelta).toBe(3);
     table.put({ PK: "TEAM#team-a", SK: "PRODUCT#nb-2", type: "product", key: "nb-2", version: 1, name: "Bags", price: 1 });
     expect((await call("POST", "/teams/team-a/products/nb-2/stock", { operationId: op(), reason: "receipt", quantity: 5, unitCost: 1 })).body.product.data.stock).toBe(5);
+    // An item stored without a version reads as version 1, so a stock change makes it 2
+    table.put({ PK: "TEAM#team-a", SK: "PRODUCT#nb-3", type: "product", key: "nb-3", name: "Mops", price: 1, stock: 1 });
+    expect((await call("GET", "/teams/team-a/products/nb-3")).body.version).toBe(1);
+    expect((await call("POST", "/teams/team-a/products/nb-3/stock", { operationId: op(), reason: "receipt", quantity: 1, unitCost: 1 })).body.product.version).toBe(2);
   });
 
   it("needs the item to exist", async () => {
     expect((await call("POST", "/teams/team-a/products/nope/stock", { operationId: op(), reason: "count", count: 1 })).status).toBe(404);
+  });
+});
+
+describe("edits after a command", () => {
+  it("refuse a product write made against the version before a checkout, return or stock change, so none of them is overwritten", async () => {
+    seed({ sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 5, returned: 1 } } } });
+    const edit = (expectedVersion: number) => call("PATCH", "/teams/team-a/products/0123", { data: { stock: 10, price: 13 }, expectedVersion });
+    await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2 });
+    expect((await edit(3)).body.error.code).toBe("aborted");
+    await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "0123", quantity: 1 });
+    expect((await edit(4)).body.error.code).toBe("aborted");
+    await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "count", count: 20 });
+    expect((await edit(5)).body.error.code).toBe("aborted");
+    expect(stock()).toBe(20);
+    // Made against the latest version, it saves
+    expect((await edit(6)).body).toMatchObject({ version: 7, data: { stock: 10, price: 13 } });
+  });
+
+  it("leave an untracked product's version alone, since its stock didn't change", async () => {
+    seed({ product: { code: "0123", name: "Nitrile gloves", price: 12.5 } });
+    await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 2 });
+    expect(table.get("TEAM#team-a", "PRODUCT#0123")?.version).toBe(3);
   });
 });
 

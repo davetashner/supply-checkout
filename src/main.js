@@ -9,6 +9,7 @@ import { RECEIPT_PROMPT, sampleErr } from "./receipt-prompt.js";
 
 async function bumpStock(key, delta) {
   // Adds (or removes) units from the storage count. Items nobody has counted stay uncounted when removing.
+  // The artifact build only: in the web build, checkouts and returns move stock on the server (src/moves.js).
   const p = products[key]; if (!p || !delta) return true;
   if (!hasStock(p) && delta < 0) return true;
   return write(() => setStock(db, key, Math.max(0, (hasStock(p) ? p.stock : 0) + delta)));
@@ -217,7 +218,7 @@ function newSheetModal(existing) {
 }
 
 function checkoutModal(s, code, key = keyOf(code)) {
-  const prod = products[key], line = own(s.items || {}, key);
+  const prod = products[key], line = own(s.items || {}, key), action = {};
   openModal(`
     <h2>Check out</h2>
     <div class="code">${esc(codeText(code))}</div>
@@ -237,16 +238,19 @@ function checkoutModal(s, code, key = keyOf(code)) {
     m.querySelector("#f").addEventListener("submit", async e => {
       e.preventDefault();
       const qty = getQty(); if (!qty) { toast("Choose at least 1."); return; }
-      let name = prod && prod.name, price = prod ? Number(prod.price) || 0 : 0;
+      let name = prod && prod.name, price = prod ? Number(prod.price) || 0 : 0, oneOff = {};
       if (!prod) {
         name = m.querySelector("#fName").value.trim(); price = Math.max(0, Number(m.querySelector("#fPrice").value) || 0);
         if (!name) return;
         const save = code || m.querySelector("#fSave").checked;
         if (save && !await write(() => db.doc("products/" + key).set({ code, name, price, updatedAt: new Date().toISOString() }))) return;
+        // Not saved to inventory: the line's name and price come from here (whole cents, as the API takes them)
+        if (!save) oneOff = { name, price: round2(price), code };
       }
       const fresh = currentSheet() || s, cur = own(fresh.items || {}, key);
       const item = { code, name: cur ? cur.name : name, price: cur ? cur.price : price, out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) };
-      if (await write(() => checkOut(db, s.id, key, item), `Checked out ${qty} × ${item.name}`)) { closeModal(); await bumpStock(key, -qty); }
+      let then;
+      if (await write(async () => { then = await checkOut(db, action, s.id, key, qty, item, oneOff, bumpStock); }, `Checked out ${qty} × ${item.name}`)) { closeModal(); await then(); }
     });
   });
 }
@@ -286,7 +290,7 @@ function pickReturnModal(s) {
 }
 
 function returnModal(s, code, key = keyOf(code)) {
-  const line = own(s.items || {}, key), prod = products[key];
+  const line = own(s.items || {}, key), prod = products[key], action = {};
   if (!line) {
     openModal(`
       <h2>Not on this sheet</h2>
@@ -331,7 +335,8 @@ function returnModal(s, code, key = keyOf(code)) {
       // Add to the latest count, in case someone else recorded a return meanwhile
       const cur = own((currentSheet() || s).items || {}, key) || line;
       const out = int(cur.out), before = Math.min(int(cur.returned), out), back = Math.min(out, before + r);
-      if (await write(() => recordReturn(db, s.id, key, back), `${back - before} returned · ${back} of ${out} back`)) { closeModal(); await bumpStock(key, back - before); }
+      let then;
+      if (await write(async () => { then = await recordReturn(db, action, s.id, key, before, back, bumpStock); }, `${back - before} returned · ${back} of ${out} back`)) { closeModal(); await then(); }
     });
   });
 }

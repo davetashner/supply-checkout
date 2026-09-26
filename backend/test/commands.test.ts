@@ -77,6 +77,9 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
     expect(moves.find((m) => m.reason === "receipt")).toMatchObject({ unitCost: 0.75, quantity: 12, delta: 12 });
     // The sheet's version moved with every line change, for the edit screens' conditional writes
     expect((await getDocument(db, ctx, "sheets", "s1"))?.version).toBe(1 + 3);
+    // And the product's with every stock change, so a PATCH made against an older one conflicts
+    expect((await getDocument(db, ctx, "products", "0123"))?.version).toBe(1 + 5);
+    await expect(updateDocument(db, ctx, "products", "0123", { stock: 100 }, { expectedVersion: 5 })).rejects.toThrow(ConflictError);
     // Operation records expire after a week
     const op = await rawItem(db, `TEAM#${ctx.teamId}`, `OP#${out.result.operationId}`);
     expect(op?.expiresAt).toBe(Date.parse("2026-09-26T12:00:01.000Z") / 1000 + 7 * 86400);
