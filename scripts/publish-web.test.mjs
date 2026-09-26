@@ -29,8 +29,8 @@ function build() {
   return dir;
 }
 
-/** A fake AWS CLI: records every call, answers reads from `existing` releases. */
-function fakeAws({ existing = [], params = PARAMS } = {}) {
+/** A fake AWS CLI: records every call, answers reads from `existing` demo and `apps` app releases. */
+function fakeAws({ existing = [], apps = [], params = PARAMS } = {}) {
   const calls = [];
   const log = [];
   const run = (cmd, args) => {
@@ -43,7 +43,8 @@ function fakeAws({ existing = [], params = PARAMS } = {}) {
     }
     if (service === "s3api" && op === "head-object") {
       const key = args[args.indexOf("--key") + 1];
-      if (existing.some((v) => key === `releases/${v}/index.html`)) return "{}";
+      if ([...existing, ...apps].some((v) => key === `releases/${v}/index.html`)) return "{}";
+      if (apps.some((v) => key === `releases/${v}/config.json`)) return "{}";
       throw new Error("404");
     }
     if (op === "describe-key-value-store") return JSON.stringify({ ETag: "etag-1" });
@@ -125,10 +126,32 @@ test("a dry run prints the writes and changes nothing", () => {
 });
 
 test("activate switches to an existing release only", () => {
-  const aws = fakeAws({ existing: ["1.1.0"] });
+  const aws = fakeAws({ apps: ["1.1.0"] });
   main(["activate", "--channel", "app", "--version", "1.1.0"], aws.deps);
   assert.equal(writes(aws.calls).length, 1);
+  const demo = fakeAws({ existing: ["demo-1"] });
+  main(["activate", "--channel", "demo", "--version", "demo-1"], demo.deps);
+  assert.equal(writes(demo.calls).length, 1);
   assert.throws(() => main(["activate", "--channel", "app", "--version", "9.9.9"], fakeAws().deps), /No release 9\.9\.9/);
+});
+
+test("activate refuses a release from the other channel", () => {
+  // An app release (it has config.json) never goes live at /demo/
+  const app = fakeAws({ apps: ["1.1.0"] });
+  assert.throws(() => main(["activate", "--channel", "demo", "--version", "1.1.0"], app.deps), /1\.1\.0 is an app release .*demo channel/);
+  assert.deepEqual(writes(app.calls), []);
+  // Nor a demo release on app.
+  const demo = fakeAws({ existing: ["demo-1"] });
+  assert.throws(() => main(["activate", "--channel", "app", "--version", "demo-1"], demo.deps), /demo-1 is a demo release .*app channel/);
+  assert.deepEqual(writes(demo.calls), []);
+});
+
+test("publishing the demo refuses an app build (a folder with config.json)", () => {
+  const dir = build();
+  writeFileSync(path.join(dir, "config.json"), "{}");
+  const aws = fakeAws();
+  assert.throws(() => main(["publish", "--channel", "demo", "--dir", dir, "--version", "demo-3"], aws.deps), /has a config\.json/);
+  assert.deepEqual(writes(aws.calls), []);
 });
 
 test("status lists live versions and releases", () => {
