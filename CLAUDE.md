@@ -31,10 +31,12 @@ Beads are labeled `mvp` or `phase-2` (native mobile apps, full active-active fai
 ## Git and PRs
 
 - `main` is protected by a ruleset: PR required, **squash merge only**, `CI passed` must be green, and the branch must be up to date. No bypass.
+- With a merge queue on main (a `merge_queue` rule in the ruleset), PRs merge through the queue: it runs CI on each PR on top of main and squash-merges it, so branches don't need updating by hand.
+- CI on a pull request runs the browser tests in desktop Chrome and iPhone Safari only, against both builds (coverage in desktop Chrome). The merge queue, pushes to main, manual runs and a nightly run use all 12 browser jobs, so a failure in another browser can first show up there.
 - Work in a worktree: `git worktree add .claude/worktrees/<type>/<name> -b <type>/<name> origin/main`.
 - PR titles are Conventional Commits; release-please turns `fix:` / `feat:` into releases. Keep app fixes in their own `fix:` PR, separate from `test:` or `docs:` work.
 - Sign off commits (`git commit -s`). Put a `Closes <bead-id>` line in the PR body for each finished bead.
-- Land a PR with `npm run land -- <pr>` from the main checkout. It updates a branch that's behind, waits for CI (printing the failing log if it fails), squash-merges, removes the worktree and branch, pulls main, closes the `Closes` beads, and says whether the beads export is stale. It exits non-zero whenever the PR isn't merged: when main's ruleset blocks a green PR it names the rule and prints the `gh pr review <pr> --approve` command (release-please PRs always need a human approval), it waits up to 3 minutes for an UNKNOWN merge state to settle, and it still cleans up a PR someone else already merged. Its tests are `npm run test:scripts`.
+- Land a PR with `npm run land -- <pr>` from the main checkout. It updates a branch that's behind, waits for CI (printing the failing log if it fails), squash-merges (or, when main has a merge queue, waits for the PR's CI, adds it to the queue and waits for the queue to merge it, printing the merge group's failing log if the queue drops it), removes the worktree and branch, pulls main, closes the `Closes` beads, and says whether the beads export is stale. It exits non-zero whenever the PR isn't merged: when main's ruleset blocks a green PR it names the rule and prints the `gh pr review <pr> --approve` command (release-please PRs always need a human approval), it waits up to 3 minutes for an UNKNOWN merge state to settle, and it still cleans up a PR someone else already merged. Its tests are `npm run test:scripts`.
 
 ## Tests
 

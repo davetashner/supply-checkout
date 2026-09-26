@@ -31,7 +31,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `scripts/validate-html.mjs` | HTML validation (html-validate). |
 | `scripts/dev-server.mjs` | Local dev server with the mock runtime (`npm run dev`). |
 | `scripts/render-icons.mjs` | Renders the favicon's PNG fallbacks from `src/icons/favicon.svg` with Playwright's Chromium (`npm run icons`). Run it after changing the SVG, and commit the PNGs. |
-| `scripts/land-pr.sh` | Waits for CI, squash-merges a PR, cleans up its worktree and branch, and closes its beads (`npm run land -- <pr>`). Exits non-zero if the PR isn't merged, and explains a PR that main's ruleset blocks. |
+| `scripts/land-pr.sh` | Waits for CI, squash-merges a PR (or adds it to the merge queue and waits for the queue to merge it), cleans up its worktree and branch, and closes its beads (`npm run land -- <pr>`). Exits non-zero if the PR isn't merged, and explains a PR that main's ruleset blocks. |
 | `scripts/land-pr.test.sh` | Tests for `land-pr.sh` against a fake `gh` in a throwaway repo (`npm run test:scripts`, which also runs shellcheck). |
 | `scripts/check-public-safety.mjs` | Blocks AWS identifiers, email addresses and credentials from this public repo (pre-commit hook and CI). |
 | `scripts/check-region-strings.mjs` | Blocks AWS region names in `infra/`, `backend/` and `src/` outside `infra/lib/config.ts` (ADR 0010; pre-commit hook and CI). |
@@ -460,7 +460,7 @@ A full run starts a browser in every worker, and WebKit workers can each take ov
 - **Fewer workers.** Locally, Playwright uses one worker per 8 GB of RAM, and at most half the CPU cores (`localWorkers` in `playwright.config.js`). That's 2 on a 16 GB laptop. Pass `--workers=N` to change it for one run. CI uses Playwright's default.
 - **One run at a time.** Each run takes a lock in the repo's shared `.git` directory (`tests/run-lock.js`), so a run started in another worktree waits and prints which run it's waiting for. A lock left by a run that was killed is taken over automatically. CI skips the lock.
 
-While working on a change, run just the file and browser you're touching, e.g. `npx playwright test tests/sheets.spec.js --project=desktop-chrome`. Save `npm run check` for before you open a PR; CI runs every browser and build anyway.
+While working on a change, run just the file and browser you're touching, e.g. `npx playwright test tests/sheets.spec.js --project=desktop-chrome`. Save `npm run check` for before you open a PR; CI runs every browser and build anyway (pull requests run desktop Chrome and iPhone Safari, and the merge queue runs the rest).
 
 | Suite | What it checks |
 | --- | --- |
@@ -493,6 +493,8 @@ The mock (`tests/mock-claude.js`) has opt-in failure modes, so tests can reach e
 
 `main` is protected. Every change goes through a pull request that is **squash-merged**, and the PR title becomes the commit message. Merging requires the **CI passed** check, and the branch must be up to date with `main`. Force pushes and branch deletion are blocked, and history stays linear.
 
+When the ruleset has a merge queue, pull requests merge through it: `npm run land -- <pr>` (or `gh pr merge <pr> --squash`) adds a PR whose CI passed to the queue, and the queue runs the full CI on the PR on top of `main`, and on top of any PRs ahead of it, before squash-merging it. A PR whose merge group fails CI leaves the queue unmerged. The queue keeps branches current, so they don't need updating by hand.
+
 Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) style. CI rejects titles that don't match.
 
 - `fix: …` → patch release
@@ -502,11 +504,11 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every pull request, on pushes to `main`, and on release-please's pull request. The **CI passed** job succeeds only if every job below passes (or is skipped because it doesn't apply):
+`.github/workflows/ci.yml` runs on every pull request, on each merge queue group, on pushes to `main`, nightly, and on release-please's pull request. The **CI passed** job succeeds only if every job below passes (or is skipped because it doesn't apply). Pull requests run a smaller browser matrix; everything else runs all of it:
 
 | Job | Gate |
 | --- | --- |
-| PR title | Conventional Commits format |
+| PR title | Conventional Commits format (pull requests only) |
 | Lint and validate HTML | ESLint on `src/`, `demo/`, scripts and tests; builds all three and runs html-validate on each |
 | Lint GitHub workflows | actionlint |
 | No region names outside the config module | `scripts/check-region-strings.mjs`: fails on any AWS region name in `infra/`, `backend/` or `src/` outside `infra/lib/config.ts` (ADR 0010) |
@@ -514,9 +516,9 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | Secret scan | gitleaks on every commit in the history, and `scripts/check-public-safety.mjs` on every file (AWS account and SSO identifiers, email addresses, AWS and Stripe keys, private keys) |
 | Dependency audit | `npm audit` fails on high-severity advisories; dependency review fails a PR that adds a moderate-or-worse vulnerable package |
 | CodeQL (javascript-typescript), CodeQL (actions) | CodeQL `security-extended` queries on the app, scripts, tests and workflows (`.github/workflows/codeql.yml`, which also runs weekly). Results go to the repository's code scanning alerts |
-| Backend | Only when `backend/`, `docs/api/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint (with the DynamoDB ban), the handler and OpenAPI tests, and the data-access tests against DynamoDB Local, which runs as a service container |
-| Infra | Only when `infra/`, `backend/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint, the CDK unit and snapshot tests (which skip Lambda bundling), and a synth with cdk-nag (which bundles the handlers with esbuild from `backend/`) for the deployed region and for both regions; the tests also synth every stack, identity and web included, in each region on its own |
-| Tests (browser, artifact or web build) | All test suites, in twelve parallel jobs: desktop Chrome and iPhone Safari against each build, and desktop Firefox, Safari and Edge, Android Chrome (Pixel portrait and landscape, Galaxy) and iPad Safari (portrait and landscape) against the web build. The web jobs also test the demo build. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
+| Backend | Only when `backend/`, `docs/api/` or the CI workflow changes in the pull request or merge queue group (always on `main`, nightly and manual runs): `npm audit`, type-check and ESLint (with the DynamoDB ban), the handler and OpenAPI tests, and the data-access tests against DynamoDB Local, which runs as a service container |
+| Infra | Only when `infra/`, `backend/` or the CI workflow changes in the pull request or merge queue group (always on `main`, nightly and manual runs): `npm audit`, type-check and ESLint, the CDK unit and snapshot tests (which skip Lambda bundling), and a synth with cdk-nag (which bundles the handlers with esbuild from `backend/`) for the deployed region and for both regions; the tests also synth every stack, identity and web included, in each region on its own |
+| Tests (browser, artifact or web build) | All test suites. On a pull request, four parallel jobs: desktop Chrome and iPhone Safari against each build. On the merge queue, `main`, the nightly run (07:23 UTC) and manual runs, twelve: those four plus desktop Firefox, Safari and Edge, Android Chrome (Pixel portrait and landscape, Galaxy) and iPad Safari (portrait and landscape) against the web build. The `Detect changed areas` job picks the matrix. The web jobs also test the demo build and the CloudFront Content-Security-Policy. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
 
 ## Releases
 
