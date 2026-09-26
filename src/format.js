@@ -14,7 +14,12 @@ export const own = (obj, k) => Object.hasOwn(obj, k) ? obj[k] : undefined;
 export const int = v => Math.max(0, Math.floor(Number(v) || 0));
 export const codeText = c => c ? "Barcode " + c : "No barcode";
 export const hasStock = p => p && typeof p.stock === "number";
+// A product's cost each (ADR 0014): missing means unknown
+export const hasCost = p => typeof p.cost === "number" && Number.isFinite(p.cost);
+// What one each in storage is worth: its cost where known, its price otherwise
+export const unitValue = p => hasCost(p) ? p.cost : Number(p.price) || 0;
 export const newKey = () => "nb-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 export const uid = () => Math.random().toString(36).slice(2, 9);
-export const round2 = n => Math.round((Number(n) || 0) * 100) / 100;
+// Rounds to cents, halves up (ADR 0014). toPrecision first, so 1.005 (really 1.00499…) is 1.01
+export const round2 = n => Math.round(Number(((Number(n) || 0) * 100).toPrecision(12))) / 100;
 export const numOrNull = n => (n === null || n === undefined || n === "" || isNaN(Number(n))) ? null : round2(n);

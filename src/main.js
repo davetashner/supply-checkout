@@ -1,7 +1,7 @@
 import "./theme.js";
 import { use, help } from "./runtime.js";
 import { checkOut, recordReturn, setStock } from "./moves.js";
-import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, newKey, uid, round2, numOrNull } from "./format.js";
+import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, newKey, uid, round2, numOrNull } from "./format.js";
 import { lines, totals } from "./sheet-math.js";
 import { $, toast, openModal, closeModal, armButton, stepperHTML, setText, setHTML, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
@@ -174,9 +174,9 @@ function drawPrices() {
       ${canWrite ? `<button type="button" class="btn primary" id="addProduct">+ Add item</button>` : ""}
     </div>
     ${list.length ? `<div class="table-wrap"><table class="prices">
-      <thead><tr><th>Item</th><th>In storage</th><th>Price each</th><th>Value</th></tr></thead>
-      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || "Unnamed item")}<span class="code">${esc(codeText(p.code))}</span></td><td class="${hasStock(p) ? "" : "muted"}">${hasStock(p) ? p.stock : "—"}</td><td>${money(p.price)}</td><td>${hasStock(p) ? money(p.stock * (Number(p.price) || 0)) : "—"}</td></tr>`).join("")}</tbody>
-      <tfoot><tr><td>Total in storage</td><td>${list.reduce((a, p) => a + (hasStock(p) ? p.stock : 0), 0)}</td><td></td><td>${money(list.reduce((a, p) => a + (hasStock(p) ? p.stock * (Number(p.price) || 0) : 0), 0))}</td></tr></tfoot>
+      <thead><tr><th>Item</th><th>In storage</th><th>Price each</th><th>Cost each</th><th>Value</th></tr></thead>
+      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || "Unnamed item")}<span class="code">${esc(codeText(p.code))}</span></td><td class="${hasStock(p) ? "" : "muted"}">${hasStock(p) ? p.stock : "—"}</td><td>${money(p.price)}</td><td class="${hasCost(p) ? "" : "muted"}">${hasCost(p) ? money(p.cost) : "—"}</td><td>${hasStock(p) ? money(storageCents(p) / 100) : "—"}</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td>Total in storage</td><td>${list.reduce((a, p) => a + (hasStock(p) ? p.stock : 0), 0)}</td><td></td><td></td><td>${money(list.reduce((a, p) => a + storageCents(p), 0) / 100)}</td></tr></tfoot>
     </table></div>` : `<div class="empty">${connected ? "No items yet. Add one, or scan a barcode on a sheet." : "Loading…"}</div>`}`;
   const ap = $("#addProduct"); ap && ap.addEventListener("click", () => productModal(null));
   $("#main").querySelectorAll("tr[data-prod]").forEach(tr => {
@@ -364,6 +364,11 @@ function lineModal(s, key) {
   });
 }
 
+// An item's storage value in whole cents (ADR 0014): its count times its cost each, or
+// its price each where the cost isn't known
+const MAX_PACK = 10000;
+const storageCents = p => hasStock(p) ? Math.round(p.stock * round2(unitValue(p)) * 100) : 0;
+
 function productModal(key) {
   const p = key ? products[key] : null;
   openModal(`
@@ -374,8 +379,11 @@ function productModal(key) {
             : `<div class="manual"><input type="text" id="fCode" inputmode="numeric" autocomplete="off" placeholder="Type, scan, or leave blank"><label class="btn" for="fScan">Scan</label></div><input class="vh" type="file" id="fScan" accept="image/*" capture="environment">`}
       </div>
       <div class="field"><label for="fName">Item name</label><input type="text" id="fName" required value="${esc(p ? p.name : "")}" ${p ? "autofocus" : ""}></div>
-      <div class="field"><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" step="0.01" inputmode="decimal" value="${p ? (Number(p.price) || 0) : ""}" placeholder="0.00"></div>
+      <div class="field"><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" step="0.01" inputmode="decimal" value="${p ? round2(p.price) : ""}" placeholder="0.00"></div>
+      <div class="field"><label for="fCost">Cost each ($)</label><input type="number" id="fCost" min="0" step="0.01" inputmode="decimal" value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="Leave blank if not known"></div>
       <div class="field"><label for="fStock">In storage now</label><input type="number" id="fStock" min="0" inputmode="numeric" value="${hasStock(p) ? p.stock : ""}" placeholder="Leave blank if not counted"></div>
+      <div class="field"><label for="fPack">Comes in packs of</label><input type="number" id="fPack" min="1" max="${MAX_PACK}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.packSize) ? p.packSize : ""}" placeholder="1"></div>
+      <p class="hint">Price is what a client is charged. Cost is what you paid each, before tax, and isn't shown on sheets. Storage counts single items, not packs.</p>
       ${p ? `<p class="hint">Price changes apply to new checkouts. Sheets keep the price they were checked out at; change it on a sheet by tapping the row.</p>` : ""}
       <div class="modal-actions">${p ? `<button type="button" class="btn danger" id="remove">Delete</button><span class="spacer"></span>` : ""}<button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div>
     </form>`, m => {
@@ -387,11 +395,16 @@ function productModal(key) {
     m.querySelector("#f").addEventListener("submit", async e => {
       e.preventDefault();
       const code = p ? (p.code || "") : m.querySelector("#fCode").value.trim();
-      const name = m.querySelector("#fName").value.trim(), price = Math.max(0, Number(m.querySelector("#fPrice").value) || 0);
+      const name = m.querySelector("#fName").value.trim(), price = Math.max(0, round2(m.querySelector("#fPrice").value));
       if (!name) return;
       const docKey = p ? key : (code ? keyOf(code) : newKey());
-      const body = { code, name, price, updatedAt: new Date().toISOString() };
-      const st = m.querySelector("#fStock").value.trim(); if (st !== "") body.stock = int(st);
+      // set replaces the whole item, so start from what's there: fields this form doesn't
+      // manage survive an edit (ADR 0014). A blank optional field removes it.
+      const body = { ...(p || {}), code, name, price, updatedAt: new Date().toISOString() };
+      const opt = (id, field, val) => { const v = m.querySelector(id).value.trim(); if (v === "") delete body[field]; else body[field] = val(v); };
+      opt("#fStock", "stock", int);
+      opt("#fCost", "cost", v => Math.max(0, round2(v)));
+      opt("#fPack", "packSize", v => Math.min(MAX_PACK, Math.max(1, int(v))));
       if (await write(() => db.doc("products/" + docKey).set(body), "Saved")) closeModal();
     });
   });
