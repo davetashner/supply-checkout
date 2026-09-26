@@ -414,12 +414,7 @@ npm run lint        # tsc type-check and ESLint, including the DynamoDB ban
 npm test            # vitest; the access-pattern tests need DynamoDB Local
 ```
 
-`test/data-api.test.ts` and `test/account-api.test.ts` run the data and account handlers against an in-memory table that refuses calls outside the partitions the request's session tags allow, as the IAM policies do; they have the isolation negative tests. The access-pattern tests (and `test/documents.test.ts`) run every entity in ADR 0005 against [DynamoDB Local](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBLocal.html), each test file in a fresh table. They're skipped unless `DYNAMODB_ENDPOINT` is set. To run them locally with Docker:
-
-```bash
-docker run --rm -d -p 8000:8000 amazon/dynamodb-local:3.0.0
-DYNAMODB_ENDPOINT=http://localhost:8000 npm test
-```
+`test/data-api.test.ts` and `test/account-api.test.ts` run the data and account handlers against an in-memory table that refuses calls outside the partitions the request's session tags allow, as the IAM policies do; they have the isolation negative tests. The access-pattern tests (and `test/documents.test.ts`) run every entity in ADR 0005 against [DynamoDB Local](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBLocal.html), each test file in a fresh table. They're skipped unless `DYNAMODB_ENDPOINT` is set. `npm run test:ddb` (`scripts/test-ddb.ts`) runs everything against DynamoDB Local locally: it starts CI's image (read from `ci.yml`) with Docker, colima's docker context or Podman on a free port, runs vitest (extra arguments go to vitest), and always removes the container. With no runtime it says how to get one (`brew install colima docker && colima start` on macOS).
 
 ## Supported browsers
 
