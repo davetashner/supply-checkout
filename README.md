@@ -16,6 +16,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | --- | --- |
 | `src/index.html` | The page: head (fonts, ZXing from a CDN) and markup. |
 | `src/styles.css` | All of the app's styles. |
+| `src/icons/` | The barcode favicon: `favicon.svg` (the source, drawn on a 16 px grid so it stays crisp at 16 and 32 px, with dark-mode colors), and its PNG fallbacks `favicon-32.png` and `apple-touch-icon.png` (180 px), which `npm run icons` renders from the SVG. The web build and demo serve all three from `assets/`; the artifact inlines only the SVG, as a `data:` URI. |
 | `src/main.js` | App state, screens, modals, receipt review, and startup. |
 | `src/runtime.js` | `use()`, the one place the app reaches the claude.ai runtime (`window.claude`). |
 | `src/format.js`, `src/sheet-math.js` | Formatting helpers and sheet totals, with no app state. |
@@ -29,6 +30,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `scripts/page.mjs` | Wraps the artifact in the same document skeleton claude.ai adds at publish time. |
 | `scripts/validate-html.mjs` | HTML validation (html-validate). |
 | `scripts/dev-server.mjs` | Local dev server with the mock runtime (`npm run dev`). |
+| `scripts/render-icons.mjs` | Renders the favicon's PNG fallbacks from `src/icons/favicon.svg` with Playwright's Chromium (`npm run icons`). Run it after changing the SVG, and commit the PNGs. |
 | `scripts/land-pr.sh` | Waits for CI, squash-merges a PR, cleans up its worktree and branch, and closes its beads (`npm run land -- <pr>`). Exits non-zero if the PR isn't merged, and explains a PR that main's ruleset blocks. |
 | `scripts/land-pr.test.sh` | Tests for `land-pr.sh` against a fake `gh` in a throwaway repo (`npm run test:scripts`, which also runs shellcheck). |
 | `scripts/check-public-safety.mjs` | Blocks AWS identifiers, email addresses and credentials from this public repo (pre-commit hook and CI). |
