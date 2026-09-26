@@ -86,7 +86,7 @@ npm run synth:all-regions  # the same for every approved region (-c regions=all)
 npm run test:update # accept template snapshot changes after reviewing them
 ```
 
-**Stacks.** Every stack is named `supply-checkout-<env>-<region>-<component>`. Each region in the environment gets `data` (stateful: table, keys, buckets), `api` and `realtime` (stateless), and `observability`. The primary region also gets `identity` (stateful: Cognito) and `web` (CloudFront and WAF). Stateful stacks have termination protection. Every stack writes `/supply-checkout/<env>/<component>/stack` to SSM Parameter Store, and later stacks publish their outputs beside it. All resources are tagged `app=supply-checkout`.
+**Stacks.** Every stack is named `supply-checkout-<env>-<region>-<component>`. Each region in the environment gets `domain` (certificates, DNS records and the SES domain; see [Domain and email](#domain-and-email)), `data` (stateful: table, keys, buckets), `api` and `realtime` (stateless), and `observability`. The primary region also gets `identity` (stateful: Cognito) and `web` (CloudFront and WAF). `GLOBAL_SERVICES_REGION` always has a `domain` stack, because CloudFront, Cognito and AppSync only accept certificates from there. Stateful stacks have termination protection. Every stack writes `/supply-checkout/<env>/<component>/stack` to SSM Parameter Store, and later stacks publish their outputs beside it. All resources are tagged `app=supply-checkout`.
 
 **Regions.** The MVP runs in **us-east-1 only**. Every stack takes its region as a parameter, and the tests and CI also synthesize us-west-2 (`synth:all-regions`), so turning on the second region from [ADR 0010](docs/adr/0010-multi-region-active-active.md) is a config change: add it to `DEFAULT_REGIONS` in `lib/config.ts`. CDK is already bootstrapped in us-west-2. `lib/config.ts` is the only file in `infra/`, `backend/` or `src/` that may name a region: it holds `APPROVED_REGIONS`, `DEFAULT_REGIONS` and `GLOBAL_SERVICES_REGION` (where AWS requires CloudFront's certificate and WAF, and where Cognito lives). Stacks get their region as a parameter, Lambdas read `AWS_REGION`, and tests import the constants. `npm run check:regions` (in CI and the pre-commit hook) enforces this.
 
@@ -102,7 +102,7 @@ npm run test:update # accept template snapshot changes after reviewing them
 Validations.of(bucket).acknowledge({ id: "AwsSolutions-S1", reason: "…why this is safe…" });
 ```
 
-**Deploying** (until the pipeline in [ADR 0012](docs/adr/0012-cicd-releases-rollbacks.md) takes over):
+**Deploying** (until the pipeline in [ADR 0012](docs/adr/0012-cicd-releases-rollbacks.md) takes over). Before the first deploy, create the SSM parameters the stacks read: the hosted zone and DMARC report address ([Domain and email](#domain-and-email)) and the alarm recipients (below).
 
 ```bash
 aws sso login --profile supply-prod
@@ -130,6 +130,75 @@ aws cloudwatch set-alarm-state --profile supply-prod --region us-east-1 \
   --alarm-name supply-checkout-prod-p1-checkout-broken \
   --state-value ALARM --state-reason "Testing the P1 page"
 ```
+
+### Domain and email
+
+`lib/domain.ts` names every host, and each region's `domain` stack (`lib/stacks/domain-stack.ts`) holds the certificates and records for them (`supply-checkout-m64`). Prod serves `supplycheckout.com` itself; any other environment serves `<env>.supplycheckout.com` from a zone in its own account.
+
+| Name | What serves it | Certificate |
+| --- | --- | --- |
+| apex, `www.` | the demo, until the real app launches (CloudFront) | `web`, in `GLOBAL_SERVICES_REGION` |
+| `app.` | the web app (CloudFront) | `web`, in `GLOBAL_SERVICES_REGION` |
+| `auth.` | Cognito Managed Login | `auth`, in `GLOBAL_SERVICES_REGION` |
+| `realtime.` | AppSync Events | `realtime`, in `GLOBAL_SERVICES_REGION` |
+| `api.` | the HTTP API, in every region | `api`, in each region |
+| `mail.` | SES custom MAIL FROM (MX and SPF) | none |
+
+The certificates are validated by DNS in the zone; CloudFormation adds the validation records and waits a few minutes for issuance. Each ARN is published to SSM as `/supply-checkout/<env>/domain/<name>-certificate-arn`, in the stack's region. The names start to resolve when the stacks that use them add their alias records: `web` (`supply-checkout-qk1`), `identity` (`supply-checkout-zsm`), `api` and `realtime`. Those stacks import the zone with `importZone()` from `lib/domain.ts`.
+
+In the primary region, the stack also creates the SES domain identity with Easy DKIM (three CNAMEs), the `mail.` MAIL FROM domain, SPF on the apex (`v=spf1 include:amazonses.com -all`) and DMARC at `p=none`. SES in the second region is phase 2 (`supply-checkout-3x3.1`).
+
+**The hosted zone is imported, never created.** Prod's zone was created by hand when the domain was delegated from Namecheap. The stack reads its ID from the SSM parameter `/supply-checkout/<env>/dns/hosted-zone-id` at deploy time (a CloudFormation SSM parameter), rather than `HostedZone.fromLookup`, so synth stays account-agnostic in CI and the zone ID never lands in `cdk.context.json`. DMARC aggregate reports go to the address in `/supply-checkout/<env>/dns/dmarc-rua`. Use a DMARC report service's `mailto:` address, not a personal mailbox at another domain: receivers drop reports to another domain unless that domain publishes an authorization record, which personal mail providers don't. Create both parameters before the first deploy, in each region with a `domain` stack (today, us-east-1):
+
+```bash
+aws sso login --profile supply-prod
+ZONE_ID=$(aws route53 list-hosted-zones-by-name --profile supply-prod --dns-name supplycheckout.com \
+  --query "HostedZones[?Name=='supplycheckout.com.'].Id | [0]" --output text | sed 's|/hostedzone/||')
+aws ssm put-parameter --profile supply-prod --region us-east-1 --type String \
+  --name /supply-checkout/prod/dns/hosted-zone-id --value "$ZONE_ID"
+aws ssm put-parameter --profile supply-prod --region us-east-1 --type String \
+  --name /supply-checkout/prod/dns/dmarc-rua --value 'mailto:dmarc-reports@example.com'   # your DMARC report service's address
+# The stack adds TXT records at the apex and _dmarc, and MX and TXT at mail.
+# If any of those already exist in the zone, the deploy fails: remove them, or
+# merge their values into lib/stacks/domain-stack.ts first.
+aws route53 list-resource-record-sets --profile supply-prod --hosted-zone-id "$ZONE_ID" \
+  --query "ResourceRecordSets[?Type!='NS' && Type!='SOA'].[Name,Type]" --output text
+cd infra
+npx cdk deploy supply-checkout-prod-us-east-1-domain --profile supply-prod
+```
+
+**Then, by hand:**
+
+1. Check the identity is verified (DKIM `SUCCESS`, MAIL FROM `SUCCESS`; DNS can take up to an hour):
+   ```bash
+   aws sesv2 get-email-identity --profile supply-prod --region us-east-1 --email-identity supplycheckout.com \
+     --query '{sending:VerifiedForSendingStatus,dkim:DkimAttributes.Status,mailFrom:MailFromAttributes.MailFromDomainStatus}'
+   ```
+2. Request SES production access. New accounts are in the sandbox (200 messages a day, verified recipients only). AWS answers within about a day, and may ask follow-up questions by email:
+   ```bash
+   aws sesv2 put-account-details --profile supply-prod --region us-east-1 \
+     --production-access-enabled --mail-type TRANSACTIONAL --contact-language EN \
+     --website-url https://supplycheckout.com \
+     --additional-contact-email-addresses you@example.com \
+     --use-case-description "Transactional email for Supply Checkout, a subscription app for tracking supplies checked out to client jobs: team invitations, sign-in and account notices, and billing receipts, sent only to users of a team and people a team member invites. No marketing or purchased lists. Bounces and complaints go to an SNS topic; addresses that hard-bounce or complain are suppressed with the SES account-level suppression list, and we alarm on bounce and complaint rates."
+   aws sesv2 get-account --profile supply-prod --region us-east-1 \
+     --query '{production:ProductionAccessEnabled,review:Details.ReviewDetails}'
+   ```
+3. Check DMARC. While still in the sandbox, verify your own address (`aws sesv2 create-email-identity --email-identity you@example.com`, then click the link), and send yourself a message from the domain:
+   ```bash
+   DOMAIN=supplycheckout.com
+   aws sesv2 send-email --profile supply-prod --region us-east-1 \
+     --from-email-address "noreply@$DOMAIN" --destination ToAddresses=you@example.com \
+     --content 'Simple={Subject={Data=DMARC test},Body={Text={Data=Test}}}'
+   ```
+   In the received message's headers ("Show original" in Gmail), SPF, DKIM and DMARC should all say `PASS`. Aggregate reports arrive at the `dmarc-rua` address daily. Once they show SES mail passing for a couple of weeks, change `p=none` to `p=quarantine` in `lib/stacks/domain-stack.ts`.
+
+**Staging and dev.** Only the prod account exists today, so nothing is delegated yet. When one of those accounts exists (`staging` here):
+
+1. In the staging account, create the zone `staging.supplycheckout.com` (`aws route53 create-hosted-zone --name staging.supplycheckout.com --caller-reference staging-$(date +%s)`) and put its ID in that account's `/supply-checkout/staging/dns/hosted-zone-id`.
+2. In the prod account, put the new zone's four name servers in a `StringList` parameter: `aws ssm put-parameter --type StringList --name /supply-checkout/prod/dns/delegation/staging --value 'ns-1.awsdns-01.org,ns-2.awsdns-02.co.uk,…'`.
+3. Add `"delegatedEnvs": ["staging"]` to `cdk.json` (it holds names only) and redeploy prod's `domain` stack, which adds the NS record. Keep it in `cdk.json` rather than passing `-c`: a prod deploy without it removes the delegation.
+4. Deploy staging with `-c envName=staging` and that account's profile.
 
 ## Backend
 

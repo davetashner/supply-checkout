@@ -15,7 +15,7 @@ import { addSupplyCheckout } from "../lib/supply-checkout.js";
 
 // Region names live only in lib/config.ts (ADR 0010); tests use its constants.
 const [EAST, WEST] = APPROVED_REGIONS;
-const config: DeploymentConfig = { envName: "prod", regions: [EAST, WEST], primaryRegion: EAST };
+const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.com", regions: [EAST, WEST], primaryRegion: EAST };
 
 function build(context: Record<string, unknown> = {}, overrides: Partial<DeploymentConfig> = {}) {
   const app = new App({ context: { "aws:cdk:version-reporting": false, ...context } });
