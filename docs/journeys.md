@@ -222,13 +222,15 @@ Thresholds are starting points. Tune them after a few weeks of real traffic, and
 
 Crews start early, so "business hours" means 5am–8pm US Eastern, every day.
 
+**Core canary hours.** The core journey canary runs only from 8am to 8pm Eastern. Canary schedules are UTC cron, which doesn't follow daylight saving time, so EventBridge Scheduler starts and stops the canary on an `America/New_York` schedule. Its alarm treats missing data as not breaching, so the overnight gap doesn't page anyone. Between 8pm and 8am, a blocked journey is caught by the metric alarms below (API errors, site down, region health). From 6am to 8am, "Checkouts stopped" also covers J4.
+
 Alarms that fire during a deploy also trigger the automatic rollback (`supply-checkout-9lj`). The page should say whether a rollback already ran.
 
 ### Every journey
 
 | Alarm | Signal | Starting threshold | Severity |
 | --- | --- | --- | --- |
-| **Core journey canary failing** | CloudWatch Synthetics canary in each region, every 5 minutes: sign in as a test crew member, open the test sheet, check out and return one item, confirm the live update arrives | 2 failed runs out of 3 in either region | P1 |
+| **Core journey canary failing** | CloudWatch Synthetics canary in each region, every 5 minutes from 8am to 8pm Eastern: sign in as a test crew member, open the test sheet, check out and return one item, confirm the live update arrives | 2 failed runs out of 3 in either region | P1 |
 | **Site down** | CloudFront `5xxErrorRate` | above 1% for 5 minutes | P1 |
 | **API errors** | API Gateway `5xx` per route | above 2% of requests for 5 minutes (at least 20 requests) | P1 |
 | **API slow** | API Gateway `Latency` p95 | above 2 seconds for 10 minutes | P2 |
@@ -243,7 +245,7 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 
 | Alarm | Signal | Starting threshold | Severity |
 | --- | --- | --- | --- |
-| **Nobody can sign in** | Cognito `SignInSuccesses` and `TokenRefreshSuccesses` | zero for 15 minutes during business hours while the core canary also fails (composite alarm) | P1 |
+| **Nobody can sign in** | Cognito `SignInSuccesses` and `TokenRefreshSuccesses` | zero for 15 minutes between 8am and 8pm Eastern while the core canary also fails (composite alarm) | P1 |
 | **Sign-in throttled** | Cognito `SignInThrottles` and `TokenRefreshThrottles` | any, for 5 minutes | P1 |
 | **Social sign-in failing** | Cognito `FederationSuccesses` against federated sign-in attempts, from our login logs | success rate below 90% over 30 minutes | P2 |
 
