@@ -13,3 +13,4 @@ playwright-report/
 # Local git worktrees
 .claude/worktrees/
 coverage/
+dist/

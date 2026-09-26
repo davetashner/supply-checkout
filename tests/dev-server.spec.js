@@ -5,7 +5,7 @@ import { createDevServer } from "../scripts/dev-server.mjs";
 
 let server, base;
 test.beforeAll(async () => {
-  server = createDevServer();
+  server = await createDevServer();
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${server.address().port}/`;
 });

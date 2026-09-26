@@ -11,11 +11,12 @@
 //   ?mock={"sampleError":"rate_limited"}
 //                                    any tests/mock-claude.js option, as JSON
 //
-// Data lives in memory in the page: a reload starts over. index.html is read
-// on every request, so edits show on reload.
+// Data lives in memory in the page: a reload starts over. The app is served
+// from src/ by Vite's dev server, so edits reload the page.
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { pathToFileURL } from "node:url";
-import { buildPage } from "./page.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createServer as createViteServer } from "vite";
 import { installMockClaude } from "../tests/mock-claude.js";
 
 const PORT = Number(process.env.PORT) || 5173;
@@ -65,20 +66,38 @@ const bootstrap = `<script>
 </script>
 `;
 
-// Exported so tests can run it on a free port
-export const createDevServer = () => createServer((req, res) => {
-  const { pathname } = new URL(req.url, "http://localhost");
-  if (pathname !== "/") { res.writeHead(404).end(); return; }
-  try {
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-    res.end(buildPage({ head: bootstrap }));
-  } catch (e) {
-    res.writeHead(500, { "content-type": "text/plain" }).end(String(e));
-  }
-});
+const root = fileURLToPath(new URL("../src/", import.meta.url));
+
+// Exported so tests can run it on a free port. Closing the server also stops Vite.
+export async function createDevServer() {
+  let vite;
+  const server = createServer(async (req, res) => {
+    const { pathname } = new URL(req.url, "http://localhost");
+    if (pathname !== "/") { vite.middlewares(req, res, () => res.writeHead(404).end()); return; }
+    try {
+      // The bootstrap goes first in <head>, before any of the app's code
+      const source = readFileSync(root + "index.html", "utf8").replace(/(<meta name="viewport"[^>]*>\n)/, `$1${bootstrap}`);
+      const html = await vite.transformIndexHtml(req.url, source);
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end(html);
+    } catch (e) {
+      res.writeHead(500, { "content-type": "text/plain" }).end(String(e));
+    }
+  });
+  vite = await createViteServer({
+    configFile: false,
+    root,
+    appType: "custom",
+    logLevel: "warn",
+    server: { middlewareMode: true, hmr: { server } },
+  });
+  const close = server.close.bind(server);
+  server.close = (cb) => { vite.close().finally(() => { server.closeAllConnections(); close(cb); }); return server; };
+  return server;
+}
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  createDevServer().listen(PORT, "127.0.0.1", () => {
+  (await createDevServer()).listen(PORT, "127.0.0.1", () => {
     console.log(`Supply Checkout (mock runtime): http://localhost:${PORT}/`);
     console.log("Options: ?seed=empty  ?viewer  ?nouser  ?mock={\"sampleError\":\"rate_limited\"}");
   });

@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import { HtmlValidate, formatterFactory } from "html-validate";
-import { page } from "./page.mjs";
+import { buildPage } from "./page.mjs";
+import { distDir } from "./builds.mjs";
 
 const validator = new HtmlValidate({
   extends: ["html-validate:recommended"],
@@ -11,9 +13,17 @@ const validator = new HtmlValidate({
   },
 });
 
-const report = await validator.validateString(page, "index.html");
-if (!report.valid) {
-  console.error(formatterFactory("stylish")(report.results));
-  process.exit(1);
+// Run `npm run build` first (npm run lint does).
+const pages = {
+  "dist/artifact/index.html (as published)": buildPage(),
+  "dist/web/index.html": readFileSync(distDir("web") + "index.html", "utf8"),
+};
+let valid = true;
+for (const [name, html] of Object.entries(pages)) {
+  const report = await validator.validateString(html, name);
+  if (!report.valid) {
+    console.error(formatterFactory("stylish")(report.results));
+    valid = false;
+  } else console.log(`${name}: HTML is valid`);
 }
-console.log("index.html: HTML is valid");
+if (!valid) process.exit(1);

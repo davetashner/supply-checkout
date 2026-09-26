@@ -1,9 +1,11 @@
 import { test as base, expect } from "@playwright/test";
-import { page as document } from "../scripts/page.mjs";
+import { builtFiles, currentBuild } from "../scripts/builds.mjs";
 import { installMockClaude } from "./mock-claude.js";
 import * as coverage from "./coverage.js";
 
 const ORIGIN = "https://supply-checkout.test/";
+// The build under test (BUILD=artifact or BUILD=web), built by tests/global-setup.js
+const files = builtFiles(currentBuild());
 
 // Every test fails on an uncaught exception or console error in the page.
 export const test = base.extend({
@@ -27,7 +29,10 @@ export { expect };
 export async function openApp(page, opts = {}) {
   // Keep tests hermetic: no fonts or CDN scripts. The app works without ZXing.
   await page.route(/fonts\.(googleapis|gstatic)\.com|cdn\.jsdelivr\.net/, (r) => r.abort());
-  await page.route(ORIGIN, (r) => r.fulfill({ contentType: "text/html", body: document }));
+  await page.route(ORIGIN + "**", (r) => {
+    const file = files.get(new URL(r.request().url()).pathname);
+    return file ? r.fulfill(file) : r.fulfill({ status: 404 });
+  });
   await page.addInitScript(installMockClaude, opts);
   await page.goto(ORIGIN);
 }

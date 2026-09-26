@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "tests",
-  globalSetup: "./tests/coverage-setup.js",
+  globalSetup: "./tests/global-setup.js",
   globalTeardown: "./tests/coverage-teardown.js",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
