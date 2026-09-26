@@ -28,8 +28,12 @@
 //
 // Responses made here never reach the cache. The 302s say no-store, so the
 // home page can later become the landing page without browsers remembering
-// the redirect. They carry HSTS and nosniff themselves, since the response
-// headers policy is documented for cached and origin responses only.
+// the redirect. Every response made here (the redirects and the 503) carries
+// HSTS and nosniff itself, since the response headers policy is documented for
+// cached and origin responses only.
+//
+// The host is compared exactly, after lowercasing: "app.<domain>." (a
+// trailing dot) or "app.<domain>:443" isn't app., so it's treated as the apex.
 // WebStack drops these comments and fills in the __NAMES__ at synth time.
 import cf from "cloudfront";
 
@@ -40,16 +44,24 @@ const APP = "__APP_HOST__";
 const HSTS = "__HSTS__";
 const VERSION = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
+// On every response made here; a fresh copy each time, so none share an object
+const SECURITY_HEADERS = {
+  "strict-transport-security": HSTS,
+  "x-content-type-options": "nosniff",
+};
+
+function headers(extra) {
+  const all = Object.assign({}, SECURITY_HEADERS, extra);
+  const out = {};
+  for (const name of Object.keys(all)) out[name] = { value: all[name] };
+  return out;
+}
+
 function redirect(statusCode, location, cacheControl) {
   return {
     statusCode,
     statusDescription: statusCode === 301 ? "Moved Permanently" : "Found",
-    headers: {
-      location: { value: location },
-      "cache-control": { value: cacheControl },
-      "strict-transport-security": { value: HSTS },
-      "x-content-type-options": { value: "nosniff" },
-    },
+    headers: headers({ location, "cache-control": cacheControl }),
   };
 }
 
@@ -67,7 +79,7 @@ async function serve(request, channel, uri) {
     return {
       statusCode: 503,
       statusDescription: "Service Unavailable",
-      headers: { "cache-control": { value: "no-store" }, "retry-after": { value: "60" } },
+      headers: headers({ "cache-control": "no-store", "retry-after": "60" }),
     };
   }
   request.uri = "/releases/" + version + (uri.endsWith("/") ? uri + "index.html" : uri);

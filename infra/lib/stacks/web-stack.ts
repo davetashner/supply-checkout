@@ -64,13 +64,24 @@ const ROUTER_SOURCE = readFileSync(new URL("../web/router.js", import.meta.url),
   .filter((line) => !/^\s*\/\//.test(line))
   .join("\n");
 
+/** Hostnames the router compares against: lowercase letters, digits, dots and dashes only. */
+const HOST = /^[a-z0-9.-]+$/;
+
 /** The router's source with its placeholders filled in. */
 export function routerCode(values: { kvsId: string; apex: string; www: string; app: string }): string {
-  const code = ROUTER_SOURCE.replace("__KVS_ID__", values.kvsId)
-    .replace("__APEX_HOST__", values.apex)
-    .replace("__WWW_HOST__", values.www)
-    .replace("__APP_HOST__", values.app)
-    .replace("__HSTS__", `max-age=${HSTS_MAX_AGE.toSeconds()}; includeSubDomains`);
+  for (const key of ["apex", "www", "app"] as const) {
+    if (!HOST.test(values[key])) throw new Error(`router.js ${key} host "${values[key]}" isn't a lowercase hostname`);
+  }
+  const fill: Record<string, string> = {
+    __KVS_ID__: values.kvsId,
+    __APEX_HOST__: values.apex,
+    __WWW_HOST__: values.www,
+    __APP_HOST__: values.app,
+    __HSTS__: `max-age=${HSTS_MAX_AGE.toSeconds()}; includeSubDomains`,
+  };
+  // A replacer function, so "$&" and the like in a value are copied as they are
+  let code = ROUTER_SOURCE;
+  for (const [placeholder, value] of Object.entries(fill)) code = code.replace(placeholder, () => value);
   const left = code.match(/__[A-Z_]+__/);
   if (left) throw new Error(`router.js placeholder ${left[0]} isn't filled in`);
   return code;
