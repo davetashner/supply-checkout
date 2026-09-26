@@ -3,8 +3,8 @@ import html from "eslint-plugin-html";
 import globals from "globals";
 
 export default [
-  // infra/ is its own package with its own ESLint config (npm --prefix infra run lint)
-  { ignores: ["node_modules/", "playwright-report/", "test-results/", "coverage/", "dist/", "infra/"] },
+  // infra/ and backend/ are their own packages with their own ESLint configs
+  { ignores: ["node_modules/", "playwright-report/", "test-results/", "coverage/", "dist/", "infra/", "backend/"] },
   js.configs.recommended,
   {
     rules: {

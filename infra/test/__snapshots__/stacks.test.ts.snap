@@ -67,6 +67,116 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
     },
   },
   "Resources": {
+    "AppTable815C50BC": {
+      "DeletionPolicy": "Retain",
+      "Properties": {
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "PK",
+            "AttributeType": "S",
+          },
+          {
+            "AttributeName": "SK",
+            "AttributeType": "S",
+          },
+          {
+            "AttributeName": "GSI1PK",
+            "AttributeType": "S",
+          },
+          {
+            "AttributeName": "GSI1SK",
+            "AttributeType": "S",
+          },
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+        "GlobalSecondaryIndexes": [
+          {
+            "IndexName": "GSI1",
+            "KeySchema": [
+              {
+                "AttributeName": "GSI1PK",
+                "KeyType": "HASH",
+              },
+              {
+                "AttributeName": "GSI1SK",
+                "KeyType": "RANGE",
+              },
+            ],
+            "Projection": {
+              "ProjectionType": "ALL",
+            },
+          },
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "PK",
+            "KeyType": "HASH",
+          },
+          {
+            "AttributeName": "SK",
+            "KeyType": "RANGE",
+          },
+        ],
+        "Replicas": [
+          {
+            "DeletionProtectionEnabled": true,
+            "GlobalSecondaryIndexes": [
+              {
+                "IndexName": "GSI1",
+              },
+            ],
+            "PointInTimeRecoverySpecification": {
+              "PointInTimeRecoveryEnabled": true,
+            },
+            "Region": "us-east-1",
+            "SSESpecification": {
+              "KMSMasterKeyId": {
+                "Fn::GetAtt": [
+                  "TableKeyF581D96F",
+                  "Arn",
+                ],
+              },
+            },
+            "Tags": [
+              {
+                "Key": "app",
+                "Value": "supply-checkout",
+              },
+              {
+                "Key": "component",
+                "Value": "data",
+              },
+              {
+                "Key": "env",
+                "Value": "prod",
+              },
+              {
+                "Key": "layer",
+                "Value": "stateful",
+              },
+              {
+                "Key": "managed-by",
+                "Value": "cdk",
+              },
+            ],
+          },
+        ],
+        "SSESpecification": {
+          "SSEEnabled": true,
+          "SSEType": "KMS",
+        },
+        "StreamSpecification": {
+          "StreamViewType": "NEW_AND_OLD_IMAGES",
+        },
+        "TableName": "supply-checkout-prod-app",
+        "TimeToLiveSpecification": {
+          "AttributeName": "expiresAt",
+          "Enabled": true,
+        },
+      },
+      "Type": "AWS::DynamoDB::GlobalTable",
+      "UpdateReplacePolicy": "Retain",
+    },
     "StackInfoC49BCBCF": {
       "Properties": {
         "Description": "Supply Checkout data stack (stateful)",
@@ -80,6 +190,158 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
         },
         "Type": "String",
         "Value": "{"stackName":"supply-checkout-prod-us-east-1-data","layer":"stateful"}",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "TableArnParamC3B0EFCC": {
+      "Properties": {
+        "Description": "App table ARN in this region",
+        "Name": "/supply-checkout/prod/data/table-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "data",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "AppTable815C50BC",
+            "Arn",
+          ],
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "TableKeyAlias2D661624": {
+      "Properties": {
+        "AliasName": "alias/supply-checkout-prod-app-table",
+        "TargetKeyId": {
+          "Fn::GetAtt": [
+            "TableKeyF581D96F",
+            "Arn",
+          ],
+        },
+      },
+      "Type": "AWS::KMS::Alias",
+    },
+    "TableKeyArnParam30791791": {
+      "Properties": {
+        "Description": "KMS key ARN for the app table in this region",
+        "Name": "/supply-checkout/prod/data/table-key-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "data",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "TableKeyF581D96F",
+            "Arn",
+          ],
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "TableKeyF581D96F": {
+      "DeletionPolicy": "Retain",
+      "Properties": {
+        "Description": "Encrypts the Supply Checkout app table (ADR 0005)",
+        "EnableKeyRotation": true,
+        "KeyPolicy": {
+          "Statement": [
+            {
+              "Action": "kms:*",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":root",
+                    ],
+                  ],
+                },
+              },
+              "Resource": "*",
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout",
+          },
+          {
+            "Key": "component",
+            "Value": "data",
+          },
+          {
+            "Key": "env",
+            "Value": "prod",
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful",
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk",
+          },
+        ],
+      },
+      "Type": "AWS::KMS::Key",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "TableNameParam3E3123DC": {
+      "Properties": {
+        "Description": "App table name",
+        "Name": "/supply-checkout/prod/data/table-name",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "data",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "AppTable815C50BC",
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "TableStreamArnParam15549A4C": {
+      "Properties": {
+        "Description": "App table stream ARN in this region",
+        "Name": "/supply-checkout/prod/data/table-stream-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "data",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "AppTable815C50BC",
+            "StreamArn",
+          ],
+        },
       },
       "Type": "AWS::SSM::Parameter",
     },

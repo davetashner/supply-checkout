@@ -33,6 +33,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `scripts/export-beads.mjs` | Writes the beads backlog export without owner emails (`npm run beads:export`). |
 | `tests/` | Playwright end-to-end tests, run against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`). |
 | `infra/` | The AWS CDK app (TypeScript) for the SaaS version. Its own npm package; see [Infrastructure](#infrastructure). |
+| `backend/` | Lambda code for the SaaS version (TypeScript). `backend/src/data` is the data-access module, the only code that talks to DynamoDB. Its own npm package; see [Backend](#backend). |
 | `docs/adr/` | Architecture decision records for the AWS subscription product. |
 | `docs/architecture/` | Architecture overview and diagrams (Mermaid). |
 | `docs/journeys.md` | The customer journeys the product must never break, the tests that cover them, and the production alarms for when one is blocked. |
@@ -83,6 +84,8 @@ npm run test:update # accept template snapshot changes after reviewing them
 
 **Parameters.** The environment and regions are CDK context (defaults in `cdk.json`: `envName=prod`, `regions=["us-east-1"]`, `primaryRegion=us-east-1`); override them with `-c envName=staging -c regions=us-east-1,us-west-2`. Only the regions in `APPROVED_REGIONS` (`lib/config.ts`) are allowed. The account ID is never committed: it comes from the AWS profile at synth time, and a synth without credentials (CI, tests) is account-agnostic.
 
+**The `app` table.** The primary region's `data` stack holds the single DynamoDB table from [ADR 0005](docs/adr/0005-multi-tenant-dynamodb.md), `supply-checkout-<env>-app`. It's a `TableV2` (`AWS::DynamoDB::GlobalTable`) with one replica, in its own region: on-demand, encrypted with a customer-managed KMS key that rotates yearly, point-in-time recovery, deletion protection, a stream with new and old images, TTL on `expiresAt`, and one index, `GSI1`. Adding the us-west-2 replica in phase 2 is another entry in `replicas` with that region's key, not a new table. The data stack publishes `table-name`, `table-arn`, `table-stream-arn` and `table-key-arn` to SSM under `/supply-checkout/<env>/data/`. The key and index names come from `backend/src/data/schema.ts`, so the table and the code that reads it can't drift apart.
+
 **cdk-nag.** `AwsSolutionsChecks` is registered as a CDK validation plugin, so every synth and deploy fails on an unacknowledged finding. When a finding is intended, acknowledge it on the narrowest construct with a written reason:
 
 ```ts
@@ -97,6 +100,29 @@ cd infra
 npx cdk bootstrap --profile supply-prod        # once per account and region; bootstraps every region in the app
 npx cdk diff --profile supply-prod
 npx cdk deploy --all --profile supply-prod
+```
+
+## Backend
+
+`backend/` holds the Lambda code (ADR 0002, 0006). It is a separate npm package with its own lockfile. So far it has the data-access module, `backend/src/data`:
+
+- **Team-scoped access.** Every read and write of a team's data takes a `TeamContext`. Only the module can issue one: `authorizeTeam(db, userId, teamId)` checks the MEMBER item (the authorizer calls it with the user ID from the verified token), and `createTeam`, `acceptInvite` and `teamContextForStripeCustomer` issue one for the new owner, the new member and the billing webhook. Each function checks the role (viewer, contributor, owner, system) before it writes.
+- **One place for DynamoDB.** ESLint (`backend/eslint.config.js`) bans importing `@aws-sdk/client-dynamodb` or `@aws-sdk/lib-dynamodb` anywhere outside `src/data` (tests may, to inspect stored items).
+- **Region-ready** ([ADR 0010](docs/adr/0010-multi-region-active-active.md)). Every team gets `homeRegion` when it's created, from `AWS_REGION`. `writeRegionFor` in `src/data/region.ts` is the one function that decides where a team's writes go; in the MVP it always returns the local region.
+- **Keys.** As in ADR 0005, except sheets: `SHEET#<sheetId>` instead of `SHEET#<date>#<id>`, because the date is editable and a key can't change. Date order comes from `GSI1` (`TEAM#<teamId>#SHEETS`, `<date>#<sheetId>`), which one update can change. `GSI1` also finds invites by the SHA-256 hash of their token.
+
+```bash
+cd backend
+npm ci
+npm run lint        # tsc type-check and ESLint, including the DynamoDB ban
+npm test            # vitest; the access-pattern tests need DynamoDB Local
+```
+
+The access-pattern tests run every entity in ADR 0005 against [DynamoDB Local](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBLocal.html), each test file in a fresh table. They're skipped unless `DYNAMODB_ENDPOINT` is set. To run them locally with Docker:
+
+```bash
+docker run --rm -d -p 8000:8000 amazon/dynamodb-local:3.0.0
+DYNAMODB_ENDPOINT=http://localhost:8000 npm test
 ```
 
 ## Tests
@@ -151,7 +177,8 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | Secret scan | gitleaks on every commit in the history, and `scripts/check-public-safety.mjs` on every file (AWS account and SSO identifiers, email addresses, AWS and Stripe keys, private keys) |
 | Dependency audit | `npm audit` fails on high-severity advisories; dependency review fails a PR that adds a moderate-or-worse vulnerable package |
 | CodeQL (javascript-typescript), CodeQL (actions) | CodeQL `security-extended` queries on the app, scripts, tests and workflows (`.github/workflows/codeql.yml`, which also runs weekly). Results go to the repository's code scanning alerts |
-| Infra | Only when `infra/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint, the CDK unit and snapshot tests, and a synth with cdk-nag for the deployed region and for both regions |
+| Backend | Only when `backend/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint (with the DynamoDB ban), and the data-access tests against DynamoDB Local, which runs as a service container |
+| Infra | Only when `infra/`, `backend/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint, the CDK unit and snapshot tests, and a synth with cdk-nag for the deployed region and for both regions |
 | Tests (desktop-chrome or iphone-safari, artifact or web build) | All test suites, in four parallel jobs: each browser against each build. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
 
 ## Releases
