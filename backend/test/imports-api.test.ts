@@ -501,7 +501,13 @@ describe("retries and resuming", () => {
     expect(table.transactions).toEqual([2, 4, 5, 4]);
     // A single row that still can't fit is too large to save
     table.maxTransactionBytes = 100_000;
-    expect(await post({ importId: randomUUID(), csv: "name,barcode,price\nItem 0,c0,3\n" })).toMatchObject({ status: 413, body: { error: { code: "quota_exceeded", message: "The item on line 2 is too large to save" } } });
+    const stopped = randomUUID();
+    expect(await post({ importId: stopped, csv: "name,barcode,price\nItem 0,c0,3\n" })).toMatchObject({ status: 413, body: { error: { code: "quota_exceeded", message: "The item on line 2 is too large to save" } } });
+    // No retry gets past it, so it leaves the stuck-import check; the job stays
+    const job = table.get("TEAM#team-a", `IMPORT#${stopped}`);
+    expect(job).toMatchObject({ status: "committing" });
+    expect(job).not.toHaveProperty("GSI1PK");
+    expect(job).not.toHaveProperty("GSI1SK");
   });
 
   it("measures items when it commits, so items that grew after staging still fit", async () => {
@@ -530,6 +536,9 @@ describe("retries and resuming", () => {
     expect(res).toMatchObject({ status: 409, body: { error: { code: "aborted", message: expect.stringMatching(/line 3's key.*Choose the file again/) } } });
     expect(product("A_B")).toMatchObject({ code: "A_B", name: "Someone else's", price: 9 });
     expect(product("1")).toBeUndefined();
+    // Stopped for good: out of the stuck-import check
+    expect(table.get("TEAM#team-a", `IMPORT#${id}`)).toMatchObject({ status: "committing" });
+    expect(table.get("TEAM#team-a", `IMPORT#${id}`)).not.toHaveProperty("GSI1PK");
     table.beforeTransactWrite = undefined;
     // The same request can't get past it; a new import plans around it
     expect((await post({ importId: id, csv })).status).toBe(409);

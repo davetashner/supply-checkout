@@ -255,6 +255,17 @@ curl -si https://api.supplycheckout.com/teams/t/products | head -1
 
 The observability stack adds the API errors and API slow alarms, reading the API's ID from `/supply-checkout/<env>/api/api-id`.
 
+In the primary region it also adds the scheduled checks ([Observability](observability.md)). The stuck-import check's IAM conditions (`dynamodb:LeadingKeys`, `dynamodb:Attributes`, `dynamodb:Select`) aren't enforced by DynamoDB Local, so after the first deploy of the observability stack, and after any change to that policy or to `listStuckImports`, run both checks once and confirm each answers without an error and logs no `AccessDeniedException`:
+
+```bash
+aws lambda invoke --profile supply-prod --region us-east-1 \
+  --function-name supply-checkout-prod-stuck-imports /dev/stdout   # {"stuck":0}
+aws lambda invoke --profile supply-prod --region us-east-1 \
+  --function-name supply-checkout-prod-email-quota /dev/stdout     # {"usedPercent":…}
+```
+
+A `FunctionError` in the response, or `AccessDeniedException` in `/aws/lambda/supply-checkout-prod-stuck-imports`, means the role and the query disagree: the query must send `Select: SPECIFIC_ATTRIBUTES` and name only `STUCK_IMPORT_ATTRIBUTES`.
+
 **Measuring p95** (the acceptance target is under 300 ms, warm). Create a team for a test user with `POST /teams`, or, before the account routes are deployed, add one by hand (their `sub` is in the Cognito console), then sign in and time requests:
 
 ```bash

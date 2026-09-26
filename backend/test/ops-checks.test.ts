@@ -55,6 +55,8 @@ describe("stuck-import check", () => {
     expect(first).toMatchObject({
       IndexName: "GSI1",
       KeyConditionExpression: "GSI1PK = :pk AND GSI1SK < :before",
+      // The policy's StringEquals on dynamodb:Select fails when the request leaves it out
+      Select: "SPECIFIC_ATTRIBUTES",
       ExpressionAttributeValues: { ":pk": "IMPORTS#COMMITTING", ":before": new Date(NOW - STUCK_IMPORT_AFTER_MINUTES * 60_000).toISOString() },
     });
     // The IAM policy allows exactly these names

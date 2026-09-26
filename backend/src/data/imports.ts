@@ -50,7 +50,7 @@
 // condition holds.
 
 import { createHash } from "node:crypto";
-import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
 import { type Movement, OPERATION_TTL_DAYS } from "./commands.js";
 import { parseCsv } from "./csv.js";
@@ -476,7 +476,7 @@ function rowWrites(db: Db, ctx: TeamContext, id: string, row: StagedRow, item: I
   // Another item took this new item's key after staging (A#B and A_B both make the key A_B, say).
   // The same barcode is the same item, from another import of the same file.
   if (row.create && item && (typeof item.code === "string" ? item.code.trim() : "") !== row.barcode) {
-    throw new ConflictError(`An item was added under line ${row.line}'s key while importing. Choose the file again to finish; rows already imported won't be added twice.`);
+    throw new ImportStoppedError(`An item was added under line ${row.line}'s key while importing. Choose the file again to finish; rows already imported won't be added twice.`);
   }
   const current = item ? documentData(item) : undefined;
   const { data, changes } = applyRow(current, row);
@@ -531,6 +531,9 @@ function imported(job: Item, replayed: boolean): ImportOutcome {
   return { status: "imported", importId: String(job.importId), replayed, summary: job.summary as ImportSummary };
 }
 
+/** A conflict no retry of this import gets past: only choosing the file again (a new import) does. */
+class ImportStoppedError extends ConflictError {}
+
 const expired = () => new ConflictError("This import expired before it finished. Choose the file again to finish; rows already imported won't be added twice.");
 // What DynamoDB gets: storable() sends a map with a "constructor" key as a Map, which
 // JSON.stringify would write as "{}", so Maps are measured as the maps they are
@@ -540,8 +543,39 @@ const bytesOf = (writes: TransactItem[]) => writes.reduce((sum, w) => sum + Buff
 const transactionTooLarge = (error: unknown) =>
   (error as { name?: string } | null)?.name === "ValidationException" && /size|large|4 ?MB/i.test((error as Error).message);
 
-/** Commits the job's rows from the first one not yet committed. */
+/**
+ * Commits the job's rows from the first one not yet committed. A row too
+ * large to save, or a planned key another item took, stops the import for
+ * good (a retry of the same file hits it again, and the owner is told which
+ * line and to choose the file again), so the job leaves the
+ * committing-imports index then: "Imports stuck" is for imports someone could
+ * still finish. The job itself stays, so the rows already imported are on
+ * record until it expires.
+ */
 async function commit(db: Db, ctx: TeamContext, id: string, first: Item, now: Date): Promise<ImportOutcome> {
+  try {
+    return await commitRows(db, ctx, id, first, now);
+  } catch (error) {
+    if (error instanceof TooLargeError || error instanceof ImportStoppedError) await leaveCommittingIndex(db, keys.importJob(ctx.teamId, id)).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** Takes a job still committing out of the committing-imports index (best effort: the caller's error wins). */
+async function leaveCommittingIndex(db: Db, jobKey: Item): Promise<void> {
+  await connection(db).doc.send(
+    new UpdateCommand({
+      TableName: db.tableName,
+      Key: jobKey,
+      UpdateExpression: "REMOVE GSI1PK, GSI1SK",
+      ConditionExpression: "#status = :committing",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: { ":committing": "committing" },
+    }),
+  );
+}
+
+async function commitRows(db: Db, ctx: TeamContext, id: string, first: Item, now: Date): Promise<ImportOutcome> {
   const jobKey = keys.importJob(ctx.teamId, id);
   let job = first;
   const replayed = job.status === "done";
@@ -730,6 +764,8 @@ export async function listStuckImports(db: Db, startedBefore: Date): Promise<Stu
         TableName: db.tableName,
         IndexName: GSI1,
         KeyConditionExpression: "GSI1PK = :pk AND GSI1SK < :before",
+        // The IAM policy requires it (dynamodb:Select); DynamoDB doesn't infer it from the projection
+        Select: "SPECIFIC_ATTRIBUTES",
         ExpressionAttributeValues: { ":pk": COMMITTING_IMPORTS_PARTITION, ":before": startedBefore.toISOString() },
         // Placeholders for every name: some ("committed") are reserved words
         ProjectionExpression: STUCK_IMPORT_ATTRIBUTES.map((_, i) => `#a${i}`).join(", "),
