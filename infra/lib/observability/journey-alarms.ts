@@ -8,6 +8,7 @@ import {
   TreatMissingData,
 } from "aws-cdk-lib/aws-cloudwatch";
 import { Construct } from "constructs";
+import { emailResourceNames } from "../../../backend/src/email/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import { realtimeResourceNames } from "../../../backend/src/realtime/channels.js";
 import type { AlarmTopics, Severity } from "./alarm-topics.js";
@@ -58,6 +59,7 @@ function percent(numerator: Metric, denominator: Metric, minimum: number, label:
 
 export function journeyAlarmSpecs(region: string, tableName: string, apiId: string, envName: string): JourneyAlarmSpec[] {
   const realtime = realtimeResourceNames(envName);
+  const email = emailResourceNames(envName);
   return [
     // Every journey
     {
@@ -132,6 +134,22 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       rule: "SES Reputation.ComplaintRate above 0.08%. AWS reviews at 0.1%.",
       metric: new Metric({ namespace: "AWS/SES", metricName: "Reputation.ComplaintRate", statistic: "Maximum", period: FIFTEEN_MINUTES, region }),
       threshold: 0.0008,
+    },
+    {
+      id: "email-events-dropped",
+      title: "Email events dropped",
+      journeys: "J3",
+      severity: "P2",
+      rule: "Any message in the email-events dead-letter queue: a bounce or complaint the handler couldn't record after retries, so an invite that bounced may still show as pending. SES has already suppressed the address; the message has the event to replay.",
+      metric: new Metric({
+        namespace: "AWS/SQS",
+        metricName: "ApproximateNumberOfMessagesVisible",
+        dimensionsMap: { QueueName: email.deadLetterQueue },
+        statistic: "Maximum",
+        period: FIVE_MINUTES,
+        region,
+      }),
+      threshold: 0,
     },
     // J4. Check supplies out and back in
     {

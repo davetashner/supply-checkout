@@ -5,11 +5,11 @@
 // acceptInvite live in team-context.ts.
 
 import { randomBytes, randomUUID } from "node:crypto";
-import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { ConflictError, InvalidInputError } from "./errors.js";
 import { gsi1, gsi2, id, inviteePartition, keys, prefixes, strip, teamPartition } from "./keys.js";
-import { type Invite, type MemberRole, hashEmail, hashInviteToken, memberRole, normalizeEmail } from "./model.js";
+import { type Invite, type InviteFailure, type MemberRole, hashEmail, hashInviteToken, memberRole, normalizeEmail } from "./model.js";
 import { queryAll } from "./query.js";
 import { GSI2 } from "./schema.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
@@ -67,6 +67,45 @@ export async function createInvite(
 export async function listInvites(db: Db, ctx: TeamContext): Promise<Invite[]> {
   readable(ctx);
   return queryAll<Invite>(db, teamPartition(ctx.teamId), prefixes.invite);
+}
+
+const FAILURES: readonly InviteFailure[] = ["bounced", "complained"];
+
+/**
+ * Marks an invite failed after SES reported that its email bounced or drew a
+ * complaint, so the owner sees it and can correct the address. Only a system
+ * context may (teamContextForEmailEvent). `emailHash` is hashEmail() of the
+ * address that bounced: the invite must be for that address, so a stale or
+ * wrong tag can't mark another invite. Returns false when there's no such
+ * invite (already accepted, revoked or expired and removed). Marking again is
+ * harmless: the latest report wins.
+ */
+export async function markInviteFailed(
+  db: Db,
+  ctx: TeamContext,
+  input: { readonly inviteId: string; readonly emailHash: string; readonly reason: InviteFailure; readonly at: Date },
+): Promise<boolean> {
+  writable(db, ctx, "system");
+  if (!FAILURES.includes(input.reason)) throw new InvalidInputError("Invalid failure reason");
+  const { GSI2PK } = gsi2.invitee(input.emailHash, input.inviteId);
+  try {
+    await connection(db).doc.send(
+      new UpdateCommand({
+        TableName: db.tableName,
+        Key: keys.invite(ctx.teamId, input.inviteId),
+        // inviteStatus, not status: a team's META item has a status (its
+        // subscription), and this role's policy pins the partition, not the item
+        UpdateExpression: "SET inviteStatus = :failed, failureReason = :reason, failedAt = :at",
+        // Only invites have GSI2 keys, and this one must be for the address that bounced
+        ConditionExpression: "attribute_exists(PK) AND GSI2PK = :invitee",
+        ExpressionAttributeValues: { ":failed": "failed", ":reason": input.reason, ":at": input.at.toISOString(), ":invitee": GSI2PK },
+      }),
+    );
+    return true;
+  } catch (error) {
+    if ((error as { name?: string } | null)?.name === "ConditionalCheckFailedException") return false;
+    throw error;
+  }
 }
 
 export async function revokeInvite(db: Db, ctx: TeamContext, inviteId: string): Promise<void> {
