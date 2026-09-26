@@ -1,0 +1,192 @@
+// use("db") for the web build: the app's Firestore-like calls (src/main.js) on the data
+// API, as mapped at the top of docs/api/openapi.yaml, with onSnapshot kept current by live
+// updates (docs/api/realtime.md).
+//
+// Each collection someone listens to is held in memory. Listeners get the whole collection
+// after the first list, after each of the adapter's own writes, after each live event
+// (fetched through the API, which checks membership on every request) and after every
+// re-list. Documents are sent through as the app wrote them, whatever their fields.
+//
+// Sheets are listed by ID and sorted here, not with ?orderBy=date: that route reads an
+// index that can lag a write, and a full re-list must not drop a sheet just created.
+import { createLive } from "./live.js";
+
+const META = { fromCache: false, hasPendingWrites: false };
+const cmp = (a, b) => (a > b) - (a < b);
+const snap = (id, doc) => ({ id, exists: !!doc, data: () => (doc ? structuredClone(doc.data) : undefined), metadata: META });
+
+function querySnap(docs, order) {
+  const list = [...docs.values()].sort((a, b) => cmp(a.id, b.id));
+  if (order) {
+    // Missing or non-text values sort as "", so undated sheets come last when newest-first
+    const val = (d) => (typeof d.data[order.field] === "string" ? d.data[order.field] : "");
+    const dir = order.dir === "desc" ? -1 : 1;
+    list.sort((a, b) => cmp(val(a), val(b)) * dir || cmp(a.id, b.id));
+  }
+  const out = list.map((d) => snap(d.id, d));
+  return { docs: out, size: out.length, empty: !out.length, docChanges: () => [], metadata: META };
+}
+
+export function createDb({ api, config, teamId, token, onRemoved }) {
+  const base = `/teams/${encodeURIComponent(teamId)}`;
+  const colls = {};
+  const inflight = new Map();
+  let removed = false;
+  const coll = (name) => (colls[name] ||= { docs: new Map(), loaded: false, listeners: new Set(), touched: null, listing: null, again: false, due: false });
+  const docPath = (name, id) => `${base}/${name}/${encodeURIComponent(id)}`;
+
+  // Removed from the team (or it's gone): stop everything once, and say so
+  function lost() {
+    if (removed) return;
+    removed = true;
+    live.stop();
+    onRemoved();
+  }
+
+  // Delivers the collection to its listeners, at most once per tick
+  function notify(name) {
+    const c = coll(name);
+    if (c.due) return;
+    c.due = true;
+    setTimeout(() => {
+      c.due = false;
+      if (c.loaded) c.listeners.forEach((l) => l.fn(c));
+    }, 0);
+  }
+
+  // Stores a document from the API (null: it's gone), unless an older copy
+  function put(name, id, doc) {
+    const c = coll(name), held = c.docs.get(id);
+    if (doc && held && doc.version < held.version) return;
+    if (c.touched) c.touched.add(id);
+    if (doc) c.docs.set(id, doc);
+    else c.docs.delete(id);
+    notify(name);
+  }
+
+  async function list(name) {
+    const docs = new Map();
+    let cursor = "";
+    do {
+      const page = await api("GET", `${base}/${name}` + (cursor && `?cursor=${encodeURIComponent(cursor)}`));
+      for (const d of page.documents) docs.set(d.id, d);
+      cursor = page.cursor;
+    } while (cursor);
+    return docs;
+  }
+
+  // Replaces the collection with a fresh list, keeping documents that changed while it
+  // was being read. A re-list asked for meanwhile runs once more afterwards.
+  function relist(name) {
+    const c = coll(name);
+    if (c.listing) { c.again = true; return c.listing; }
+    c.listing = (async () => {
+      do {
+        c.again = false;
+        c.touched = new Set();
+        const docs = await list(name);
+        for (const id of c.touched) {
+          const doc = c.docs.get(id);
+          if (doc) docs.set(id, doc);
+          else docs.delete(id);
+        }
+        c.docs = docs;
+        c.loaded = true;
+        c.touched = null;
+        notify(name);
+      } while (c.again);
+    })()
+      .catch((e) => {
+        c.touched = null;
+        if (e.code === "permission_denied") lost();
+        // Only the first load reports an error; later re-lists are retried by the next one
+        else if (!c.loaded) c.listeners.forEach((l) => l.error && l.error(e));
+      })
+      .finally(() => { c.listing = null; });
+    return c.listing;
+  }
+  const resync = () => { if (!removed) Object.keys(colls).forEach((n) => colls[n].listeners.size && relist(n)); };
+
+  // A live event: fetch what changed (at most one fetch per document at a time)
+  async function fetchDoc(name, id) {
+    const key = name + "/" + id;
+    const busy = inflight.get(key);
+    if (busy) { busy.again = true; return; }
+    const state = { again: true };
+    inflight.set(key, state);
+    while (state.again) {
+      state.again = false;
+      try { put(name, id, await api("GET", docPath(name, id))); }
+      catch (e) {
+        if (e.code === "not_found") put(name, id, null);
+        else if (e.code === "permission_denied") lost();
+      }
+    }
+    inflight.delete(key);
+  }
+
+  function onEvent(ev) {
+    const c = colls[ev.collection];
+    if (!c) return;
+    if (ev.op === "delete") { put(ev.collection, ev.id, null); return; }
+    const held = c.docs.get(ev.id);
+    // Skip what's already here: an older version, or (for sheets) the same one, such as
+    // the echo of this user's own write. A product's stock changes without a new version.
+    if (held && (ev.version < held.version || (ev.version === held.version && ev.collection === "sheets"))) return;
+    fetchDoc(ev.collection, ev.id);
+  }
+
+  const live = createLive({ url: config.realtimeUrl, host: config.realtimeHost, channel: `/teams/${teamId}`, token, onEvent, onResync: resync });
+  live.start();
+
+  // Calls render with the collection whenever it changes, once it has loaded
+  function listen(name, render, error) {
+    const c = coll(name);
+    const l = { fn: render, error };
+    c.listeners.add(l);
+    if (c.loaded) notify(name);
+    else relist(name);
+    return () => c.listeners.delete(l);
+  }
+
+  function docRef(path) {
+    const [name, id] = [path.slice(0, path.indexOf("/")), path.slice(path.indexOf("/") + 1)];
+    const write = async (method, body) => put(name, id, await api(method, docPath(name, id), body));
+    return {
+      id,
+      path,
+      get: async () => {
+        try { return snap(id, await api("GET", docPath(name, id))); }
+        catch (e) { if (e.code === "not_found") return snap(id, null); throw e; }
+      },
+      set: (data) => write("PUT", { data }),
+      update: (patch) => write("PATCH", { data: patch }),
+      delete: () => write("DELETE"),
+      onSnapshot: (next, error) => listen(name, (c) => next(snap(id, c.docs.get(id))), error),
+    };
+  }
+
+  function query(name, order) {
+    return {
+      orderBy: (field, dir = "asc") => query(name, { field, dir }),
+      get: async () => querySnap(await list(name), order),
+      onSnapshot: (next, error) => listen(name, (c) => next(querySnap(c.docs, order)), error),
+    };
+  }
+
+  return {
+    // Sheet IDs are made here, as the app expects; the first set() creates the document
+    collection: (name) => {
+      const ref = {
+        ...query(name, null),
+        path: name,
+        doc: (id) => docRef(name + "/" + (id || crypto.randomUUID())),
+        add: async (data) => { const r = ref.doc(); await r.set(data); return r; },
+      };
+      return ref;
+    },
+    doc: docRef,
+    // A new access token: reconnect live updates with it
+    reconnect: () => live.reconnect(),
+  };
+}

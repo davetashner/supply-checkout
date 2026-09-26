@@ -1,16 +1,24 @@
 // node --test scripts/publish-web.test.mjs (part of npm run test:scripts)
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { IMMUTABLE, REVALIDATE, VERSION, defaultVersion, main, parseArgs, uploadCommands } from "./publish-web.mjs";
+import { IMMUTABLE, REVALIDATE, VERSION, configParameterNames, defaultVersion, main, parseArgs, uploadCommands } from "./publish-web.mjs";
 
 const STORE = "arn:aws:cloudfront::000000000000:key-value-store/example"; // public-safety: allow
+const APP_CONFIG = {
+  apiUrl: "https://api.example.test",
+  authUrl: "https://auth.example.test",
+  clientId: "client-1",
+  realtimeUrl: "wss://realtime.example.test/event/realtime",
+  realtimeHost: "realtime.example.test",
+};
 const PARAMS = {
   "/supply-checkout/prod/web/bucket-name": "releases-bucket",
   "/supply-checkout/prod/web/bucket-region": "bucket-region-1",
   "/supply-checkout/prod/web/live-version-store-arn": STORE,
+  ...Object.fromEntries(Object.entries(configParameterNames("prod")).map(([k, name]) => [name, APP_CONFIG[k]])),
 };
 
 function build() {
@@ -22,7 +30,7 @@ function build() {
 }
 
 /** A fake AWS CLI: records every call, answers reads from `existing` releases. */
-function fakeAws({ existing = [] } = {}) {
+function fakeAws({ existing = [], params = PARAMS } = {}) {
   const calls = [];
   const log = [];
   const run = (cmd, args) => {
@@ -30,7 +38,8 @@ function fakeAws({ existing = [] } = {}) {
     calls.push(args);
     const [service, op] = args;
     if (service === "ssm" && op === "get-parameters") {
-      return JSON.stringify({ Parameters: Object.entries(PARAMS).map(([Name, Value]) => ({ Name, Value })) });
+      const names = args.slice(args.indexOf("--names") + 1).filter((n) => n.startsWith("/"));
+      return JSON.stringify({ Parameters: names.filter((n) => n in params).map((Name) => ({ Name, Value: params[Name] })) });
     }
     if (service === "s3api" && op === "head-object") {
       const key = args[args.indexOf("--key") + 1];
@@ -73,6 +82,32 @@ test("publish refuses to overwrite a release, and can leave the new one unpublis
   main(["publish", "--channel", "app", "--dir", dir, "--version", "1.2.0", "--no-activate"], quiet.deps);
   assert.deepEqual(writes(quiet.calls).map(([, op]) => op), ["sync", "sync"]);
   assert.match(quiet.log.at(-1), /activate --channel app --version 1.2.0/);
+});
+
+test("publishing the app writes its config.json from the stacks' outputs first", () => {
+  const dir = build();
+  const aws = fakeAws();
+  main(["publish", "--channel", "app", "--dir", dir, "--version", "app-1"], aws.deps);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(dir, "config.json"), "utf8")), APP_CONFIG);
+  // Not hashed, so browsers revalidate it like index.html
+  assert.ok(writes(aws.calls)[1].includes(REVALIDATE));
+
+  // The demo has no backend, and a dry run only says what it would write
+  const demo = build();
+  main(["publish", "--channel", "demo", "--dir", demo, "--version", "demo-9"], fakeAws().deps);
+  assert.ok(!existsSync(path.join(demo, "config.json")));
+  const dry = fakeAws();
+  main(["publish", "--channel", "app", "--dir", demo, "--version", "app-2", "--dry-run"], dry.deps);
+  assert.ok(!existsSync(path.join(demo, "config.json")));
+  assert.ok(dry.log.some((l) => l.startsWith("Would write config.json") && l.includes('"clientId": "client-1"')));
+});
+
+test("config prints the app's config.json, and needs the stacks deployed", () => {
+  const aws = fakeAws();
+  main(["config"], aws.deps);
+  assert.deepEqual(JSON.parse(aws.log[0]), APP_CONFIG);
+  const bare = fakeAws({ params: {} });
+  assert.throws(() => main(["config", "--env", "staging"], bare.deps), /realtime stacks first\): \/supply-checkout\/staging\/api\/url/);
 });
 
 test("publish needs a built folder", () => {
