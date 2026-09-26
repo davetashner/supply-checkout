@@ -44,9 +44,11 @@ Requires Node 22 or newer.
 
 ```bash
 npm ci
-npx playwright install chromium webkit
+npx playwright install chromium webkit firefox
 npm run check
 ```
+
+Microsoft Edge is a system install rather than one of Playwright's own browsers. `npx playwright install msedge` installs it (it asks for admin rights). The Edge tests run whenever Edge is installed, and always in CI.
 
 `npm run dev` serves `src/` with Vite's dev server at http://localhost:5173, against the same in-memory runtime the tests use, with demo sheets, inventory and a receipt, so it can be tried in a browser without publishing to claude.ai. Add `?seed=empty`, `?viewer`, `?nouser`, or `?mock={...}` with any `tests/mock-claude.js` option. Data resets on reload, and the page reloads when a file in `src/` changes.
 
@@ -99,9 +101,23 @@ npx cdk diff --profile supply-prod
 npx cdk deploy --all --profile supply-prod
 ```
 
+## Supported browsers
+
+The current and previous major versions of Chrome, Edge, Firefox and Safari on desktop. The list is the `browserslist` field in `package.json`, and both builds compile their JavaScript and CSS for it (`build.target` in `vite.config.js`).
+
+| Browser | Test project | Builds tested |
+| --- | --- | --- |
+| Chrome (desktop) | `desktop-chrome` | artifact, web |
+| Safari (iPhone) | `iphone-safari` | artifact, web |
+| Firefox (desktop) | `desktop-firefox` | web |
+| Safari (desktop) | `desktop-safari` | web |
+| Microsoft Edge (desktop) | `desktop-edge` | web |
+
+The artifact build only runs on claude.ai, so it's tested in desktop Chrome and iPhone Safari; the web build is tested in every browser above.
+
 ## Tests
 
-`npm test` runs these Playwright suites in desktop Chrome and an iPhone-sized Safari (WebKit), against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`), once for each build. `npm run test:artifact` and `npm run test:web` run one build; `BUILD=web npx playwright test …` does the same for a single file or test. Each run builds the app first (`tests/global-setup.js`), so it always tests the current source.
+`npm test` runs these Playwright suites against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`), once for each build: the artifact build in desktop Chrome and an iPhone-sized Safari (WebKit), and the web build in every supported browser (above). `npm run test:artifact` and `npm run test:web` run one build; `BUILD=web npx playwright test …` does the same for a single file or test, and `--project=desktop-firefox` picks one browser. Each run builds the app first (`tests/global-setup.js`), so it always tests the current source.
 
 ### Running tests on a laptop
 
@@ -161,7 +177,7 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | Dependency audit | `npm audit` fails on high-severity advisories; dependency review fails a PR that adds a moderate-or-worse vulnerable package |
 | CodeQL (javascript-typescript), CodeQL (actions) | CodeQL `security-extended` queries on the app, scripts, tests and workflows (`.github/workflows/codeql.yml`, which also runs weekly). Results go to the repository's code scanning alerts |
 | Infra | Only when `infra/` or the CI workflow changes (always on `main`): `npm audit`, type-check and ESLint, the CDK unit and snapshot tests, and a synth with cdk-nag for the deployed region and for both regions |
-| Tests (desktop-chrome or iphone-safari, artifact or web build) | All test suites, in four parallel jobs: each browser against each build. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
+| Tests (browser, artifact or web build) | All test suites, in seven parallel jobs: desktop Chrome and iPhone Safari against each build, and desktop Firefox, Safari and Edge against the web build. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
 
 ## Releases
 

@@ -41,8 +41,8 @@ Beads are labeled `mvp` or `phase-2` (native mobile apps, full active-active fai
 ```bash
 npm ci
 npm run hooks:install    # once per clone: pre-commit check for AWS IDs, emails and keys
-npx playwright install chromium webkit
-npm run check            # lint + all suites in desktop Chrome and iPhone Safari, against both builds
+npx playwright install chromium webkit firefox
+npm run check            # lint + all suites: artifact in desktop Chrome and iPhone Safari, web in every supported browser, against both builds
 npm run test:coverage    # desktop Chrome with the 98% coverage gate, for both builds
 ```
 

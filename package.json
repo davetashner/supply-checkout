@@ -7,13 +7,19 @@
   "engines": {
     "node": ">=22"
   },
+  "browserslist": [
+    "last 2 Chrome major versions",
+    "last 2 Edge major versions",
+    "last 2 Firefox major versions",
+    "last 2 Safari major versions"
+  ],
   "scripts": {
     "build": "npm run build:artifact && npm run build:web",
     "build:artifact": "vite build --mode artifact",
     "build:web": "vite build --mode web",
     "lint": "eslint . && npm run build && node scripts/validate-html.mjs",
     "test": "npm run test:artifact && npm run test:web",
-    "test:artifact": "BUILD=artifact playwright test",
+    "test:artifact": "BUILD=artifact playwright test --project=desktop-chrome --project=iphone-safari",
     "test:web": "BUILD=web playwright test",
     "check": "npm run lint && npm run check:public && npm test",
     "test:coverage": "COVERAGE=1 BUILD=artifact playwright test --project=desktop-chrome && COVERAGE=1 BUILD=web playwright test --project=desktop-chrome",
@@ -27,6 +33,7 @@
     "@axe-core/playwright": "^4.13.0",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.63.0",
+    "browserslist": "^4.29.1",
     "eslint": "^10.11.0",
     "eslint-plugin-html": "^8.2.1",
     "globals": "^17.12.0",
