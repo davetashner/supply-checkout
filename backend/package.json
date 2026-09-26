@@ -10,7 +10,8 @@
   "scripts": {
     "lint": "tsc --noEmit && eslint .",
     "test": "vitest run",
-    "check": "npm run lint && npm test"
+    "check": "npm run lint && npm test",
+    "test:ddb": "node scripts/test-ddb.ts"
   },
   "dependencies": {
     "@aws-lambda-powertools/logger": "^2.35.0",
