@@ -7,6 +7,8 @@ import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, TEAM, openAws, connected } from "./fake-aws.js";
 
 test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
+// The modal's entrance animation fades it in; axe must see its final colors
+test.use({ reducedMotion: "reduce" });
 
 const PATH = "/teams/t1/imports";
 const CSV = "name,barcode,price,stock,Notes\nNitrile gloves,0123,13,10,x\nRags,,1.5,,y\nBins,,3,2,\n";
