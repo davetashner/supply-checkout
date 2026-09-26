@@ -1,4 +1,5 @@
 import { test, expect, openApp, createSheet, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
+import { usedState } from "./fixtures.js";
 
 test("creates a sheet recording client, date and who prepared it", async ({ page }) => {
   await openApp(page);
@@ -178,4 +179,28 @@ test("returning the same item again adds to what's already been returned", async
   // Both returns went back into storage
   await page.getByRole("button", { name: "Inventory" }).click();
   await expect(inventoryRow(page, "Paper towels").locator("td").nth(1)).toHaveText("5");
+});
+
+test("Enter on a sheet line or inventory row opens its editor and keeps it open", async ({ page }) => {
+  await openApp(page, usedState);
+  await expect(page.locator("#notice")).toBeHidden();
+  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await lineRow(page, "Storage bins").press("Enter");
+  await expect(modal(page).getByRole("heading", { name: "Storage bins, 12 qt" })).toBeVisible();
+  await expect(page.locator("#toast")).toBeHidden();
+  await modal(page).getByRole("button", { name: "Cancel" }).click();
+
+  await page.getByRole("button", { name: "Inventory" }).click();
+  await inventoryRow(page, "Paper towels").press("Enter");
+  await expect(modal(page).getByRole("heading", { name: "Edit item" })).toBeVisible();
+  await expect(page.locator("#toast")).toBeHidden();
+});
+
+test("inventory search matches barcodes in any case", async ({ page }) => {
+  await openApp(page, usedState);
+  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await page.getByRole("button", { name: "Add item without a barcode" }).click();
+  await modal(page).getByLabel("Or pick from inventory").fill("sku1");
+  await expect(modal(page).locator("#pick button")).toHaveCount(1);
+  await expect(modal(page).locator("#pick")).toContainText("Paper towels");
 });

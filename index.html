@@ -456,7 +456,8 @@ function drawSheet(s) {
     if (!canWrite) return;
     const go = () => lineModal(s, tr.dataset.line);
     tr.addEventListener("click", go);
-    tr.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+    // preventDefault: otherwise this Enter press also submits the editor's form
+    tr.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
   });
 }
 
@@ -477,7 +478,8 @@ function drawPrices() {
     if (!canWrite) return;
     const go = () => productModal(tr.dataset.prod);
     tr.addEventListener("click", go);
-    tr.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+    // preventDefault: otherwise this Enter press also submits the editor's form
+    tr.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
   });
 }
 
@@ -575,7 +577,7 @@ function pickOutModal(s) {
     if (!box) return;
     const paint = () => {
       const q = find.value.trim().toLowerCase();
-      const hits = all.filter(p => !q || String(p.name).toLowerCase().includes(q) || String(p.code || "").includes(q));
+      const hits = all.filter(p => !q || String(p.name).toLowerCase().includes(q) || String(p.code || "").toLowerCase().includes(q));
       box.innerHTML = hits.length ? hits.map(p => `<button type="button" data-k="${esc(p.key)}"><span>${esc(p.name)}<span class="code" style="display:block">${esc(codeText(p.code))}</span></span><span class="num">${hasStock(p) ? p.stock + " in storage" : money(p.price)}</span></button>`).join("") : `<p class="hint">No matches. Use + New item.</p>`;
       box.querySelectorAll("[data-k]").forEach(b => b.addEventListener("click", () => { const p = products[b.dataset.k] || {}; checkoutModal(s, p.code || "", b.dataset.k); }));
     };
