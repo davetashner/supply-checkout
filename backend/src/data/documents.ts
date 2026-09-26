@@ -23,6 +23,7 @@ import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
 import { ConflictError, InvalidInputError, NotFoundError, TooLargeError } from "./errors.js";
 import { barcode, id as checkId, keys, prefixes, productKey, teamPartition } from "./keys.js";
+import { money } from "./money.js";
 import { type Page, queryPage } from "./query.js";
 import { GSI1, GSI1PK, PK } from "./schema.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
@@ -138,8 +139,13 @@ function checkDocument(collection: Collection, data: unknown): DocumentData {
   if (collection === "sheets") {
     if ("date" in data && typeof data.date !== "string") throw new InvalidInputError("Invalid date");
     if ("items" in data && !isMap(data.items)) throw new InvalidInputError("Invalid items");
-    // Each line keeps its barcode (`code`), which the typed functions bound the same way
-    for (const line of Object.values((data.items ?? {}) as Record<string, unknown>)) if (isMap(line) && "code" in line) barcode(line.code);
+    // Each line keeps its barcode (`code`) and its cost each (`cost`, ADR 0014), which the
+    // typed functions bound the same way
+    for (const line of Object.values((data.items ?? {}) as Record<string, unknown>)) {
+      if (!isMap(line)) continue;
+      if ("code" in line) barcode(line.code);
+      if ("cost" in line) money(line.cost, "cost");
+    }
   }
   if (Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_DOCUMENT_BYTES) {
     throw new TooLargeError(`Documents are limited to ${MAX_DOCUMENT_BYTES} bytes`);

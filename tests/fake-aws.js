@@ -202,10 +202,17 @@ export class FakeBackend {
     if (expected === undefined) return err(400, "bad_request");
     if (Number(expected) !== (cur ? cur.version : 0)) return err(409, "aborted");
     if (method === "DELETE") { this.docs.delete(key); return [204]; }
-    if (method === "PUT") { this.write(team, coll, id, call.body.data); return [200, out()]; }
+    // A sheet line's cost each is an amount in whole cents (ADR 0014), as backend/src/data/documents.ts checks
+    const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
+    const badCost = (data) => coll === "sheets" && Object.values(data?.items || {}).some((l) => l && typeof l === "object" && "cost" in l && !cents(l.cost));
+    if (method === "PUT") {
+      if (badCost(call.body.data)) return err(400, "bad_request");
+      this.write(team, coll, id, call.body.data); return [200, out()];
+    }
     if (!cur) return err(404, "not_found");
     const data = clone(cur.data);
     merge(data, call.body.data);
+    if (badCost(data)) return err(400, "bad_request");
     this.write(team, coll, id, data);
     return [200, out()];
   }

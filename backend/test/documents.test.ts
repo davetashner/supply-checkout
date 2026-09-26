@@ -74,6 +74,12 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
     // A barcode is bounded like a product key, in either write
     await expect(setDocument(db, ctx, "sheets", "s2", { items: { a: { ...gloves, code: "1".repeat(257) } } })).rejects.toThrow(InvalidInputError);
     await expect(updateDocument(db, ctx, "sheets", "s1", { items: { a: { code: 5 } } })).rejects.toThrow(InvalidInputError);
+    // So is a line's cost each (ADR 0014): kept as written, refused unless it's an amount in whole cents
+    await updateDocument(db, ctx, "sheets", "s1", { items: { "nb-1": { cost: 0.75 } } });
+    expect((await getDocument(db, ctx, "sheets", "s1"))?.data.items).toMatchObject({ "nb-1": { name: "Rags", cost: 0.75 } });
+    expect((await getSheet(db, ctx, "s1"))?.items["nb-1"]?.cost).toBe(0.75);
+    await expect(setDocument(db, ctx, "sheets", "s2", { items: { a: { ...gloves, cost: -1 } } })).rejects.toThrow(InvalidInputError);
+    await expect(updateDocument(db, ctx, "sheets", "s1", { items: { a: { cost: 0.001 } } })).rejects.toThrow(InvalidInputError);
   });
 
   it("lists by ID (consistent) or by date (the index), a page at a time", async () => {
