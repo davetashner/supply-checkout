@@ -185,7 +185,7 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
   // so the screen updates before the live events arrive. Resolves to how many the command
   // moved and the line as it is now. A 409 fetches both, as a document write's does, and
   // passes the error on. So does a 400 or 404, which the command refuses for what the sheet
-  // holds now; it rejects as failed_precondition with the server's message, for the app to show.
+  // holds now; it rejects as `refused` (a code only this adapter uses) with the server's message, for the app to show.
   //
   // `action` stands for one action the person confirmed. It keeps one operation ID for as long
   // as the request stays the same, so every attempt at it (a retry, or a second tap while the
@@ -212,7 +212,7 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
       if (refused || e.code === "aborted") await Promise.all([fetchDoc("sheets", sheetId), fetchDoc("products", body.productKey)]);
       // Refused for what the sheet holds now (only so many left to return, the line or the
       // sheet gone): the server's message says why, with the latest now showing
-      if (refused) throw { code: "failed_precondition", message: `${String(e.message).replace(/\.$/, "")}. The latest is showing.`, status: e.status };
+      if (refused) throw { code: "refused", message: `${String(e.message).replace(/\.$/, "")}. The latest is showing.`, status: e.status };
       throw e;
     }
   }
