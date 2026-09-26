@@ -1,3 +1,4 @@
+import "./theme.js";
 import { use, help } from "./runtime.js";
 import { checkOut, recordReturn, setStock } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, newKey, uid, round2, numOrNull } from "./format.js";
@@ -26,6 +27,9 @@ async function write(fn, okMsg) {
   catch (e) {
     if (e && e.code === "invalid_argument") { canWrite = false; render(); toast("You have view-only access. Ask the owner for Contributor access to make changes."); }
     else if (e && e.code === "quota_exceeded") toast("Storage is full. Delete old sheets or items to make room.");
+    // Someone else saved this first (the web build's versioned writes, ADR 0006). Close the
+    // editor so the latest values show, rather than an edit made on the old ones.
+    else if (e && e.code === "aborted") { closeModal(); toast("Someone else changed this just now, so your change wasn't saved. The latest is showing; make your change again if it's still needed."); }
     else toast("That didn't save. Check your connection and try again.");
     return false;
   }

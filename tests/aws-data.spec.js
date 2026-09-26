@@ -28,21 +28,22 @@ test.describe("data", () => {
     const put = backend.requests("PUT", /^\/teams\/t1\/sheets\//)[0];
     const id = put.path.split("/").pop();
     expect(id).toMatch(/^[A-Za-z0-9_-]{1,128}$/);
-    expect(put.body).toEqual({ data: { client: "Foxtrot Dental", date: expect.any(String), createdBy: "u-pat", createdAt: expect.any(String), status: "open", items: {} } });
+    // Each write names the version it was made against: 0 for a new document
+    expect(put.body).toEqual({ data: { client: "Foxtrot Dental", date: expect.any(String), createdBy: "u-pat", createdAt: expect.any(String), status: "open", items: {} }, expectedVersion: 0 });
 
     // Checkout: the sheet line (with its code, as the app wrote it), then the storage count
     await enterBarcode(page, "SKU1");
     await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
     await expect(lineRow(page, "Paper towels")).toBeVisible();
-    expect(backend.requests("PATCH", `/teams/t1/sheets/${id}`)[0].body).toEqual({ data: { items: { SKU1: { code: "SKU1", name: "Paper towels, 6 roll", price: 8.5, out: 1, returned: 0 } } } });
-    expect(backend.requests("PATCH", "/teams/t1/products/SKU1")[0].body).toEqual({ data: { stock: 9 } });
+    expect(backend.requests("PATCH", `/teams/t1/sheets/${id}`)[0].body).toEqual({ data: { items: { SKU1: { code: "SKU1", name: "Paper towels, 6 roll", price: 8.5, out: 1, returned: 0 } } }, expectedVersion: 1 });
+    expect(backend.requests("PATCH", "/teams/t1/products/SKU1")[0].body).toEqual({ data: { stock: 9 }, expectedVersion: 1 });
 
     // Return
     await page.getByRole("button", { name: "Return", exact: true }).click();
     await enterBarcode(page, "SKU1");
     await modal(page).getByRole("button", { name: "Save return" }).click();
     await expect(lineRow(page, "Paper towels")).toContainText("1");
-    expect(backend.requests("PATCH", `/teams/t1/sheets/${id}`)[1].body).toEqual({ data: { items: { SKU1: { returned: 1 } } } });
+    expect(backend.requests("PATCH", `/teams/t1/sheets/${id}`)[1].body).toEqual({ data: { items: { SKU1: { returned: 1 } } }, expectedVersion: 2 });
     await expect.poll(() => backend.doc("t1", "products", "SKU1").data.stock).toBe(10);
 
     // A key with characters that need encoding in a path
@@ -61,7 +62,7 @@ test.describe("data", () => {
     await page.getByRole("button", { name: "Delete sheet" }).click();
     await page.getByRole("button", { name: "Tap again to delete" }).click();
     await expect(card(page, "Foxtrot Dental")).toHaveCount(0);
-    expect(backend.requests("DELETE", `/teams/t1/sheets/${id}`)).toHaveLength(1);
+    expect(backend.requests("DELETE", `/teams/t1/sheets/${id}`).map((r) => r.query)).toEqual([{ expectedVersion: "3" }]);
     expect(backend.doc("t1", "sheets", id)).toBeUndefined();
   });
 
@@ -88,7 +89,7 @@ test.describe("data", () => {
     const error = (status, code) => ({ status, body: { error: { code, message: code } } });
     await tryCreate(error(413, "quota_exceeded"));
     await expect(page.locator("#toast")).toHaveText("Storage is full. Delete old sheets or items to make room.");
-    for (const answer of [error(409, "aborted"), { status: 502, body: "<html>Bad gateway</html>" }, { abort: true }]) {
+    for (const answer of [error(400, "bad_request"), { status: 502, body: "<html>Bad gateway</html>" }, { abort: true }]) {
       await page.locator("#toast").evaluate((t) => { t.hidden = true; });
       backend.on("PUT", /^\/teams\/t1\/sheets\//, answer);
       await page.getByRole("button", { name: "Create sheet" }).click();
@@ -99,6 +100,38 @@ test.describe("data", () => {
     await page.getByRole("button", { name: "Create sheet" }).click();
     await expect(page.locator("#notice")).toContainText("You have view-only access.");
     expect(backend.requests("PUT", /^\/teams\/t1\/sheets\//)).toHaveLength(5);
+  });
+
+  test("a conflicting edit is refused, and the latest values show with a clear message", async ({ page }) => {
+    const backend = await open(page);
+    await card(page, "Echo Studio").click();
+    await lineRow(page, "Paper towels").click();
+    await modal(page).getByLabel("Taken").fill("7");
+    // Meanwhile someone else checks out more of the same line, and this page hasn't heard yet
+    const theirs = structuredClone(usedState.seed["sheets/s1"]);
+    theirs.items.SKU1.out = 9;
+    backend.write("t1", "sheets", "s1", theirs);
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(page.locator("#toast")).toHaveText("Someone else changed this just now, so your change wasn't saved. The latest is showing; make your change again if it's still needed.");
+    await expect(modal(page)).toBeEmpty();
+    await expect(lineRow(page, "Paper towels").locator("td").nth(2)).toHaveText("9");
+    expect(backend.requests("PATCH", "/teams/t1/sheets/s1").map((r) => r.body.expectedVersion)).toEqual([1]);
+    expect(backend.doc("t1", "sheets", "s1")).toMatchObject({ version: 2, data: { items: { SKU1: { out: 9 } } } });
+
+    // Made again on the latest, it saves
+    await lineRow(page, "Paper towels").click();
+    await modal(page).getByLabel("Taken").fill("10");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(page.locator("#toast")).toHaveText("Saved");
+    expect(backend.requests("PATCH", "/teams/t1/sheets/s1").map((r) => r.body.expectedVersion)).toEqual([1, 2]);
+    expect(backend.doc("t1", "sheets", "s1").data.items.SKU1.out).toBe(10);
+
+    // A delete that races someone else's delete: the sheet is gone either way
+    backend.docs.delete("t1/sheets/s1");
+    await page.getByRole("button", { name: "Delete sheet" }).click();
+    await page.getByRole("button", { name: "Tap again to delete" }).click();
+    await expect(page.locator("#toast")).toContainText("Someone else changed this just now");
+    await expect(card(page, "Echo Studio")).toHaveCount(0);
   });
 
   test("a first load that fails reports a lost connection", async ({ page }) => {

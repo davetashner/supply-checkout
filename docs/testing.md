@@ -43,6 +43,7 @@ While working on a change, run just the file and browser you're touching, e.g. `
 | --- | --- |
 | `app.spec.js` | Core flows: sheets, checkout and return, storage counts, items without barcodes, receipt review, CSV export, view-only access |
 | `a11y.spec.js` | axe-core WCAG 2.1 A/AA scan of every screen, in light and dark mode |
+| `theme.spec.js` | The System / Light / Dark control: each choice over a light and a dark OS, kept across a reload, applied before the page finishes loading, and falling back to System when storage throws |
 | `layout.spec.js` | No sideways scrolling at 320px and 390px phone widths |
 | `resilience.spec.js` | Missing capabilities, failed receipt reads, full storage, lost write permission, and resuming an unsaved receipt |
 | `sheets.spec.js` | Editing, filtering, reopening and deleting sheets; editing and removing lines; picking and returning items without barcodes |
@@ -54,7 +55,7 @@ While working on a change, run just the file and browser you're touching, e.g. `
 | `failures.spec.js` | Every kind of save that can fail leaves the screen as it was |
 | `legacy-data.spec.js` | Sheets and items missing fields that older versions didn't save |
 | `concurrent.spec.js` | Someone else changing or deleting data while a form is open |
-| `demo.spec.js` | The demo build (web runs only): the banner, a checkout, a receipt and a download with no requests outside the page and Google Fonts; a reload starting over; the banner's accessibility and 320px layout |
+| `demo.spec.js` | The demo build (web runs only): the banner, a checkout, a receipt and a download with no requests outside the page and Google Fonts; a reload starting over; the theme control; the banner's accessibility and 320px layout |
 | `dev-server.spec.js` | `npm run dev` and its query-string options |
 | `aws-account.spec.js` | The web build's runtime (web runs only): `config.json`, sign-in and the code exchange, token refresh (including 401, refresh, retry), first sign-in, invites, the team switcher, view-only, sign-out, and the screens' accessibility and 320px layout |
 | `aws-data.spec.js` | The web build's runtime (web runs only): the app's writes on the data routes, cursors, error codes, downloads (including exporting 1,000 sheets listed page by page, and owners only), live events, re-lists, reconnecting, the polling fallback and removal from a team |
