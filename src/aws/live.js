@@ -1,5 +1,5 @@
 // Live updates for the web build, over AppSync Events (docs/api/realtime.md). One
-// subscription to the team's channel; each event names a changed document and carries
+// subscription to the user's own channel; each event names a changed document and carries
 // none of its data, so the db module fetches it. After every (re)subscribe, when the tab
 // is shown again and every 10 minutes, it asks for a full re-list (onResync), because
 // events sent while disconnected are gone. If the socket can't get going three times in

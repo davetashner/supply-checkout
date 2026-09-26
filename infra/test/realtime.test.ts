@@ -1,6 +1,7 @@
 import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
+import { LIVE_AUDIENCE_ATTRIBUTES } from "../../backend/src/data/schema.js";
 import { REALTIME_ENV } from "../../backend/src/realtime/channels.js";
 import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { realtimeOutputParameters } from "../lib/stacks/realtime-stack.js";
@@ -47,11 +48,11 @@ describe("Event API authorization", () => {
     });
   });
 
-  it("has one namespace, teams, that clients can subscribe to and only IAM can publish to", () => {
+  it("has one namespace, users, that clients can subscribe to and only IAM can publish to", () => {
     const t = realtime();
     t.resourceCountIs("AWS::AppSync::ChannelNamespace", 1);
     t.hasResourceProperties("AWS::AppSync::ChannelNamespace", {
-      Name: "teams",
+      Name: "users",
       PublishAuthModes: [{ AuthType: "AWS_IAM" }],
       SubscribeAuthModes: [{ AuthType: "AWS_LAMBDA" }],
     });
@@ -70,40 +71,34 @@ describe("Event API authorization", () => {
     });
   });
 
-  it("gives the authorizer the user pool, client and table, read from SSM at deploy time", () => {
+  it("gives the authorizer the user pool and client, read from SSM at deploy time, and no table", () => {
     const t = realtime();
-    t.hasResourceProperties("AWS::Lambda::Function", {
-      Runtime: "nodejs24.x",
-      Architectures: ["arm64"],
-      Environment: {
-        Variables: Match.objectLike({
-          [REALTIME_ENV.tableName]: "supply-checkout-prod-app",
-          [REALTIME_ENV.userPoolId]: { Ref: Match.stringLikeRegexp("identityuserpoolid") },
-          [REALTIME_ENV.clientId]: { Ref: Match.stringLikeRegexp("identitywebclientid") },
-        }),
-      },
-    });
+    const [[, fn]] = resources(t, "AWS::Lambda::Function").filter(([id]) => id === authorizerId(t)) as [[string, Resource]];
+    expect(fn.Properties).toMatchObject({ Runtime: "nodejs24.x", Architectures: ["arm64"] });
+    const vars = (fn.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    expect(vars[REALTIME_ENV.userPoolId]).toEqual({ Ref: expect.stringMatching(/identityuserpoolid/) });
+    expect(vars[REALTIME_ENV.clientId]).toEqual({ Ref: expect.stringMatching(/identitywebclientid/) });
+    expect(vars[REALTIME_ENV.tableName]).toBeUndefined();
   });
 
-  it("lets the authorizer read team items and nothing else in the table", () => {
+  it("gives the authorizer no DynamoDB or KMS access: it only compares the channel with the token", () => {
     const t = realtime();
-    const table = statements(t).filter((s) => s.policy.startsWith("AuthorizerRole") && JSON.stringify(s.Action).includes("dynamodb:"));
-    expect(table).toHaveLength(1);
-    expect(table[0]).toMatchObject({ Action: "dynamodb:GetItem", Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] } } });
+    const mine = statements(t).filter((s) => s.policy.startsWith("AuthorizerRole"));
+    expect(mine.map((s) => s.Action)).toEqual([["logs:CreateLogStream", "logs:PutLogEvents"]]);
   });
 });
 
 describe("the stream consumer", () => {
-  it("is the only principal that may publish, and only to the teams namespace", () => {
+  it("is the only principal that may publish, and only to the users namespace", () => {
     const t = realtime();
     const publish = statements(t).filter((s) => JSON.stringify(s.Action).includes("appsync:"));
     expect(publish).toHaveLength(1);
     expect(publish[0]?.policy).toMatch(/^PublisherRole/);
     expect(publish[0]?.Action).toBe("appsync:EventPublish");
-    expect(JSON.stringify(publish[0]?.Resource)).toMatch(/\/channelNamespace\/teams"\]\]\}$/);
+    expect(JSON.stringify(publish[0]?.Resource)).toMatch(/\/channelNamespace\/users"\]\]\}$/);
   });
 
-  it("reads the table's stream from SSM, filtered to products and sheets, with partial batch failures and a dead-letter queue", () => {
+  it("reads the table's stream from SSM, filtered to products, sheets, members and team metadata, with partial batch failures and a dead-letter queue", () => {
     const t = realtime();
     const [[, mapping]] = resources(t, "AWS::Lambda::EventSourceMapping") as [[string, Resource]];
     expect(mapping.Properties).toMatchObject({
@@ -121,13 +116,37 @@ describe("the stream consumer", () => {
     expect(patterns).toEqual([
       { dynamodb: { Keys: { SK: { S: [{ prefix: "PRODUCT#" }] } } } },
       { dynamodb: { Keys: { SK: { S: [{ prefix: "SHEET#" }] } } } },
+      { dynamodb: { Keys: { SK: { S: [{ prefix: "MEMBER#" }] } } } },
+      { dynamodb: { Keys: { SK: { S: ["META"] } } } },
     ]);
   });
 
-  it("publishes to the API's own HTTP host, not the custom domain", () => {
+  it("may read only who gets a team's changes: team partitions, and only the audience attributes", () => {
+    const t = realtime();
+    const reads = statements(t).filter((s) => s.policy.startsWith("PublisherRole") && JSON.stringify(s.Action).includes("dynamodb:") && !JSON.stringify(s.Action).includes("Stream"));
+    expect(reads).toHaveLength(1);
+    expect(reads[0]).toMatchObject({
+      Effect: "Allow",
+      Action: ["dynamodb:GetItem", "dynamodb:Query"],
+      Condition: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+        "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "userId", "role", "status"] },
+        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
+    });
+    expect([...LIVE_AUDIENCE_ATTRIBUTES]).toEqual(["PK", "SK", "userId", "role", "status"]);
+    expect(JSON.stringify(reads[0]?.Resource)).toMatch(/table\/supply-checkout-prod-app"\]\]\}$/);
+  });
+
+  it("publishes to the API's own HTTP host, not the custom domain, and reads members from the app table", () => {
     realtime().hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "supply-checkout-prod-live-updates",
-      Environment: { Variables: Match.objectLike({ [REALTIME_ENV.httpHost]: { "Fn::GetAtt": [Match.stringLikeRegexp("^EventApi"), "Dns.Http"] } }) },
+      Environment: {
+        Variables: Match.objectLike({
+          [REALTIME_ENV.httpHost]: { "Fn::GetAtt": [Match.stringLikeRegexp("^EventApi"), "Dns.Http"] },
+          [REALTIME_ENV.tableName]: "supply-checkout-prod-app",
+        }),
+      },
     });
   });
 

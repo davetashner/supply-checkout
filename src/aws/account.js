@@ -191,7 +191,7 @@ export async function start(config) {
     const claims = session.claims();
     const name = [claims.given_name, claims.family_name].filter(Boolean).join(" ") || claims.email;
     const profile = { id: me.user.id, name, avatarUrl: AVATAR, isMe: true };
-    db = createDb({ api: session.api, config, teamId: team.id, token: session.token, onRemoved: () => removed(team) });
+    db = createDb({ api: session.api, config, teamId: team.id, userId: me.user.id, token: session.token, onRemoved: () => removed(team) });
     return {
       db,
       user: {
