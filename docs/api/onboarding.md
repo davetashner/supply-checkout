@@ -40,8 +40,10 @@ Then:
    `teamId` for the data routes. It's empty, so the app shows its empty
    inventory, ready to add products.
 2. **Arrived from an invite link.** The invite email links to the app with the
-   invite's ID and a one-time token (the link format is
-   `supply-checkout-5tp`'s; for example `?invite=<id>&token=<token>`). Keep
+   invite's ID and a one-time token:
+   `https://app.<env domain>/?invite=<id>&token=<token>`. (It opens the web
+   app; opening the mobile app from it, with universal links, comes with the
+   phase 2 apps.) Keep
    both across sign-in (in `sessionStorage`, then remove them from the URL),
    and once `/me` has loaded offer that invite ("Bravo Co invited you as a
    contributor") with **Join**, and **Create my own team instead** if the user
@@ -71,6 +73,24 @@ Then:
 Use `role` to show or hide editing (viewers read only; the data routes also
 answer a viewer's write with `403 permission_denied`, `reason: "view_only"`). Use `status` and
 `trialEndsAt` for the trial banner.
+
+## Inviting people
+
+Owners invite from the members screen: `POST /teams/{teamId}/invites` with
+`{"email", "role"}`. The server makes the invite and emails the link above; the
+response is the invite as owners see it (never the token), with `inviteStatus`
+`pending`, or `failed` with `failureReason: "not_sent"` if SES wouldn't send
+it. `GET /teams/{teamId}/invites` lists them: `pending`, `failed` (`bounced`,
+`complained` or `not_sent`, shown as "Couldn't deliver" with why) or
+`expired`. `DELETE /teams/{teamId}/invites/{inviteId}` revokes one, and
+`POST /teams/{teamId}/invites/{inviteId}/resend` replaces it with a new link
+(a new `id`), pending again. To correct an address, revoke the invite and make
+a new one. Each team can send 50 invites a day, 3 to any one address, and each
+address can be sent 15 from all teams (429 `quota_exceeded`). The address must
+be a bare `name@example.com` (400 otherwise); an address that's already a member's, or already has a
+live invite to the team, is 409 `aborted` with a message to show. Removing a
+member also revokes their other invites to the team. See
+[openapi.yaml](openapi.yaml) under the `invites` tag.
 
 ## Errors from `POST /teams`
 

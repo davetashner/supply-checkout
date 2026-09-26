@@ -66,3 +66,15 @@ export const LIVE_AUDIENCE_ATTRIBUTES = [PK, SK, "userId", "role", "status"] as 
  * other attribute, or read one back.
  */
 export const MEMBER_ROW_ATTRIBUTES = [PK, SK, "role"] as const;
+
+/**
+ * The partition prefix of the per-invitee invite counters:
+ * `INVITELIMIT#<sha256 of the email>`, sort key `LIMIT#INVITES#<day>`. When an
+ * owner invites someone, the account function's session is tagged with the
+ * invitee's hash, and that tag reaches only this partition, only with
+ * UpdateItem, and only these attributes (INVITE_LIMIT_ATTRIBUTES).
+ */
+export const INVITE_LIMIT_PREFIX = "INVITELIMIT#";
+
+/** The only attributes a request may name in an `INVITELIMIT#` partition: the keys, the count, its item type and its expiry. */
+export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as const;

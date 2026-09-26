@@ -2,8 +2,8 @@
 //
 // The SES domain identity, its configuration set and the bounce and
 // complaint topic are in the primary region's domain stack; the handler for
-// those events is the email stack. A function that sends (invites,
-// supply-checkout-5tp; billing notices, supply-checkout-x0l) gets
+// those events is the email stack. A function that sends (the account
+// function, for invites; billing notices, supply-checkout-x0l) gets
 // grantSendEmail(), and nothing else may send.
 import { Stack } from "aws-cdk-lib";
 import { PolicyStatement } from "aws-cdk-lib/aws-iam";

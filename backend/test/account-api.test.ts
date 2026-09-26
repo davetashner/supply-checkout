@@ -10,12 +10,13 @@ import { createAccountHandler } from "../src/api/account-handler.js";
 import type { CognitoUser } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
-import { ACCOUNT_ROUTES, ACCOUNT_TAG_UNUSED, routeKey } from "../src/api/routes.js";
+import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
 import { authorizeTeam, createInvite, hashEmail, MAX_TEAMS_PER_USER, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS } from "../src/data/index.js";
 import type { Observability } from "../src/observability/index.js";
-import { REGION } from "./helpers.js";
+import { REGION, accountPartitions, fakeMailer } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
+const mails = fakeMailer();
 const ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_pool";
 const DAY = 86400_000;
 const OWNER = "user-owner";
@@ -66,7 +67,7 @@ beforeEach(() => {
   // Like accountScopedDbs: each handle reaches only its session tags' partitions
   const dbFor: DbForAccount = (scope) => {
     scopes.push(scope);
-    return table.scoped([`USER#${scope.userId}`, `TEAM#${scope.teamId ?? ACCOUNT_TAG_UNUSED}`, `INVITEE#${scope.invitee ?? ACCOUNT_TAG_UNUSED}`]);
+    return table.scoped(accountPartitions(scope));
   };
   const userInfo = async (token: string) => {
     if (cognitoDown) throw new Error("GetUser failed: 500");
@@ -74,7 +75,7 @@ beforeEach(() => {
     if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
     return user;
   };
-  handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs: fakeObservability(), now: () => now });
+  handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, now: () => now });
 });
 
 interface Request {
@@ -121,7 +122,7 @@ async function call(method: string, path: string, request: Request = {}) {
 
 const create = (user: string, name: string, key: string) => call("POST", "/teams", { user, body: { name }, headers: { "Idempotency-Key": key } });
 
-/** An invite from team-a's owner, made through the data layer (the invite route is supply-checkout-5tp). */
+/** An invite from team-a's owner, made through the data layer (test/invites-api.test.ts covers the invite routes). */
 async function invite(email: string, options: { role?: "contributor" | "viewer" | "owner"; ttlDays?: number; team?: string } = {}) {
   const team = options.team ?? "team-a";
   const owner = await authorizeTeam(table.db(), OWNER, team);
@@ -287,7 +288,8 @@ describe("POST /invites/{inviteId}/accept", () => {
   it("needs the token from the emailed link: none, a wrong one or another invite's is 404", async () => {
     await table.seedTeam("team-b", { [OWNER]: "owner" });
     const { inviteId, token } = await invite("pat@example.com", { team: "team-b" });
-    const other = await invite("pat@example.com", { team: "team-b" });
+    await table.seedTeam("team-c", { [OWNER]: "owner" });
+    const other = await invite("pat@example.com", { team: "team-c" });
     for (const wrong of [undefined, "", "x".repeat(43), other.token, 42 as unknown as string]) {
       expect(await accept(PAT, inviteId, wrong), String(wrong)).toMatchObject({ status: 404, body: { error: { code: "not_found" } } });
     }

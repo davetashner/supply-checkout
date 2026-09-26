@@ -10,15 +10,16 @@ import { createAccountHandler } from "../src/api/account-handler.js";
 import type { CognitoUser } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
-import { ACCOUNT_ROUTES, ACCOUNT_TAG_UNUSED, routeKey } from "../src/api/routes.js";
+import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
 import { authorizeTeam, createInvite } from "../src/data/index.js";
 import { cognitoAdmin, type UpdateUserAttributes } from "../src/identity/cognito-admin.js";
 import { createEmailVerifiedHandler, federatedProvider, providerSaysVerified } from "../src/identity/email-verified-handler.js";
 import { FEDERATED_PROVIDERS, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "../src/identity/names.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
-import { REGION } from "./helpers.js";
+import { REGION, accountPartitions, fakeMailer } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
+const mails = fakeMailer();
 const POOL = `${REGION}_pool`;
 const ISSUER = `https://cognito-idp.${REGION}.amazonaws.com/${POOL}`;
 const GOOGLE_ID = "107691234567890123456";
@@ -337,14 +338,14 @@ describe("invites for Google and Apple users", () => {
     table = new MemoryTable();
     table.seedTeam("team-a", { [OWNER]: "owner" });
     const dbFor: DbForAccount = (scope) =>
-      table.scoped([`USER#${scope.userId}`, `TEAM#${scope.teamId ?? ACCOUNT_TAG_UNUSED}`, `INVITEE#${scope.invitee ?? ACCOUNT_TAG_UNUSED}`]);
+      table.scoped(accountPartitions(scope));
     // GetUser, with the access token standing in for the username
     const userInfo = async (token: string): Promise<CognitoUser> => {
       const user = users.get(token.replace(/^token-/, ""));
       if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
       return { sub: user.sub, email: user.attributes.email, emailVerified: user.attributes.email_verified === "true" };
     };
-    handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs: fakeObservability(), now: () => now });
+    handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, now: () => now });
   });
 
   /** A first sign-in through Managed Login: Cognito creates the user from the provider's claims, then runs the trigger. */

@@ -276,7 +276,8 @@ function checkoutModal(s, code, key = keyOf(code)) {
       const qty = getQty(); if (!qty) { toast("Choose at least 1."); return; }
       let name = prod && prod.name, price = prod ? Number(prod.price) || 0 : 0, oneOff = {};
       if (!prod) {
-        name = m.querySelector("#fName").value.trim(); price = Math.max(0, Number(m.querySelector("#fPrice").value) || 0);
+        // A typed price is kept in whole cents, as the API takes it (ADR 0014)
+        name = m.querySelector("#fName").value.trim(); price = Math.max(0, round2(m.querySelector("#fPrice").value));
         if (!name) return;
         const save = code || m.querySelector("#fSave").checked;
         // Saved once per action: a retry after the checkout failed doesn't save it again
@@ -284,8 +285,8 @@ function checkoutModal(s, code, key = keyOf(code)) {
           if (!await write(() => db.doc("products/" + key).set({ code, name, price, updatedAt: new Date().toISOString() }))) return;
           action.saved = true;
         }
-        // Not saved to inventory: the line's name and price come from here (whole cents, as the API takes them)
-        if (!save) oneOff = { name, price: round2(price), code };
+        // Not saved to inventory: the line's name and price come from here
+        if (!save) oneOff = { name, price, code };
       }
       const fresh = currentSheet() || s, cur = own(fresh.items || {}, key);
       // A new line copies the item's cost too (ADR 0014); an existing line keeps its snapshot
@@ -413,7 +414,8 @@ function lineModal(s, key) {
     m.querySelector("#f").addEventListener("submit", async e => {
       e.preventDefault();
       const out = int(m.querySelector("#fOut").value), returned = Math.min(int(m.querySelector("#fRet").value), out);
-      const price = Math.max(0, Number(m.querySelector("#fPrice").value) || 0);
+      // Typed prices are kept in whole cents (ADR 0014)
+      const price = Math.max(0, round2(m.querySelector("#fPrice").value));
       if (await write(() => db.doc("sheets/" + s.id).update({ items: { [key]: { out, returned, price } } }), "Saved", s.id)) closeModal();
     });
   });

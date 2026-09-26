@@ -207,9 +207,18 @@ describe("grantSendEmail", () => {
     });
   });
 
-  it("isn't given to any function yet: invites and billing add it when they send", () => {
+  it("is given only to the account function, which sends invites", () => {
     const { app, stacks } = build();
     void app;
-    for (const stack of stacks.all) expect(JSON.stringify(Template.fromStack(stack).findResources("AWS::IAM::Policy"))).not.toContain("ses:SendEmail");
+    for (const stack of stacks.all) {
+      const policies = Template.fromStack(stack).findResources("AWS::IAM::Policy");
+      const senders = Object.entries(policies)
+        .filter(([, p]) => JSON.stringify(p).includes("ses:SendEmail"))
+        .map(([id]) => id);
+      // In every region's api stack, the account function's role; nowhere else
+      expect(senders, stack.stackName).toEqual(stack.stackName.endsWith("-api") ? [expect.stringMatching(/^AccountFunctionRole/)] : []);
+      // No other SES action anywhere (no raw or templated sends)
+      expect(JSON.stringify(policies)).not.toMatch(/ses:Send(Raw|Templated|Bulk)/);
+    }
   });
 });
