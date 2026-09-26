@@ -124,7 +124,7 @@ flowchart TB
   class s3w,apiw,lamw,evtw,streamw,ddbw,brw,sqsw later
 ```
 
-Not drawn: KMS keys, Secrets Manager (Stripe keys), SES, CloudWatch alarms and dashboards, AWS Backup. In the MVP they're in us-east-1. Phase 2 adds a KMS key, replica secrets, SES, and alarms and dashboards in us-west-2.
+Not drawn: KMS keys, Secrets Manager (Stripe keys), SES, CloudWatch alarms and dashboards, AWS Backup (daily, copied to a separate account; see [Backups and restores](../backups.md)). In the MVP they're in us-east-1. Phase 2 adds a KMS key, replica secrets, SES, and alarms and dashboards in us-west-2.
 
 **Names.** Prod serves `supplycheckout.com` from the Route 53 zone the domain is delegated to; staging and dev serve `<env>.supplycheckout.com` from zones in their own accounts, delegated from prod's. The apex serves the demo at `/demo/` and redirects everything else to `app.` (until the landing page), `www.` redirects to the apex, `app.` serves the web app, `auth.` Cognito, `realtime.` AppSync Events and `api.` the HTTP API. The certificates for CloudFront, Cognito and AppSync are in us-east-1 (AWS requires it); `api.` has one in each region. SES signs with DKIM and uses `mail.` as its MAIL FROM domain, so both SPF and DKIM align for DMARC. See the README's "Domain and email" section.
 

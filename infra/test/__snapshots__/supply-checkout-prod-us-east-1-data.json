@@ -333,6 +333,9 @@
           "Rules": [
             {
               "ExpirationInDays": 365,
+              "NoncurrentVersionExpiration": {
+                "NoncurrentDays": 30
+              },
               "Status": "Enabled"
             }
           ]
@@ -371,7 +374,10 @@
             "Key": "managed-by",
             "Value": "cdk"
           }
-        ]
+        ],
+        "VersioningConfiguration": {
+          "Status": "Enabled"
+        }
       },
       "UpdateReplacePolicy": "Retain",
       "DeletionPolicy": "Retain"

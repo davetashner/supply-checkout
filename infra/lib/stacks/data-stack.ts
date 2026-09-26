@@ -112,7 +112,10 @@ export class DataStack extends SupplyCheckoutStack {
       blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
       objectOwnership: ObjectOwnership.BUCKET_OWNER_PREFERRED,
       enforceSSL: true,
-      lifecycleRules: [{ expiration: Duration.days(365) }],
+      // Versioned so an overwrite or delete of a log can be undone for 30 days
+      // (supply-checkout-8x1: every bucket that holds data is versioned)
+      versioned: true,
+      lifecycleRules: [{ expiration: Duration.days(365), noncurrentVersionExpiration: Duration.days(30) }],
       removalPolicy: RemovalPolicy.RETAIN,
     });
     Validations.of(this.logsBucket).acknowledge({

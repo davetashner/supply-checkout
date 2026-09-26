@@ -427,3 +427,60 @@ test("a tap on the list survives a redraw, and a snapshot with no changes leaves
   await page.locator("#main .bar").click({ position: { x: 1, y: 1 } });
   await expect(page.locator("#overlay")).toBeHidden();
 });
+
+test("a tap on a line survives a redraw, and a snapshot with no changes leaves the sheet alone", async ({ page }) => {
+  await openEcho(page);
+  const row = lineRow(page, "Paper towels");
+  await expect(row).toBeVisible();
+  const tapped = await row.elementHandle();
+  const head = await page.getByRole("button", { name: "Finished Return" }).elementHandle();
+
+  // Press a line; another user checks out more of the other line, which redraws the sheet mid-tap
+  await row.scrollIntoViewIfNeeded();
+  const box = await row.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.evaluate(() => {
+    window.__mock.docs.get("sheets/s1").items["nb-bins"].out = 5;
+    window.__mock.notify();
+  });
+  await expect(page.locator(".totals")).toContainText("Taken8");
+  // What didn't change is the same elements
+  expect(await tapped.evaluate((el) => el.isConnected)).toBe(true);
+  expect(await head.evaluate((el) => el.isConnected)).toBe(true);
+  await page.mouse.up();
+  await expect(modal(page).getByRole("heading", { name: "Paper towels, 6 roll" })).toBeVisible();
+  await modal(page).getByRole("button", { name: "Cancel" }).click();
+
+  // A snapshot with nothing new doesn't touch the sheet view
+  await page.evaluate(() => {
+    window.__mutations = 0;
+    new MutationObserver((m) => { window.__mutations += m.length; }).observe(document.getElementById("sheetView"), { subtree: true, childList: true, attributes: true, characterData: true });
+    window.__mock.notify();
+  });
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 50)));
+  expect(await page.evaluate(() => window.__mutations)).toBe(0);
+
+  // Clicks on the sheet outside its buttons and lines do nothing
+  await page.locator("#sheetHead h2").click();
+  await page.locator("#sheetBody .totals").click();
+  await expect(page.locator("#overlay")).toBeHidden();
+});
+
+test("the sheet's buttons act on the latest copy of the sheet", async ({ page }) => {
+  await openEcho(page);
+  await page.evaluate(() => {
+    window.__mock.docs.get("sheets/s1").client = "Echo Studio West";
+    window.__mock.notify();
+  });
+  await expect(page.getByRole("heading", { name: "Echo Studio West" })).toBeVisible();
+  await page.getByRole("button", { name: "Edit details" }).click();
+  await expect(modal(page).getByLabel("Client", { exact: true })).toHaveValue("Echo Studio West");
+});
+
+test("a refused write to a sheet that's still there switches the page to view-only", async ({ page }) => {
+  await openEcho(page, { writeError: "invalid_argument" });
+  await page.getByRole("button", { name: "Finished Return" }).click();
+  await expect(page.locator("#notice")).toContainText("view-only access");
+  await expect(page.locator("#scanbar")).toBeHidden();
+});
