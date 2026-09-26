@@ -37,6 +37,15 @@ test("failed line edits keep the line editor open", async ({ page }) => {
   await expect(modal(page).getByRole("heading", { name: "Paper towels, 6 roll" })).toBeVisible();
 });
 
+test("an edit someone else saved over first closes the editor and says so", async ({ page }) => {
+  await openEcho(page, { ...usedState, writeErrorFor: { prefix: "sheets/", code: "aborted" } });
+  await lineRow(page, "Paper towels").click();
+  await modal(page).getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("#toast")).toHaveText("Someone else changed this just now, so your change wasn't saved. The latest is showing; make your change again if it's still needed.");
+  await expect(modal(page)).toBeEmpty();
+  await expect(page.getByRole("heading", { name: "Echo Studio" })).toBeVisible();
+});
+
 test("a new item that can't be saved to inventory isn't added to the sheet", async ({ page }) => {
   await openEcho(page, { ...usedState, writeErrorFor: { prefix: "products/", code: "unavailable" } });
   await enterBarcode(page, "NEW1");
