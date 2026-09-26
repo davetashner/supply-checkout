@@ -4,7 +4,7 @@
 import { test, expect, createSheet, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
 import { currentBuild } from "../scripts/builds.mjs";
 import { usedState } from "./fixtures.js";
-import { FakeBackend, openAws, connected, sockets, emit, receive, dropSocket, setVisible } from "./fake-aws.js";
+import { FakeBackend, TEAM, openAws, connected, sockets, emit, receive, dropSocket, setVisible } from "./fake-aws.js";
 
 test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 
@@ -151,6 +151,35 @@ test.describe("data", () => {
     expect((await download).suggestedFilename()).toBe("Echo Studio 2026-09-24.csv");
     // The file's object URL is released afterwards
     await page.clock.fastForward(10e3);
+  });
+
+  test("an owner exports 1,000 sheets, listed page by page, as a JSON download", async ({ page }) => {
+    const docs = seeded();
+    for (let i = 0; i < 1000; i++) {
+      const items = {};
+      for (let j = 0; j < 20; j++) items[`k${j}`] = { code: `C${j}`, name: `Item ${j}`, price: j, out: 3, returned: 1 };
+      docs[`t1/sheets/b${i}`] = { client: `Client ${i}`, date: "2026-09-01", status: "open", items };
+    }
+    const backend = new FakeBackend({ docs });
+    backend.pageSize = 100;
+    const start = Date.now();
+    await open(page, backend);
+    await page.getByRole("button", { name: "Export data" }).click();
+    await expect(modal(page)).toContainText("1001 sheets and 2 inventory items");
+    const download = page.waitForEvent("download");
+    await modal(page).getByRole("button", { name: "Everything (JSON)" }).click();
+    const file = await download;
+    expect(Date.now() - start).toBeLessThan(30e3);
+    expect(file.suggestedFilename()).toMatch(/^Supply Checkout export \d{4}-\d{2}-\d{2}\.json$/);
+    const json = JSON.parse(await (await import("node:fs/promises")).readFile(await file.path(), "utf8"));
+    expect(json.sheets).toHaveLength(1001);
+    expect(json.sheets.find((s) => s.id === "b7").totals).toEqual({ taken: 60, returned: 20, used: 40, charge: 380 });
+  });
+
+  test("members who aren't owners get no Export data", async ({ page }) => {
+    await open(page, new FakeBackend({ teams: [{ ...TEAM, role: "contributor" }], docs: seeded() }));
+    await expect(card(page, "Echo Studio")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Export data" })).toHaveCount(0);
   });
 
   test("the rest of the runtime's surface", async ({ page }) => {

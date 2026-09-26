@@ -82,6 +82,11 @@
             "Mutable": true,
             "Name": "email",
             "Required": true
+          },
+          {
+            "AttributeDataType": "String",
+            "Mutable": true,
+            "Name": "idp_email_verified"
           }
         ],
         "SmsVerificationMessage": "The verification code to your new account is {####}",

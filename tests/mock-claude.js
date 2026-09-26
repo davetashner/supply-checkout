@@ -2,7 +2,7 @@
 // Injected with page.addInitScript, so it must be self-contained.
 export function installMockClaude(opts) {
   const {
-    seed = {}, canWrite = true, userId = "u_test", userName = "Test User", avatarUrl = "data:,", receipt = null,
+    seed = {}, canWrite = true, owner = true, userId = "u_test", userName = "Test User", avatarUrl = "data:,", receipt = null,
     sampleDelay = 0, // milliseconds sample.json takes to answer, like a real model call
     // Failure modes: a capability that isn't available, or calls that reject
     unavailable = [], writeError = null, sampleError = null,
@@ -11,7 +11,7 @@ export function installMockClaude(opts) {
     rejects = [], // capabilities whose use() call rejects
     writeErrorFor = null, // { prefix, code }: writes to matching paths fail
     limits = undefined, limitsError = false, // sample.limits() result, or it throws
-    userErrors = [], // user methods that throw: "id", "can", "profiles"
+    userErrors = [], // user methods that throw: "id", "can", "profiles", "isOwner"
     snapshotError = false, // collection listeners report an error instead of data
     downloadError = null, // downloads.save rejects with this code ("bare": rejects with no error object)
     sampleHang = false, // sample.json waits until its signal aborts
@@ -101,9 +101,9 @@ export function installMockClaude(opts) {
   const fails = (name) => { if (userErrors.includes(name)) throw { code: "unavailable", message: "simulated " + name + " failure" }; };
   const user = {
     id: async () => { fails("id"); return userId; },
-    me: async () => ({ ...profile(userId), isOwner: true, canEdit: canWrite }),
+    me: async () => ({ ...profile(userId), isOwner: owner, canEdit: canWrite }),
     can: async () => { fails("can"); return canWrite; },
-    isOwner: async () => true,
+    isOwner: async () => { fails("isOwner"); return owner; },
     canEdit: async () => canWrite,
     profiles: async (ids) => { fails("profiles"); return Object.fromEntries([].concat(ids).map((id) => [id, profile(id)])); },
   };
