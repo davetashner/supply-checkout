@@ -5,6 +5,16 @@ export function installMockClaude(opts) {
     seed = {}, canWrite = true, userId = "u_test", receipt = null,
     // Failure modes: a capability that isn't available, or calls that reject
     unavailable = [], writeError = null, sampleError = null,
+    // More failure modes, all off by default:
+    noRuntime = false, // no window.claude at all
+    rejects = [], // capabilities whose use() call rejects
+    writeErrorFor = null, // { prefix, code }: writes to matching paths fail
+    limits = undefined, limitsError = false, // sample.limits() result, or it throws
+    userErrors = [], // user methods that throw: "id", "can", "profiles"
+    snapshotError = false, // collection listeners report an error instead of data
+    downloadError = null, // downloads.save rejects with this code ("bare": rejects with no error object)
+    sampleHang = false, // sample.json waits until its signal aborts
+    instantUpdates = false, // listeners fire during a write, before it resolves (like a local-first database)
   } = opts || {};
   const clone = (o) => (o === undefined ? undefined : JSON.parse(JSON.stringify(o)));
   const docs = new Map(Object.entries(clone(seed)));
@@ -13,11 +23,15 @@ export function installMockClaude(opts) {
   window.__mock = mock;
 
   const denied = () => ({ code: "invalid_argument", message: "write not allowed" });
-  const guard = () => {
+  const guard = (path) => {
     if (!canWrite) throw denied();
     if (writeError) throw { code: writeError, message: "simulated " + writeError };
+    if (writeErrorFor && path.startsWith(writeErrorFor.prefix)) throw { code: writeErrorFor.code, message: "simulated " + writeErrorFor.code };
   };
-  const notify = () => setTimeout(() => listeners.forEach((l) => l()), 0);
+  const fire = () => listeners.forEach((l) => l());
+  const notify = () => (instantUpdates ? fire() : setTimeout(fire, 0));
+  // Tests call this after changing mock.docs directly, to act as another user
+  mock.notify = notify;
   const merge = (target, src) => {
     for (const [k, v] of Object.entries(src)) {
       const both = v && typeof v === "object" && !Array.isArray(v) && target[k] && typeof target[k] === "object" && !Array.isArray(target[k]);
@@ -29,7 +43,8 @@ export function installMockClaude(opts) {
     const d = docs.get(path);
     return { id: path.split("/").pop(), exists: !!d, data: () => clone(d), metadata: { fromCache: false, hasPendingWrites: false } };
   };
-  const listen = (run, next) => {
+  const listen = (run, next, error) => {
+    if (snapshotError && error) { setTimeout(() => error({ code: "unavailable", message: "simulated listener error" }), 0); return () => {}; }
     const l = () => next(run());
     listeners.add(l);
     setTimeout(l, 0);
@@ -41,13 +56,13 @@ export function installMockClaude(opts) {
       id: path.split("/").pop(),
       path,
       get: async () => snap(path),
-      set: async (data) => { guard(); docs.set(path, clone(data)); notify(); },
+      set: async (data) => { guard(path); docs.set(path, clone(data)); notify(); },
       update: async (data) => {
-        guard();
+        guard(path);
         if (!docs.has(path)) throw { code: "invalid_argument", message: "no such document" };
         merge(docs.get(path), data); notify();
       },
-      delete: async () => { guard(); docs.delete(path); notify(); },
+      delete: async () => { guard(path); docs.delete(path); notify(); },
       onSnapshot: (next) => listen(() => snap(path), next),
       collection: (sub) => collRef(path + "/" + sub),
     };
@@ -67,7 +82,7 @@ export function installMockClaude(opts) {
       limit() { return this; },
       orderBy: (field, dir = "asc") => query(path, { field, dir }),
       get: async () => run(),
-      onSnapshot: (next) => listen(run, next),
+      onSnapshot: (next, error) => listen(run, next, error),
     };
   }
   function collRef(path) {
@@ -82,23 +97,41 @@ export function installMockClaude(opts) {
 
   const db = { doc: docRef, collection: collRef };
   const profile = (id) => ({ id, name: id === userId ? "Test User" : "", avatarUrl: "data:,", color: "#336", email: null, isMe: id === userId, guest: false });
+  const fails = (name) => { if (userErrors.includes(name)) throw { code: "unavailable", message: "simulated " + name + " failure" }; };
   const user = {
-    id: async () => userId,
+    id: async () => { fails("id"); return userId; },
     me: async () => ({ ...profile(userId), isOwner: true, canEdit: canWrite }),
-    can: async () => canWrite,
+    can: async () => { fails("can"); return canWrite; },
     isOwner: async () => true,
     canEdit: async () => canWrite,
-    profiles: async (ids) => Object.fromEntries([].concat(ids).map((id) => [id, profile(id)])),
+    profiles: async (ids) => { fails("profiles"); return Object.fromEntries([].concat(ids).map((id) => [id, profile(id)])); },
   };
-  const downloads = { save: async (req) => { mock.saves.push(req); return { status: "saved" }; } };
+  const downloads = {
+    save: async (req) => {
+      if (downloadError === "bare") throw undefined;
+      if (downloadError) throw { code: downloadError, message: "simulated " + downloadError };
+      mock.saves.push(req); return { status: "saved" };
+    },
+  };
   const sample = async () => ({ text: "", truncated: false, modelTierApplied: "default" });
-  sample.json = async (prompt) => {
+  sample.json = async (prompt, { signal } = {}) => {
     mock.sampleCalls.push(prompt);
+    if (sampleHang) await new Promise((_, reject) => signal.addEventListener("abort", () => reject({ code: "cancelled", message: "cancelled" })));
     if (sampleError) throw { code: sampleError, message: "simulated " + sampleError };
     return clone(receipt);
   };
-  sample.limits = async () => ({ maxPromptBytes: 65536, images: { maxCount: 5, maxInputBytes: 20e6, mediaTypes: ["image/jpeg", "image/png"] } });
+  sample.limits = async () => {
+    if (limitsError) throw { code: "unavailable", message: "simulated limits failure" };
+    if (limits !== undefined) return limits;
+    return { maxPromptBytes: 65536, images: { maxCount: 5, maxInputBytes: 20e6, mediaTypes: ["image/jpeg", "image/png"] } };
+  };
 
   const namespaces = { db, user, downloads, sample };
-  window.claude = { use: async (name) => (unavailable.includes(name) ? null : namespaces[name] || null) };
+  if (noRuntime) return;
+  window.claude = {
+    use: async (name) => {
+      if (rejects.includes(name)) throw { code: "not_granted", message: "simulated rejection" };
+      return unavailable.includes(name) ? null : namespaces[name] || null;
+    },
+  };
 }

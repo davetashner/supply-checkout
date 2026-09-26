@@ -87,10 +87,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Coverage is measured in Chromium, the only browser that reports it
           - project: desktop-chrome
             browser: chromium
+            coverage: "1"
           - project: iphone-safari
             browser: webkit
+            coverage: ""
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -102,6 +105,17 @@ jobs:
       - run: npx playwright test --project=${{ matrix.project }}
         env:
           CI: true
+          # Fails the run below 98% coverage; see tests/coverage.js
+          COVERAGE: ${{ matrix.coverage }}
+      - name: Coverage summary
+        if: always() && matrix.coverage && hashFiles('coverage/summary.json') != ''
+        run: node scripts/coverage-summary.mjs >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always() && matrix.coverage
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
       - uses: actions/upload-artifact@v7
         if: failure()
         with:

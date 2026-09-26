@@ -42,8 +42,24 @@ npm run check
 | `a11y.spec.js` | axe-core WCAG 2.1 A/AA scan of every screen, in light and dark mode |
 | `layout.spec.js` | No sideways scrolling at 320px and 390px phone widths |
 | `resilience.spec.js` | Missing capabilities, failed receipt reads, full storage, lost write permission, and resuming an unsaved receipt |
+| `sheets.spec.js` | Editing, filtering, reopening and deleting sheets; editing and removing lines; picking and returning items without barcodes |
+| `inventory.spec.js` | Adding, editing and deleting items; storage counts and totals; view-only and disconnected states |
+| `barcode.spec.js` | Reading barcode photos with the browser's detector or ZXing, at several sizes, and when the photo can't be read |
+| `receipts.spec.js` | Receipt review: clients, existing sheets, name and price choices, barcodes, splitting, every save check, and partial save failures |
+| `startup.spec.js` | Starting without the runtime or with capabilities declined, lost connections, download failures, and saved-draft problems |
+| `failures.spec.js` | Every kind of save that can fail leaves the screen as it was |
+| `legacy-data.spec.js` | Sheets and items missing fields that older versions didn't save |
+| `concurrent.spec.js` | Someone else changing or deleting data while a form is open |
 
 Every test also fails if the page throws an uncaught error or logs a console error.
+
+### Coverage
+
+`npm run test:coverage` runs the suites in desktop Chrome with code coverage on. The run fails if lines, statements, functions or branches of the app's script fall below **98%** (`THRESHOLD` in `tests/coverage.js`). CI runs this on every pull request.
+
+When coverage is too low, `coverage/uncovered.txt` lists each gap by its line in `index.html`: lines that never ran, lines that only partly ran, and branches that never ran. `coverage/index.html` is the full report; CI uploads the `coverage/` folder as the `coverage-report` artifact.
+
+The mock (`tests/mock-claude.js`) has opt-in failure modes, so tests can reach error paths: a missing runtime, declined capabilities, failed or path-specific writes, lost listeners, failed downloads, and a receipt read that waits to be cancelled. `window.__mock.notify()` fires live updates after a test changes `window.__mock.docs`, to act as another user.
 
 ## Contributing to main
 
@@ -66,7 +82,7 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | Lint and validate HTML | ESLint on the app script and tests, html-validate on the markup |
 | Lint GitHub workflows | actionlint |
 | Dependency audit | `npm audit` fails on high-severity advisories; dependency review fails a PR that adds a moderate-or-worse vulnerable package |
-| Tests (desktop-chrome), Tests (iphone-safari) | All four test suites, in parallel. A failure uploads the Playwright report and traces as a workflow artifact |
+| Tests (desktop-chrome), Tests (iphone-safari) | All test suites, in parallel. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A failure uploads the Playwright report and traces as a workflow artifact |
 
 ## Releases
 

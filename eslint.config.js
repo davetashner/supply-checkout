@@ -3,7 +3,7 @@ import html from "eslint-plugin-html";
 import globals from "globals";
 
 export default [
-  { ignores: ["node_modules/", "playwright-report/", "test-results/"] },
+  { ignores: ["node_modules/", "playwright-report/", "test-results/", "coverage/"] },
   js.configs.recommended,
   {
     rules: {
