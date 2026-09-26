@@ -4,7 +4,7 @@
 import { test, expect, createSheet, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
 import { currentBuild } from "../scripts/builds.mjs";
 import { usedState } from "./fixtures.js";
-import { FakeBackend, TEAM, openAws, connected, sockets, emit, receive, dropSocket, setVisible } from "./fake-aws.js";
+import { FakeBackend, TEAM, USER, openAws, connected, sockets, emit, receive, dropSocket, setVisible } from "./fake-aws.js";
 
 test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 
@@ -945,7 +945,8 @@ test.describe("stock commands", () => {
 
   const draftLine = (o) => ({ name: "", raw: "", qty: 1, price: 0, dest: "stock", code: "", match: "", suggested: false, useName: "inv", usePrice: "receipt", ...o });
   const openDraft = (page, backend, lines) => open(page, backend, {
-    storage: { local: { "supplyCheckout.receiptDraft": JSON.stringify({ store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines }) } },
+    // Pat's draft for this team (src/aws/session.js)
+    storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.receiptDraft.t1": JSON.stringify({ store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines }) } },
   });
 
   test("a receipt's general-inventory lines are receipt commands, one per line", async ({ page }) => {
