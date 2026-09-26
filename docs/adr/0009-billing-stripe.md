@@ -19,7 +19,7 @@ We need per-seat monthly subscriptions (chosen on the web or in the mobile apps,
 - **One-time payments**: Checkout in `payment` mode, or invoice items added to the next invoice.
 - **Scheduled payments**: **subscription schedules** for future-dated plan changes and annual renewals; send-invoice collection (net 30) for customers who pay by invoice.
 - **Tax**: Stripe Tax, turned on once we are registered where we have to collect.
-- **Webhooks**: one endpoint (`/billing/webhook`) served in both regions. It checks the Stripe signature, stores the event ID for idempotency ([ADR 0005](0005-multi-tenant-dynamodb.md)), and puts the event on SQS; a worker updates the team's plan, seats and status. Handled events: `checkout.session.completed`, `customer.subscription.created|updated|deleted`, `invoice.paid`, `invoice.payment_failed`.
+- **Webhooks**: one endpoint (`/billing/webhook`), served from us-east-1 in the MVP and from both regions once the second region is live ([ADR 0010](0010-multi-region-active-active.md)). It checks the Stripe signature, stores the event ID for idempotency ([ADR 0005](0005-multi-tenant-dynamodb.md)), and puts the event on SQS; a worker updates the team's plan, seats and status. Handled events: `checkout.session.completed`, `customer.subscription.created|updated|deleted`, `invoice.paid`, `invoice.payment_failed`.
 - **Access rules**: `active` and `trialing` teams have full access. `past_due` teams keep full access through a 7-day grace period with a banner, then become read-only. `canceled` teams are read-only for 30 days (so they can export), then data is deleted as the privacy policy describes.
 - **Trial**: 14 days, no card needed.
 
@@ -30,6 +30,6 @@ We need per-seat monthly subscriptions (chosen on the web or in the mobile apps,
 
 ## Consequences
 
-- Stripe keys live in AWS Secrets Manager, replicated to the second region. The webhook signing secret is rotated with the key.
+- Stripe keys live in AWS Secrets Manager, replicated to the second region when it is added. The webhook signing secret is rotated with the key.
 - The billing Lambda is the only code allowed to change a team's plan or status.
 - Stripe is the only billing system. The mobile apps send owners to Stripe Checkout and the Customer Portal rather than using App Store or Google Play in-app purchase ([ADR 0013](0013-web-billing-only.md)).

@@ -15,7 +15,7 @@ A record starts as **Proposed**. Change it to **Accepted** once we agree, or **S
 | [0007](0007-identity-cognito.md) | Cognito for sign-in; teams and roles stored in our own data | Proposed |
 | [0008](0008-receipt-reading-bedrock.md) | Read receipts with Claude on Amazon Bedrock | Proposed |
 | [0009](0009-billing-stripe.md) | Stripe Billing for subscriptions, invoices and payments | Proposed |
-| [0010](0010-multi-region-active-active.md) | Active-active in two US regions | Proposed |
+| [0010](0010-multi-region-active-active.md) | Active-active in two US regions; the MVP runs in us-east-1 only | Accepted |
 | [0011](0011-mobile-apps-capacitor.md) | Native iOS and Android apps wrap the web app with Capacitor | Proposed |
 | [0012](0012-cicd-releases-rollbacks.md) | CI/CD with GitHub Actions, canary deploys and automatic rollback | Proposed |
 | [0013](0013-web-billing-only.md) | Web billing only; the mobile apps link to web checkout | Proposed |
