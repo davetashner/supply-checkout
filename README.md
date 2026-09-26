@@ -19,6 +19,8 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `src/icons/` | The barcode favicon: `favicon.svg` (the source, drawn on a 16 px grid so it stays crisp at 16 and 32 px, with dark-mode colors), and its PNG fallbacks `favicon-32.png` and `apple-touch-icon.png` (180 px), which `npm run icons` renders from the SVG. The web build and demo serve all three from `assets/`; the artifact inlines only the SVG, as a `data:` URI. |
 | `src/main.js` | App state, screens, modals, receipt review, and startup. |
 | `src/runtime.js` | `use()`, the one place the app reaches the claude.ai runtime (`window.claude`). |
+| `src/aws/` | The web build's runtime ([ADR 0004](docs/adr/0004-runtime-adapter.md)): `window.claude` on the AWS backend. `main.js` loads `config.json` and installs it; `session.js` is sign-in (Managed Login, PKCE, tokens in memory); `account.js` is first sign-in, invites, the team bar and the `user` and `downloads` capabilities; `db.js` maps the app's `db` calls onto the data API; `live.js` is live updates over AppSync Events, with the polling fallback. See [The web app on AWS](#the-web-app-on-aws). |
+| `src/moves.js` | Checkout and return writes, in one place so the web build can switch to atomic commands (`supply-checkout-1dg.1`). |
 | `src/format.js`, `src/sheet-math.js` | Formatting helpers and sheet totals, with no app state. |
 | `src/dom.js` | `$`, toast, modals, two-tap confirm buttons and number steppers. |
 | `src/barcode.js` | Reading barcodes from photos (the browser's detector, or ZXing). |
@@ -36,7 +38,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `scripts/check-public-safety.mjs` | Blocks AWS identifiers, email addresses and credentials from this public repo (pre-commit hook and CI). |
 | `scripts/check-region-strings.mjs` | Blocks AWS region names in `infra/`, `backend/` and `src/` outside `infra/lib/config.ts` (ADR 0010; pre-commit hook and CI). |
 | `scripts/export-beads.mjs` | Writes the beads backlog export without owner emails (`npm run beads:export`). |
-| `tests/` | Playwright end-to-end tests, run against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`). |
+| `tests/` | Playwright end-to-end tests, run against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`), and the web build's runtime against a fake AWS backend (`tests/fake-aws.js`). |
 | `infra/` | The AWS CDK app (TypeScript) for the SaaS version. Its own npm package; see [Infrastructure](#infrastructure). |
 | `backend/` | Lambda code for the SaaS version (TypeScript). `backend/src/data` is the data-access module, the only code that talks to DynamoDB. `backend/src/api` is the HTTP API's handlers (data and sign-in sessions). `backend/src/observability` is logging and business metrics. Its own npm package; see [Backend](#backend). |
 | `docs/api/openapi.yaml` | The HTTP API's OpenAPI description, including how the app's `db` calls map onto it. |
@@ -64,7 +66,7 @@ Microsoft Edge is a system install rather than one of Playwright's own browsers.
 | Command | Output | For |
 | --- | --- | --- |
 | `npm run build:artifact` | `dist/artifact/index.html` | claude.ai. One self-contained file with the script and styles inlined. Like the hand-written `index.html` it replaces, it's a page fragment (claude.ai adds the doctype, `<head>` and `<body>`), and it only loads fonts from Google Fonts and ZXing from cdn.jsdelivr.net. It isn't minified, so it can be read before publishing. |
-| `npm run build:web` | `dist/web/` | CloudFront. `index.html` plus minified, content-hashed files in `assets/`, which can be cached forever. |
+| `npm run build:web` | `dist/web/` | CloudFront, at `app.`. `index.html` plus minified, content-hashed files in `assets/`, which can be cached forever. It runs the same app on the AWS backend through `src/aws/`, which reads `config.json` (written when publishing) to find the environment. |
 | `npm run build:demo` | `dist/demo/` | supplycheckout.com, until sign-in and the API exist. The web build with `demo/main.js` running first: the in-memory runtime from the tests with the `npm run dev` demo data, receipt reading that returns a canned receipt after a pause, and CSV downloads saved in the browser. A banner says it's a demo, that nothing is saved and that data resets on reload. It makes no requests except to its own files, Google Fonts and cdn.jsdelivr.net. Asset URLs are relative (`./assets/…`), so the folder works from any path. |
 
 `npm run build` runs all three. Each writes hidden source maps (`dist/artifact/app.js.map`, `dist/web/assets/*.js.map`, `dist/demo/assets/*.js.map`) with no `sourceMappingURL` comment in the code; the coverage run uses them.
@@ -224,7 +226,7 @@ npm run publish:web -- activate --channel app --version 1.3.0  # switch, or roll
 npm run publish:web -- status                                   # live versions and every uploaded release
 ```
 
-Options: `--env` (default `prod`), `--profile` (default `$AWS_PROFILE`, else `supply-prod`), `--dry-run` (print the writes instead of running them). Publishing a version that already exists fails.
+Options: `--env` (default `prod`), `--profile` (default `$AWS_PROFILE`, else `supply-prod`), `--dry-run` (print the writes instead of running them). Publishing a version that already exists fails. Publishing to the `app` channel first writes `config.json` into the folder from the api, identity and realtime stacks' SSM outputs, so those must be deployed; `npm run publish:web -- config` prints it.
 
 **First deploy, and the demo live at supplycheckout.com:**
 
@@ -394,6 +396,19 @@ npx cdk deploy supply-checkout-staging-us-east-1-realtime supply-checkout-stagin
 
 Then measure the 2-second p95 and the reconnect behavior in staging as described in [docs/api/realtime.md](docs/api/realtime.md#measuring-after-a-deploy).
 
+### The web app on AWS
+
+The web build (`npm run build:web`, served at `app.<env domain>`) is the same app as the artifact. `src/aws/main.js` runs first and provides `window.claude.use()` on the backend ([ADR 0004](docs/adr/0004-runtime-adapter.md), `supply-checkout-a2b`); the artifact never includes it, and the tests and the demo bring their own runtime, which it leaves alone.
+
+- **Config.** `config.json`, next to `index.html`: `apiUrl`, `authUrl`, `clientId`, `realtimeUrl` and `realtimeHost`. The publish step writes it from SSM (above), so one build works in every environment and no IDs are committed. Without it the app says shared storage isn't available.
+- **Sign-in.** Managed Login with the code flow and PKCE ([Sign-in](#sign-in)). The API's `/auth/session` redeems the code and keeps the refresh token in an HttpOnly cookie; the access token is only in memory. It's refreshed five minutes before it expires, and after any 401 (then the request is tried once more). If refreshing fails, the sign-in screen comes back.
+- **Teams.** After sign-in, `GET /me` decides ([docs/api/onboarding.md](docs/api/onboarding.md)): "Name your team" for a new user (`POST /teams`, one `Idempotency-Key` per name), the invite from an `?invite=<id>&token=<token>` link (kept across sign-in), or the last team used (in `localStorage`). A bar under the header shows the team, a switcher when there are several (switching reloads the page), and Sign out. Viewers get the app's view-only notice.
+- **Data.** The `db` calls map onto the data routes as [openapi.yaml](docs/api/openapi.yaml) describes, with the API's error codes passed through. Sheets are listed by ID and sorted in the browser, because the date-ordered route reads an index that can lag a write.
+- **Live updates.** One subscription to `/teams/<teamId>` ([docs/api/realtime.md](docs/api/realtime.md)). Each event is fetched through the API; both collections are re-listed after every subscribe, when the tab is shown again and every 10 minutes; the socket reconnects with backoff and with each new token; after three failed connects it polls every 15 seconds (60 while hidden) and retries the socket every 2 minutes. A 403 shows that the user was removed from the team.
+- **Not yet.** Receipt reading waits for its endpoint (`supply-checkout-kx8`): `use("sample")` is null behind `RECEIPT_READING` in `src/aws/main.js`, so "Scan receipt" is hidden. Checkout and return are the app's document writes (`src/moves.js`) until the atomic commands exist (`supply-checkout-1dg.1`). Other members' names aren't in the API yet, so their sheets say "Someone".
+
+**Trying it** once the identity, api and realtime stacks are deployed: `npm run build:web && npm run publish:web -- publish --channel app --dir dist/web --env <env>`, open `https://app.<env domain>/`, sign up, name a team, and check a sheet in two browsers at once. Outside prod, `http://localhost:5173` is also an allowed origin: `node scripts/publish-web.mjs config --env <env> > dist/web/config.json`, then `npx vite preview --mode web --port 5173`. There the refresh cookie (`SameSite=Strict`, on the API's site) isn't sent, so each reload signs in again.
+
 ## Backend
 
 `backend/` holds the Lambda code (ADR 0002, 0006). It is a separate npm package with its own lockfile. `backend/src/observability` gives every handler structured JSON logs and business metrics ([Powertools for AWS Lambda](https://docs.powertools.aws.dev/lambda/typescript/)): `createObservability()` returns a `logger` and `count(metric, n, metadata)`, and `withObservability(obs, handler)` adds the request ID to every log line and flushes metrics after each invocation. Metrics go out as CloudWatch embedded metric format in namespace `SupplyCheckout`, with `Region` as their only dimension; per-team detail goes in metadata, never a dimension.
@@ -478,6 +493,8 @@ While working on a change, run just the file and browser you're touching, e.g. `
 | `concurrent.spec.js` | Someone else changing or deleting data while a form is open |
 | `demo.spec.js` | The demo build (web runs only): the banner, a checkout, a receipt and a download with no requests outside the page, Google Fonts and cdn.jsdelivr.net; a reload starting over; the banner's accessibility and 320px layout |
 | `dev-server.spec.js` | `npm run dev` and its query-string options |
+| `aws-account.spec.js` | The web build's runtime (web runs only): `config.json`, sign-in and the code exchange, token refresh (including 401, refresh, retry), first sign-in, invites, the team switcher, view-only, sign-out, and the screens' accessibility and 320px layout |
+| `aws-data.spec.js` | The web build's runtime (web runs only): the app's writes on the data routes, cursors, error codes, downloads, live events, re-lists, reconnecting, the polling fallback and removal from a team |
 
 Every test also fails if the page throws an uncaught error or logs a console error.
 
