@@ -16,6 +16,15 @@ export const GSI1 = "GSI1";
 export const GSI1PK = "GSI1PK";
 export const GSI1SK = "GSI1SK";
 
+/**
+ * Invites by the invitee's email, for the "pending invites" list at first
+ * sign-in: GSI2PK `INVITEE#<sha256 of the lowercased email>`, GSI2SK
+ * `INVITE#<inviteId>`. Only invite items have it (a sparse index).
+ */
+export const GSI2 = "GSI2";
+export const GSI2PK = "GSI2PK";
+export const GSI2SK = "GSI2SK";
+
 /** Epoch seconds. DynamoDB deletes the item some time after it passes. */
 export const TTL_ATTRIBUTE = "expiresAt";
 

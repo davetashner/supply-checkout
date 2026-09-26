@@ -28,7 +28,7 @@ export interface TeamDbOptions {
   /** How many teams' handles to keep. */
   readonly maxTeams?: number;
   /** For tests. */
-  readonly sts?: { send(command: AssumeRoleCommand): Promise<Pick<AssumeRoleCommandOutput, "Credentials">> };
+  readonly sts?: Sts;
   readonly now?: () => number;
 }
 
@@ -43,56 +43,87 @@ interface Credentials {
   readonly expiration: Date;
 }
 
+/** An STS client, or a stand-in for tests. */
+export type Sts = { send(command: AssumeRoleCommand): Promise<Pick<AssumeRoleCommandOutput, "Credentials">> };
+
+/**
+ * Credentials for one tagged session of `roleArn`, assumed on first use and
+ * again five minutes before they expire. Concurrent callers share one call.
+ */
+export function roleSession(sts: Sts, now: () => number, input: { roleArn: string; sessionName: string; tags: Record<string, string> }) {
+  let current: Credentials | undefined;
+  let pending: Promise<Credentials> | undefined;
+  return async (): Promise<Credentials> => {
+    if (current && current.expiration.getTime() - now() > REFRESH_BEFORE_MS) return current;
+    pending ??= sts
+      .send(
+        new AssumeRoleCommand({
+          RoleArn: input.roleArn,
+          // Shows the caller in CloudTrail; the tags are what the policy checks
+          RoleSessionName: input.sessionName.slice(0, 64),
+          DurationSeconds: SESSION_SECONDS,
+          Tags: Object.entries(input.tags).map(([Key, Value]) => ({ Key, Value })),
+        }),
+      )
+      .then(({ Credentials: c }) => {
+        if (!c?.AccessKeyId || !c.SecretAccessKey || !c.SessionToken || !c.Expiration) throw new Error("AssumeRole returned no credentials");
+        current = { accessKeyId: c.AccessKeyId, secretAccessKey: c.SecretAccessKey, sessionToken: c.SessionToken, expiration: c.Expiration };
+        return current;
+      })
+      .finally(() => {
+        pending = undefined;
+      });
+    return pending;
+  };
+}
+
+/**
+ * How long an evicted handle stays open. A request that took the handle before
+ * it was evicted may still be using it, and a Lambda request lasts at most the
+ * function's timeout (10 seconds), so it's closed well after that.
+ */
+export const CLOSE_EVICTED_AFTER_MS = 60_000;
+
+/**
+ * A small LRU cache of Db handles. An evicted handle is closed only after
+ * CLOSE_EVICTED_AFTER_MS, never under a request that is still using it.
+ */
+export function dbCache(maxSize: number) {
+  const cache = new Map<string, Db>();
+  return (key: string, create: () => Db): Db => {
+    const hit = cache.get(key);
+    if (hit) {
+      // Most recently used goes last
+      cache.delete(key);
+      cache.set(key, hit);
+      return hit;
+    }
+    const db = create();
+    cache.set(key, db);
+    if (cache.size > maxSize) {
+      const [oldest, evicted] = cache.entries().next().value as [string, Db];
+      cache.delete(oldest);
+      // unref: a pending close never keeps the process alive
+      setTimeout(() => closeDb(evicted), CLOSE_EVICTED_AFTER_MS).unref();
+    }
+    return db;
+  };
+}
+
 export function teamScopedDbs(options: TeamDbOptions): DbForTeam {
   const env = options.env ?? process.env;
   const sts = options.sts ?? new STSClient({ region: env.AWS_REGION });
   const now = options.now ?? Date.now;
-  const maxTeams = options.maxTeams ?? 50;
-  const cache = new Map<string, Db>();
-
-  const credentialsFor = (teamId: string) => {
-    let current: Credentials | undefined;
-    let pending: Promise<Credentials> | undefined;
-    return async (): Promise<Credentials> => {
-      if (current && current.expiration.getTime() - now() > REFRESH_BEFORE_MS) return current;
-      pending ??= sts
-        .send(
-          new AssumeRoleCommand({
-            RoleArn: options.roleArn,
-            // Shows the team in CloudTrail; the tag is what the policy checks
-            RoleSessionName: `team-${teamId}`.slice(0, 64),
-            DurationSeconds: SESSION_SECONDS,
-            Tags: [{ Key: TEAM_SESSION_TAG, Value: teamId }],
-          }),
-        )
-        .then(({ Credentials: c }) => {
-          if (!c?.AccessKeyId || !c.SecretAccessKey || !c.SessionToken || !c.Expiration) throw new Error("AssumeRole returned no credentials");
-          current = { accessKeyId: c.AccessKeyId, secretAccessKey: c.SecretAccessKey, sessionToken: c.SessionToken, expiration: c.Expiration };
-          return current;
-        })
-        .finally(() => {
-          pending = undefined;
-        });
-      return pending;
-    };
-  };
+  const cached = dbCache(options.maxTeams ?? 50);
 
   return (teamId: string) => {
     if (typeof teamId !== "string" || !TEAM_ID.test(teamId)) throw new InvalidInputError("Invalid team ID");
-    const hit = cache.get(teamId);
-    if (hit) {
-      // Most recently used goes last
-      cache.delete(teamId);
-      cache.set(teamId, hit);
-      return hit;
-    }
-    const db = createDb({ tableName: options.tableName, env, credentials: credentialsFor(teamId) });
-    cache.set(teamId, db);
-    if (cache.size > maxTeams) {
-      const [oldest, evicted] = cache.entries().next().value as [string, Db];
-      cache.delete(oldest);
-      closeDb(evicted);
-    }
-    return db;
+    return cached(teamId, () =>
+      createDb({
+        tableName: options.tableName,
+        env,
+        credentials: roleSession(sts, now, { roleArn: options.roleArn, sessionName: `team-${teamId}`, tags: { [TEAM_SESSION_TAG]: teamId } }),
+      }),
+    );
   };
 }

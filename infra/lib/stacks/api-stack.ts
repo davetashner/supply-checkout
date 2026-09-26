@@ -3,6 +3,7 @@ import { Aws, Duration, Stack, Validations } from "aws-cdk-lib";
 import { AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
 import {
   ApiMapping,
+  CfnStage,
   CorsHttpMethod,
   DomainName,
   HttpApi,
@@ -21,8 +22,17 @@ import { AaaaRecord, ARecord, RecordTarget } from "aws-cdk-lib/aws-route53";
 import { ApiGatewayv2DomainProperties } from "aws-cdk-lib/aws-route53-targets";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
-import { API_ENV, AUTH_ROUTES, DATA_ROUTES, TEAM_SESSION_TAG } from "../../../backend/src/api/routes.js";
-import { GSI1, tableName } from "../../../backend/src/data/schema.js";
+import {
+  ACCOUNT_ROUTES,
+  ACCOUNT_SESSION_TAGS,
+  API_ENV,
+  AUTH_ROUTES,
+  DATA_ROUTES,
+  IDEMPOTENCY_HEADER,
+  routeKey,
+  TEAM_SESSION_TAG,
+} from "../../../backend/src/api/routes.js";
+import { GSI1, GSI2, tableName } from "../../../backend/src/data/schema.js";
 import type { DeploymentConfig } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import { cognitoJwtAuthorizer, identityOptionsFromContext, identityOutputParameters, LOCAL_DEV_ORIGIN } from "../identity.js";
@@ -62,6 +72,9 @@ export const bundling: BundlingOptions = {
  * - Data routes (backend/src/api/routes.ts, docs/api/openapi.yaml): the app's
  *   products and sheets documents, behind the Cognito JWT authorizer, served
  *   by the `data` function.
+ * - Account routes (/me, POST /teams, POST /invites/{inviteId}/accept): the
+ *   signed-in user's teams and invites, creating a team and accepting an
+ *   invite, behind the same authorizer, served by the `account` function.
  * - Auth routes: the sign-in session endpoints, which keep the refresh token
  *   in an HttpOnly cookie, served by the `auth` function. No authorizer: they
  *   run on the cookie, with SameSite=Strict and an Origin check.
@@ -71,6 +84,14 @@ export const bundling: BundlingOptions = {
  *   items whose partition key is `TEAM#<tag>` or `TEAM#<tag>#SHEETS`
  *   (dynamodb:LeadingKeys). The first layer, the membership check, is in the
  *   handler.
+ * - The account function can't use the data-access role: creating a team or
+ *   accepting an invite writes items outside any team the caller is in. It
+ *   assumes the account-access role instead, with session tags `userId`
+ *   (always the token's `sub`), `teamId` and `invitee`, and that role may only
+ *   touch items whose partition key is `USER#<userId>` or `TEAM#<teamId>`, or
+ *   GSI2's `INVITEE#<invitee>` (the hashed verified email). The handler tags a
+ *   team only when the request is entitled to it (backend/src/api/account-db.ts).
+ *   No Scan, no BatchWriteItem, and never another user's partition.
  * - Functions are NodejsFunction (Node.js 24, arm64) behind a `live` alias,
  *   ready for CodeDeploy canaries (ADR 0012). The data function has 1 GB of
  *   memory for CPU: its work is JSON and TLS, and more memory means less
@@ -90,7 +111,9 @@ export class ApiStack extends SupplyCheckoutStack {
   readonly api: HttpApi;
   readonly dataFunction: NodejsFunction;
   readonly authFunction: NodejsFunction;
+  readonly accountFunction: NodejsFunction;
   readonly dataAccessRole: Role;
+  readonly accountAccessRole: Role;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "api", layer: "stateless" });
@@ -121,6 +144,20 @@ export class ApiStack extends SupplyCheckoutStack {
       },
     });
 
+    this.accountFunction = this.handler("AccountFunction", "account", {
+      memorySize: 512,
+      description: "The signed-in user's teams and invites; creates teams and accepts invites",
+      environment: { [API_ENV.tableName]: table, [API_ENV.issuerUrl]: ssm(identity.issuerUrl) },
+    });
+    const tableKeyStatement = () =>
+      new PolicyStatement({
+        sid: "TableKeyThroughDynamoDb",
+        effect: Effect.ALLOW,
+        actions: ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"],
+        resources: [ssm(`/supply-checkout/${config.envName}/data/table-key-arn`)],
+        conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
+      });
+
     // The data-access role: DynamoDB on one team's partitions, chosen by the session tag
     const dataRole = this.dataFunction.role;
     if (!dataRole) throw new Error("The data function has no role");
@@ -148,13 +185,7 @@ export class ApiStack extends SupplyCheckoutStack {
                 "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`TEAM#${teamTag}`, `TEAM#${teamTag}#SHEETS`] },
               },
             }),
-            new PolicyStatement({
-              sid: "TableKeyThroughDynamoDb",
-              effect: Effect.ALLOW,
-              actions: ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"],
-              resources: [ssm(`/supply-checkout/${config.envName}/data/table-key-arn`)],
-              conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
-            }),
+            tableKeyStatement(),
           ],
         }),
       },
@@ -163,6 +194,52 @@ export class ApiStack extends SupplyCheckoutStack {
       new PolicyStatement({ actions: ["sts:AssumeRole", "sts:TagSession"], resources: [this.dataAccessRole.roleArn] }),
     );
     this.dataFunction.addEnvironment(API_ENV.dataRoleArn, this.dataAccessRole.roleArn);
+
+    // The account-access role: the caller's own partition, plus at most one
+    // team and one invitee partition, each chosen by a session tag
+    const accountRole = this.accountFunction.role;
+    if (!accountRole) throw new Error("The account function has no role");
+    const tag = (key: string) => `\${aws:PrincipalTag/${key}}`;
+    const accountTags = Object.values(ACCOUNT_SESSION_TAGS);
+    this.accountAccessRole = new Role(this, "AccountAccessRole", {
+      description: "Assumed by the account function per request, tagged with the user and at most one team and invitee; reaches only those partitions",
+      maxSessionDuration: Duration.hours(1),
+      assumedBy: new ArnPrincipal(accountRole.roleArn)
+        .withConditions({
+          // Every session names a user, a team and an invitee (or the unused marker), and nothing else
+          StringLike: Object.fromEntries(accountTags.map((key) => [`aws:RequestTag/${key}`, "?*"])),
+          "ForAllValues:StringEquals": { "aws:TagKeys": accountTags },
+        })
+        .withSessionTags(),
+      inlinePolicies: {
+        CallerPartitionsOnly: new PolicyDocument({
+          statements: [
+            new PolicyStatement({
+              sid: "CallerItemsOnly",
+              effect: Effect.ALLOW,
+              // GetItem also covers TransactGetItems; Put, Delete, Update and
+              // ConditionCheck cover TransactWriteItems (team creation, invite acceptance)
+              actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:Query"],
+              resources: [tableArn, `${tableArn}/index/${GSI2}`],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [
+                    `USER#${tag(ACCOUNT_SESSION_TAGS.userId)}`,
+                    `TEAM#${tag(ACCOUNT_SESSION_TAGS.teamId)}`,
+                    `INVITEE#${tag(ACCOUNT_SESSION_TAGS.invitee)}`,
+                  ],
+                },
+              },
+            }),
+            tableKeyStatement(),
+          ],
+        }),
+      },
+    });
+    this.accountFunction.addToRolePolicy(
+      new PolicyStatement({ actions: ["sts:AssumeRole", "sts:TagSession"], resources: [this.accountAccessRole.roleArn] }),
+    );
+    this.accountFunction.addEnvironment(API_ENV.accountRoleArn, this.accountAccessRole.roleArn);
 
     // The API
     this.api = new HttpApi(this, "HttpApi", {
@@ -173,7 +250,7 @@ export class ApiStack extends SupplyCheckoutStack {
       corsPreflight: {
         allowOrigins: origins,
         allowMethods: [CorsHttpMethod.GET, CorsHttpMethod.PUT, CorsHttpMethod.PATCH, CorsHttpMethod.DELETE, CorsHttpMethod.POST],
-        allowHeaders: ["authorization", "content-type"],
+        allowHeaders: ["authorization", "content-type", IDEMPOTENCY_HEADER],
         // The auth routes' cookie
         allowCredentials: true,
         maxAge: Duration.hours(1),
@@ -212,6 +289,16 @@ export class ApiStack extends SupplyCheckoutStack {
     for (const route of DATA_ROUTES) {
       this.api.addRoutes({ path: route.path, methods: [route.method as HttpMethod], integration: dataIntegration, authorizer });
     }
+    const accountIntegration = new HttpLambdaIntegration("AccountIntegration", this.live(this.accountFunction));
+    // RouteSettings is a JSON map in CloudFormation, so it takes CloudFormation's casing
+    const routeSettings: Record<string, { ThrottlingRateLimit: number; ThrottlingBurstLimit: number }> = {};
+    for (const route of ACCOUNT_ROUTES) {
+      const added = this.api.addRoutes({ path: route.path, methods: [route.method as HttpMethod], integration: accountIntegration, authorizer });
+      // Route settings name the route, so it must exist first
+      stage.node.addDependency(...added);
+      routeSettings[routeKey(route)] = { ThrottlingRateLimit: route.throttle.rate, ThrottlingBurstLimit: route.throttle.burst };
+    }
+    (stage.node.defaultChild as CfnStage).routeSettings = routeSettings;
     const authIntegration = new HttpLambdaIntegration("AuthIntegration", this.live(this.authFunction));
     for (const route of AUTH_ROUTES) {
       const [added] = this.api.addRoutes({ path: route.path, methods: [route.method as HttpMethod], integration: authIntegration });

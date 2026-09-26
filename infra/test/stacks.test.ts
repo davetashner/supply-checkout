@@ -163,7 +163,7 @@ describe("app table (ADR 0005, ADR 0010)", () => {
     expect(table.Properties.TableName).toBe("supply-checkout-staging-app");
   });
 
-  it("is on-demand, streamed, keyed PK/SK with GSI1, TTL on expiresAt, and retained", () => {
+  it("is on-demand, streamed, keyed PK/SK with GSI1 and GSI2, TTL on expiresAt, and retained", () => {
     const { stacks } = build();
     const template = Template.fromStack(inRegion(stacks, EAST).data);
     template.hasResource("AWS::DynamoDB::GlobalTable", {
@@ -183,6 +183,14 @@ describe("app table (ADR 0005, ADR 0010)", () => {
             KeySchema: [
               { AttributeName: "GSI1PK", KeyType: "HASH" },
               { AttributeName: "GSI1SK", KeyType: "RANGE" },
+            ],
+            Projection: { ProjectionType: "ALL" },
+          },
+          {
+            IndexName: "GSI2",
+            KeySchema: [
+              { AttributeName: "GSI2PK", KeyType: "HASH" },
+              { AttributeName: "GSI2SK", KeyType: "RANGE" },
             ],
             Projection: { ProjectionType: "ALL" },
           },

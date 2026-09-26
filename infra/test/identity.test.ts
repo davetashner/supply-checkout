@@ -167,6 +167,14 @@ describe("web app client", () => {
     });
   });
 
+  it("lets users write only their email and name, never a verified flag", () => {
+    for (const context of [{}, { appleSignIn: true, googleSignIn: true }]) {
+      const { template } = build({ envName: "staging" }, context);
+      const client = only(template, "AWS::Cognito::UserPoolClient");
+      expect((client.Properties.WriteAttributes as string[]).sort()).toEqual(["email", "family_name", "given_name"]);
+    }
+  });
+
   it("returns only to app. in prod, and also to the local dev server elsewhere or when asked", () => {
     const urls = (template: Template) => {
       const client = only(template, "AWS::Cognito::UserPoolClient");
@@ -199,7 +207,7 @@ describe("Apple and Google sign-in", () => {
         client_secret: secretRef(secrets.google, "clientSecret"),
         authorize_scopes: "openid email profile",
       },
-      AttributeMapping: { email: "email", email_verified: "email_verified", given_name: "given_name", family_name: "family_name" },
+      AttributeMapping: { email: "email", given_name: "given_name", family_name: "family_name" },
     });
     template.hasResourceProperties("AWS::Cognito::UserPoolIdentityProvider", {
       ProviderName: "SignInWithApple",
@@ -217,6 +225,18 @@ describe("Apple and Google sign-in", () => {
     template.hasResourceProperties("AWS::Cognito::UserPoolClient", {
       SupportedIdentityProviders: ["COGNITO", { Ref: Match.stringLikeRegexp("^Google") }, { Ref: Match.stringLikeRegexp("^Apple") }],
     });
+  });
+
+  it("map only attributes the web client may write, and never email_verified", () => {
+    const { template } = build({ envName: "staging" }, { appleSignIn: true, googleSignIn: true });
+    const writable = only(template, "AWS::Cognito::UserPoolClient").Properties.WriteAttributes as string[];
+    const providers = Object.values(template.findResources("AWS::Cognito::UserPoolIdentityProvider"));
+    expect(providers).toHaveLength(2);
+    for (const provider of providers) {
+      const mapped = Object.keys(provider.Properties.AttributeMapping as Record<string, string>);
+      expect(mapped).not.toContain("email_verified");
+      for (const attribute of mapped) expect(writable, attribute).toContain(attribute);
+    }
   });
 
   it("can be turned on one at a time", () => {

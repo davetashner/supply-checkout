@@ -21,7 +21,8 @@ Use **one DynamoDB table** (`app`), on-demand capacity, point-in-time recovery o
 | Team | `TEAM#<teamId>` | `META` | name, plan, seats, subscription status, home region |
 | Member | `TEAM#<teamId>` | `MEMBER#<userId>` | role: owner, contributor, viewer |
 | User's teams | `USER#<userId>` | `TEAM#<teamId>` | reverse lookup for the team switcher |
-| Invite | `TEAM#<teamId>` | `INVITE#<inviteId>` | email, role, expiry (TTL); GSI on hashed token |
+| Invite | `TEAM#<teamId>` | `INVITE#<inviteId>` | email, role, expiry (TTL); GSI on hashed token, second GSI on hashed email (pending invites at first sign-in) |
+| Teams created today | `USER#<userId>` | `LIMIT#TEAMS#<yyyy-mm-dd>` | per-user rate limit on team creation; TTL |
 | Product | `TEAM#<teamId>` | `PRODUCT#<key>` | same fields as today; `stock` changed only with atomic `ADD` |
 | Sheet | `TEAM#<teamId>` | `SHEET#<date>#<id>` | same fields as today; sorting by SK gives the existing date order |
 | Receipt usage | `TEAM#<teamId>` | `USAGE#<yyyy-mm>` | atomic counter for the monthly limit |

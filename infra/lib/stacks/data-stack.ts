@@ -11,7 +11,7 @@ import { Key } from "aws-cdk-lib/aws-kms";
 import { BlockPublicAccess, Bucket, BucketEncryption, ObjectOwnership } from "aws-cdk-lib/aws-s3";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
-import { GSI1, GSI1PK, GSI1SK, PK, SK, TTL_ATTRIBUTE, tableName } from "../../../backend/src/data/schema.js";
+import { GSI1, GSI1PK, GSI1SK, GSI2, GSI2PK, GSI2SK, PK, SK, TTL_ATTRIBUTE, tableName } from "../../../backend/src/data/schema.js";
 import type { DeploymentConfig } from "../config.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
@@ -83,6 +83,12 @@ export class DataStack extends SupplyCheckoutStack {
           indexName: GSI1,
           partitionKey: { name: GSI1PK, type: AttributeType.STRING },
           sortKey: { name: GSI1SK, type: AttributeType.STRING },
+        },
+        // Invites by the invitee's hashed email (first sign-in's pending invites)
+        {
+          indexName: GSI2,
+          partitionKey: { name: GSI2PK, type: AttributeType.STRING },
+          sortKey: { name: GSI2SK, type: AttributeType.STRING },
         },
       ],
       // The stack's own region is always a replica; no others until phase 2.

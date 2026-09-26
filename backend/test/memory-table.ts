@@ -47,18 +47,22 @@ export class MemoryTable {
 
   /** A Db on this table. With `team`, calls outside that team's partitions are refused. */
   db(team?: string): Db {
-    return fakeDb(async (command) => this.send(command as { constructor: { name: string }; input: Input }, team));
+    return this.scoped(team === undefined ? undefined : [`TEAM#${team}`, `TEAM#${team}#SHEETS`]);
   }
 
-  private allowed(team: string | undefined, partitions: string[]): void {
-    if (team === undefined) return;
-    const ok = new Set([`TEAM#${team}`, `TEAM#${team}#SHEETS`]);
+  /** A Db allowed only the given partitions (PK, or the index partition for a query), like a LeadingKeys policy. */
+  scoped(partitions: string[] | undefined): Db {
+    return fakeDb(async (command) => this.send(command as { constructor: { name: string }; input: Input }, partitions && new Set(partitions)));
+  }
+
+  private allowed(ok: Set<string> | undefined, partitions: string[]): void {
+    if (ok === undefined) return;
     if (partitions.some((p) => !ok.has(p))) {
       throw Object.assign(new Error("not authorized to perform dynamodb action (LeadingKeys)"), { name: "AccessDeniedException" });
     }
   }
 
-  private send(command: { constructor: { name: string }; input: Input }, team: string | undefined): unknown {
+  private send(command: { constructor: { name: string }; input: Input }, team: Set<string> | undefined): unknown {
     const name = command.constructor.name;
     const input = command.input;
     const record = (partitions: string[]) => {
@@ -95,6 +99,8 @@ export class MemoryTable {
       }
       case "QueryCommand":
         return this.query(input, record);
+      case "TransactWriteCommand":
+        return this.transactWrite(input, record);
       default:
         throw new Error(`MemoryTable doesn't support ${name}`);
     }
@@ -105,25 +111,87 @@ export class MemoryTable {
     const names = input.ExpressionAttributeNames ?? {};
     const values = input.ExpressionAttributeValues ?? {};
     const attr = (s: string) => names[s] ?? s;
-    const ok = input.ConditionExpression.split(" AND ").every((clause) => {
-      const notExists = /^attribute_not_exists\((.+)\)$/.exec(clause);
+    const clause = (c: string): boolean => {
+      const notExists = /^attribute_not_exists\((.+)\)$/.exec(c);
       if (notExists) return !item || item[attr(notExists[1] as string)] === undefined;
-      const equals = /^(\S+) = (:\S+)$/.exec(clause);
-      if (equals) return !!item && JSON.stringify(item[attr(equals[1] as string)]) === JSON.stringify(values[equals[2] as string]);
-      throw new Error(`MemoryTable can't evaluate ${clause}`);
-    });
+      const exists = /^attribute_exists\((.+)\)$/.exec(c);
+      if (exists) return !!item && item[attr(exists[1] as string)] !== undefined;
+      const compare = /^(\S+) (=|<|>) (:\S+)$/.exec(c);
+      if (compare) {
+        if (!item) return false;
+        const [, name, op, value] = compare as unknown as [string, string, string, string];
+        const [a, b] = [item[attr(name)], values[value]];
+        if (op === "=") return JSON.stringify(a) === JSON.stringify(b);
+        if (a === undefined) return false;
+        return op === "<" ? (a as number) < (b as number) : (a as number) > (b as number);
+      }
+      throw new Error(`MemoryTable can't evaluate ${c}`);
+    };
+    const ok = input.ConditionExpression.split(" OR ").some((any) => any.split(" AND ").every(clause));
     if (!ok) throw Object.assign(new Error("The conditional request failed"), { name: "ConditionalCheckFailedException" });
+  }
+
+  /**
+   * All or nothing, like DynamoDB: every condition is checked first, and a
+   * failure cancels the lot with a reason per item. Update understands
+   * `ADD a :v` and `SET a = :v, ...`.
+   */
+  private transactWrite(input: Input, record: (partitions: string[]) => void): unknown {
+    type Op = { Put?: Input; Delete?: Input; Update?: Input; ConditionCheck?: Input };
+    const ops = (input.TransactItems as Op[]).map((op) => {
+      const [kind, body] = Object.entries(op)[0] as [string, Input];
+      return { kind, body, key: (body.Item ?? body.Key) as Item };
+    });
+    record(ops.map((o) => String(o.key.PK)));
+    const reasons = ops.map(({ body, key }) => {
+      try {
+        this.check(body, this.items.get(MemoryTable.id(key)));
+        return { Code: "None" };
+      } catch {
+        return { Code: "ConditionalCheckFailed" };
+      }
+    });
+    if (reasons.some((r) => r.Code !== "None")) {
+      throw Object.assign(new Error("Transaction cancelled"), { name: "TransactionCanceledException", CancellationReasons: reasons });
+    }
+    for (const { kind, body, key } of ops) {
+      const id = MemoryTable.id(key);
+      if (kind === "Put") this.items.set(id, structuredClone(body.Item as Item));
+      if (kind === "Delete") this.items.delete(id);
+      if (kind === "Update") this.items.set(id, this.update(body, this.items.get(id) ?? { ...key }));
+    }
+    return {};
+  }
+
+  private update(input: Input & { UpdateExpression?: string }, item: Item): Item {
+    const names = input.ExpressionAttributeNames ?? {};
+    const values = input.ExpressionAttributeValues ?? {};
+    const attr = (s: string) => names[s] ?? s;
+    const next = structuredClone(item);
+    for (const [, verb, rest] of (input.UpdateExpression ?? "").matchAll(/(ADD|SET) (.+?)(?= (?:ADD|SET) |$)/g)) {
+      for (const part of (rest as string).split(",").map((p) => p.trim())) {
+        if (verb === "ADD") {
+          const [name, value] = part.split(" ") as [string, string];
+          next[attr(name)] = ((next[attr(name)] as number | undefined) ?? 0) + (values[value] as number);
+        } else {
+          const [name, value] = part.split(" = ") as [string, string];
+          next[attr(name)] = values[value];
+        }
+      }
+    }
+    return next;
   }
 
   private query(input: Input, record: (partitions: string[]) => void): unknown {
     const values = input.ExpressionAttributeValues ?? {};
-    const index = input.IndexName === "GSI1";
-    const [pkAttr, skAttr] = index ? ["GSI1PK", "GSI1SK"] : ["PK", "SK"];
+    const index = input.IndexName as string | undefined;
+    const [pkAttr, skAttr] = index ? [`${index}PK`, `${index}SK`] : ["PK", "SK"];
     const pk = String(values[":pk"]);
     record([pk]);
     const prefix = values[":prefix"] as string | undefined;
+    const sk = values[":sk"] as string | undefined;
     let rows = [...this.items.values()]
-      .filter((i) => i[pkAttr] === pk && (prefix === undefined || String(i[skAttr]).startsWith(prefix)))
+      .filter((i) => i[pkAttr] === pk && (prefix === undefined || String(i[skAttr]).startsWith(prefix)) && (sk === undefined || i[skAttr] === sk))
       .sort((a, b) => (String(a[skAttr]) < String(b[skAttr]) ? -1 : String(a[skAttr]) > String(b[skAttr]) ? 1 : 0));
     if (input.ScanIndexForward === false) rows.reverse();
     const start = input.ExclusiveStartKey as Item | undefined;
@@ -135,7 +203,7 @@ export class MemoryTable {
     const limit = input.Limit as number | undefined;
     const page = limit ? rows.slice(0, limit) : rows;
     const last = limit && rows.length > limit ? page[page.length - 1] : undefined;
-    const lastKey = last && (index ? { PK: last.PK, SK: last.SK, GSI1PK: last.GSI1PK, GSI1SK: last.GSI1SK } : { PK: last.PK, SK: last.SK });
+    const lastKey = last && (index ? { PK: last.PK, SK: last.SK, [pkAttr]: last[pkAttr], [skAttr]: last[skAttr] } : { PK: last.PK, SK: last.SK });
     return { Items: page.map((i) => structuredClone(i)), LastEvaluatedKey: lastKey };
   }
 }
