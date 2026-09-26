@@ -627,6 +627,62 @@ test.describe("live updates", () => {
     await expect(card(page, "Stale")).toHaveCount(0);
   });
 
+  test("a 200-row import is one re-list for each client, not 200 fetches", async ({ page }) => {
+    const backend = await open(page);
+    const productGets = () => backend.requests("GET", /^\/teams\/t1\/products\/./).length;
+    // The import's 200 items, and the events for them, arriving together
+    const events = Array.from({ length: 200 }, (_, i) => {
+      const id = `IMP${String(i).padStart(3, "0")}`;
+      return { v: 1, teamId: "t1", collection: "products", id, op: "put", version: backend.write("t1", "products", id, { name: `Imported ${i}`, price: 1, stock: i }) };
+    });
+    await page.evaluate((evs) => evs.forEach((e) => window.__sockets.at(-1).event(e)), events);
+    await expect.poll(() => lists(backend).products).toBe(3);
+    // The first few are fetched before it's clear this is a burst; the rest come with the re-list
+    expect(productGets()).toBe(10);
+    await page.getByRole("button", { name: "Inventory" }).click();
+    await expect(page.locator("#main tbody tr", { hasText: "Imported 199" })).toBeVisible();
+    await expect(page.locator("#main tbody tr", { hasText: "Imported 150" })).toBeVisible();
+    expect(lists(backend)).toEqual({ products: 3, sheets: 2 });
+    expect(productGets()).toBe(10);
+  });
+
+  test("a burst that goes on is re-listed every 2 seconds, and single events are fetched again once it's over", async ({ page }) => {
+    await page.clock.install();
+    const backend = await open(page);
+    await page.clock.pauseAt(new Date(Date.now() + 60e3));
+    const productGets = () => backend.requests("GET", /^\/teams\/t1\/products\/./).length;
+    let n = 0;
+    // The fake socket delivers each event on a timer, so the clock runs them now
+    const burst = async (count) => {
+      await page.evaluate((evs) => evs.forEach((e) => window.__sockets.at(-1).event(e)),
+        Array.from({ length: count }, () => ({ v: 1, teamId: "t1", collection: "products", id: `B${n++}`, op: "put", version: 1 })));
+      await page.clock.runFor(0);
+    };
+
+    // Ten are fetched; the eleventh is held
+    await burst(11);
+    await expect.poll(productGets).toBe(10);
+    // Events keep coming, never 300 ms apart: the re-list waits no more than 2 seconds
+    for (let i = 0; i < 7; i++) {
+      await page.clock.runFor(250);
+      await burst(1);
+    }
+    expect(lists(backend).products).toBe(2);
+    await page.clock.runFor(250);
+    await expect.poll(() => lists(backend).products).toBe(3);
+    // The re-list used up the fetch budget, so the next event is held too, until 300 ms of quiet
+    await burst(1);
+    await page.clock.runFor(299);
+    expect(lists(backend).products).toBe(3);
+    await page.clock.runFor(1);
+    await expect.poll(() => lists(backend).products).toBe(4);
+    // A second later, one event is one fetch again
+    await page.clock.runFor(1000);
+    await burst(1);
+    await expect.poll(productGets).toBe(11);
+    expect(lists(backend)).toEqual({ products: 4, sheets: 2 });
+  });
+
   test("a re-list keeps changes that arrive while it's being read", async ({ page }) => {
     const backend = await open(page, new FakeBackend({ docs: { ...seeded(), "t1/sheets/old": { client: "Old job", date: "2026-09-01", status: "open", items: {} } } }));
     const before = lists(backend);
