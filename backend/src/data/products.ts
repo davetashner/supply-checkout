@@ -3,7 +3,7 @@
 // and doesn't bump `version`, so a count change never conflicts with an edit.
 
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import type { Db } from "./client.js";
+import { type Db, connection } from "./client.js";
 import { InvalidInputError, conflictOnConditionFailure } from "./errors.js";
 import { keys, prefixes, productKey, strip, teamPartition } from "./keys.js";
 import { queryAll, versionedSet } from "./query.js";
@@ -43,7 +43,7 @@ export async function listProducts(db: Db, ctx: TeamContext): Promise<Product[]>
 
 export async function getProduct(db: Db, ctx: TeamContext, key: string): Promise<Product | undefined> {
   readable(ctx);
-  const { Item } = await db.doc.send(new GetCommand({ TableName: db.tableName, Key: keys.product(ctx.teamId, key), ConsistentRead: true }));
+  const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: keys.product(ctx.teamId, key), ConsistentRead: true }));
   return strip<Product>(Item);
 }
 
@@ -51,7 +51,7 @@ export async function getProduct(db: Db, ctx: TeamContext, key: string): Promise
 export async function createProduct(db: Db, ctx: TeamContext, key: string, input: ProductFields, stock = 0): Promise<Product> {
   writable(db, ctx);
   const product = { type: "product", key: productKey(key), ...fields(input), stock, version: 1 } as Product;
-  await db.doc
+  await connection(db).doc
     .send(
       new PutCommand({
         TableName: db.tableName,
@@ -66,7 +66,7 @@ export async function createProduct(db: Db, ctx: TeamContext, key: string, input
 /** Edits code, name and price if nobody else has since `expectedVersion`. */
 export async function updateProduct(db: Db, ctx: TeamContext, key: string, input: ProductFields, expectedVersion: number): Promise<Product> {
   writable(db, ctx);
-  const { Attributes } = await db.doc
+  const { Attributes } = await connection(db).doc
     .send(new UpdateCommand({ TableName: db.tableName, Key: keys.product(ctx.teamId, key), ...versionedSet(fields(input), expectedVersion), ReturnValues: "ALL_NEW" }))
     .catch(conflictOnConditionFailure("This item changed; reload and try again"));
   return strip<Product>(Attributes) as Product;
@@ -76,7 +76,7 @@ export async function updateProduct(db: Db, ctx: TeamContext, key: string, input
 export async function adjustStock(db: Db, ctx: TeamContext, key: string, delta: number): Promise<number> {
   writable(db, ctx);
   if (!Number.isInteger(delta)) throw new InvalidInputError("Invalid stock change");
-  const { Attributes } = await db.doc
+  const { Attributes } = await connection(db).doc
     .send(
       new UpdateCommand({
         TableName: db.tableName,
@@ -94,7 +94,7 @@ export async function adjustStock(db: Db, ctx: TeamContext, key: string, delta: 
 /** Deletes a product, if unchanged since `expectedVersion` when given. */
 export async function deleteProduct(db: Db, ctx: TeamContext, key: string, expectedVersion?: number): Promise<void> {
   writable(db, ctx);
-  await db.doc
+  await connection(db).doc
     .send(
       new DeleteCommand({
         TableName: db.tableName,

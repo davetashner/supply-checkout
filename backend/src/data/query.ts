@@ -1,5 +1,5 @@
 import { QueryCommand, type QueryCommandInput } from "@aws-sdk/lib-dynamodb";
-import type { Db } from "./client.js";
+import { type Db, connection } from "./client.js";
 import { InvalidInputError } from "./errors.js";
 import { strip } from "./keys.js";
 
@@ -8,7 +8,7 @@ export async function queryAll<T>(db: Db, pk: string, prefix: string): Promise<T
   const out: T[] = [];
   let ExclusiveStartKey: Record<string, unknown> | undefined;
   do {
-    const page = await db.doc.send(
+    const page = await connection(db).doc.send(
       new QueryCommand({
         TableName: db.tableName,
         KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
@@ -39,7 +39,7 @@ export async function queryPage<T>(
   partition: { readonly attribute: string; readonly value: string },
   cursor: string | undefined,
 ): Promise<Page<T>> {
-  const page = await db.doc.send(
+  const page = await connection(db).doc.send(
     new QueryCommand({ ...input, TableName: db.tableName, ExclusiveStartKey: decodeCursor(cursor, partition) }),
   );
   return {

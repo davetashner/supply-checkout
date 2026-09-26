@@ -2,7 +2,7 @@
 // item per month, checked against the plan's limit in the same write.
 
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import type { Db } from "./client.js";
+import { type Db, connection } from "./client.js";
 import { InvalidInputError, LimitReachedError } from "./errors.js";
 import { keys, month } from "./keys.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
@@ -15,7 +15,7 @@ export function usageMonth(now = new Date()): string {
 /** Receipts read so far in `m` (YYYY-MM). */
 export async function getReceiptUsage(db: Db, ctx: TeamContext, m: string): Promise<number> {
   readable(ctx);
-  const { Item } = await db.doc.send(new GetCommand({ TableName: db.tableName, Key: keys.usage(ctx.teamId, m), ConsistentRead: true }));
+  const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: keys.usage(ctx.teamId, m), ConsistentRead: true }));
   return (Item?.receipts as number | undefined) ?? 0;
 }
 
@@ -28,7 +28,7 @@ export async function recordReceiptRead(db: Db, ctx: TeamContext, m: string, lim
   writable(db, ctx);
   if (!Number.isInteger(limit) || limit < 0) throw new InvalidInputError("Invalid limit");
   try {
-    const { Attributes } = await db.doc.send(
+    const { Attributes } = await connection(db).doc.send(
       new UpdateCommand({
         TableName: db.tableName,
         Key: keys.usage(ctx.teamId, month(m)),

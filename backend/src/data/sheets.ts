@@ -9,7 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import type { Db } from "./client.js";
+import { type Db, connection } from "./client.js";
 import { InvalidInputError, conflictOnConditionFailure } from "./errors.js";
 import { date, gsi1, keys, prefixes, productKey, strip, teamPartition } from "./keys.js";
 import { type Page, queryAll, queryPage, versionedSet } from "./query.js";
@@ -74,7 +74,7 @@ export async function createSheet(
     items,
     version: 1,
   };
-  await db.doc.send(
+  await connection(db).doc.send(
     new PutCommand({
       TableName: db.tableName,
       Item: { ...keys.sheet(ctx.teamId, sheet.id), ...gsi1.sheetsByDate(ctx.teamId, sheet.date, sheet.id), ...sheet },
@@ -87,7 +87,7 @@ export async function createSheet(
 /** Reads one sheet by ID, strongly consistent. */
 export async function getSheet(db: Db, ctx: TeamContext, sheetId: string): Promise<Sheet | undefined> {
   readable(ctx);
-  const { Item } = await db.doc.send(new GetCommand({ TableName: db.tableName, Key: keys.sheet(ctx.teamId, sheetId), ConsistentRead: true }));
+  const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: keys.sheet(ctx.teamId, sheetId), ConsistentRead: true }));
   return strip<Sheet>(Item);
 }
 
@@ -156,7 +156,7 @@ export async function updateSheet(
     fields.status = changes.status;
     if (changes.status === "closed") fields.closedAt = new Date().toISOString();
   }
-  const { Attributes } = await db.doc
+  const { Attributes } = await connection(db).doc
     .send(new UpdateCommand({ TableName: db.tableName, Key: keys.sheet(ctx.teamId, sheetId), ...versionedSet(fields, expectedVersion), ReturnValues: "ALL_NEW" }))
     .catch(conflictOnConditionFailure("This sheet changed; reload and try again"));
   return strip<Sheet>(Attributes) as Sheet;
@@ -173,7 +173,7 @@ export async function setSheetLine(
 ): Promise<Sheet> {
   writable(db, ctx);
   const update = versionedSet({}, expectedVersion);
-  const { Attributes } = await db.doc
+  const { Attributes } = await connection(db).doc
     .send(
       new UpdateCommand({
         TableName: db.tableName,
@@ -192,7 +192,7 @@ export async function setSheetLine(
 export async function removeSheetLine(db: Db, ctx: TeamContext, sheetId: string, key: string, expectedVersion: number): Promise<Sheet> {
   writable(db, ctx);
   const update = versionedSet({}, expectedVersion);
-  const { Attributes } = await db.doc
+  const { Attributes } = await connection(db).doc
     .send(
       new UpdateCommand({
         TableName: db.tableName,
@@ -209,7 +209,7 @@ export async function removeSheetLine(db: Db, ctx: TeamContext, sheetId: string,
 
 export async function deleteSheet(db: Db, ctx: TeamContext, sheetId: string, expectedVersion?: number): Promise<void> {
   writable(db, ctx);
-  await db.doc
+  await connection(db).doc
     .send(
       new DeleteCommand({
         TableName: db.tableName,

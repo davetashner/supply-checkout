@@ -1,6 +1,7 @@
 // Checks that need no database: keys, TeamContext, region routing, cursors.
 
 import { describe, expect, it } from "vitest";
+import * as data from "../src/data/index.js";
 import {
   ConflictError,
   createDb,
@@ -9,22 +10,20 @@ import {
   listSheetsByDate,
   localRegion,
   TeamContext,
+  teamContextForStripeCustomer,
   updateProduct,
   writeRegionFor,
-  type Db,
 } from "../src/data/index.js";
+import { connection } from "../src/data/client.js";
 import { conflictOnConditionFailure } from "../src/data/errors.js";
 import { gsi1, keys, strip } from "../src/data/keys.js";
 import { tableName } from "../src/data/schema.js";
-import { assertContext, issueContext, writable } from "../src/data/team-context.js";
+import { assertContext, writable } from "../src/data/team-context.js";
+import * as teamContextFile from "../src/data/team-context.js";
 import { usageMonth } from "../src/data/usage.js";
-import { REGION } from "./helpers.js";
+import { contextFor, fakeDb, offlineDb, REGION } from "./helpers.js";
 
-/** A Db whose calls fail loudly: these tests must never reach DynamoDB. */
-const offline: Db = {
-  ...createDb({ tableName: "offline", region: REGION, env: {} }),
-  doc: { send: () => Promise.reject(new Error("unexpected DynamoDB call")) } as unknown as Db["doc"],
-};
+const offline = offlineDb();
 
 describe("keys (ADR 0005)", () => {
   it("builds every entity's key", () => {
@@ -79,17 +78,53 @@ describe("TeamContext (ADR 0005)", () => {
     expect(() => assertContext({ teamId: "t1", userId: "u1", role: "owner", homeRegion: REGION } as unknown as TeamContext)).toThrow(ForbiddenError);
   });
 
-  it("is frozen, so the team can't be swapped", () => {
-    const ctx = issueContext("t1", "u1", "viewer", REGION);
+  it("has no exported issuer, from the module entry point or its own file", () => {
+    for (const exports of [data, teamContextFile]) {
+      expect(Object.keys(exports).filter((name) => /issue/i.test(name))).toEqual([]);
+    }
+    expect(Object.keys(teamContextFile).sort()).toEqual([
+      "TeamContext",
+      "acceptInvite",
+      "assertContext",
+      "authorizeTeam",
+      "createTeam",
+      "findInvite",
+      "readable",
+      "teamContextForStripeCustomer",
+      "writable",
+    ]);
+  });
+
+  it("is issued to members by authorizeTeam, and to nobody else", async () => {
+    const ctx = await contextFor("contributor");
+    expect(assertContext(ctx)).toMatchObject({ teamId: "t1", userId: "u1", role: "contributor", homeRegion: REGION });
+    const noMember = fakeDb(async () => ({ Responses: [{ Item: { homeRegion: REGION } }, {}] }));
+    await expect(data.authorizeTeam(noMember, "u1", "t1")).rejects.toThrow(ForbiddenError);
+  });
+
+  it("is issued as system to a Stripe webhook for a linked customer only", async () => {
+    const linked = fakeDb(async ({ input }) => ({
+      Item: String((input.Key as { PK: string }).PK).startsWith("STRIPE#") ? { teamId: "t1" } : { homeRegion: REGION },
+    }));
+    expect(await teamContextForStripeCustomer(linked, "cus_1")).toMatchObject({ teamId: "t1", role: "system", userId: "system:stripe" });
+    expect(await teamContextForStripeCustomer(fakeDb(async () => ({})), "cus_1")).toBeUndefined();
+    const deletedTeam = fakeDb(async ({ input }) => ({
+      Item: String((input.Key as { PK: string }).PK).startsWith("STRIPE#") ? { teamId: "t1" } : undefined,
+    }));
+    expect(await teamContextForStripeCustomer(deletedTeam, "cus_1")).toBeUndefined();
+  });
+
+  it("is frozen, so the team can't be swapped", async () => {
+    const ctx = await contextFor("viewer");
     expect(Object.isFrozen(ctx)).toBe(true);
     expect(() => Object.assign(ctx, { teamId: "t2" })).toThrow(TypeError);
   });
 
-  it("gates writes by role", () => {
-    const viewer = issueContext("t1", "u1", "viewer", REGION);
-    const contributor = issueContext("t1", "u1", "contributor", REGION);
-    const owner = issueContext("t1", "u1", "owner", REGION);
-    const system = issueContext("t1", "system:stripe", "system", REGION);
+  it("gates writes by role", async () => {
+    const viewer = await contextFor("viewer");
+    const contributor = await contextFor("contributor");
+    const owner = await contextFor("owner");
+    const system = await contextFor("system");
     expect(() => writable(offline, viewer)).toThrow(ForbiddenError);
     expect(writable(offline, contributor)).toBe(contributor);
     expect(() => writable(offline, contributor, "owner")).toThrow(ForbiddenError);
@@ -99,7 +134,7 @@ describe("TeamContext (ADR 0005)", () => {
   });
 
   it("rejects a viewer's write before it reaches DynamoDB", async () => {
-    const viewer = issueContext("t1", "u1", "viewer", REGION);
+    const viewer = await contextFor("viewer");
     await expect(updateProduct(offline, viewer, "p1", { code: "", name: "x", price: 1 }, 1)).rejects.toThrow(ForbiddenError);
   });
 });
@@ -111,10 +146,10 @@ describe("region routing (ADR 0010)", () => {
     expect(() => localRegion({})).toThrow(/AWS_REGION/);
   });
 
-  it("sends every team's writes to the local region in the MVP, whatever its home region", () => {
+  it("sends every team's writes to the local region in the MVP, whatever its home region", async () => {
     expect(writeRegionFor({ teamId: "t1", homeRegion: "home-1" }, "local-1")).toBe("local-1");
     // So a team homed elsewhere can still be written here
-    const ctx = issueContext("t1", "u1", "owner", "home-1");
+    const ctx = await contextFor("owner", "home-1");
     expect(writable(offline, ctx)).toBe(ctx);
   });
 });
@@ -126,13 +161,21 @@ describe("createDb", () => {
     expect(db.region).toBe("somewhere-1");
   });
 
+  it("hides the DynamoDB clients behind an opaque handle", () => {
+    const db = createDb({ env: { TABLE_NAME: "tbl", AWS_REGION: "somewhere-1" } });
+    expect(Object.keys(db).sort()).toEqual(["region", "tableName"]);
+    expect(Object.isFrozen(db)).toBe(true);
+    expect(connection(db).tableName).toBe("tbl");
+    expect(() => connection({ tableName: "tbl", region: "somewhere-1" } as typeof db)).toThrow(/createDb/);
+  });
+
   it("requires a table name", () => {
     expect(() => createDb({ env: { AWS_REGION: "somewhere-1" } })).toThrow(/TABLE_NAME/);
   });
 });
 
-describe("cursors", () => {
-  const ctx = issueContext("t1", "u1", "viewer", REGION);
+describe("cursors", async () => {
+  const ctx = await contextFor("viewer");
   const cursor = (key: unknown) => Buffer.from(JSON.stringify(key)).toString("base64url");
 
   it.each([
@@ -151,6 +194,7 @@ describe("conflictOnConditionFailure", () => {
   it("maps condition failures to ConflictError", () => {
     expect(() => map({ name: "ConditionalCheckFailedException" })).toThrow(ConflictError);
     expect(() => map({ name: "TransactionCanceledException", CancellationReasons: [{ Code: "None" }, { Code: "ConditionalCheckFailed" }] })).toThrow(ConflictError);
+    expect(() => map({ name: "TransactionCanceledException", CancellationReasons: [{ Code: "TransactionConflict" }] })).toThrow(ConflictError);
   });
 
   it("rethrows anything else", () => {

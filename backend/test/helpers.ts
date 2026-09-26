@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { afterAll, beforeAll } from "vitest";
-import { createDb, type Db } from "../src/data/index.js";
+import { authorizeTeam, createDb, type Db, type Role, type TeamContext } from "../src/data/index.js";
+import { connection, dbFromConnection } from "../src/data/client.js";
 import { createLocalTable, deleteLocalTable } from "../src/data/local-table.js";
 
 /** DynamoDB Local, e.g. http://localhost:8000. CI runs it as a service container. */
@@ -25,8 +26,28 @@ export function useTable(): { readonly db: Db } {
 
 /** The raw stored item, keys included, to check where data landed. */
 export async function rawItem(db: Db, PK: string, SK: string) {
-  const { Item } = await db.doc.send(new GetCommand({ TableName: db.tableName, Key: { PK, SK }, ConsistentRead: true }));
+  const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: { PK, SK }, ConsistentRead: true }));
   return Item;
 }
 
 export const newUser = () => `user-${randomUUID()}`;
+
+/** A Db whose calls fail loudly, for tests that must never reach DynamoDB. */
+export function offlineDb(region = REGION): Db {
+  return fakeDb(() => Promise.reject(new Error("unexpected DynamoDB call")), region);
+}
+
+/** A Db whose document client answers with `send`. */
+export function fakeDb(send: (command: { input: Record<string, unknown> }) => Promise<unknown>, region = REGION): Db {
+  const doc = { send } as unknown as ReturnType<typeof connection>["doc"];
+  return dbFromConnection({ client: {} as ReturnType<typeof connection>["client"], doc, tableName: "fake", region });
+}
+
+/**
+ * A real, issued context without a database: authorizeTeam against a fake
+ * that returns a team homed in `homeRegion` and a membership with `role`.
+ */
+export function contextFor(role: Role, homeRegion = REGION, teamId = "t1", userId = "u1"): Promise<TeamContext> {
+  const db = fakeDb(async () => ({ Responses: [{ Item: { homeRegion } }, { Item: { role } }] }));
+  return authorizeTeam(db, userId, teamId);
+}

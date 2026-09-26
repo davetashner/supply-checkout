@@ -64,7 +64,7 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
     const ownerId = newUser();
     const { team: created, context: owner } = await createTeam(db, { userId: ownerId, email: "owner@example.com" }, { name });
     const join = async (role: "contributor" | "viewer") => {
-      const { token } = await createInvite(db, owner, { email: `${role}@example.com`, role, teamName: name });
+      const { token } = await createInvite(db, owner, { email: `${role}@example.com`, role });
       return acceptInvite(db, { userId: newUser() }, token);
     };
     return { team: created, owner, contributor: await join("contributor"), viewer: await join("viewer") };
@@ -118,14 +118,16 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await setMemberRole(db, owner, viewer.userId, "contributor");
       expect((await getMember(db, owner, viewer.userId))?.role).toBe("contributor");
       expect((await listTeamsForUser(db, viewer.userId))[0]?.role).toBe("contributor");
+      await setMemberRole(db, owner, viewer.userId, "contributor"); // no change, no write
       await expect(setMemberRole(db, contributor, viewer.userId, "owner")).rejects.toThrow(ForbiddenError);
-      await expect(setMemberRole(db, owner, owner.userId, "viewer")).rejects.toThrow(ForbiddenError);
       await expect(setMemberRole(db, owner, newUser(), "viewer")).rejects.toThrow(ConflictError);
+      await expect(setMemberRole(db, owner, viewer.userId, "system" as "owner")).rejects.toThrow(InvalidInputError);
 
       await removeMember(db, owner, viewer.userId);
       expect(await getMember(db, owner, viewer.userId)).toBeUndefined();
       expect(await listTeamsForUser(db, viewer.userId)).toEqual([]);
       await expect(authorizeTeam(db, viewer.userId, owner.teamId)).rejects.toThrow(ForbiddenError);
+      await expect(removeMember(db, owner, viewer.userId)).rejects.toThrow(ConflictError);
       // A contributor can leave, but can't remove anyone else
       await expect(removeMember(db, contributor, owner.userId)).rejects.toThrow(ForbiddenError);
       await removeMember(db, contributor, contributor.userId);
@@ -133,10 +135,79 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
     });
   });
 
+  describe("at least one owner", () => {
+    /** The stored owner count, and the owners actually in the team. */
+    async function owners(ctx: TeamContext) {
+      const meta = await rawItem(db, `TEAM#${ctx.teamId}`, "META");
+      const actual = (await listMembers(db, ctx)).filter((m) => m.role === "owner").length;
+      return { counted: meta?.owners as number, actual };
+    }
+
+    it("keeps the last owner from leaving or demoting themselves", async () => {
+      const { owner } = await team();
+      expect(await owners(owner)).toEqual({ counted: 1, actual: 1 });
+      await expect(removeMember(db, owner, owner.userId)).rejects.toThrow(ConflictError);
+      await expect(setMemberRole(db, owner, owner.userId, "contributor")).rejects.toThrow(ConflictError);
+      expect(await owners(owner)).toEqual({ counted: 1, actual: 1 });
+      expect((await getMember(db, owner, owner.userId))?.role).toBe("owner");
+    });
+
+    it("counts promotions, demotions, owner invites and removals", async () => {
+      const { owner, contributor, viewer } = await team();
+      await setMemberRole(db, owner, contributor.userId, "owner");
+      expect(await owners(owner)).toEqual({ counted: 2, actual: 2 });
+      // With another owner, an owner can demote themselves...
+      await setMemberRole(db, owner, owner.userId, "viewer");
+      expect(await owners(contributor)).toEqual({ counted: 1, actual: 1 });
+      // ...and the one left can't
+      const second = await authorizeTeam(db, contributor.userId, contributor.teamId);
+      await expect(setMemberRole(db, second, second.userId, "viewer")).rejects.toThrow(ConflictError);
+      await expect(removeMember(db, second, second.userId)).rejects.toThrow(ConflictError);
+
+      const { token } = await createInvite(db, second, { email: "co-owner@example.com", role: "owner" });
+      const third = await acceptInvite(db, { userId: newUser() }, token);
+      expect(third.role).toBe("owner");
+      expect(await owners(second)).toEqual({ counted: 2, actual: 2 });
+      await removeMember(db, third, third.userId);
+      await removeMember(db, second, viewer.userId);
+      expect(await owners(second)).toEqual({ counted: 1, actual: 1 });
+    });
+
+    it("refuses an owner acting on a context from before they were demoted", async () => {
+      const { owner, contributor, viewer } = await team();
+      await setMemberRole(db, owner, contributor.userId, "owner");
+      await setMemberRole(db, owner, viewer.userId, "owner");
+      const stale = await authorizeTeam(db, contributor.userId, contributor.teamId);
+      await setMemberRole(db, owner, stale.userId, "viewer");
+      expect(await owners(owner)).toEqual({ counted: 2, actual: 2 });
+      // `stale` still says owner and two owners remain, but the write re-checks the caller's MEMBER item
+      await expect(removeMember(db, stale, viewer.userId)).rejects.toThrow(ConflictError);
+      await expect(setMemberRole(db, stale, viewer.userId, "contributor")).rejects.toThrow(ConflictError);
+      expect(await owners(owner)).toEqual({ counted: 2, actual: 2 });
+    });
+
+    it("keeps an owner when two owners remove each other at the same time", async () => {
+      for (let round = 0; round < 5; round++) {
+        const { owner: a, contributor } = await team();
+        await setMemberRole(db, a, contributor.userId, "owner");
+        const b = await authorizeTeam(db, contributor.userId, contributor.teamId);
+        const results = await Promise.allSettled([removeMember(db, a, b.userId), removeMember(db, b, a.userId)]);
+        const failed = results.filter((r) => r.status === "rejected");
+        // At most one wins; a loser fails with ConflictError, never half-applied
+        expect(failed.length).toBeGreaterThanOrEqual(1);
+        for (const r of failed) expect((r as PromiseRejectedResult).reason).toBeInstanceOf(ConflictError);
+        // Whoever wasn't removed can still read the team
+        const left = await owners(results[1].status === "fulfilled" ? b : a);
+        expect(left.actual).toBeGreaterThanOrEqual(1);
+        expect(left.counted).toBe(left.actual);
+      }
+    });
+  });
+
   describe("Invite", () => {
     it("stores only the token's hash, finds the invite by it, and works once", async () => {
       const { owner } = await team();
-      const { invite, token } = await createInvite(db, owner, { email: "New@Example.com", role: "viewer", teamName: "Echo Cleaning" });
+      const { invite, token } = await createInvite(db, owner, { email: "New@Example.com", role: "viewer" });
       const stored = await rawItem(db, `TEAM#${owner.teamId}`, `INVITE#${invite.inviteId}`);
       expect(JSON.stringify(stored)).not.toContain(token);
       expect(stored).toMatchObject({ email: "new@example.com", GSI1SK: "INVITE" });
@@ -153,21 +224,39 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
 
     it("ignores expired, revoked and unknown tokens, and only owners invite", async () => {
       const { owner, contributor } = await team();
-      const expired = await createInvite(db, owner, { email: "a@example.com", role: "viewer", teamName: "x", ttlDays: -1 });
-      expect(await findInvite(db, expired.token)).toBeUndefined();
-      const revoked = await createInvite(db, owner, { email: "b@example.com", role: "viewer", teamName: "x" });
+      const expiring = await createInvite(db, owner, { email: "a@example.com", role: "viewer", ttlDays: 1 });
+      expect(await findInvite(db, expiring.token)).toBeDefined();
+      expect(await findInvite(db, expiring.token, new Date(Date.now() + 2 * 86400_000))).toBeUndefined();
+      const revoked = await createInvite(db, owner, { email: "b@example.com", role: "viewer" });
       await revokeInvite(db, owner, revoked.invite.inviteId);
       expect(await findInvite(db, revoked.token)).toBeUndefined();
       expect(await findInvite(db, "short")).toBeUndefined();
       expect(await findInvite(db, "x".repeat(43))).toBeUndefined();
-      await expect(createInvite(db, contributor, { email: "c@example.com", role: "viewer", teamName: "x" })).rejects.toThrow(ForbiddenError);
-      await expect(createInvite(db, owner, { email: "not-an-email", role: "viewer", teamName: "x" })).rejects.toThrow(InvalidInputError);
-      await expect(createInvite(db, owner, { email: "d@example.com", role: "system" as "viewer", teamName: "x" })).rejects.toThrow(InvalidInputError);
+      await expect(createInvite(db, contributor, { email: "c@example.com", role: "viewer" })).rejects.toThrow(ForbiddenError);
+      await expect(createInvite(db, owner, { email: "not-an-email", role: "viewer" })).rejects.toThrow(InvalidInputError);
+      await expect(createInvite(db, owner, { email: "d@example.com", role: "system" as "viewer" })).rejects.toThrow(InvalidInputError);
+    });
+
+    it("lasts 1 to 30 days, and takes the team name from the team", async () => {
+      const { owner } = await team("Stored Name Co");
+      for (const ttlDays of [0, -1, 31, 1.5, Number.NaN]) {
+        await expect(createInvite(db, owner, { email: "e@example.com", role: "viewer", ttlDays })).rejects.toThrow(InvalidInputError);
+      }
+      const now = Date.now() / 1000;
+      const month = await createInvite(db, owner, { email: "e@example.com", role: "viewer", ttlDays: 30 });
+      expect(month.invite.expiresAt).toBeGreaterThanOrEqual(Math.floor(now) + 30 * 86400);
+      expect(month.invite.expiresAt).toBeLessThanOrEqual(Math.ceil(now) + 30 * 86400 + 5);
+      const week = await createInvite(db, owner, { email: "f@example.com", role: "viewer" });
+      expect(week.invite.expiresAt - Math.floor(now)).toBeLessThanOrEqual(7 * 86400 + 5);
+      // A caller-supplied name is ignored: the type doesn't take one, and the stored team's name is used
+      const spoofed = await createInvite(db, owner, { email: "g@example.com", role: "viewer", teamName: "Evil Co" } as Parameters<typeof createInvite>[2]);
+      expect(spoofed.invite.teamName).toBe("Stored Name Co");
+      expect(await findInvite(db, spoofed.token)).toMatchObject({ teamName: "Stored Name Co" });
     });
 
     it("rejects an invite for someone who is already a member", async () => {
       const { owner, viewer } = await team();
-      const { token } = await createInvite(db, owner, { email: "v@example.com", role: "contributor", teamName: "x" });
+      const { token } = await createInvite(db, owner, { email: "v@example.com", role: "contributor" });
       await expect(acceptInvite(db, { userId: viewer.userId }, token)).rejects.toThrow(ConflictError);
       // The failed transaction left the invite in place
       expect(await findInvite(db, token)).toBeDefined();

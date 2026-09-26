@@ -1,12 +1,25 @@
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 
-// Only the data-access module (src/data) may use the DynamoDB client, so every
-// read and write goes through a TeamContext (ADR 0005). Tests may, to check
-// what was stored.
-const DYNAMODB = ["@aws-sdk/client-dynamodb", "@aws-sdk/lib-dynamodb", "@aws-sdk/client-dynamodb-streams"];
+// Only the data-access module (src/data) may use DynamoDB, so every read and
+// write goes through a TeamContext (ADR 0005). Outside src/data:
+//
+// - No @aws-sdk package with "dynamodb" in its name, or any path inside one
+//   (client-dynamodb, lib-dynamodb, util-dynamodb, client-dynamodb-streams,
+//   and deep paths such as lib-dynamodb/dist-cjs/index.js).
+// - Nothing from src/data except its entry point, data/index.js. The internals
+//   (the context issuer's file, the raw client) stay private to the module.
+//
+// Tests may do both, to inspect stored items and build fake connections.
+const DYNAMODB = String.raw`^@aws-sdk/[^/]*dynamodb[^/]*(/.*)?$`;
+const DATA_INTERNALS = String.raw`(^|/)data/(?!index(\.js|\.ts)?$)`;
 export const DYNAMODB_MESSAGE =
-  "Use the data-access module (src/data) instead: it scopes every read and write to a TeamContext (ADR 0005).";
+  "Use the data-access module (src/data/index.js) instead: it scopes every read and write to a TeamContext (ADR 0005).";
+export const DATA_INTERNALS_MESSAGE =
+  "Import the data-access module only through src/data/index.js; its other files are private (ADR 0005).";
+
+// esquery regex literals end at the first "/", so write slashes as \x2F
+const esquery = (pattern) => `/${pattern.replaceAll("/", "\\x2F")}/`;
 
 export default tseslint.config(
   { ignores: ["node_modules/", "coverage/"] },
@@ -14,12 +27,23 @@ export default tseslint.config(
   ...tseslint.configs.strict,
   {
     rules: {
-      "no-restricted-imports": ["error", { paths: DYNAMODB.map((name) => ({ name, message: DYNAMODB_MESSAGE })) }],
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            { regex: DYNAMODB, message: DYNAMODB_MESSAGE },
+            { regex: DATA_INTERNALS, message: DATA_INTERNALS_MESSAGE },
+          ],
+        },
+      ],
       "no-restricted-syntax": [
         "error",
-        ...DYNAMODB.flatMap((name) => [
-          { selector: `ImportExpression[source.value='${name}']`, message: DYNAMODB_MESSAGE },
-          { selector: `CallExpression[callee.name='require'][arguments.0.value='${name}']`, message: DYNAMODB_MESSAGE },
+        ...[
+          [DYNAMODB, DYNAMODB_MESSAGE],
+          [DATA_INTERNALS, DATA_INTERNALS_MESSAGE],
+        ].flatMap(([pattern, message]) => [
+          { selector: `ImportExpression[source.value=${esquery(pattern)}]`, message },
+          { selector: `CallExpression[callee.name='require'][arguments.0.value=${esquery(pattern)}]`, message },
         ]),
       ],
     },
