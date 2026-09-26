@@ -10,8 +10,11 @@
   "scripts": {
     "lint": "eslint . && node scripts/validate-html.mjs",
     "test": "playwright test",
-    "check": "npm run lint && npm test",
-    "test:coverage": "COVERAGE=1 playwright test --project=desktop-chrome"
+    "check": "npm run lint && npm run check:public && npm test",
+    "test:coverage": "COVERAGE=1 playwright test --project=desktop-chrome",
+    "beads:export": "node scripts/export-beads.mjs",
+    "check:public": "node scripts/check-public-safety.mjs",
+    "hooks:install": "git config core.hooksPath scripts/git-hooks"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",

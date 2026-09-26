@@ -31,7 +31,9 @@ npx playwright install chromium webkit
 npm run check
 ```
 
-`npm run lint` runs ESLint on the app's inline script and the tests, then validates the HTML.
+`npm run lint` runs ESLint on the app's inline script and the tests, then validates the HTML. `npm run check` also runs the public-safety check below and every test suite.
+
+Run `npm run hooks:install` once per clone. It installs a pre-commit hook (`scripts/git-hooks/pre-commit`) that blocks commits containing AWS account or SSO identifiers, personal email addresses, or credentials, because this repository is public.
 
 ## Tests
 
@@ -82,8 +84,9 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | PR title | Conventional Commits format |
 | Lint and validate HTML | ESLint on the app script and tests, html-validate on the markup |
 | Lint GitHub workflows | actionlint |
+| Secret scan | gitleaks on every commit in the history, and `scripts/check-public-safety.mjs` on every file (AWS account and SSO identifiers, email addresses, AWS and Stripe keys, private keys) |
 | Dependency audit | `npm audit` fails on high-severity advisories; dependency review fails a PR that adds a moderate-or-worse vulnerable package |
-| Tests (desktop-chrome), Tests (iphone-safari) | All test suites, in parallel. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A failure uploads the Playwright report and traces as a workflow artifact |
+| Tests (desktop-chrome), Tests (iphone-safari) | All test suites, in parallel. Desktop Chrome also fails below 98% code coverage and posts a coverage table to the job summary. A test that only passes on its retry fails the run. A failure uploads the Playwright report and traces as a workflow artifact |
 
 ## Releases
 
