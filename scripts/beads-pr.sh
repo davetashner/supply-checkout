@@ -18,7 +18,7 @@ say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 # Removes the export worktree and its local branch, on every path out. A
 # pushed branch stays on origin for its PR.
-# shellcheck disable=SC2329 # the EXIT trap calls it
+# shellcheck disable=SC2317,SC2329 # the EXIT trap calls it
 cleanup() {
   [ -n "${root:-}" ] || return 0
   cd "$root"
