@@ -51,13 +51,14 @@ While working on a change, run just the file and browser you're touching, e.g. `
 | `barcode.spec.js` | Reading barcode photos with the browser's detector or ZXing, at several sizes, and when the photo can't be read |
 | `receipts.spec.js` | Receipt review: clients, existing sheets, name and price choices, barcodes, splitting, every save check, and partial save failures |
 | `startup.spec.js` | Starting without the runtime or with capabilities declined, lost connections, download failures, and saved-draft problems |
+| `export.spec.js` | Exporting all data: sheets and inventory as CSV, everything as JSON, matching the screens; formula-like text guarded; owners only, including view-only owners; 1,000 sheets |
 | `failures.spec.js` | Every kind of save that can fail leaves the screen as it was |
 | `legacy-data.spec.js` | Sheets and items missing fields that older versions didn't save |
 | `concurrent.spec.js` | Someone else changing or deleting data while a form is open |
 | `demo.spec.js` | The demo build (web runs only): the banner, a checkout, a receipt and a download with no requests outside the page and Google Fonts; a reload starting over; the theme control; the banner's accessibility and 320px layout |
 | `dev-server.spec.js` | `npm run dev` and its query-string options |
 | `aws-account.spec.js` | The web build's runtime (web runs only): `config.json`, sign-in and the code exchange, token refresh (including 401, refresh, retry), first sign-in, invites, the team switcher, view-only, sign-out, and the screens' accessibility and 320px layout |
-| `aws-data.spec.js` | The web build's runtime (web runs only): the app's writes on the data routes, cursors, error codes, downloads, live events, re-lists, reconnecting, the polling fallback and removal from a team |
+| `aws-data.spec.js` | The web build's runtime (web runs only): the app's writes on the data routes, cursors, error codes, downloads (including exporting 1,000 sheets listed page by page, and owners only), live events, re-lists, reconnecting, the polling fallback and removal from a team |
 
 Every test also fails if the page throws an uncaught error or logs a console error.
 

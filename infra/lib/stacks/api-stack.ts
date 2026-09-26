@@ -290,13 +290,18 @@ export class ApiStack extends SupplyCheckoutStack {
     });
 
     const authorizer = cognitoJwtAuthorizer(this, { envName: config.envName });
-    const dataIntegration = new HttpLambdaIntegration("DataIntegration", this.live(this.dataFunction));
-    for (const route of DATA_ROUTES) {
-      this.api.addRoutes({ path: route.path, methods: [route.method as HttpMethod], integration: dataIntegration, authorizer });
-    }
-    const accountIntegration = new HttpLambdaIntegration("AccountIntegration", this.live(this.accountFunction));
     // RouteSettings is a JSON map in CloudFormation, so it takes CloudFormation's casing
     const routeSettings: Record<string, { ThrottlingRateLimit: number; ThrottlingBurstLimit: number }> = {};
+    const dataIntegration = new HttpLambdaIntegration("DataIntegration", this.live(this.dataFunction));
+    for (const route of DATA_ROUTES) {
+      const added = this.api.addRoutes({ path: route.path, methods: [route.method as HttpMethod], integration: dataIntegration, authorizer });
+      // Heavy routes (the CSV import) get their own throttle, below the stage's
+      if (route.throttle) {
+        stage.node.addDependency(...added);
+        routeSettings[routeKey(route)] = { ThrottlingRateLimit: route.throttle.rate, ThrottlingBurstLimit: route.throttle.burst };
+      }
+    }
+    const accountIntegration = new HttpLambdaIntegration("AccountIntegration", this.live(this.accountFunction));
     for (const route of ACCOUNT_ROUTES) {
       const added = this.api.addRoutes({ path: route.path, methods: [route.method as HttpMethod], integration: accountIntegration, authorizer });
       // Route settings name the route, so it must exist first

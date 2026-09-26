@@ -56,6 +56,21 @@ test("a new item that can't be saved to inventory isn't added to the sheet", asy
   await expect(modal(page).getByLabel("Item name")).toHaveValue("Wax");
 });
 
+test("a checkout that fails after saving a new item doesn't save the item again on retry", async ({ page }) => {
+  await openEcho(page, { ...usedState, writeErrorFor: { prefix: "sheets/", code: "unavailable" } });
+  await enterBarcode(page, "NEW1");
+  await modal(page).getByLabel("Item name").fill("Wax");
+  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await failed(page);
+  expect(await page.evaluate(() => window.__mock.docs.get("products/NEW1").name)).toBe("Wax");
+  // Gone by the retry: if the retry saved it again, it would be back
+  await page.evaluate(() => window.__mock.docs.delete("products/NEW1"));
+  await page.locator("#toast").evaluate((t) => { t.hidden = true; });
+  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await failed(page);
+  expect(await page.evaluate(() => window.__mock.docs.has("products/NEW1"))).toBe(false);
+});
+
 test("a failed item delete keeps the item", async ({ page }) => {
   await openApp(page, failing);
   await page.getByRole("button", { name: "Inventory" }).click();

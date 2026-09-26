@@ -4,7 +4,7 @@
 import { test, expect, createSheet, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
 import { currentBuild } from "../scripts/builds.mjs";
 import { usedState } from "./fixtures.js";
-import { FakeBackend, openAws, connected, sockets, emit, receive, dropSocket, setVisible } from "./fake-aws.js";
+import { FakeBackend, TEAM, openAws, connected, sockets, emit, receive, dropSocket, setVisible } from "./fake-aws.js";
 
 test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 
@@ -31,20 +31,27 @@ test.describe("data", () => {
     // Each write names the version it was made against: 0 for a new document
     expect(put.body).toEqual({ data: { client: "Foxtrot Dental", date: expect.any(String), createdBy: "u-pat", createdAt: expect.any(String), status: "open", items: {} }, expectedVersion: 0 });
 
-    // Checkout: the sheet line (with its code, as the app wrote it), then the storage count
+    // Checkout: one command that adds the line and takes it off stock (docs/api/commands.md)
     await enterBarcode(page, "SKU1");
     await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
     await expect(lineRow(page, "Paper towels")).toBeVisible();
-    expect(backend.requests("PATCH", `/teams/t1/sheets/${id}`)[0].body).toEqual({ data: { items: { SKU1: { code: "SKU1", name: "Paper towels, 6 roll", price: 8.5, out: 1, returned: 0 } } }, expectedVersion: 1 });
-    expect(backend.requests("PATCH", "/teams/t1/products/SKU1")[0].body).toEqual({ data: { stock: 9 }, expectedVersion: 1 });
+    await expect(page.locator("#toast")).toHaveText("Checked out 1 × Paper towels, 6 roll");
+    const [checkout] = backend.requests("POST", `/teams/t1/sheets/${id}/checkout`);
+    expect(checkout.body).toEqual({ operationId: expect.stringMatching(/^[0-9a-f-]{36}$/), productKey: "SKU1", quantity: 1 });
+    expect(backend.doc("t1", "sheets", id)).toMatchObject({ version: 2, data: { items: { SKU1: { code: "SKU1", name: "Paper towels, 6 roll", price: 8.5, out: 1, returned: 0 } } } });
+    expect(backend.doc("t1", "products", "SKU1")).toMatchObject({ version: 2, data: { stock: 9 } });
 
-    // Return
+    // Return, as another command with its own operation ID
     await page.getByRole("button", { name: "Return", exact: true }).click();
     await enterBarcode(page, "SKU1");
     await modal(page).getByRole("button", { name: "Save return" }).click();
-    await expect(lineRow(page, "Paper towels")).toContainText("1");
-    expect(backend.requests("PATCH", `/teams/t1/sheets/${id}`)[1].body).toEqual({ data: { items: { SKU1: { returned: 1 } } }, expectedVersion: 2 });
-    await expect.poll(() => backend.doc("t1", "products", "SKU1").data.stock).toBe(10);
+    await expect(page.locator("#toast")).toHaveText("1 returned · 1 of 1 back");
+    const [ret] = backend.requests("POST", `/teams/t1/sheets/${id}/return`);
+    expect(ret.body).toEqual({ operationId: expect.stringMatching(/^[0-9a-f-]{36}$/), productKey: "SKU1", quantity: 1 });
+    expect(ret.body.operationId).not.toBe(checkout.body.operationId);
+    expect(backend.doc("t1", "products", "SKU1")).toMatchObject({ version: 3, data: { stock: 10 } });
+    // The stock moved on the server only: no sheet PATCH, and no read-then-write of the count
+    expect(backend.requests("PATCH", /^\/teams\/t1\//)).toEqual([]);
 
     // A key with characters that need encoding in a path
     await page.getByRole("button", { name: "Inventory" }).click();
@@ -153,6 +160,35 @@ test.describe("data", () => {
     await page.clock.fastForward(10e3);
   });
 
+  test("an owner exports 1,000 sheets, listed page by page, as a JSON download", async ({ page }) => {
+    const docs = seeded();
+    for (let i = 0; i < 1000; i++) {
+      const items = {};
+      for (let j = 0; j < 20; j++) items[`k${j}`] = { code: `C${j}`, name: `Item ${j}`, price: j, out: 3, returned: 1 };
+      docs[`t1/sheets/b${i}`] = { client: `Client ${i}`, date: "2026-09-01", status: "open", items };
+    }
+    const backend = new FakeBackend({ docs });
+    backend.pageSize = 100;
+    const start = Date.now();
+    await open(page, backend);
+    await page.getByRole("button", { name: "Export data" }).click();
+    await expect(modal(page)).toContainText("1001 sheets and 2 inventory items");
+    const download = page.waitForEvent("download");
+    await modal(page).getByRole("button", { name: "Everything (JSON)" }).click();
+    const file = await download;
+    expect(Date.now() - start).toBeLessThan(30e3);
+    expect(file.suggestedFilename()).toMatch(/^Supply Checkout export \d{4}-\d{2}-\d{2}\.json$/);
+    const json = JSON.parse(await (await import("node:fs/promises")).readFile(await file.path(), "utf8"));
+    expect(json.sheets).toHaveLength(1001);
+    expect(json.sheets.find((s) => s.id === "b7").totals).toEqual({ taken: 60, returned: 20, used: 40, charge: 380 });
+  });
+
+  test("members who aren't owners get no Export data", async ({ page }) => {
+    await open(page, new FakeBackend({ teams: [{ ...TEAM, role: "contributor" }], docs: seeded() }));
+    await expect(card(page, "Echo Studio")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Export data" })).toHaveCount(0);
+  });
+
   test("the rest of the runtime's surface", async ({ page }) => {
     const backend = await open(page, new FakeBackend({
       docs: {
@@ -199,6 +235,181 @@ test.describe("data", () => {
   test("the user's name falls back to their email", async ({ page }) => {
     await open(page, new FakeBackend({ claims: { email: "pat@example.com" }, docs: { "t1/sheets/m": { client: "Mine", date: "2026-09-25", createdBy: "u-pat", status: "open", items: {} } } }));
     await expect(card(page, "Mine")).toContainText("pat@example.com");
+  });
+});
+
+test.describe("checkout and return commands", () => {
+  const CHECKOUT = "/teams/t1/sheets/s1/checkout", RETURN = "/teams/t1/sheets/s1/return";
+  const toast = (page) => page.locator("#toast");
+  const hideToast = (page) => toast(page).evaluate((t) => { t.hidden = true; });
+  const scanOut = async (page, qty) => {
+    await enterBarcode(page, "SKU1");
+    for (let i = 1; i < qty; i++) await modal(page).getByRole("button", { name: "More" }).click();
+    await modal(page).getByRole("button", { name: `Add ${qty} to sheet` }).click();
+  };
+
+  test("two people checking out the same item at once leave the line and the stock right", async ({ page }) => {
+    const backend = await open(page);
+    backend.shareTokens = true;
+    // A second device, signed in to the same team
+    const other = await page.context().newPage();
+    backend.pageLoads = 0;
+    await openAws(other, backend);
+    await connected(other);
+    for (const p of [page, other]) await card(p, "Echo Studio").click();
+
+    // Both checkouts reach the API before either is answered
+    const release = backend.hold("POST", CHECKOUT);
+    await scanOut(page, 2);
+    await scanOut(other, 3);
+    await expect.poll(() => backend.requests("POST", CHECKOUT).length).toBe(2);
+    release();
+    await expect(toast(page)).toHaveText("Checked out 2 × Paper towels, 6 roll");
+    await expect(toast(other)).toHaveText("Checked out 3 × Paper towels, 6 roll");
+    // Each is added to what's stored, so neither is lost: 3 out before, 10 in storage
+    expect(backend.doc("t1", "sheets", "s1").data.items.SKU1).toMatchObject({ out: 3 + 2 + 3, returned: 1 });
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(10 - 2 - 3);
+    const ids = backend.requests("POST", CHECKOUT).map((r) => r.body.operationId);
+    expect(new Set(ids).size).toBe(2);
+    expect(backend.requests("PATCH", /^\/teams\/t1\//)).toEqual([]);
+    // The one answered last has both
+    await expect(lineRow(other, "Paper towels").locator("td").nth(2)).toHaveText("8");
+    await other.close();
+  });
+
+  test("a retry after a lost answer sends the same operation ID, so it counts once", async ({ page }) => {
+    const backend = await open(page);
+    await card(page, "Echo Studio").click();
+    // The API saves the checkout, but the answer never arrives
+    backend.on("POST", CHECKOUT, { lost: true });
+    await scanOut(page, 1);
+    await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(9);
+    // Tapping again retries the same action
+    await hideToast(page);
+    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await expect(toast(page)).toHaveText("Checked out 1 × Paper towels, 6 roll");
+    const [first, retry] = backend.requests("POST", CHECKOUT).map((r) => r.body);
+    expect(retry).toEqual(first);
+    expect(backend.operations.size).toBe(1);
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(9);
+    expect(backend.doc("t1", "sheets", "s1").data.items.SKU1.out).toBe(4);
+    await expect(lineRow(page, "Paper towels").locator("td").nth(2)).toHaveText("4");
+
+    // A request changed after a failure is a new operation
+    await page.getByRole("button", { name: "Return", exact: true }).click();
+    backend.on("POST", RETURN, { status: 503, body: { error: { code: "unavailable", message: "try again" } } });
+    await enterBarcode(page, "SKU1");
+    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+    await modal(page).getByRole("button", { name: "More" }).click();
+    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await expect(toast(page)).toHaveText("2 returned · 3 of 4 back");
+    const [failed, changed] = backend.requests("POST", RETURN).map((r) => r.body);
+    expect([failed.quantity, changed.quantity]).toEqual([1, 2]);
+    expect(changed.operationId).not.toBe(failed.operationId);
+    expect(backend.doc("t1", "sheets", "s1").data.items.SKU1.returned).toBe(3);
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(11);
+  });
+
+  test("a retried return is the same request even after a live update changed the line", async ({ page }) => {
+    const backend = await open(page);
+    await card(page, "Echo Studio").click();
+    await page.getByRole("button", { name: "Return", exact: true }).click();
+    // 3 out, 1 back: return the other 2, and the answer is lost
+    backend.on("POST", RETURN, { lost: true });
+    await enterBarcode(page, "SKU1");
+    await modal(page).getByRole("button", { name: "More" }).click();
+    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+    // The saved return's live update arrives while the form is still open
+    await emit(page, { v: 1, eventId: "e1", collection: "sheets", id: "s1", op: "put", version: backend.doc("t1", "sheets", "s1").version });
+    await expect(lineRow(page, "Paper towels")).toContainText("3");
+    await hideToast(page);
+    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await expect(toast(page)).toHaveText("2 returned · 3 of 3 back");
+    const [first, retry] = backend.requests("POST", RETURN).map((r) => r.body);
+    expect(retry).toEqual(first);
+    expect(first.quantity).toBe(2);
+    expect(backend.operations.size).toBe(1);
+    expect(backend.doc("t1", "sheets", "s1").data.items.SKU1).toMatchObject({ out: 3, returned: 3 });
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(12);
+  });
+
+  test("a retried checkout of a new item saves the item once", async ({ page }) => {
+    const backend = await open(page);
+    await card(page, "Echo Studio").click();
+    backend.on("POST", CHECKOUT, { lost: true });
+    await enterBarcode(page, "NEW1");
+    await modal(page).getByLabel("Item name").fill("Wax");
+    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+    // Someone else edits the new item meanwhile: saving it again would conflict
+    backend.write("t1", "products", "NEW1", { code: "NEW1", name: "Floor wax", price: 0 });
+    await hideToast(page);
+    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await expect(toast(page)).toHaveText("Checked out 1 × Wax");
+    expect(backend.requests("PUT", "/teams/t1/products/NEW1")).toHaveLength(1);
+    expect(backend.operations.size).toBe(1);
+    expect(backend.doc("t1", "sheets", "s1").data.items.NEW1).toMatchObject({ out: 1 });
+  });
+
+  for (const kind of ["checkout", "return"]) {
+    test(`a ${kind} by someone made a viewer meanwhile is refused, and the app switches to view-only`, async ({ page }) => {
+      const backend = await open(page);
+      await card(page, "Echo Studio").click();
+      if (kind === "return") await page.getByRole("button", { name: "Return", exact: true }).click();
+      await enterBarcode(page, "SKU1");
+      backend.teams[0].role = "viewer";
+      await modal(page).getByRole("button", { name: kind === "return" ? "Save return" : "Add 1 to sheet" }).click();
+      await expect(page.locator("#notice")).toContainText("You have view-only access.");
+      expect(backend.requests("POST", `/teams/t1/sheets/s1/${kind}`)).toHaveLength(1);
+      expect(backend.operations.size).toBe(0);
+      expect(backend.doc("t1", "sheets", "s1").version).toBe(1);
+    });
+  }
+
+  test("a return on a sheet deleted as it saves still says what came back", async ({ page }) => {
+    const backend = await open(page);
+    await card(page, "Echo Studio").click();
+    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await enterBarcode(page, "SKU1");
+    backend.on("POST", RETURN, { status: 200, body: { operationId: "x", replayed: false, result: { quantity: 1 }, sheet: null, product: null } });
+    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await expect(toast(page)).toHaveText("1 returned · 0 of 0 back");
+    await expect(card(page, "Echo Studio")).toHaveCount(0);
+  });
+
+  test("a sheet closed meanwhile refuses a checkout, and the latest sheet and item show", async ({ page }) => {
+    const backend = await open(page);
+    await card(page, "Echo Studio").click();
+    await enterBarcode(page, "SKU1");
+    // Someone else finishes the return and recounts storage, and this page hasn't heard yet
+    backend.write("t1", "sheets", "s1", { ...usedState.seed["sheets/s1"], status: "closed" });
+    backend.write("t1", "products", "SKU1", { ...usedState.seed["products/SKU1"], stock: 4 });
+    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await expect(toast(page)).toContainText("Someone else changed this just now");
+    await expect(modal(page)).toBeEmpty();
+    await expect(page.locator("#sheetHead .pill")).toHaveText("Returned");
+    expect(backend.requests("GET", "/teams/t1/sheets/s1")).toHaveLength(1);
+    expect(backend.requests("GET", "/teams/t1/products/SKU1")).toHaveLength(1);
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(4);
+  });
+
+  test("an item that isn't saved to inventory sends its name and price for the line", async ({ page }) => {
+    const backend = await open(page);
+    await card(page, "Echo Studio").click();
+    await page.getByRole("button", { name: "Add item without a barcode" }).click();
+    await modal(page).getByRole("button", { name: "+ New item" }).click();
+    await modal(page).getByLabel("Item name").fill("Ladder rental");
+    await modal(page).getByLabel("Price each ($)").fill("12.35");
+    await modal(page).getByLabel("Save to inventory for next time").uncheck();
+    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await expect(lineRow(page, "Ladder rental")).toBeVisible();
+    const [{ body }] = backend.requests("POST", CHECKOUT);
+    expect(body).toEqual({ operationId: expect.any(String), productKey: expect.stringMatching(/^nb-/), quantity: 1, name: "Ladder rental", price: 12.35, code: "" });
+    expect(backend.requests("PUT", /^\/teams\/t1\/products\//)).toEqual([]);
+    expect(backend.doc("t1", "sheets", "s1").data.items[body.productKey]).toEqual({ code: "", name: "Ladder rental", price: 12.35, out: 1, returned: 0 });
   });
 });
 
@@ -415,5 +626,24 @@ test.describe("live updates", () => {
     await emit(page, { v: 1, collection: "sheets", id: "s1", op: "put", version: 6 });
     await expect(page.getByRole("heading", { name: "You're no longer in Echo Cleaning" })).toBeVisible();
     expect((await sockets(page)).at(-1).closed).toBe(true);
+  });
+});
+
+test.describe("inventory edits", () => {
+  // ADR 0014: the edit form replaces the whole item, so it must carry what it doesn't show
+  test("an edit sends the item's cost, pack size and other fields back", async ({ page }) => {
+    const docs = seeded();
+    docs["t1/products/SKU1"] = { ...docs["t1/products/SKU1"], cost: 6.25, packSize: 12, note: "keep me" };
+    const backend = await open(page, new FakeBackend({ docs }));
+    await page.getByRole("button", { name: "Inventory" }).click();
+    await inventoryRow(page, "Paper towels").click();
+    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(inventoryRow(page, "Paper towels").locator("td").nth(2)).toHaveText("$9.00");
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1")[0].body).toEqual({
+      data: { code: "SKU1", name: "Paper towels, 6 roll", price: 9, cost: 6.25, packSize: 12, stock: 10, note: "keep me", updatedAt: expect.any(String) },
+      expectedVersion: 1,
+    });
+    expect(backend.doc("t1", "products", "SKU1").data).toMatchObject({ cost: 6.25, packSize: 12, note: "keep me" });
   });
 });
