@@ -168,10 +168,12 @@ describe("web app client", () => {
   });
 
   it("lets users write only their email and name, never a verified flag", () => {
-    for (const context of [{}, { appleSignIn: true, googleSignIn: true }]) {
-      const { template } = build({ envName: "staging" }, context);
-      const client = only(template, "AWS::Cognito::UserPoolClient");
-      expect((client.Properties.WriteAttributes as string[]).sort()).toEqual(["email", "family_name", "given_name"]);
+    const writable = (context: Record<string, unknown>) =>
+      (only(build({ envName: "staging" }, context).template, "AWS::Cognito::UserPoolClient").Properties.WriteAttributes as string[]).sort();
+    expect(writable({})).toEqual(["email", "family_name", "given_name"]);
+    // With a provider on, also the attribute it maps its claim to (Cognito requires it); the trigger decides what it means
+    for (const context of [{ googleSignIn: true }, { appleSignIn: true }, { appleSignIn: true, googleSignIn: true }]) {
+      expect(writable(context)).toEqual(["custom:idp_email_verified", "email", "family_name", "given_name"]);
     }
   });
 
@@ -207,7 +209,7 @@ describe("Apple and Google sign-in", () => {
         client_secret: secretRef(secrets.google, "clientSecret"),
         authorize_scopes: "openid email profile",
       },
-      AttributeMapping: { email: "email", given_name: "given_name", family_name: "family_name" },
+      AttributeMapping: { email: "email", given_name: "given_name", family_name: "family_name", "custom:idp_email_verified": "email_verified" },
     });
     template.hasResourceProperties("AWS::Cognito::UserPoolIdentityProvider", {
       ProviderName: "SignInWithApple",
@@ -219,7 +221,7 @@ describe("Apple and Google sign-in", () => {
         private_key: secretRef(secrets.apple, "privateKey"),
         authorize_scopes: "name email",
       },
-      AttributeMapping: Match.objectLike({ email: "email" }),
+      AttributeMapping: Match.objectLike({ email: "email", "custom:idp_email_verified": "email_verified" }),
     });
     // Referencing the providers also makes CloudFormation create them before the client
     template.hasResourceProperties("AWS::Cognito::UserPoolClient", {
@@ -239,6 +241,14 @@ describe("Apple and Google sign-in", () => {
     }
   });
 
+  it("keep a mutable custom attribute for the providers' claim, even with both off", () => {
+    for (const context of [{}, { googleSignIn: true }]) {
+      build({}, context).template.hasResourceProperties("AWS::Cognito::UserPool", {
+        Schema: Match.arrayWith([{ Name: "idp_email_verified", AttributeDataType: "String", Mutable: true }]),
+      });
+    }
+  });
+
   it("can be turned on one at a time", () => {
     const { template } = build({}, { googleSignIn: true });
     template.resourceCountIs("AWS::Cognito::UserPoolIdentityProvider", 1);
@@ -255,6 +265,91 @@ describe("Apple and Google sign-in", () => {
       localhostCallbacks: false,
     });
     expect(() => identityOptionsFromContext(ctx({ appleSignIn: "yes" }), "prod")).toThrow(/appleSignIn must be true or false/);
+  });
+});
+
+describe("Google and Apple triggers (supply-checkout-6v9)", () => {
+  const withProviders = () => build({ envName: "staging" }, { appleSignIn: true, googleSignIn: true });
+  /** The logical ID of the function whose Code comes from backend/src/identity/<name>.ts. */
+  const fnId = (template: Template, id: string) => {
+    const found = Object.keys(template.findResources("AWS::Lambda::Function")).filter((k) => k.startsWith(id));
+    expect(found, id).toHaveLength(1);
+    return found[0] as string;
+  };
+  const statementsOf = (template: Template, roleId: string) =>
+    Object.values(template.findResources("AWS::IAM::Policy"))
+      .filter((p) => JSON.stringify(p.Properties.Roles) === JSON.stringify([{ Ref: roleId }]))
+      .flatMap((p) => p.Properties.PolicyDocument.Statement as Record<string, unknown>[]);
+  const sameStatements = (actual: unknown[], expected: unknown[]) => {
+    expect(actual).toHaveLength(expected.length);
+    expect(actual).toEqual(expect.arrayContaining(expected));
+  };
+  const roleOf = (template: Template, id: string) =>
+    (template.toJSON().Resources[fnId(template, id)].Properties.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0];
+
+  it("aren't there with both providers off", () => {
+    const { stacks, template } = build();
+    expect(stacks.identity.federatedTriggers).toBeUndefined();
+    template.resourceCountIs("AWS::Lambda::Function", 0);
+    expect(only(template, "AWS::Cognito::UserPool").Properties.LambdaConfig).toBeUndefined();
+  });
+
+  it("guard native sign-ins and set email_verified before every token, with either provider on", () => {
+    for (const context of [{ googleSignIn: true }, { appleSignIn: true }]) {
+      const { stacks, template } = build({}, context);
+      expect(stacks.identity.federatedTriggers).toBeDefined();
+      template.resourceCountIs("AWS::Lambda::Function", 2);
+      template.hasResourceProperties("AWS::Cognito::UserPool", {
+        LambdaConfig: {
+          PreAuthentication: { "Fn::GetAtt": [fnId(template, "SignInGuard"), "Arn"] },
+          PreTokenGeneration: { "Fn::GetAtt": [fnId(template, "EmailVerified"), "Arn"] },
+        },
+      });
+      for (const fn of Object.values(template.findResources("AWS::Lambda::Function"))) {
+        expect(fn.Properties).toMatchObject({ Runtime: "nodejs24.x", Architectures: ["arm64"], Timeout: 5 });
+      }
+    }
+    const source = readFileSync(new URL("../lib/stacks/identity-stack.ts", import.meta.url), "utf8");
+    expect(source).toContain("src/identity/${name}.ts");
+    expect(source).toMatch(/trigger\("SignInGuard", "sign-in-guard"/);
+    expect(source).toMatch(/trigger\("EmailVerified", "email-verified"/);
+  });
+
+  it("may each be invoked only by this pool", () => {
+    const { template } = withProviders();
+    const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0];
+    const permissions = Object.values(template.findResources("AWS::Lambda::Permission")).map((p) => p.Properties);
+    expect(permissions).toHaveLength(2);
+    for (const id of ["SignInGuard", "EmailVerified"]) {
+      expect(permissions).toContainEqual({
+        Action: "lambda:InvokeFunction",
+        FunctionName: { "Fn::GetAtt": [fnId(template, id), "Arn"] },
+        Principal: "cognito-idp.amazonaws.com",
+        SourceArn: { "Fn::GetAtt": [poolId, "Arn"] },
+      });
+    }
+  });
+
+  it("give the guard no AWS permissions, and the email_verified trigger only AdminUpdateUserAttributes on this pool", () => {
+    const { template } = withProviders();
+    const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0];
+    const xray = { Effect: "Allow", Action: ["xray:PutTraceSegments", "xray:PutTelemetryRecords"], Resource: "*" };
+    const logs = (id: string) => ({ Effect: "Allow", Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: { "Fn::GetAtt": [Object.keys(template.findResources("AWS::Logs::LogGroup")).find((k) => k.startsWith(`${id}Logs`)), "Arn"] } });
+    sameStatements(statementsOf(template, roleOf(template, "SignInGuard")), [logs("SignInGuard"), xray]);
+    const setVerified = { Sid: "SetEmailVerified", Effect: "Allow", Action: "cognito-idp:AdminUpdateUserAttributes", Resource: { "Fn::GetAtt": [poolId, "Arn"] } };
+    sameStatements(statementsOf(template, roleOf(template, "EmailVerified")), [logs("EmailVerified"), xray, setVerified]);
+    for (const role of Object.values(template.findResources("AWS::IAM::Role"))) expect(role.Properties.ManagedPolicyArns).toBeUndefined();
+  });
+
+  it("get their grant after the pool exists, so the pool can name the functions (no dependency cycle)", () => {
+    const { template } = withProviders();
+    const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0] as string;
+    const grantId = Object.keys(template.findResources("AWS::IAM::Policy", { Properties: { PolicyName: Match.stringLikeRegexp("EmailVerifiedUpdateUser") } }))[0];
+    expect(grantId).toBeDefined();
+    for (const [id, fn] of Object.entries(template.findResources("AWS::Lambda::Function")) as [string, { DependsOn?: string[]; Properties: unknown }][]) {
+      expect(fn.DependsOn ?? [], id).not.toContain(grantId);
+      expect(JSON.stringify(fn.Properties), id).not.toContain(poolId);
+    }
   });
 });
 
