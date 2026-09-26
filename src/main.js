@@ -1,6 +1,6 @@
 import "./theme.js";
 import { use, help } from "./runtime.js";
-import { checkOut, recordReturn, setStock } from "./moves.js";
+import { checkOut, recordReturn, setStock, saveItem } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, newKey, uid, round2, numOrNull } from "./format.js";
 import { lines, totals } from "./sheet-math.js";
 import { $, toast, openModal, closeModal, armButton, stepperHTML, setText, setHTML, wireStepper } from "./dom.js";
@@ -385,6 +385,8 @@ const storageCents = p => hasStock(p) ? Math.round(p.stock * round2(unitValue(p)
 
 function productModal(key) {
   const p = key ? products[key] : null;
+  // One count per form: every attempt at saving the same count is the same stock command
+  const action = {};
   openModal(`
     <h2>${p ? "Edit item" : "Add item"}</h2>
     <form id="f" style="display:grid;gap:14px">
@@ -419,7 +421,7 @@ function productModal(key) {
       opt("#fStock", "stock", int);
       opt("#fCost", "cost", v => Math.max(0, round2(v)));
       opt("#fPack", "packSize", v => Math.min(MAX_PACK, Math.max(1, int(v))));
-      if (await write(() => db.doc("products/" + docKey).set(body), "Saved")) closeModal();
+      if (await write(() => saveItem(db, action, docKey, body, { reason: "count", count: body.stock }), "Saved")) closeModal();
     });
   });
 }
@@ -693,6 +695,11 @@ function rerenderLine(l) {
   old.replaceWith(tmp.firstElementChild); paintSum();
 }
 
+// What a general-inventory line adds to storage: its quantity in eaches at the receipt's price
+// each. The line is the action, so saving the same line again (a retry after a failure) is the
+// same stock command.
+const stockIn = l => ({ action: l, quantity: int(l.qty), unitCost: Math.max(0, round2(l.price)) });
+
 async function saveReceipt(btn) {
   const d = draft;
   const lines = d.lines.filter(l => (lineProd(l) || l.name.trim()) && int(l.qty) > 0);
@@ -721,12 +728,12 @@ async function saveReceipt(btn) {
   const groups = Object.create(null);
   for (const l of lines) (groups[keyOfLine[l.id]] = groups[keyOfLine[l.id]] || []).push(l);
   for (const [k, ls] of Object.entries(groups)) {
-    const ex = products[k], add = ls.filter(l => l.dest === "stock").reduce((a, l) => a + int(l.qty), 0);
+    const ex = products[k], stocked = ls.filter(l => l.dest === "stock"), add = stocked.reduce((a, l) => a + int(l.qty), 0);
     if (!ex && !add && !d.savePrices) continue;
     const l0 = ls[0], code = (ex && ex.code) || (ls.find(l => l.code) || {}).code || "";
     const body = { ...(ex || {}), code, name: effName(l0), price: round2(effPrice(l0)), updatedAt: new Date().toISOString() };
     if (add) body.stock = (hasStock(ex) ? ex.stock : 0) + add;
-    if (!await write(() => db.doc("products/" + k).set(body))) { done(); return; }
+    if (!await write(() => saveItem(db, null, k, body, { reason: "receipt", lines: stocked.map(stockIn) }))) { done(); return; }
   }
   // Inventory is written; drop those lines so a retry can't add them twice
   d.lines = d.lines.filter(l => l.dest !== "stock"); saveDraft();
