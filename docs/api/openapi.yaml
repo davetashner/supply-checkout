@@ -462,6 +462,31 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/CommandConflict" }
         "413": { $ref: "#/components/responses/TooLarge" }
+  /teams/{teamId}/sheets/{sheetId}/lines:
+    parameters:
+      - $ref: "#/components/parameters/teamId"
+      - $ref: "#/components/parameters/sheetId"
+    post:
+      tags: [commands]
+      operationId: addLines
+      summary: Add a receipt's lines for a client to a sheet, in one transaction, without moving stock.
+      description: |
+        Adds each line's `quantity` to the sheet's `out` for its product,
+        creating the line, with the request's `code`, `name`, `price` and
+        `cost`, if the sheet doesn't have it. An existing line keeps its copy.
+        Every line changes or none does. Stock doesn't move: the items were
+        bought for the client and never were in storage. 1 to 40 lines, each
+        product at most once. The sheet must be open. Contributors and owners
+        only. Idempotent by `operationId`: see [commands.md](commands.md).
+      requestBody: { $ref: "#/components/requestBodies/AddLines" }
+      responses:
+        "200": { $ref: "#/components/responses/LinesAdded" }
+        "400": { $ref: "#/components/responses/CommandRefused" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/CommandConflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
   /teams/{teamId}/sheets/{sheetId}/return:
     parameters:
       - $ref: "#/components/parameters/teamId"
@@ -990,6 +1015,35 @@ components:
             oneOff:
               summary: Check out an item that isn't in inventory
               value: { operationId: "a8098c1a-f86e-41b1-8e42-6b87b5ab13a6", productKey: "k-7f3a", quantity: 1, name: "Leftover storage bins", price: 4 }
+    AddLines:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [operationId, lines]
+            properties:
+              operationId: { $ref: "#/components/schemas/OperationId" }
+              lines:
+                type: array
+                minItems: 1
+                maxItems: 40
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [productKey, quantity, name, price]
+                  properties:
+                    productKey: { type: string, minLength: 1, maxLength: 256, description: "The line's key. Each product at most once." }
+                    quantity: { $ref: "#/components/schemas/Quantity" }
+                    name: { type: string, minLength: 1, maxLength: 200, description: For a new line. Trimmed. }
+                    price: { allOf: [{ $ref: "#/components/schemas/Money" }], description: For a new line. The client price per each. }
+                    code: { type: string, maxLength: 256, description: For a new line. Its barcode, or empty. }
+                    cost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: For a new line. What the business paid per each. }
+          examples:
+            receipt:
+              summary: Two receipt lines for a client
+              value: { operationId: "6ec0bd7f-11c0-43da-975e-2a8ad9ebae0b", lines: [{ productKey: "0123", quantity: 4, name: "Nitrile gloves", price: 12.5, code: "0123", cost: 9.99 }, { productKey: "k-7f3a", quantity: 2, name: "Painter's tape", price: 6.25, cost: 6.25 }] }
     Return:
       required: true
       content:
@@ -1270,6 +1324,40 @@ components:
                 oneOf: [{ $ref: "#/components/schemas/Document" }, { type: "null" }]
               product:
                 description: "`null` for an item that isn't in inventory."
+                oneOf: [{ $ref: "#/components/schemas/Document" }, { type: "null" }]
+    LinesAdded:
+      description: |
+        Done, now or by an earlier request with the same `operationId`
+        (`replayed: true`, and nothing changed this time). `result` is what
+        the first run did; `sheet` is as it is now, read after the command.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [operationId, replayed, result, sheet]
+            properties:
+              operationId: { type: string, format: uuid }
+              replayed: { type: boolean }
+              result:
+                type: object
+                required: [operationId, command, sheetId, lines, userId, at]
+                properties:
+                  operationId: { type: string, format: uuid }
+                  command: { const: addLines }
+                  sheetId: { type: string }
+                  lines:
+                    type: array
+                    items:
+                      type: object
+                      required: [productKey, quantity, lineCreated]
+                      properties:
+                        productKey: { type: string }
+                        quantity: { type: integer }
+                        lineCreated: { type: boolean, description: "False: it added to a line already on the sheet." }
+                  userId: { type: string }
+                  at: { type: string, format: date-time }
+              sheet:
+                description: "`null` if the sheet has since been deleted."
                 oneOf: [{ $ref: "#/components/schemas/Document" }, { type: "null" }]
     CommandRefused:
       description: |

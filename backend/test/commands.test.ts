@@ -7,6 +7,7 @@ import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import {
   acceptInvite,
+  addLines,
   adjustStockCommand,
   checkout,
   ConflictError,
@@ -87,6 +88,26 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
     // Operation records expire after a week
     const op = await rawItem(db, `TEAM#${ctx.teamId}`, `OP#${out.result.operationId}`);
     expect(op?.expiresAt).toBe(Date.parse("2026-09-26T12:00:01.000Z") / 1000 + 7 * 86400);
+  });
+
+  it("adds a receipt's lines in one transaction, new and existing, 40 at a time, without moving stock, and replays a retry", async () => {
+    const ctx = await team();
+    await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 1 });
+    const forty = [{ productKey: "0123", quantity: 2, name: "Ignored", price: 1 }, ...Array.from({ length: 39 }, (_, i) => ({ productKey: `k-${i}`, quantity: 1, name: `Item ${i}`, price: 2.5, cost: 1.25 }))];
+    const input = { operationId: randomUUID(), sheetId: "s1", lines: forty };
+    const first = await addLines(db, ctx, input);
+    expect(first.result.lines.filter((l) => l.lineCreated)).toHaveLength(39);
+    await addLines(db, ctx, { ...input, operationId: randomUUID() });
+    expect(await line(ctx)).toMatchObject({ name: "Nitrile gloves", out: 5 });
+    expect(await line(ctx, "k-7")).toEqual({ code: "", name: "Item 7", price: 2.5, cost: 1.25, out: 2, returned: 0 });
+    expect(await stock(ctx)).toBe(99);
+    const before = await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1");
+    expect(await addLines(db, ctx, input)).toEqual({ result: first.result, replayed: true });
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1")).toEqual(before);
+    // A sheet without an items map gets one
+    await setDocument(db, ctx, "sheets", "s2", { client: "Echo", status: "open" });
+    await addLines(db, ctx, { operationId: randomUUID(), sheetId: "s2", lines: [{ productKey: "constructor", quantity: 3, name: "Odd key", price: 1 }] });
+    expect((await getDocument(db, ctx, "sheets", "s2"))?.data.items).toEqual({ constructor: { code: "", name: "Odd key", price: 1, out: 3, returned: 0 } });
   });
 
   it("changes nothing when an operation is replayed, and returns the first result", async () => {

@@ -20,7 +20,7 @@ export function installMockClaude(opts) {
   const clone = (o) => (o === undefined ? undefined : JSON.parse(JSON.stringify(o)));
   const docs = new Map(Object.entries(clone(seed)));
   const listeners = new Set();
-  const mock = { docs, saves: [], sampleCalls: [], failWrites: null };
+  const mock = { docs, saves: [], sampleCalls: [], failWrites: null, loseWrites: null };
   window.__mock = mock;
 
   const denied = () => ({ code: "invalid_argument", message: "write not allowed" });
@@ -42,6 +42,9 @@ export function installMockClaude(opts) {
   mock.hold = () => { let release; held = { wait: new Promise((r) => { release = r; }), release }; };
   mock.release = () => { const h = held; held = null; if (h) h.release(); };
   const arrive = async () => { mock.writes++; if (held) await held.wait; };
+  // Set by a test to a path prefix ("sheets/"): writes there are saved, but then reject as if
+  // the answer was lost on the way back
+  const lost = (path) => { if (mock.loseWrites !== null && path.startsWith(mock.loseWrites)) throw { code: "unavailable", message: "simulated lost answer" }; };
   const merge = (target, src) => {
     for (const [k, v] of Object.entries(src)) {
       const both = v && typeof v === "object" && !Array.isArray(v) && target[k] && typeof target[k] === "object" && !Array.isArray(target[k]);
@@ -66,11 +69,11 @@ export function installMockClaude(opts) {
       id: path.split("/").pop(),
       path,
       get: async () => snap(path),
-      set: async (data) => { await arrive(); guard(path); docs.set(path, clone(data)); notify(); },
+      set: async (data) => { await arrive(); guard(path); docs.set(path, clone(data)); notify(); lost(path); },
       update: async (data) => {
         await arrive(); guard(path);
         if (!docs.has(path)) throw { code: "invalid_argument", message: "no such document" };
-        merge(docs.get(path), data); notify();
+        merge(docs.get(path), data); notify(); lost(path);
       },
       delete: async () => { await arrive(); guard(path); docs.delete(path); notify(); },
       onSnapshot: (next) => listen(() => snap(path), next),

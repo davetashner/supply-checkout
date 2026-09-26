@@ -36,6 +36,7 @@ the artifact's document write.
 | Return (`returnModal`) | `PATCH sheets/<id>` with `returned`, then `bumpStock(key, back - before)` | `POST /teams/{teamId}/sheets/{sheetId}/return`. No `bumpStock`. |
 | Inventory form, "In storage now" (`productModal`) | `PUT products/<key>` with the new `stock` | `PUT products/<key>` without `stock`, if any other field changed, then, if the count differs, `POST /teams/{teamId}/products/{key}/stock` with `reason: "count"`. A blank count leaves stock as it is. |
 | Receipt save, General inventory lines (`saveReceipt`) | `PUT products/<key>` with `stock` plus the lines' quantities | `PUT products/<key>` without `stock` (price and name updates), if they changed, then one `POST .../products/{key}/stock` with `reason: "receipt"` per line: its quantity in eaches and its receipt price as `unitCost` |
+| Receipt save, a client's lines on an existing sheet (`saveReceipt`) | Reads the sheet, then `PATCH sheets/<id>` with the lines added to it and a mark for this receipt in `savedReceipts`; an attempt that finds its mark writes nothing | `POST /teams/{teamId}/sheets/{sheetId}/lines`, up to 40 lines each, no stock moved |
 | Item history (new) | none | `GET /teams/{teamId}/products/{key}/movements` (not used by the app yet) |
 
 Everything else stays on the document routes: creating, editing and deleting
@@ -97,6 +98,26 @@ rather than rounding ([ADR 0014](../adr/0014-units-cost-and-rounding.md)).
   ignored when the item is in inventory.
 - An existing line's `code`, `name`, `price` and `cost` never change on a
   checkout; only `out` goes up.
+
+**Add a receipt's lines**: `POST /teams/{teamId}/sheets/{sheetId}/lines`
+
+```json
+{ "operationId": "…", "lines": [{ "productKey": "0123", "quantity": 4, "name": "Nitrile gloves", "price": 12.5, "code": "0123", "cost": 9.99 }] }
+```
+
+- Items bought on a receipt for a client, added to a sheet that already
+  exists: every line changes in one transaction, or none does, and **stock
+  doesn't move** (they were never in storage). A new line takes the request's
+  `code`, `name`, `price` and `cost` (the receipt's choices); a line already
+  on the sheet keeps its copy and adds to `out`.
+- 1 to 40 lines, each product at most once. The app sends a longer receipt
+  as one request per 40, each its own operation. The sheet must be open.
+- The response has `result` (each line, with `lineCreated`) and the `sheet`
+  as it is now; there's no `product`.
+- The app keeps each request's operation ID with the receipt draft, so
+  saving again after a lost answer, even after a reload, adds nothing twice.
+  A new sheet from a receipt keeps its ID with the draft too, and a retry
+  looks for it before saving it.
 
 **Return**: `POST /teams/{teamId}/sheets/{sheetId}/return`
 

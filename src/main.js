@@ -1,7 +1,7 @@
 import "./theme.js";
 import { use, help } from "./runtime.js";
 import { WEB } from "./build.js";
-import { checkOut, recordReturn, setStock, saveItem } from "./moves.js";
+import { checkOut, recordReturn, setStock, saveItem, addLines } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, newKey, uid, round2, numOrNull } from "./format.js";
 import { lines, lineCharge, totals } from "./sheet-math.js";
 import { $, toast, openModal, closeModal, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
@@ -810,6 +810,8 @@ $("#rBody").addEventListener("click", e => {
     const half = Math.floor(int(line.qty) / 2); line.qty = int(line.qty) - half;
     const other = d.dests.find(x => x.id !== line.dest);
     const copy = { ...line, id: uid(), qty: half, dest: other ? other.id : line.dest };
+    // Its own action: not the operation the line it came from may have kept (src/aws/db.js)
+    delete copy.operation;
     d.lines.splice(d.lines.indexOf(line) + 1, 0, copy); saveDraft(); renderReceipt();
     const f = $("#q-" + copy.id); f && f.focus();
   }
@@ -842,6 +844,10 @@ async function saveReceipt(btn) {
   if (!usedDests.length && !toStock.length) { toast("Nothing to save. Assign each item to a client or to General inventory."); return; }
   btn.disabled = true; btn.textContent = "Saving…";
   const done = () => { btn.disabled = false; btn.textContent = "Save"; };
+  // Didn't save: the draft keeps what hasn't been saved, and the actions' operation IDs and
+  // marks (src/moves.js), so saving again adds nothing twice. If it failed for the
+  // connection, the button says Try again.
+  const failed = () => { saveDraft(); renderReceipt(); if (retryable) $("#rSave").textContent = TRY; };
 
   // Keyed by names, barcodes' keys and line ids: no prototype, so "constructor" and
   // "__proto__" are ordinary keys
@@ -851,7 +857,8 @@ async function saveReceipt(btn) {
   for (const l of lines) {
     let k = lineProd(l) ? l.match : "";
     if (!k && l.code) k = keyForCode(l.code);
-    if (!k) { const n = l.name.trim().toLowerCase(); k = byName[n] || newByName[n] || (newByName[n] = newKey()); }
+    // A new item's key is kept with its line, so saving again makes the same item, not another
+    if (!k) { const n = l.name.trim().toLowerCase(); k = byName[n] || newByName[n] || (newByName[n] = (l.newKey ||= newKey())); }
     keyOfLine[l.id] = k;
   }
   const groups = Object.create(null);
@@ -862,7 +869,7 @@ async function saveReceipt(btn) {
     const l0 = ls[0], code = (ex && ex.code) || (ls.find(l => l.code) || {}).code || "";
     const body = { ...(ex || {}), code, name: effName(l0), price: effPrice(l0), cost: unitCost(l0), updatedAt: new Date().toISOString() };
     if (add) body.stock = (hasStock(ex) ? ex.stock : 0) + add;
-    if (!await write(() => saveItem(db, null, k, body, { reason: "receipt", lines: stocked.map(stockIn) }))) { done(); return; }
+    if (!await write(() => saveItem(db, null, k, body, { reason: "receipt", lines: stocked.map(stockIn) }))) { failed(); return; }
   }
   // Inventory is written; drop those lines so a retry can't add them twice
   d.lines = d.lines.filter(l => l.dest !== "stock"); saveDraft();
@@ -877,29 +884,29 @@ async function saveReceipt(btn) {
     }
     let ok;
     if (x.sheetId) {
-      const s = sheets.find(s => s.id === x.sheetId);
-      if (!s) { toast("One of the chosen sheets was deleted. Pick another and save again."); done(); renderReceipt(); return; }
-      // A line already on the sheet keeps its snapshot: name, price, and cost (or no cost)
-      for (const [k, it] of Object.entries(items)) {
-        const cur = own(s.items || {}, k); if (!cur) continue;
-        Object.assign(it, { name: cur.name, price: cur.price, out: it.out + int(cur.out), returned: int(cur.returned), code: cur.code || it.code });
-        if (hasCost(cur)) it.cost = cur.cost; else delete it.cost;
-      }
-      ok = await write(() => db.doc("sheets/" + s.id).update({ items }), undefined, s.id);
-      if (ok) savedIds.push(s.id);
+      if (!sheets.some(s => s.id === x.sheetId)) { toast("One of the chosen sheets was deleted. Pick another and save again."); done(); renderReceipt(); return; }
+      ok = await write(() => addLines(db, x, x.sheetId, items), undefined, x.sheetId);
+      if (ok) savedIds.push(x.sheetId);
     } else {
-      const ref = db.collection("sheets").doc();
-      const body = { client: x.client.trim(), date: d.date, createdBy: myId || null, createdAt: new Date().toISOString(), status: "open", items };
+      // One new sheet per destination, whatever the attempt: its ID and creation time are kept
+      // with the draft. Once an attempt has been made, the next looks for the sheet first, so
+      // one whose answer was lost isn't saved again.
+      const tried = !!x.newId;
+      x.newId ||= db.collection("sheets").doc().id;
+      x.createdAt ||= new Date().toISOString();
+      saveDraft();
+      const ref = db.collection("sheets").doc(x.newId);
+      const body = { client: x.client.trim(), date: d.date, createdBy: myId || null, createdAt: x.createdAt, status: "open", items };
       if (!myId) body.createdByName = d.by.trim();
       if (d.store) body.source = { store: d.store, receiptDate: d.receiptDate };
-      ok = await write(() => ref.set(body));
+      ok = await write(async () => { if (!tried || !(await ref.get()).exists) await ref.set(body); });
       if (ok) addLocalSheet(ref.id, body);
       if (ok) savedIds.push(ref.id);
     }
     if (!ok) {
       // Keep only what hasn't been saved, so saving again won't duplicate
       d.lines = d.lines.filter(l => !usedDests.slice(0, usedDests.indexOf(x)).some(y => y.id === l.dest));
-      saveDraft(); done(); renderReceipt(); return;
+      failed(); return;
     }
   }
   draft = null; saveDraft(); ui.receipt = false;
