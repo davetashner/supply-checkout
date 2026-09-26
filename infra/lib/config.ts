@@ -27,9 +27,18 @@ export const GLOBAL_SERVICES_REGION = "us-east-1";
 /** `-c regions=all` synthesizes every approved region. */
 export const ALL_REGIONS = "all";
 
+/**
+ * The product's registered domain (Namecheap, delegated to a Route 53 hosted
+ * zone in the prod account). Prod serves it directly; every other environment
+ * serves `<envName>.<domain>` from its own zone (see lib/domain.ts).
+ */
+export const DEFAULT_DOMAIN_NAME = "supplycheckout.com";
+
 export interface DeploymentConfig {
   /** Environment name, e.g. prod, staging, dev. Part of every stack name. */
   readonly envName: string;
+  /** The registered domain, e.g. supplycheckout.com. Prod uses it as is; see lib/domain.ts. */
+  readonly domainName: string;
   /** AWS account ID, or undefined for an account-agnostic synth (CI, tests). */
   readonly account?: string;
   /** Every region the full stack is deployed to (ADR 0010: active-active). */
@@ -53,6 +62,9 @@ function list(value: unknown): string[] | undefined {
 export function validateConfig(config: DeploymentConfig): DeploymentConfig {
   if (!/^[a-z][a-z0-9-]{0,15}$/.test(config.envName)) {
     throw new Error(`envName must be lowercase letters, digits or dashes (got "${config.envName}")`);
+  }
+  if (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(config.domainName)) {
+    throw new Error(`domainName must be a lowercase domain name like example.com (got "${config.domainName}")`);
   }
   if (config.regions.length === 0) throw new Error("At least one region is required");
   if (new Set(config.regions).size !== config.regions.length) {
@@ -79,6 +91,7 @@ export function configFromContext(
   const regions = list(node.tryGetContext("regions")) ?? [...DEFAULT_REGIONS];
   return validateConfig({
     envName: String(node.tryGetContext("envName") ?? "prod"),
+    domainName: String(node.tryGetContext("domainName") ?? DEFAULT_DOMAIN_NAME),
     account: env.CDK_DEFAULT_ACCOUNT || undefined,
     regions,
     primaryRegion: String(node.tryGetContext("primaryRegion") ?? regions[0]),

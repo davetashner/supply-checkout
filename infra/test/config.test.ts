@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   ALL_REGIONS,
   APPROVED_REGIONS,
+  DEFAULT_DOMAIN_NAME,
   DEFAULT_REGIONS,
   GLOBAL_SERVICES_REGION,
   configFromContext,
@@ -26,6 +27,7 @@ describe("configFromContext", () => {
   it("defaults to prod in the deployed regions only, no account", () => {
     expect(configFromContext(context({}), {})).toEqual({
       envName: "prod",
+      domainName: DEFAULT_DOMAIN_NAME,
       account: undefined,
       regions: [...DEFAULT_REGIONS],
       primaryRegion: DEFAULT_REGIONS[0],
@@ -47,6 +49,11 @@ describe("configFromContext", () => {
     expect(config).toMatchObject({ regions: [...APPROVED_REGIONS], primaryRegion: EAST });
   });
 
+  it("takes the domain from context, defaulting to the registered one", () => {
+    expect(DEFAULT_DOMAIN_NAME).toBe("supplycheckout.com");
+    expect(configFromContext(context({ domainName: "example.com" }), {}).domainName).toBe("example.com");
+  });
+
   it("accepts a single region with an explicit primary", () => {
     const config = configFromContext(context({ envName: "dev", regions: [EAST], primaryRegion: EAST }), {});
     expect(config.regions).toEqual([EAST]);
@@ -63,7 +70,7 @@ describe("cdk.json", () => {
 });
 
 describe("validateConfig", () => {
-  const good = { envName: "prod", regions: [EAST, WEST], primaryRegion: EAST };
+  const good = { envName: "prod", domainName: "supplycheckout.com", regions: [EAST, WEST], primaryRegion: EAST };
   const unapproved = "xx-nowhere-1";
 
   it.each([
@@ -74,6 +81,9 @@ describe("validateConfig", () => {
     [{ ...good, regions: [unapproved], primaryRegion: unapproved }, /not approved/],
     [{ ...good, primaryRegion: unapproved }, /primaryRegion/],
     [{ ...good, account: "123" }, /12-digit/],
+    [{ ...good, domainName: "Example.com" }, /domainName/],
+    [{ ...good, domainName: "localhost" }, /domainName/],
+    [{ ...good, domainName: "https://example.com" }, /domainName/],
   ])("rejects %o", (config, message) => {
     expect(() => validateConfig(config)).toThrow(message);
   });

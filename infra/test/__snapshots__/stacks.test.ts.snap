@@ -376,6 +376,527 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
 }
 `;
 
+exports[`stack layout > matches the template snapshots > supply-checkout-prod-us-east-1-domain 1`] = `
+{
+  "Parameters": {
+    "BootstrapVersion": {
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+    "SsmParameterValuesupplycheckoutproddnsdmarcruaC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Default": "/supply-checkout/prod/dns/dmarc-rua",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+    "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Default": "/supply-checkout/prod/dns/hosted-zone-id",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+  },
+  "Resources": {
+    "ApexSpfB00F875A": {
+      "Properties": {
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter",
+        },
+        "Name": "supplycheckout.com.",
+        "ResourceRecords": [
+          ""v=spf1 include:amazonses.com -all"",
+        ],
+        "TTL": "1800",
+        "Type": "TXT",
+      },
+      "Type": "AWS::Route53::RecordSet",
+    },
+    "ApiCertificate1D5B2B3B": {
+      "Properties": {
+        "DomainName": "api.supplycheckout.com",
+        "DomainValidationOptions": [
+          {
+            "DomainName": "api.supplycheckout.com",
+            "HostedZoneId": {
+              "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter",
+            },
+          },
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout",
+          },
+          {
+            "Key": "component",
+            "Value": "domain",
+          },
+          {
+            "Key": "env",
+            "Value": "prod",
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless",
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk",
+          },
+          {
+            "Key": "Name",
+            "Value": "supply-checkout-prod-us-east-1-domain/ApiCertificate",
+          },
+        ],
+        "ValidationMethod": "DNS",
+      },
+      "Type": "AWS::CertificateManager::Certificate",
+    },
+    "ApiCertificateParamBA7053FC": {
+      "Properties": {
+        "Description": "Certificate for api.supplycheckout.com in this region",
+        "Name": "/supply-checkout/prod/domain/api-certificate-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "domain",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "ApiCertificate1D5B2B3B",
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "AuthCertificateC5D33BF2": {
+      "Properties": {
+        "DomainName": "auth.supplycheckout.com",
+        "DomainValidationOptions": [
+          {
+            "DomainName": "auth.supplycheckout.com",
+            "HostedZoneId": {
+              "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter",
+            },
+          },
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout",
+          },
+          {
+            "Key": "component",
+            "Value": "domain",
+          },
+          {
+            "Key": "env",
+            "Value": "prod",
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless",
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk",
+          },
+          {
+            "Key": "Name",
+            "Value": "supply-checkout-prod-us-east-1-domain/AuthCertificate",
+          },
+        ],
+        "ValidationMethod": "DNS",
+      },
+      "Type": "AWS::CertificateManager::Certificate",
+    },
+    "AuthCertificateParam12BE1B90": {
+      "Properties": {
+        "Description": "Cognito custom domain certificate: auth.",
+        "Name": "/supply-checkout/prod/domain/auth-certificate-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "domain",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "AuthCertificateC5D33BF2",
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "Dmarc65510571": {
+      "Properties": {
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter",
+        },
+        "Name": "_dmarc.supplycheckout.com.",
+        "ResourceRecords": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                ""v=DMARC1; p=none; rua=",
+                {
+                  "Ref": "SsmParameterValuesupplycheckoutproddnsdmarcruaC96584B6F00A464EAD1953AFF4B05118Parameter",
+                },
+                "; adkim=r; aspf=r; fo=1"",
+              ],
+            ],
+          },
+        ],
+        "TTL": "1800",
+        "Type": "TXT",
+      },
+      "Type": "AWS::Route53::RecordSet",
+    },
+    "EmailIdentity7187767D": {
+      "Properties": {
+        "EmailIdentity": "supplycheckout.com",
+        "MailFromAttributes": {
+          "MailFromDomain": "mail.supplycheckout.com",
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout",
+          },
+          {
+            "Key": "component",
+            "Value": "domain",
+          },
+          {
+            "Key": "env",
+            "Value": "prod",
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless",
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk",
+          },
+        ],
+      },
+      "Type": "AWS::SES::EmailIdentity",
+    },
+    "EmailIdentityDkimDnsToken1BA32ACB3": {
+      "Properties": {
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter",
+        },
+        "Name": {
+          "Fn::GetAtt": [
+            "EmailIdentity7187767D",
+            "DkimDNSTokenName1",
+          ],
+        },
+        "ResourceRecords": [
+          {
+            "Fn::GetAtt": [
+              "EmailIdentity7187767D",
+              "DkimDNSTokenValue1",
+            ],
+          },
+        ],
+        "TTL": "1800",
+        "Type": "CNAME",
+      },
+      "Type": "AWS::Route53::RecordSet",
+    },
+    "EmailIdentityDkimDnsToken2BBEBB8EC": {
+      "Properties": {
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter",
+        },
+        "Name": {
+          "Fn::GetAtt": [
+            "EmailIdentity7187767D",
+            "DkimDNSTokenName2",
+          ],
+        },
+        "ResourceRecords": [
+          {
+            "Fn::GetAtt": [
+              "EmailIdentity7187767D",
+              "DkimDNSTokenValue2",
+            ],
+          },
+        ],
+        "TTL": "1800",
+        "Type": "CNAME",
+      },
+      "Type": "AWS::Route53::RecordSet",
+    },
+    "EmailIdentityDkimDnsToken3BB5E8A49": {
+      "Properties": {
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter",
+        },
+        "Name": {
+          "Fn::GetAtt": [
+            "EmailIdentity7187767D",
+            "DkimDNSTokenName3",
+          ],
+        },
+        "ResourceRecords": [
+          {
+            "Fn::GetAtt": [
+              "EmailIdentity7187767D",
+              "DkimDNSTokenValue3",
+            ],
+          },
+        ],
+        "TTL": "1800",
+        "Type": "CNAME",
+      },
+      "Type": "AWS::Route53::RecordSet",
+    },
+    "EmailIdentityMailFromMxRecordCEAAECD0": {
+      "Properties": {
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter",
+        },
+        "Name": "mail.supplycheckout.com.",
+        "ResourceRecords": [
+          "10 feedback-smtp.us-east-1.amazonses.com",
+        ],
+        "TTL": "1800",
+        "Type": "MX",
+      },
+      "Type": "AWS::Route53::RecordSet",
+    },
+    "EmailIdentityMailFromTxtRecordE6B5E5D0": {
+      "Properties": {
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter",
+        },
+        "Name": "mail.supplycheckout.com.",
+        "ResourceRecords": [
+          ""v=spf1 include:amazonses.com ~all"",
+        ],
+        "TTL": "1800",
+        "Type": "TXT",
+      },
+      "Type": "AWS::Route53::RecordSet",
+    },
+    "EmailIdentityParamDEF84454": {
+      "Properties": {
+        "Description": "SES domain identity",
+        "Name": "/supply-checkout/prod/domain/email-identity",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "domain",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "EmailIdentity7187767D",
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "EnvDomainParamE40C6E1D": {
+      "Properties": {
+        "Description": "Zone apex this environment serves",
+        "Name": "/supply-checkout/prod/domain/env-domain",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "domain",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": "supplycheckout.com",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "RealtimeCertificateD74CA95D": {
+      "Properties": {
+        "DomainName": "realtime.supplycheckout.com",
+        "DomainValidationOptions": [
+          {
+            "DomainName": "realtime.supplycheckout.com",
+            "HostedZoneId": {
+              "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter",
+            },
+          },
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout",
+          },
+          {
+            "Key": "component",
+            "Value": "domain",
+          },
+          {
+            "Key": "env",
+            "Value": "prod",
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless",
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk",
+          },
+          {
+            "Key": "Name",
+            "Value": "supply-checkout-prod-us-east-1-domain/RealtimeCertificate",
+          },
+        ],
+        "ValidationMethod": "DNS",
+      },
+      "Type": "AWS::CertificateManager::Certificate",
+    },
+    "RealtimeCertificateParamD80079D6": {
+      "Properties": {
+        "Description": "AppSync custom domain certificate: realtime.",
+        "Name": "/supply-checkout/prod/domain/realtime-certificate-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "domain",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "RealtimeCertificateD74CA95D",
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "StackInfoC49BCBCF": {
+      "Properties": {
+        "Description": "Supply Checkout domain stack (stateless)",
+        "Name": "/supply-checkout/prod/domain/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "domain",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": "{"stackName":"supply-checkout-prod-us-east-1-domain","layer":"stateless"}",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "WebCertificate760B17F3": {
+      "Properties": {
+        "DomainName": "app.supplycheckout.com",
+        "DomainValidationOptions": [
+          {
+            "DomainName": "app.supplycheckout.com",
+            "HostedZoneId": {
+              "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter",
+            },
+          },
+          {
+            "DomainName": "supplycheckout.com",
+            "HostedZoneId": {
+              "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter",
+            },
+          },
+          {
+            "DomainName": "www.supplycheckout.com",
+            "HostedZoneId": {
+              "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter",
+            },
+          },
+        ],
+        "SubjectAlternativeNames": [
+          "supplycheckout.com",
+          "www.supplycheckout.com",
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout",
+          },
+          {
+            "Key": "component",
+            "Value": "domain",
+          },
+          {
+            "Key": "env",
+            "Value": "prod",
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless",
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk",
+          },
+          {
+            "Key": "Name",
+            "Value": "supply-checkout-prod-us-east-1-domain/WebCertificate",
+          },
+        ],
+        "ValidationMethod": "DNS",
+      },
+      "Type": "AWS::CertificateManager::Certificate",
+    },
+    "WebCertificateParam80851A34": {
+      "Properties": {
+        "Description": "CloudFront certificate: app., apex and www.",
+        "Name": "/supply-checkout/prod/domain/web-certificate-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "domain",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "WebCertificate760B17F3",
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                  ],
+                  {
+                    "Ref": "BootstrapVersion",
+                  },
+                ],
+              },
+            ],
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI.",
+        },
+      ],
+    },
+  },
+}
+`;
+
 exports[`stack layout > matches the template snapshots > supply-checkout-prod-us-east-1-identity 1`] = `
 {
   "Parameters": {
@@ -1962,6 +2483,142 @@ exports[`stack layout > matches the template snapshots > supply-checkout-prod-us
         },
         "Type": "String",
         "Value": "{"stackName":"supply-checkout-prod-us-west-2-data","layer":"stateful"}",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                  ],
+                  {
+                    "Ref": "BootstrapVersion",
+                  },
+                ],
+              },
+            ],
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI.",
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`stack layout > matches the template snapshots > supply-checkout-prod-us-west-2-domain 1`] = `
+{
+  "Parameters": {
+    "BootstrapVersion": {
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+    "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Default": "/supply-checkout/prod/dns/hosted-zone-id",
+      "Type": "AWS::SSM::Parameter::Value<String>",
+    },
+  },
+  "Resources": {
+    "ApiCertificate1D5B2B3B": {
+      "Properties": {
+        "DomainName": "api.supplycheckout.com",
+        "DomainValidationOptions": [
+          {
+            "DomainName": "api.supplycheckout.com",
+            "HostedZoneId": {
+              "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter",
+            },
+          },
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout",
+          },
+          {
+            "Key": "component",
+            "Value": "domain",
+          },
+          {
+            "Key": "env",
+            "Value": "prod",
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless",
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk",
+          },
+          {
+            "Key": "Name",
+            "Value": "supply-checkout-prod-us-west-2-domain/ApiCertificate",
+          },
+        ],
+        "ValidationMethod": "DNS",
+      },
+      "Type": "AWS::CertificateManager::Certificate",
+    },
+    "ApiCertificateParamBA7053FC": {
+      "Properties": {
+        "Description": "Certificate for api.supplycheckout.com in this region",
+        "Name": "/supply-checkout/prod/domain/api-certificate-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "domain",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "ApiCertificate1D5B2B3B",
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "EnvDomainParamE40C6E1D": {
+      "Properties": {
+        "Description": "Zone apex this environment serves",
+        "Name": "/supply-checkout/prod/domain/env-domain",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "domain",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": "supplycheckout.com",
+      },
+      "Type": "AWS::SSM::Parameter",
+    },
+    "StackInfoC49BCBCF": {
+      "Properties": {
+        "Description": "Supply Checkout domain stack (stateless)",
+        "Name": "/supply-checkout/prod/domain/stack",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "domain",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk",
+        },
+        "Type": "String",
+        "Value": "{"stackName":"supply-checkout-prod-us-west-2-domain","layer":"stateless"}",
       },
       "Type": "AWS::SSM::Parameter",
     },

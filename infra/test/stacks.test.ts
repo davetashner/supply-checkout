@@ -3,14 +3,14 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import { Bucket } from "aws-cdk-lib/aws-s3";
 import { AwsSolutionsChecks } from "cdk-nag";
 import { describe, expect, it } from "vitest";
-import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
+import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { addSupplyCheckout, type SupplyCheckoutStacks } from "../lib/supply-checkout.js";
 
 // No account: tests synth account-agnostic templates, exactly as CI does, so
 // snapshots never contain an account ID.
 // Region names live only in lib/config.ts (ADR 0010); tests use its constants.
 const [EAST, WEST] = APPROVED_REGIONS;
-const config: DeploymentConfig = { envName: "prod", regions: [EAST, WEST], primaryRegion: EAST };
+const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.com", regions: [EAST, WEST], primaryRegion: EAST };
 
 function build(overrides: Partial<DeploymentConfig> = {}) {
   // Version reporting off keeps snapshots stable across CDK upgrades
@@ -28,32 +28,38 @@ function inRegion(stacks: SupplyCheckoutStacks, region: string) {
 const names = (stacks: Stack[]) => stacks.map((s) => s.stackName).sort();
 
 describe("stack layout", () => {
-  it("creates data, api, realtime and observability per region, plus identity and web in the primary", () => {
+  it("creates domain, data, api, realtime and observability per region, plus identity and web in the primary", () => {
     const { stacks } = build();
     expect(names(stacks.all)).toEqual([
       `supply-checkout-prod-${EAST}-api`,
       `supply-checkout-prod-${EAST}-data`,
+      `supply-checkout-prod-${EAST}-domain`,
       `supply-checkout-prod-${EAST}-identity`,
       `supply-checkout-prod-${EAST}-observability`,
       `supply-checkout-prod-${EAST}-realtime`,
       `supply-checkout-prod-${EAST}-web`,
       `supply-checkout-prod-${WEST}-api`,
       `supply-checkout-prod-${WEST}-data`,
+      `supply-checkout-prod-${WEST}-domain`,
       `supply-checkout-prod-${WEST}-observability`,
       `supply-checkout-prod-${WEST}-realtime`,
     ]);
     for (const [region, r] of Object.entries(stacks.regions)) {
       for (const stack of [r.data, r.api, r.realtime, r.observability]) expect(stack.region).toBe(region);
     }
+    for (const [region, stack] of Object.entries(stacks.domain)) expect(stack.region).toBe(region);
     expect(stacks.identity.region).toBe(EAST);
     expect(stacks.web.region).toBe(EAST);
   });
 
-  it("takes the environment and regions as parameters", () => {
+  it("takes the environment and regions as parameters, keeping a domain stack in the global services region", () => {
     const { stacks } = build({ envName: "staging", regions: [WEST], primaryRegion: WEST });
     expect(names(stacks.all)).toEqual([
+      // CloudFront, Cognito and AppSync certificates must be in GLOBAL_SERVICES_REGION
+      `supply-checkout-staging-${GLOBAL_SERVICES_REGION}-domain`,
       `supply-checkout-staging-${WEST}-api`,
       `supply-checkout-staging-${WEST}-data`,
+      `supply-checkout-staging-${WEST}-domain`,
       `supply-checkout-staging-${WEST}-identity`,
       `supply-checkout-staging-${WEST}-observability`,
       `supply-checkout-staging-${WEST}-realtime`,
@@ -80,14 +86,19 @@ describe("stack layout", () => {
     ]);
   });
 
-  it("orders deploys: data and identity before api, api and realtime before observability, all data before web", () => {
+  it("orders deploys: domain first, data and identity before api, api and realtime before observability, all data before web", () => {
     const { stacks } = build();
     const deps = (s: Stack) => s.dependencies.map((d) => d.stackName).sort();
-    const east = inRegion(stacks, EAST);
-    expect(deps(east.api)).toEqual([east.data.stackName, stacks.identity.stackName].sort());
-    expect(deps(east.realtime)).toEqual([east.data.stackName]);
-    expect(deps(east.observability)).toEqual([east.api.stackName, east.realtime.stackName].sort());
-    expect(deps(stacks.web)).toEqual(Object.values(stacks.regions).map((r) => r.data.stackName).sort());
+    const globalDomain = stacks.domain[GLOBAL_SERVICES_REGION]?.stackName;
+    for (const [region, r] of Object.entries(stacks.regions)) {
+      const domain = stacks.domain[region]?.stackName;
+      expect(deps(r.api)).toEqual([r.data.stackName, domain, stacks.identity.stackName].sort());
+      expect(deps(r.realtime)).toEqual([...new Set([r.data.stackName, globalDomain])].sort());
+      expect(deps(r.observability)).toEqual([r.api.stackName, r.realtime.stackName].sort());
+    }
+    expect(deps(stacks.identity)).toEqual([globalDomain]);
+    expect(deps(stacks.web)).toEqual([globalDomain, ...Object.values(stacks.regions).map((r) => r.data.stackName)].sort());
+    for (const domain of Object.values(stacks.domain)) expect(deps(domain)).toEqual([]);
   });
 
   it("tags every stack and resource with the app, environment and component", () => {
@@ -228,8 +239,12 @@ describe("cdk-nag", () => {
   // where it runs (ADR 0010).
   it.each(APPROVED_REGIONS)("synths every stack in %s, cdk-nag clean", (region) => {
     const { app, stacks } = build({ regions: [region], primaryRegion: region });
-    expect(stacks.all).toHaveLength(6);
-    for (const stack of stacks.all) expect(stack.region, stack.stackName).toBe(region);
+    const global = stacks.domain[GLOBAL_SERVICES_REGION];
+    // The global services region always has a domain stack, for certificates
+    // AWS only accepts there; every other stack runs in the one region.
+    const regional = stacks.all.filter((s) => region === GLOBAL_SERVICES_REGION || s !== global);
+    expect(regional).toHaveLength(7);
+    for (const stack of regional) expect(stack.region, stack.stackName).toBe(region);
     const report = new AwsSolutionsChecks(app).validateScope(app);
     expect(report.violations).toEqual([]);
     expect(() => app.synth()).not.toThrow();

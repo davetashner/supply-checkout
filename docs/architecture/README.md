@@ -102,6 +102,8 @@ flowchart TB
 
 Not drawn: KMS keys, Secrets Manager (Stripe keys), SES, CloudWatch alarms and dashboards, AWS Backup. In the MVP they're in us-east-1. Phase 2 adds a KMS key, replica secrets, SES, and alarms and dashboards in us-west-2.
 
+**Names.** Prod serves `supplycheckout.com` from the Route 53 zone the domain is delegated to; staging and dev serve `<env>.supplycheckout.com` from zones in their own accounts, delegated from prod's. The apex and `www.` serve the demo until the real app launches, `app.` the web app, `auth.` Cognito, `realtime.` AppSync Events and `api.` the HTTP API. The certificates for CloudFront, Cognito and AppSync are in us-east-1 (AWS requires it); `api.` has one in each region. SES signs with DKIM and uses `mail.` as its MAIL FROM domain, so both SPF and DKIM align for DMARC. See the README's "Domain and email" section.
+
 ## 3. Reading a receipt
 
 The flow from [ADR 0008](../adr/0008-receipt-reading-bedrock.md). Nothing is saved until the user confirms, just like today.
