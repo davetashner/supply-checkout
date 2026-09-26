@@ -74,7 +74,23 @@ export const keys = {
   /** How many teams the user created on a UTC day (YYYY-MM-DD): the per-user rate limit. */
   teamsCreated: (userId: string, day: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: `LIMIT#TEAMS#${date(day)}` }),
   webhook: (eventId: string) => ({ PK: `WEBHOOK#${id(eventId, "webhook event ID")}`, SK: "DONE" }),
+  /** A checkout, return or stock command's record, for replaying a retry (commands.ts). */
+  operation: (teamId: string, operationId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `OP#${id(operationId, "operation ID")}` }),
+  /** One change to a product's stock, in its history: newest last by `at` (ISO 8601), then operation. */
+  movement: (teamId: string, key: string, at: string, operationId: string) => ({
+    PK: `TEAM#${id(teamId, "team ID")}`,
+    SK: `${movementPrefix(key)}${at}#${id(operationId, "operation ID")}`,
+  }),
 };
+
+/**
+ * The sort-key prefix of one product's movements. A product key may contain
+ * "#", so it's escaped ("%" to "%25", then "#" to "%23"): otherwise the
+ * movements of "a" would share a prefix with those of "a#b".
+ */
+export function movementPrefix(key: string): string {
+  return `MOVE#${productKey(key).replaceAll("%", "%25").replaceAll("#", "%23")}#`;
+}
 
 /** Sort-key prefixes for queries within a team's partition. */
 export const prefixes = {

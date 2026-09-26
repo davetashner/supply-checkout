@@ -3,7 +3,13 @@
 // serves and the ones the handlers answer can't drift apart. No imports.
 // docs/api/openapi.yaml describes the same routes; a test keeps them in step.
 
-export type Operation = "list" | "get" | "set" | "update" | "delete";
+/**
+ * The generic document operations, which the app's edit screens use, and the
+ * inventory commands next to them (backend/src/data/commands.ts,
+ * docs/api/commands.md): checkout, return and stock adjust, each one atomic and
+ * idempotent by operation ID, and a product's stock history.
+ */
+export type Operation = "list" | "get" | "set" | "update" | "delete" | "checkout" | "return" | "adjustStock" | "movements";
 export type HttpMethod = "GET" | "PUT" | "PATCH" | "DELETE" | "POST";
 
 export interface DataRoute {
@@ -21,8 +27,15 @@ const collectionRoutes = (collection: "products" | "sheets", param: string): Dat
   { method: "DELETE", path: `/teams/{teamId}/${collection}/{${param}}`, collection, operation: "delete" },
 ];
 
+const commandRoutes: DataRoute[] = [
+  { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/checkout", collection: "sheets", operation: "checkout" },
+  { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/return", collection: "sheets", operation: "return" },
+  { method: "POST", path: "/teams/{teamId}/products/{key}/stock", collection: "products", operation: "adjustStock" },
+  { method: "GET", path: "/teams/{teamId}/products/{key}/movements", collection: "products", operation: "movements" },
+];
+
 /** Team data. Every one needs a Cognito access token (the JWT authorizer). */
-export const DATA_ROUTES: readonly DataRoute[] = [...collectionRoutes("products", "key"), ...collectionRoutes("sheets", "sheetId")];
+export const DATA_ROUTES: readonly DataRoute[] = [...collectionRoutes("products", "key"), ...collectionRoutes("sheets", "sheetId"), ...commandRoutes];
 
 export interface AuthRoute {
   readonly method: "POST";
