@@ -51,6 +51,16 @@ export async function start(config) {
 
   // Signed out: a link to Managed Login. Following it leaves the page.
   async function signIn() {
+    // A Google or Apple sign-in was just linked to the existing account: sign in with it again
+    if (session.relink) {
+      const provider = session.relink, url = await session.signInUrl(provider);
+      session.relink = "";
+      show(`<h2>Signing in</h2>
+        <p>Your ${provider === "Google" ? "Google" : "Apple"} sign-in is now linked to your Supply Checkout account. Finishing sign-in…</p>
+        <div class="actions"><a class="btn primary big" href="${esc(url)}" id="signIn">Continue</a></div>`);
+      location.assign(url);
+      return until(() => {});
+    }
     const url = await session.signInUrl();
     const invited = !!takeInvite();
     show(`<h2>Sign in</h2>

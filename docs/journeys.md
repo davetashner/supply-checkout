@@ -47,7 +47,7 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 2. Sign in with an email code, a passkey, Apple or Google.
 3. If the person belongs to more than one team, pick the team.
 
-**Expected:** the team's sheets appear within 3 seconds. Staying signed in lasts 30 days on the same device. A person removed from a team no longer sees it on their next request.
+**Expected:** the team's sheets appear within 3 seconds. Staying signed in lasts 30 days on the same device. Signing in with Apple or Google using the verified email of an existing account opens that same account and its teams (`supply-checkout-0b1`: `backend/test/account-link.test.ts`, and the retry in `tests/aws-account.spec.js`). A person removed from a team no longer sees it on their next request.
 
 **Status:** planned. `supply-checkout-zsm` (Cognito), `supply-checkout-l5y` (team switcher).
 
