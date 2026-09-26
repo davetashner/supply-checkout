@@ -117,7 +117,7 @@ describe("templates", () => {
     expect(email.html).toContain("&lt;a href=&quot;https://evil.example.com&quot;&gt;");
     expect(email.subject).not.toMatch(/[\r\n]/);
     expect(email.text.split("\n")[0]).toContain("Bcc: x");
-    expect([...email.html.matchAll(/href="([^"]+)"/g)].every((m) => (m[1] as string).startsWith(APP))).toBe(true);
+    expect([...email.html.matchAll(/href="([^"]+)"/g)].every((m) => new URL((m[1] as string).replaceAll("&amp;", "&")).origin === APP)).toBe(true);
   });
 
   it("shortens long names and names a blank one", () => {
