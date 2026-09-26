@@ -53,3 +53,28 @@ test("picking an item someone else just deleted still opens checkout", async ({ 
   await expect(modal(page).getByRole("heading", { name: "Check out" })).toBeVisible();
   await expect(modal(page)).toContainText("No barcode");
 });
+
+// The checkout and return forms save against the latest copy of the sheet, or the one they
+// opened on if it's gone. Neither brings back a sheet someone else deleted, or moves stock.
+test("a checkout on a sheet someone else deleted doesn't bring it back or move stock", async ({ page }) => {
+  await openEcho(page);
+  await enterBarcode(page, "SKU1");
+  const stock = await page.evaluate(() => window.__mock.docs.get("products/SKU1").stock);
+  await elsewhere(page, (docs) => docs.delete("sheets/s1"));
+  await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
+  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await expect(page.locator("#toast")).toBeVisible();
+  expect(await page.evaluate(() => [window.__mock.docs.has("sheets/s1"), window.__mock.docs.get("products/SKU1").stock])).toEqual([false, stock]);
+});
+
+test("a return on a sheet someone else deleted doesn't bring it back or move stock", async ({ page }) => {
+  await openEcho(page);
+  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await enterBarcode(page, "SKU1");
+  const stock = await page.evaluate(() => window.__mock.docs.get("products/SKU1").stock);
+  await elsewhere(page, (docs) => docs.delete("sheets/s1"));
+  await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
+  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await expect(page.locator("#toast")).toBeVisible();
+  expect(await page.evaluate(() => [window.__mock.docs.has("sheets/s1"), window.__mock.docs.get("products/SKU1").stock])).toEqual([false, stock]);
+});
