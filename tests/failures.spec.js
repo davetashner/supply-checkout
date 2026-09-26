@@ -46,6 +46,15 @@ test("an edit someone else saved over first closes the editor and says so", asyn
   await expect(page.getByRole("heading", { name: "Echo Studio" })).toBeVisible();
 });
 
+test("a return refused for what's saved now closes the form and says why, not to check the connection", async ({ page }) => {
+  await openEcho(page, { ...usedState, writeErrorFor: { prefix: "sheets/", code: "failed_precondition" } });
+  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await enterBarcode(page, "SKU1");
+  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await expect(page.locator("#toast")).toHaveText("simulated failed_precondition");
+  await expect(modal(page)).toBeEmpty();
+});
+
 test("a new item that can't be saved to inventory isn't added to the sheet", async ({ page }) => {
   await openEcho(page, { ...usedState, writeErrorFor: { prefix: "products/", code: "unavailable" } });
   await enterBarcode(page, "NEW1");

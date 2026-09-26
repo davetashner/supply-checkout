@@ -184,7 +184,8 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
   // stock together. The answer has the sheet and the product as they are now (null if gone),
   // so the screen updates before the live events arrive. Resolves to how many the command
   // moved and the line as it is now. A 409 fetches both, as a document write's does, and
-  // passes the error on.
+  // passes the error on. So does a 400 or 404, which the command refuses for what the sheet
+  // holds now; it rejects as failed_precondition with the server's message, for the app to show.
   //
   // `action` stands for one action the person confirmed. It keeps one operation ID for as long
   // as the request stays the same, so every attempt at it (a retry, or a second tap while the
@@ -203,9 +204,15 @@ export function createDb({ api, config, teamId, token, onRemoved }) {
       const res = await api("POST", `${docPath("sheets", sheetId)}/${name}`, { operationId: operation, ...body });
       put("sheets", sheetId, res.sheet);
       put("products", body.productKey, res.product);
-      return { quantity: res.result.quantity, line: res.sheet ? res.sheet.data.items[body.productKey] : {} };
+      // The line as the sheet has it now; {} if the sheet or the line is gone (or has no items)
+      const items = res.sheet?.data.items;
+      return { quantity: res.result.quantity, line: (items && Object.hasOwn(items, body.productKey) && items[body.productKey]) || {} };
     } catch (e) {
-      if (e.code === "aborted") await Promise.all([fetchDoc("sheets", sheetId), fetchDoc("products", body.productKey)]);
+      const refused = e.code === "bad_request" || e.code === "not_found";
+      if (refused || e.code === "aborted") await Promise.all([fetchDoc("sheets", sheetId), fetchDoc("products", body.productKey)]);
+      // Refused for what the sheet holds now (only so many left to return, the line or the
+      // sheet gone): the server's message says why, with the latest now showing
+      if (refused) throw { code: "failed_precondition", message: `${String(e.message).replace(/\.$/, "")}. The latest is showing.`, status: e.status };
       throw e;
     }
   }
