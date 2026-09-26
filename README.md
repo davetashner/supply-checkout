@@ -2,7 +2,7 @@
 
 A shared supply tracker for taking supplies from storage to client jobs and bringing back what wasn't used.
 
-- **Sheets** – one per client and date, recording who prepared it. Scan a barcode (or pick an item without one) to check supplies out, scan again on return to record what came back unused, then tap **Finished Return**. Each sheet totals what was used and what to charge, and downloads as CSV.
+- **Sheets** – one per client and date, recording who prepared it. Scan a barcode (or pick an item without one) to check supplies out, scan again on return to record what came back unused, then tap **Finished Return**. Each sheet totals what was used and what to charge, and downloads as CSV. Owners can export every sheet and the inventory at once, as CSV or JSON (**Export data**).
 - **Inventory** – items, prices and how many are in storage. Checkouts subtract from storage; returns add back.
 - **Receipts** – photograph a store receipt and Claude reads the line items and prices, suggests matches against existing inventory, and lets you assign each item to a client's sheet or to general inventory before anything is saved.
 
