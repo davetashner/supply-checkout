@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "supply_checkout",
+  "project_id": "0410dabd-f6c2-4467-a285-cdda5a6c7cd2"
+}
