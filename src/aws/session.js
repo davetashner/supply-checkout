@@ -15,8 +15,34 @@ export const INVITE_KEY = "supplyCheckout.invite";
 // The team the user last chose (account.js)
 export const TEAM_KEY = "supplyCheckout.team";
 // The receipt being entered (DKEY in src/main.js), which names the team's items, prices
-// and sheets, so it's forgotten on sign-out along with the team
+// and sheets. The web build keeps one per team, at draftKey(teamId), and forgets them all
+// on sign-out along with the team. The key without a team is the artifact's (and older
+// web builds'), and is forgotten the same way.
 export const DRAFT_KEY = "supplyCheckout.receiptDraft";
+export const draftKey = (teamId) => `${DRAFT_KEY}.${teamId}`;
+// Whose the team choice and drafts on this device are: the user ID from /me. A session can
+// end without Sign out (it expired, or a sign-out timed out here but went through), and then
+// the next person to sign in may be someone else; account.js forgets the saved team and
+// drafts when the user doesn't match.
+export const OWNER_KEY = "supplyCheckout.owner";
+
+// localStorage and sessionStorage, where any access can throw (blocked site data, some
+// sandboxed frames, a full quota): a read that fails finds nothing, and a write that fails
+// is skipped, so storage is only ever a convenience.
+const store = (area) => ({
+  get(key) { try { return window[area].getItem(key); } catch { return null; } },
+  json(key) { try { return JSON.parse(window[area].getItem(key)); } catch { return null; } },
+  set(key, value) { try { window[area].setItem(key, value); } catch { /* not kept */ } },
+  remove(key) { try { window[area].removeItem(key); } catch { /* nothing more to do */ } },
+  keys() { try { return Object.keys(window[area]); } catch { return []; } },
+});
+export const local = store("localStorage"), tab = store("sessionStorage");
+
+// Forgets the chosen team and every team's receipt draft, one key at a time, so one that
+// can't be removed doesn't keep the rest
+export function forgetLocal() {
+  for (const key of [TEAM_KEY, ...local.keys().filter((k) => k === DRAFT_KEY || k.startsWith(DRAFT_KEY + "."))]) local.remove(key);
+}
 
 // A first Google or Apple sign-in whose email already has an account: the pre sign-up trigger
 // (backend/src/identity/account-link-handler.ts) links it to that account and fails that one
@@ -40,7 +66,12 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
     timer = setTimeout(background, Math.max(60, life - EARLY) * 1000);
   }
 
-  const background = () => refresh().catch(() => {});
+  // A scheduled refresh that fails for any reason but an ended session (the API didn't
+  // answer, or timed out) tries again in a minute, so the live updates' token doesn't go
+  // stale until the next 401. Not while signing out: that sets its own timer if it fails.
+  const background = () => refresh().catch((e) => {
+    if (e.code !== "unauthenticated" && !signingOut) { clearTimeout(timer); timer = setTimeout(background, 60_000); }
+  });
 
   // One refresh at a time; a 401 means the session is over. None while signing out: with
   // refresh-token rotation, one that started after the revoke (a 401 from a live update's
@@ -64,9 +95,9 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
     async start() {
       const q = new URLSearchParams(location.search);
       if (q.has("code") || q.has("error")) {
-        const saved = JSON.parse(sessionStorage.getItem(PKCE_KEY)) || {};
+        const saved = tab.json(PKCE_KEY) || {};
         const code = q.get("code"), state = q.get("state");
-        sessionStorage.removeItem(PKCE_KEY);
+        tab.remove(PKCE_KEY);
         history.replaceState(null, "", location.pathname);
         // Only for the sign-in this tab started, and only once, so it can't loop
         const linked = !code && state && state === saved.state && !saved.relinked && LINKED.exec(q.get("error_description") || "");
@@ -88,7 +119,7 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
     async signInUrl(provider) {
       const verifier = random(32), state = random(16);
       const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
-      sessionStorage.setItem(PKCE_KEY, JSON.stringify(provider ? { verifier, state, relinked: true } : { verifier, state }));
+      tab.set(PKCE_KEY, JSON.stringify(provider ? { verifier, state, relinked: true } : { verifier, state }));
       const q = new URLSearchParams({ response_type: "code", client_id: config.clientId, redirect_uri: redirectUri, scope: SCOPES, state, code_challenge: challenge, code_challenge_method: "S256" });
       if (provider) q.set("identity_provider", provider);
       return `${config.authUrl}/oauth2/authorize?${q}`;
@@ -112,8 +143,8 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
       }
     },
 
-    // Revokes the refresh token, forgets sign-in's saved state, the chosen team and the
-    // receipt draft, then signs out of Managed Login too. False, still signed in, when the API couldn't be
+    // Revokes the refresh token, forgets sign-in's saved state, the chosen team, every
+    // team's receipt draft and whose they were, then signs out of Managed Login too. False, still signed in, when the API couldn't be
     // reached. A refresh already in flight finishes first: with refresh-token rotation, its
     // response would otherwise set a new refresh cookie after sign-out cleared it.
     async signOut() {
@@ -125,11 +156,11 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
       try { await post("/auth/sign-out"); } catch { signingOut = false; timer = setTimeout(background, 60_000); return false; }
       tokens = null;
       clearTimeout(timer);
-      // Storage that can't be written (blocked site data) mustn't stop the Managed Login sign-out
-      try {
-        for (const key of [PKCE_KEY, INVITE_KEY]) sessionStorage.removeItem(key);
-        for (const key of [TEAM_KEY, DRAFT_KEY]) localStorage.removeItem(key);
-      } catch { /* nothing more to do: the session is revoked */ }
+      // Storage that can't be written (blocked site data) mustn't stop the Managed Login
+      // sign-out, and a key that can't be removed mustn't keep the others
+      for (const key of [PKCE_KEY, INVITE_KEY]) tab.remove(key);
+      forgetLocal();
+      local.remove(OWNER_KEY);
       location.assign(`${config.authUrl}/logout?${new URLSearchParams({ client_id: config.clientId, logout_uri: redirectUri })}`);
       return true;
     },
