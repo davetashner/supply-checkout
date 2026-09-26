@@ -3,6 +3,8 @@ import { AwsSolutionsChecks } from "cdk-nag";
 import { type DeploymentConfig, GLOBAL_SERVICES_REGION } from "./config.js";
 import { ObservabilityDefaults } from "./observability/defaults.js";
 import { ApiStack } from "./stacks/api-stack.js";
+import { BackupAccountStack } from "./stacks/backup-account-stack.js";
+import { BackupStack } from "./stacks/backup-stack.js";
 import type { SupplyCheckoutStack } from "./stacks/base-stack.js";
 import { DataStack } from "./stacks/data-stack.js";
 import { DomainStack } from "./stacks/domain-stack.js";
@@ -29,6 +31,8 @@ export interface SupplyCheckoutStacks {
   readonly domain: Record<string, DomainStack>;
   /** Primary region only. */
   readonly identity: IdentityStack;
+  /** Primary region only: AWS Backup for the app table (docs/backups.md). */
+  readonly backup: BackupStack;
   /** Primary region only: SES bounce and complaint handling. */
   readonly email: EmailStack;
   /** GLOBAL_SERVICES_REGION only (CloudFront's web ACL and certificate). */
@@ -40,7 +44,9 @@ export interface SupplyCheckoutStacks {
  * Adds every stack for one environment to the app.
  *
  * Per region: domain, data (stateful) → api, realtime (stateless) → observability.
- * Primary region only: identity (stateful). GLOBAL_SERVICES_REGION: web
+ * Primary region only: identity (stateful), and backup (stateful, after the
+ * data stack, whose table it backs up, and observability, whose topic its
+ * alarms notify). GLOBAL_SERVICES_REGION: web
  * (stateless, CloudFront and WAF; needs every region's data stack for its
  * origin buckets). Identity and web also wait for the domain stack in
  * GLOBAL_SERVICES_REGION, which holds their certificates. Identity waits for
@@ -84,6 +90,11 @@ export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyChe
     observability.addStackDependency(realtime);
     regions[region] = { data, api, realtime, observability };
   }
+  const backup = new BackupStack(app, config, config.primaryRegion);
+  const primary = regions[config.primaryRegion] as RegionStacks;
+  backup.addStackDependency(primary.data);
+  // Its alarms notify the observability stack's P2 topic
+  backup.addStackDependency(primary.observability);
   const email = new EmailStack(app, config, config.primaryRegion);
   email.addStackDependency(regions[config.primaryRegion]?.data as DataStack);
   email.addStackDependency(domain[config.primaryRegion] as DomainStack);
@@ -98,9 +109,22 @@ export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyChe
   const all = [
     ...Object.values(domain),
     identity,
+    backup,
     web,
     email,
     ...Object.values(regions).flatMap((r) => [r.data, r.api, r.realtime, r.observability]),
   ];
-  return { regions, domain, identity, web, email, all };
+  return { regions, domain, identity, backup, web, email, all };
+}
+
+/**
+ * The backup account's vault for this environment's copies, in the primary
+ * region. Only bin/backup-account.ts calls this, with the backup account's
+ * profile; the workload app never includes it.
+ */
+export function addBackupAccount(app: App, config: DeploymentConfig): BackupAccountStack {
+  Tags.of(app).add("app", "supply-checkout");
+  Tags.of(app).add("managed-by", "cdk");
+  Validations.of(app).addPlugins(new AwsSolutionsChecks(app, { verbose: true }));
+  return new BackupAccountStack(app, config, config.primaryRegion);
 }

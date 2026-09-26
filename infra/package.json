@@ -13,9 +13,11 @@
     "test:update": "vitest run --update",
     "synth": "cdk synth --quiet",
     "synth:all-regions": "cdk synth --quiet -c regions=all -o cdk.out/all-regions",
+    "synth:backup-account": "cdk synth --quiet --app \"npx tsx bin/backup-account.ts\" -o cdk.out/backup-account",
     "diff": "cdk diff",
     "deploy": "cdk deploy --all",
-    "check": "npm run lint && npm test && npm run synth && npm run synth:all-regions",
+    "deploy:backup-account": "cdk deploy --app \"npx tsx bin/backup-account.ts\" -o cdk.out/backup-account",
+    "check": "npm run lint && npm test && npm run synth && npm run synth:all-regions && npm run synth:backup-account",
     "cdk": "cdk"
   },
   "dependencies": {
