@@ -69,7 +69,7 @@ test("receipt reading works with unnamed, unpriced inventory items", async ({ pa
   expect(await page.evaluate(() => window.__mock.sampleCalls[0])).toContain("i1 |  | $0.00");
   // The matched item has no price, so the receipt price differs
   await expect(page.locator(".rline").first()).toContainText("Price changed");
-  await page.locator(".rline").first().getByRole("button", { name: /Keep inventory price/ }).click();
+  await page.locator(".rline").first().getByRole("button", { name: /Keep the client price/ }).click();
   await expect(page.locator(".rline").first().locator("[data-total]")).toHaveText("$0.00");
   await expect(page.locator(".rline").first()).not.toContainText("in storage now");
   await page.getByLabel("Client name").fill("Bravo Two");
