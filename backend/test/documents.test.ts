@@ -115,14 +115,30 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
 
   it("doesn't lose an atomic stock change that lands between a read and a write", async () => {
     const ctx = await team();
-    await setDocument(db, ctx, "products", "p1", { name: "Gloves", stock: 5 });
+    await setDocument(db, ctx, "products", "p1", { name: "Gloves" });
+    await adjustStock(db, ctx, "p1", 5);
     await adjustStock(db, ctx, "p1", -2);
     // A new version, so a write made against the old one conflicts
-    await expect(updateDocument(db, ctx, "products", "p1", { stock: 5 }, { expectedVersion: 1 })).rejects.toThrow(ConflictError);
+    await expect(updateDocument(db, ctx, "products", "p1", { price: 2 }, { expectedVersion: 2 })).rejects.toThrow(ConflictError);
     // The write sees stock 3, not the 5 it might have read before
     const { after } = await updateDocument(db, ctx, "products", "p1", { price: 2 });
     expect(after.data).toEqual({ name: "Gloves", stock: 3, price: 2 });
     expect((await getProduct(db, ctx, "p1"))?.stock).toBe(3);
+  });
+
+  it("keeps a product's stock through set and update, and refuses a write that changes it", async () => {
+    const ctx = await team();
+    await expect(setDocument(db, ctx, "products", "p1", { name: "Gloves", stock: 5 })).rejects.toThrow(InvalidInputError);
+    expect(await getDocument(db, ctx, "products", "p1")).toBeUndefined();
+    await setDocument(db, ctx, "products", "p1", { name: "Gloves" });
+    await expect(updateDocument(db, ctx, "products", "p1", { stock: 5 })).rejects.toThrow(InvalidInputError);
+    await adjustStock(db, ctx, "p1", 5);
+    // A replace that leaves stock out keeps it; one that repeats it is fine
+    expect((await setDocument(db, ctx, "products", "p1", { name: "Blue gloves" }, { expectedVersion: 2 })).after).toEqual({ id: "p1", version: 3, data: { name: "Blue gloves", stock: 5 } });
+    expect((await updateDocument(db, ctx, "products", "p1", { stock: 5, price: 2 })).after.data).toEqual({ name: "Blue gloves", stock: 5, price: 2 });
+    await expect(setDocument(db, ctx, "products", "p1", { name: "Blue gloves", stock: 6 })).rejects.toThrow(InvalidInputError);
+    await expect(updateDocument(db, ctx, "products", "p1", { stock: 4 })).rejects.toThrow(InvalidInputError);
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#p1")).toMatchObject({ version: 4, stock: 5 });
   });
 
   it("refuses viewers, reserved fields and oversized documents", async () => {

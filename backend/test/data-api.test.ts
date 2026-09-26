@@ -130,21 +130,68 @@ describe("documents (the app's db contract)", () => {
       status: 200,
       body: { id: "0123", version: 1, data: product },
     });
-    expect((await call("PUT", "/teams/team-a/products/0123", { body: { data: { ...product, stock: 4 } } })).body.version).toBe(2);
-    expect(await call("GET", "/teams/team-a/products/0123")).toEqual({ status: 200, body: { id: "0123", version: 2, data: { ...product, stock: 4 } } });
+    expect((await call("PUT", "/teams/team-a/products/0123", { body: { data: { ...product, price: 13 } } })).body.version).toBe(2);
+    expect(await call("GET", "/teams/team-a/products/0123")).toEqual({ status: 200, body: { id: "0123", version: 2, data: { ...product, price: 13 } } });
     await call("PUT", "/teams/team-a/products/nb-1", { body: { data: { code: "", name: "Rags", price: 1 } } });
     const list = await call("GET", "/teams/team-a/products");
     expect(list.status).toBe(200);
     expect(list.body.documents.map((d: { id: string }) => d.id)).toEqual(["0123", "nb-1"]);
     expect(list.body.cursor).toBeUndefined();
     // The stored item has the key attributes; the document never shows them
-    expect(table.get("TEAM#team-a", "PRODUCT#0123")).toMatchObject({ type: "product", key: "0123", version: 2, stock: 4 });
+    expect(table.get("TEAM#team-a", "PRODUCT#0123")).toMatchObject({ type: "product", key: "0123", version: 2, price: 13 });
   });
 
-  it("replaces the whole document on set", async () => {
-    await call("PUT", "/teams/team-a/products/0123", { body: { data: { ...product, stock: 4 } } });
+  it("replaces the whole document on set, except a product's stock", async () => {
+    await call("PUT", "/teams/team-a/products/0123", { body: { data: { ...product, cost: 9 } } });
     const { body } = await call("PUT", "/teams/team-a/products/0123", { body: { data: { code: "0123", name: "Gloves" } } });
     expect(body.data).toEqual({ code: "0123", name: "Gloves" });
+  });
+
+  describe("a product's stock, which only the stock commands change", () => {
+    const stored = () => table.get("TEAM#team-a", "PRODUCT#0123");
+    beforeEach(async () => {
+      await call("PUT", "/teams/team-a/products/0123", { body: { data: product } });
+      table.put({ ...(stored() as Record<string, unknown>), stock: 7 });
+    });
+    const refused = { status: 400, body: { error: { code: "bad_request", message: "Stock changes only through the stock command (POST /teams/{teamId}/products/{key}/stock)" } } };
+
+    it("keeps the stored stock through a PUT or PATCH that leaves it out", async () => {
+      expect((await call("PUT", "/teams/team-a/products/0123", { body: { data: { ...product, name: "Gloves" } } })).body).toEqual({ id: "0123", version: 2, data: { ...product, name: "Gloves", stock: 7 } });
+      expect((await call("PATCH", "/teams/team-a/products/0123", { body: { data: { price: 13 } } })).body).toEqual({ id: "0123", version: 3, data: { ...product, name: "Gloves", price: 13, stock: 7 } });
+      expect(stored()).toMatchObject({ version: 3, stock: 7 });
+    });
+
+    it("takes a body that repeats the stored stock", async () => {
+      expect((await call("PUT", "/teams/team-a/products/0123", { body: { data: { ...product, stock: 7 } } })).body.data.stock).toBe(7);
+      expect((await call("PATCH", "/teams/team-a/products/0123", { body: { data: { stock: 7 } } })).body).toMatchObject({ version: 3, data: { stock: 7 } });
+    });
+
+    it("refuses, with nothing written, a PUT or PATCH whose stock differs from what's stored", async () => {
+      for (const [method, data] of [
+        ["PUT", { ...product, stock: 8 }],
+        ["PUT", { ...product, stock: 0 }],
+        ["PATCH", { stock: 6 }],
+        ["PATCH", { stock: 7.5 }],
+      ] as const) {
+        expect(await call(method, "/teams/team-a/products/0123", { body: { data } })).toEqual(refused);
+      }
+      expect(stored()).toMatchObject({ version: 1, stock: 7 });
+    });
+
+    it("refuses stock on a new product and on one that doesn't track stock, which start counting with the stock command", async () => {
+      expect(await call("PUT", "/teams/team-a/products/0456", { body: { data: { ...product, code: "0456", stock: 3 } } })).toEqual(refused);
+      expect(table.get("TEAM#team-a", "PRODUCT#0456")).toBeUndefined();
+      await call("PUT", "/teams/team-a/products/0456", { body: { data: { ...product, code: "0456" } } });
+      expect(await call("PATCH", "/teams/team-a/products/0456", { body: { data: { stock: 3 } } })).toEqual(refused);
+      expect(await call("PUT", "/teams/team-a/products/0456", { body: { data: { ...product, code: "0456", stock: 0 } } })).toEqual(refused);
+      expect(table.get("TEAM#team-a", "PRODUCT#0456")).toMatchObject({ version: 1 });
+      expect(table.get("TEAM#team-a", "PRODUCT#0456")?.stock).toBeUndefined();
+    });
+
+    it("leaves sheets alone: a field called stock is only data there", async () => {
+      expect((await call("PUT", "/teams/team-a/sheets/s1", { body: { data: { ...sheet("2026-09-01"), stock: 3 } } })).body.data.stock).toBe(3);
+      expect((await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { stock: 4 } } })).body.data.stock).toBe(4);
+    });
   });
 
   it("deep-merges nested maps on update, as the app's runtime does", async () => {
@@ -206,9 +253,9 @@ describe("documents (the app's db contract)", () => {
     expect((await call("PUT", "/teams/team-a/sheets/s1", { body: { data: receiptSheet } })).body.data).toEqual(receiptSheet);
     await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { status: "closed", closedAt: "2026-09-02T00:00:00.000Z" } } });
     expect((await call("GET", "/teams/team-a/sheets/s1")).body.data).toEqual({ ...receiptSheet, status: "closed", closedAt: "2026-09-02T00:00:00.000Z" });
-    const full = { ...product, stock: 7 };
+    const full = { ...product, cost: 9, packSize: 12, notes: "Blue box" };
     expect((await call("PUT", "/teams/team-a/products/0123", { body: { data: full } })).body.data).toEqual(full);
-    expect((await call("PATCH", "/teams/team-a/products/0123", { body: { data: { stock: 6 } } })).body.data).toEqual({ ...product, stock: 6 });
+    expect((await call("PATCH", "/teams/team-a/products/0123", { body: { data: { cost: 8 } } })).body.data).toEqual({ ...full, cost: 8 });
   });
 
   it("refuses to update a document that doesn't exist", async () => {

@@ -329,26 +329,44 @@ export async function listDocuments(db: Db, ctx: TeamContext, collection: Collec
   return { items: page.items.map((item) => fromItem(collection, item)), cursor: page.cursor };
 }
 
-/** Replaces a document, creating it if needed (the app's `set`). */
+/**
+ * A product's `stock` moves only through the stock commands (commands.ts)
+ * and the CSV import (imports.ts), which record a movement for every change.
+ * A document write keeps the stored stock: `written` (the body) may leave it
+ * out, or repeat the stored value, and anything else is refused. A new
+ * product has no stock, so creating one with `stock` is refused too: it
+ * starts counting with a `count` adjustment, which records the movement.
+ */
+function keepStock(collection: Collection, current: StoredDocument | undefined, written: DocumentData, next: DocumentData): DocumentData {
+  if (collection !== "products") return next;
+  const stored = current?.data.stock;
+  if (Object.hasOwn(written, "stock") && written.stock !== stored) {
+    throw new InvalidInputError("Stock changes only through the stock command (POST /teams/{teamId}/products/{key}/stock)");
+  }
+  if (stored !== undefined) next.stock = stored;
+  return next;
+}
+
+/** Replaces a document, creating it if needed (the app's `set`). A product keeps its stock (keepStock). */
 export function setDocument(db: Db, ctx: TeamContext, collection: Collection, rawId: unknown, data: unknown, options: WriteOptions = {}): Promise<WriteResult> {
   // Validate before cloning: structuredClone of a very deep value overflows the stack
   if (!isMap(data)) throw new InvalidInputError("A document is a JSON object");
   checkValue(data, 0);
-  return write(db, ctx, collection, rawId, options, () => structuredClone(data) as DocumentData);
+  return write(db, ctx, collection, rawId, options, (current) => keepStock(collection, current, data, structuredClone(data) as DocumentData));
 }
 
 /**
  * Deep-merges `patch` into an existing document (the app's `update`): a
  * nested object merges into an existing nested object key by key, and any
  * other value replaces what was there. Throws NotFoundError if the document
- * doesn't exist.
+ * doesn't exist. A product keeps its stock (keepStock).
  */
 export function updateDocument(db: Db, ctx: TeamContext, collection: Collection, rawId: unknown, patch: unknown, options: WriteOptions = {}): Promise<WriteResult> {
   if (!isMap(patch)) throw new InvalidInputError("An update is a JSON object");
   checkValue(patch, 0);
   return write(db, ctx, collection, rawId, options, (current) => {
     if (!current) throw new NotFoundError("No such document");
-    return deepMerge(structuredClone(current.data), patch);
+    return keepStock(collection, current, patch, deepMerge(structuredClone(current.data), patch));
   });
 }
 

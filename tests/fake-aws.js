@@ -202,17 +202,18 @@ export class FakeBackend {
     if (expected === undefined) return err(400, "bad_request");
     if (Number(expected) !== (cur ? cur.version : 0)) return err(409, "aborted");
     if (method === "DELETE") { this.docs.delete(key); return [204]; }
+    if (method === "PATCH" && !cur) return err(404, "not_found");
+    // A product's stock moves only through the stock commands (keepStock in
+    // backend/src/data/documents.ts): a write keeps what's stored and refuses a different stock
+    const stored = cur && cur.data.stock;
+    if (coll === "products" && Object.hasOwn(call.body.data, "stock") && call.body.data.stock !== stored) return err(400, "bad_request");
+    const data = method === "PUT" ? clone(call.body.data) : clone(cur.data);
+    if (method === "PATCH") merge(data, call.body.data);
+    if (coll === "products" && stored !== undefined) data.stock = stored;
     // A sheet line's cost each is an amount in whole cents (ADR 0014), as backend/src/data/documents.ts checks
     const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
-    const badCost = (data) => coll === "sheets" && Object.values(data?.items || {}).some((l) => l && typeof l === "object" && "cost" in l && !cents(l.cost));
-    if (method === "PUT") {
-      if (badCost(call.body.data)) return err(400, "bad_request");
-      this.write(team, coll, id, call.body.data); return [200, out()];
-    }
-    if (!cur) return err(404, "not_found");
-    const data = clone(cur.data);
-    merge(data, call.body.data);
-    if (badCost(data)) return err(400, "bad_request");
+    const badCost = coll === "sheets" && Object.values(data.items || {}).some((l) => l && typeof l === "object" && "cost" in l && !cents(l.cost));
+    if (badCost) return err(400, "bad_request");
     this.write(team, coll, id, data);
     return [200, out()];
   }
