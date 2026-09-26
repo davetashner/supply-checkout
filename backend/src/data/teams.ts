@@ -9,7 +9,7 @@ import { type Member, type MemberRole, type Team, type UserTeam, memberRole, own
 import { queryAll, versionedSet } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
-export type { Invite, Member, MemberRole, Team, UserTeam } from "./model.js";
+export type { Invite, InviteFailure, Member, MemberRole, Team, UserTeam } from "./model.js";
 
 const LAST_OWNER = "Someone else changed this team, or it would be left without an owner";
 

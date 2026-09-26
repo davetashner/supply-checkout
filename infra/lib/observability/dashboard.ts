@@ -100,9 +100,10 @@ export class OpsDashboard extends Construct {
     );
     this.dashboard.addWidgets(
       businessGraph("J1: sign-ups", [BusinessMetric.SignUps]),
-      businessGraph("J3: invites", [BusinessMetric.InvitesSent, BusinessMetric.InvitesAccepted]),
+      businessGraph("J3: invites", [BusinessMetric.InvitesSent, BusinessMetric.InvitesAccepted, BusinessMetric.InvitesFailed]),
       businessGraph("J7: billing errors", [BusinessMetric.CheckoutSessionErrors, BusinessMetric.WebhookSignatureFailures]),
       businessGraph("J4: live updates", [BusinessMetric.LiveUpdates, BusinessMetric.LiveUpdateFailures]),
     );
+    this.dashboard.addWidgets(businessGraph("J3: email bounces and complaints", [BusinessMetric.EmailBounces, BusinessMetric.EmailComplaints]));
   }
 }

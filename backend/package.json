@@ -17,6 +17,7 @@
     "@aws-lambda-powertools/logger": "^2.35.0",
     "@aws-lambda-powertools/metrics": "^2.35.0",
     "@aws-sdk/client-dynamodb": "^3.1141.0",
+    "@aws-sdk/client-sesv2": "^3.1141.0",
     "@aws-sdk/client-sts": "^3.1141.0",
     "@aws-sdk/credential-provider-node": "^3.972.84",
     "@aws-sdk/lib-dynamodb": "^3.1141.0",

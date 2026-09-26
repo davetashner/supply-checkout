@@ -31,13 +31,14 @@ function inRegion(stacks: SupplyCheckoutStacks, region: string) {
 const names = (stacks: Stack[]) => stacks.map((s) => s.stackName).sort();
 
 describe("stack layout", () => {
-  it("creates domain, data, api, realtime and observability per region, plus identity, backup and web in the primary", () => {
+  it("creates domain, data, api, realtime and observability per region, plus identity, backup, email and web in the primary", () => {
     const { stacks } = build();
     expect(names(stacks.all)).toEqual([
       `supply-checkout-prod-${EAST}-api`,
       `supply-checkout-prod-${EAST}-backup`,
       `supply-checkout-prod-${EAST}-data`,
       `supply-checkout-prod-${EAST}-domain`,
+      `supply-checkout-prod-${EAST}-email`,
       `supply-checkout-prod-${EAST}-identity`,
       `supply-checkout-prod-${EAST}-observability`,
       `supply-checkout-prod-${EAST}-realtime`,
@@ -54,6 +55,7 @@ describe("stack layout", () => {
     for (const [region, stack] of Object.entries(stacks.domain)) expect(stack.region).toBe(region);
     expect(stacks.identity.region).toBe(EAST);
     expect(stacks.backup.region).toBe(EAST);
+    expect(stacks.email.region).toBe(EAST);
     expect(stacks.web.region).toBe(EAST);
   });
 
@@ -67,6 +69,7 @@ describe("stack layout", () => {
       `supply-checkout-staging-${WEST}-backup`,
       `supply-checkout-staging-${WEST}-data`,
       `supply-checkout-staging-${WEST}-domain`,
+      `supply-checkout-staging-${WEST}-email`,
       `supply-checkout-staging-${WEST}-identity`,
       `supply-checkout-staging-${WEST}-observability`,
       `supply-checkout-staging-${WEST}-realtime`,
@@ -104,6 +107,7 @@ describe("stack layout", () => {
       expect(deps(r.observability)).toEqual([r.api.stackName, r.realtime.stackName].sort());
     }
     expect(deps(stacks.identity)).toEqual([globalDomain, stacks.web.stackName].sort());
+    expect(deps(stacks.email)).toEqual([stacks.domain[EAST]?.stackName, inRegion(stacks, EAST).data.stackName].sort());
     expect(deps(stacks.web)).toEqual([globalDomain, ...Object.values(stacks.regions).map((r) => r.data.stackName)].sort());
     for (const domain of Object.values(stacks.domain)) expect(deps(domain)).toEqual([]);
     const east = inRegion(stacks, EAST);
@@ -281,7 +285,7 @@ describe("cdk-nag", () => {
     // other stack runs in the one region.
     const global: Stack[] = [stacks.domain[GLOBAL_SERVICES_REGION] as Stack, stacks.web];
     const regional = stacks.all.filter((s) => region === GLOBAL_SERVICES_REGION || !global.includes(s));
-    expect(regional).toHaveLength(region === GLOBAL_SERVICES_REGION ? 8 : 7);
+    expect(regional).toHaveLength(region === GLOBAL_SERVICES_REGION ? 9 : 8);
     for (const stack of global) expect(stack?.region).toBe(GLOBAL_SERVICES_REGION);
     for (const stack of regional) expect(stack.region, stack.stackName).toBe(region);
     const report = new AwsSolutionsChecks(app).validateScope(app);

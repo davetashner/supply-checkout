@@ -38,6 +38,8 @@ The owner does this once. Agents can't create accounts or deploy. The profile na
 > **`cdk deploy --all` fails until step 4 is done.** The backup stack reads `/supply-checkout/<env>/backup/copy-vault-arn` and `/supply-checkout/<env>/backup/organization-id` at deploy time, and CloudFormation fails when a parameter doesn't exist. Until the backup account's vault is in place, deploy with `-c backupCopy=false` (no copy, and no parameters needed), or leave the backup stack out.
 >
 > **Check the vault stack's settings before its first deploy.** Its lock can't be changed after 72 hours (see [the lock's limits](#why-governance-mode-here-and-compliance-mode-there)).
+>
+> **Do steps 3 to 6 in one session, and prove a copy lands the same day.** The 72-hour clock starts when the vault stack deploys. The copy path's `kms:ViaService` and `aws:ResourceOrgID` conditions haven't been tested against real AWS, so don't wait for the nightly plan to find out whether copies work.
 
 1. **Allow cross-account backup in the organization.** From the management account, in the primary region:
 
@@ -81,7 +83,48 @@ The owner does this once. Agents can't create accounts or deploy. The profile na
 
    An environment with no vault in the backup account (a dev account) deploys with `-c backupCopy=false`. It still gets the local vault and the daily backup, with no copy.
 
-6. **Check the next morning.** The plan runs at 2am Eastern. Both jobs should be `COMPLETED`:
+6. **Prove the copy path now, with an on-demand backup and copy.** Use the backup role, the same one the plan uses, so this tests the same permissions:
+
+   ```bash
+   P="--profile supply-prod --region us-east-1"
+   TABLE_ARN=$(aws dynamodb describe-table --table-name supply-checkout-prod-app --query Table.TableArn --output text $P)
+   ROLE_ARN=$(aws iam get-role --role-name supply-checkout-prod-backup --query Role.Arn --output text --profile supply-prod)
+   COPY_VAULT=$(aws ssm get-parameter --name /supply-checkout/prod/backup/copy-vault-arn --query Parameter.Value --output text $P)
+
+   aws backup start-backup-job $P --backup-vault-name supply-checkout-prod-backups \
+     --resource-arn "$TABLE_ARN" --iam-role-arn "$ROLE_ARN" --lifecycle DeleteAfterDays=35
+   aws backup describe-backup-job $P --backup-job-id <id>   # until COMPLETED; note RecoveryPointArn
+
+   aws backup start-copy-job $P --recovery-point-arn <RecoveryPointArn> \
+     --source-backup-vault-name supply-checkout-prod-backups \
+     --destination-backup-vault-arn "$COPY_VAULT" --iam-role-arn "$ROLE_ARN" \
+     --lifecycle DeleteAfterDays=90
+   aws backup describe-copy-job $P --copy-job-id <id>       # until COMPLETED
+
+   aws backup list-recovery-points-by-backup-vault --backup-vault-name supply-checkout-prod-backup-copies \
+     --profile supply-backup --region us-east-1               # the copy is here
+   ```
+
+   A copy retention of 90 days must be inside the vault lock's 30 to 365. If a job fails, `StatusMessage` and CloudTrail show which call was refused. See [Key sharing](#key-sharing-and-what-the-first-drill-should-confirm) for the conditions to loosen first.
+
+7. **If no copy has landed about 48 hours after the vault stack deployed, decide before the 72 hours are up.** After 72 hours the lock is permanent, whether or not a copy has ever worked.
+   - **Remove the lock and try again later.** In the backup account:
+
+     ```bash
+     aws backup delete-backup-vault-lock-configuration --backup-vault-name supply-checkout-prod-backup-copies \
+       --profile supply-backup --region us-east-1
+     ```
+
+     Once copies work, put it back. CloudFormation may not re-apply it, because the template hasn't changed. If `aws backup describe-backup-vault` shows no lock after a redeploy, set the same values as `COPY_LOCK` by hand. That starts a new 72-hour grace period:
+
+     ```bash
+     aws backup put-backup-vault-lock-configuration --backup-vault-name supply-checkout-prod-backup-copies \
+       --min-retention-days 30 --max-retention-days 365 --changeable-for-days 3 --profile supply-backup --region us-east-1
+     ```
+
+   - **Or accept 30 and 365 days as final** and keep fixing the copy path. Only the lock's limits are permanent. Key policies, the vault access policy and the roles can still change.
+
+8. **Check the next morning.** The plan runs at 2am Eastern. Both jobs should be `COMPLETED`:
 
    ```bash
    aws backup list-backup-jobs --by-backup-vault-name supply-checkout-prod-backups --profile supply-prod --region us-east-1
@@ -89,7 +132,7 @@ The owner does this once. Agents can't create accounts or deploy. The profile na
    aws backup list-recovery-points-by-backup-vault --backup-vault-name supply-checkout-prod-backup-copies --profile supply-backup --region us-east-1
    ```
 
-   The `no-recent-backup` alarm fires on the first day, before the first backup runs. It clears once a backup completes.
+   The `no-recent-backup` alarm can fire before the first backup completes. It clears once one does.
 
 ## Roles
 

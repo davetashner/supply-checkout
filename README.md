@@ -21,6 +21,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `src/runtime.js` | `use()`, the one place the app reaches the claude.ai runtime (`window.claude`). |
 | `src/aws/` | The web build's runtime ([ADR 0004](docs/adr/0004-runtime-adapter.md)): `window.claude` on the AWS backend. `main.js` loads `config.json` and installs it; `session.js` is sign-in (Managed Login, PKCE, tokens in memory); `account.js` is first sign-in, invites, the team bar and the `user` and `downloads` capabilities; `db.js` maps the app's `db` calls onto the data API; `live.js` is live updates over AppSync Events, with the polling fallback. See [The web app on AWS](docs/web-app.md#the-web-app-on-aws). |
 | `src/moves.js` | Checkout and return writes, in one place so the web build can switch to atomic commands (`supply-checkout-1dg.1`). |
+| `src/build.js` | `WEB`: false in the artifact build, so code only the web build can reach is left out of it (and out of its coverage). |
 | `src/format.js`, `src/sheet-math.js` | Formatting helpers and sheet totals, with no app state. |
 | `src/dom.js` | `$`, toast, modals, two-tap confirm buttons and number steppers. |
 | `src/barcode.js` | Reading barcodes from photos (the browser's detector, or ZXing, loaded the first time it's needed). |

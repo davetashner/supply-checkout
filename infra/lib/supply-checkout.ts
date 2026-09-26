@@ -8,6 +8,7 @@ import { BackupStack } from "./stacks/backup-stack.js";
 import type { SupplyCheckoutStack } from "./stacks/base-stack.js";
 import { DataStack } from "./stacks/data-stack.js";
 import { DomainStack } from "./stacks/domain-stack.js";
+import { EmailStack } from "./stacks/email-stack.js";
 import { IdentityStack } from "./stacks/identity-stack.js";
 import { ObservabilityStack } from "./stacks/observability-stack.js";
 import { RealtimeStack } from "./stacks/realtime-stack.js";
@@ -32,6 +33,8 @@ export interface SupplyCheckoutStacks {
   readonly identity: IdentityStack;
   /** Primary region only: AWS Backup for the app table (docs/backups.md). */
   readonly backup: BackupStack;
+  /** Primary region only: SES bounce and complaint handling. */
+  readonly email: EmailStack;
   /** GLOBAL_SERVICES_REGION only (CloudFront's web ACL and certificate). */
   readonly web: WebStack;
   readonly all: SupplyCheckoutStack[];
@@ -48,6 +51,8 @@ export interface SupplyCheckoutStacks {
  * origin buckets). Identity and web also wait for the domain stack in
  * GLOBAL_SERVICES_REGION, which holds their certificates. Identity waits for
  * web too (its apex record), and for the primary region's domain stack (SES).
+ * Email (primary region only) waits for that region's data stack (the table)
+ * and domain stack (the SES configuration set and its events topic).
  */
 export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyCheckoutStacks {
   Tags.of(app).add("app", "supply-checkout");
@@ -90,6 +95,9 @@ export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyChe
   backup.addStackDependency(primary.data);
   // Its alarms notify the observability stack's P2 topic
   backup.addStackDependency(primary.observability);
+  const email = new EmailStack(app, config, config.primaryRegion);
+  email.addStackDependency(regions[config.primaryRegion]?.data as DataStack);
+  email.addStackDependency(domain[config.primaryRegion] as DomainStack);
   // CloudFront's web ACL and certificate must be in GLOBAL_SERVICES_REGION
   const web = new WebStack(app, config, GLOBAL_SERVICES_REGION);
   for (const { data } of Object.values(regions)) web.addStackDependency(data);
@@ -103,9 +111,10 @@ export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyChe
     identity,
     backup,
     web,
+    email,
     ...Object.values(regions).flatMap((r) => [r.data, r.api, r.realtime, r.observability]),
   ];
-  return { regions, domain, identity, backup, web, all };
+  return { regions, domain, identity, backup, web, email, all };
 }
 
 /**
