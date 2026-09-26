@@ -1,0 +1,18 @@
+/* The web build's account screens and team bar (src/aws/account.js). They use the app's
+   colors and controls, so they follow light and dark mode. */
+.account-open .tabs,.account-open .wrap > :not(.top):not(#account){display:none !important}
+.account:empty{display:none}
+.account{max-width:480px;margin:24px auto;display:grid;grid-template-columns:minmax(0,1fr);gap:14px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:22px;overflow-wrap:anywhere}
+.account h2{font-size:30px}
+.account p{margin:0}
+.account form{display:grid;gap:14px}
+.account .actions{display:flex;gap:8px;flex-wrap:wrap}
+.account .error{color:var(--danger)}
+.account [hidden]{display:none}
+.account .invite{background:var(--sunk);border-radius:10px;padding:10px 14px}
+.account .whoami{font-size:14px;color:var(--muted);border-top:1px solid var(--line);padding-top:12px}
+.account .whoami .btn{padding:4px 8px}
+.teambar{display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap;margin-block:-4px 14px;font-size:14px;color:var(--muted);overflow-wrap:anywhere}
+.teambar strong{color:var(--ink);font-weight:600}
+.teambar label{font-weight:600}
+.teambar select{flex:0 1 260px}

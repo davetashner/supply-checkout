@@ -1,4 +1,5 @@
-import { use } from "./runtime.js";
+import { use, help } from "./runtime.js";
+import { checkOut, recordReturn, setStock } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, int, codeText, hasStock, newKey, uid, round2, numOrNull } from "./format.js";
 import { lines, totals } from "./sheet-math.js";
 import { $, toast, openModal, closeModal, armButton, stepperHTML, setText, setHTML, wireStepper } from "./dom.js";
@@ -9,7 +10,7 @@ async function bumpStock(key, delta) {
   // Adds (or removes) units from the storage count. Items nobody has counted stay uncounted when removing.
   const p = products[key]; if (!p || !delta) return true;
   if (!hasStock(p) && delta < 0) return true;
-  return write(() => db.doc("products/" + key).update({ stock: Math.max(0, (hasStock(p) ? p.stock : 0) + delta) }));
+  return write(() => setStock(db, key, Math.max(0, (hasStock(p) ? p.stock : 0) + delta)));
 }
 
 let db = null, userNs = null, dl = null, myId = null, canWrite = true, connected = false;
@@ -55,7 +56,7 @@ function draw() {
   $("#tab-sheets").setAttribute("aria-pressed", ui.tab === "sheets");
   $("#tab-prices").setAttribute("aria-pressed", ui.tab === "prices");
   const notice = $("#notice");
-  if (!connected) { notice.hidden = false; notice.textContent = "Connecting to shared storage… If this doesn't clear, open this page on claude.ai while signed in."; }
+  if (!connected) { notice.hidden = false; notice.textContent = `Connecting to shared storage… If this doesn't clear, ${help().connecting}.`; }
   else if (!canWrite) { notice.hidden = false; notice.textContent = "You have view-only access. Ask the owner to give you Contributor access to scan and edit."; }
   else notice.hidden = true;
 
@@ -239,7 +240,7 @@ function checkoutModal(s, code, key = keyOf(code)) {
       }
       const fresh = currentSheet() || s, cur = (fresh.items || {})[key];
       const item = { code, name: cur ? cur.name : name, price: cur ? cur.price : price, out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) };
-      if (await write(() => db.doc("sheets/" + s.id).update({ items: { [key]: item } }), `Checked out ${qty} × ${item.name}`)) { closeModal(); await bumpStock(key, -qty); }
+      if (await write(() => checkOut(db, s.id, key, item), `Checked out ${qty} × ${item.name}`)) { closeModal(); await bumpStock(key, -qty); }
     });
   });
 }
@@ -324,7 +325,7 @@ function returnModal(s, code, key = keyOf(code)) {
       // Add to the latest count, in case someone else recorded a return meanwhile
       const cur = ((currentSheet() || s).items || {})[key] || line;
       const out = int(cur.out), before = Math.min(int(cur.returned), out), back = Math.min(out, before + r);
-      if (await write(() => db.doc("sheets/" + s.id).update({ items: { [key]: { returned: back } } }), `${back - before} returned · ${back} of ${out} back`)) { closeModal(); await bumpStock(key, back - before); }
+      if (await write(() => recordReturn(db, s.id, key, back), `${back - before} returned · ${back} of ${out} back`)) { closeModal(); await bumpStock(key, back - before); }
     });
   });
 }
@@ -732,7 +733,7 @@ draw();
     try { myId = await userNs.id(); } catch {}
     try { const w = await userNs.can("data.write"); if (w === false) canWrite = false; } catch {}
   }
-  if (!db) { $("#notice").hidden = false; $("#notice").textContent = "Shared storage isn't available in this view. Open this page on claude.ai while signed in."; return; }
+  if (!db) { $("#notice").hidden = false; $("#notice").textContent = "Shared storage isn't available in this view. " + help().missing; return; }
   const onErr = () => toast("Lost connection to shared storage. Reload the page.");
   let got = 0; const ready = () => { if (++got >= 2) connected = true; render(); };
   let pFirst = true, sFirst = true;
