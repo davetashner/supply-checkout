@@ -7,6 +7,7 @@ const seed = {
   ...usedState.seed,
   "products/uncounted": { code: "UC1", name: "=HYPERLINK(\"x\")", price: 2.25 },
   "products/noname": { code: "", price: "3" },
+  "products/noprice": { code: "NP", name: "Rags", stock: 4 },
   "sheets/s2": { client: "Delta, \"Dry\" Cleaning", date: "2026-09-25", createdByName: "Sam", status: "closed", closedAt: "2026-09-25T18:00:00Z", items: {} },
   "sheets/s3": { client: "", status: "open", items: { odd: { code: "", out: "4", returned: 9 } } },
 };
@@ -20,7 +21,7 @@ const saved = (page, i) => page.evaluate((i) => window.__mock.saves[i], i);
 test("owners export every sheet and the inventory as CSV, and everything as JSON", async ({ page }) => {
   await openOwner(page);
   await page.getByRole("button", { name: "Export data" }).click();
-  await expect(modal(page)).toContainText("3 sheets and 4 inventory items");
+  await expect(modal(page)).toContainText("3 sheets and 5 inventory items");
 
   await modal(page).getByRole("button", { name: "Sheets (CSV)" }).click();
   await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
@@ -44,6 +45,7 @@ test("owners export every sheet and the inventory as CSV, and everything as JSON
     "Item,Barcode,In storage,Price each,Value",
     "\"'=HYPERLINK(\"\"x\"\")\",UC1,,2.25,",
     "\"Paper towels, 6 roll\",SKU1,10,8.50,85.00",
+    "Rags,NP,4,0.00,0.00",
     "\"Storage bins, 12 qt\",,2,5.00,10.00",
     "Unnamed item,,,3.00,",
   ]);
@@ -56,7 +58,7 @@ test("owners export every sheet and the inventory as CSV, and everything as JSON
   expect(json).toMatchObject({ app: "Supply Checkout", exportedAt: expect.any(String) });
   expect(json.sheets.map((s) => s.id)).toEqual(["s3", "s2", "s1"]);
   expect(json.sheets[2]).toMatchObject({ client: "Echo Studio", preparedBy: "Test User", items: seed["sheets/s1"].items, totals: { taken: 5, returned: 1, used: 4, charge: 27 } });
-  expect(json.inventory.map((p) => p.key)).toEqual(["uncounted", "SKU1", "nb-bins", "noname"]);
+  expect(json.inventory.map((p) => p.key)).toEqual(["uncounted", "SKU1", "noprice", "nb-bins", "noname"]);
   expect(json.inventory[1]).toEqual({ key: "SKU1", ...seed["products/SKU1"] });
 
   await modal(page).getByRole("button", { name: "Close" }).click();
@@ -75,9 +77,10 @@ test("a single sheet's CSV guards formula-like text too", async ({ page }) => {
 });
 
 test("view-only owners can still export (a cancelled team's read-only period)", async ({ page }) => {
-  await openOwner(page, { canWrite: false });
+  await openOwner(page, { canWrite: false, seed: { "products/a": { name: "A", price: 1 }, "sheets/s": { client: "One", date: "2026-09-01", status: "open", items: {} } } });
   await expect(page.getByRole("button", { name: "+ New sheet" })).toHaveCount(0);
   await page.getByRole("button", { name: "Export data" }).click();
+  await expect(modal(page)).toContainText("1 sheet and 1 inventory item,");
   await modal(page).getByRole("button", { name: "Everything (JSON)" }).click();
   await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
 });
