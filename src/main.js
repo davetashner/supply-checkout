@@ -6,6 +6,7 @@ import { lines, totals } from "./sheet-math.js";
 import { $, toast, openModal, closeModal, armButton, stepperHTML, setText, setHTML, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
 import { RECEIPT_PROMPT, sampleErr } from "./receipt-prompt.js";
+import { sheetCsv, sheetsCsv, inventoryCsv, allJson } from "./export.js";
 
 async function bumpStock(key, delta) {
   // Adds (or removes) units from the storage count. Items nobody has counted stay uncounted when removing.
@@ -14,7 +15,7 @@ async function bumpStock(key, delta) {
   return write(() => setStock(db, key, Math.max(0, (hasStock(p) ? p.stock : 0) + delta)));
 }
 
-let db = null, userNs = null, dl = null, myId = null, canWrite = true, connected = false;
+let db = null, userNs = null, dl = null, myId = null, canWrite = true, connected = false, isOwner = false;
 // Keyed by product key, which can be any barcode's: no prototype, so a key like
 // "constructor" finds nothing until there's a product with that key
 let products = Object.create(null), sheets = [], people = {};
@@ -89,6 +90,7 @@ function drawList() {
       </div>
       <div class="chips">
         ${canWrite && receiptOK ? `<label class="btn" for="receiptFile">Scan receipt</label>` : ""}
+        ${dl && isOwner && connected ? `<button type="button" class="btn" id="exportAll">Export data</button>` : ""}
         ${canWrite ? `<button type="button" class="btn primary" id="newSheet">+ New sheet</button>` : ""}
       </div>
     </div>
@@ -105,6 +107,7 @@ function drawList() {
         </button>`; }).join("") : `<div class="empty">${connected ? (ui.filter === "open" ? "Nothing is checked out right now." : "No sheets here yet.") : "Loading sheets…"}</div>`}
     </div>`;
   const ns = $("#newSheet"); ns && ns.addEventListener("click", () => newSheetModal());
+  const ea = $("#exportAll"); ea && ea.addEventListener("click", exportAllModal);
   const rs = $("#resume"); rs && rs.addEventListener("click", () => { ui.receipt = true; draw(); renderReceipt(); window.scrollTo(0, 0); });
   $("#main").querySelectorAll("[data-filter]").forEach(b => b.addEventListener("click", () => { ui.filter = b.dataset.filter; draw(); }));
   $("#main").querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => { ui.sheetId = b.dataset.open; draw(); window.scrollTo(0,0); }));
@@ -423,18 +426,36 @@ function handleCode(code) {
 }
 
 /* ---------- export ---------- */
-async function exportCsv(s) {
-  const q = v => { const t = String(v ?? ""); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
-  const t = totals(s);
-  const rows = [
-    ["Client", s.client], ["Date", s.date], ["Prepared by", personText(s)], ["Status", s.status === "closed" ? "Returned" : "Checked out"], [],
-    ["Item", "Barcode", "Price each", "Taken", "Returned", "Used", "Charge"],
-    ...lines(s).map(l => { const o = int(l.out), r = Math.min(int(l.returned), o); return [l.name, l.code || "", (Number(l.price)||0).toFixed(2), o, r, o - r, ((o - r) * (Number(l.price)||0)).toFixed(2)]; }),
-    ["Total", "", "", t.out, t.ret, t.used, t.charge.toFixed(2)]
-  ];
-  const data = rows.map(r => r.map(q).join(",")).join("\n");
-  try { await dl.save({ filename: `${[(s.client || "sheet").replace(/[\\/:*?"<>|]/g, ""), s.date].filter(Boolean).join(" ").trim()}.csv`, data }); }
-  catch (e) { if (e && e.code !== "declined") toast("Couldn't prepare the download here."); }
+async function save(filename, data) {
+  try { await dl.save({ filename, data }); return true; }
+  catch (e) { if (e && e.code !== "declined") toast("Couldn't prepare the download here."); return false; }
+}
+function exportCsv(s) {
+  return save(`${[(s.client || "sheet").replace(/[\\/:*?"<>|]/g, ""), s.date].filter(Boolean).join(" ").trim()}.csv`, sheetCsv(s, personText(s)));
+}
+
+// Owners download every sheet and the inventory, whatever their write access (a team
+// that's read-only after cancelling can still take its data)
+function exportAllModal() {
+  const n = sheets.length, k = Object.keys(products).length;
+  openModal(`
+    <h2>Export all data</h2>
+    <p class="hint" style="margin-top:-6px">${n} sheet${n === 1 ? "" : "s"} and ${k} inventory item${k === 1 ? "" : "s"}, as the app shows them. CSV files open in a spreadsheet; the JSON file has everything, for a backup or another tool.</p>
+    <div style="display:grid;gap:10px">
+      <button type="button" class="btn" data-export="sheets">Sheets (CSV)</button>
+      <button type="button" class="btn" data-export="inventory">Inventory (CSV)</button>
+      <button type="button" class="btn" data-export="json">Everything (JSON)</button>
+    </div>
+    <div class="modal-actions"><button type="button" class="btn" id="cancel">Close</button></div>`, m => {
+    m.querySelector("#cancel").addEventListener("click", closeModal);
+    const day = todayISO();
+    const files = {
+      sheets: () => [`Supply Checkout sheets ${day}.csv`, sheetsCsv(sheets, personText)],
+      inventory: () => [`Supply Checkout inventory ${day}.csv`, inventoryCsv(products)],
+      json: () => [`Supply Checkout export ${day}.json`, allJson(products, sheets, personText)],
+    };
+    m.querySelectorAll("[data-export]").forEach(b => b.addEventListener("click", () => save(...files[b.dataset.export]())));
+  });
 }
 
 /* ---------- wiring ---------- */
@@ -754,6 +775,7 @@ draw();
   if (userNs) {
     try { myId = await userNs.id(); } catch {}
     try { const w = await userNs.can("data.write"); if (w === false) canWrite = false; } catch {}
+    try { isOwner = (await userNs.isOwner()) === true; } catch {}
   }
   if (!db) { $("#notice").hidden = false; $("#notice").textContent = "Shared storage isn't available in this view. " + help().missing; return; }
   const onErr = () => toast("Lost connection to shared storage. Reload the page.");
