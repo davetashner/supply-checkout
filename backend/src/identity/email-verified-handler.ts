@@ -18,10 +18,19 @@
 //   attribute then holds whatever was last written, possibly by the user.
 // - The user is a federated-only user: its username is
 //   `<providerName>_<provider user ID>` for a Google or SignInWithApple entry
-//   in `identities`, which Cognito maintains and no client can write. Such a
-//   user has no password, email code or passkey, so a Managed Login sign-in
-//   is always a sign-in with that provider, and Cognito applies the
-//   attribute mapping (email and the claim) before this trigger runs.
+//   in `identities`, which Cognito maintains and no client can write, and
+//   Cognito marks it EXTERNAL_PROVIDER (`cognito:user_status`).
+// - Such a user can't sign in natively: the pre authentication trigger
+//   (sign-in-guard-handler.ts) refuses every password, email-code and passkey
+//   sign-in by one. So a Managed Login token for them always comes from a
+//   provider sign-in, and Cognito applies the attribute mapping (email and
+//   the claim) before this trigger runs. Managed Login's own sign-ins are
+//   also TokenGeneration_HostedAuth, which is why the guard is needed.
+//
+// Accepted risk: if a provider sign-in left the claim out, Cognito would keep
+// the attribute's last value, which the user may have written. Google and
+// Apple always send email_verified with the email scope, so this doesn't
+// happen with them; a missing attribute (never mapped) counts as unverified.
 //
 // A native user linked to a provider (supply-checkout-0b1) doesn't meet the
 // second condition and is left alone: its email was verified with Cognito's
@@ -32,9 +41,11 @@
 // What it does: email_verified becomes "true" when the provider says the email
 // is verified (Google sends a boolean, Apple a boolean or the string
 // "true"/"false"; mapped into a string attribute, both arrive as text), and
-// "false" when the provider says it isn't or leaves the claim out. Nothing is
-// written when it already matches. A failed update is logged and the sign-in
-// goes ahead unverified (the safe state); the next sign-in tries again.
+// "false" when the provider says it isn't. Nothing is written when it
+// already matches. A failed update is logged and the sign-in goes ahead; the
+// next sign-in tries again. A failed promotion leaves the user unverified
+// (safe); a failed downgrade leaves them verified until the next sign-in, and
+// is logged as its own outcome, "downgrade-failed", at error level.
 //
 // Logs carry the provider and the outcome, never the email or the username
 // (which contains the provider's user ID).
@@ -85,14 +96,24 @@ export function federatedProvider(userName: unknown, identities: unknown): Feder
   return undefined;
 }
 
-export type Outcome = "not-provider-sign-in" | "not-federated" | "no-email" | "unchanged" | "verified" | "unverified" | "failed";
+export type Outcome =
+  | "not-provider-sign-in"
+  | "not-federated"
+  | "no-email"
+  | "unchanged"
+  | "verified"
+  | "unverified"
+  /** Couldn't mark verified: the user stays unverified. */
+  | "failed"
+  /** Couldn't mark unverified: the user stays verified until a later sign-in succeeds. */
+  | "downgrade-failed";
 
 export function createEmailVerifiedHandler(deps: EmailVerifiedDeps) {
   const handle = async (event: PreTokenGenerationTriggerEvent): Promise<{ outcome: Outcome; provider?: FederatedProvider }> => {
     if (event.triggerSource !== "TokenGeneration_HostedAuth") return { outcome: "not-provider-sign-in" };
     const attributes = event.request?.userAttributes ?? {};
     const provider = federatedProvider(event.userName, attributes.identities);
-    if (!provider) return { outcome: "not-federated" };
+    if (!provider || attributes["cognito:user_status"] !== "EXTERNAL_PROVIDER") return { outcome: "not-federated" };
     if (!attributes.email) return { outcome: "no-email", provider };
 
     const verified = providerSaysVerified(attributes[PROVIDER_EMAIL_VERIFIED_ATTRIBUTE]);
@@ -100,8 +121,13 @@ export function createEmailVerifiedHandler(deps: EmailVerifiedDeps) {
     try {
       await deps.updateUserAttributes(event.userPoolId, event.userName, { email_verified: verified ? "true" : "false" });
     } catch (error) {
-      deps.obs.logger.error("Couldn't update email_verified", { provider, error: (error as Error).message });
-      return { outcome: "failed", provider };
+      const outcome = verified ? "failed" : "downgrade-failed";
+      deps.obs.logger.error(verified ? "Couldn't mark email verified" : "Couldn't mark email unverified; it stays verified", {
+        provider,
+        outcome,
+        error: (error as Error).message,
+      });
+      return { outcome, provider };
     }
     return { outcome: verified ? "verified" : "unverified", provider };
   };

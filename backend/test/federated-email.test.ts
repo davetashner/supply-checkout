@@ -48,14 +48,16 @@ function triggerEvent(options: {
   email?: string | null;
   identities?: string;
   triggerSource?: string;
+  /** `cognito:user_status`; null leaves it out. */
+  status?: string | null;
 }): PreTokenGenerationTriggerEvent {
   const provider = options.provider ?? "Google";
   const id = provider === "Google" ? GOOGLE_ID : APPLE_ID;
   const userAttributes: Record<string, string> = {
     sub: "8f0e5b1c-0000-4000-8000-000000000001",
     identities: options.identities ?? identities(provider, id),
-    "cognito:user_status": "EXTERNAL_PROVIDER",
   };
+  if (options.status !== null) userAttributes["cognito:user_status"] = options.status ?? "EXTERNAL_PROVIDER";
   if (options.email !== null) userAttributes.email = options.email ?? "pat@example.com";
   // Cognito passes attribute values as strings; a test may pass a raw boolean to check the parser
   if (options.claim !== undefined) userAttributes[PROVIDER_EMAIL_VERIFIED_ATTRIBUTE] = options.claim as string;
@@ -203,6 +205,40 @@ describe("pre token generation trigger", () => {
     expect(calls).toEqual([]);
   });
 
+  it("logs a failed downgrade as its own outcome: the user stays verified until a later sign-in", async () => {
+    const { handler, logs } = trigger(async () => {
+      throw new Error("AdminUpdateUserAttributes failed: 500 InternalErrorException");
+    });
+    await handler(triggerEvent({ provider: "SignInWithApple", claim: "false", emailVerified: "true" }));
+    expect(logs.map((l) => [l.level, l.message, l.data.outcome])).toEqual([
+      ["error", "Couldn't mark email unverified; it stays verified", "downgrade-failed"],
+      ["info", "Federated email", "downgrade-failed"],
+    ]);
+  });
+
+  it("acts only for users Cognito marks EXTERNAL_PROVIDER", async () => {
+    // A native user named like a provider identity (usernames are email addresses here, but defense in depth)
+    for (const status of ["CONFIRMED", "UNCONFIRMED", "FORCE_CHANGE_PASSWORD", "", null]) {
+      const { handler, calls, logs } = trigger();
+      await handler(triggerEvent({ claim: "true", status }));
+      expect(calls, String(status)).toEqual([]);
+      expect(logs[0]?.data.outcome).toBe("not-federated");
+    }
+  });
+
+  it("uses the attribute's last value when a provider sign-in leaves the claim out (accepted risk: Google and Apple always send it)", async () => {
+    // Cognito keeps an attribute the provider didn't send, so the event carries whatever was last written.
+    // Here that's a stale "true": the trigger can't tell it from the provider's, and promotes.
+    const { handler, calls } = trigger();
+    const stale = triggerEvent({ claim: "true", emailVerified: "false" });
+    await handler(stale);
+    expect(calls).toEqual([{ pool: POOL, user: stale.userName, attributes: { email_verified: "true" } }]);
+    // A claim that was never mapped at all counts as unverified
+    const { handler: again, calls: none } = trigger();
+    await again(triggerEvent({ emailVerified: "false" }));
+    expect(none).toEqual([]);
+  });
+
   it("does nothing without an email", async () => {
     const { handler, calls, logs } = trigger();
     await handler(triggerEvent({ claim: "true", email: null }));
@@ -216,9 +252,13 @@ describe("pre token generation trigger", () => {
     });
     const event = triggerEvent({ claim: "true" });
     expect(await handler(event)).toBe(event);
-    expect(logs.map((l) => [l.level, l.data.outcome ?? l.data.error])).toEqual([
-      ["error", "AdminUpdateUserAttributes failed: 400 TooManyRequestsException"],
-      ["info", "failed"],
+    expect(logs).toEqual([
+      {
+        level: "error",
+        message: "Couldn't mark email verified",
+        data: { provider: "Google", outcome: "failed", error: "AdminUpdateUserAttributes failed: 400 TooManyRequestsException" },
+      },
+      { level: "info", message: "Federated email", data: { triggerSource: "TokenGeneration_HostedAuth", outcome: "failed", provider: "Google" } },
     ]);
     const text = JSON.stringify(logs);
     expect(text).not.toContain("pat@example.com");

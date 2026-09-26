@@ -75,7 +75,9 @@ const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
  * generation trigger (backend/src/identity/email-verified-handler.ts) sets
  * email_verified from the provider's own claim, which the providers map to
  * `custom:idp_email_verified` (they can't map email_verified itself: it would
- * have to be client-writable). Later: a pre sign-up trigger to link an Apple
+ * have to be client-writable). A pre authentication trigger keeps Google and
+ * Apple users to their provider, so that claim is fresh whenever it's read
+ * (see addFederatedTriggers). Later: a pre sign-up trigger to link an Apple
  * or Google sign-in to an existing account with the same email
  * (AdminLinkProviderForUser, supply-checkout-0b1).
  *
@@ -88,8 +90,8 @@ export class IdentityStack extends SupplyCheckoutStack {
   readonly webClient: UserPoolClient;
   readonly domain: UserPoolDomain;
   readonly options: IdentityOptions;
-  /** The pre token generation trigger, when Google or Apple sign-in is on. */
-  readonly emailVerifiedTrigger?: NodejsFunction;
+  /** The pre authentication and pre token generation triggers, when Google or Apple sign-in is on. */
+  readonly federatedTriggers?: { readonly signInGuard: NodejsFunction; readonly emailVerified: NodejsFunction };
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "identity", layer: "stateful" });
@@ -178,7 +180,7 @@ export class IdentityStack extends SupplyCheckoutStack {
     new AaaaRecord(this, "AuthAliasIpv6", { zone, recordName: names.auth, target });
 
     const providers = this.addSocialProviders(secrets);
-    if (providers.length) this.emailVerifiedTrigger = this.addEmailVerifiedTrigger();
+    if (providers.length) this.federatedTriggers = this.addFederatedTriggers();
 
     const writable = new ClientAttributes().withStandardAttributes({ email: true, givenName: true, familyName: true });
     const appUrl = `https://${names.app}/`;
@@ -281,41 +283,30 @@ export class IdentityStack extends SupplyCheckoutStack {
   }
 
   /**
-   * The pre token generation trigger that sets email_verified from Google's
-   * or Apple's claim (backend/src/identity/email-verified-handler.ts). Its
-   * role may write only its own log group and call AdminUpdateUserAttributes
-   * on this pool.
+   * The triggers for Google and Apple users (backend/src/identity):
    *
-   * The pool names the function (LambdaConfig), so the function can't name
+   * - Pre authentication (sign-in-guard-handler.ts) refuses every native
+   *   sign-in (password, email code, passkey) by a federated-only user, so
+   *   they sign in only through their provider. It needs no AWS permissions.
+   * - Pre token generation (email-verified-handler.ts) sets email_verified
+   *   from the provider's claim at each provider sign-in. It relies on the
+   *   guard: the attribute it reads is user-writable, and is fresh from the
+   *   provider only at a provider sign-in. Its role may also call
+   *   AdminUpdateUserAttributes on this pool.
+   *
+   * The pool names each function (LambdaConfig), so a function can't name
    * the pool: the grant is a separate policy attached to the role after the
    * pool exists, and the function doesn't wait for it. The trigger's first
    * call comes with a sign-in, after the deploy.
    */
-  private addEmailVerifiedTrigger(): NodejsFunction {
-    const logGroup = new LogGroup(this, "EmailVerifiedLogs", { retention: LOG_RETENTION });
-    const role = new Role(this, "EmailVerifiedRole", {
-      assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
-      description: "Execution role for the user pool's email_verified trigger",
-    });
-    role.addToPolicy(new PolicyStatement({ actions: ["logs:CreateLogStream", "logs:PutLogEvents"], resources: [logGroup.logGroupArn] }));
-    const fn = new NodejsFunction(this, "EmailVerified", {
-      role,
-      logGroup,
-      entry: `${BACKEND}src/identity/email-verified.ts`,
-      projectRoot: BACKEND,
-      depsLockFilePath: `${BACKEND}package-lock.json`,
-      runtime: Runtime.NODEJS_24_X,
-      architecture: Architecture.ARM_64,
-      memorySize: 256,
-      // Cognito waits 5 seconds for a trigger
-      timeout: Duration.seconds(5),
-      description: "Sets email_verified for Google and Apple users from the provider's own claim",
-      environment: { NODE_OPTIONS: "--enable-source-maps" },
-      bundling,
-    });
-    this.userPool.addTrigger(UserPoolOperation.PRE_TOKEN_GENERATION, fn);
+  private addFederatedTriggers(): { signInGuard: NodejsFunction; emailVerified: NodejsFunction } {
+    const signInGuard = this.trigger("SignInGuard", "sign-in-guard", "Refuses password, email-code and passkey sign-ins by Google and Apple users");
+    this.userPool.addTrigger(UserPoolOperation.PRE_AUTHENTICATION, signInGuard);
+
+    const emailVerified = this.trigger("EmailVerified", "email-verified", "Sets email_verified for Google and Apple users from the provider's own claim");
+    this.userPool.addTrigger(UserPoolOperation.PRE_TOKEN_GENERATION, emailVerified);
     new Policy(this, "EmailVerifiedUpdateUser", {
-      roles: [role],
+      roles: [emailVerified.role as Role],
       statements: [
         new PolicyStatement({
           sid: "SetEmailVerified",
@@ -324,6 +315,31 @@ export class IdentityStack extends SupplyCheckoutStack {
         }),
       ],
     });
-    return fn;
+    return { signInGuard, emailVerified };
+  }
+
+  /** A function from backend/src/identity/<name>.ts, with its own log group and a role that can write only to it. */
+  private trigger(id: string, name: string, description: string): NodejsFunction {
+    const logGroup = new LogGroup(this, `${id}Logs`, { retention: LOG_RETENTION });
+    const role = new Role(this, `${id}Role`, {
+      assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
+      description: `Execution role for the user pool's ${name} trigger`,
+    });
+    role.addToPolicy(new PolicyStatement({ actions: ["logs:CreateLogStream", "logs:PutLogEvents"], resources: [logGroup.logGroupArn] }));
+    return new NodejsFunction(this, id, {
+      role,
+      logGroup,
+      entry: `${BACKEND}src/identity/${name}.ts`,
+      projectRoot: BACKEND,
+      depsLockFilePath: `${BACKEND}package-lock.json`,
+      runtime: Runtime.NODEJS_24_X,
+      architecture: Architecture.ARM_64,
+      memorySize: 256,
+      // Cognito waits 5 seconds for a trigger
+      timeout: Duration.seconds(5),
+      description,
+      environment: { NODE_OPTIONS: "--enable-source-maps" },
+      bundling,
+    });
   }
 }

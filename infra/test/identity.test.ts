@@ -268,67 +268,88 @@ describe("Apple and Google sign-in", () => {
   });
 });
 
-describe("email_verified trigger (supply-checkout-6v9)", () => {
+describe("Google and Apple triggers (supply-checkout-6v9)", () => {
   const withProviders = () => build({ envName: "staging" }, { appleSignIn: true, googleSignIn: true });
+  /** The logical ID of the function whose Code comes from backend/src/identity/<name>.ts. */
+  const fnId = (template: Template, id: string) => {
+    const found = Object.keys(template.findResources("AWS::Lambda::Function")).filter((k) => k.startsWith(id));
+    expect(found, id).toHaveLength(1);
+    return found[0] as string;
+  };
+  const statementsOf = (template: Template, roleId: string) =>
+    Object.values(template.findResources("AWS::IAM::Policy"))
+      .filter((p) => JSON.stringify(p.Properties.Roles) === JSON.stringify([{ Ref: roleId }]))
+      .flatMap((p) => p.Properties.PolicyDocument.Statement as Record<string, unknown>[]);
+  const sameStatements = (actual: unknown[], expected: unknown[]) => {
+    expect(actual).toHaveLength(expected.length);
+    expect(actual).toEqual(expect.arrayContaining(expected));
+  };
+  const roleOf = (template: Template, id: string) =>
+    (template.toJSON().Resources[fnId(template, id)].Properties.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0];
 
-  it("isn't there with both providers off", () => {
+  it("aren't there with both providers off", () => {
     const { stacks, template } = build();
-    expect(stacks.identity.emailVerifiedTrigger).toBeUndefined();
+    expect(stacks.identity.federatedTriggers).toBeUndefined();
     template.resourceCountIs("AWS::Lambda::Function", 0);
     expect(only(template, "AWS::Cognito::UserPool").Properties.LambdaConfig).toBeUndefined();
   });
 
-  it("runs before every token with either provider on, from backend/src/identity", () => {
+  it("guard native sign-ins and set email_verified before every token, with either provider on", () => {
     for (const context of [{ googleSignIn: true }, { appleSignIn: true }]) {
       const { stacks, template } = build({}, context);
-      expect(stacks.identity.emailVerifiedTrigger).toBeDefined();
-      const fnId = Object.keys(template.findResources("AWS::Lambda::Function"))[0] as string;
-      template.hasResourceProperties("AWS::Cognito::UserPool", { LambdaConfig: { PreTokenGeneration: { "Fn::GetAtt": [fnId, "Arn"] } } });
-      template.hasResourceProperties("AWS::Lambda::Function", { Runtime: "nodejs24.x", Architectures: ["arm64"], Timeout: 5 });
+      expect(stacks.identity.federatedTriggers).toBeDefined();
+      template.resourceCountIs("AWS::Lambda::Function", 2);
+      template.hasResourceProperties("AWS::Cognito::UserPool", {
+        LambdaConfig: {
+          PreAuthentication: { "Fn::GetAtt": [fnId(template, "SignInGuard"), "Arn"] },
+          PreTokenGeneration: { "Fn::GetAtt": [fnId(template, "EmailVerified"), "Arn"] },
+        },
+      });
+      for (const fn of Object.values(template.findResources("AWS::Lambda::Function"))) {
+        expect(fn.Properties).toMatchObject({ Runtime: "nodejs24.x", Architectures: ["arm64"], Timeout: 5 });
+      }
     }
     const source = readFileSync(new URL("../lib/stacks/identity-stack.ts", import.meta.url), "utf8");
-    expect(source).toContain("src/identity/email-verified.ts");
+    expect(source).toContain("src/identity/${name}.ts");
+    expect(source).toMatch(/trigger\("SignInGuard", "sign-in-guard"/);
+    expect(source).toMatch(/trigger\("EmailVerified", "email-verified"/);
   });
 
-  it("may be invoked only by this pool", () => {
+  it("may each be invoked only by this pool", () => {
     const { template } = withProviders();
     const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0];
-    const fnId = Object.keys(template.findResources("AWS::Lambda::Function"))[0];
-    const permission = only(template, "AWS::Lambda::Permission");
-    expect(permission.Properties).toEqual({
-      Action: "lambda:InvokeFunction",
-      FunctionName: { "Fn::GetAtt": [fnId, "Arn"] },
-      Principal: "cognito-idp.amazonaws.com",
-      SourceArn: { "Fn::GetAtt": [poolId, "Arn"] },
-    });
+    const permissions = Object.values(template.findResources("AWS::Lambda::Permission")).map((p) => p.Properties);
+    expect(permissions).toHaveLength(2);
+    for (const id of ["SignInGuard", "EmailVerified"]) {
+      expect(permissions).toContainEqual({
+        Action: "lambda:InvokeFunction",
+        FunctionName: { "Fn::GetAtt": [fnId(template, id), "Arn"] },
+        Principal: "cognito-idp.amazonaws.com",
+        SourceArn: { "Fn::GetAtt": [poolId, "Arn"] },
+      });
+    }
   });
 
-  it("can update users only in this pool, and write only its own log group", () => {
+  it("give the guard no AWS permissions, and the email_verified trigger only AdminUpdateUserAttributes on this pool", () => {
     const { template } = withProviders();
     const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0];
-    const logsId = Object.keys(template.findResources("AWS::Logs::LogGroup"))[0];
-    const policies = Object.values(template.findResources("AWS::IAM::Policy"));
-    const statements = policies.flatMap((p) => p.Properties.PolicyDocument.Statement as Record<string, unknown>[]);
-    const cognito = statements.filter((s) => JSON.stringify(s.Action).includes("cognito-idp"));
-    expect(cognito).toEqual([
-      { Sid: "SetEmailVerified", Effect: "Allow", Action: "cognito-idp:AdminUpdateUserAttributes", Resource: { "Fn::GetAtt": [poolId, "Arn"] } },
-    ]);
-    expect(statements).toContainEqual({ Effect: "Allow", Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: { "Fn::GetAtt": [logsId, "Arn"] } });
-    // Nothing else but the X-Ray writes every function gets
-    const other = statements.filter((s) => !cognito.includes(s) && !JSON.stringify(s.Action).includes("logs:"));
-    expect(other).toEqual([{ Effect: "Allow", Action: ["xray:PutTraceSegments", "xray:PutTelemetryRecords"], Resource: "*" }]);
-    const role = only(template, "AWS::IAM::Role");
-    expect(role.Properties.ManagedPolicyArns).toBeUndefined();
+    const xray = { Effect: "Allow", Action: ["xray:PutTraceSegments", "xray:PutTelemetryRecords"], Resource: "*" };
+    const logs = (id: string) => ({ Effect: "Allow", Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: { "Fn::GetAtt": [Object.keys(template.findResources("AWS::Logs::LogGroup")).find((k) => k.startsWith(`${id}Logs`)), "Arn"] } });
+    sameStatements(statementsOf(template, roleOf(template, "SignInGuard")), [logs("SignInGuard"), xray]);
+    const setVerified = { Sid: "SetEmailVerified", Effect: "Allow", Action: "cognito-idp:AdminUpdateUserAttributes", Resource: { "Fn::GetAtt": [poolId, "Arn"] } };
+    sameStatements(statementsOf(template, roleOf(template, "EmailVerified")), [logs("EmailVerified"), xray, setVerified]);
+    for (const role of Object.values(template.findResources("AWS::IAM::Role"))) expect(role.Properties.ManagedPolicyArns).toBeUndefined();
   });
 
-  it("gets its grant after the pool exists, so the pool can name the function (no dependency cycle)", () => {
+  it("get their grant after the pool exists, so the pool can name the functions (no dependency cycle)", () => {
     const { template } = withProviders();
     const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0] as string;
-    const [fnId, fn] = Object.entries(template.findResources("AWS::Lambda::Function"))[0] as [string, { DependsOn?: string[] }];
     const grantId = Object.keys(template.findResources("AWS::IAM::Policy", { Properties: { PolicyName: Match.stringLikeRegexp("EmailVerifiedUpdateUser") } }))[0];
     expect(grantId).toBeDefined();
-    expect(fn.DependsOn ?? []).not.toContain(grantId);
-    expect(JSON.stringify(template.toJSON().Resources[fnId].Properties)).not.toContain(poolId);
+    for (const [id, fn] of Object.entries(template.findResources("AWS::Lambda::Function")) as [string, { DependsOn?: string[]; Properties: unknown }][]) {
+      expect(fn.DependsOn ?? [], id).not.toContain(grantId);
+      expect(JSON.stringify(fn.Properties), id).not.toContain(poolId);
+    }
   });
 });
 
