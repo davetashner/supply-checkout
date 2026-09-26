@@ -40,3 +40,13 @@ export function tableName(envName: string): string {
  * can't read documents, emails or anything else in a team's partition.
  */
 export const LIVE_AUDIENCE_ATTRIBUTES = [PK, SK, "userId", "role", "status"] as const;
+
+/**
+ * The only attributes a request may name in another member's `USER#`
+ * partition: the keys and `role`. When an owner changes a member's role or
+ * removes them, the member's team-switcher row is updated (`role`, on the
+ * condition that the row exists) or deleted. The account-access role allows
+ * exactly these there (dynamodb:Attributes), so that session can't write any
+ * other attribute, or read one back.
+ */
+export const MEMBER_ROW_ATTRIBUTES = [PK, SK, "role"] as const;

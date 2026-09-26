@@ -31,27 +31,35 @@ async function credentials(db: Db) {
 }
 
 describe("accountScopedDbs", () => {
-  it("tags every session with the user, and the team and invitee or the unused marker", async () => {
+  it("tags every session with the user, and the team, invitee and member or the unused marker", async () => {
     const { sts, calls } = fakeSts();
     const dbFor = accountScopedDbs({ roleArn: ROLE, env, sts });
     const invitee = hashEmail("pat@example.com");
     await credentials(dbFor({ userId: "user-1" }));
     await credentials(dbFor({ userId: "user-1", teamId: "team-a" }));
     await credentials(dbFor({ userId: "user-1", invitee }));
+    await credentials(dbFor({ userId: "user-1", teamId: "team-a", member: "user-2" }));
+    const tags = (teamId: string, inv: string, member: string) => [
+      { Key: "userId", Value: "user-1" },
+      { Key: "teamId", Value: teamId },
+      { Key: "invitee", Value: inv },
+      { Key: "member", Value: member },
+    ];
     expect(calls.map((c) => [c.RoleArn, c.RoleSessionName, c.Tags])).toEqual([
-      [ROLE, "user-user-1", [{ Key: "userId", Value: "user-1" }, { Key: "teamId", Value: "." }, { Key: "invitee", Value: "." }]],
-      [ROLE, "user-user-1", [{ Key: "userId", Value: "user-1" }, { Key: "teamId", Value: "team-a" }, { Key: "invitee", Value: "." }]],
-      [ROLE, "user-user-1", [{ Key: "userId", Value: "user-1" }, { Key: "teamId", Value: "." }, { Key: "invitee", Value: invitee }]],
+      [ROLE, "user-user-1", tags(".", ".", ".")],
+      [ROLE, "user-user-1", tags("team-a", ".", ".")],
+      [ROLE, "user-user-1", tags(".", invitee, ".")],
+      [ROLE, "user-user-1", tags("team-a", ".", "user-2")],
     ]);
     // The same scope reuses its handle and session
     expect(dbFor({ userId: "user-1", teamId: "team-a" })).toBe(dbFor({ userId: "user-1", teamId: "team-a" }));
     await credentials(dbFor({ userId: "user-1", teamId: "team-a" }));
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
   });
 
   it("refuses anything that could reach into another key", () => {
     const dbFor = accountScopedDbs({ roleArn: ROLE, env, sts: fakeSts().sts });
-    for (const scope of [{ userId: "USER#x" }, { userId: "" }, { userId: "u", teamId: "a#b" }, { userId: "u", invitee: "pat@example.com" }, { userId: "u", invitee: "A".repeat(64) }]) {
+    for (const scope of [{ userId: "USER#x" }, { userId: "" }, { userId: "u", teamId: "a#b" }, { userId: "u", invitee: "pat@example.com" }, { userId: "u", invitee: "A".repeat(64) }, { userId: "u", teamId: "t", member: "USER#x" }, { userId: "u", member: "user-2" }]) {
       expect(() => dbFor(scope), JSON.stringify(scope)).toThrow(InvalidInputError);
     }
   });

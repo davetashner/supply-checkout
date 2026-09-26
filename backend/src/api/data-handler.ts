@@ -8,8 +8,10 @@
 // 3. The team comes only from the path. authorizeTeam reads the caller's
 //    MEMBER item for it and issues the TeamContext every data function needs;
 //    no membership, no context. The body can't name a team.
-// 4. Writes need the contributor role or above. Viewers get 403
-//    `invalid_argument`, the code the app reads as "view-only access".
+// 4. Each route names the least role that may call it (routes.ts, minRole),
+//    checked before anything runs: viewers read, contributors also write,
+//    and only owners import. A caller below it gets 403 `permission_denied`
+//    with the reason `view_only` or `owners_only` (roles.ts).
 // 5. Every DynamoDB call runs on a role session tagged with the path's team,
 //    whose IAM policy allows only that team's partition (team-db.ts).
 //
@@ -48,7 +50,8 @@ import {
   type WriteResult,
 } from "../data/index.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
-import { ApiError, errorFor as apiErrorFor, errorResponse, json, jsonBody, noContent, viewOnly } from "./http.js";
+import { ApiError, errorFor as apiErrorFor, errorResponse, json, jsonBody, noContent, notMember, viewOnly } from "./http.js";
+import { requireRole } from "./roles.js";
 import { DATA_ROUTES, type DataRoute, routeKey } from "./routes.js";
 import type { DbForTeam } from "./team-db.js";
 
@@ -61,9 +64,6 @@ export interface DataHandlerDeps {
 }
 
 const ROUTES = new Map(DATA_ROUTES.map((r) => [routeKey(r), r]));
-const WRITES = new Set(["set", "update", "delete", "checkout", "return", "adjustStock", "importProducts"]);
-/** Roles that may write through the API. Anything else (viewer, or a role we don't know) is read-only. */
-const WRITERS = new Set(["contributor", "owner"]);
 const SUB = /^[A-Za-z0-9_-]{1,128}$/;
 
 /**
@@ -76,8 +76,9 @@ export function errorFor(error: unknown): ApiError {
   if (error instanceof ConflictError) return new ApiError(409, "aborted", error.message);
   if (error instanceof TooLargeError) return new ApiError(413, "quota_exceeded", error.message);
   if (error instanceof LimitReachedError) return new ApiError(429, "quota_exceeded", error.message);
-  // The role check (a viewer writing). The membership check maps its own
-  // ForbiddenError to permission_denied before an operation runs.
+  // The data layer's own role check, behind the route's (roles.ts), which
+  // runs first. The membership check maps its own ForbiddenError before an
+  // operation runs.
   if (error instanceof ForbiddenError) return viewOnly();
   return apiErrorFor(error);
 }
@@ -212,8 +213,6 @@ const IMPORT_FIELDS = ["importId", "csv", "dryRun"];
  * problem, and nothing is written.
  */
 async function runImport(deps: DataHandlerDeps, event: DataEvent, ctx: TeamContext): Promise<APIGatewayProxyStructuredResultV2> {
-  // The data layer checks the role too; this says why in words the app can show
-  if (ctx.role !== "owner") throw new ApiError(403, "permission_denied", "Only the team's owners can import inventory");
   const body = jsonBody(event, IMPORT_FIELDS);
   const outcome = await importProducts(deps.dbForTeam(ctx.teamId), ctx, body as { csv: unknown }, new Date((deps.now ?? Date.now)()));
   if (outcome.status === "invalid" && body.dryRun !== true) {
@@ -304,10 +303,10 @@ export function createDataHandler(deps: DataHandlerDeps) {
       } catch (error) {
         // Not a member, or no such team: the same answer for both, so the
         // response doesn't reveal which teams exist
-        if (error instanceof ForbiddenError) throw new ApiError(403, "permission_denied", "You're not a member of this team");
+        if (error instanceof ForbiddenError) throw notMember();
         throw error;
       }
-      if (WRITES.has(route.operation) && !WRITERS.has(ctx.role)) throw viewOnly();
+      requireRole(ctx.role, route.minRole);
       const response = await run(deps, route, event, ctx);
       status = response.statusCode ?? 200;
       return response;

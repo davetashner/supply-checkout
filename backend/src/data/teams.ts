@@ -3,7 +3,7 @@
 
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
-import { ConflictError, conflictOnConditionFailure } from "./errors.js";
+import { ConflictError, LastOwnerError, conflictOnConditionFailure } from "./errors.js";
 import { id, keys, prefixes, strip, teamPartition } from "./keys.js";
 import { type Member, type MemberRole, type Team, type UserTeam, memberRole, ownersUpdate, teamName } from "./model.js";
 import { queryAll, versionedSet } from "./query.js";
@@ -11,7 +11,8 @@ import { type TeamContext, readable, writable } from "./team-context.js";
 
 export type { Invite, InviteFailure, Member, MemberRole, Team, UserTeam } from "./model.js";
 
-const LAST_OWNER = "Someone else changed this team, or it would be left without an owner";
+const CHANGED = "Someone else changed this team's members just now; reload and try again";
+const LAST_OWNER = "A team needs at least one owner. Make someone else an owner first.";
 
 export async function getTeam(db: Db, ctx: TeamContext): Promise<Team> {
   readable(ctx);
@@ -71,6 +72,24 @@ function callerStillOwner(db: Db, ctx: TeamContext, target: string) {
   ];
 }
 
+/**
+ * Maps a member change's failed transaction: the owner count's condition
+ * (item `ownersAt`, when there is one) failing means the team would lose its
+ * last owner, and anything else that failed a condition means someone changed
+ * the team meanwhile. The count's condition is the enforcement; this only
+ * picks the message.
+ */
+function memberChangeFailed(ownersAt: number | undefined): (error: unknown) => never {
+  return (error: unknown) => {
+    const cancelled = error as { name?: string; CancellationReasons?: { Code?: string }[] } | null;
+    const reasons = cancelled?.name === "TransactionCanceledException" ? (cancelled.CancellationReasons ?? []) : [];
+    const others = reasons.filter((_, i) => i !== ownersAt);
+    // Only the owner count refused it: every other condition held
+    if (ownersAt !== undefined && reasons[ownersAt]?.Code === "ConditionalCheckFailed" && others.every((r) => r.Code === "None")) throw new LastOwnerError(LAST_OWNER);
+    return conflictOnConditionFailure(CHANGED)(error);
+  };
+}
+
 async function currentRole(db: Db, ctx: TeamContext, userId: string): Promise<MemberRole> {
   const { Item } = await connection(db).doc.send(
     new GetCommand({ TableName: db.tableName, Key: keys.member(ctx.teamId, id(userId, "user ID")), ConsistentRead: true }),
@@ -82,7 +101,8 @@ async function currentRole(db: Db, ctx: TeamContext, userId: string): Promise<Me
 /**
  * Owners change members' roles, their own included. The MEMBER item, the
  * user's switcher row and the team's owner count change in one transaction,
- * conditioned on the role read here, so a team never loses its last owner.
+ * conditioned on the role read here, so a team never loses its last owner
+ * (LastOwnerError).
  */
 export async function setMemberRole(db: Db, ctx: TeamContext, userId: string, role: MemberRole): Promise<void> {
   writable(db, ctx, "owner");
@@ -103,20 +123,30 @@ export async function setMemberRole(db: Db, ctx: TeamContext, userId: string, ro
               ExpressionAttributeValues: { ":role": role, ":from": from },
             },
           },
-          { Update: { TableName: db.tableName, Key: keys.userTeam(userId, ctx.teamId), ...set, ExpressionAttributeValues: { ":role": role } } },
+          // The member's team-switcher row: only `role`, and only if the row exists, so this
+          // can't create a partial row. MEMBER_ROW_ATTRIBUTES lists what it may name.
+          {
+            Update: {
+              TableName: db.tableName,
+              Key: keys.userTeam(userId, ctx.teamId),
+              ...set,
+              ConditionExpression: "attribute_exists(PK)",
+              ExpressionAttributeValues: { ":role": role },
+            },
+          },
           ...(from === "owner" ? [ownersUpdate(db.tableName, ctx.teamId, -1)] : []),
           ...(role === "owner" ? [ownersUpdate(db.tableName, ctx.teamId, 1)] : []),
           ...callerStillOwner(db, ctx, userId),
         ],
       }),
     )
-    .catch(conflictOnConditionFailure(LAST_OWNER));
+    .catch(memberChangeFailed(from === "owner" ? 2 : undefined));
 }
 
 /**
  * Owners remove members; any member can remove themselves (leave). Removing an
  * owner decrements the owner count in the same transaction, conditioned on
- * another owner remaining.
+ * another owner remaining (LastOwnerError).
  */
 export async function removeMember(db: Db, ctx: TeamContext, userId: string): Promise<void> {
   writable(db, ctx, userId === ctx.userId ? "viewer" : "owner");
@@ -140,7 +170,7 @@ export async function removeMember(db: Db, ctx: TeamContext, userId: string): Pr
         ],
       }),
     )
-    .catch(conflictOnConditionFailure(LAST_OWNER));
+    .catch(memberChangeFailed(from === "owner" ? 2 : undefined));
 }
 
 /**
