@@ -31,6 +31,10 @@ async function write(fn, okMsg) {
     // Someone else saved this first (the web build's versioned writes, ADR 0006). Close the
     // editor so the latest values show, rather than an edit made on the old ones.
     else if (e && e.code === "aborted") { closeModal(); toast("Someone else changed this just now, so your change wasn't saved. The latest is showing; make your change again if it's still needed."); }
+    // Refused for what's saved now, such as returning more than are left (the web build's
+    // checkout and return commands, src/aws/db.js): the message says why. The latest is showing.
+    // `refused` is that adapter's own code, so no other write shows a raw message.
+    else if (e && e.code === "refused") { closeModal(); toast(e.message); }
     else toast("That didn't save. Check your connection and try again.");
     return false;
   }

@@ -169,8 +169,14 @@ test.describe("data", () => {
     }
     const backend = new FakeBackend({ docs });
     backend.pageSize = 100;
+    // The re-list after subscribing redraws the list, replacing the Export data button; in
+    // WebKit a redraw of 1,000 cards mid-tap can swallow the click. Holding each re-list's
+    // first page keeps the list still until the export is done.
+    const relist = (c) => backend.hold("GET", (path) => path === `/teams/t1/${c}` && lists(backend)[c] === 2);
+    const release = [relist("products"), relist("sheets")];
     const start = Date.now();
     await open(page, backend);
+    await expect(card(page, "Client 999")).toBeVisible();
     await page.getByRole("button", { name: "Export data" }).click();
     await expect(modal(page)).toContainText("1001 sheets and 2 inventory items");
     const download = page.waitForEvent("download");
@@ -181,6 +187,10 @@ test.describe("data", () => {
     const json = JSON.parse(await (await import("node:fs/promises")).readFile(await file.path(), "utf8"));
     expect(json.sheets).toHaveLength(1001);
     expect(json.sheets.find((s) => s.id === "b7").totals).toEqual({ taken: 60, returned: 20, used: 40, charge: 380 });
+    // The re-lists waited at their first page, then run page by page as before
+    expect(backend.requests("GET", "/teams/t1/sheets")).toHaveLength(12);
+    release.forEach((r) => r());
+    await expect.poll(() => backend.requests("GET", "/teams/t1/sheets").length).toBe(22);
   });
 
   test("a tap survives the redraw when a re-list's pages arrive", async ({ page }) => {
@@ -418,6 +428,68 @@ test.describe("checkout and return commands", () => {
     expect(backend.requests("GET", "/teams/t1/products/SKU1")).toHaveLength(1);
     expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(4);
   });
+
+  test("a return of more than are left now shows the API's reason and the latest line, not a connection problem", async ({ page }) => {
+    const backend = await open(page);
+    await card(page, "Echo Studio").click();
+    await page.getByRole("button", { name: "Return", exact: true }).click();
+    // 3 out, 1 back: the form offers the other 2
+    await enterBarcode(page, "SKU1");
+    await modal(page).getByRole("button", { name: "More" }).click();
+    // Someone else returns 1 of them, and this page hasn't heard yet
+    const seed = usedState.seed["sheets/s1"];
+    backend.write("t1", "sheets", "s1", { ...seed, items: { ...seed.items, SKU1: { ...seed.items.SKU1, returned: 2 } } });
+    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await expect(toast(page)).toHaveText("Only 1 of this item is left to return. The latest is showing.");
+    await expect(modal(page)).toBeEmpty();
+    expect(backend.requests("GET", "/teams/t1/sheets/s1")).toHaveLength(1);
+    expect(backend.requests("GET", "/teams/t1/products/SKU1")).toHaveLength(1);
+    // Returning again offers the 1 that's left
+    await enterBarcode(page, "SKU1");
+    await expect(modal(page)).toContainText("3 taken · 2 back");
+    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await expect(toast(page)).toHaveText("1 returned · 3 of 3 back");
+  });
+
+  test("a return of a line removed meanwhile says it isn't on the sheet", async ({ page }) => {
+    const backend = await open(page);
+    await card(page, "Echo Studio").click();
+    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await enterBarcode(page, "SKU1");
+    const rest = Object.fromEntries(Object.entries(usedState.seed["sheets/s1"].items).filter(([k]) => k !== "SKU1"));
+    backend.write("t1", "sheets", "s1", { ...usedState.seed["sheets/s1"], items: rest });
+    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await expect(toast(page)).toHaveText("This item isn't on this sheet. The latest is showing.");
+    await expect(modal(page)).toBeEmpty();
+    await expect(lineRow(page, "Paper towels")).toHaveCount(0);
+  });
+
+  test("a checkout on a sheet deleted meanwhile says so and the sheet goes", async ({ page }) => {
+    const backend = await open(page);
+    await card(page, "Echo Studio").click();
+    await enterBarcode(page, "SKU1");
+    backend.docs.delete("t1/sheets/s1");
+    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await expect(toast(page)).toHaveText("No such sheet. The latest is showing.");
+    await expect(modal(page)).toBeEmpty();
+    await expect(card(page, "Echo Studio")).toHaveCount(0);
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(10);
+  });
+
+  // The answer's sheet may have no items, or no longer have the line (removed by someone
+  // else right after): the return still saved, so it says what came back
+  for (const [what, data] of [["no items", {}], ["no such line", { items: { SKU2: { out: 1, returned: 0 } } }]]) {
+    test(`a saved return whose answer has ${what} still says what came back`, async ({ page }) => {
+      const backend = await open(page);
+      await card(page, "Echo Studio").click();
+      await page.getByRole("button", { name: "Return", exact: true }).click();
+      await enterBarcode(page, "SKU1");
+      backend.on("POST", RETURN, { status: 200, body: { operationId: "x", replayed: false, result: { quantity: 1 }, sheet: { id: "s1", version: 9, data: { ...usedState.seed["sheets/s1"], items: undefined, ...data } }, product: null } });
+      await modal(page).getByRole("button", { name: "Save return" }).click();
+      await expect(toast(page)).toHaveText("1 returned · 0 of 0 back");
+      await expect(modal(page)).toBeEmpty();
+    });
+  }
 
   test("an item that isn't saved to inventory sends its name and price for the line", async ({ page }) => {
     const backend = await open(page);
