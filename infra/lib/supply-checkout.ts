@@ -1,6 +1,7 @@
-import { type App, Tags, Validations } from "aws-cdk-lib";
+import { type App, AspectPriority, Aspects, Tags, Validations } from "aws-cdk-lib";
 import { AwsSolutionsChecks } from "cdk-nag";
 import type { DeploymentConfig } from "./config.js";
+import { ObservabilityDefaults } from "./observability/defaults.js";
 import { ApiStack } from "./stacks/api-stack.js";
 import type { SupplyCheckoutStack } from "./stacks/base-stack.js";
 import { DataStack } from "./stacks/data-stack.js";
@@ -39,6 +40,9 @@ export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyChe
   // AWS Solutions rules run on every synth. Findings fail the synth unless
   // acknowledged with Validations.of(construct).acknowledge({ id, reason }).
   Validations.of(app).addPlugins(new AwsSolutionsChecks(app, { verbose: true }));
+  // Log retention, X-Ray tracing and metrics settings for every function and
+  // log group, including ones added later (supply-checkout-7pe).
+  Aspects.of(app).add(new ObservabilityDefaults(config), { priority: AspectPriority.MUTATING });
 
   const identity = new IdentityStack(app, config, config.primaryRegion);
   const regions: Record<string, RegionStacks> = {};

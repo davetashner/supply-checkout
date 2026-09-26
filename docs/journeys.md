@@ -228,6 +228,23 @@ Crews start early, so "business hours" means 5am–8pm US Eastern, every day.
 
 Alarms that fire during a deploy also trigger the automatic rollback (`supply-checkout-9lj`). The page should say whether a rollback already ran.
 
+### Which alarms exist
+
+`supply-checkout-7pe` built the alarm topics, the dashboard and the alarms below, in `infra/lib/observability/` (each region's `observability` stack). Alarms are named `supply-checkout-<env>-<p1|p2>-<id>`, notify their severity's SNS topic when they fire and when they recover, and treat missing data as not breaching, because most of their metrics only exist once there is traffic.
+
+| Alarm | Journeys | Severity | Built as |
+| --- | --- | --- | --- |
+| Functions failing | Every journey | P1 | Lambda `Errors` ÷ `Invocations` across every function in the region, at least 20 invocations. Per-function alarms come with the functions. |
+| Functions throttled | Every journey | P2 | Lambda `Throttles` across every function in the region |
+| Database errors | Every journey | P1 | DynamoDB `SystemErrors` on the app table, summed over the operations the data module uses |
+| Database throttled | Every journey | P2 | DynamoDB `ReadThrottleEvents` + `WriteThrottleEvents` on the app table |
+| Email bouncing, Email complaints | J3 | P1 | SES reputation metrics, as below |
+| Writes rejected | J4 | P2 | `ConditionalWriteConflicts` ÷ `Writes`, at least 20 writes |
+| Receipt reading failing | J5 | P2 | As below |
+| Checkout broken, Webhook signature failures | J7 | P1 | As below |
+
+Every other alarm on this page waits for the resource or code it watches, and is added by the bead that builds it (the alarm goes in that region's `observability` stack, with `topics.notify(alarm, severity)`): the canaries (`supply-checkout-pkt`); Site down and Firewall blocking customers (CloudFront and WAF, `supply-checkout-qk1`); API errors, API slow and API unhealthy (they need the API's ID); Cognito alarms (`supply-checkout-zsm`); Live updates failing (AppSync Events); Bedrock alarms and Receipt cost spike (the receipt function); Near the sending limit (SES); the billing queue, reconciliation and deletion-job alarms; and Checkouts stopped, which compares with the same hour last week, and so needs something other than one CloudWatch alarm. The remaining P3 trends (No sign-ups, Invites not accepted, Failed payments rising, App checkouts abandoned) are read from the dashboard at the weekly review.
+
 ### Every journey
 
 | Alarm | Signal | Starting threshold | Severity |
@@ -336,4 +353,6 @@ Added with us-west-2. Until then, none of these exist.
 
 Several alarms above rely on metrics our own code sends (CloudWatch embedded metric format from Lambda), not ones AWS provides:
 
-`Checkouts`, `Returns`, `ReceiptReads`, `ReceiptReadFailures`, `SignUps`, `InvitesSent`, `InvitesAccepted`, `CheckoutSessionErrors`, `WebhookSignatureFailures`, `ConditionalWriteConflicts`, plus per-team receipt token usage. Give each one a region dimension, even while there is only us-east-1, so they split cleanly when us-west-2 is added. Add them to `supply-checkout-7pe` as its dashboards are built.
+`Checkouts`, `Returns`, `ReceiptReads`, `ReceiptReadFailures`, `SignUps`, `InvitesSent`, `InvitesAccepted`, `CheckoutSessionErrors`, `WebhookSignatureFailures`, `ConditionalWriteConflicts`, `Writes` (the denominator for "Writes rejected"), and `ReceiptTokens` (receipt token usage, with the team ID as metadata rather than a dimension). Each has a `Region` dimension, even while there is only us-east-1, so they split cleanly when us-west-2 is added.
+
+The names are in `backend/src/observability/names.ts`, which both the Lambda code and the dashboard and alarms import. Send them with `count()` from `backend/src/observability`, in namespace `SupplyCheckout`. The dashboard already has a graph for each; until the handlers exist, the graphs are empty and the alarms stay OK.
