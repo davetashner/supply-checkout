@@ -13,7 +13,7 @@ flowchart LR
   subgraph SC[Supply Checkout]
     web[Web app<br/>desktop and mobile browsers]
     apps[iOS and Android apps<br/>Capacitor]
-    backend[AWS backend<br/>us-east-1 + us-west-2]
+    backend[AWS backend<br/>us-east-1; us-west-2 in phase 2]
   end
   stripe[(Stripe<br/>billing, invoices, tax)]
   bedrock[(Amazon Bedrock<br/>Claude)]
@@ -36,68 +36,71 @@ flowchart LR
   artifact -. same UI code, ADR 0004 .- web
 ```
 
-## 2. AWS deployment (active-active)
+## 2. AWS deployment
 
-Both regions serve traffic. Each team has a home region for writes ([ADR 0010](../adr/0010-multi-region-active-active.md)).
+The MVP runs in us-east-1 only. The stacks are region-ready, and us-west-2 is added in phase 2 to make the design active-active, with a home region for each team's writes ([ADR 0010](../adr/0010-multi-region-active-active.md)). Dashed boxes and lines are phase 2.
 
 ```mermaid
 flowchart TB
   user([Browser or mobile app])
-  r53{{Route 53<br/>latency routing + health checks}}
+  r53{{Route 53<br/>MVP: health check<br/>phase 2: latency routing + failover}}
   cf[CloudFront<br/>+ AWS WAF]
 
   user -->|app.domain| cf
   user -->|api.domain, realtime.domain| r53
 
-  subgraph E[us-east-1]
+  subgraph E[us-east-1: MVP]
     s3e[(S3 web bundle)]
     apie[HTTP API<br/>JWT authorizer]
     lame[Lambda: data, teams,<br/>billing, receipts]
     evte[AppSync Events<br/>channel per team]
     streame[DynamoDB Streams<br/>→ publisher Lambda]
-    ddbe[(DynamoDB<br/>global table replica)]
+    ddbe[(DynamoDB<br/>global table, one replica)]
     cog[Cognito user pool<br/>us-east-1 only]
     bre[Bedrock]
     sqse[SQS: Stripe events]
   end
 
-  subgraph W[us-west-2]
+  subgraph W[us-west-2: phase 2]
     s3w[(S3 web bundle)]
     apiw[HTTP API<br/>JWT authorizer]
     lamw[Lambda: data, teams,<br/>billing, receipts]
     evtw[AppSync Events<br/>channel per team]
     streamw[DynamoDB Streams<br/>→ publisher Lambda]
-    ddbw[(DynamoDB<br/>global table replica)]
+    ddbw[(DynamoDB<br/>second replica)]
     brw[Bedrock]
     sqsw[SQS: Stripe events]
   end
 
-  cf -->|primary| s3e
-  cf -. origin failover .-> s3w
-  s3e -. replication .- s3w
+  cf --> s3e
+  cf -.->|phase 2: origin failover| s3w
+  s3e -.-|phase 2: replication| s3w
 
   r53 --> apie
-  r53 --> apiw
   r53 --> evte
-  r53 --> evtw
+  r53 -.->|phase 2| apiw
+  r53 -.->|phase 2| evtw
 
   apie --> lame --> ddbe
-  apiw --> lamw --> ddbw
+  apiw -.-> lamw -.-> ddbw
   lame --> bre
-  lamw --> brw
+  lamw -.-> brw
   lame --> sqse
-  lamw --> sqsw
-  ddbe <-->|global table replication| ddbw
+  lamw -.-> sqsw
+  ddbe <-.->|phase 2: global table replication| ddbw
   ddbe --> streame --> evte
-  ddbw --> streamw --> evtw
-  lamw -. writes for teams homed in us-east-1 .-> apie
+  ddbw -.-> streamw -.-> evtw
+  lamw -.->|phase 2: writes for teams homed in us-east-1| apie
 
   apie -. JWKS, cached .- cog
   apiw -. JWKS, cached .- cog
   user -->|sign in| cog
+
+  classDef later stroke-dasharray: 5 5
+  class s3w,apiw,lamw,evtw,streamw,ddbw,brw,sqsw later
 ```
 
-Shared in both regions and not drawn: KMS keys, Secrets Manager replica secrets (Stripe keys), SES, CloudWatch alarms and dashboards, AWS Backup.
+Not drawn: KMS keys, Secrets Manager (Stripe keys), SES, CloudWatch alarms and dashboards, AWS Backup. In the MVP they're in us-east-1. Phase 2 adds a KMS key, replica secrets, SES, and alarms and dashboards in us-west-2.
 
 ## 3. Reading a receipt
 
@@ -307,19 +310,18 @@ flowchart LR
   gates --> preview[Preview stack in dev<br/>journey tests]
   preview --> merge[Squash-merge to main]
   merge --> build[Build once:<br/>web bundle, Lambda zips,<br/>CDK assembly]
-  build --> stg[Deploy staging<br/>both regions]
+  build --> stg[Deploy staging<br/>us-east-1]
   stg --> stgtest[Journey + smoke tests<br/>against staging]
   stgtest --> rp[release-please PR]
-  rp -->|merge = tag vX.Y.Z| prodw[Prod us-west-2<br/>Lambda canary 10% / 5 min]
-  prodw --> canw{Alarms + synthetics OK?}
-  canw -->|yes| prode[Prod us-east-1<br/>canary]
-  canw -->|no| rbw[Auto rollback:<br/>alias + web version]
+  rp -->|merge = tag vX.Y.Z| prode[Prod us-east-1<br/>Lambda canary 10% / 5 min]
   prode --> cane{Alarms + synthetics OK?}
-  cane -->|no| rbe[Auto rollback]
+  cane -->|no| rbe[Auto rollback:<br/>alias + web version]
   cane -->|yes| mobile[fastlane:<br/>TestFlight + Play internal]
   mobile --> art[Attach index.html<br/>for claude.ai artifact]
 ```
 
+In phase 2, staging deploys to both regions, and prod deploys to us-west-2 first (with its own canary and rollback), then us-east-1. The mobile builds are also phase 2.
+
 ## Costs at a glance
 
-Rough monthly AWS cost for production **before** customers, both regions: Route 53 hosted zone and health checks (about $3), KMS keys (about $2–4), Secrets Manager (about $1–2), CloudWatch Synthetics canaries (about $5–10, the biggest fixed item), and WAF (about $6+). Everything else (Lambda, API Gateway, DynamoDB, AppSync Events, CloudFront, S3, Cognito, SES) is pay-per-use and costs pennies at low volume. Receipt reading is about half a cent to one and a half cents per receipt ([ADR 0008](../adr/0008-receipt-reading-bedrock.md)). Staging and dev add a similar but smaller fixed amount. The business plan bead turns this into a full cost model.
+Rough monthly AWS cost for production **before** customers, in one region (the MVP): Route 53 hosted zone and health checks (about $3), KMS keys (about $2–4), Secrets Manager (about $1–2), CloudWatch Synthetics canaries (about $5–10, the biggest fixed item), and WAF (about $6+). Everything else (Lambda, API Gateway, DynamoDB, AppSync Events, CloudFront, S3, Cognito, SES) is pay-per-use and costs pennies at low volume. Receipt reading is about half a cent to one and a half cents per receipt ([ADR 0008](../adr/0008-receipt-reading-bedrock.md)). Staging and dev add a similar but smaller fixed amount. Adding us-west-2 in phase 2 roughly doubles the fixed items. The business plan bead turns this into a full cost model.

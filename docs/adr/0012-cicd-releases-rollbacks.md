@@ -12,8 +12,8 @@ The repo already has CI (lint, HTML validation, dependency audit, Playwright in 
 **Pipeline** (GitHub Actions, OIDC into each AWS account per [ADR 0003](0003-aws-account-structure.md)):
 
 1. **Pull request**: the existing gates, plus infra unit tests, `cdk-nag`, `cdk diff` posted to the PR, CodeQL, secret scanning, and a **preview stack** in `dev` running the customer-journey tests. Previews are deleted when the PR closes.
-2. **Merge to `main`**: build once, and keep the build artifacts (web bundle, Lambda zips, CDK cloud assembly). Deploy to **staging** in both regions, then run the full customer-journey suite and the smoke tests against staging.
-3. **Release** (release-please PR merged, which tags the version): promote **the same artifacts** to **prod**, one region at a time: us-west-2 first, then us-east-1. GitHub environment protection holds prod behind a required review at first; switch it to automatic once the rollback path has been proven on a game day.
+2. **Merge to `main`**: build once, and keep the build artifacts (web bundle, Lambda zips, CDK cloud assembly). Deploy to **staging** (us-east-1 in the MVP; both regions once the second region is live, [ADR 0010](0010-multi-region-active-active.md)), then run the full customer-journey suite and the smoke tests against staging.
+3. **Release** (release-please PR merged, which tags the version): promote **the same artifacts** to **prod**: us-east-1 in the MVP. Once the second region is live, prod deploys one region at a time, us-west-2 first, then us-east-1. GitHub environment protection holds prod behind a required review at first; switch it to automatic once the rollback path has been proven on a game day.
 4. After each prod region deploys, the **CloudWatch Synthetics** canaries run the core journeys against that region.
 
 **Automated rollback**:
