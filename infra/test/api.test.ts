@@ -2,7 +2,7 @@ import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { ACCOUNT_ROUTES, AUTH_ROUTES, DATA_ROUTES, routeKey } from "../../backend/src/api/routes.js";
-import { MEMBER_ROW_ATTRIBUTES } from "../../backend/src/data/schema.js";
+import { INVITE_LIMIT_ATTRIBUTES, MEMBER_ROW_ATTRIBUTES } from "../../backend/src/data/schema.js";
 import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
 import { apiOutputParameters } from "../lib/stacks/api-stack.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
@@ -92,6 +92,10 @@ describe("HTTP API routes", () => {
       "GET /teams/{teamId}/members": { ThrottlingRateLimit: 20, ThrottlingBurstLimit: 40 },
       "PATCH /teams/{teamId}/members/{userId}": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
       "DELETE /teams/{teamId}/members/{userId}": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
+      "GET /teams/{teamId}/invites": { ThrottlingRateLimit: 20, ThrottlingBurstLimit: 40 },
+      "POST /teams/{teamId}/invites": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
+      "DELETE /teams/{teamId}/invites/{inviteId}": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
+      "POST /teams/{teamId}/invites/{inviteId}/resend": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
     });
     // Created after the routes it names
     expect((stage.DependsOn as string[]).filter((d) => d.startsWith("HttpApi")).length).toBeGreaterThanOrEqual(ACCOUNT_ROUTES.length + 1);
@@ -207,7 +211,7 @@ describe("account-access role (LeadingKeys)", () => {
     return r.Properties as { AssumeRolePolicyDocument: { Statement: Record<string, unknown>[] }; Policies: { PolicyDocument: { Statement: Record<string, unknown>[] } }[]; MaxSessionDuration: number };
   };
 
-  it("can be assumed only by the account function's role, with the user, team, invitee and member tags and no others", () => {
+  it("can be assumed only by the account function's role, with the user, team, invitee, member and invite limit tags and no others", () => {
     const r = role();
     expect(r.MaxSessionDuration).toBe(3600);
     const [trust, ...rest] = r.AssumeRolePolicyDocument.Statement;
@@ -217,15 +221,15 @@ describe("account-access role (LeadingKeys)", () => {
       Action: ["sts:AssumeRole", "sts:TagSession"],
       Principal: { AWS: { "Fn::GetAtt": [expect.stringMatching(/^AccountFunctionRole/), "Arn"] } },
       Condition: {
-        StringLike: { "aws:RequestTag/userId": "?*", "aws:RequestTag/teamId": "?*", "aws:RequestTag/invitee": "?*", "aws:RequestTag/member": "?*" },
-        "ForAllValues:StringEquals": { "aws:TagKeys": ["userId", "teamId", "invitee", "member"] },
+        StringLike: { "aws:RequestTag/userId": "?*", "aws:RequestTag/teamId": "?*", "aws:RequestTag/invitee": "?*", "aws:RequestTag/member": "?*", "aws:RequestTag/inviteLimit": "?*" },
+        "ForAllValues:StringEquals": { "aws:TagKeys": ["userId", "teamId", "invitee", "member", "inviteLimit"] },
       },
     });
   });
 
-  it("reaches only the tagged user, team and invitee partitions, with item, transaction and query actions and no scan, and a member's only to update or delete", () => {
+  it("reaches only the tagged user, team and invitee partitions, with item, transaction and query actions and no scan, a member's only to update or delete, and an invited address's counter only to update", () => {
     const [policy] = role().Policies;
-    const [items, member, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    const [items, member, limit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
     expect(rest).toEqual([]);
     expect(items).toMatchObject({
       Sid: "CallerItemsOnly",
@@ -258,7 +262,31 @@ describe("account-access role (LeadingKeys)", () => {
     expect(JSON.stringify(member?.Resource)).toContain(":table/supply-checkout-prod-app");
     expect(JSON.stringify(member?.Resource)).not.toContain("index");
     expect(JSON.stringify(member?.Resource)).not.toContain("*");
+    // The invited address's daily counter: only UpdateItem, only its attributes, nothing returned
+    expect(limit).toMatchObject({
+      Sid: "InviteLimitCounterOnly",
+      Effect: "Allow",
+      Action: "dynamodb:UpdateItem",
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["INVITELIMIT#${aws:PrincipalTag/inviteLimit}"], "dynamodb:Attributes": ["PK", "SK", "count", "type", "expiresAt"] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+      },
+    });
+    // The same list the data layer's counter writes are tested against (backend/test/invites-api.test.ts)
+    expect([...INVITE_LIMIT_ATTRIBUTES]).toEqual(["PK", "SK", "count", "type", "expiresAt"]);
+    expect(Object.keys(limit?.Condition as object).sort()).toEqual(["ForAllValues:StringEquals", "StringEqualsIfExists"]);
+    expect(JSON.stringify(limit?.Resource)).toContain(":table/supply-checkout-prod-app");
+    expect(JSON.stringify(limit?.Resource)).not.toContain("index");
+    expect(JSON.stringify(limit?.Resource)).not.toContain("*");
     expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } });
+  });
+
+  it("lets the account function send invite emails, from noreply only, and nothing else in SES", () => {
+    const { template } = api();
+    const sends = resources(template, "AWS::IAM::Policy").flatMap(([id, p]) =>
+      (p.Properties.PolicyDocument as { Statement: { Action: unknown; Condition?: unknown }[] }).Statement.filter((s) => JSON.stringify(s.Action).includes("ses:")).map((s) => [id, s]),
+    );
+    expect(sends).toEqual([[expect.stringMatching(/^AccountFunctionRole/), expect.objectContaining({ Sid: "SendAppEmail", Action: "ses:SendEmail", Condition: { StringEquals: { "ses:FromAddress": "noreply@supplycheckout.com" } } })]]);
   });
 
   it("is the only thing the account function may assume, and the data function can't", () => {

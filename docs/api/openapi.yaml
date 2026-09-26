@@ -97,7 +97,10 @@ info:
     routes run there too, on the path's team after the same membership and
     role checks: changing or removing another member also updates or deletes
     that member's own team-switcher row, so only those sessions carry a tag
-    for that member's partition, and only for updates and deletes.
+    for that member's partition, and only for updates and deletes. The
+    invites routes run there too: creating or re-sending an invite also
+    counts it against the invited address's daily limit, so only those
+    sessions carry a tag for that address's counter, and only for updates.
 servers:
   - url: https://api.{envDomain}
     variables:
@@ -120,6 +123,14 @@ tags:
     description: The signed-in user's teams and pending invites, creating a team, and accepting an invite (first sign-in).
   - name: members
     description: A team's members and roles (ADR 0007). Owners list members, change roles and remove members; anyone can leave; a team always keeps an owner.
+  - name: invites
+    description: |
+      A team's invites (ADR 0007). Owners invite an address with a role, and
+      the server emails it a link with a single-use token (only its hash is
+      stored) that expires in 7 days. Owners see each invite as pending,
+      failed (its email bounced, drew a complaint or couldn't be sent) or
+      expired, and can revoke or re-send it. Joining is
+      `POST /invites/{inviteId}/accept` ([onboarding.md](onboarding.md)).
   - name: auth
     description: Sign-in sessions for the web app, with the refresh token in an HttpOnly cookie.
 paths:
@@ -666,6 +677,120 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NoSuchMember" }
         "409": { $ref: "#/components/responses/MemberConflict" }
+  /teams/{teamId}/invites:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    get:
+      tags: [invites]
+      operationId: listInvites
+      summary: The team's invites that haven't been accepted or revoked. Owners only.
+      description: |
+        Newest first. An expired invite stays listed (as `expired`) until
+        DynamoDB's TTL removes it, so the owner can re-send it.
+      responses:
+        "200":
+          description: The team's invites.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invites]
+                properties:
+                  invites:
+                    type: array
+                    items: { $ref: "#/components/schemas/TeamInvite" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [invites]
+      operationId: createInvite
+      summary: Invite an email address to the team with a role, and email it the link. Owners only.
+      description: |
+        Creates the invite, then emails the link
+        (`https://app.<env domain>/?invite=<id>&token=<token>`) from
+        `noreply@<env domain>`. The token is in the email only; the response
+        never has it. If SES won't send the email, the invite is still made,
+        and comes back with `inviteStatus: "failed"` and
+        `failureReason: "not_sent"`: re-send or revoke it. A bounce or
+        complaint reported later marks it failed too (`bounced`,
+        `complained`).
+
+        Each team can send 50 invites a day (UTC) and each address can be sent
+        5, from all teams together; re-sends count. Past either, 429
+        `quota_exceeded`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, role]
+              properties:
+                email: { type: string, maxLength: 254, description: "The address to invite. Matched without regard to case (and after Unicode NFKC)." }
+                role: { type: string, enum: [owner, contributor, viewer] }
+      responses:
+        "201":
+          description: The invite, pending (the email was sent) or failed (`not_sent`).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invite]
+                properties:
+                  invite: { $ref: "#/components/schemas/TeamInvite" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: "`aborted`: the address is already a member's, or already has a live invite to this team (re-send that one)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429": { $ref: "#/components/responses/TooManyInvites" }
+  /teams/{teamId}/invites/{inviteId}:
+    parameters:
+      - { $ref: "#/components/parameters/teamId" }
+      - { $ref: "#/components/parameters/inviteId" }
+    delete:
+      tags: [invites]
+      operationId: revokeInvite
+      summary: Revoke an invite, so its link stops working. Owners only.
+      description: Revoking an invite that's already gone (accepted, revoked or expired and removed) is also 204.
+      responses:
+        "204": { description: Revoked. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /teams/{teamId}/invites/{inviteId}/resend:
+    parameters:
+      - { $ref: "#/components/parameters/teamId" }
+      - { $ref: "#/components/parameters/inviteId" }
+    post:
+      tags: [invites]
+      operationId: resendInvite
+      summary: Send an invite again, with a new link. Owners only.
+      description: |
+        Replaces the invite with a new one: a new `id` and token (the old
+        link stops working), the same address and role, a new 7-day expiry,
+        and no failure. Works for a pending, failed or expired invite, and
+        counts against the same daily limits. No request body. To correct the
+        address, revoke the invite and make a new one.
+      responses:
+        "201":
+          description: The new invite, pending or failed (`not_sent`), as for `createInvite`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invite]
+                properties:
+                  invite: { $ref: "#/components/schemas/TeamInvite" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`not_found`: the invite was accepted or revoked."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429": { $ref: "#/components/responses/TooManyInvites" }
   /auth/session:
     post:
       tags: [auth]
@@ -754,6 +879,12 @@ components:
       in: path
       required: true
       description: The team. The caller must be a member; the body can't name a team.
+      schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
+    inviteId:
+      name: inviteId
+      in: path
+      required: true
+      description: "The invite's `id` in the team's invite list."
       schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
     productKey:
       name: key
@@ -1033,6 +1164,25 @@ components:
         teamName: { type: string }
         role: { type: string, enum: [owner, contributor, viewer], description: The role the caller joins with. }
         expiresAt: { type: string, format: date-time }
+    TeamInvite:
+      type: object
+      description: An invite as the team's owners see it. Never the token.
+      required: [id, email, role, createdAt, expiresAt, inviteStatus, failureReason, failedAt]
+      properties:
+        id: { type: string }
+        email: { type: string, description: The invited address, normalized (lowercase). }
+        role: { type: string, enum: [owner, contributor, viewer] }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        inviteStatus:
+          type: string
+          enum: [pending, failed, expired]
+          description: "`failed`: its email couldn't be delivered (`failureReason`). `expired`: past `expiresAt`. Otherwise `pending`."
+        failureReason:
+          type: [string, "null"]
+          enum: [bounced, complained, not_sent, null]
+          description: "`bounced` (the address doesn't take mail), `complained` (the recipient marked it as spam) or `not_sent` (SES wouldn't send it). SES suppresses a bounced or complaining address, so a re-send to it fails too."
+        failedAt: { type: [string, "null"], format: date-time }
     Member:
       type: object
       required: [userId, email, role, joinedAt]
@@ -1137,6 +1287,9 @@ components:
             required: [team]
             properties:
               team: { $ref: "#/components/schemas/Team" }
+    TooManyInvites:
+      description: "`quota_exceeded`: the team has sent 50 invites today (UTC), or the address has been sent 5. Try again tomorrow."
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     TooManyTeams:
       description: "`quota_exceeded`: the caller has created 5 teams today (UTC), or is already in 20 teams (the message says which)."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }

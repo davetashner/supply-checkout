@@ -12,7 +12,14 @@
 //   GET    /teams/{teamId}/members           Owners: the team's members and roles.
 //   PATCH  /teams/{teamId}/members/{userId}  Owners: change a member's role.
 //   DELETE /teams/{teamId}/members/{userId}  Owners: remove a member. Anyone:
-//                                            leave (their own user ID).
+//                                            leave (their own user ID). Their
+//                                            pending invites to the team go too.
+//   GET    /teams/{teamId}/invites                     Owners: the team's invites,
+//                                                      pending, failed or expired.
+//   POST   /teams/{teamId}/invites                     Owners: invite an address with
+//                                                      a role, and email it the link.
+//   DELETE /teams/{teamId}/invites/{inviteId}          Owners: revoke an invite.
+//   POST   /teams/{teamId}/invites/{inviteId}/resend   Owners: a new link and email.
 //
 // The team's last owner can't be removed, demoted or leave: the team item's
 // owner count moves in the same transaction as the membership, conditioned
@@ -36,15 +43,24 @@
 //    anything else. Only after that, and only for a user who is a member of
 //    that team, does a session also carry the `member` tag, which lets it
 //    update or delete that user's team-switcher row and nothing else in
-//    their partition.
+//    their partition. Likewise, only after an owner's checks does a session
+//    carry the `inviteLimit` tag, for the address being invited, which lets it
+//    update that address's daily invite counter and nothing else.
+//
+// Invite emails: the invite is written first, then sent (email/mailer.ts). If
+// SES won't take it, the invite stays, marked failed (`not_sent`), so the
+// owner sees "Couldn't deliver" and can re-send or revoke it. Addresses,
+// names and tokens never go in a log line or a metric.
 
 import type { APIGatewayProxyStructuredResultV2, Context } from "aws-lambda";
 import {
   acceptInvite,
   authorizeTeam,
+  createInvite,
   createTeam,
   findInviteForEmail,
   ForbiddenError,
+  getInvite,
   getMember,
   getTeam,
   hashEmail,
@@ -56,14 +72,19 @@ import {
   memberRole,
   removeMember,
   setMemberRole,
+  listInvites,
   listInvitesForEmail,
   listTeamsForUser,
+  markInviteNotSent,
   normalizeEmail,
+  resendInvite,
+  revokeInvite,
   type Role,
   type Team,
   type TeamContext,
   teamIdForRequest,
 } from "../data/index.js";
+import { EmailNotSentError, type Mailer, sendInviteEmail } from "../email/mailer.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import type { DbForAccount } from "./account-db.js";
 import type { CognitoUser, UserInfo } from "./cognito-user.js";
@@ -78,6 +99,8 @@ export interface AccountHandlerDeps {
   /** The user pool's issuer URL; tokens from anywhere else are refused. */
   readonly issuerUrl: string;
   readonly obs: Observability;
+  /** Sends invite emails (email/mailer.ts). */
+  readonly mailer: Mailer;
   readonly now?: () => number;
 }
 
@@ -112,6 +135,23 @@ const inviteBody = (invite: Invite) => ({
   teamName: invite.teamName,
   role: invite.role,
   expiresAt: new Date(invite.expiresAt * 1000).toISOString(),
+});
+
+/**
+ * An invite as its team's owners see it: the address, role and state, never
+ * the token or its hash. `inviteStatus` is `failed` when its email bounced,
+ * drew a complaint or couldn't be sent (`failureReason`), `expired` once it
+ * lapsed, and `pending` otherwise.
+ */
+const teamInviteBody = (invite: Invite, nowMs: number) => ({
+  id: invite.inviteId,
+  email: invite.email,
+  role: invite.role,
+  createdAt: invite.createdAt,
+  expiresAt: new Date(invite.expiresAt * 1000).toISOString(),
+  inviteStatus: invite.inviteStatus === "failed" ? "failed" : invite.expiresAt * 1000 <= nowMs ? "expired" : "pending",
+  failureReason: invite.inviteStatus === "failed" ? (invite.failureReason ?? null) : null,
+  failedAt: invite.inviteStatus === "failed" ? (invite.failedAt ?? null) : null,
 });
 
 const ROLE_ORDER = { owner: 0, contributor: 1, viewer: 2 };
@@ -259,6 +299,71 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     return noContent();
   }
 
+  /** An owner's context for the path's team, or 403. */
+  async function ownerContext(event: DataEvent, userId: string): Promise<{ teamId: string; ctx: TeamContext }> {
+    const found = await teamContext(event, userId);
+    requireRole(found.ctx.role, "owner");
+    return found;
+  }
+
+  /**
+   * Emails a new or re-sent invite its link. When SES won't take it, the
+   * invite is marked failed and returned that way: it exists, and the owner
+   * can re-send or revoke it. Only the error's name is logged.
+   */
+  async function send(db: ReturnType<DbForAccount>, ctx: TeamContext, invite: Invite, token: string): Promise<Invite> {
+    try {
+      await sendInviteEmail(deps.mailer, invite, token);
+      obs.count(BusinessMetric.InvitesSent, 1, { teamId: ctx.teamId });
+      return invite;
+    } catch (error) {
+      const code = error instanceof EmailNotSentError ? error.code : ((error as { name?: string } | null)?.name ?? "Unknown");
+      obs.logger.warn("Invite email not sent", { teamId: ctx.teamId, inviteId: invite.inviteId, code });
+      const at = new Date(now());
+      await markInviteNotSent(db, ctx, invite.inviteId, at);
+      obs.count(BusinessMetric.InvitesFailed, 1, { teamId: ctx.teamId, reason: "not_sent" });
+      return { ...invite, inviteStatus: "failed", failureReason: "not_sent", failedAt: at.toISOString() };
+    }
+  }
+
+  async function invites(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    const { teamId, ctx } = await ownerContext(event, userId);
+    const at = now();
+    const list = (await listInvites(dbFor({ userId, teamId }), ctx))
+      .map((invite) => teamInviteBody(invite, at))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
+    return json(200, { invites: list });
+  }
+
+  async function invite(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    // Membership and role first, so anyone else gets the same 403 whatever they send
+    const { teamId, ctx } = await ownerContext(event, userId);
+    const body = jsonBody(event, ["email", "role"]);
+    const email = normalizeEmail(body.email);
+    const role = memberRole(body.role);
+    const db = dbFor({ userId, teamId, inviteLimit: hashEmail(email) });
+    const made = await createInvite(db, ctx, { email, role }, new Date(now()));
+    return json(201, { invite: teamInviteBody(await send(db, ctx, made.invite, made.token), now()) });
+  }
+
+  async function revoke(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    const { teamId, ctx } = await ownerContext(event, userId);
+    await revokeInvite(dbFor({ userId, teamId }), ctx, pathId(event, "inviteId", "invite ID"));
+    return noContent();
+  }
+
+  async function resend(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    const { teamId, ctx } = await ownerContext(event, userId);
+    const inviteId = pathId(event, "inviteId", "invite ID");
+    if (event.body) jsonBody(event, []);
+    // The address comes from the stored invite, never the request
+    const old = await getInvite(dbFor({ userId, teamId }), ctx, inviteId);
+    if (!old) throw new ApiError(404, "not_found", "This invite was accepted or revoked");
+    const db = dbFor({ userId, teamId, inviteLimit: hashEmail(old.email) });
+    const made = await resendInvite(db, ctx, inviteId, {}, new Date(now()));
+    return json(201, { invite: teamInviteBody(await send(db, ctx, made.invite, made.token), now()) });
+  }
+
   const actions: Record<AccountRoute["action"], (event: DataEvent, userId: string) => Promise<APIGatewayProxyStructuredResultV2>> = {
     me,
     createTeam: newTeam,
@@ -266,6 +371,10 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     listMembers: members,
     setMemberRole: changeRole,
     removeMember: remove,
+    listInvites: invites,
+    createInvite: invite,
+    revokeInvite: revoke,
+    resendInvite: resend,
   };
 
   return async (event: DataEvent, context?: Context): Promise<APIGatewayProxyStructuredResultV2> => {

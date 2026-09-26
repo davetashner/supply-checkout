@@ -6,6 +6,7 @@ import { type Db, connection } from "./client.js";
 import { ConflictError, LastOwnerError, conflictOnConditionFailure } from "./errors.js";
 import { id, keys, prefixes, strip, teamPartition } from "./keys.js";
 import { type Member, type MemberRole, type Team, type UserTeam, memberRole, ownersUpdate, teamName } from "./model.js";
+import { revokeInvitesForEmail } from "./invites.js";
 import { queryAll, versionedSet } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
@@ -90,13 +91,15 @@ function memberChangeFailed(ownersAt: number | undefined): (error: unknown) => n
   };
 }
 
-async function currentRole(db: Db, ctx: TeamContext, userId: string): Promise<MemberRole> {
+async function currentMember(db: Db, ctx: TeamContext, userId: string): Promise<Member> {
   const { Item } = await connection(db).doc.send(
     new GetCommand({ TableName: db.tableName, Key: keys.member(ctx.teamId, id(userId, "user ID")), ConsistentRead: true }),
   );
   if (!Item) throw new ConflictError("Not a member of this team");
-  return Item.role as MemberRole;
+  return Item as Member;
 }
+
+const currentRole = async (db: Db, ctx: TeamContext, userId: string): Promise<MemberRole> => (await currentMember(db, ctx, userId)).role;
 
 /**
  * Owners change members' roles, their own included. The MEMBER item, the
@@ -146,11 +149,17 @@ export async function setMemberRole(db: Db, ctx: TeamContext, userId: string, ro
 /**
  * Owners remove members; any member can remove themselves (leave). Removing an
  * owner decrements the owner count in the same transaction, conditioned on
- * another owner remaining (LastOwnerError).
+ * another owner remaining (LastOwnerError). Their pending invites to the team
+ * are revoked first.
  */
 export async function removeMember(db: Db, ctx: TeamContext, userId: string): Promise<void> {
-  writable(db, ctx, userId === ctx.userId ? "viewer" : "owner");
-  const from = await currentRole(db, ctx, userId);
+  const minimum = userId === ctx.userId ? "viewer" : "owner";
+  writable(db, ctx, minimum);
+  const { role: from, email } = await currentMember(db, ctx, userId);
+  // Any other invite to this team for their address goes first, so someone
+  // removed can't rejoin with an invite they hadn't used. If the removal then
+  // fails (the last owner), only their own unused invites are gone.
+  if (typeof email === "string" && email) await revokeInvitesForEmail(db, ctx, email, minimum);
   await connection(db)
     .doc.send(
       new TransactWriteCommand({

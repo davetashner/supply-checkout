@@ -4,6 +4,8 @@ import { afterAll, beforeAll } from "vitest";
 import { authorizeTeam, createDb, type Db, type Role, type TeamContext } from "../src/data/index.js";
 import { connection, dbFromConnection } from "../src/data/client.js";
 import { createLocalTable, deleteLocalTable } from "../src/data/local-table.js";
+import { EmailNotSentError, type Mailer, type MessageTags } from "../src/email/mailer.js";
+import type { EmailInput } from "../src/email/templates.js";
 
 /** DynamoDB Local, e.g. http://localhost:8000. CI runs it as a service container. */
 export const endpoint = process.env.DYNAMODB_ENDPOINT || undefined;
@@ -50,4 +52,32 @@ export function fakeDb(send: (command: { input: Record<string, unknown> }) => Pr
 export function contextFor(role: Role, homeRegion = REGION, teamId = "t1", userId = "u1"): Promise<TeamContext> {
   const db = fakeDb(async () => ({ Responses: [{ Item: { homeRegion } }, { Item: { role } }] }));
   return authorizeTeam(db, userId, teamId);
+}
+
+/** A mailer that records what it would send, or fails like SES when `fail` names an error. */
+export function fakeMailer() {
+  const sent: { to: string; input: EmailInput; tags: MessageTags }[] = [];
+  const state = { fail: undefined as string | undefined };
+  const mailer: Mailer = {
+    async send(to, input, tags = {}) {
+      if (state.fail) throw new EmailNotSentError(state.fail);
+      sent.push({ to, input, tags });
+      return { messageId: `message-${sent.length}` };
+    },
+  };
+  return { mailer, sent, state };
+}
+
+/**
+ * The partitions an account-access session reaches, as its IAM policy allows
+ * them (LeadingKeys): a handle on the in-memory table scoped the same way.
+ */
+export function accountPartitions(scope: { userId: string; teamId?: string; invitee?: string; member?: string; inviteLimit?: string }): string[] {
+  return [
+    `USER#${scope.userId}`,
+    `TEAM#${scope.teamId ?? "."}`,
+    `INVITEE#${scope.invitee ?? "."}`,
+    `USER#${scope.member ?? "."}`,
+    `INVITELIMIT#${scope.inviteLimit ?? "."}`,
+  ];
 }

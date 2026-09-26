@@ -10,11 +10,13 @@ import type { DbForAccount } from "../src/api/account-db.js";
 import { createAccountHandler } from "../src/api/account-handler.js";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { hasRole, requireRole } from "../src/api/roles.js";
-import { ACCOUNT_ROUTES, ACCOUNT_TAG_UNUSED, DATA_ROUTES, routeKey, TEAM_ROLES, type TeamRole } from "../src/api/routes.js";
-import { InvalidInputError } from "../src/data/index.js";
+import { ACCOUNT_ROUTES, DATA_ROUTES, routeKey, TEAM_ROLES, type TeamRole } from "../src/api/routes.js";
+import { hashEmail, InvalidInputError } from "../src/data/index.js";
 import type { Observability } from "../src/observability/index.js";
+import { accountPartitions, fakeMailer } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
+const mails = fakeMailer();
 const NOW = Date.parse("2026-09-26T12:00:00Z");
 const ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_pool";
 const USERS = { owner: "user-owner", contributor: "user-contributor", viewer: "user-viewer", outsider: "user-outsider" } as const;
@@ -22,6 +24,7 @@ type Caller = keyof typeof USERS;
 const CALLERS = Object.keys(USERS) as Caller[];
 const SECOND_OWNER = "user-owner-2";
 const TARGET = "user-target";
+const INVITE = "invite-1";
 
 const obs = {
   region: "test-local-1",
@@ -41,6 +44,23 @@ function seed() {
   for (const [userId, role] of [[USERS.owner, "owner"], [SECOND_OWNER, "owner"], [USERS.contributor, "contributor"], [USERS.viewer, "viewer"], [TARGET, "viewer"]]) {
     table.put({ PK: `USER#${userId}`, SK: "TEAM#team-a", type: "userTeam", userId, teamId: "team-a", teamName: "team-a", role });
   }
+  table.put({
+    PK: "TEAM#team-a",
+    SK: `INVITE#${INVITE}`,
+    GSI1PK: `INVITE#${"0".repeat(64)}`,
+    GSI1SK: "INVITE",
+    GSI2PK: `INVITEE#${hashEmail("invited@example.com")}`,
+    GSI2SK: `INVITE#${INVITE}`,
+    type: "invite",
+    teamId: "team-a",
+    teamName: "team-a",
+    inviteId: INVITE,
+    email: "invited@example.com",
+    role: "viewer",
+    invitedBy: USERS.owner,
+    createdAt: "2026-09-25T12:00:00.000Z",
+    expiresAt: NOW / 1000 + 86400,
+  });
   table.put({ PK: "TEAM#team-a", SK: "PRODUCT#0123", type: "product", key: "0123", version: 3, code: "0123", name: "Nitrile gloves", price: 12.5, stock: 10 });
   table.put({
     PK: "TEAM#team-a",
@@ -62,8 +82,8 @@ function seed() {
     now: () => NOW,
   });
   const dbFor: DbForAccount = (scope) =>
-    table.scoped([`USER#${scope.userId}`, `TEAM#${scope.teamId ?? ACCOUNT_TAG_UNUSED}`, `INVITEE#${scope.invitee ?? ACCOUNT_TAG_UNUSED}`, `USER#${scope.member ?? ACCOUNT_TAG_UNUSED}`]);
-  accountHandler = createAccountHandler({ dbFor, userInfo: async () => Promise.reject(new Error("not used")), issuerUrl: ISSUER, obs, now: () => NOW });
+    table.scoped(accountPartitions(scope));
+  accountHandler = createAccountHandler({ dbFor, userInfo: async () => Promise.reject(new Error("not used")), issuerUrl: ISSUER, obs, mailer: mails.mailer, now: () => NOW });
 }
 
 beforeEach(seed);
@@ -128,11 +148,19 @@ const MEMBER_CASES: Record<string, Omit<Case, "minRole">> = {
   "GET /teams/{teamId}/members": { method: "GET", path: "/teams/team-a/members" },
   "PATCH /teams/{teamId}/members/{userId}": { method: "PATCH", path: `/teams/team-a/members/${TARGET}`, body: { role: "contributor" } },
   "DELETE /teams/{teamId}/members/{userId}": { method: "DELETE", path: `/teams/team-a/members/${TARGET}` },
+  "GET /teams/{teamId}/invites": { method: "GET", path: "/teams/team-a/invites" },
+  "POST /teams/{teamId}/invites": { method: "POST", path: "/teams/team-a/invites", body: { email: "new@example.com", role: "viewer" } },
+  "DELETE /teams/{teamId}/invites/{inviteId}": { method: "DELETE", path: `/teams/team-a/invites/${INVITE}` },
+  "POST /teams/{teamId}/invites/{inviteId}/resend": { method: "POST", path: `/teams/team-a/invites/${INVITE}/resend` },
 };
 const MEMBER_MIN_ROLE: Record<string, TeamRole> = {
   "GET /teams/{teamId}/members": "owner",
   "PATCH /teams/{teamId}/members/{userId}": "owner",
   "DELETE /teams/{teamId}/members/{userId}": "owner",
+  "GET /teams/{teamId}/invites": "owner",
+  "POST /teams/{teamId}/invites": "owner",
+  "DELETE /teams/{teamId}/invites/{inviteId}": "owner",
+  "POST /teams/{teamId}/invites/{inviteId}/resend": "owner",
 };
 
 const TEAM_ACCOUNT_ROUTES = ACCOUNT_ROUTES.filter((r) => r.path.startsWith("/teams/{teamId}"));

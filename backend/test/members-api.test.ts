@@ -8,11 +8,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { AccountScope, DbForAccount } from "../src/api/account-db.js";
 import { createAccountHandler } from "../src/api/account-handler.js";
 import type { DataEvent } from "../src/api/data-handler.js";
-import { ACCOUNT_ROUTES, ACCOUNT_TAG_UNUSED, routeKey } from "../src/api/routes.js";
+import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
 import { MEMBER_ROW_ATTRIBUTES } from "../src/data/schema.js";
 import type { Observability } from "../src/observability/index.js";
+import { accountPartitions, fakeMailer } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
+const mails = fakeMailer();
 const NOW = Date.parse("2026-09-26T12:00:00Z");
 const ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_pool";
 const OWNER = "user-owner";
@@ -44,7 +46,7 @@ beforeEach(() => {
   team("team-b", { [OUTSIDER]: "owner" });
   const dbFor: DbForAccount = (scope) => {
     scopes.push(scope);
-    return table.scoped([`USER#${scope.userId}`, `TEAM#${scope.teamId ?? ACCOUNT_TAG_UNUSED}`, `INVITEE#${scope.invitee ?? ACCOUNT_TAG_UNUSED}`, `USER#${scope.member ?? ACCOUNT_TAG_UNUSED}`]);
+    return table.scoped(accountPartitions(scope));
   };
   const obs = {
     region: "test-local-1",
@@ -52,7 +54,7 @@ beforeEach(() => {
     count: () => {},
     flush: () => {},
   } as unknown as Observability;
-  handler = createAccountHandler({ dbFor, userInfo: async () => Promise.reject(new Error("not used")), issuerUrl: ISSUER, obs, now: () => NOW });
+  handler = createAccountHandler({ dbFor, userInfo: async () => Promise.reject(new Error("not used")), issuerUrl: ISSUER, obs, mailer: mails.mailer, now: () => NOW });
 });
 
 function event(method: string, path: string, user: string, body?: unknown, rawBody?: string): DataEvent {

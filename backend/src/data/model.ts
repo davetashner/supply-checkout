@@ -77,10 +77,12 @@ export interface Invite {
 }
 
 /**
- * Why an invite's email failed: a permanent bounce or a complaint. SES
- * suppresses the address either way. Transient bounces don't fail an invite.
+ * Why an invite's email failed: a permanent bounce or a complaint (SES
+ * suppresses the address either way; the email-events handler records these),
+ * or SES refused to send it at all (`not_sent`, recorded by the request that
+ * created or re-sent the invite). Transient bounces don't fail an invite.
  */
-export type InviteFailure = "bounced" | "complained";
+export type InviteFailure = "bounced" | "complained" | "not_sent";
 
 /** True for a role a MEMBER item may hold. */
 export function isMemberRole(value: unknown): value is MemberRole {
@@ -121,6 +123,16 @@ export const TRIAL_DAYS = 14;
 
 /** Teams one user may create per UTC day: a guard against scripts and runaway retries. */
 export const TEAMS_PER_USER_PER_DAY = 5;
+
+/** Invites (new or re-sent) one team may send per UTC day. */
+export const INVITES_PER_TEAM_PER_DAY = 50;
+
+/**
+ * Invites (new or re-sent) one address may be sent per UTC day, from all teams
+ * together. A complaint suppresses the address for Cognito's sign-in codes
+ * too, so invites mustn't be a way to flood someone's mailbox.
+ */
+export const INVITES_PER_ADDRESS_PER_DAY = 5;
 
 /** Teams one user may belong to. It bounds the per-team work /me does (a role session each). */
 export const MAX_TEAMS_PER_USER = 20;
