@@ -569,6 +569,15 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await expect(setSheetLine(db, contributor, sheet.id, "x", long, s.version)).rejects.toThrow(InvalidInputError);
       await expect(setSheetLine(db, contributor, sheet.id, "x", { ...gloves, code: 5 as unknown as string }, s.version)).rejects.toThrow(InvalidInputError);
       expect((await setSheetLine(db, contributor, sheet.id, "x", { ...gloves, code: "1".repeat(256) }, s.version)).items.x?.code).toHaveLength(256);
+      // A line's cost each (ADR 0014) is kept, and has to be an amount in whole cents
+      s = await setSheetLine(db, contributor, sheet.id, "x", { ...gloves, cost: 9.99 }, s.version + 1);
+      expect(s.items.x).toEqual({ ...gloves, cost: 9.99 });
+      const costed = await createSheet(db, contributor, { client: "x", date: "2026-09-25", items: { a: { ...rags, cost: 0 } } });
+      expect((await getSheet(db, viewer, costed.id))?.items.a).toEqual({ ...rags, cost: 0 });
+      for (const cost of [-0.01, Number.NaN, "1" as unknown as number, 1.234, 1_000_001]) {
+        await expect(setSheetLine(db, contributor, sheet.id, "x", { ...gloves, cost }, s.version)).rejects.toThrow(InvalidInputError);
+        await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", items: { a: { ...rags, cost } } })).rejects.toThrow(InvalidInputError);
+      }
       await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", source: null as unknown as { store: string; receiptDate: string } })).rejects.toThrow(InvalidInputError);
       await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", source: { store: 1 as unknown as string, receiptDate: "" } })).rejects.toThrow(InvalidInputError);
       await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", createdByName: "x".repeat(201) })).rejects.toThrow(InvalidInputError);

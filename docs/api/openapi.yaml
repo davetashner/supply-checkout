@@ -58,7 +58,9 @@ info:
       `GSI1SK`, `GSI2PK`, `GSI2SK`, `type`, `id`, `key`, `version`, `teamId`. For sheets, `date` must be a string
       and `items` an object. A barcode (`code`, on a product and on each line
       in a sheet's `items`) must be a string of at most 256 characters, the
-      product key limit; it's empty for an item without a barcode.
+      product key limit; it's empty for an item without a barcode. A line's
+      `cost`, if present, must be a `Money` amount (0 to 1,000,000, at most
+      two decimals; ADR 0014).
     - A product's `stock` changes only through the stock commands (the
       `commands` tag) and the CSV import, which record a movement for every
       change. A product `set` or `update` keeps the stored `stock`: leave it
@@ -1159,7 +1161,7 @@ components:
         code: { type: string, maxLength: 256, description: 'The barcode, exported as "Barcode" in the sheet CSV; empty for an item without one.' }
         name: { type: string }
         price: { type: number, minimum: 0 }
-        cost: { type: number, minimum: 0, description: "What the business paid per each, copied from the product at the line's first checkout (ADR 0014). Absent when unknown." }
+        cost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "What the business paid per each (ADR 0014): copied from the product at the line's first checkout, or the receipt's cost each for a line a receipt adds. Absent when unknown; any other value is refused with 400 `bad_request`." }
         out: { type: integer, minimum: 0, description: How many were taken. }
         returned: { type: integer, minimum: 0, description: How many came back. }
     Team:

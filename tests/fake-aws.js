@@ -216,6 +216,10 @@ export class FakeBackend {
     const data = method === "PUT" ? clone(call.body.data) : clone(cur.data);
     if (method === "PATCH") merge(data, call.body.data);
     if (coll === "products" && stored !== undefined) data.stock = stored;
+    // A sheet line's cost each is an amount in whole cents (ADR 0014), as backend/src/data/documents.ts checks
+    const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
+    const badCost = coll === "sheets" && Object.values(data.items || {}).some((l) => l && typeof l === "object" && "cost" in l && !cents(l.cost));
+    if (badCost) return err(400, "bad_request");
     this.write(team, coll, id, data);
     return [200, out()];
   }

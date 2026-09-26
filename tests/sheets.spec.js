@@ -125,7 +125,29 @@ test("edits the price and counts on a sheet line", async ({ page }) => {
   await modal(page).getByRole("button", { name: "Save" }).click();
   await expect(lineRow(page, "Paper towels")).toContainText("$9.00");
   await expect(lineRow(page, "Paper towels").locator("td").nth(3)).toHaveText("4");
+});
 
+// ADR 0014: a typed price is saved in whole cents, halves up. The fields' step="0.01" makes a
+// browser that validates forms refuse 1.005, so the test lifts it to check the save itself.
+const anyStep = (field) => field.evaluate((el) => { el.step = "any"; });
+
+test("a typed price on a sheet line or a new item is saved rounded to cents", async ({ page }) => {
+  await openEcho(page);
+  await lineRow(page, "Paper towels").click();
+  await anyStep(modal(page).getByLabel("Price each on this sheet ($)"));
+  await modal(page).getByLabel("Price each on this sheet ($)").fill("1.005");
+  await modal(page).getByRole("button", { name: "Save" }).click();
+  await expect(lineRow(page, "Paper towels")).toContainText("$1.01");
+  expect(await page.evaluate(() => window.__mock.docs.get("sheets/s1").items.SKU1.price)).toBe(1.01);
+
+  await enterBarcode(page, "NEW3");
+  await modal(page).getByLabel("Item name").fill("Sponges");
+  await anyStep(modal(page).getByLabel("Price each ($)"));
+  await modal(page).getByLabel("Price each ($)").fill("1.005");
+  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await expect(lineRow(page, "Sponges")).toContainText("$1.01");
+  const saved = await page.evaluate(() => [window.__mock.docs.get("products/NEW3").price, window.__mock.docs.get("sheets/s1").items.NEW3.price]);
+  expect(saved).toEqual([1.01, 1.01]);
 });
 
 test("removes a line from a sheet with two taps", async ({ page }) => {
