@@ -17,14 +17,14 @@ export function closeModal() { $("#overlay").hidden = true; $("#modal").innerHTM
 $("#overlay").addEventListener("click", e => { if (e.target.id === "overlay") closeModal(); });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#overlay").hidden) closeModal(); });
 
-export function armButton(btn, label, action) {
-  // Two-tap confirm, since the viewer can't show confirm() dialogs
-  btn.addEventListener("click", () => {
-    if (btn.classList.contains("armed")) { action(); return; }
-    btn.classList.add("armed"); const old = btn.textContent; btn.textContent = label;
-    setTimeout(() => { btn.classList.remove("armed"); btn.textContent = old; }, 3500);
-  });
+// Two-tap confirm, since the viewer can't show confirm() dialogs. arm() is one tap, for a
+// delegated handler; armButton wires it to a button.
+export function arm(btn, label, action) {
+  if (btn.classList.contains("armed")) { action(); return; }
+  btn.classList.add("armed"); const old = btn.textContent; btn.textContent = label;
+  setTimeout(() => { btn.classList.remove("armed"); btn.textContent = old; }, 3500);
 }
+export const armButton = (btn, label, action) => btn.addEventListener("click", () => arm(btn, label, action));
 
 /* ---------- modals ---------- */
 export function stepperHTML(id, val, max) {
@@ -32,6 +32,8 @@ export function stepperHTML(id, val, max) {
 }
 export const setText = (el, t) => { if (el.textContent !== t) el.textContent = t; };
 export const setHTML = (el, h) => { if (el.innerHTML !== h) el.innerHTML = h; };
+// Like setAttribute, but leaves an unchanged attribute alone (setting the same value is still a DOM change)
+export const setAttr = (el, name, v) => { if (el.getAttribute(name) !== String(v)) el.setAttribute(name, v); };
 // Makes el's content match html, changing only the nodes that differ. Unlike innerHTML,
 // the elements that stay (a button being tapped) are kept: WebKit drops a tap whose
 // element is replaced between touchstart and touchend. Wire events by delegation on el.
