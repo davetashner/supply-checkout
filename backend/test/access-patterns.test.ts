@@ -1,0 +1,369 @@
+// Every entity in ADR 0005, against DynamoDB Local. CI runs DynamoDB Local as a
+// service container and sets DYNAMODB_ENDPOINT; without it these are skipped
+// locally and fail in CI.
+
+import { describe, expect, it } from "vitest";
+import {
+  acceptInvite,
+  adjustStock,
+  authorizeTeam,
+  ConflictError,
+  createInvite,
+  createProduct,
+  createSheet,
+  createTeam,
+  deleteProduct,
+  deleteSheet,
+  findInvite,
+  ForbiddenError,
+  getMember,
+  getProduct,
+  getReceiptUsage,
+  getSheet,
+  getTeam,
+  InvalidInputError,
+  LimitReachedError,
+  linkStripeCustomer,
+  listAudit,
+  listInvites,
+  listMembers,
+  listProducts,
+  listSheets,
+  listSheetsByDate,
+  listTeamsForUser,
+  markWebhookProcessed,
+  recordAudit,
+  recordReceiptRead,
+  removeMember,
+  removeSheetLine,
+  revokeInvite,
+  setMemberRole,
+  setSheetLine,
+  teamContextForStripeCustomer,
+  updateProduct,
+  updateSheet,
+  updateTeam,
+  type Db,
+  type TeamContext,
+} from "../src/data/index.js";
+import { endpoint, newUser, rawItem, REGION, useTable } from "./helpers.js";
+
+describe("DynamoDB Local", () => {
+  it.runIf(process.env.CI)("is configured in CI", () => {
+    expect(endpoint, "Set DYNAMODB_ENDPOINT to DynamoDB Local").toBeTruthy();
+  });
+});
+
+describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
+  const table = useTable();
+  let db: Db;
+
+  /** A new team with an owner, plus a contributor and a viewer. */
+  async function team(name = "Echo Cleaning") {
+    db = table.db;
+    const ownerId = newUser();
+    const { team: created, context: owner } = await createTeam(db, { userId: ownerId, email: "owner@example.com" }, { name });
+    const join = async (role: "contributor" | "viewer") => {
+      const { token } = await createInvite(db, owner, { email: `${role}@example.com`, role, teamName: name });
+      return acceptInvite(db, { userId: newUser() }, token);
+    };
+    return { team: created, owner, contributor: await join("contributor"), viewer: await join("viewer") };
+  }
+
+  describe("Team", () => {
+    it("is created with the owner, the reverse lookup, and the local region as its home region", async () => {
+      const { team: t, owner } = await team();
+      expect(t.homeRegion).toBe(REGION);
+      expect(owner.homeRegion).toBe(REGION);
+      expect(await rawItem(db, `TEAM#${t.teamId}`, "META")).toMatchObject({ type: "team", name: "Echo Cleaning", homeRegion: REGION, version: 1 });
+      expect(await getTeam(db, owner)).toMatchObject({ teamId: t.teamId, homeRegion: REGION, status: "trialing" });
+    });
+
+    it("is renamed by owners with a version check; plan and status only by the billing system", async () => {
+      const { owner, contributor } = await team();
+      const renamed = await updateTeam(db, owner, { name: "Echo Clean Co" }, 1);
+      expect(renamed).toMatchObject({ name: "Echo Clean Co", version: 2 });
+      await expect(updateTeam(db, owner, { name: "Stale" }, 1)).rejects.toThrow(ConflictError);
+      await expect(updateTeam(db, contributor, { name: "Nope" }, 2)).rejects.toThrow(ForbiddenError);
+      await expect(updateTeam(db, owner, { plan: "pro" }, 2)).rejects.toThrow(ForbiddenError);
+      await expect(updateTeam(db, owner, { name: " " }, 2)).rejects.toThrow(InvalidInputError);
+    });
+  });
+
+  describe("Member and user's teams", () => {
+    it("authorizes members with their role and home region, and nobody else", async () => {
+      const { team: t, owner, viewer } = await team();
+      const again = await authorizeTeam(db, owner.userId, t.teamId);
+      expect(again).toMatchObject({ teamId: t.teamId, userId: owner.userId, role: "owner", homeRegion: REGION });
+      expect((await authorizeTeam(db, viewer.userId, t.teamId)).role).toBe("viewer");
+      await expect(authorizeTeam(db, newUser(), t.teamId)).rejects.toThrow(ForbiddenError);
+      await expect(authorizeTeam(db, owner.userId, "no-such-team")).rejects.toThrow(ForbiddenError);
+      await expect(authorizeTeam(db, owner.userId, "TEAM#x")).rejects.toThrow(InvalidInputError);
+    });
+
+    it("lists members and each user's teams for the switcher", async () => {
+      const { team: t, owner, contributor, viewer } = await team();
+      const members = await listMembers(db, viewer);
+      expect(members.map((m) => [m.userId, m.role]).sort()).toEqual(
+        [[owner.userId, "owner"], [contributor.userId, "contributor"], [viewer.userId, "viewer"]].sort(),
+      );
+      const { team: second } = await createTeam(db, { userId: owner.userId }, { name: "Second Co" });
+      const mine = await listTeamsForUser(db, owner.userId);
+      expect(mine.map((r) => r.teamId).sort()).toEqual([t.teamId, second.teamId].sort());
+      expect(mine.find((r) => r.teamId === t.teamId)).toMatchObject({ teamName: "Echo Cleaning", role: "owner" });
+    });
+
+    it("changes roles and removes members in both places at once", async () => {
+      const { owner, contributor, viewer } = await team();
+      await setMemberRole(db, owner, viewer.userId, "contributor");
+      expect((await getMember(db, owner, viewer.userId))?.role).toBe("contributor");
+      expect((await listTeamsForUser(db, viewer.userId))[0]?.role).toBe("contributor");
+      await expect(setMemberRole(db, contributor, viewer.userId, "owner")).rejects.toThrow(ForbiddenError);
+      await expect(setMemberRole(db, owner, owner.userId, "viewer")).rejects.toThrow(ForbiddenError);
+      await expect(setMemberRole(db, owner, newUser(), "viewer")).rejects.toThrow(ConflictError);
+
+      await removeMember(db, owner, viewer.userId);
+      expect(await getMember(db, owner, viewer.userId)).toBeUndefined();
+      expect(await listTeamsForUser(db, viewer.userId)).toEqual([]);
+      await expect(authorizeTeam(db, viewer.userId, owner.teamId)).rejects.toThrow(ForbiddenError);
+      // A contributor can leave, but can't remove anyone else
+      await expect(removeMember(db, contributor, owner.userId)).rejects.toThrow(ForbiddenError);
+      await removeMember(db, contributor, contributor.userId);
+      expect((await listMembers(db, owner)).map((m) => m.userId)).toEqual([owner.userId]);
+    });
+  });
+
+  describe("Invite", () => {
+    it("stores only the token's hash, finds the invite by it, and works once", async () => {
+      const { owner } = await team();
+      const { invite, token } = await createInvite(db, owner, { email: "New@Example.com", role: "viewer", teamName: "Echo Cleaning" });
+      const stored = await rawItem(db, `TEAM#${owner.teamId}`, `INVITE#${invite.inviteId}`);
+      expect(JSON.stringify(stored)).not.toContain(token);
+      expect(stored).toMatchObject({ email: "new@example.com", GSI1SK: "INVITE" });
+      expect(stored?.expiresAt).toBeGreaterThan(Date.now() / 1000);
+      expect((await listInvites(db, owner)).map((i) => i.inviteId)).toEqual([invite.inviteId]);
+      expect(await findInvite(db, token)).toMatchObject({ inviteId: invite.inviteId, teamId: owner.teamId });
+
+      const userId = newUser();
+      const joined = await acceptInvite(db, { userId }, token);
+      expect(joined).toMatchObject({ teamId: owner.teamId, role: "viewer" });
+      expect(await listInvites(db, owner)).toEqual([]);
+      await expect(acceptInvite(db, { userId: newUser() }, token)).rejects.toThrow(InvalidInputError);
+    });
+
+    it("ignores expired, revoked and unknown tokens, and only owners invite", async () => {
+      const { owner, contributor } = await team();
+      const expired = await createInvite(db, owner, { email: "a@example.com", role: "viewer", teamName: "x", ttlDays: -1 });
+      expect(await findInvite(db, expired.token)).toBeUndefined();
+      const revoked = await createInvite(db, owner, { email: "b@example.com", role: "viewer", teamName: "x" });
+      await revokeInvite(db, owner, revoked.invite.inviteId);
+      expect(await findInvite(db, revoked.token)).toBeUndefined();
+      expect(await findInvite(db, "short")).toBeUndefined();
+      expect(await findInvite(db, "x".repeat(43))).toBeUndefined();
+      await expect(createInvite(db, contributor, { email: "c@example.com", role: "viewer", teamName: "x" })).rejects.toThrow(ForbiddenError);
+      await expect(createInvite(db, owner, { email: "not-an-email", role: "viewer", teamName: "x" })).rejects.toThrow(InvalidInputError);
+      await expect(createInvite(db, owner, { email: "d@example.com", role: "system" as "viewer", teamName: "x" })).rejects.toThrow(InvalidInputError);
+    });
+
+    it("rejects an invite for someone who is already a member", async () => {
+      const { owner, viewer } = await team();
+      const { token } = await createInvite(db, owner, { email: "v@example.com", role: "contributor", teamName: "x" });
+      await expect(acceptInvite(db, { userId: viewer.userId }, token)).rejects.toThrow(ConflictError);
+      // The failed transaction left the invite in place
+      expect(await findInvite(db, token)).toBeDefined();
+    });
+  });
+
+  describe("Product", () => {
+    it("is created, listed, read, edited with a version check, and deleted", async () => {
+      const { owner, contributor, viewer } = await team();
+      const created = await createProduct(db, contributor, "0123456789", { code: "0123456789", name: "Glass cleaner", price: 4.5 }, 3);
+      expect(created).toMatchObject({ key: "0123456789", stock: 3, version: 1 });
+      await expect(createProduct(db, contributor, "0123456789", { code: "", name: "Dup", price: 1 })).rejects.toThrow(ConflictError);
+      await createProduct(db, owner, "no-barcode-sponge", { code: "", name: "Sponge", price: 1 });
+      expect((await listProducts(db, viewer)).map((p) => p.key).sort()).toEqual(["0123456789", "no-barcode-sponge"]);
+
+      const edited = await updateProduct(db, contributor, "0123456789", { code: "0123456789", name: "Glass cleaner 1L", price: 5 }, 1);
+      expect(edited).toMatchObject({ name: "Glass cleaner 1L", price: 5, stock: 3, version: 2 });
+      await expect(updateProduct(db, contributor, "0123456789", { code: "", name: "Stale", price: 5 }, 1)).rejects.toThrow(ConflictError);
+      await expect(updateProduct(db, contributor, "missing", { code: "", name: "x", price: 5 }, 1)).rejects.toThrow(ConflictError);
+      await expect(updateProduct(db, viewer, "0123456789", { code: "", name: "x", price: 5 }, 2)).rejects.toThrow(ForbiddenError);
+      await expect(createProduct(db, contributor, "bad", { code: "", name: "x", price: -1 })).rejects.toThrow(InvalidInputError);
+
+      await expect(deleteProduct(db, contributor, "0123456789", 1)).rejects.toThrow(ConflictError);
+      await deleteProduct(db, contributor, "0123456789", 2);
+      await deleteProduct(db, contributor, "no-barcode-sponge");
+      expect(await getProduct(db, viewer, "0123456789")).toBeUndefined();
+    });
+
+    it("changes stock only by atomic ADD, which never conflicts with an edit", async () => {
+      const { contributor } = await team();
+      await createProduct(db, contributor, "towels", { code: "", name: "Towels", price: 2 }, 10);
+      // Ten checkouts at once all land: no lost updates
+      await Promise.all(Array.from({ length: 10 }, () => adjustStock(db, contributor, "towels", -1)));
+      expect((await getProduct(db, contributor, "towels"))?.stock).toBe(0);
+      expect(await adjustStock(db, contributor, "towels", 4)).toBe(4);
+      // The version didn't move, so an edit opened before the count changes still saves
+      expect(await updateProduct(db, contributor, "towels", { code: "", name: "Bath towels", price: 2 }, 1)).toMatchObject({ stock: 4, version: 2 });
+      await expect(adjustStock(db, contributor, "missing", 1)).rejects.toThrow(ConflictError);
+      await expect(adjustStock(db, contributor, "towels", 0.5)).rejects.toThrow(InvalidInputError);
+    });
+  });
+
+  describe("Sheet", () => {
+    const line = (out: number, returned = 0) => ({ name: "Towels", price: 2, out, returned });
+
+    it("is keyed by an immutable ID and read by ID alone", async () => {
+      const { contributor, viewer } = await team();
+      const sheet = await createSheet(db, contributor, { client: "Smith house", date: "2026-09-25", items: { towels: line(2) } });
+      const stored = await rawItem(db, `TEAM#${contributor.teamId}`, `SHEET#${sheet.id}`);
+      expect(stored).toMatchObject({ GSI1PK: `TEAM#${contributor.teamId}#SHEETS`, GSI1SK: `2026-09-25#${sheet.id}`, status: "open", createdBy: contributor.userId });
+      expect(await getSheet(db, viewer, sheet.id)).toMatchObject({ id: sheet.id, client: "Smith house", items: { towels: line(2) }, version: 1 });
+      await expect(createSheet(db, viewer, { client: "x", date: "2026-09-25" })).rejects.toThrow(ForbiddenError);
+      await expect(createSheet(db, contributor, { client: "x", date: "Sept 25" })).rejects.toThrow(InvalidInputError);
+      await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", items: { t: line(1, 2) } })).rejects.toThrow(InvalidInputError);
+    });
+
+    it("changes date in one update, keeping its ID, lines and place in date order", async () => {
+      const { contributor, viewer } = await team();
+      const a = await createSheet(db, contributor, { client: "A", date: "2026-09-01" });
+      const b = await createSheet(db, contributor, { client: "B", date: "2026-09-10" });
+      const c = await createSheet(db, contributor, { client: "C", date: "2026-09-20", items: { towels: line(1) } });
+      const moved = await updateSheet(db, contributor, c.id, { date: "2026-08-15", client: "C (moved)" }, 1);
+      expect(moved).toMatchObject({ id: c.id, date: "2026-08-15", client: "C (moved)", items: { towels: line(1) }, version: 2 });
+      expect(await getSheet(db, viewer, c.id)).toMatchObject({ date: "2026-08-15" });
+
+      const newestFirst = await listSheetsByDate(db, viewer);
+      expect(newestFirst.items.map((s) => s.id)).toEqual([b.id, a.id, c.id]);
+      const oldestFirst = await listSheetsByDate(db, viewer, { oldestFirst: true });
+      expect(oldestFirst.items.map((s) => s.id)).toEqual([c.id, a.id, b.id]);
+      const september = await listSheetsByDate(db, viewer, { from: "2026-09-01", to: "2026-09-30" });
+      expect(september.items.map((s) => s.id)).toEqual([b.id, a.id]);
+      expect((await listSheetsByDate(db, viewer, { from: "2026-09-05" })).items.map((s) => s.id)).toEqual([b.id]);
+
+      // Pages follow on with the cursor
+      const first = await listSheetsByDate(db, viewer, { limit: 2 });
+      expect(first.items).toHaveLength(2);
+      const rest = await listSheetsByDate(db, viewer, { limit: 2, cursor: first.cursor });
+      expect([...first.items, ...rest.items].map((s) => s.id)).toEqual([b.id, a.id, c.id]);
+      expect(rest.cursor).toBeUndefined();
+
+      expect((await listSheets(db, viewer)).map((s) => s.id).sort()).toEqual([a.id, b.id, c.id].sort());
+    });
+
+    it("sets, returns and removes lines, closes and reopens, with a version check on each", async () => {
+      const { contributor } = await team();
+      const sheet = await createSheet(db, contributor, { client: "Smith house", date: "2026-09-25" });
+      let s = await setSheetLine(db, contributor, sheet.id, "towels", line(3), 1);
+      s = await setSheetLine(db, contributor, sheet.id, "glass cleaner #2", { name: "Glass", price: 4, out: 1, returned: 0 }, s.version);
+      s = await setSheetLine(db, contributor, sheet.id, "towels", line(3, 2), s.version);
+      expect(s.items).toEqual({ towels: line(3, 2), "glass cleaner #2": { name: "Glass", price: 4, out: 1, returned: 0 } });
+      await expect(setSheetLine(db, contributor, sheet.id, "towels", line(4), 1)).rejects.toThrow(ConflictError);
+
+      s = await removeSheetLine(db, contributor, sheet.id, "glass cleaner #2", s.version);
+      expect(Object.keys(s.items)).toEqual(["towels"]);
+
+      s = await updateSheet(db, contributor, sheet.id, { status: "closed" }, s.version);
+      expect(s.status).toBe("closed");
+      expect(s.closedAt).toBeTruthy();
+      s = await updateSheet(db, contributor, sheet.id, { status: "open", preparedBy: "Dana" }, s.version);
+      expect(s).toMatchObject({ status: "open", preparedBy: "Dana" });
+      await expect(updateSheet(db, contributor, sheet.id, { status: "lost" as "open" }, s.version)).rejects.toThrow(InvalidInputError);
+
+      await expect(deleteSheet(db, contributor, sheet.id, 1)).rejects.toThrow(ConflictError);
+      await deleteSheet(db, contributor, sheet.id, s.version);
+      expect(await getSheet(db, contributor, sheet.id)).toBeUndefined();
+      const other = await createSheet(db, contributor, { client: "x", date: "2026-09-26" });
+      await deleteSheet(db, contributor, other.id);
+      expect(await listSheets(db, contributor)).toEqual([]);
+    });
+  });
+
+  describe("Receipt usage", () => {
+    it("counts atomically per month and stops at the limit", async () => {
+      const { contributor, viewer } = await team();
+      const counts = await Promise.all(Array.from({ length: 5 }, () => recordReceiptRead(db, contributor, "2026-09", 5)));
+      expect(counts.sort()).toEqual([1, 2, 3, 4, 5]);
+      await expect(recordReceiptRead(db, contributor, "2026-09", 5)).rejects.toThrow(LimitReachedError);
+      expect(await getReceiptUsage(db, viewer, "2026-09")).toBe(5);
+      expect(await getReceiptUsage(db, viewer, "2026-10")).toBe(0);
+      expect(await recordReceiptRead(db, contributor, "2026-10", 5)).toBe(1);
+      await expect(recordReceiptRead(db, viewer, "2026-10", 5)).rejects.toThrow(ForbiddenError);
+      await expect(recordReceiptRead(db, contributor, "2026-10", -1)).rejects.toThrow(InvalidInputError);
+    });
+  });
+
+  describe("Audit event", () => {
+    it("records who did what, with a TTL, and lists newest first for owners", async () => {
+      const { owner, viewer } = await team();
+      const t0 = new Date("2026-09-25T10:00:00Z");
+      await recordAudit(db, owner, { action: "sheet.create", target: "s1" }, t0);
+      await recordAudit(db, viewer, { action: "sheet.export", target: "s1" }, new Date(t0.getTime() + 1000));
+      const latest = await recordAudit(db, owner, { action: "product.delete", target: "p1", detail: { name: "Towels" } }, new Date(t0.getTime() + 2000));
+      expect(latest.expiresAt).toBe(Math.floor(t0.getTime() / 1000) + 2 + 365 * 86400);
+
+      const page1 = await listAudit(db, owner, { limit: 2 });
+      expect(page1.items.map((e) => e.action)).toEqual(["product.delete", "sheet.export"]);
+      expect(page1.items[1]?.userId).toBe(viewer.userId);
+      const page2 = await listAudit(db, owner, { limit: 2, cursor: page1.cursor });
+      expect(page2.items.map((e) => e.action)).toEqual(["sheet.create"]);
+      await expect(listAudit(db, viewer)).rejects.toThrow(ForbiddenError);
+      await expect(recordAudit(db, owner, { action: "Bad Action!" })).rejects.toThrow(InvalidInputError);
+    });
+  });
+
+  describe("Stripe link and processed webhook", () => {
+    it("maps a Stripe customer to one team, for webhooks acting as the system", async () => {
+      const { owner, contributor } = await team();
+      const customerId = `cus_${owner.teamId.slice(0, 8)}`;
+      await expect(linkStripeCustomer(db, contributor, customerId)).rejects.toThrow(ForbiddenError);
+      await linkStripeCustomer(db, owner, customerId);
+      await linkStripeCustomer(db, owner, customerId); // idempotent
+      expect(await rawItem(db, `STRIPE#${customerId}`, "TEAM")).toMatchObject({ teamId: owner.teamId });
+
+      const system = (await teamContextForStripeCustomer(db, customerId)) as TeamContext;
+      expect(system).toMatchObject({ teamId: owner.teamId, role: "system", homeRegion: REGION });
+      const updated = await updateTeam(db, system, { plan: "starter", seats: 5, status: "active" }, 1);
+      expect(updated).toMatchObject({ plan: "starter", seats: 5, status: "active", stripeCustomerId: customerId });
+      expect(await teamContextForStripeCustomer(db, "cus_unknown")).toBeUndefined();
+
+      // Neither the customer nor the team can be re-linked elsewhere
+      const other = await team("Other Co");
+      await expect(linkStripeCustomer(db, other.owner, customerId)).rejects.toThrow(ConflictError);
+      await expect(linkStripeCustomer(db, owner, `${customerId}x`)).rejects.toThrow(ConflictError);
+    });
+
+    it("processes each webhook event once, with a 30-day TTL", async () => {
+      db = table.db;
+      const eventId = `evt_${newUser()}`;
+      const now = new Date("2026-09-25T00:00:00Z");
+      expect(await markWebhookProcessed(db, eventId, now)).toBe(true);
+      expect(await markWebhookProcessed(db, eventId, now)).toBe(false);
+      expect((await rawItem(db, `WEBHOOK#${eventId}`, "DONE"))?.expiresAt).toBe(now.getTime() / 1000 + 30 * 86400);
+    });
+  });
+
+  describe("team isolation", () => {
+    it("never shows or changes one team's data through another team's context", async () => {
+      const a = await team("Team A");
+      const b = await team("Team B");
+      const sheet = await createSheet(db, a.contributor, { client: "A's client", date: "2026-09-25" });
+      await createProduct(db, a.contributor, "shared-key", { code: "", name: "A's towels", price: 1 }, 5);
+      await createProduct(db, b.contributor, "shared-key", { code: "", name: "B's towels", price: 1 }, 1);
+
+      expect(await getSheet(db, b.owner, sheet.id)).toBeUndefined();
+      expect(await listSheets(db, b.owner)).toEqual([]);
+      expect((await listSheetsByDate(db, b.owner)).items).toEqual([]);
+      expect((await listProducts(db, b.owner)).map((p) => p.name)).toEqual(["B's towels"]);
+      await expect(updateSheet(db, b.owner, sheet.id, { client: "hijack" }, 1)).rejects.toThrow(ConflictError);
+      await adjustStock(db, b.contributor, "shared-key", -1);
+      expect((await getProduct(db, a.viewer, "shared-key"))?.stock).toBe(5);
+      expect((await listMembers(db, b.owner)).some((m) => m.userId === a.owner.userId)).toBe(false);
+
+      // A cursor from team A's listing is refused in team B
+      await createSheet(db, a.contributor, { client: "A2", date: "2026-09-26" });
+      const pageA = await listSheetsByDate(db, a.viewer, { limit: 1 });
+      await expect(listSheetsByDate(db, b.viewer, { limit: 1, cursor: pageA.cursor })).rejects.toThrow(InvalidInputError);
+    });
+  });
+});

@@ -1,5 +1,5 @@
 import { App, type Stack, Token, Validations } from "aws-cdk-lib";
-import { Template } from "aws-cdk-lib/assertions";
+import { Match, Template } from "aws-cdk-lib/assertions";
 import { Bucket } from "aws-cdk-lib/aws-s3";
 import { AwsSolutionsChecks } from "cdk-nag";
 import { describe, expect, it } from "vitest";
@@ -111,6 +111,105 @@ describe("stack layout", () => {
     for (const stack of stacks.all) {
       expect(Template.fromStack(stack).toJSON()).toMatchSnapshot(stack.stackName);
     }
+  });
+});
+
+describe("app table (ADR 0005, ADR 0010)", () => {
+  const tableProps = (stack: Stack) => {
+    const tables = Template.fromStack(stack).findResources("AWS::DynamoDB::GlobalTable");
+    const [table, ...rest] = Object.values(tables);
+    expect(rest).toEqual([]);
+    return table;
+  };
+
+  it("is one global table in the primary region's data stack, with one replica there", () => {
+    const { stacks } = build();
+    const east = inRegion(stacks, "us-east-1");
+    const table = tableProps(east.data);
+    expect(table.Properties.Replicas).toHaveLength(1);
+    expect(table.Properties.Replicas[0].Region).toBe(east.data.region);
+    expect(table.Properties.TableName).toBe("supply-checkout-prod-app");
+    // No other stack in either region has a table yet (the second replica is phase 2)
+    for (const stack of stacks.all.filter((s) => s !== east.data)) {
+      Template.fromStack(stack).resourceCountIs("AWS::DynamoDB::GlobalTable", 0);
+      Template.fromStack(stack).resourceCountIs("AWS::DynamoDB::Table", 0);
+    }
+  });
+
+  it("follows the primary region when that is the other region", () => {
+    const { stacks } = build({ envName: "staging", regions: ["us-west-2"], primaryRegion: "us-west-2" });
+    const west = inRegion(stacks, "us-west-2");
+    const table = tableProps(west.data);
+    expect(table.Properties.Replicas.map((r: { Region: string }) => r.Region)).toEqual([west.data.region]);
+    expect(table.Properties.TableName).toBe("supply-checkout-staging-app");
+  });
+
+  it("is on-demand, streamed, keyed PK/SK with GSI1, TTL on expiresAt, and retained", () => {
+    const { stacks } = build();
+    const template = Template.fromStack(inRegion(stacks, "us-east-1").data);
+    template.hasResource("AWS::DynamoDB::GlobalTable", {
+      DeletionPolicy: "Retain",
+      UpdateReplacePolicy: "Retain",
+      Properties: {
+        BillingMode: "PAY_PER_REQUEST",
+        KeySchema: [
+          { AttributeName: "PK", KeyType: "HASH" },
+          { AttributeName: "SK", KeyType: "RANGE" },
+        ],
+        StreamSpecification: { StreamViewType: "NEW_AND_OLD_IMAGES" },
+        TimeToLiveSpecification: { AttributeName: "expiresAt", Enabled: true },
+        GlobalSecondaryIndexes: [
+          {
+            IndexName: "GSI1",
+            KeySchema: [
+              { AttributeName: "GSI1PK", KeyType: "HASH" },
+              { AttributeName: "GSI1SK", KeyType: "RANGE" },
+            ],
+            Projection: { ProjectionType: "ALL" },
+          },
+        ],
+        // No local secondary indexes: they can never be removed, and they cap
+        // each team's partition at 10 GB.
+        LocalSecondaryIndexes: Match.absent(),
+      },
+    });
+  });
+
+  it("has PITR, deletion protection and a customer-managed key with rotation on its replica", () => {
+    const { stacks } = build();
+    const template = Template.fromStack(inRegion(stacks, "us-east-1").data);
+    const keys = template.findResources("AWS::KMS::Key");
+    const [keyId, ...otherKeys] = Object.keys(keys);
+    expect(otherKeys).toEqual([]);
+    template.hasResource("AWS::KMS::Key", {
+      DeletionPolicy: "Retain",
+      UpdateReplacePolicy: "Retain",
+      Properties: { EnableKeyRotation: true },
+    });
+    template.hasResourceProperties("AWS::KMS::Alias", { AliasName: "alias/supply-checkout-prod-app-table" });
+    template.hasResourceProperties("AWS::DynamoDB::GlobalTable", {
+      SSESpecification: { SSEEnabled: true, SSEType: "KMS" },
+      Replicas: [
+        Match.objectLike({
+          DeletionProtectionEnabled: true,
+          PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+          SSESpecification: { KMSMasterKeyId: { "Fn::GetAtt": [keyId, "Arn"] } },
+        }),
+      ],
+    });
+  });
+
+  it("publishes the table name, ARNs and key ARN to SSM for the other stacks", () => {
+    const { stacks } = build();
+    const template = Template.fromStack(inRegion(stacks, "us-east-1").data);
+    for (const name of ["table-name", "table-arn", "table-stream-arn", "table-key-arn"]) {
+      template.hasResourceProperties("AWS::SSM::Parameter", { Name: `/supply-checkout/prod/data/${name}`, Type: "String" });
+    }
+  });
+
+  it("keeps the data stack termination-protected", () => {
+    const { stacks } = build();
+    expect(inRegion(stacks, "us-east-1").data.terminationProtection).toBe(true);
   });
 });
 
