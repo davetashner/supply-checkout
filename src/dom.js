@@ -32,6 +32,31 @@ export function stepperHTML(id, val, max) {
 }
 export const setText = (el, t) => { if (el.textContent !== t) el.textContent = t; };
 export const setHTML = (el, h) => { if (el.innerHTML !== h) el.innerHTML = h; };
+// Makes el's content match html, changing only the nodes that differ. Unlike innerHTML,
+// the elements that stay (a button being tapped) are kept: WebKit drops a tap whose
+// element is replaced between touchstart and touchend. Wire events by delegation on el.
+export function morph(el, html) {
+  const t = document.createElement("template"); t.innerHTML = html;
+  morphChildren(el, t.content);
+}
+function morphChildren(to, from) {
+  const want = [...from.childNodes];
+  want.forEach((n, i) => {
+    const old = to.childNodes[i];
+    if (!old) to.appendChild(n);
+    else if (old.isEqualNode(n)) return;
+    else if (old.nodeName !== n.nodeName) old.replaceWith(n);
+    else if (n.nodeType !== 1) old.nodeValue = n.nodeValue;
+    else {
+      if (!old.cloneNode(false).isEqualNode(n.cloneNode(false))) {
+        [...old.attributes].forEach(a => old.removeAttribute(a.name));
+        [...n.attributes].forEach(a => old.setAttribute(a.name, a.value));
+      }
+      morphChildren(old, n);
+    }
+  });
+  while (to.childNodes.length > want.length) to.lastChild.remove();
+}
 export function wireStepper(m, id, onChange) {
   const inp = m.querySelector("#" + id);
   // Only touch the DOM when something changed: iOS Safari drops a tap if the page

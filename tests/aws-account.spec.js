@@ -169,6 +169,9 @@ test.describe("sign-in", () => {
     const backend = new FakeBackend({ docs: seeded() });
     await openAws(page, backend);
     await connected(page);
+    // Wait for the re-list after subscribing too, or it can meet the ended session
+    // first and show the sign-in screen before the click (seen in iPhone Safari)
+    await expect.poll(() => ["products", "sheets"].map((c) => backend.requests("GET", `/teams/t1/${c}`).length)).toEqual([2, 2]);
     backend.token = "expired";
     backend.signedIn = false;
     await page.getByRole("button", { name: "+ New sheet" }).click();
