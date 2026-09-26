@@ -2,7 +2,7 @@ import "./theme.js";
 import { use, help } from "./runtime.js";
 import { checkOut, recordReturn, setStock, saveItem } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, newKey, uid, round2, numOrNull } from "./format.js";
-import { lines, totals } from "./sheet-math.js";
+import { lines, lineCharge, totals } from "./sheet-math.js";
 import { $, toast, openModal, closeModal, armButton, stepperHTML, setText, setHTML, morph, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
 import { RECEIPT_PROMPT, sampleErr } from "./receipt-prompt.js";
@@ -167,7 +167,7 @@ function drawSheet(s) {
         <tr class="${canWrite ? "click" : ""}" data-line="${esc(l.key)}" ${canWrite ? 'tabindex="0"' : ""}>
           <td>${esc(l.name || "Unnamed item")}<span class="code">${esc(codeText(l.code))}</span></td>
           <td>${money(l.price)}</td><td>${o}</td><td>${r}</td>
-          <td>${u}</td><td class="charge">${money(u * (Number(l.price)||0))}</td>
+          <td>${u}</td><td class="charge">${money(lineCharge(l))}</td>
         </tr>`; }).join("")}</tbody>
       <tfoot><tr><td>Total</td><td></td><td>${t.out}</td><td>${t.ret}</td><td>${t.used}</td><td>${money(t.charge)}</td></tr></tfoot>
     </table></div>` : `<div class="empty">No supplies on this sheet yet. Scan a barcode to check one out.</div>`}
@@ -266,7 +266,9 @@ function checkoutModal(s, code, key = keyOf(code)) {
         if (!save) oneOff = { name, price: round2(price), code };
       }
       const fresh = currentSheet() || s, cur = own(fresh.items || {}, key);
-      const item = { code, name: cur ? cur.name : name, price: cur ? cur.price : price, out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) };
+      // A new line copies the item's cost too (ADR 0014); an existing line keeps its snapshot
+      const from = cur || prod, cost = from && hasCost(from) ? { cost: from.cost } : {};
+      const item = { code, name: cur ? cur.name : name, price: cur ? cur.price : price, ...cost, out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) };
       let after;
       if (await write(async () => { ({ after } = await checkOut(db, action, s.id, key, qty, item, oneOff, bumpStock)); }, `Checked out ${qty} × ${item.name}`)) { closeModal(); await after(); }
     });
@@ -505,10 +507,23 @@ function receiptError(msg) {
   $("#rManual").addEventListener("click", () => { draft = newDraft({ items: [{ name: "", qty: 1, price: 0 }] }); saveDraft(); renderReceipt(); });
 }
 
-function newLine(o) { return { id: uid(), name: "", raw: "", qty: 1, price: 0, dest: "", code: "", match: "", suggested: false, useName: "inv", usePrice: "receipt", ...o }; }
+// usePrice: "receipt" (charge the receipt price), "inv" (keep the client price), or "" for the
+// default. perEach: the store sold singles, so a pack item's receipt price is per each.
+function newLine(o) { return { id: uid(), name: "", raw: "", qty: 1, price: 0, dest: "", code: "", match: "", suggested: false, useName: "inv", usePrice: "", perEach: false, ...o }; }
 const lineProd = l => (l.match && products[l.match]) || null;
 const effName = l => { const p = lineProd(l); return p && l.useName === "inv" ? p.name : l.name.trim(); };
-const effPrice = l => { const p = lineProd(l); return p && l.usePrice === "inv" ? (Number(p.price) || 0) : (Number(l.price) || 0); };
+// Units (ADR 0014): a matched item that comes in packs of n takes the receipt's quantity and
+// price as per pack, unless the reviewer says it was priced per each
+const packSizeOf = p => p && Number.isInteger(p.packSize) && p.packSize > 1 ? p.packSize : 1;
+const packOf = l => l.perEach ? 1 : packSizeOf(lineProd(l));
+const eaches = l => int(l.qty) * packOf(l);
+// What one each cost, before tax, in cents
+const unitCost = l => Math.max(0, round2((Number(l.price) || 0) / packOf(l)));
+// Keep the client price by default when the item has a cost and its price is above it (a markup)
+const priceChoice = l => { const p = lineProd(l); return l.usePrice || (p && hasCost(p) && p.price > p.cost ? "inv" : "receipt"); };
+const effPrice = l => { const p = lineProd(l); return p && priceChoice(l) === "inv" ? round2(p.price) : unitCost(l); };
+const charge = l => round2(eaches(l) * effPrice(l));
+const lineNote = l => packOf(l) > 1 ? `${eaches(l)} each, cost ${money(unitCost(l))} each` : "";
 let rScanLine = null;
 
 function newDraft(res) {
@@ -592,7 +607,7 @@ function invOptions(sel) {
 }
 function lineHTML(l) {
   const p = lineProd(l);
-  const priceDiff = p && Math.abs((Number(p.price) || 0) - (Number(l.price) || 0)) > 0.004;
+  const priceDiff = p && Math.abs((Number(p.price) || 0) - unitCost(l)) > 0.004, pack = packSizeOf(p), use = priceChoice(l);
   const nameDiff = p && l.name.trim() && String(p.name).trim().toLowerCase() !== l.name.trim().toLowerCase();
   const codeClash = p && p.code && l.code && p.code !== l.code;
   return `
@@ -606,10 +621,12 @@ function lineHTML(l) {
           <button type="button" data-name="inv" aria-pressed="${l.useName === "inv"}">${esc(p.name)}<small>Inventory name</small></button>
           <button type="button" data-name="receipt" aria-pressed="${l.useName === "receipt"}">${esc(l.name)}<small>From receipt</small></button>
         </div>` : ""}
-        ${priceDiff ? `<div class="choice warn" role="group" aria-label="Price to use">
+        ${pack > 1 ? `<div class="pack"><span>1 case = ${pack} each</span>
+          <label class="check"><input type="checkbox" data-f="perEach" ${l.perEach ? "checked" : ""}> Priced per each</label></div>` : ""}
+        ${priceDiff ? `<div class="choice warn" role="group" aria-label="Price to charge">
           <span class="lbl">Price changed</span>
-          <button type="button" data-price="receipt" aria-pressed="${l.usePrice === "receipt"}">${money(l.price)}<small>Receipt price</small></button>
-          <button type="button" data-price="inv" aria-pressed="${l.usePrice === "inv"}">${money(p.price)}<small>Keep inventory price</small></button>
+          <button type="button" data-price="receipt" aria-pressed="${use === "receipt"}">${money(unitCost(l))}<small>Charge the receipt price</small></button>
+          <button type="button" data-price="inv" aria-pressed="${use === "inv"}">${money(p.price)}<small>Keep the client price</small></button>
         </div>` : ""}
         ${hasStock(p) ? `<div class="hint">${p.stock} in storage now</div>` : ""}`
       : `<label class="lbl">Item name<input type="text" data-f="name" id="n-${l.id}" value="${esc(l.name)}" placeholder="Item name"></label>`}
@@ -618,11 +635,12 @@ function lineHTML(l) {
       </div>
       ${codeClash ? `<p class="hint warn">This inventory item already has barcode ${esc(p.code)}. Pick a different inventory item if this is a different product.</p>` : ""}
       <div class="rrow">
-        <label>Qty<input type="number" data-f="qty" id="q-${l.id}" min="0" inputmode="numeric" value="${l.qty}"></label>
-        <label>Each ($)<input type="number" data-f="price" id="p-${l.id}" min="0" step="0.01" inputmode="decimal" value="${l.price}"></label>
+        <label>${packOf(l) > 1 ? "Cases" : "Qty"}<input type="number" data-f="qty" id="q-${l.id}" min="0" inputmode="numeric" value="${l.qty}"></label>
+        <label>${packOf(l) > 1 ? "Per case" : "Each"} ($)<input type="number" data-f="price" id="p-${l.id}" min="0" step="0.01" inputmode="decimal" value="${l.price}"></label>
         <label class="grow">For<select data-f="dest" id="d-${l.id}">${destOptions(l.dest)}</select></label>
       </div>
-      <div class="ractions"><span class="num" data-total>${money(int(l.qty) * effPrice(l))}</span><span class="spacer"></span><button type="button" class="btn ghost" data-split>Split</button><button type="button" class="btn ghost" data-del>Remove</button></div>
+      <p class="hint" data-note>${lineNote(l)}</p>
+      <div class="ractions"><span class="num" data-total>${money(charge(l))}</span><span class="spacer"></span><button type="button" class="btn ghost" data-split>Split</button><button type="button" class="btn ghost" data-del>Remove</button></div>
     </div>`;
 }
 function setCode(l, code) {
@@ -635,9 +653,10 @@ function setCode(l, code) {
 function paintSum() {
   const d = draft, el = $("#rSum"); if (!d || !el) return;
   const rows = [...d.dests.map((x, i) => ({ id: x.id, label: destLabel(x, i) })), { id: "stock", label: "General inventory" }]
-    .map(r => { const ls = d.lines.filter(l => l.dest === r.id); return { ...r, n: ls.reduce((a, l) => a + int(l.qty), 0), $: ls.reduce((a, l) => a + int(l.qty) * effPrice(l), 0) }; })
+    .map(r => { const ls = d.lines.filter(l => l.dest === r.id); return { ...r, n: ls.reduce((a, l) => a + eaches(l), 0), $: ls.reduce((a, l) => a + Math.round(charge(l) * 100), 0) / 100 }; })
     .filter(r => r.n || r.id !== "stock");
-  const all = d.lines.reduce((a, l) => a + int(l.qty) * effPrice(l), 0);
+  // At the receipt's prices, to compare with its subtotal
+  const all = d.lines.reduce((a, l) => a + Math.round(int(l.qty) * round2(l.price) * 100), 0) / 100;
   el.innerHTML = `<h3>Summary</h3><table class="sumtable"><tbody>
     ${rows.map(r => `<tr><td>${esc(r.label)}</td><td>${r.n} item${r.n === 1 ? "" : "s"}</td><td>${money(r.$)}</td></tr>`).join("")}
     <tr class="strong"><td>Items total</td><td></td><td>${money(all)}</td></tr>
@@ -661,8 +680,10 @@ $("#rBody").addEventListener("input", e => {
     if (t.dataset.f === "price") l.price = Math.max(0, Number(t.value) || 0);
     if (t.dataset.f === "dest") l.dest = t.value;
     if (t.dataset.f === "code") l.code = t.value.trim();
+    if (t.dataset.f === "perEach") { l.perEach = t.checked; saveDraft(); rerenderLine(l); return; }
     if (t.dataset.f === "code" || t.dataset.f === "match") return;
-    row.querySelector("[data-total]").textContent = money(int(l.qty) * effPrice(l));
+    row.querySelector("[data-total]").textContent = money(charge(l));
+    row.querySelector("[data-note]").textContent = lineNote(l);
     paintSum();
   } else if (t.id === "rDate") d.date = t.value;
   else if (t.id === "rBy") d.by = t.value;
@@ -672,7 +693,7 @@ $("#rBody").addEventListener("change", e => {
   const d = draft; if (!d) return; const t = e.target;
   if (t.matches("[data-dsel]")) { const x = d.dests.find(x => x.id === t.closest("[data-d]").dataset.d); x.sheetId = t.value; saveDraft(); renderReceipt(); }
   else if (t.dataset.f === "dest") { d.lines.find(l => l.id === t.closest("[data-l]").dataset.l).dest = t.value; saveDraft(); paintSum(); }
-  else if (t.dataset.f === "match") { const l = d.lines.find(l => l.id === t.closest("[data-l]").dataset.l); l.match = t.value; l.suggested = false; l.useName = "inv"; l.usePrice = "receipt"; saveDraft(); rerenderLine(l); }
+  else if (t.dataset.f === "match") { const l = d.lines.find(l => l.id === t.closest("[data-l]").dataset.l); l.match = t.value; l.suggested = false; l.useName = "inv"; l.usePrice = ""; l.perEach = false; saveDraft(); rerenderLine(l); }
   else if (t.dataset.f === "code") { const l = d.lines.find(l => l.id === t.closest("[data-l]").dataset.l); const before = l.match; setCode(l, t.value); saveDraft(); if (l.match !== before) rerenderLine(l); }
   else if (t.id === "rScanFile") { const f = t; (async () => { const c = await scanFromInput(f); const l = d.lines.find(l => l.id === rScanLine); if (c && l) { setCode(l, c); saveDraft(); rerenderLine(l); } })(); }
   else if (t.id === "rSavePrices") { d.savePrices = t.checked; saveDraft(); }
@@ -706,10 +727,10 @@ function rerenderLine(l) {
   old.replaceWith(tmp.firstElementChild); paintSum();
 }
 
-// What a general-inventory line adds to storage: its quantity in eaches at the receipt's price
-// each. The line is the action, so saving the same line again (a retry after a failure) is the
-// same stock command.
-const stockIn = l => ({ action: l, quantity: int(l.qty), unitCost: Math.max(0, round2(l.price)) });
+// What a general-inventory line adds to storage: its quantity in eaches (packs converted) at
+// the receipt's cost each. The line is the action, so saving the same line again (a retry after
+// a failure) is the same stock command.
+const stockIn = l => ({ action: l, quantity: eaches(l), unitCost: unitCost(l) });
 
 async function saveReceipt(btn) {
   const d = draft;
@@ -739,10 +760,10 @@ async function saveReceipt(btn) {
   const groups = Object.create(null);
   for (const l of lines) (groups[keyOfLine[l.id]] = groups[keyOfLine[l.id]] || []).push(l);
   for (const [k, ls] of Object.entries(groups)) {
-    const ex = products[k], stocked = ls.filter(l => l.dest === "stock"), add = stocked.reduce((a, l) => a + int(l.qty), 0);
+    const ex = products[k], stocked = ls.filter(l => l.dest === "stock"), add = stocked.reduce((a, l) => a + eaches(l), 0);
     if (!ex && !add && !d.savePrices) continue;
     const l0 = ls[0], code = (ex && ex.code) || (ls.find(l => l.code) || {}).code || "";
-    const body = { ...(ex || {}), code, name: effName(l0), price: round2(effPrice(l0)), updatedAt: new Date().toISOString() };
+    const body = { ...(ex || {}), code, name: effName(l0), price: effPrice(l0), cost: unitCost(l0), updatedAt: new Date().toISOString() };
     if (add) body.stock = (hasStock(ex) ? ex.stock : 0) + add;
     if (!await write(() => saveItem(db, null, k, body, { reason: "receipt", lines: stocked.map(stockIn) }))) { done(); return; }
   }
@@ -754,14 +775,19 @@ async function saveReceipt(btn) {
     const ls = lines.filter(l => l.dest === x.id), items = {};
     for (const l of ls) {
       const k = keyOfLine[l.id];
-      const it = own(items, k) || (items[k] = { code: (products[k] && products[k].code) || l.code || "", name: effName(l), price: round2(effPrice(l)), out: 0, returned: 0 });
-      it.out += int(l.qty);
+      const it = own(items, k) || (items[k] = { code: (products[k] && products[k].code) || l.code || "", name: effName(l), price: effPrice(l), cost: unitCost(l), out: 0, returned: 0 });
+      it.out += eaches(l);
     }
     let ok;
     if (x.sheetId) {
       const s = sheets.find(s => s.id === x.sheetId);
       if (!s) { toast("One of the chosen sheets was deleted. Pick another and save again."); done(); renderReceipt(); return; }
-      for (const [k, it] of Object.entries(items)) { const cur = own(s.items || {}, k); if (cur) Object.assign(it, { name: cur.name, price: cur.price, out: it.out + int(cur.out), returned: int(cur.returned), code: cur.code || it.code }); }
+      // A line already on the sheet keeps its snapshot: name, price, and cost (or no cost)
+      for (const [k, it] of Object.entries(items)) {
+        const cur = own(s.items || {}, k); if (!cur) continue;
+        Object.assign(it, { name: cur.name, price: cur.price, out: it.out + int(cur.out), returned: int(cur.returned), code: cur.code || it.code });
+        if (hasCost(cur)) it.cost = cur.cost; else delete it.cost;
+      }
       ok = await write(() => db.doc("sheets/" + s.id).update({ items }));
       if (ok) savedIds.push(s.id);
     } else {
@@ -782,7 +808,7 @@ async function saveReceipt(btn) {
   draft = null; saveDraft(); ui.receipt = false;
   if (savedIds.length === 1) ui.sheetId = savedIds[0];
   ui.tab = "sheets"; draw(); window.scrollTo(0, 0);
-  const nStock = toStock.reduce((a, l) => a + int(l.qty), 0);
+  const nStock = toStock.reduce((a, l) => a + eaches(l), 0);
   toast([savedIds.length ? `Saved to ${savedIds.length} sheet${savedIds.length === 1 ? "" : "s"}` : "", nStock ? `${nStock} added to storage` : ""].filter(Boolean).join(" · "));
   if (!savedIds.length) { ui.tab = "prices"; draw(); }
 }

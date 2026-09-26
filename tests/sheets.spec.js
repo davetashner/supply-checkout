@@ -142,7 +142,7 @@ test("picks an inventory item without a barcode, with search", async ({ page }) 
   await openApp(page, {
     seed: {
       ...usedState.seed,
-      "products/nb-mop": { code: "", name: "Mop heads", price: 3 },
+      "products/nb-mop": { code: "", name: "Mop heads", price: 3, cost: 2 },
       "products/7001": { code: "7001", name: "Squeegee", price: 6 },
     },
   });
@@ -163,6 +163,28 @@ test("picks an inventory item without a barcode, with search", async ({ page }) 
   await expect(modal(page)).toContainText("No barcode");
   await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
   await expect(lineRow(page, "Mop heads")).toBeVisible();
+  // A new line copies the item's cost as well as its price (ADR 0014)
+  const line = await page.evaluate(() => window.__mock.docs.get("sheets/s1").items["nb-mop"]);
+  expect(line).toMatchObject({ name: "Mop heads", price: 3, cost: 2, out: 1 });
+});
+
+test("a sheet's total is the sum of its rows rounded to cents", async ({ page }) => {
+  // Prices with more than two decimals (typed before rounding existed) round when shown
+  await openApp(page, { seed: { "sheets/r": { client: "Round Co", date: "2026-09-01", status: "open", items: {
+    a: { code: "", name: "Wipes", price: 0.335, out: 3, returned: 0 },
+    b: { code: "", name: "Xylene", price: 1.005, out: 1, returned: 0 },
+    c: { code: "", name: "Zip ties", price: 0.1, out: 3, returned: 0 },
+  } } } });
+  await expect(page.getByRole("button", { name: /Round Co/ })).toContainText("$2.33");
+  await page.getByRole("button", { name: /Round Co/ }).click();
+  await expect(lineRow(page, "Wipes").locator(".charge")).toHaveText("$1.02");
+  await expect(lineRow(page, "Xylene").locator(".charge")).toHaveText("$1.01");
+  await expect(lineRow(page, "Zip ties").locator(".charge")).toHaveText("$0.30");
+  await expect(page.locator("#sheetBody tfoot")).toContainText("$2.33");
+  await page.getByRole("button", { name: "Download CSV" }).click();
+  await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
+  const { data } = await page.evaluate(() => window.__mock.saves[0]);
+  expect(data).toContain("Wipes,,0.34,3,0,3,1.02\nXylene,,1.01,1,0,1,1.01\nZip ties,,0.10,3,0,3,0.30\nTotal,,,7,0,7,2.33");
 });
 
 test("picking with an empty inventory goes straight to a new item", async ({ page }) => {

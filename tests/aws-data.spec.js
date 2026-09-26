@@ -885,6 +885,21 @@ test.describe("stock commands", () => {
     expect(backend.requests("PATCH", /^\/teams\/t1\//)).toEqual([]);
   });
 
+  test("a receipt's cases are stock commands in eaches at the cost of one each", async ({ page }) => {
+    const docs = { ...seeded(), "t1/products/SKU1": { ...usedState.seed["products/SKU1"], cost: 7, packSize: 6 } };
+    const backend = new FakeBackend({ docs });
+    await openDraft(page, backend, [draftLine({ id: "l1", name: "Paper towels", qty: 2, price: 45, match: "SKU1", usePrice: "" })]);
+    await connected(page);
+    await page.getByRole("button", { name: "Continue review" }).click();
+    await expect(page.locator(".rline [data-note]")).toHaveText("12 each, cost $7.50 each");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(toast(page)).toHaveText("12 added to storage");
+    // The client price is kept (it was above the cost), and the cost is the receipt's
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1")[0].body.data).toMatchObject({ price: 8.5, cost: 7.5, packSize: 6 });
+    expect(backend.requests("POST", STOCK).map((r) => r.body)).toEqual([{ operationId: expect.any(String), reason: "receipt", quantity: 12, unitCost: 7.5 }]);
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(22);
+  });
+
   test("saving a receipt again after a failed line adds each line once", async ({ page }) => {
     const backend = new FakeBackend({ docs: seeded() });
     await openDraft(page, backend, [
