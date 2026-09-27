@@ -22,6 +22,8 @@ const OUTSIDER = "user-outsider";
 
 let table: MemoryTable;
 let counts: Record<string, number>;
+/** What the handler logged as warnings. */
+let warnings: unknown[][];
 let handler: ReturnType<typeof createDataHandler>;
 
 beforeEach(() => {
@@ -29,9 +31,10 @@ beforeEach(() => {
   table.seedTeam("team-a", { [OWNER]: "owner", [CONTRIBUTOR]: "contributor", [VIEWER]: "viewer" });
   table.seedTeam("team-b", { [OUTSIDER]: "owner" });
   counts = {};
+  warnings = [];
   const obs = {
     region: "test-local-1",
-    logger: { info: () => {}, warn: () => {}, error: () => {}, addContext: () => {} },
+    logger: { info: () => {}, warn: (...args: unknown[]) => warnings.push(args), error: () => {}, addContext: () => {} },
     count: (metric: string, value = 1) => {
       counts[metric] = (counts[metric] ?? 0) + value;
     },
@@ -515,11 +518,41 @@ describe("retries and resuming", () => {
     table.maxTransactionBytes = 100_000;
     const stopped = randomUUID();
     expect(await post({ importId: stopped, csv: "name,barcode,price\nItem 0,c0,3\n" })).toMatchObject({ status: 413, body: { error: { code: "quota_exceeded", message: "The item on line 2 is too large to save" } } });
+    // The logs say what DynamoDB said: its error's name and message, never the item
+    expect(warnings).toEqual([["Refused as too large", { cause: { name: "ValidationException", message: "Transaction request cannot be larger than 4 MB" } }]]);
     // No retry gets past it, so it leaves the stuck-import check; the job stays
     const job = table.get("TEAM#team-a", `IMPORT#${stopped}`);
     expect(job).toMatchObject({ status: "committing" });
     expect(job).not.toHaveProperty("GSI1PK");
     expect(job).not.toHaveProperty("GSI1SK");
+  });
+
+  it("treats only DynamoDB's two size messages as too large; any other ValidationException is a 500", async () => {
+    const refuse = (message: string) => {
+      table.beforeTransactWrite = () => {
+        // Staging goes through; the commit is refused
+        if (table.get("TEAM#team-a", `IMPORT#${id}`)) throw Object.assign(new Error(message), { name: "ValidationException" });
+      };
+    };
+    let id = randomUUID();
+    refuse("Item size has exceeded the maximum allowed size");
+    expect(await post({ importId: id, csv: "name,barcode,price\nItem 0,c0,3\n" })).toMatchObject({ status: 413, body: { error: { message: "The item on line 2 is too large to save" } } });
+    expect(warnings).toEqual([["Refused as too large", { cause: { name: "ValidationException", message: "Item size has exceeded the maximum allowed size" } }]]);
+    // Messages the old pattern (size, large, 4 MB) matched, which are bugs rather than a batch too large
+    for (const message of ["One or more parameter values were invalid: Size of hashkey has exceeded the maximum size limit of 2048 bytes", "Transaction request cannot include multiple operations on one item", "Request too large: 4 MB"]) {
+      id = randomUUID();
+      refuse(message);
+      const res = await post({ importId: id, csv: "name,barcode,price\nItem 0,c0,3\n" });
+      expect(res.status, message).toBe(500);
+      expect(JSON.stringify(res.body)).not.toContain(message);
+    }
+    expect(warnings).toHaveLength(1);
+  });
+
+  it("the test table measures maps with a constructor key as DynamoDB gets them", () => {
+    const pad = "y".repeat(1000);
+    expect(MemoryTable.bytes({ x: new Map([["constructor", pad]]) })).toBe(MemoryTable.bytes({ x: { constructor: pad } }));
+    expect(MemoryTable.bytes({ x: new Map([["constructor", pad]]) })).toBeGreaterThan(1000);
   });
 
   it("measures items when it commits, so items that grew after staging still fit", async () => {

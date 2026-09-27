@@ -256,7 +256,7 @@ before answering `409`, so `409` from contention is rare.
 `GET /teams/{teamId}/products/{key}/movements?limit=50&cursor=…` returns the
 item's movements, newest first, a page at a time (up to 100). Any member can
 read it. Each movement has who (`userId`), when (`at`), why (`reason`:
-`checkout`, `return`, `receipt` or `count`), the `sheetId` for checkouts and
+`checkout`, `return`, `receipt`, `count`, `import`, or `delete` when the item was deleted, taking its stock to 0), the `sheetId` for checkouts and
 returns, the `quantity` or `count`, the change to stock (`delta`), whether the
 item tracked stock (`tracked`), the `unitCost` for receipts, and the
 `operationId`. Movements are kept as long as the team's data.
@@ -279,6 +279,9 @@ drifting") is a separate bead. It reconciles each item from the movements:
   before alarming, so a command that commits between the two reads isn't
   reported as drift.
 - The first run for an item takes its current `stock` as the baseline.
+- Deleting an item that tracks stock records a `delete` movement taking it to
+  0, so an item made again under the same key (which starts untracked) still
+  adds up from its whole history when it's next counted.
 - Sheet lines can be reconciled the same way: the checkout and return
   movements for a sheet and item add up to its `out` and `returned`, unless the
   line was corrected with a line edit.

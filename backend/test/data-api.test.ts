@@ -7,8 +7,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDataHandler, type DataEvent, sheetMovement } from "../src/api/data-handler.js";
 import { DATA_ROUTES, routeKey } from "../src/api/routes.js";
 import type { DbForTeam } from "../src/api/team-db.js";
-import { InvalidInputError, MAX_DOCUMENT_BYTES } from "../src/data/index.js";
+import { deleteDocument, InvalidInputError, MAX_DOCUMENT_BYTES } from "../src/data/index.js";
 import type { Observability } from "../src/observability/index.js";
+import { contextFor, REGION } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const NOW = Date.parse("2026-09-26T12:00:00Z");
@@ -189,6 +190,74 @@ describe("documents (the app's db contract)", () => {
       expect(table.get("TEAM#team-a", "PRODUCT#0456")?.stock).toBeUndefined();
     });
 
+    it("drops a stored stock that isn't a number (legacy), so the item can still be edited and stays untracked", async () => {
+      for (const legacy of ["7", null, { n: 7 }]) {
+        table.put({ ...(stored() as Record<string, unknown>), stock: legacy });
+        // A PUT that leaves stock out, or repeats what a GET returned
+        const got = (await call("GET", "/teams/team-a/products/0123")).body.data;
+        expect(got.stock).toEqual(legacy);
+        const put = await call("PUT", "/teams/team-a/products/0123", { body: { data: { ...got, name: "Gloves" } } });
+        expect(put.status).toBe(200);
+        expect(put.body.data).not.toHaveProperty("stock");
+        table.put({ ...(stored() as Record<string, unknown>), stock: legacy });
+        const patch = await call("PATCH", "/teams/team-a/products/0123", { body: { data: { price: 13 } } });
+        expect(patch.status).toBe(200);
+        expect(patch.body.data).not.toHaveProperty("stock");
+        expect(stored()).not.toHaveProperty("stock");
+        // It isn't a count to change, either
+        table.put({ ...(stored() as Record<string, unknown>), stock: legacy });
+        expect(await call("PATCH", "/teams/team-a/products/0123", { body: { data: { stock: 3 } } })).toEqual(refused);
+      }
+    });
+
+    it("records a delete movement taking stock to 0, so a product made again under the key starts from 0", async () => {
+      const moves = () => [...table.items.values()].filter((i) => String(i.SK).startsWith("MOVE#"));
+      expect((await call("DELETE", "/teams/team-a/products/0123")).status).toBe(204);
+      expect(stored()).toBeUndefined();
+      expect(moves()).toEqual([
+        expect.objectContaining({ type: "movement", productKey: "0123", reason: "delete", delta: -7, tracked: true, count: 0, userId: OWNER }),
+      ]);
+      expect((await call("GET", "/teams/team-a/products/0123/movements")).body.movements).toEqual([expect.objectContaining({ reason: "delete", delta: -7 })]);
+      // Made again, it doesn't track stock, and a count adds up from the history
+      expect((await call("PUT", "/teams/team-a/products/0123", { body: { data: product } })).body.data).toEqual(product);
+      expect(stored()).not.toHaveProperty("stock");
+      const counted = await call("POST", "/teams/team-a/products/0123/stock", { body: { operationId: "00000000-0000-4000-8000-000000000001", reason: "count", count: 4 } });
+      expect(counted.status).toBe(200);
+      // The history adds up to the change since the stock of 7 it started from: 7 - 7 + 4
+      expect(stored()).toMatchObject({ stock: 4 });
+      expect(7 + moves().reduce((sum, m) => sum + (m.delta as number), 0)).toBe(4);
+      // A product that doesn't track stock is deleted without one
+      await call("PUT", "/teams/team-a/products/0456", { body: { data: { ...product, code: "0456" } } });
+      expect((await call("DELETE", "/teams/team-a/products/0456")).status).toBe(204);
+      expect(moves()).toHaveLength(2);
+      // Deleting one that isn't there still succeeds, and records nothing
+      expect((await call("DELETE", "/teams/team-a/products/0456", { query: { expectedVersion: "0" } })).status).toBe(204);
+      expect(moves()).toHaveLength(2);
+    });
+
+    it("answers 409 and deletes nothing when stock moves between a delete's read and its write", async () => {
+      table.afterGet = (item) => {
+        if (item?.SK !== "PRODUCT#0123") return;
+        table.afterGet = undefined;
+        table.put({ ...item, stock: 9 });
+      };
+      expect((await call("DELETE", "/teams/team-a/products/0123")).status).toBe(409);
+      expect(stored()).toMatchObject({ stock: 9 });
+      expect([...table.items.values()].filter((i) => String(i.SK).startsWith("MOVE#"))).toEqual([]);
+    });
+
+    it("retries a delete without an expected version on the fresh product (backend callers)", async () => {
+      table.afterGet = (item) => {
+        if (item?.SK !== "PRODUCT#0123") return;
+        table.afterGet = undefined;
+        table.put({ ...item, stock: 9, version: 2 });
+      };
+      const ctx = await contextFor("owner", REGION, "team-a", OWNER);
+      expect((await deleteDocument(table.db("team-a"), ctx, "products", "0123")).before).toMatchObject({ version: 2, data: { stock: 9 } });
+      expect(stored()).toBeUndefined();
+      expect([...table.items.values()].filter((i) => String(i.SK).startsWith("MOVE#"))).toEqual([expect.objectContaining({ reason: "delete", delta: -9 })]);
+    });
+
     it("leaves sheets alone: a field called stock is only data there", async () => {
       expect((await call("PUT", "/teams/team-a/sheets/s1", { body: { data: { ...sheet("2026-09-01"), stock: 3 } } })).body.data.stock).toBe(3);
       expect((await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { stock: 4 } } })).body.data.stock).toBe(4);
@@ -237,6 +306,41 @@ describe("documents (the app's db contract)", () => {
       expect(patch.body.error.code).toBe("bad_request");
     }
     expect((await call("GET", "/teams/team-a/sheets/s1")).body.data.items["nb-1"].cost).toBe(2.25);
+  });
+
+  it("refuses a line price that isn't an amount in whole cents (ADR 0014)", async () => {
+    const rags = { code: "", name: "Rags", price: 1.5, out: 2, returned: 0 };
+    await call("PUT", "/teams/team-a/sheets/s1", { body: { data: sheet("2026-09-01", { "nb-1": rags }) } });
+    for (const price of [-1, "1.50", 1.505, 1_000_000.01, null]) {
+      expect((await call("PUT", "/teams/team-a/sheets/s2", { body: { data: sheet("2026-09-01", { a: { ...rags, price } }) } })).body.error.code).toBe("bad_request");
+      expect((await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { items: { "nb-1": { price } } } } })).body.error.code).toBe("bad_request");
+    }
+    expect((await call("GET", "/teams/team-a/sheets/s1")).body.data.items["nb-1"]).toEqual(rags);
+  });
+
+  it("saves a sheet holding legacy money on a line the write doesn't change, rounding it to cents (ADR 0014)", async () => {
+    // Written before the money rule: a price and cost with three decimals, and one that isn't an amount
+    const legacy = { code: "A", name: "Gloves", price: 2.345, cost: 1.005, out: 2, returned: 0 };
+    const odd = { code: "B", name: "Tape", price: "3", cost: -2, out: 1, returned: 0 };
+    table.put({ PK: "TEAM#team-a", SK: "SHEET#s1", type: "sheet", id: "s1", version: 1, ...sheet("2026-09-01", { a: legacy, b: odd }) });
+    // A PATCH to another line saves
+    const patch = await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { items: { c: { code: "C", name: "Rags", price: 1, out: 1, returned: 0 } } } } });
+    expect(patch.status).toBe(200);
+    expect(patch.body.data.items.a).toEqual({ ...legacy, price: 2.35, cost: 1.01 });
+    expect(patch.body.data.items.b).toEqual(odd);
+    // So does a PUT that repeats a legacy line as it was stored
+    table.put({ PK: "TEAM#team-a", SK: "SHEET#s1", type: "sheet", id: "s1", version: 3, ...sheet("2026-09-01", { a: legacy, b: odd }) });
+    const put = await call("PUT", "/teams/team-a/sheets/s1", { body: { data: { ...sheet("2026-09-01", { a: legacy, b: odd }), client: "Echo Ltd" } } });
+    expect(put.status).toBe(200);
+    expect(table.get("TEAM#team-a", "SHEET#s1")).toMatchObject({ version: 4, client: "Echo Ltd", items: { a: { price: 2.35, cost: 1.01 }, b: odd } });
+    // A write that changes a line's money must follow the rule, legacy or not
+    table.put({ PK: "TEAM#team-a", SK: "SHEET#s1", type: "sheet", id: "s1", version: 5, ...sheet("2026-09-01", { a: legacy, b: odd }) });
+    for (const items of [{ a: { cost: 1.006 } }, { a: { price: 2.344 } }, { b: { price: "4" } }, { b: { cost: -3 } }, { d: { ...legacy } }]) {
+      expect((await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { items } } })).body.error.code, JSON.stringify(items)).toBe("bad_request");
+    }
+    expect(table.get("TEAM#team-a", "SHEET#s1")).toMatchObject({ version: 5, items: { a: legacy, b: odd } });
+    // Correcting it saves
+    expect((await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { items: { a: { cost: 1 }, b: { price: 3, cost: 0 } } } } })).body.data.items).toMatchObject({ a: { price: 2.35, cost: 1 }, b: { price: 3, cost: 0 } });
   });
 
   it("keeps every other field the app writes on sheets and products", async () => {

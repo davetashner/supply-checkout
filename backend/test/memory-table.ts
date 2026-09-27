@@ -49,7 +49,14 @@ export class MemoryTable {
   /** DynamoDB's item size limit. The table measures an item as JSON, which is close enough. */
   static readonly MAX_ITEM_BYTES = 400_000;
 
-  private static tooBig = (item: Item) => Buffer.byteLength(JSON.stringify(item), "utf8") > MemoryTable.MAX_ITEM_BYTES;
+  /**
+   * A value's size as JSON, as DynamoDB gets it: a map with a "constructor"
+   * key goes to the SDK as a Map (storable() in client.ts), which plain
+   * JSON.stringify would write as "{}", so Maps are measured as the maps they are.
+   */
+  static bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value, (_key, v: unknown) => (v instanceof Map ? Object.fromEntries(v) : v)), "utf8");
+
+  private static tooBig = (item: Item) => MemoryTable.bytes(item) > MemoryTable.MAX_ITEM_BYTES;
 
   /**
    * What DynamoDB would get: each attribute or value marshalled as the
@@ -256,7 +263,7 @@ export class MemoryTable {
     });
     record(ops.map((o) => String(o.key.PK)));
     // DynamoDB refuses a transaction over 4 MB before looking at any condition
-    if (Buffer.byteLength(JSON.stringify(input.TransactItems), "utf8") > this.maxTransactionBytes) {
+    if (MemoryTable.bytes(input.TransactItems) > this.maxTransactionBytes) {
       throw Object.assign(new Error("Transaction request cannot be larger than 4 MB"), { name: "ValidationException" });
     }
     this.transactions.push(ops.length);
