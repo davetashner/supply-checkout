@@ -58,9 +58,11 @@ info:
       `GSI1SK`, `GSI2PK`, `GSI2SK`, `GSI3PK`, `GSI3SK` (and any `GSI<n>PK` or `GSI<n>SK`), `type`, `id`, `key`, `version`, `teamId`. For sheets, `date` must be a string
       and `items` an object. A barcode (`code`, on a product and on each line
       in a sheet's `items`) must be a string of at most 256 characters, the
-      product key limit; it's empty for an item without a barcode. A line's
-      `cost`, if present, must be a `Money` amount (0 to 1,000,000, at most
-      two decimals; ADR 0014).
+      product key limit; it's empty for an item without a barcode. A
+      product's `price` and `cost`, and a line's, if present, must be `Money`
+      amounts (0 to 1,000,000, at most two decimals; ADR 0014) where the write
+      changes them. A legacy value the document already had, carried over
+      unchanged, is rounded to cents instead of refused.
     - A product's `stock` changes only through the stock commands (the
       `commands` tag) and the CSV import, which record a movement for every
       change. A product `set` or `update` keeps the stored `stock`: leave it
