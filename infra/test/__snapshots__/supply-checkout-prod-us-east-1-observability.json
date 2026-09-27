@@ -251,7 +251,19 @@
                     },
                     {
                       "Fn::GetAtt": [
-                        "OperatorAuditWatchDataPathChanges20E06095",
+                        "OperatorAuditWatchRoleChangesFCFE9D73",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorAuditWatchLogChangesE46D2D06",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorAuditWatchTableChangesBCB8318E",
                         "Arn"
                       ]
                     },
@@ -264,6 +276,12 @@
                     {
                       "Fn::GetAtt": [
                         "OperatorAlertRouteChangesB6D06886",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorAlertKeyAndTrailChanges56EDD652",
                         "Arn"
                       ]
                     },
@@ -466,6 +484,12 @@
                     {
                       "Fn::GetAtt": [
                         "OperatorAlertRouteChangesB6D06886",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorAlertKeyAndTrailChanges56EDD652",
                         "Arn"
                       ]
                     }
@@ -5182,6 +5206,7 @@
             ]
           }
         },
+        "Name": "supply-checkout-prod-operator-pool-changes",
         "State": "ENABLED",
         "Tags": [
           {
@@ -5267,6 +5292,7 @@
             ]
           }
         },
+        "Name": "supply-checkout-prod-operator-self-service-changes",
         "State": "ENABLED",
         "Tags": [
           {
@@ -5311,25 +5337,24 @@
     "OperatorAuditWatchChanges59EE8EE1": {
       "Type": "AWS::Events::Rule",
       "Properties": {
-        "Description": "The operator audit watch's stream mapping, function or role was deleted, or changed outside a deploy (supply-checkout-6uw.11)",
+        "Description": "The operator audit watch's stream mapping or function was deleted, or changed outside a deploy (supply-checkout-6uw.11)",
         "EventPattern": {
           "source": [
-            "aws.lambda",
-            "aws.iam"
+            "aws.lambda"
           ],
           "detail-type": [
             "AWS API Call via CloudTrail"
           ],
           "detail": {
+            "eventSource": [
+              "lambda.amazonaws.com"
+            ],
             "$or": [
               {
                 "eventName": [
                   {
                     "prefix": "DeleteEventSourceMapping"
                   }
-                ],
-                "eventSource": [
-                  "lambda.amazonaws.com"
                 ],
                 "requestParameters": {
                   "uUID": [
@@ -5344,9 +5369,6 @@
                   {
                     "prefix": "UpdateEventSourceMapping"
                   }
-                ],
-                "eventSource": [
-                  "lambda.amazonaws.com"
                 ],
                 "requestParameters": {
                   "uUID": [
@@ -5372,9 +5394,6 @@
                     "prefix": "DeleteFunction"
                   }
                 ],
-                "eventSource": [
-                  "lambda.amazonaws.com"
-                ],
                 "requestParameters": {
                   "functionName": [
                     "supply-checkout-prod-operator-audit-watch",
@@ -5399,9 +5418,6 @@
                     "prefix": "UpdateFunctionConfiguration"
                   }
                 ],
-                "eventSource": [
-                  "lambda.amazonaws.com"
-                ],
                 "requestParameters": {
                   "functionName": [
                     "supply-checkout-prod-operator-audit-watch",
@@ -5423,55 +5439,11 @@
                     }
                   ]
                 }
-              },
-              {
-                "eventName": [
-                  "DeleteRole",
-                  "DeleteRolePolicy",
-                  "DetachRolePolicy"
-                ],
-                "eventSource": [
-                  "iam.amazonaws.com"
-                ],
-                "requestParameters": {
-                  "roleName": [
-                    {
-                      "Ref": "OperatorAuditWatchRole832B8493"
-                    }
-                  ]
-                }
-              },
-              {
-                "eventName": [
-                  "PutRolePolicy",
-                  "AttachRolePolicy",
-                  "UpdateAssumeRolePolicy",
-                  "PutRolePermissionsBoundary"
-                ],
-                "eventSource": [
-                  "iam.amazonaws.com"
-                ],
-                "requestParameters": {
-                  "roleName": [
-                    {
-                      "Ref": "OperatorAuditWatchRole832B8493"
-                    }
-                  ]
-                },
-                "userIdentity": {
-                  "invokedBy": [
-                    {
-                      "exists": false
-                    },
-                    {
-                      "anything-but": "cloudformation.amazonaws.com"
-                    }
-                  ]
-                }
               }
             ]
           }
         },
+        "Name": "supply-checkout-prod-operator-audit-watch-changes",
         "State": "ENABLED",
         "Tags": [
           {
@@ -5513,27 +5485,125 @@
         ]
       }
     },
-    "OperatorAuditWatchDataPathChanges20E06095": {
+    "OperatorAuditWatchRoleChangesFCFE9D73": {
       "Type": "AWS::Events::Rule",
       "Properties": {
-        "Description": "The operator audit watch's log group, the table's stream or the table key was deleted or disabled, or changed outside a deploy (supply-checkout-6uw.11)",
+        "Description": "The operator audit watch's role or its policies were deleted, or changed outside a deploy (supply-checkout-6uw.11)",
         "EventPattern": {
           "source": [
-            "aws.logs",
-            "aws.dynamodb",
-            "aws.kms"
+            "aws.iam"
           ],
           "detail-type": [
             "AWS API Call via CloudTrail"
           ],
           "detail": {
+            "eventSource": [
+              "iam.amazonaws.com"
+            ],
+            "$or": [
+              {
+                "eventName": [
+                  "DeleteRole",
+                  "DeleteRolePolicy",
+                  "DetachRolePolicy"
+                ],
+                "requestParameters": {
+                  "roleName": [
+                    {
+                      "Ref": "OperatorAuditWatchRole832B8493"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "PutRolePolicy",
+                  "AttachRolePolicy",
+                  "UpdateAssumeRolePolicy",
+                  "PutRolePermissionsBoundary"
+                ],
+                "requestParameters": {
+                  "roleName": [
+                    {
+                      "Ref": "OperatorAuditWatchRole832B8493"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-audit-watch-role",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the operator audit watch's role at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorAuditWatchLogChangesE46D2D06": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The operator audit watch's log group was deleted, or given a transformer or data protection policy outside a deploy, or one was set for the account (supply-checkout-6uw.11)",
+        "EventPattern": {
+          "source": [
+            "aws.logs"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "logs.amazonaws.com"
+            ],
             "$or": [
               {
                 "eventName": [
                   "DeleteLogGroup"
-                ],
-                "eventSource": [
-                  "logs.amazonaws.com"
                 ],
                 "requestParameters": {
                   "logGroupName": [
@@ -5548,9 +5618,6 @@
                   "PutTransformer",
                   "DeleteTransformer",
                   "PutDataProtectionPolicy"
-                ],
-                "eventSource": [
-                  "logs.amazonaws.com"
                 ],
                 "requestParameters": {
                   "logGroupIdentifier": [
@@ -5601,16 +5668,72 @@
                 "eventName": [
                   "PutAccountPolicy"
                 ],
-                "eventSource": [
-                  "logs.amazonaws.com"
-                ],
                 "requestParameters": {
                   "policyType": [
                     "TRANSFORMER_POLICY",
                     "DATA_PROTECTION_POLICY"
                   ]
                 }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-audit-watch-logs",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
               },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the operator audit watch's log group at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorAuditWatchTableChangesBCB8318E": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The table's stream or resource policy, or the table key, was disabled, deleted or changed outside a deploy (supply-checkout-6uw.11)",
+        "EventPattern": {
+          "source": [
+            "aws.dynamodb",
+            "aws.kms"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "$or": [
               {
                 "eventName": [
                   "PutResourcePolicy",
@@ -5785,6 +5908,7 @@
             ]
           }
         },
+        "Name": "supply-checkout-prod-operator-audit-watch-table",
         "State": "ENABLED",
         "Tags": [
           {
@@ -5820,7 +5944,7 @@
                 "detail-eventTime": "$.detail.eventTime",
                 "detail-eventID": "$.detail.eventID"
               },
-              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the operator audit watch's log group, the table's stream or the table key at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the table's stream or the table key at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
             }
           }
         ]
@@ -5898,6 +6022,7 @@
             ]
           }
         },
+        "Name": "supply-checkout-prod-operator-alarm-changes",
         "State": "ENABLED",
         "Tags": [
           {
@@ -5942,25 +6067,23 @@
     "OperatorAlertRouteChangesB6D06886": {
       "Type": "AWS::Events::Rule",
       "Properties": {
-        "Description": "An alarm topic, a subscription to one or the topics' key was deleted, disabled or changed outside a deploy, or a CloudTrail trail was stopped or changed (supply-checkout-6uw.11)",
+        "Description": "An alarm topic or a subscription to one was deleted, lost its permissions or was changed outside a deploy (supply-checkout-6uw.11)",
         "EventPattern": {
           "source": [
-            "aws.sns",
-            "aws.kms",
-            "aws.cloudtrail"
+            "aws.sns"
           ],
           "detail-type": [
             "AWS API Call via CloudTrail"
           ],
           "detail": {
+            "eventSource": [
+              "sns.amazonaws.com"
+            ],
             "$or": [
               {
                 "eventName": [
                   "DeleteTopic",
                   "RemovePermission"
-                ],
-                "eventSource": [
-                  "sns.amazonaws.com"
                 ],
                 "requestParameters": {
                   "topicArn": [
@@ -5976,9 +6099,6 @@
               {
                 "eventName": [
                   "SetTopicAttributes"
-                ],
-                "eventSource": [
-                  "sns.amazonaws.com"
                 ],
                 "requestParameters": {
                   "topicArn": [
@@ -6005,9 +6125,6 @@
                 "eventName": [
                   "PutDataProtectionPolicy"
                 ],
-                "eventSource": [
-                  "sns.amazonaws.com"
-                ],
                 "requestParameters": {
                   "resourceArn": [
                     {
@@ -6023,9 +6140,6 @@
                 "eventName": [
                   "Unsubscribe",
                   "SetSubscriptionAttributes"
-                ],
-                "eventSource": [
-                  "sns.amazonaws.com"
                 ],
                 "requestParameters": {
                   "subscriptionArn": [
@@ -6067,7 +6181,80 @@
                     }
                   ]
                 }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-alert-route-changes",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
               },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the alarm topics at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          },
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP213C63151"
+            },
+            "Id": "Target1",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the alarm topics at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorAlertKeyAndTrailChanges56EDD652": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The alarm topics' key was disabled, scheduled for deletion, given an alias or changed outside a deploy, or a CloudTrail trail was stopped or changed (supply-checkout-6uw.11)",
+        "EventPattern": {
+          "source": [
+            "aws.kms",
+            "aws.cloudtrail"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "$or": [
               {
                 "eventName": [
                   "DisableKey",
@@ -6152,6 +6339,7 @@
             ]
           }
         },
+        "Name": "supply-checkout-prod-operator-alert-key-and-trail",
         "State": "ENABLED",
         "Tags": [
           {
@@ -6187,7 +6375,7 @@
                 "detail-eventTime": "$.detail.eventTime",
                 "detail-eventID": "$.detail.eventID"
               },
-              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the alarm topics, their key or CloudTrail at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the alarm topics' key or CloudTrail at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
             }
           },
           {
@@ -6201,7 +6389,7 @@
                 "detail-eventTime": "$.detail.eventTime",
                 "detail-eventID": "$.detail.eventID"
               },
-              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the alarm topics, their key or CloudTrail at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the alarm topics' key or CloudTrail at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
             }
           }
         ]
@@ -6373,25 +6561,9 @@
                 "requestParameters": {
                   "name": [
                     {
-                      "Ref": "OperatorPoolChangesD40F920E"
+                      "prefix": "supply-checkout-prod-operator-"
                     },
-                    {
-                      "Ref": "OperatorSelfServiceChanges0E27141E"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchChanges59EE8EE1"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchDataPathChanges20E06095"
-                    },
-                    {
-                      "Ref": "OperatorAlarmChanges646DFF5B"
-                    },
-                    {
-                      "Ref": "OperatorAlertRouteChangesB6D06886"
-                    },
-                    "supply-checkout-prod-deletions-rule-tampering",
-                    "supply-checkout-prod-operator-rule-tampering-watch"
+                    "supply-checkout-prod-deletions-rule-tampering"
                   ]
                 }
               },
@@ -6402,25 +6574,9 @@
                 "requestParameters": {
                   "rule": [
                     {
-                      "Ref": "OperatorPoolChangesD40F920E"
+                      "prefix": "supply-checkout-prod-operator-"
                     },
-                    {
-                      "Ref": "OperatorSelfServiceChanges0E27141E"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchChanges59EE8EE1"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchDataPathChanges20E06095"
-                    },
-                    {
-                      "Ref": "OperatorAlarmChanges646DFF5B"
-                    },
-                    {
-                      "Ref": "OperatorAlertRouteChangesB6D06886"
-                    },
-                    "supply-checkout-prod-deletions-rule-tampering",
-                    "supply-checkout-prod-operator-rule-tampering-watch"
+                    "supply-checkout-prod-deletions-rule-tampering"
                   ]
                 }
               },
@@ -6431,25 +6587,9 @@
                 "requestParameters": {
                   "name": [
                     {
-                      "Ref": "OperatorPoolChangesD40F920E"
+                      "prefix": "supply-checkout-prod-operator-"
                     },
-                    {
-                      "Ref": "OperatorSelfServiceChanges0E27141E"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchChanges59EE8EE1"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchDataPathChanges20E06095"
-                    },
-                    {
-                      "Ref": "OperatorAlarmChanges646DFF5B"
-                    },
-                    {
-                      "Ref": "OperatorAlertRouteChangesB6D06886"
-                    },
-                    "supply-checkout-prod-deletions-rule-tampering",
-                    "supply-checkout-prod-operator-rule-tampering-watch"
+                    "supply-checkout-prod-deletions-rule-tampering"
                   ]
                 },
                 "userIdentity": {
@@ -6470,25 +6610,9 @@
                 "requestParameters": {
                   "rule": [
                     {
-                      "Ref": "OperatorPoolChangesD40F920E"
+                      "prefix": "supply-checkout-prod-operator-"
                     },
-                    {
-                      "Ref": "OperatorSelfServiceChanges0E27141E"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchChanges59EE8EE1"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchDataPathChanges20E06095"
-                    },
-                    {
-                      "Ref": "OperatorAlarmChanges646DFF5B"
-                    },
-                    {
-                      "Ref": "OperatorAlertRouteChangesB6D06886"
-                    },
-                    "supply-checkout-prod-deletions-rule-tampering",
-                    "supply-checkout-prod-operator-rule-tampering-watch"
+                    "supply-checkout-prod-deletions-rule-tampering"
                   ]
                 },
                 "userIdentity": {
@@ -6505,6 +6629,7 @@
             ]
           }
         },
+        "Name": "supply-checkout-prod-operator-rule-tampering",
         "State": "ENABLED",
         "Tags": [
           {
@@ -6570,27 +6695,9 @@
                 "requestParameters": {
                   "name": [
                     {
-                      "Ref": "OperatorPoolChangesD40F920E"
+                      "prefix": "supply-checkout-prod-operator-"
                     },
-                    {
-                      "Ref": "OperatorSelfServiceChanges0E27141E"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchChanges59EE8EE1"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchDataPathChanges20E06095"
-                    },
-                    {
-                      "Ref": "OperatorAlarmChanges646DFF5B"
-                    },
-                    {
-                      "Ref": "OperatorAlertRouteChangesB6D06886"
-                    },
-                    "supply-checkout-prod-deletions-rule-tampering",
-                    {
-                      "Ref": "OperatorRuleTamperingDB445FE1"
-                    }
+                    "supply-checkout-prod-deletions-rule-tampering"
                   ]
                 }
               },
@@ -6601,27 +6708,9 @@
                 "requestParameters": {
                   "rule": [
                     {
-                      "Ref": "OperatorPoolChangesD40F920E"
+                      "prefix": "supply-checkout-prod-operator-"
                     },
-                    {
-                      "Ref": "OperatorSelfServiceChanges0E27141E"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchChanges59EE8EE1"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchDataPathChanges20E06095"
-                    },
-                    {
-                      "Ref": "OperatorAlarmChanges646DFF5B"
-                    },
-                    {
-                      "Ref": "OperatorAlertRouteChangesB6D06886"
-                    },
-                    "supply-checkout-prod-deletions-rule-tampering",
-                    {
-                      "Ref": "OperatorRuleTamperingDB445FE1"
-                    }
+                    "supply-checkout-prod-deletions-rule-tampering"
                   ]
                 }
               },
@@ -6632,27 +6721,9 @@
                 "requestParameters": {
                   "name": [
                     {
-                      "Ref": "OperatorPoolChangesD40F920E"
+                      "prefix": "supply-checkout-prod-operator-"
                     },
-                    {
-                      "Ref": "OperatorSelfServiceChanges0E27141E"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchChanges59EE8EE1"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchDataPathChanges20E06095"
-                    },
-                    {
-                      "Ref": "OperatorAlarmChanges646DFF5B"
-                    },
-                    {
-                      "Ref": "OperatorAlertRouteChangesB6D06886"
-                    },
-                    "supply-checkout-prod-deletions-rule-tampering",
-                    {
-                      "Ref": "OperatorRuleTamperingDB445FE1"
-                    }
+                    "supply-checkout-prod-deletions-rule-tampering"
                   ]
                 },
                 "userIdentity": {
@@ -6673,27 +6744,9 @@
                 "requestParameters": {
                   "rule": [
                     {
-                      "Ref": "OperatorPoolChangesD40F920E"
+                      "prefix": "supply-checkout-prod-operator-"
                     },
-                    {
-                      "Ref": "OperatorSelfServiceChanges0E27141E"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchChanges59EE8EE1"
-                    },
-                    {
-                      "Ref": "OperatorAuditWatchDataPathChanges20E06095"
-                    },
-                    {
-                      "Ref": "OperatorAlarmChanges646DFF5B"
-                    },
-                    {
-                      "Ref": "OperatorAlertRouteChangesB6D06886"
-                    },
-                    "supply-checkout-prod-deletions-rule-tampering",
-                    {
-                      "Ref": "OperatorRuleTamperingDB445FE1"
-                    }
+                    "supply-checkout-prod-deletions-rule-tampering"
                   ]
                 },
                 "userIdentity": {
