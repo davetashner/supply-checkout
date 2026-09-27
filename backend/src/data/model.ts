@@ -28,6 +28,14 @@ export interface Team {
    * a team can never lose its last owner.
    */
   readonly owners: number;
+  /**
+   * How many members the team has. Created as 1, and moved in the same
+   * transaction as every membership that's added (acceptInvite, refused at
+   * memberCap) or removed (removeMember). Absent on teams made before it
+   * existed: the next membership change counts the MEMBER items and sets it,
+   * on the condition that it's still absent (teamCounts).
+   */
+  readonly members?: number;
   readonly stripeCustomerId?: string;
   readonly createdAt: string;
   readonly version: number;
@@ -140,6 +148,38 @@ export const INVITES_PER_TEAM_ADDRESS_PER_DAY = 3;
  */
 export const INVITES_PER_ADDRESS_PER_DAY = 15;
 
+/**
+ * Members a team may have while it isn't paying (trialing, or its
+ * subscription is anything but PAID_STATUSES): enough for a crew to try it,
+ * few enough that free accounts can't make a team whose live updates are
+ * costly to fan out (ADR 0016).
+ */
+export const MEMBERS_PER_TRIAL_TEAM = 10;
+
+/**
+ * Members a paying team may have. It bounds the live-update fan-out (one
+ * publish per member per chunk of changes, ADR 0016) and the per-team work
+ * the members screen does. A bigger customer asks support, which raises it.
+ */
+export const MEMBERS_PER_TEAM = 100;
+
+/** Subscription statuses that count as paying for memberCap: `active`, and `past_due` while Stripe retries. */
+export const PAID_STATUSES: readonly string[] = ["active", "past_due"];
+
+/**
+ * How many members a team may have. Pending invites count against it when an
+ * owner invites someone (createInvite), and acceptInvite enforces it
+ * atomically with the team's `members` count.
+ *
+ * This is the one place the cap is decided. Seat billing (bead
+ * supply-checkout-l50) plugs in here: when a paid team's members must fit its
+ * paid seats, return `Math.min(MEMBERS_PER_TEAM, team.seats)` for paying
+ * teams. Until then seats aren't enforced.
+ */
+export function memberCap(team: { readonly status?: unknown; readonly seats?: unknown }): number {
+  return typeof team.status === "string" && PAID_STATUSES.includes(team.status) ? MEMBERS_PER_TEAM : MEMBERS_PER_TRIAL_TEAM;
+}
+
 /** Teams one user may belong to. It bounds the per-team work /me does (a role session each). */
 export const MAX_TEAMS_PER_USER = 20;
 
@@ -216,6 +256,66 @@ export function teamIdForRequest(userId: string, requestKey: string): string {
   if (typeof requestKey !== "string" || !REQUEST_KEY.test(requestKey)) throw new InvalidInputError("Invalid idempotency key");
   const h = createHash("sha256").update(`team\n${userId}\n${requestKey}`, "utf8").digest("hex");
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
+
+/**
+ * The one transaction item on a team's META item for a membership that's
+ * added or removed: it moves the member count, and the owner count too when
+ * the membership is an owner's. (DynamoDB allows one operation per item in a
+ * transaction, so both counts move in one Update.)
+ *
+ * - `members: 1` is conditional on the count being below `cap`, so two
+ *   accepts racing for the last place can't both join.
+ * - `owners: -1` is conditional on another owner remaining (ownersUpdate).
+ * - `counted`: the team has no `members` yet (a team made before the count),
+ *   and this is how many MEMBER items it has now. The update sets the count
+ *   to `counted + members`, on the condition that it's still absent. Every
+ *   membership change sets it, so one that commits between the caller's
+ *   count and this write makes the condition fail (a ConflictError to retry),
+ *   rather than leave a wrong count. The caller checks the cap against
+ *   `counted` itself.
+ */
+export function teamCounts(
+  tableName: string,
+  teamId: string,
+  change: { readonly members: 1 | -1; readonly owners?: 1 | -1; readonly cap?: number; readonly counted?: number },
+) {
+  const conditions = ["attribute_exists(PK)"];
+  const values: Record<string, number> = {};
+  const add: string[] = [];
+  let set = "";
+  if (change.counted === undefined) {
+    add.push("#members :members");
+    values[":members"] = change.members;
+    if (change.members > 0) {
+      if (change.cap === undefined) throw new Error("Adding a member needs the team's cap");
+      conditions.push("#members < :cap");
+      values[":cap"] = change.cap;
+    } else conditions.push("attribute_exists(#members)");
+  } else {
+    set = "SET #members = :members";
+    values[":members"] = Math.max(0, change.counted + change.members);
+    conditions.push("attribute_not_exists(#members)");
+  }
+  if (change.owners !== undefined) {
+    add.push("owners :owners");
+    values[":owners"] = change.owners;
+    if (change.owners < 0) {
+      conditions.push("owners > :one");
+      values[":one"] = 1;
+    }
+  }
+  return {
+    Update: {
+      TableName: tableName,
+      Key: keys.team(teamId),
+      UpdateExpression: [set, add.length ? `ADD ${add.join(", ")}` : ""].filter(Boolean).join(" "),
+      ConditionExpression: conditions.join(" AND "),
+      // MEMBERS is a DynamoDB reserved word
+      ExpressionAttributeNames: { "#members": "members" },
+      ExpressionAttributeValues: values,
+    },
+  };
 }
 
 /**

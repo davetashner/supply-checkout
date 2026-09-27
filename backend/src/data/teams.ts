@@ -5,7 +5,8 @@ import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dy
 import { type Db, connection } from "./client.js";
 import { ConflictError, LastOwnerError, conflictOnConditionFailure } from "./errors.js";
 import { id, keys, prefixes, strip, teamPartition } from "./keys.js";
-import { type Member, type MemberRole, type Team, type UserTeam, memberRole, ownersUpdate, teamName } from "./model.js";
+import { type Member, type MemberRole, type Team, type UserTeam, memberRole, ownersUpdate, teamCounts, teamName } from "./model.js";
+import { memberCount } from "./member-count.js";
 import { revokeInvitesForEmail } from "./invites.js";
 import { queryAll, versionedSet } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
@@ -147,15 +148,20 @@ export async function setMemberRole(db: Db, ctx: TeamContext, userId: string, ro
 }
 
 /**
- * Owners remove members; any member can remove themselves (leave). Removing an
- * owner decrements the owner count in the same transaction, conditioned on
- * another owner remaining (LastOwnerError). Their pending invites to the team
- * are revoked first.
+ * Owners remove members; any member can remove themselves (leave). The team's
+ * member count goes down in the same transaction, and removing an owner also
+ * decrements the owner count, conditioned on another owner remaining
+ * (LastOwnerError). Their pending invites to the team are revoked first.
  */
 export async function removeMember(db: Db, ctx: TeamContext, userId: string): Promise<void> {
   const minimum = userId === ctx.userId ? "viewer" : "owner";
   writable(db, ctx, minimum);
-  const { role: from, email } = await currentMember(db, ctx, userId);
+  const [{ role: from, email }, count] = await Promise.all([currentMember(db, ctx, userId), memberCount(db, ctx.teamId)]);
+  if (!count) throw new ConflictError(CHANGED);
+  // Writing the count for the first time: its condition is that nobody else
+  // did, so a failure there can't be told apart from the last owner by the
+  // cancellation reasons. The owner count read here answers that case.
+  if (count.counted !== undefined && from === "owner" && count.owners <= 1) throw new LastOwnerError(LAST_OWNER);
   // Any other invite to this team for their address goes first, so someone
   // removed can't rejoin with an invite they hadn't used. If the removal then
   // fails (the last owner), only their own unused invites are gone.
@@ -174,12 +180,12 @@ export async function removeMember(db: Db, ctx: TeamContext, userId: string): Pr
             },
           },
           { Delete: { TableName: db.tableName, Key: keys.userTeam(userId, ctx.teamId) } },
-          ...(from === "owner" ? [ownersUpdate(db.tableName, ctx.teamId, -1)] : []),
+          teamCounts(db.tableName, ctx.teamId, { members: -1, counted: count.counted, ...(from === "owner" ? { owners: -1 as const } : {}) }),
           ...callerStillOwner(db, ctx, userId),
         ],
       }),
     )
-    .catch(memberChangeFailed(from === "owner" ? 2 : undefined));
+    .catch(memberChangeFailed(from === "owner" && count.counted === undefined ? 2 : undefined));
 }
 
 /**
