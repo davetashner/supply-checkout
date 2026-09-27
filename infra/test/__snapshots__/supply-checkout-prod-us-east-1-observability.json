@@ -2908,12 +2908,16 @@
                     "GSI1SK",
                     "closedAt",
                     "purgeAfter",
+                    "purging",
                     "stripeCustomerId",
                     "teamId"
                   ]
                 },
                 "StringEquals": {
-                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                  "dynamodb:Select": [
+                    "SPECIFIC_ATTRIBUTES",
+                    "COUNT"
+                  ]
                 }
               },
               "Effect": "Allow",
@@ -2953,6 +2957,7 @@
                     "GSI1SK",
                     "closedAt",
                     "purgeAfter",
+                    "purging",
                     "stripeCustomerId",
                     "teamId"
                   ]
@@ -3001,6 +3006,7 @@
                     "GSI1SK",
                     "closedAt",
                     "purgeAfter",
+                    "purging",
                     "stripeCustomerId",
                     "teamId"
                   ]
@@ -3027,6 +3033,45 @@
                 ]
               },
               "Sid": "DeleteClosedTeamItems"
+            },
+            {
+              "Action": "dynamodb:UpdateItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "TEAM#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "purgeAfter",
+                    "purging"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "dynamodb:ReturnValues": "NONE"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "MarkClosedTeamPurging"
             },
             {
               "Action": [
@@ -3252,6 +3297,71 @@
             "Arn"
           ]
         }
+      }
+    },
+    "OpsChecksPurgeNotRunning6728EEA6": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Deletion job not running (J11, us-east-1). No ClosedTeamsOverdue sample from the hourly closed-team purge for 3 hours: its schedule is disabled or deleted, or every run fails before it reads the closed-teams index. Closed teams aren't being deleted, and Deletion overdue can't see it. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-deletion-not-running",
+        "ComparisonOperator": "LessThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "ClosedTeamsOverdue (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "ClosedTeamsOverdue",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 10800,
+              "Stat": "SampleCount"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 1,
+        "TreatMissingData": "breaching"
       }
     },
     "OperatorPoolChangesD40F920E": {
@@ -3605,6 +3715,13 @@
               {
                 "Fn::GetAtt": [
                   "JourneyAlarmsteamclosednoticesfailingA94DEEDE",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "OpsChecksPurgeNotRunning6728EEA6",
                   "Arn"
                 ]
               },

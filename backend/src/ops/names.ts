@@ -30,6 +30,13 @@ export const PURGE_BUDGET_MS = 4 * 60_000;
  */
 export const PURGE_OVERDUE_AFTER_HOURS = 24;
 
+/**
+ * No ClosedTeamsOverdue sample from the purge for this long alarms ("Deletion
+ * job not running"): three hourly runs missed, so one slow or skipped run
+ * doesn't page anyone.
+ */
+export const PURGE_SILENT_ALARM_HOURS = 3;
+
 /** Functions the observability stack names. */
 export const opsResourceNames = (envName: string) => ({
   stuckImportsFunction: `supply-checkout-${envName}-stuck-imports`,

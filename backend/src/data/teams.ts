@@ -404,8 +404,11 @@ const TOO_OFTEN = `A team can be reopened ${REOPENS_PER_TEAM_PER_DAY} times a da
  * moves. The update is conditioned on
  * the team still having the closure that was read (same `closedAt` and
  * `purgeAfter`), on `purgeAfter` being more than REOPEN_CUTOFF_MINUTES away
- * (TeamDeletingError otherwise: the purge may already be deleting it), and on
- * the team having an owner.
+ * (TeamDeletingError otherwise: the purge may already be deleting it), on
+ * the team not being marked `purging` (TeamDeletingError: purgeTeam sets the
+ * mark, conditioned on the team still being closed and due, before it deletes
+ * anything, so whichever write lands first wins, whatever the clocks say),
+ * and on the team having an owner.
  *
  * From then on the team is writable again (authorizeTeam reads `closedAt`)
  * and its members get live updates again (liveUpdateRecipients). Nothing
@@ -432,7 +435,8 @@ export async function reopenTeam(
   if (!isClosed(current)) return { team: current, reopenedNow: false };
   if (confirmation(input.confirmName) !== confirmation(current.name)) throw new InvalidInputError(REOPEN_CONFIRM);
   const cutoff = new Date(now.getTime() + REOPEN_CUTOFF_MINUTES * 60_000).toISOString();
-  if (typeof current.purgeAfter !== "string" || current.purgeAfter <= cutoff) throw new TeamDeletingError(TOO_LATE);
+  // Too close to the purge, or the purge has started: it marks the team before deleting anything
+  if (typeof current.purgeAfter !== "string" || current.purgeAfter <= cutoff || current.purging !== undefined) throw new TeamDeletingError(TOO_LATE);
   await connection(db)
     .doc.send(
       new TransactWriteCommand({
@@ -442,7 +446,7 @@ export async function reopenTeam(
               TableName: db.tableName,
               Key: keys.team(ctx.teamId),
               UpdateExpression: "REMOVE closedAt, closedBy, purgeAfter, GSI1PK, GSI1SK SET #version = #version + :one",
-              ConditionExpression: "closedAt = :at AND purgeAfter = :purge AND purgeAfter > :cutoff AND owners > :zero",
+              ConditionExpression: "closedAt = :at AND purgeAfter = :purge AND purgeAfter > :cutoff AND attribute_not_exists(purging) AND owners > :zero",
               ExpressionAttributeNames: { "#version": "version" },
               ExpressionAttributeValues: { ":at": current.closedAt, ":purge": current.purgeAfter, ":cutoff": cutoff, ":one": 1, ":zero": 0 },
             },
@@ -472,10 +476,12 @@ export async function reopenTeam(
         ],
       }),
     )
-    .catch((error: unknown) => {
+    .catch(async (error: unknown) => {
       const reasons = (error as { name?: string; CancellationReasons?: { Code?: string }[] } | null)?.name === "TransactionCanceledException" ? ((error as { CancellationReasons?: { Code?: string }[] }).CancellationReasons ?? []) : [];
       // Only the counter refused it: every other condition held
       if (reasons[3]?.Code === "ConditionalCheckFailed" && reasons.slice(0, 3).every((r) => r.Code === "None")) throw new LimitReachedError(TOO_OFTEN);
+      // The team changed since it was read: if the purge marked it meanwhile, say so
+      if (reasons[0]?.Code === "ConditionalCheckFailed" && (await getTeam(db, ctx))?.purging !== undefined) throw new TeamDeletingError(TOO_LATE);
       return conflictOnConditionFailure(CHANGED)(error);
     });
   return { team: (await getTeam(db, ctx)) as Team, reopenedNow: true };

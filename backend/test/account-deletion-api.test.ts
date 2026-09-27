@@ -15,7 +15,7 @@ import { authorizeTeam, CLOSED_TEAM_RETENTION_DAYS, createInvite, hashEmail, lis
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { PURGE_BUDGET_MS } from "../src/ops/names.js";
 import { createTeamPurgeHandler } from "../src/ops/team-purge-handler.js";
-import { TEAM_PURGE_ATTRIBUTES } from "../src/data/schema.js";
+import { TEAM_PURGE_ATTRIBUTES, TEAM_PURGE_MARK_ATTRIBUTES } from "../src/data/schema.js";
 import { REGION, accountPartitions, fakeDb, fakeMailer, memoryDeletionLog, unusedEmailCodes } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 import { connection } from "../src/data/client.js";
@@ -458,6 +458,27 @@ describe("reopening a team", () => {
     expect((await reopen()).status).toBe(200);
   });
 
+  it("refuses a team the purge has marked, even with hours left by the server's clock, including one marked mid-request", async () => {
+    await close();
+    // Well before the cutoff by this clock, but the purge (its clock ahead) has started on it
+    now = NOW + 5 * DAY;
+    table.put({ ...(meta() as Record<string, unknown>), purging: new Date(NOW + 31 * DAY).toISOString() });
+    expect(await reopen()).toMatchObject({ status: 409, body: { error: { code: "aborted", reason: "team_deleting" } } });
+    expect(meta()).toMatchObject({ closedAt: expect.any(String), GSI1PK: "TEAMS#CLOSED" });
+    // Marked between reopen's read and its write: the transaction's condition refuses it, and it says why
+    const { purging: _purging, ...unmarked } = meta() as Record<string, unknown>;
+    void _purging;
+    table.put(unmarked);
+    table.beforeTransactWrite = () => {
+      table.put({ ...(meta() as Record<string, unknown>), purging: new Date(NOW + 31 * DAY).toISOString() });
+      table.beforeTransactWrite = undefined;
+    };
+    expect(await reopen()).toMatchObject({ status: 409, body: { error: { code: "aborted", reason: "team_deleting" } } });
+    expect(meta()?.closedAt).toBeDefined();
+    expect(audits("team-a").map((a) => a.action)).toEqual(["team.closed"]);
+    expect(counts[BusinessMetric.TeamsReopened]).toBeUndefined();
+  });
+
   it("reopens a team at most three times a UTC day, so cycling can't flood the owners with email", async () => {
     for (let i = 0; i < 3; i++) {
       expect((await close("team-b")).status).toBe(200);
@@ -733,16 +754,24 @@ describe("purging closed teams", () => {
     table.requests.length = 0;
     await purge(NOW + 31 * DAY);
     expect(table.requests.length).toBeGreaterThan(5);
+    const seen = new Set<string>();
     for (const { command, input } of table.requests) {
+      seen.add(`${command} ${String(input.Select ?? "")}`.trim());
       const names = Object.values((input.ExpressionAttributeNames ?? {}) as Record<string, string>);
-      const text = [input.ProjectionExpression, input.ConditionExpression, input.KeyConditionExpression].filter(Boolean).join(" ");
-      const bare = [...String(text).replace(/:[A-Za-z0-9_]+/g, " ").matchAll(/(?<![#\w])[A-Za-z_][A-Za-z0-9_]*\b(?!\s*\()/g)].map((m) => m[0]).filter((w) => !["AND", "OR"].includes(w));
-      for (const a of [...names, ...bare, ...Object.keys((input.Key ?? {}) as object)]) expect(TEAM_PURGE_ATTRIBUTES as readonly string[], `${command} ${a}`).toContain(a);
-      if (command === "QueryCommand") expect(input).toMatchObject({ Select: "SPECIFIC_ATTRIBUTES", ProjectionExpression: expect.any(String) });
+      const text = [input.ProjectionExpression, input.ConditionExpression, input.KeyConditionExpression, input.UpdateExpression].filter(Boolean).join(" ");
+      const bare = [...String(text).replace(/:[A-Za-z0-9_]+/g, " ").matchAll(/(?<![#\w])[A-Za-z_][A-Za-z0-9_]*\b(?!\s*\()/g)].map((m) => m[0]).filter((w) => !["AND", "OR", "SET"].includes(w));
+      // The one update, the purging mark, has its own narrower list (its own IAM statement)
+      const allowed: readonly string[] = command === "UpdateCommand" ? TEAM_PURGE_MARK_ATTRIBUTES : TEAM_PURGE_ATTRIBUTES;
+      for (const a of [...names, ...bare, ...Object.keys((input.Key ?? {}) as object)]) expect(allowed, `${command} ${a}`).toContain(a);
+      if (command === "QueryCommand" && input.Select !== "COUNT") expect(input).toMatchObject({ Select: "SPECIFIC_ATTRIBUTES", ProjectionExpression: expect.any(String) });
+      if (command === "QueryCommand" && input.Select === "COUNT") expect(input).toMatchObject({ IndexName: "GSI1", ExpressionAttributeValues: expect.objectContaining({ ":pk": "TEAMS#CLOSED" }) });
       if (command === "GetCommand") expect(input.ProjectionExpression).toEqual(expect.any(String));
+      // Never closedAt: the mark can't close or reopen a team
+      if (command === "UpdateCommand") expect(input).toMatchObject({ Key: { PK: "TEAM#team-a", SK: "META" }, UpdateExpression: "SET purging = :now", ConditionExpression: "attribute_exists(purgeAfter) AND purgeAfter <= :now" });
       expect(input.ReturnValues).toBeUndefined();
-      expect(["QueryCommand", "GetCommand", "DeleteCommand"]).toContain(command);
+      expect(["QueryCommand", "GetCommand", "DeleteCommand", "UpdateCommand"]).toContain(command);
     }
+    expect([...seen].sort()).toEqual(["DeleteCommand", "GetCommand", "QueryCommand COUNT", "QueryCommand SPECIFIC_ATTRIBUTES", "UpdateCommand"]);
   });
 
   it("skips a team listed in the index that isn't closed or isn't due, and leaves another team's Stripe link", async () => {
@@ -786,9 +815,65 @@ describe("purging closed teams", () => {
     await close("team-b");
     let clock = NOW + 40 * DAY;
     const run = createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), deletions: deletions.log, now: () => (clock += PURGE_BUDGET_MS + 1) })();
-    // Ten days past their deletion date and not reached: overdue
-    expect(await run).toEqual({ purged: 0, failed: 0, due: 2, overdue: 2 });
-    expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(2);
+    // Ten days past their deletion date and not reached: overdue. The three entries it didn't
+    // write aren't listed, but they're counted: nothing will ever delete them, so a person should look
+    expect(await run).toEqual({ purged: 0, failed: 0, due: 2, overdue: 5 });
+    expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(5);
     expect(meta("team-a")).toBeDefined();
+  });
+
+  it("counts every overdue team, not just the first page it lists", async () => {
+    // More overdue teams than one listing holds (100)
+    for (let i = 0; i < 130; i++) {
+      const teamId = `team-old-${String(i).padStart(3, "0")}`;
+      team(teamId, {}, { closedAt: "2026-08-01T00:00:00.000Z", purgeAfter: "2026-08-31T00:00:00.000Z", GSI1PK: "TEAMS#CLOSED", GSI1SK: `2026-08-31T00:00:00.000Z#${teamId}` });
+    }
+    // Due, but not yet overdue
+    team("team-new", {}, { closedAt: "2026-08-27T00:00:00.000Z", purgeAfter: "2026-09-26T00:00:00.000Z", GSI1PK: "TEAMS#CLOSED", GSI1SK: "2026-09-26T00:00:00.000Z#team-new" });
+    let clock = NOW;
+    // Out of time before the first team
+    const stuck = createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), deletions: deletions.log, now: () => (clock += PURGE_BUDGET_MS + 1) });
+    expect(await stuck()).toEqual({ purged: 0, failed: 0, due: 100, overdue: 130 });
+    expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(130);
+    // A run that deletes the 100 it listed leaves the other 30 overdue
+    expect(await purge(NOW)).toEqual({ purged: 100, failed: 0, due: 100, overdue: 30 });
+    expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(30);
+    expect(await purge(NOW)).toEqual({ purged: 31, failed: 0, due: 31, overdue: 0 });
+  });
+
+  it("sends no gauge when it can't read the index, so the not-running alarm sees the gap", async () => {
+    await close("team-a");
+    const db = table.guarded((command, input) => !(command === "QueryCommand" && input.Select === "COUNT"));
+    await expect(createTeamPurgeHandler({ db, obs: observability(), deletions: deletions.log, now: () => NOW + 40 * DAY })()).rejects.toMatchObject({ name: "AccessDeniedException" });
+    expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBeUndefined();
+  });
+
+  it("marks a team purging before it deletes anything, and leaves it marked if it stops part-way", async () => {
+    await close("team-a");
+    const at = new Date(NOW + 31 * DAY);
+    let deletes = 0;
+    const db = table.guarded((command) => command !== "DeleteCommand" || ++deletes < 3);
+    await expect(purgeTeam(db, "team-a", at)).rejects.toMatchObject({ name: "AccessDeniedException" });
+    expect(meta("team-a")).toMatchObject({ purging: at.toISOString(), closedAt: expect.any(String) });
+    // The next run carries on, and finishes it
+    expect((await purgeTeam(table.db(undefined), "team-a", new Date(at.getTime() + 3_600_000))).skipped).toBe(false);
+    expect(partition("TEAM#team-a")).toEqual([]);
+  });
+
+  it("leaves a team alone that was reopened between reading it and marking it", async () => {
+    await close("team-a");
+    const before = partition("TEAM#team-a").length;
+    // Reopened right after the purge read it: closure fields and index keys gone
+    table.afterGet = (item) => {
+      if (item?.PK === "TEAM#team-a" && item.SK === "META") {
+        table.afterGet = undefined;
+        const open = { ...(item as Record<string, unknown>) };
+        for (const k of ["closedAt", "closedBy", "purgeAfter", "GSI1PK", "GSI1SK"]) Reflect.deleteProperty(open, k);
+        table.put(open);
+      }
+    };
+    expect(await purgeTeam(table.db(undefined), "team-a", new Date(NOW + 31 * DAY))).toEqual({ deleted: 0, skipped: true });
+    expect(partition("TEAM#team-a")).toHaveLength(before);
+    expect(meta("team-a")?.purging).toBeUndefined();
   });
 });

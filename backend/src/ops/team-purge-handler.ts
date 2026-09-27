@@ -9,9 +9,14 @@
 // item last. It starts no new team after PURGE_BUDGET_MS, and a team it
 // didn't finish (the timeout) is still listed, so the next run carries on.
 // One team's failure is logged and counted, and the others still go.
-// Every run, even one that fails, sends the ClosedTeamsOverdue gauge: the
-// teams it found that are still there PURGE_OVERDUE_AFTER_HOURS after their
-// deletion date, so the privacy deadline has its own alarm.
+// Every run that could read the index, even one where teams fail, sends the
+// ClosedTeamsOverdue gauge: the closed teams still there
+// PURGE_OVERDUE_AFTER_HOURS after their deletion date, so the privacy
+// deadline has its own alarm. It's counted with a count query on the index
+// (countTeamsDueBefore), not from the listing, so it isn't capped at the
+// listing's limit. A run that can't read the index sends no gauge, and
+// neither does a purge that doesn't run at all: "Deletion job not running"
+// alarms when the gauge's samples stop.
 //
 // Before deleting a team, it writes the team's deletion record (the team ID and
 // the time, deletions/records.ts), so a restore from an older backup can delete
@@ -21,7 +26,7 @@
 // may delete whole items and name only TEAM_PURGE_ATTRIBUTES
 // (infra/lib/observability/ops-checks.ts).
 
-import { type Db, listTeamsToPurge, purgeTeam } from "../data/index.js";
+import { countTeamsDueBefore, type Db, listTeamsToPurge, purgeTeam } from "../data/index.js";
 import type { DeletionLog } from "../deletions/records.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import { PURGE_BUDGET_MS, PURGE_OVERDUE_AFTER_HOURS } from "./names.js";
@@ -39,6 +44,9 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
   const now = deps.now ?? Date.now;
   return async (): Promise<{ purged: number; failed: number; due: number; overdue: number }> => {
     const started = now();
+    const overdueBefore = new Date(started - PURGE_OVERDUE_AFTER_HOURS * 3_600_000).toISOString();
+    // Counted before the listing, from the same index: every overdue team is also due, and they list first
+    const overdueAtStart = await countTeamsDueBefore(db, new Date(overdueBefore));
     const due = await listTeamsToPurge(db, new Date(started));
     let purged = 0;
     let failed = 0;
@@ -59,9 +67,11 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
       }
     }
     if (purged) obs.count(BusinessMetric.TeamsPurged, purged);
-    // ISO timestamps compare as strings; the listing is at most its limit, which is enough to alarm on
-    const overdueBefore = new Date(started - PURGE_OVERDUE_AFTER_HOURS * 3_600_000).toISOString();
-    const overdue = due.filter((t) => t.purgeAfter <= overdueBefore && !done.has(t.teamId)).length;
+    // The overdue teams at the start less those this run deleted (or found weren't due). Not a
+    // count after the run: the index is eventually consistent, and a team just deleted could still
+    // be counted. ISO timestamps compare as strings.
+    const cleared = due.filter((t) => t.purgeAfter < overdueBefore && done.has(t.teamId)).length;
+    const overdue = Math.max(0, overdueAtStart - cleared);
     obs.gauge(BusinessMetric.ClosedTeamsOverdue, overdue);
     obs.logger.info("Purged closed teams", { due: due.length, purged, failed, overdue });
     // A run that failed anywhere fails, so the Lambda errors alarm sees it

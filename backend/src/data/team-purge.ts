@@ -6,6 +6,13 @@
 // table's own index. It names only TEAM_PURGE_ATTRIBUTES, the attributes its
 // IAM policy allows, so it never reads documents, emails or names.
 //
+// Before deleting anything it marks the META item `purging` (the time it
+// started), on the condition the team is still closed and due. reopenTeam
+// refuses a team marked `purging` and purgeTeam refuses one that isn't closed,
+// and both are conditional writes to the same META item, so whichever lands
+// first wins: a team is never reopened part-deleted, whatever the clocks say.
+// The mark is never removed; the META item goes last.
+//
 // A team is deleted in an order that makes a stopped run safe to repeat: each
 // member's team-switcher row, then every other item in the team's partition,
 // then the Stripe link, and the META item last, which also takes the team out
@@ -16,7 +23,7 @@
 // Deleting MEMBER items here doesn't move the META item's counts: the META
 // item goes too.
 
-import { DeleteCommand, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { id, keys, prefixes, teamPartition } from "./keys.js";
 import { CLOSED_TEAMS_PARTITION, GSI1 } from "./schema.js";
@@ -61,6 +68,32 @@ export async function listTeamsToPurge(db: Db, now: Date, limit = 100): Promise<
   return out;
 }
 
+/**
+ * How many closed teams have a `purgeAfter` before `before`, however many
+ * there are: a count query on the same index partition (Select COUNT, which
+ * returns no items), paged by DynamoDB's 1 MB limit. The purge's
+ * ClosedTeamsOverdue gauge uses it, so it isn't capped at a listing's limit.
+ */
+export async function countTeamsDueBefore(db: Db, before: Date): Promise<number> {
+  let count = 0;
+  let ExclusiveStartKey: Record<string, unknown> | undefined;
+  do {
+    const page = await connection(db).doc.send(
+      new QueryCommand({
+        TableName: db.tableName,
+        IndexName: GSI1,
+        KeyConditionExpression: "GSI1PK = :pk AND GSI1SK < :before",
+        Select: "COUNT",
+        ExpressionAttributeValues: { ":pk": CLOSED_TEAMS_PARTITION, ":before": before.toISOString() },
+        ExclusiveStartKey,
+      }),
+    );
+    count += page.Count ?? 0;
+    ExclusiveStartKey = page.LastEvaluatedKey;
+  } while (ExclusiveStartKey);
+  return count;
+}
+
 /** What purgeTeam did: `skipped` when the team isn't closed or isn't due (it was, or it's gone). */
 export interface PurgeResult {
   readonly deleted: number;
@@ -84,10 +117,13 @@ const CONCURRENCY = 10;
  * movements, audit trail, counters), each member's team-switcher row, and the
  * Stripe link. Returns how many items it deleted. Safe to run again after it
  * stopped part-way, and a no-op for a team that isn't closed or isn't due.
+ * It first marks the team `purging`, conditioned on it still being closed and
+ * due, so reopenTeam can't reopen it once anything may be gone.
  *
- * `beforeDelete` runs once the team is found due and before anything is
- * deleted (the purge writes the team's deletion record there); if it fails,
- * nothing is deleted and the next run tries again.
+ * `beforeDelete` runs once the team is marked and before anything is deleted
+ * (the purge writes the team's deletion record there): after the mark, so a
+ * team reopened meanwhile never gets a record. If it fails, nothing is
+ * deleted and the next run tries again.
  */
 export async function purgeTeam(db: Db, teamId: string, now: Date, options: { readonly beforeDelete?: () => Promise<void> } = {}): Promise<PurgeResult> {
   const { doc } = connection(db);
@@ -97,6 +133,28 @@ export async function purgeTeam(db: Db, teamId: string, now: Date, options: { re
   );
   // Only a closed team, and only once it's due: the index is a hint, the META item decides
   if (!meta || typeof meta.closedAt !== "string" || typeof meta.purgeAfter !== "string" || meta.purgeAfter > now.toISOString()) return { deleted: 0, skipped: true };
+  // Mark it before deleting anything, if it's still closed and due: from here reopenTeam refuses it.
+  // A team reopened since the read above fails the condition and is left alone.
+  const marked = await doc
+    .send(
+      new UpdateCommand({
+        TableName: db.tableName,
+        Key: keys.team(teamId),
+        UpdateExpression: "SET purging = :now",
+        // purgeAfter exists exactly while the team is closed (closeTeam and reopenTeam set and remove it
+        // with closedAt), so this is "still closed and due" without naming closedAt (TEAM_PURGE_MARK_ATTRIBUTES)
+        ConditionExpression: "attribute_exists(purgeAfter) AND purgeAfter <= :now",
+        ExpressionAttributeValues: { ":now": now.toISOString() },
+      }),
+    )
+    .then(
+      () => true,
+      (error: unknown) => {
+        if ((error as { name?: string } | null)?.name === "ConditionalCheckFailedException") return false;
+        throw error;
+      },
+    );
+  if (!marked) return { deleted: 0, skipped: true };
   await options.beforeDelete?.();
 
   const items: { PK: string; SK: string }[] = [];

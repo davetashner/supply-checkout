@@ -355,6 +355,8 @@ export class MemoryTable {
       if (at < 0) throw Object.assign(new Error("The provided starting key is invalid"), { name: "ValidationException" });
       rows = rows.slice(at + 1);
     }
+    // Select COUNT returns how many match and no items (one page here: nothing in memory is near 1 MB)
+    if (input.Select === "COUNT") return { Count: rows.length };
     const limit = input.Limit as number | undefined;
     const page = limit ? rows.slice(0, limit) : rows;
     const last = limit && rows.length > limit ? page[page.length - 1] : undefined;
