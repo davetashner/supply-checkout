@@ -7,6 +7,7 @@ import { createLocalTable, deleteLocalTable } from "../src/data/local-table.js";
 import type { EmailCodes } from "../src/api/cognito-user.js";
 import { EmailNotSentError, type Mailer, type MessageTags } from "../src/email/mailer.js";
 import type { EmailInput } from "../src/email/templates.js";
+import { type DeletionLog, type DeletionRecord, validRecord } from "../src/deletions/records.js";
 
 /** DynamoDB Local, e.g. http://localhost:8000. CI runs it as a service container. */
 export const endpoint = process.env.DYNAMODB_ENDPOINT || undefined;
@@ -91,6 +92,23 @@ export function accountPartitions(scope: { userId: string; teamId?: string; invi
 
 /** The account handler's deleteUser, for tests that never delete an account. */
 export const unusedDeleteUser = async (): Promise<void> => Promise.reject(new Error("deleteUser not used"));
+
+/** A deletion log for handlers whose tests never delete anything. */
+export const unusedDeletionLog: DeletionLog = { record: () => Promise.reject(new Error("deletion log not used")) };
+
+/** A deletion log that keeps what it's given, or fails like S3 while `fail` is set. */
+export function memoryDeletionLog() {
+  const records: DeletionRecord[] = [];
+  const state = { fail: false };
+  const log: DeletionLog = {
+    async record(record) {
+      if (state.fail) throw Object.assign(new Error("Access Denied"), { name: "AccessDenied" });
+      // Checked and written once, as s3DeletionLog does
+      if (!records.some((r) => r.kind === record.kind && r.id === record.id)) records.push(validRecord(record));
+    },
+  };
+  return { log, records, state };
+}
 
 /**
  * The top-level attribute names a request names anywhere (its key, update,

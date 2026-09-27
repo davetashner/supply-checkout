@@ -146,7 +146,7 @@ Dependabot opens weekly update PRs for npm packages and GitHub Actions.
 | Page | What it covers |
 | --- | --- |
 | [docs/infrastructure.md](docs/infrastructure.md) | The CDK app: stacks, regions, parameters, the `app` table, cdk-nag, deploying, template snapshots, domain and email, sign-in, the data API and live updates |
-| [docs/backups.md](docs/backups.md) | PITR, AWS Backup and the copy to a separate backup account, vault locks, S3 versioning, failed-backup alarms and the restore drill |
+| [docs/backups.md](docs/backups.md) | PITR, AWS Backup and the copy to a separate backup account, vault locks, S3 versioning, failed-backup alarms, the restore drill, deletion records and putting a restored table back into service |
 | [docs/observability.md](docs/observability.md) | Alarm topics, the dashboard, log retention and alarm recipients |
 | [docs/backend.md](docs/backend.md) | The Lambda code: logging and metrics, the data-access module, inventory commands, keys and its tests |
 | [docs/web-app.md](docs/web-app.md) | Web hosting and releases on CloudFront, publishing, and the web build's runtime on AWS |

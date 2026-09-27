@@ -4,6 +4,7 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { domainOutputParameters, hostNames } from "../lib/domain.js";
+import { DELETION_RECORD_RETENTION_DAYS } from "../../backend/src/deletions/names.js";
 import { webBucketName } from "../lib/stacks/data-stack.js";
 import { MANAGED_RULE_GROUPS, RATE_LIMIT_PER_5_MINUTES, RELEASE_CHANNELS, webOutputParameters } from "../lib/stacks/web-stack.js";
 import { contentSecurityPolicy, cspDirectives } from "../lib/web/content-security-policy.js";
@@ -75,6 +76,37 @@ describe("web bucket (data stack)", () => {
 
   it("publishes the bucket name", () => {
     build().data(EAST).hasResourceProperties("AWS::SSM::Parameter", { Name: "/supply-checkout/prod/data/web-bucket-name" });
+  });
+});
+
+describe("deletion records bucket (data stack, supply-checkout-0ic7)", () => {
+  it("keeps each record under a compliance-mode lock for longer than any backup, then expires it, and is retained", () => {
+    const { data } = build();
+    data(EAST).hasResource("AWS::S3::Bucket", {
+      DeletionPolicy: "Retain",
+      Properties: {
+        BucketName: { "Fn::Join": ["", [`supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }]] },
+        VersioningConfiguration: { Status: "Enabled" },
+        ObjectLockEnabled: true,
+        ObjectLockConfiguration: { ObjectLockEnabled: "Enabled", Rule: { DefaultRetention: { Mode: "COMPLIANCE", Days: DELETION_RECORD_RETENTION_DAYS } } },
+        LifecycleConfiguration: { Rules: [{ ExpirationInDays: DELETION_RECORD_RETENTION_DAYS + 1, NoncurrentVersionExpiration: { NoncurrentDays: 1 }, Status: "Enabled" }] },
+        BucketEncryption: { ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" } }] },
+        OwnershipControls: { Rules: [{ ObjectOwnership: "BucketOwnerEnforced" }] },
+        PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true },
+        LoggingConfiguration: { LogFilePrefix: "s3/deletions/", DestinationBucketName: Match.anyValue() },
+      },
+    });
+    // Longer than the vault locks' 365-day maximum retention
+    expect(DELETION_RECORD_RETENTION_DAYS).toBeGreaterThan(365);
+    build().data(EAST).hasResourceProperties("AWS::SSM::Parameter", { Name: "/supply-checkout/prod/data/deletions-bucket-name" });
+  });
+
+  it("refuses anything but TLS, and grants nobody anything in its bucket policy", () => {
+    const { data } = build();
+    const policies = Object.values(data(EAST).findResources("AWS::S3::BucketPolicy")).filter((p) => JSON.stringify(p.Properties.Bucket).includes("DeletionsBucket"));
+    expect(policies).toHaveLength(1);
+    const statements = policies[0]?.Properties.PolicyDocument.Statement as { Effect: string }[];
+    expect(statements.map((st) => st.Effect)).toEqual(["Deny"]);
   });
 });
 

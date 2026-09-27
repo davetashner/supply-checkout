@@ -338,6 +338,35 @@ describe("account-access role (LeadingKeys)", () => {
     expect(sends).toEqual([[expect.stringMatching(/^AccountFunctionRole/), expect.objectContaining({ Sid: "SendAppEmail", Action: "ses:SendEmail", Condition: { StringEquals: { "ses:FromAddress": "noreply@supplycheckout.com" } } })]]);
   });
 
+  it("lets the account function put account deletion records, in the primary region's bucket, and no other function touch S3", () => {
+    for (const region of [EAST, WEST]) {
+      const { template } = api(region);
+      const s3 = resources(template, "AWS::IAM::Policy").flatMap(([id, p]) =>
+        (p.Properties.PolicyDocument as { Statement: { Action: unknown }[] }).Statement.filter((s) => JSON.stringify(s.Action).includes("s3:")).map((s) => [id, s]),
+      );
+      expect(s3).toEqual([
+        [
+          expect.stringMatching(/^AccountFunctionRole/),
+          {
+            Sid: "PutAccountDeletionRecords",
+            Effect: "Allow",
+            Action: "s3:PutObject",
+            Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:s3:::supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }, "/users/*"]] },
+            Condition: { Null: { "s3:if-none-match": "false" } },
+          },
+        ],
+      ]);
+      const fn = resources(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("AccountFunction"))?.[1].Properties.Environment as { Variables: Record<string, unknown> };
+      expect(fn.Variables).toMatchObject({
+        DELETIONS_BUCKET: { "Fn::Join": ["", [`supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }]] },
+        DELETIONS_REGION: EAST,
+      });
+      // Neither the account-access role nor any other role reaches the bucket
+      const roles = resources(template, "AWS::IAM::Role").filter(([, r]) => JSON.stringify(r.Properties).includes("s3:"));
+      expect(roles).toEqual([]);
+    }
+  });
+
   it("is the only thing the account function may assume, and the data function can't", () => {
     const { template } = api();
     const assumes = resources(template, "AWS::IAM::Policy").flatMap(([id, p]) =>

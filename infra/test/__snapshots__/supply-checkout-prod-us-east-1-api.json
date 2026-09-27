@@ -587,6 +587,32 @@
                 }
               ],
               "Sid": "SendAppEmail"
+            },
+            {
+              "Action": "s3:PutObject",
+              "Condition": {
+                "Null": {
+                  "s3:if-none-match": "false"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":s3:::supply-checkout-prod-deletions-us-east-1-",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    "/users/*"
+                  ]
+                ]
+              },
+              "Sid": "PutAccountDeletionRecords"
             }
           ],
           "Version": "2012-10-17"
@@ -620,6 +646,18 @@
                 "Arn"
               ]
             },
+            "DELETIONS_BUCKET": {
+              "Fn::Join": [
+                "",
+                [
+                  "supply-checkout-prod-deletions-us-east-1-",
+                  {
+                    "Ref": "AWS::AccountId"
+                  }
+                ]
+              ]
+            },
+            "DELETIONS_REGION": "us-east-1",
             "EMAIL_APP_URL": "https://app.supplycheckout.com",
             "EMAIL_CONFIGURATION_SET": "supply-checkout-prod-transactional",
             "EMAIL_FROM_ADDRESS": "noreply@supplycheckout.com",
