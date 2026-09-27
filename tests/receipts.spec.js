@@ -1,5 +1,6 @@
 import { test, expect, openApp, lineRow, inventoryRow } from "./helpers.js";
 import { usedState, fakeImage } from "./fixtures.js";
+import { currentBuild } from "../scripts/builds.mjs";
 
 // usedState.receipt: line 0 is 4 × storage bins (suggested match for the
 // "Storage bins, 12 qt" inventory item, receipt price $5.50 vs $5.00),
@@ -19,9 +20,13 @@ const hideToast = (page) => page.locator("#toast").evaluate((t) => { t.hidden = 
 const toast = (page) => page.locator("#toast");
 const docs = (page, prefix) => page.evaluate((p) => Object.fromEntries([...window.__mock.docs].filter(([k]) => k.startsWith(p))), prefix);
 
-// Starts the app with a saved, unfinished receipt review
+// Starts the app with a saved, unfinished receipt review (once: a reload keeps what the page saved)
 const seedDraft = async (page, draft, opts = {}) => {
-  await page.addInitScript((d) => localStorage.setItem("supplyCheckout.receiptDraft", JSON.stringify(d)), {
+  await page.addInitScript((d) => {
+    if (sessionStorage.getItem("draftSeeded")) return;
+    sessionStorage.setItem("draftSeeded", "1");
+    localStorage.setItem("supplyCheckout.receiptDraft", JSON.stringify(d));
+  }, {
     store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null,
     savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines: [], ...draft,
   });
@@ -447,8 +452,9 @@ test("a receipt saved to an existing sheet again after a lost answer adds each l
   const s1 = (await docs(page, "sheets/s1"))["sheets/s1"];
   // Found this receipt's mark from the lost attempt: nothing added twice
   expect(s1).toEqual(lost);
-  expect(Object.values(s1.items).filter((it) => it.name === "Mop heads")).toEqual([{ code: "", name: "Mop heads", price: 4, cost: 4, out: 1, returned: 0 }]);
-  expect(Object.keys(s1.savedReceipts)).toHaveLength(1);
+  const mark = s1.items.SKU1.ops.at(-1);
+  expect(Object.values(s1.items).filter((it) => it.name === "Mop heads")).toEqual([{ code: "", name: "Mop heads", price: 4, cost: 4, out: 1, returned: 0, ops: [mark] }]);
+  expect(s1.savedReceipts).toBeUndefined();
 });
 
 test("a new sheet from a receipt is saved once, however many tries it takes", async ({ page }) => {
@@ -480,6 +486,127 @@ test("a sheet deleted just before a receipt is saved to it says so, and keeps th
   await expect(toast(page)).toHaveText("Someone else deleted this sheet, so your change wasn't saved.");
   await expect(saveBtn(page)).toBeEnabled();
   await expect(page.locator(".rline")).toHaveCount(1);
+  // Refused, so nothing was saved: the review can be changed again
+  await expect(locked(page)).toHaveCount(0);
+  await expect(line(page, 0).getByLabel("Qty")).toBeEnabled();
+});
+
+// From the first attempt until the receipt is saved, the review is locked (saveReceipt in
+// src/main.js): a changed line would be a new action, adding again what an attempt whose answer
+// was lost may have saved
+const locked = (page) => page.locator("#rLocked");
+async function expectLocked(page) {
+  await expect(locked(page)).toHaveText("Not saved yet: the answer didn't come back, so part of this receipt may have saved. Tap Try again to finish. It can't be changed until it's saved, so nothing is added twice.");
+  await expect(tryAgain(page)).toHaveAttribute("aria-describedby", "rLocked");
+  await expect(line(page, 0).getByLabel("Qty")).toBeDisabled();
+  await expect(line(page, 0).getByRole("button", { name: "Split" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "+ Add item" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "+ Add another client" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Discard" })).toBeEnabled();
+}
+
+test("general-inventory lines saved again after a lost answer add to storage once", async ({ page }) => {
+  await seedDraft(page, {
+    savePrices: false,
+    lines: [
+      draftLine({ name: "Paper towels", match: "SKU1", qty: 5, price: 8.5, dest: "stock" }),
+      draftLine({ name: "Bins", match: "nb-bins", qty: 3, price: 5, dest: "stock" }),
+      draftLine({ name: "Sponges", qty: 4, price: 1, dest: "stock" }),
+    ],
+  });
+  // The first item saves, but the answer never comes back
+  await mock(page, () => { window.__mock.loseWrites = "products/"; });
+  await saveBtn(page).click();
+  await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+  await expectLocked(page);
+  await expect(page.locator(".rline")).toHaveCount(3);
+  expect((await docs(page, "products/SKU1"))["products/SKU1"].stock).toBe(15);
+  // Nothing typed, picked or tapped in a locked review changes it, even if it gets through
+  await page.evaluate(() => {
+    const q = document.querySelector('.rline [data-f="qty"]');
+    q.value = "9"; q.dispatchEvent(new Event("input", { bubbles: true })); q.dispatchEvent(new Event("change", { bubbles: true }));
+    document.querySelector(".rline [data-del]").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("supplyCheckout.receiptDraft")).lines.map((l) => l.qty))).toEqual([5, 3, 4]);
+
+  await mock(page, () => { window.__mock.loseWrites = null; });
+  await hideToast(page);
+  await tryAgain(page).click();
+  await expect(toast(page)).toHaveText("12 added to storage");
+  const products = await docs(page, "products/");
+  // Found the first item's marks from the lost attempt: its 5 were added once
+  expect(products["products/SKU1"]).toMatchObject({ stock: 15, ops: [expect.any(String)] });
+  expect(products["products/nb-bins"].stock).toBe(5);
+  expect(Object.values(products).find((p) => p.name === "Sponges")).toMatchObject({ stock: 4 });
+});
+
+test("a receipt whose answer was lost stays locked through a reload, and saves once", async ({ page }) => {
+  test.skip(currentBuild() === "web", "The web build keeps its drafts per team (tests/aws-data.spec.js)");
+  await seedDraft(page, { savePrices: false, dests: [{ id: "d1", sheetId: "s1", client: "" }], lines: [draftLine({ name: "Paper towels", match: "SKU1", qty: 2, price: 8.5 })] });
+  await mock(page, () => { window.__mock.loseWrites = "sheets/"; });
+  await saveBtn(page).click();
+  await expect(tryAgain(page)).toBeEnabled();
+  await page.reload();
+  await page.getByRole("button", { name: "Continue review" }).click();
+  await expectLocked(page);
+  await tryAgain(page).click();
+  await expect(toast(page)).toHaveText("Saved to 1 sheet");
+  expect((await docs(page, "sheets/s1"))["sheets/s1"].items.SKU1.out).toBe(5);
+});
+
+test("a sheet deleted after a lost answer unlocks the review, keeping only what wasn't saved", async ({ page }) => {
+  await seedDraft(page, {
+    savePrices: false,
+    dests: [{ id: "d1", sheetId: "", client: "Lima Co" }, { id: "d2", sheetId: "s1", client: "" }],
+    lines: [draftLine({ name: "Mop heads", qty: 1, price: 4, dest: "d1" }), draftLine({ name: "Paper towels", match: "SKU1", qty: 2, price: 8.5, dest: "d2" })],
+  });
+  await mock(page, () => { window.__mock.loseWrites = "sheets/"; });
+  await saveBtn(page).click();
+  await expect(tryAgain(page)).toBeEnabled();
+  await expect(locked(page)).toBeVisible();
+  // Someone deletes Echo Studio, and this page hears of it
+  await mock(page, () => { window.__mock.loseWrites = null; window.__mock.docs.delete("sheets/s1"); window.__mock.notify(); });
+  await hideToast(page);
+  await tryAgain(page).click();
+  await expect(toast(page)).toHaveText("One of the chosen sheets was deleted. Pick another and save again.");
+  // Lima Co's sheet is saved (once) and out of the review; Echo Studio's line can go elsewhere
+  await expect(page.locator(".rline")).toHaveCount(1);
+  await expect(line(page, 0)).toContainText("Paper towels");
+  await expect(locked(page)).toHaveCount(0);
+  await expect(saveBtn(page)).toBeEnabled();
+  expect(Object.values(await docs(page, "sheets/")).filter((s) => s.client === "Lima Co")).toHaveLength(1);
+  await page.locator("[data-dsel]").nth(1).selectOption("");
+  await page.locator("[data-dname]").nth(1).fill("Mike Co");
+  await saveBtn(page).click();
+  await expect(page.getByRole("heading", { name: "Mike Co" })).toBeVisible();
+  expect(Object.values(await docs(page, "sheets/")).filter((s) => s.client === "Lima Co")).toHaveLength(1);
+});
+
+// claude.ai's db has no timeout, so the artifact gives up on a write after 20 s. It may still
+// land: Try again waits for it, then finds its mark (src/moves.js)
+test("in the artifact, a receipt save that timed out and then landed adds its lines once on Try again", async ({ page }) => {
+  test.skip(currentBuild() === "web", "The web build's requests have their own timeout");
+  await page.clock.install();
+  await seedDraft(page, { savePrices: false, dests: [{ id: "d1", sheetId: "s1", client: "" }], lines: [draftLine({ name: "Mop heads", qty: 2, price: 4 })] });
+  const before = await page.evaluate(() => window.__mock.writes);
+  await mock(page, () => window.__mock.hold());
+  await saveBtn(page).click();
+  await expect(page.getByRole("button", { name: "Saving…" })).toBeDisabled();
+  await expect(line(page, 0).getByLabel("Qty")).toBeDisabled();
+  await expect(locked(page)).toHaveCount(0);
+  await page.clock.fastForward(20e3);
+  await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+  await expectLocked(page);
+  await hideToast(page);
+  await tryAgain(page).click();
+  await expect(page.getByRole("button", { name: "Saving…" })).toBeDisabled();
+  // The first attempt lands now
+  await mock(page, () => window.__mock.release());
+  await expect(toast(page)).toHaveText("Saved to 1 sheet");
+  const mops = Object.values((await docs(page, "sheets/s1"))["sheets/s1"].items).filter((it) => it.name === "Mop heads");
+  expect(mops).toMatchObject([{ out: 2 }]);
+  // One write: Try again wrote nothing
+  expect(await page.evaluate(() => window.__mock.writes)).toBe(before + 1);
 });
 
 // ADR 0014: cost and client price, and packs converted to eaches (J5)
@@ -563,5 +690,5 @@ test("cases added to an existing sheet line add eaches and keep the line's price
   await saveBtn(page).click();
   await expect(toast(page)).toHaveText("Saved to 1 sheet");
   const sheets = await docs(page, "sheets/");
-  expect(sheets["sheets/s1"].items.GL).toEqual({ code: "GL", name: "Gloves, box", price: 1.8, cost: 0.9, out: 16, returned: 1 });
+  expect(sheets["sheets/s1"].items.GL).toEqual({ code: "GL", name: "Gloves, box", price: 1.8, cost: 0.9, out: 16, returned: 1, ops: [expect.any(String)] });
 });

@@ -160,6 +160,11 @@ jobs:
           BUILD: ${{ matrix.build }}
           # Fails the run below 98% coverage; see tests/coverage.js
           COVERAGE: ${{ matrix.coverage }}
+      # TEMPORARY (supply-checkout-gb8c): the new retry and timeout tests 25 more times; dropped before merge
+      - run: npx playwright test --project=${{ matrix.project }} --repeat-each=25 -g "timed out and then landed|lost answer|answer was lost"
+        env:
+          CI: true
+          BUILD: ${{ matrix.build }}
       - name: Coverage summary
         if: always() && matrix.coverage && hashFiles(format('coverage/{0}/summary.json', matrix.build)) != ''
         run: node scripts/coverage-summary.mjs "$BUILD" >> "$GITHUB_STEP_SUMMARY"

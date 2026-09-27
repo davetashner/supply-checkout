@@ -1,7 +1,7 @@
 import "./theme.js";
 import { use, help } from "./runtime.js";
 import { WEB } from "./build.js";
-import { checkOut, recordReturn, setStock, saveItem, addLines } from "./moves.js";
+import { checkOut, recordReturn, setStock, saveItem, addLines, markOf } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, newKey, uid, round2, numOrNull } from "./format.js";
 import { lines, lineCharge, totals } from "./sheet-math.js";
 import { $, toast, openModal, closeModal, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
@@ -613,7 +613,8 @@ $("#tab-prices").addEventListener("click", () => { ui.tab = "prices"; ui.receipt
 // src/aws/account.js), so it's read once the team is known; its drafts are forgotten on
 // sign-out and when someone else signs in (src/aws/session.js).
 let DKEY = "supplyCheckout.receiptDraft";
-let sampleFn = null, receiptOK = false, draft = null;
+// rSaving: a receipt is being saved (saveReceipt)
+let sampleFn = null, receiptOK = false, draft = null, rSaving = false;
 const loadDraft = () => { try { draft = JSON.parse(localStorage.getItem(DKEY) || "null"); } catch {} };
 if (!WEB) loadDraft();
 const saveDraft = () => { try { draft ? localStorage.setItem(DKEY, JSON.stringify(draft)) : localStorage.removeItem(DKEY); } catch {} };
@@ -692,6 +693,7 @@ function renderReceipt() {
   const d = draft; if (!d) { ui.receipt = false; draw(); return; }
   const openSheets = sheets.filter(s => s.status !== "closed");
   $("#rBody").innerHTML = `
+    <fieldset id="rForm" ${d.locked ? "disabled" : ""}>
     <div class="sheet-head">
       <h2>Review receipt</h2>
       <div class="meta">${d.store ? `<span>${esc(d.store)}</span>` : ""}<span>Purchased ${esc(fmtDate(d.receiptDate))}</span></div>
@@ -720,7 +722,9 @@ function renderReceipt() {
     <button type="button" class="btn" id="rAddLine">+ Add item</button>
     <div class="panel" id="rSum"></div>
     <label class="check"><input type="checkbox" id="rSavePrices" ${d.savePrices ? "checked" : ""}> Also add client items to inventory with their prices</label>
-    <div class="modal-actions"><button type="button" class="btn danger" id="rDiscard">Discard</button><span class="spacer"></span><button type="button" class="btn primary big" id="rSave">Save</button></div>`;
+    </fieldset>
+    ${d.locked && !rSaving ? `<p class="hint warn" id="rLocked">Not saved yet: the answer didn't come back, so part of this receipt may have saved. Tap Try again to finish. It can't be changed until it's saved, so nothing is added twice.</p>` : ""}
+    <div class="modal-actions"><button type="button" class="btn danger" id="rDiscard" ${rSaving ? "disabled" : ""}>Discard</button><span class="spacer"></span><button type="button" class="btn primary big" id="rSave" ${rSaving ? "disabled" : ""} ${d.locked && !rSaving ? `aria-describedby="rLocked"` : ""}>${rSaving ? "Saving…" : d.locked ? TRY : "Save"}</button></div>`;
   armButton($("#rDiscard"), "Tap again to discard", () => { draft = null; saveDraft(); ui.receipt = false; draw(); toast("Receipt discarded"); });
   paintSum();
 }
@@ -790,8 +794,10 @@ function paintSum() {
   ${d.subtotal != null && Math.abs(d.subtotal - all) > 0.01 ? `<p class="hint warn">Items total doesn't match the receipt subtotal. Check for a missed or misread line.</p>` : ""}`;
 }
 
+// A locked draft (saveReceipt) can't be changed: its fields are disabled, and these ignore anything that gets through
+const editable = t => draft && !(draft.locked && t.closest("#rForm"));
 $("#rBody").addEventListener("input", e => {
-  const d = draft; if (!d) return; const t = e.target;
+  const d = draft, t = e.target; if (!editable(t)) return;
   if (t.matches("[data-dname]")) {
     const x = d.dests.find(x => x.id === t.closest("[data-d]").dataset.d); x.client = t.value;
     const i = d.dests.indexOf(x);
@@ -814,7 +820,7 @@ $("#rBody").addEventListener("input", e => {
   saveDraft();
 });
 $("#rBody").addEventListener("change", e => {
-  const d = draft; if (!d) return; const t = e.target;
+  const d = draft, t = e.target; if (!editable(t)) return;
   if (t.matches("[data-dsel]")) { const x = d.dests.find(x => x.id === t.closest("[data-d]").dataset.d); x.sheetId = t.value; saveDraft(); renderReceipt(); }
   else if (t.dataset.f === "dest") { d.lines.find(l => l.id === t.closest("[data-l]").dataset.l).dest = t.value; saveDraft(); paintSum(); }
   else if (t.dataset.f === "match") { const l = d.lines.find(l => l.id === t.closest("[data-l]").dataset.l); l.match = t.value; l.suggested = false; l.useName = "inv"; l.usePrice = ""; l.perEach = false; saveDraft(); rerenderLine(l); }
@@ -823,7 +829,7 @@ $("#rBody").addEventListener("change", e => {
   else if (t.id === "rSavePrices") { d.savePrices = t.checked; saveDraft(); }
 });
 $("#rBody").addEventListener("click", e => {
-  const d = draft; if (!d) return; const t = e.target.closest("button"); if (!t) return;
+  const d = draft, t = e.target.closest("button"); if (!t || !editable(t)) return;
   const row = t.closest("[data-l]"), line = row && d.lines.find(l => l.id === row.dataset.l);
   if (t.id === "rAddDest") { d.dests.push({ id: uid(), sheetId: "", client: "" }); saveDraft(); renderReceipt(); const x = d.dests[d.dests.length - 1]; const f = $("#dname-" + x.id); f && f.focus(); }
   else if (t.matches("[data-drm]")) {
@@ -837,14 +843,14 @@ $("#rBody").addEventListener("click", e => {
     const half = Math.floor(int(line.qty) / 2); line.qty = int(line.qty) - half;
     const other = d.dests.find(x => x.id !== line.dest);
     const copy = { ...line, id: uid(), qty: half, dest: other ? other.id : line.dest };
-    // Its own action: not the operation the line it came from may have kept (src/aws/db.js)
-    delete copy.operation;
+    // Its own action: not the operation or mark the line it came from may have kept (src/aws/db.js, src/moves.js)
+    delete copy.operation; delete copy.mark;
     d.lines.splice(d.lines.indexOf(line) + 1, 0, copy); saveDraft(); renderReceipt();
     const f = $("#q-" + copy.id); f && f.focus();
   }
   else if (t.matches("[data-del]") && line) { d.lines = d.lines.filter(l => l !== line); saveDraft(); renderReceipt(); }
   else if (t.id === "rAddLine") { const l = newLine({ dest: d.dests[0].id }); d.lines.push(l); saveDraft(); renderReceipt(); $("#n-" + l.id).focus(); }
-  else if (t.id === "rSave") saveReceipt(t);
+  else if (t.id === "rSave") saveReceipt();
 });
 
 function rerenderLine(l) {
@@ -858,7 +864,7 @@ function rerenderLine(l) {
 // a failure) is the same stock command.
 const stockIn = l => ({ action: l, quantity: eaches(l), unitCost: unitCost(l) });
 
-async function saveReceipt(btn) {
+async function saveReceipt() {
   const d = draft;
   const lines = d.lines.filter(l => (lineProd(l) || l.name.trim()) && int(l.qty) > 0);
   if (!lines.length) { toast("Add at least one item with a name and a quantity."); return; }
@@ -869,12 +875,19 @@ async function saveReceipt(btn) {
   if (!myId && usedDests.some(x => !x.sheetId) && !d.by.trim()) { toast("Enter who prepared these sheets."); $("#rBy") && $("#rBy").focus(); return; }
   const toStock = lines.filter(l => l.dest === "stock");
   if (!usedDests.length && !toStock.length) { toast("Nothing to save. Assign each item to a client or to General inventory."); return; }
-  btn.disabled = true; btn.textContent = "Saving…";
-  const done = () => { btn.disabled = false; btn.textContent = "Save"; };
-  // Didn't save: the draft keeps what hasn't been saved, and the actions' operation IDs and
-  // marks (src/moves.js), so saving again adds nothing twice. If it failed for the
-  // connection, the button says Try again.
-  const failed = () => { saveDraft(); renderReceipt(); if (retryable) $("#rSave").textContent = TRY; };
+  // From the first attempt until it's saved, the draft is locked: each destination and stock
+  // line is one action, with its operation IDs and marks (src/aws/db.js, src/moves.js), so
+  // saving again after a lost answer adds nothing twice. A changed line would be a new
+  // operation, adding again what an earlier attempt may have saved, so nothing can be changed
+  // meanwhile. The marks are made and the lock saved with the draft before anything is sent,
+  // so they last through a reload.
+  for (const l of toStock) markOf(l);
+  for (const x of usedDests) markOf(x);
+  d.locked = true; rSaving = true; saveDraft(); renderReceipt();
+  // Didn't save: the draft keeps what hasn't been saved. If it failed for the connection, it
+  // stays locked and the button says Try again. Refused (a sheet deleted, view-only, storage
+  // full), nothing more was saved and what was is out of the draft, so it can be changed.
+  const failed = () => { rSaving = false; if (!retryable) d.locked = false; saveDraft(); renderReceipt(); };
 
   // Keyed by names, barcodes' keys and line ids: no prototype, so "constructor" and
   // "__proto__" are ordinary keys
@@ -897,9 +910,9 @@ async function saveReceipt(btn) {
     const body = { ...(ex || {}), code, name: effName(l0), price: effPrice(l0), cost: unitCost(l0), updatedAt: new Date().toISOString() };
     if (add) body.stock = (hasStock(ex) ? ex.stock : 0) + add;
     if (!await write(() => saveItem(db, null, k, body, { reason: "receipt", lines: stocked.map(stockIn) }))) { failed(); return; }
+    // Written: drop its stock lines, so they can't be added twice
+    d.lines = d.lines.filter(l => !stocked.includes(l)); saveDraft();
   }
-  // Inventory is written; drop those lines so a retry can't add them twice
-  d.lines = d.lines.filter(l => l.dest !== "stock"); saveDraft();
 
   const savedIds = [];
   for (const x of usedDests) {
@@ -911,7 +924,11 @@ async function saveReceipt(btn) {
     }
     let ok;
     if (x.sheetId) {
-      if (!sheets.some(s => s.id === x.sheetId)) { toast("One of the chosen sheets was deleted. Pick another and save again."); done(); renderReceipt(); return; }
+      if (!sheets.some(s => s.id === x.sheetId)) {
+        toast("One of the chosen sheets was deleted. Pick another and save again.");
+        d.lines = d.lines.filter(l => !usedDests.slice(0, usedDests.indexOf(x)).some(y => y.id === l.dest));
+        retryable = false; failed(); return;
+      }
       ok = await write(() => addLines(db, x, x.sheetId, items), undefined, x.sheetId);
       if (ok) savedIds.push(x.sheetId);
     } else {
@@ -936,7 +953,7 @@ async function saveReceipt(btn) {
       failed(); return;
     }
   }
-  draft = null; saveDraft(); ui.receipt = false;
+  rSaving = false; draft = null; saveDraft(); ui.receipt = false;
   if (savedIds.length === 1) ui.sheetId = savedIds[0];
   ui.tab = "sheets"; draw(); window.scrollTo(0, 0);
   const nStock = toStock.reduce((a, l) => a + eaches(l), 0);
