@@ -244,8 +244,8 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Database errors | Every journey | P1 | DynamoDB `SystemErrors` on the app table, summed over the operations the data module uses |
 | Database throttled | Every journey | P2 | DynamoDB `ReadThrottleEvents` + `WriteThrottleEvents` on the app table |
 | Sign-out not revoking | J0 | P2 | As below |
-| Imports stuck | J2 | P2 | As below, from the stuck-import check |
-| Email verification not saved, Email codes failing, Near the sending limit | J3 | P2 | As below. Near the sending limit reads the SES quota check's gauge. |
+| Imports stuck | J2 | P2 | As below, from the stuck-import check. In the primary region only, where the check runs. |
+| Email verification not saved, Email codes failing, Near the sending limit | J3 | P2 | As below. Near the sending limit reads the SES quota check's gauge, and is in the primary region only, where the check runs. |
 | Email bouncing, Email complaints | J3 | P1 | SES reputation metrics, as below |
 | Email events dropped | J3 | P2 | As below |
 | Writes rejected | J4 | P2 | `ConditionalWriteConflicts` ÷ `Writes`, at least 20 writes |
@@ -253,7 +253,7 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Live updates delayed, Live updates dropped, Live updates deferred | J4 | P2 | As below. Live updates deferred needs 3 breaching 5-minute periods in a row. |
 | Receipt reading failing | J5 | P2 | As below |
 | Checkout broken, Webhook signature failures | J7 | P1 | As below |
-| Deletion overdue, Deletion job not running, Team closure emails failing, Team reopened emails failing | J11 | P2 | As below. Deletion overdue and Deletion job not running read the closed-team purge's gauge; Deletion job not running is in the primary region only, with the purge. |
+| Deletion overdue, Deletion job not running, Team closure emails failing, Team reopened emails failing | J11 | P2 | As below. Deletion overdue and Deletion job not running read the closed-team purge's gauge, and are in the primary region only, with the purge. |
 
 Every other alarm on this page waits for the resource or code it watches, and is added by the bead that builds it (the alarm goes in that region's `observability` stack, with `topics.notify(alarm, severity)`): the canaries (`supply-checkout-pkt`); Site down and Firewall blocking customers (CloudFront and WAF, `supply-checkout-qk1`); API unhealthy (it needs a `/health` route and a Route 53 health check, which the API doesn't have yet); Cognito alarms (`supply-checkout-zsm`); Bedrock alarms and Receipt cost spike (the receipt function); the billing queue and reconciliation alarms; and Checkouts stopped, which compares with the same hour last week, and so needs something other than one CloudWatch alarm. The remaining P3 trends (No sign-ups, Invites not accepted, Failed payments rising, App checkouts abandoned) are read from the dashboard at the weekly review.
 
