@@ -5,8 +5,10 @@
 
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { acceptInvite, createInvite, createTeam, type Db, ForbiddenError, importProducts, listDocuments, listMovements, MAX_IMPORT_ROWS, setDocument, type TeamContext } from "../src/data/index.js";
-import { keys } from "../src/data/keys.js";
+import { PutCommand } from "@aws-sdk/lib-dynamodb";
+import { acceptInvite, createInvite, createTeam, type Db, ForbiddenError, importProducts, listDocuments, listMovements, listStuckImports, MAX_IMPORT_ROWS, setDocument, type TeamContext } from "../src/data/index.js";
+import { connection } from "../src/data/client.js";
+import { gsi1, keys } from "../src/data/keys.js";
 import { endpoint, newUser, rawItem, useTable } from "./helpers.js";
 
 function sampleCsv(n: number, stock = (i: number) => i * 3): string {
@@ -88,5 +90,35 @@ describe.skipIf(!endpoint)("inventory import (DynamoDB Local)", () => {
     const contributor = await acceptInvite(db, { userId: newUser(), verifiedEmail: "crew@example.com" }, invite, token);
     await expect(importProducts(db, contributor, { importId: randomUUID(), csv: "name,price\nA,1" })).rejects.toBeInstanceOf(ForbiddenError);
     expect(await allProducts(ctx)).toEqual([]);
+  });
+
+  it("lists imports still committing an hour after they started, and not finished ones", async () => {
+    const ctx = await team();
+    const now = new Date();
+    const hourAgo = new Date(now.getTime() - 3600_000);
+    // Finished: out of the index
+    const done = randomUUID();
+    await importProducts(db, ctx, { importId: done, csv: sampleCsv(60) }, new Date(now.getTime() - 2 * 3600_000));
+    const job = await rawItem(db, keys.importJob(ctx.teamId, done).PK, keys.importJob(ctx.teamId, done).SK);
+    expect(job).toMatchObject({ status: "done" });
+    expect(job).not.toHaveProperty("GSI1PK");
+    // Two left committing, as a Lambda timing out part-way leaves them: one old, one recent
+    const stuck = randomUUID();
+    const recent = randomUUID();
+    const put = (importId: string, at: Date) =>
+      connection(db).doc.send(
+        new PutCommand({
+          TableName: db.tableName,
+          Item: { ...keys.importJob(ctx.teamId, importId), ...gsi1.importCommitting(at.toISOString(), importId), type: "import", importId, request: "abc", status: "committing", total: 120, committed: 49, userId: "u-secret", createdAt: at.toISOString() },
+        }),
+      );
+    const startedAt = new Date(now.getTime() - 90 * 60_000);
+    await put(stuck, startedAt);
+    await put(recent, new Date(now.getTime() - 5 * 60_000));
+
+    const found = (await listStuckImports(db, hourAgo)).filter((s) => s.teamId === ctx.teamId);
+    // Only the progress, never who started it or the plan
+    expect(found).toEqual([{ teamId: ctx.teamId, importId: stuck, startedAt: startedAt.toISOString(), committed: 49, total: 120 }]);
+    expect((await listStuckImports(db, now)).filter((s) => s.teamId === ctx.teamId).map((s) => s.importId)).toEqual([stuck, recent]);
   });
 });

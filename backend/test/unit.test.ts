@@ -17,6 +17,7 @@ import {
 import { connection } from "../src/data/client.js";
 import { conflictOnConditionFailure } from "../src/data/errors.js";
 import { gsi1, keys, strip } from "../src/data/keys.js";
+import { MEMBERS_PER_TEAM, MEMBERS_PER_TRIAL_TEAM, memberCap, teamCounts } from "../src/data/model.js";
 import { tableName } from "../src/data/schema.js";
 import { assertContext, writable } from "../src/data/team-context.js";
 import * as teamContextFile from "../src/data/team-context.js";
@@ -211,5 +212,28 @@ describe("conflictOnConditionFailure", () => {
     const other = { name: "TransactionCanceledException", CancellationReasons: [{ Code: "ThrottlingError" }] };
     expect(() => map(other)).toThrow(expect.objectContaining({ name: "TransactionCanceledException" }));
     expect(() => map(null)).toThrow();
+  });
+});
+
+describe("member cap", () => {
+  it("is the trial cap unless the team is paying, and doesn't look at seats yet", () => {
+    expect(MEMBERS_PER_TRIAL_TEAM).toBeLessThan(MEMBERS_PER_TEAM);
+    for (const status of ["trialing", "canceled", "unpaid", "incomplete", "incomplete_expired", undefined, 7]) expect(memberCap({ status })).toBe(MEMBERS_PER_TRIAL_TEAM);
+    for (const status of ["active", "past_due"]) expect(memberCap({ status, seats: 1 })).toBe(MEMBERS_PER_TEAM);
+  });
+
+  it("moves both counts in one update on the team's META item", () => {
+    const join = teamCounts("t", "team", { members: 1, owners: 1, cap: 10 }).Update;
+    expect(join).toMatchObject({
+      Key: keys.team("team"),
+      UpdateExpression: "ADD #members :members, owners :owners",
+      ConditionExpression: "attribute_exists(PK) AND #members < :cap",
+      ExpressionAttributeValues: { ":members": 1, ":owners": 1, ":cap": 10 },
+    });
+    const leave = teamCounts("t", "team", { members: -1, owners: -1 }).Update;
+    expect(leave.ConditionExpression).toBe("attribute_exists(PK) AND attribute_exists(#members) AND owners > :one");
+    const first = teamCounts("t", "team", { members: -1, counted: 0 }).Update;
+    expect(first).toMatchObject({ UpdateExpression: "SET #members = :members", ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(#members)", ExpressionAttributeValues: { ":members": 0 } });
+    expect(() => teamCounts("t", "team", { members: 1 })).toThrow("cap");
   });
 });

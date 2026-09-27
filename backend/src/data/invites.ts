@@ -7,7 +7,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
-import { ConflictError, InvalidInputError, LimitReachedError, NotFoundError, conflictOnConditionFailure } from "./errors.js";
+import { ConflictError, InvalidInputError, LimitReachedError, NotFoundError, TeamFullError, conflictOnConditionFailure } from "./errors.js";
 import { gsi1, gsi2, id, inviteePartition, keys, prefixes, strip, teamPartition } from "./keys.js";
 import {
   type Invite,
@@ -24,6 +24,7 @@ import {
   memberRole,
   normalizeEmail,
 } from "./model.js";
+import { memberCount } from "./member-count.js";
 import { queryAll } from "./query.js";
 import { GSI2 } from "./schema.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
@@ -144,6 +145,10 @@ async function storedInvite(db: Db, ctx: TeamContext, inviteId: string): Promise
  * limits for the UTC day (INVITES_PER_TEAM_PER_DAY, INVITES_PER_ADDRESS_PER_DAY,
  * INVITES_PER_TEAM_ADDRESS_PER_DAY; LimitReachedError). The address must be a
  * bare addr-spec (mailAddress), and the limits count it by inviteLimitKey.
+ *
+ * Refused (TeamFullError) when the team's members and live invites already
+ * fill its memberCap, so owners don't send invites that can't be accepted.
+ * That check reads before it writes; acceptInvite is what enforces the cap.
  */
 export async function createInvite(
   db: Db,
@@ -155,12 +160,18 @@ export async function createInvite(
   const email = mailAddress(input.email);
   const ttlDays = ttl(input.ttlDays);
   const role = memberRole(input.role);
-  const [members, invites] = await Promise.all([
+  const [members, invites, count] = await Promise.all([
     queryAll<Member>(db, teamPartition(ctx.teamId), prefixes.member),
     queryAll<Invite>(db, teamPartition(ctx.teamId), prefixes.invite),
+    memberCount(db, ctx.teamId),
   ]);
+  if (!count) throw new ConflictError("This team no longer exists");
   if (members.some((m) => m.email === email)) throw new ConflictError("They're already a member of this team");
-  if (invites.some((i) => i.email === email && live(i, now))) throw new ConflictError("They already have an invite to this team. Resend it instead.");
+  const pending = invites.filter((i) => live(i, now));
+  if (pending.some((i) => i.email === email)) throw new ConflictError("They already have an invite to this team. Resend it instead.");
+  if (members.length + pending.length >= count.cap) {
+    throw new TeamFullError(`This team can have ${count.cap} members, counting pending invites. Remove someone or revoke an invite first.`);
+  }
   return writeInvite(db, ctx, { email, role, ttlDays }, now);
 }
 

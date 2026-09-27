@@ -986,7 +986,7 @@
     "TableStream8DEAEA6B": {
       "Type": "AWS::Lambda::EventSourceMapping",
       "Properties": {
-        "BatchSize": 100,
+        "BatchSize": 25,
         "BisectBatchOnFunctionError": true,
         "DestinationConfig": {
           "OnFailure": {

@@ -116,7 +116,53 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       metric: dynamoDbThrottles(tableName, region),
       threshold: 0,
     },
+    // J0. Sign in
+    {
+      id: "sign-out-not-revoking",
+      title: "Sign-out not revoking",
+      journeys: "J0",
+      severity: "P2",
+      rule: "SignOutRevokeFailures at least 3 in 15 minutes: Cognito didn't revoke the refresh tokens of people who signed out, so they stay valid until they expire (30 days). Sign-out still clears the cookie. Usually Cognito unreachable or erroring.",
+      metric: business(BusinessMetric.SignOutRevokeFailures, region, FIFTEEN_MINUTES),
+      threshold: 2,
+    },
+    // J2. Set up the inventory
+    {
+      id: "imports-stuck",
+      title: "Imports stuck",
+      journeys: "J2",
+      severity: "P2",
+      rule: "StuckImports above 0 at its maximum over 15 minutes: an inventory import has been committing for over an hour and is half applied until it's finished. The stuck-import check runs in the primary region every 10 minutes and logs each one's team and import IDs.",
+      metric: business(BusinessMetric.StuckImports, region, FIFTEEN_MINUTES, "Maximum"),
+      threshold: 0,
+    },
     // J3. Invite the crew
+    {
+      id: "email-verification-not-saved",
+      title: "Email verification not saved",
+      journeys: "J3",
+      severity: "P2",
+      rule: "Any EmailVerifyFailures or EmailUnverifyFailures over 15 minutes: the sign-in trigger couldn't copy a Google or Apple user's email_verified, so they stay unverified (and can't accept invites) or, for a downgrade, stay verified. The sign-in goes ahead and the next one retries, so the Lambda Errors alarm doesn't see it.",
+      metric: new MathExpression({
+        expression: "FILL(v, 0) + FILL(u, 0)",
+        usingMetrics: {
+          v: business(BusinessMetric.EmailVerifyFailures, region, FIFTEEN_MINUTES),
+          u: business(BusinessMetric.EmailUnverifyFailures, region, FIFTEEN_MINUTES),
+        },
+        period: FIFTEEN_MINUTES,
+        label: `Email verification failures (${region})`,
+      }),
+      threshold: 0,
+    },
+    {
+      id: "near-sending-limit",
+      title: "Near the sending limit",
+      journeys: "J3",
+      severity: "P2",
+      rule: "EmailQuotaUsedPercent above 80 at its maximum over 15 minutes: SES has sent over 80% of its rolling 24-hour quota, and stops sending (invites, sign-in codes) at 100%. The SES quota check runs in the primary region every 10 minutes.",
+      metric: business(BusinessMetric.EmailQuotaUsedPercent, region, FIFTEEN_MINUTES, "Maximum"),
+      threshold: 80,
+    },
     {
       id: "email-bouncing",
       title: "Email bouncing",
