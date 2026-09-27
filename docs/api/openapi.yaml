@@ -1191,6 +1191,47 @@ paths:
         "500":
           description: "`internal`: Stripe couldn't be reached or refused the request. Nothing about the team changed; try again."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /billing/webhook:
+    post:
+      tags: [billing]
+      operationId: stripeWebhook
+      summary: Stripe's events. For Stripe only.
+      description: |
+        No Cognito token: the `Stripe-Signature` header, checked against the
+        endpoint's signing secret, is the proof. A verified event we handle
+        (`checkout.session.completed`, `customer.subscription.created`,
+        `.updated`, `.deleted`, `.trial_will_end`, `invoice.paid`,
+        `invoice.payment_failed`) is put on the billing queue, and only then
+        answered 200; the billing worker applies it to the team's plan,
+        seats and status, and emails owners about a trial ending without a
+        card, a failed payment, or the team turning read-only. Other events,
+        and events from the other Stripe mode, are answered 200 and dropped.
+      security: []
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: "A Stripe event (docs.stripe.com/api/events)." }
+      responses:
+        "200":
+          description: Received (queued, or dropped as not ours to handle).
+          content:
+            application/json:
+              schema: { type: object, required: [received], properties: { received: { type: boolean, const: true } } }
+        "400":
+          description: "`bad_request`: no `Stripe-Signature` header, or it doesn't match the body and the signing secret, or it's more than 5 minutes old."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "413":
+          description: "`quota_exceeded`: the body is over 1 MB."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "500":
+          description: "`internal`: the event couldn't be queued. Stripe sends it again."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /ops/teams:
     get:
       tags: [ops]
@@ -1966,7 +2007,7 @@ components:
         name: { type: string }
         role: { type: string, enum: [owner, contributor, viewer], description: The caller's role in this team. }
         plan: { type: string, description: "`trial` until the team subscribes." }
-        status: { type: string, description: "Subscription status (ADR 0009): `trialing`, `active`, `past_due`, `canceled`." }
+        status: { type: string, description: "Subscription status (ADR 0009), from Stripe once the team subscribes: `trialing`, `active`, `past_due`, `canceled`, `unpaid`, `incomplete`, `incomplete_expired`." }
         trialEndsAt: { type: [string, "null"], format: date-time, description: When the free trial ends. }
         homeRegion: { type: string, description: The region the team was created in (ADR 0010). }
         closedAt: { type: [string, "null"], format: date-time, description: "When an owner closed the team (`closeTeam`), or `null`. A closed team is read-only." }
@@ -1983,6 +2024,7 @@ components:
             - type: "null"
         members: { type: [integer, "null"], description: "How many members the team has, or `null` for a team from before the count (the members list has them)." }
         memberCap: { type: integer, description: "How many members the team may have. Pending invites count against it when inviting (429 `team_full`)." }
+        subscriptionEnded: { type: boolean, description: "The team's subscription ended (`canceled`, `unpaid` or `incomplete_expired`: for example its trial ended without a card) and no comp keeps it going, so it's read-only: a write is 403 `permission_denied` with `reason: \"subscription_ended\"`. Members can still read and export it, and leave; an owner can subscribe again (`createCheckout`)." }
     Invite:
       type: object
       description: A pending invite, to show. Accepting it needs the token from the invite email.
@@ -2033,7 +2075,7 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -2049,6 +2091,8 @@ components:
                 address changed while the code was checked).
                 `already_subscribed`: the team has a Stripe subscription that
                 hasn't ended, so it can't start another checkout.
+                `subscription_ended`: the team's subscription ended, so it's
+                read-only until an owner subscribes again.
   responses:
     OperatorsOnly:
       description: "`permission_denied`: the token's user isn't in the `operators` group (now, according to Cognito)."

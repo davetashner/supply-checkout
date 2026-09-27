@@ -8,6 +8,7 @@ import {
   TreatMissingData,
 } from "aws-cdk-lib/aws-cloudwatch";
 import { Construct } from "constructs";
+import { billingResourceNames } from "../../../backend/src/billing/names.js";
 import { emailResourceNames } from "../../../backend/src/email/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import { PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS } from "../../../backend/src/ops/names.js";
@@ -76,6 +77,7 @@ function percent(numerator: Metric, denominator: Metric, minimum: number, label:
 export function journeyAlarmSpecs(region: string, tableName: string, apiId: string, envName: string): JourneyAlarmSpec[] {
   const realtime = realtimeResourceNames(envName);
   const email = emailResourceNames(envName);
+  const billing = billingResourceNames(envName);
   return [
     // Every journey
     {
@@ -345,6 +347,38 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       rule: "Any WebhookSignatureFailures. Usually a rotated or wrong signing secret.",
       metric: business(BusinessMetric.WebhookSignatureFailures, region, FIVE_MINUTES),
       threshold: 0,
+    },
+    {
+      id: "billing-events-stuck",
+      title: "Billing events stuck",
+      journeys: "J7, J8",
+      severity: "P1",
+      rule: "Any message in the billing events dead-letter queue: a Stripe event the billing worker couldn't apply after 5 tries, so a team's plan, seats or status may be out of date. The message holds the event's IDs, to replay it.",
+      metric: new Metric({
+        namespace: "AWS/SQS",
+        metricName: "ApproximateNumberOfMessagesVisible",
+        dimensionsMap: { QueueName: billing.deadLetterQueue },
+        statistic: "Maximum",
+        period: FIVE_MINUTES,
+        region,
+      }),
+      threshold: 0,
+    },
+    {
+      id: "billing-events-late",
+      title: "Billing events late",
+      journeys: "J7, J8",
+      severity: "P2",
+      rule: "The oldest message in the billing events queue is more than 5 minutes old: the worker is failing or behind, so a payment takes longer to show.",
+      metric: new Metric({
+        namespace: "AWS/SQS",
+        metricName: "ApproximateAgeOfOldestMessage",
+        dimensionsMap: { QueueName: billing.queue },
+        statistic: "Maximum",
+        period: FIVE_MINUTES,
+        region,
+      }),
+      threshold: 300,
     },
     // J11. Delete an account
     {

@@ -9,6 +9,7 @@ import {
   configFromContext,
   stripeModeOf,
   stripeSecretArn,
+  stripeWebhookSecretArn,
   validateConfig,
 } from "../lib/config.js";
 
@@ -103,6 +104,7 @@ describe("Stripe mode and secret", () => {
   it("names exactly one secret: the environment's key for the mode, with Secrets Manager's six-character suffix", () => {
     const where = { partition: "aws", region: EAST, account: "${AWS::AccountId}" };
     expect(stripeSecretArn(where, "prod", "test")).toBe(`arn:aws:secretsmanager:${EAST}:\${AWS::AccountId}:secret:supply-checkout/prod/stripe/test-secret-key-??????`);
+    expect(stripeWebhookSecretArn(where, "prod", "test")).toBe(`arn:aws:secretsmanager:${EAST}:\${AWS::AccountId}:secret:supply-checkout/prod/stripe/test-webhook-secret-??????`);
     expect(stripeSecretArn({ ...where, region: WEST }, "staging", "live")).toBe(`arn:aws:secretsmanager:${WEST}:\${AWS::AccountId}:secret:supply-checkout/staging/stripe/live-secret-key-??????`);
   });
 });

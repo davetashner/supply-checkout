@@ -70,8 +70,33 @@ export function createStripe(key: string): Stripe {
   });
 }
 
-/** How long a function keeps its client before reading the secret again. */
+/** How long a function keeps a secret (or the client made from it) before reading it again. */
 export const STRIPE_CLIENT_TTL_MS = 60 * 60_000;
+
+/**
+ * A value made from a secret, read on first use and again after
+ * STRIPE_CLIENT_TTL_MS. Concurrent callers share one read, and a failed read
+ * (or a value `make` refuses) isn't kept, so the next request tries again.
+ */
+export function cachedSecret<T>(options: { readonly secretId: string; readonly read: SecretReader; readonly make: (value: string | undefined) => T; readonly now?: () => number }): () => Promise<T> {
+  const now = options.now ?? Date.now;
+  let current: { value: T; at: number } | undefined;
+  let pending: Promise<T> | undefined;
+  return () => {
+    if (current && now() - current.at < STRIPE_CLIENT_TTL_MS) return Promise.resolve(current.value);
+    pending ??= options
+      .read(options.secretId)
+      .then((secret) => {
+        const value = options.make(secret);
+        current = { value, at: now() };
+        return value;
+      })
+      .finally(() => {
+        pending = undefined;
+      });
+    return pending;
+  };
+}
 
 export interface CachedStripeOptions<S> {
   readonly secretId: string;
@@ -82,29 +107,32 @@ export interface CachedStripeOptions<S> {
   readonly now?: () => number;
 }
 
-/**
- * The client, read from the secret on first use and again after
- * STRIPE_CLIENT_TTL_MS. Concurrent callers share one read, and a failed read
- * isn't kept, so the next request tries again.
- */
+/** The Stripe client, from the secret key of the configured mode (cachedSecret). */
 export function cachedStripe<S>(options: CachedStripeOptions<S>): () => Promise<S> {
-  const now = options.now ?? Date.now;
-  let current: { client: S; at: number } | undefined;
-  let pending: Promise<S> | undefined;
-  return () => {
-    if (current && now() - current.at < STRIPE_CLIENT_TTL_MS) return Promise.resolve(current.client);
-    pending ??= options
-      .read(options.secretId)
-      .then((value) => {
-        const client = options.create(requireMode(keyFromSecret(value), options.mode));
-        current = { client, at: now() };
-        return client;
-      })
-      .finally(() => {
-        pending = undefined;
-      });
-    return pending;
-  };
+  return cachedSecret({ secretId: options.secretId, read: options.read, now: options.now, make: (value) => options.create(requireMode(keyFromSecret(value), options.mode)) });
+}
+
+// A webhook endpoint's signing secret
+const WEBHOOK_SECRET = /^whsec_[A-Za-z0-9+/=]+$/;
+
+/**
+ * The signing secret in a secret's value: the value itself, or the one field
+ * of a JSON object that holds one. Throws, without the value, if there's none.
+ */
+export function webhookSecretFrom(value: string | undefined): string {
+  const text = (value ?? "").trim();
+  if (WEBHOOK_SECRET.test(text)) return text;
+  if (text.startsWith("{")) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = undefined;
+    }
+    const found = Object.values(typeof parsed === "object" && parsed !== null ? parsed : {}).filter((v): v is string => typeof v === "string" && WEBHOOK_SECRET.test(v.trim()));
+    if (found.length === 1) return (found[0] as string).trim();
+  }
+  throw new Error("The webhook secret doesn't hold a Stripe webhook signing secret");
 }
 
 /** The mode from the environment: `test` or `live`, and nothing else. */

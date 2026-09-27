@@ -16,6 +16,8 @@ import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations
 import { Certificate } from "aws-cdk-lib/aws-certificatemanager";
 import { ArnPrincipal, Effect, PolicyDocument, PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { Alias, Architecture, type IFunction, Runtime } from "aws-cdk-lib/aws-lambda";
+import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
+import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { type BundlingOptions, NodejsFunction, OutputFormat } from "aws-cdk-lib/aws-lambda-nodejs";
 import { LogGroup } from "aws-cdk-lib/aws-logs";
 import { AaaaRecord, ARecord, RecordTarget } from "aws-cdk-lib/aws-route53";
@@ -35,9 +37,12 @@ import {
   OPS_SESSION_TAG,
   routeKey,
   TEAM_SESSION_TAG,
+  WEBHOOK_ROUTES,
 } from "../../../backend/src/api/routes.js";
 import {
   COMMITTING_IMPORTS_PARTITION,
+  BILLING_READ_ATTRIBUTES,
+  BILLING_UPDATE_ATTRIBUTES,
   COMP_ATTRIBUTES,
   CUSTOMER_LINK_TEAM_ATTRIBUTES,
   GSI1,
@@ -55,11 +60,15 @@ import {
   REOPEN_ATTRIBUTES,
   STRIPE_LINK_ATTRIBUTES,
   STRIPE_LINK_PREFIX,
+  STRIPE_LINK_READ_ATTRIBUTES,
   STUCK_IMPORT_ATTRIBUTES,
   tableName,
+  WEBHOOK_RECORD_ATTRIBUTES,
+  WEBHOOK_RECORD_PREFIX,
 } from "../../../backend/src/data/schema.js";
-import { STRIPE_ENV, stripeSecretName } from "../../../backend/src/billing/names.js";
-import { type DeploymentConfig, stripeModeOf, stripeSecretArn } from "../config.js";
+import { BILLING_ENV, BILLING_MAX_RECEIVES, billingResourceNames, STRIPE_ENV, stripeSecretName, stripeWebhookSecretName } from "../../../backend/src/billing/names.js";
+import { BILLING_WORKER_TAGS } from "../../../backend/src/billing/worker-db.js";
+import { type DeploymentConfig, stripeModeOf, stripeSecretArn, stripeWebhookSecretArn } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import { grantPutDeletionRecords } from "../deletions.js";
 import { grantSendEmail } from "../email.js";
@@ -153,7 +162,14 @@ export class ApiStack extends SupplyCheckoutStack {
   /** Starts Stripe Checkout (ADR 0009): one of only two kinds of function that may read the Stripe secret key. */
   readonly billingFunction: NodejsFunction;
   readonly billingAccessRole: Role;
-  /** Primary region only (ADR 0015). */
+  /** Stripe's webhook: verifies each event and puts it on the billing queue (ADR 0009). */
+  readonly webhookFunction: NodejsFunction;
+  /** Verified Stripe events, FIFO per customer, and the events that kept failing. */
+  readonly billingQueue: Queue;
+  readonly billingDeadLetterQueue: Queue;
+  /** Applies queued events to teams (ADR 0009). */
+  readonly billingWorker: NodejsFunction;
+  readonly billingWorkerRole: Role;
   readonly opsFunction?: NodejsFunction;
   readonly operatorAccessRole?: Role;
   /** Primary region only: reopens closed teams for the ops function (supply-checkout-6uw.6). */
@@ -353,6 +369,12 @@ export class ApiStack extends SupplyCheckoutStack {
     const billing = this.addBilling(config, table, tableArn, region, appOrigin, ssm(identity.issuerUrl), tableKeyStatement);
     this.billingFunction = billing.fn;
     this.billingAccessRole = billing.role;
+    const events = this.addBillingEvents(config, table, tableArn, region, tableKeyStatement);
+    this.webhookFunction = events.webhook;
+    this.billingQueue = events.queue;
+    this.billingDeadLetterQueue = events.deadLetterQueue;
+    this.billingWorker = events.worker;
+    this.billingWorkerRole = events.role;
 
     // The API
     this.api = new HttpApi(this, "HttpApi", {
@@ -435,6 +457,17 @@ export class ApiStack extends SupplyCheckoutStack {
         stage.node.addDependency(...added);
         routeSettings[routeKey(route)] = { ThrottlingRateLimit: route.throttle.rate, ThrottlingBurstLimit: route.throttle.burst };
       }
+    }
+    // Stripe's webhook: no authorizer, the Stripe signature is checked in the function
+    const webhookIntegration = new HttpLambdaIntegration("WebhookIntegration", this.live(this.webhookFunction));
+    for (const route of WEBHOOK_ROUTES) {
+      const added = this.api.addRoutes({ path: route.path, methods: [route.method as HttpMethod], integration: webhookIntegration });
+      stage.node.addDependency(...added);
+      routeSettings[routeKey(route)] = { ThrottlingRateLimit: route.throttle.rate, ThrottlingBurstLimit: route.throttle.burst };
+      Validations.of(added[0] as Construct).acknowledge({
+        id: "AwsSolutions-APIG4",
+        reason: "Stripe calls the webhook without a Cognito token; the function verifies the Stripe-Signature header against the endpoint's signing secret before it does anything.",
+      });
     }
     (stage.node.defaultChild as CfnStage).routeSettings = routeSettings;
     const authIntegration = new HttpLambdaIntegration("AuthIntegration", this.live(this.authFunction));
@@ -562,6 +595,158 @@ export class ApiStack extends SupplyCheckoutStack {
       }),
     );
     return { fn, role };
+  }
+
+  /**
+   * Stripe's webhook, the billing queue and the billing worker (ADR 0009,
+   * supply-checkout-2kl), in every region.
+   *
+   * - The webhook function verifies an event's Stripe signature with the
+   *   endpoint's signing secret, puts it on the queue, and answers. It may
+   *   read that one secret and send to that one queue: no table, no Stripe
+   *   API key.
+   * - The queue is FIFO, grouped by Stripe customer and deduplicated by
+   *   event ID. A message that fails BILLING_MAX_RECEIVES times goes to the
+   *   dead-letter queue (the "Billing events stuck" alarm).
+   * - The worker applies each event. Its own role can't reach the table: it
+   *   may read the Stripe secret key, send owner emails (grantSendEmail), and
+   *   assume the billing-worker role tagged with the event, its customer and
+   *   (once the link is read) the team. That role may:
+   *   - GetItem and PutItem in `WEBHOOK#<eventId>`, naming only the event
+   *     records' attributes (WEBHOOK_RECORD_ATTRIBUTES), returning nothing.
+   *   - GetItem in `STRIPE#<stripeCustomer>` naming only the keys and `teamId`.
+   *   - GetItem and Query in `TEAM#<teamId>` naming only
+   *     BILLING_READ_ATTRIBUTES (projected reads only).
+   *   - UpdateItem in `TEAM#<teamId>` naming only BILLING_UPDATE_ATTRIBUTES,
+   *     returning nothing.
+   */
+  private addBillingEvents(config: DeploymentConfig, table: string, tableArn: string, region: string, tableKeyStatement: () => PolicyStatement) {
+    const mode = stripeModeOf(config);
+    const names = billingResourceNames(config.envName);
+    const where = { partition: Aws.PARTITION, region, account: Aws.ACCOUNT_ID };
+    const deadLetterQueue = new Queue(this, "BillingEventsDeadLetterQueue", {
+      queueName: names.deadLetterQueue,
+      fifo: true,
+      encryption: QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      retentionPeriod: Duration.days(14),
+    });
+    Validations.of(deadLetterQueue).acknowledge({
+      id: "AwsSolutions-SQS3",
+      reason: "This is the dead-letter queue: it holds Stripe events the billing worker couldn't apply, for replay.",
+    });
+    const workerTimeout = Duration.seconds(30);
+    const queue = new Queue(this, "BillingEventsQueue", {
+      queueName: names.queue,
+      fifo: true,
+      encryption: QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      // Six times the worker's timeout, as Lambda recommends for an SQS event source
+      visibilityTimeout: Duration.seconds(workerTimeout.toSeconds() * 6),
+      retentionPeriod: Duration.days(4),
+      deadLetterQueue: { queue: deadLetterQueue, maxReceiveCount: BILLING_MAX_RECEIVES },
+    });
+
+    const webhook = this.handler(
+      "BillingWebhookFunction",
+      "webhook",
+      {
+        memorySize: 256,
+        description: "Stripe's webhook: verifies each event's signature and queues it (ADR 0009)",
+        environment: { [STRIPE_ENV.mode]: mode, [BILLING_ENV.webhookSecretId]: stripeWebhookSecretName(config.envName, mode), [BILLING_ENV.queueUrl]: queue.queueUrl },
+      },
+      "billing",
+    );
+    webhook.addToRolePolicy(new PolicyStatement({ sid: "ReadStripeWebhookSecret", actions: ["secretsmanager:GetSecretValue"], resources: [stripeWebhookSecretArn(where, config.envName, mode)] }));
+    webhook.addToRolePolicy(new PolicyStatement({ sid: "QueueBillingEvents", actions: ["sqs:SendMessage"], resources: [queue.queueArn] }));
+
+    const worker = this.handler(
+      "BillingWorkerFunction",
+      "worker-entry",
+      {
+        memorySize: 512,
+        timeout: workerTimeout,
+        description: "Applies queued Stripe events to teams' plans, seats and status, and emails owners (ADR 0009)",
+        environment: { [API_ENV.tableName]: table, [STRIPE_ENV.secretId]: stripeSecretName(config.envName, mode), [STRIPE_ENV.mode]: mode },
+      },
+      "billing",
+    );
+    worker.addEventSource(new SqsEventSource(queue, { batchSize: 1, reportBatchItemFailures: true }));
+    worker.addToRolePolicy(new PolicyStatement({ sid: "ReadStripeSecretKey", actions: ["secretsmanager:GetSecretValue"], resources: [stripeSecretArn(where, config.envName, mode)] }));
+    // Trial-ending, payment-failed and read-only emails to owners
+    grantSendEmail(worker, config);
+    const workerFnRole = worker.role;
+    if (!workerFnRole) throw new Error("The billing worker has no role");
+    const tag = (key: string) => `\${aws:PrincipalTag/${key}}`;
+    const tags = Object.values(BILLING_WORKER_TAGS);
+    const team = `TEAM#${tag(BILLING_WORKER_TAGS.teamId)}`;
+    const role = new Role(this, "BillingWorkerRole", {
+      description: "Assumed by the billing worker per event, tagged with the event, its Stripe customer and the customer's team: the event's records, the link, and the team's billing attributes",
+      maxSessionDuration: Duration.hours(1),
+      assumedBy: new ArnPrincipal(workerFnRole.roleArn)
+        .withConditions({
+          StringLike: Object.fromEntries(tags.map((key) => [`aws:RequestTag/${key}`, "?*"])),
+          "ForAllValues:StringEquals": { "aws:TagKeys": tags },
+        })
+        .withSessionTags(),
+      inlinePolicies: {
+        BillingEventScope: new PolicyDocument({
+          statements: [
+            new PolicyStatement({
+              sid: "EventRecordsOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [`${WEBHOOK_RECORD_PREFIX}${tag(BILLING_WORKER_TAGS.eventId)}`],
+                  "dynamodb:Attributes": [...WEBHOOK_RECORD_ATTRIBUTES],
+                },
+                StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES", "dynamodb:ReturnValues": "NONE" },
+              },
+            }),
+            new PolicyStatement({
+              sid: "StripeLinkTeamOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:GetItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [`${STRIPE_LINK_PREFIX}${tag(BILLING_WORKER_TAGS.stripeCustomer)}`],
+                  "dynamodb:Attributes": [...STRIPE_LINK_READ_ATTRIBUTES],
+                },
+                // As AWS's attribute-level examples do: a read must name its attributes
+                StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+              },
+            }),
+            new PolicyStatement({
+              sid: "TeamBillingReadOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:GetItem", "dynamodb:Query"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [team], "dynamodb:Attributes": [...BILLING_READ_ATTRIBUTES] },
+                StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+              },
+            }),
+            new PolicyStatement({
+              sid: "TeamBillingUpdateOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:UpdateItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [team], "dynamodb:Attributes": [...BILLING_UPDATE_ATTRIBUTES] },
+                StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+              },
+            }),
+            tableKeyStatement(),
+          ],
+        }),
+      },
+    });
+    worker.addToRolePolicy(new PolicyStatement({ actions: ["sts:AssumeRole", "sts:TagSession"], resources: [role.roleArn] }));
+    worker.addEnvironment(BILLING_ENV.workerRoleArn, role.roleArn);
+    return { webhook, queue, deadLetterQueue, worker, role };
   }
 
   /**
@@ -755,7 +940,7 @@ export class ApiStack extends SupplyCheckoutStack {
   }
 
   /** A function from backend/src/<dir>/<name>.ts. */
-  private handler(id: string, name: string, props: { memorySize: number; description: string; environment: Record<string, string> }, dir = "api"): NodejsFunction {
+  private handler(id: string, name: string, props: { memorySize: number; description: string; environment: Record<string, string>; timeout?: Duration }, dir = "api"): NodejsFunction {
     // Its own log group and a role that can write only to it (instead of
     // AWSLambdaBasicExecutionRole, which allows every log group)
     const logGroup = new LogGroup(this, `${id}Logs`, { retention: LOG_RETENTION });
@@ -773,7 +958,7 @@ export class ApiStack extends SupplyCheckoutStack {
       runtime: Runtime.NODEJS_24_X,
       architecture: Architecture.ARM_64,
       memorySize: props.memorySize,
-      timeout: Duration.seconds(10),
+      timeout: props.timeout ?? Duration.seconds(10),
       description: props.description,
       environment: { NODE_OPTIONS: "--enable-source-maps", ...props.environment },
       bundling,

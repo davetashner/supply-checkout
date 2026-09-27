@@ -1,8 +1,10 @@
 import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, routeKey } from "../../backend/src/api/routes.js";
+import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, routeKey, WEBHOOK_ROUTES } from "../../backend/src/api/routes.js";
 import {
+  BILLING_READ_ATTRIBUTES,
+  BILLING_UPDATE_ATTRIBUTES,
   COMP_ATTRIBUTES,
   CUSTOMER_LINK_TEAM_ATTRIBUTES,
   IMPORT_INDEX_ATTRIBUTES,
@@ -11,7 +13,9 @@ import {
   OWNER_OPERATOR_AUDIT_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
   STRIPE_LINK_ATTRIBUTES,
+  STRIPE_LINK_READ_ATTRIBUTES,
   STUCK_IMPORT_ATTRIBUTES,
+  WEBHOOK_RECORD_ATTRIBUTES,
 } from "../../backend/src/data/schema.js";
 import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
 import { apiOutputParameters } from "../lib/stacks/api-stack.js";
@@ -37,9 +41,9 @@ describe("HTTP API routes", () => {
   it("serves every data, account, billing, auth and ops route in the primary region, the ops routes nowhere else, and no others", () => {
     const { template } = api();
     const keys = resources(template, "AWS::ApiGatewayV2::Route").map(([, r]) => r.Properties.RouteKey).sort();
-    expect(keys).toEqual([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...AUTH_ROUTES, ...OPS_ROUTES].map(routeKey).sort());
+    expect(keys).toEqual([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES, ...OPS_ROUTES].map(routeKey).sort());
     const west = resources(api(WEST).template, "AWS::ApiGatewayV2::Route").map(([, r]) => r.Properties.RouteKey).sort();
-    expect(west).toEqual([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...AUTH_ROUTES].map(routeKey).sort());
+    expect(west).toEqual([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES].map(routeKey).sort());
     // The inventory commands and the stock history, next to the document routes
     expect(keys).toEqual(
       expect.arrayContaining([
@@ -80,9 +84,9 @@ describe("HTTP API routes", () => {
   it("routes data, account, billing, auth and ops requests to their functions' live aliases", () => {
     const { template } = api();
     const integrations = resources(template, "AWS::ApiGatewayV2::Integration").map(([, r]) => JSON.stringify(r.Properties.IntegrationUri));
-    expect(integrations).toHaveLength(5);
-    for (const fn of ["DataFunctionLive", "AccountFunctionLive", "BillingFunctionLive", "AuthFunctionLive", "OpsFunctionLive"]) expect(integrations.some((i) => i.includes(fn)), fn).toBe(true);
-    template.resourcePropertiesCountIs("AWS::Lambda::Alias", { Name: "live" }, 5);
+    expect(integrations).toHaveLength(6);
+    for (const fn of ["DataFunctionLive", "AccountFunctionLive", "BillingFunctionLive", "BillingWebhookFunctionLive", "AuthFunctionLive", "OpsFunctionLive"]) expect(integrations.some((i) => i.includes(fn)), fn).toBe(true);
+    template.resourcePropertiesCountIs("AWS::Lambda::Alias", { Name: "live" }, 6);
   });
 
   it("allows only the app's origin (and localhost outside prod), with credentials for the cookie", () => {
@@ -124,6 +128,7 @@ describe("HTTP API routes", () => {
       "POST /me/email/code": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /me/email/verify": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
       "POST /teams/{teamId}/billing/checkout": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "POST /billing/webhook": { ThrottlingRateLimit: 20, ThrottlingBurstLimit: 50 },
       "GET /ops/teams": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "GET /ops/teams/{teamId}": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "PUT /ops/teams/{teamId}/comp": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
@@ -163,11 +168,11 @@ describe("functions", () => {
   it("run Node.js 24 on arm64, with the data function at 1 GB, and the ops and reopen functions in the primary region only", () => {
     const { template } = api();
     const fns = resources(template, "AWS::Lambda::Function").map(([id, r]) => [id, r.Properties] as const);
-    expect(fns).toHaveLength(6);
+    expect(fns).toHaveLength(8);
     expect(fns.some(([id]) => id.startsWith("OpsFunction"))).toBe(true);
     expect(fns.some(([id]) => id.startsWith("OpsReopenFunction"))).toBe(true);
     expect(resources(api(WEST).template, "AWS::Lambda::Function").some(([id]) => id.startsWith("Ops"))).toBe(false);
-    for (const [, p] of fns) expect(p).toMatchObject({ Runtime: "nodejs24.x", Architectures: ["arm64"], Timeout: 10, TracingConfig: { Mode: "Active" } });
+    for (const [id, p] of fns) expect(p).toMatchObject({ Runtime: "nodejs24.x", Architectures: ["arm64"], Timeout: id.startsWith("BillingWorker") ? 30 : 10, TracingConfig: { Mode: "Active" } });
     expect(fns.find(([id]) => id.startsWith("DataFunction"))?.[1].MemorySize).toBe(1024);
   });
 
@@ -338,7 +343,12 @@ describe("account-access role (LeadingKeys)", () => {
     const sends = resources(template, "AWS::IAM::Policy").flatMap(([id, p]) =>
       (p.Properties.PolicyDocument as { Statement: { Action: unknown; Condition?: unknown }[] }).Statement.filter((s) => JSON.stringify(s.Action).includes("ses:")).map((s) => [id, s]),
     );
-    expect(sends).toEqual([[expect.stringMatching(/^AccountFunctionRole/), expect.objectContaining({ Sid: "SendAppEmail", Action: "ses:SendEmail", Condition: { StringEquals: { "ses:FromAddress": "noreply@supplycheckout.com" } } })]]);
+    const noreply = expect.objectContaining({ Sid: "SendAppEmail", Action: "ses:SendEmail", Condition: { StringEquals: { "ses:FromAddress": "noreply@supplycheckout.com" } } });
+    // And the billing worker, for owners' billing notices
+    expect(sends).toEqual([
+      [expect.stringMatching(/^AccountFunctionRole/), noreply],
+      [expect.stringMatching(/^BillingWorkerFunctionRole/), noreply],
+    ]);
   });
 
   it("lets the account function put account deletion records, in the primary region's bucket, and no other function touch S3", () => {
@@ -402,23 +412,19 @@ describe("billing function and billing-access role (ADR 0009)", () => {
     expect(env(api(EAST, {}, { stripeMode: "live" }).template)).toMatchObject({ STRIPE_SECRET_ID: "supply-checkout/prod/stripe/live-secret-key", STRIPE_MODE: "live" });
   });
 
-  it("lets only the billing function read the Stripe secret key, and only that one secret in its own region", () => {
+  it("lets only the billing function and worker read the Stripe secret key, and only the webhook its signing secret, each one secret in its own region", () => {
     for (const region of [EAST, WEST]) {
       const { template } = api(region);
       const reads = resources(template, "AWS::IAM::Policy").flatMap(([id, p]) =>
         (p.Properties.PolicyDocument as { Statement: { Action: unknown }[] }).Statement.filter((s) => JSON.stringify(s.Action).includes("secretsmanager:")).map((s) => [id, s]),
       );
+      // Secrets Manager's six random characters, and nothing else: no account ID written down
+      const secret = (name: string) => ({ "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:secretsmanager:${region}:`, { Ref: "AWS::AccountId" }, `:secret:supply-checkout/prod/stripe/${name}-??????`]] });
+      const key = { Sid: "ReadStripeSecretKey", Effect: "Allow", Action: "secretsmanager:GetSecretValue", Resource: secret("test-secret-key") };
       expect(reads).toEqual([
-        [
-          expect.stringMatching(/^BillingFunctionRole/),
-          {
-            Sid: "ReadStripeSecretKey",
-            Effect: "Allow",
-            Action: "secretsmanager:GetSecretValue",
-            // Secrets Manager's six random characters, and nothing else: no account ID written down
-            Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:secretsmanager:${region}:`, { Ref: "AWS::AccountId" }, ":secret:supply-checkout/prod/stripe/test-secret-key-??????"]] },
-          },
-        ],
+        [expect.stringMatching(/^BillingFunctionRole/), key],
+        [expect.stringMatching(/^BillingWebhookFunctionRole/), { Sid: "ReadStripeWebhookSecret", Effect: "Allow", Action: "secretsmanager:GetSecretValue", Resource: secret("test-webhook-secret") }],
+        [expect.stringMatching(/^BillingWorkerFunctionRole/), key],
       ]);
       // No role reaches any secret
       expect(resources(template, "AWS::IAM::Role").filter(([, r]) => JSON.stringify(r.Properties).includes("secretsmanager:"))).toEqual([]);
@@ -459,7 +465,7 @@ describe("billing function and billing-access role (ADR 0009)", () => {
       Action: "dynamodb:UpdateItem",
       Resource: expect.anything(),
       Condition: {
-        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": ["PK", "SK", "stripeCustomerId"] },
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": ["PK", "SK", "stripeCustomerId", "closedAt"] },
         StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
       },
     });
@@ -474,7 +480,7 @@ describe("billing function and billing-access role (ADR 0009)", () => {
       },
     });
     // The same lists the handler's requests are tested against (backend/test/billing-policy.ts)
-    expect([...CUSTOMER_LINK_TEAM_ATTRIBUTES]).toEqual(["PK", "SK", "stripeCustomerId"]);
+    expect([...CUSTOMER_LINK_TEAM_ATTRIBUTES]).toEqual(["PK", "SK", "stripeCustomerId", "closedAt"]);
     expect([...STRIPE_LINK_ATTRIBUTES]).toEqual(["PK", "SK", "type", "customerId", "teamId"]);
     for (const s of [read, update, link]) {
       expect(JSON.stringify(s?.Resource)).toContain(":table/supply-checkout-prod-app");
@@ -490,6 +496,133 @@ describe("billing function and billing-access role (ADR 0009)", () => {
     );
     expect(assumes.filter(([, r]) => /BillingAccessRole/.test(r as string)).map(([id]) => id)).toEqual([expect.stringMatching(/^BillingFunctionRole/)]);
     expect(assumes.filter(([id]) => /^BillingFunctionRole/.test(id as string)).map(([, r]) => r)).toEqual([expect.stringMatching(/BillingAccessRole/)]);
+  });
+});
+
+describe("Stripe webhook, billing queue and worker (ADR 0009)", () => {
+  const worker = (template = api().template) => {
+    const [[, r]] = resources(template, "AWS::IAM::Role").filter(([id]) => id.startsWith("BillingWorkerRole")) as [[string, Resource]];
+    return r.Properties as { AssumeRolePolicyDocument: { Statement: Record<string, unknown>[] }; Policies: { PolicyDocument: { Statement: Record<string, unknown>[] } }[] };
+  };
+  const statements = (template: Template, prefix: string) =>
+    resources(template, "AWS::IAM::Policy")
+      .filter(([id]) => id.startsWith(prefix))
+      .flatMap(([, p]) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
+
+  it("serves the webhook with no authorizer, from its own function's live alias", () => {
+    const { template } = api();
+    const [[, route]] = resources(template, "AWS::ApiGatewayV2::Route").filter(([, r]) => r.Properties.RouteKey === "POST /billing/webhook") as [[string, Resource]];
+    expect(route.Properties.AuthorizationType ?? "NONE").toBe("NONE");
+    expect(JSON.stringify(route.Properties.Target)).toBeDefined();
+  });
+
+  it("has a FIFO queue with SSE and TLS only, redriving to a FIFO dead-letter queue after 5 tries", () => {
+    for (const region of [EAST, WEST]) {
+      const { template } = api(region);
+      template.hasResourceProperties("AWS::SQS::Queue", {
+        QueueName: "supply-checkout-prod-billing-events.fifo",
+        FifoQueue: true,
+        SqsManagedSseEnabled: true,
+        VisibilityTimeout: 180,
+        RedrivePolicy: { deadLetterTargetArn: { "Fn::GetAtt": [Match.stringLikeRegexp("^BillingEventsDeadLetterQueue"), "Arn"] }, maxReceiveCount: 5 },
+      });
+      template.hasResourceProperties("AWS::SQS::Queue", { QueueName: "supply-checkout-prod-billing-events-dlq.fifo", FifoQueue: true, SqsManagedSseEnabled: true, MessageRetentionPeriod: 14 * 86400 });
+      // Both refuse anything but TLS
+      expect(resources(template, "AWS::SQS::QueuePolicy").filter(([, p]) => JSON.stringify(p.Properties).includes("aws:SecureTransport"))).toHaveLength(2);
+    }
+  });
+
+  it("lets the webhook only read its signing secret and send to the queue: no table, no Stripe key", () => {
+    const { template } = api();
+    const own = statements(template, "BillingWebhookFunctionRole");
+    expect(own.map((s) => s.Action)).toEqual(["logs:CreateLogStream,logs:PutLogEvents".split(","), "secretsmanager:GetSecretValue", "sqs:SendMessage"]);
+    expect(own.find((s) => s.Action === "sqs:SendMessage")?.Resource).toEqual({ "Fn::GetAtt": [expect.stringMatching(/^BillingEventsQueue/), "Arn"] });
+    const env = (resources(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("BillingWebhookFunction"))?.[1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    expect(env).toMatchObject({ STRIPE_MODE: "test", STRIPE_WEBHOOK_SECRET_ID: "supply-checkout/prod/stripe/test-webhook-secret", BILLING_QUEUE_URL: { Ref: expect.stringMatching(/^BillingEventsQueue/) } });
+    expect(env).not.toHaveProperty("TABLE_NAME");
+    expect(env).not.toHaveProperty("STRIPE_SECRET_ID");
+  });
+
+  it("runs the worker from the queue one event at a time, reporting failures per message", () => {
+    const { template } = api();
+    template.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
+      EventSourceArn: { "Fn::GetAtt": [Match.stringLikeRegexp("^BillingEventsQueue"), "Arn"] },
+      BatchSize: 1,
+      FunctionResponseTypes: ["ReportBatchItemFailures"],
+    });
+    const env = (resources(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("BillingWorkerFunction"))?.[1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    expect(env).toMatchObject({ TABLE_NAME: "supply-checkout-prod-app", STRIPE_SECRET_ID: "supply-checkout/prod/stripe/test-secret-key", STRIPE_MODE: "test", BILLING_WORKER_ROLE_ARN: { "Fn::GetAtt": [expect.stringMatching(/^BillingWorkerRole/), "Arn"] } });
+  });
+
+  it("lets only the worker assume the billing-worker role, with the event, customer and team tags and no others", () => {
+    const [trust, ...rest] = worker().AssumeRolePolicyDocument.Statement;
+    expect(rest).toEqual([]);
+    expect(trust).toMatchObject({
+      Action: ["sts:AssumeRole", "sts:TagSession"],
+      Principal: { AWS: { "Fn::GetAtt": [expect.stringMatching(/^BillingWorkerFunctionRole/), "Arn"] } },
+      Condition: {
+        StringLike: { "aws:RequestTag/eventId": "?*", "aws:RequestTag/stripeCustomer": "?*", "aws:RequestTag/teamId": "?*" },
+        "ForAllValues:StringEquals": { "aws:TagKeys": ["eventId", "stripeCustomer", "teamId"] },
+      },
+    });
+    const { template } = api();
+    const assumes = resources(template, "AWS::IAM::Policy").flatMap(([id, p]) =>
+      (p.Properties.PolicyDocument as { Statement: { Action: unknown; Resource: unknown }[] }).Statement.filter((s) => JSON.stringify(s.Action).includes("sts:AssumeRole")).map((s) => [id, JSON.stringify(s.Resource)]),
+    );
+    expect(assumes.filter(([, r]) => /BillingWorkerRole/.test(r as string)).map(([id]) => id)).toEqual([expect.stringMatching(/^BillingWorkerFunctionRole/)]);
+  });
+
+  it("reaches only the event's records, the customer's link, and the team's billing attributes", () => {
+    const [policy, ...others] = worker().Policies;
+    expect(others).toEqual([]);
+    const [records, link, read, update, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    expect(rest).toEqual([]);
+    expect(records).toEqual({
+      Sid: "EventRecordsOnly",
+      Effect: "Allow",
+      Action: ["dynamodb:GetItem", "dynamodb:PutItem"],
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["WEBHOOK#${aws:PrincipalTag/eventId}"], "dynamodb:Attributes": [...WEBHOOK_RECORD_ATTRIBUTES] },
+        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES", "dynamodb:ReturnValues": "NONE" },
+      },
+    });
+    expect(link).toEqual({
+      Sid: "StripeLinkTeamOnly",
+      Effect: "Allow",
+      Action: "dynamodb:GetItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["STRIPE#${aws:PrincipalTag/stripeCustomer}"], "dynamodb:Attributes": ["PK", "SK", "teamId"] },
+        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
+    });
+    expect(read).toEqual({
+      Sid: "TeamBillingReadOnly",
+      Effect: "Allow",
+      Action: ["dynamodb:GetItem", "dynamodb:Query"],
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": [...BILLING_READ_ATTRIBUTES] },
+        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
+    });
+    expect(update).toEqual({
+      Sid: "TeamBillingUpdateOnly",
+      Effect: "Allow",
+      Action: "dynamodb:UpdateItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": [...BILLING_UPDATE_ATTRIBUTES] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+      },
+    });
+    // Never the purge's index keys or anything about documents or members' data beyond an owner's address
+    expect(BILLING_UPDATE_ATTRIBUTES).not.toContain("purgeAfter");
+    expect(BILLING_UPDATE_ATTRIBUTES).not.toContain("GSI1PK");
+    expect([...STRIPE_LINK_READ_ATTRIBUTES]).toEqual(["PK", "SK", "teamId"]);
+    for (const s of [records, link, read, update]) expect(JSON.stringify(s?.Resource)).not.toMatch(/index|\*/);
+    expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb" });
   });
 });
 

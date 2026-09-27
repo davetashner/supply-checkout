@@ -13,6 +13,15 @@ export class TeamClosedError extends Error {
   override readonly name = "TeamClosedError";
 }
 
+/**
+ * The team's subscription has ended (canceled, unpaid, or its first payment
+ * never went through) and it has no live comp: it's read-only until an owner
+ * subscribes again (ADR 0009). (403, reason `subscription_ended`)
+ */
+export class SubscriptionEndedError extends Error {
+  override readonly name = "SubscriptionEndedError";
+}
+
 /** A version check or an existence check failed: someone else changed it first. (409) */
 export class ConflictError extends Error {
   override readonly name: string = "ConflictError";

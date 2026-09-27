@@ -60,6 +60,9 @@ import { BILLING_ROUTES, type BillingRoute, IDEMPOTENCY_HEADER, routeKey } from 
 
 /** What the checkout needs from the Stripe client (the `stripe` package's, or a fake in tests). */
 export interface CheckoutStripe extends PriceLister {
+  readonly subscriptions: {
+    list(params: { customer: string; status: "all"; limit: number }): PromiseLike<{ readonly data: readonly { readonly status: string }[] }>;
+  };
   readonly customers: {
     create(params: { name: string; metadata: Record<string, string> }, options: { idempotencyKey: string }): PromiseLike<{ readonly id: string }>;
   };
@@ -198,6 +201,10 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
       throw new ApiError(400, "bad_request", `Choose at least ${team.members} seats: the team has ${team.members} members`);
     }
     const stripe = await deps.stripe();
+    // A subscription the webhook hasn't recorded yet (another checkout just finished): one per team
+    if (team.stripeCustomerId && (await stripe.subscriptions.list({ customer: team.stripeCustomerId, status: "all", limit: 10 })).data.some((s) => !hasEnded(s.status))) {
+      throw new ApiError(409, "aborted", "This team already has a subscription. Change it from Manage billing.", "already_subscribed");
+    }
     const priceId = await deps.priceFor(input.plan, input.price);
     const customer = await customerFor(stripe, ctx, team);
     const at = now();

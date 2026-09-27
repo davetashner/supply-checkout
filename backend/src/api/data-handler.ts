@@ -46,6 +46,7 @@ import {
   returnItems,
   setDocument,
   type StoredDocument,
+  SubscriptionEndedError,
   TeamClosedError,
   type TeamContext,
   TooLargeError,
@@ -84,6 +85,7 @@ export function errorFor(error: unknown): ApiError {
   // operation runs.
   if (error instanceof ForbiddenError) return viewOnly();
   if (error instanceof TeamClosedError) return new ApiError(403, "permission_denied", error.message, "team_closed");
+  if (error instanceof SubscriptionEndedError) return new ApiError(403, "permission_denied", error.message, "subscription_ended");
   return apiErrorFor(error);
 }
 

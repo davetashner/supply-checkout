@@ -175,6 +175,7 @@ describe("POST /teams", () => {
       deletesAt: null,
       reopenBy: null,
       comp: null,
+      subscriptionEnded: false,
       members: 1,
       memberCap: MEMBERS_PER_TRIAL_TEAM,
     });
@@ -238,7 +239,7 @@ describe("GET /me", () => {
     expect(body.user).toEqual({ id: PAT, email: "Pat@Example.com", emailVerified: true });
     expect(body.teams).toEqual([
       created,
-      { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION, closedAt: null, deletesAt: null, reopenBy: null, comp: null, members: 2, memberCap: MEMBERS_PER_TRIAL_TEAM },
+      { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION, closedAt: null, deletesAt: null, reopenBy: null, comp: null, subscriptionEnded: false, members: 2, memberCap: MEMBERS_PER_TRIAL_TEAM },
     ].map((t) => JSON.parse(JSON.stringify(t))));
     expect(body.invites).toEqual([]);
   });

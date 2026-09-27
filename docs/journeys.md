@@ -147,7 +147,7 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Expected:** the team shows as active within a minute of paying. Adding a member updates the seat count with proration. Invoices are emailed and listed in the app with the company name.
 
-**Status:** planned. `supply-checkout-x0l` (Checkout), `supply-checkout-2kl` (webhooks), `supply-checkout-121` (Customer Portal), `supply-checkout-eja` (invoices), `supply-checkout-l50` (seats).
+**Status:** partly built, in the Stripe sandbox. Checkout (`supply-checkout-x0l`) and the webhook, queue and worker (`supply-checkout-2kl`) are built: a finished checkout sets the team's plan, seats and status within a minute, a team whose trial ends without a card turns read-only with a banner (and owners are emailed), and an owner of a read-only team can subscribe again from the team bar. Still to come: the in-app plan picker (`supply-checkout-8jc.5`), the Customer Portal (`supply-checkout-121`), invoices (`supply-checkout-eja`) and seat sync (`supply-checkout-l50`). Tests: `backend/test/billing-api.test.ts`, `billing-webhook.test.ts`, `billing-worker.test.ts`, `billing-ddb.test.ts`, and `tests/aws-billing.spec.js`.
 
 ### J8. A payment fails and is fixed
 
@@ -252,10 +252,11 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Live updates failing | J4 | P2 | `LiveUpdateFailures` ÷ `LiveUpdates` from the stream consumer (`supply-checkout-dpc`), at least 20 events, over 10 minutes. The canary's live-update check comes with the canary. |
 | Live updates delayed, Live updates dropped, Live updates deferred | J4 | P2 | As below. Live updates deferred needs 3 breaching 5-minute periods in a row. |
 | Receipt reading failing | J5 | P2 | As below |
-| Checkout broken, Webhook signature failures | J7 | P1 | As below |
+| Checkout broken, Webhook signature failures, Billing events stuck | J7 | P1 | As below. Billing events stuck watches the billing events dead-letter queue. |
+| Billing events late | J7, J8 | P2 | The billing events queue's `ApproximateAgeOfOldestMessage` above 5 minutes |
 | Deletion overdue, Deletion job not running, Team closure emails failing, Team reopened emails failing | J11 | P2 | As below. Deletion overdue and Deletion job not running read the closed-team purge's gauge, and are in the primary region only, with the purge. |
 
-Every other alarm on this page waits for the resource or code it watches, and is added by the bead that builds it (the alarm goes in that region's `observability` stack, with `topics.notify(alarm, severity)`): the canaries (`supply-checkout-pkt`); Site down and Firewall blocking customers (CloudFront and WAF, `supply-checkout-qk1`); API unhealthy (it needs a `/health` route and a Route 53 health check, which the API doesn't have yet); Cognito alarms (`supply-checkout-zsm`); Bedrock alarms and Receipt cost spike (the receipt function); the billing queue and reconciliation alarms; and Checkouts stopped, which compares with the same hour last week, and so needs something other than one CloudWatch alarm. The remaining P3 trends (No sign-ups, Invites not accepted, Failed payments rising, App checkouts abandoned) are read from the dashboard at the weekly review.
+Every other alarm on this page waits for the resource or code it watches, and is added by the bead that builds it (the alarm goes in that region's `observability` stack, with `topics.notify(alarm, severity)`): the canaries (`supply-checkout-pkt`); Site down and Firewall blocking customers (CloudFront and WAF, `supply-checkout-qk1`); API unhealthy (it needs a `/health` route and a Route 53 health check, which the API doesn't have yet); Cognito alarms (`supply-checkout-zsm`); Bedrock alarms and Receipt cost spike (the receipt function); the reconciliation alarms (Seat counts drifting, Paid but not active, `supply-checkout-8jc.9`); and Checkouts stopped, which compares with the same hour last week, and so needs something other than one CloudWatch alarm. The remaining P3 trends (No sign-ups, Invites not accepted, Failed payments rising, App checkouts abandoned) are read from the dashboard at the weekly review.
 
 ### Every journey
 

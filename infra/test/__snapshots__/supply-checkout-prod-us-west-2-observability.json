@@ -1949,6 +1949,114 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmsbillingeventsstuck9FA234DE": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "AlarmDescription": "P1 Billing events stuck (J7, J8, us-west-2). Any message in the billing events dead-letter queue: a Stripe event the billing worker couldn't apply after 5 tries, so a team's plan, seats or status may be out of date. The message holds the event's IDs, to replay it. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p1-billing-events-stuck",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "Dimensions": [
+          {
+            "Name": "QueueName",
+            "Value": "supply-checkout-prod-billing-events-dlq.fifo"
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Namespace": "AWS/SQS",
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Period": 300,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsbillingeventslateE45F9C67": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Billing events late (J7, J8, us-west-2). The oldest message in the billing events queue is more than 5 minutes old: the worker is failing or behind, so a payment takes longer to show. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-billing-events-late",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "Dimensions": [
+          {
+            "Name": "QueueName",
+            "Value": "supply-checkout-prod-billing-events.fifo"
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "ApproximateAgeOfOldestMessage",
+        "Namespace": "AWS/SQS",
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Period": 300,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 300,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmsteamclosednoticesfailingA94DEEDE": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {

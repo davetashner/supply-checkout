@@ -48,12 +48,21 @@ function fakeStripe() {
     sessions: [] as { params: CheckoutSessionParams; key: string }[],
     lists: 0,
     prices: [...PRICES],
+    /** The customer's subscriptions in Stripe, which the webhook may not have recorded yet. */
+    subscriptions: [] as { status: string }[],
+    subscriptionLists: [] as string[],
     sessionError: undefined as Error | undefined,
     noUrl: false,
     /** Runs after a customer is made, before it's linked: another request's link. */
     afterCustomer: undefined as (() => void) | undefined,
   };
   const client: CheckoutStripe = {
+    subscriptions: {
+      async list(params) {
+        state.subscriptionLists.push(params.customer);
+        return { data: state.subscriptions };
+      },
+    },
     customers: {
       async create(params, options) {
         state.customers.push({ params, key: options.idempotencyKey });
@@ -329,6 +338,30 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
     const answer = await checkout();
     expect(answer.status).toBe(409);
     expect(answer.body.error.reason).toBe("already_subscribed");
+    expect(stripe.state.sessions).toHaveLength(0);
+  });
+
+  it("refuses a team whose customer has a live subscription the webhook hasn't recorded yet", async () => {
+    patchTeam({ stripeCustomerId: "cus_test_9" });
+    stripe.state.subscriptions = [{ status: "canceled" }, { status: "trialing" }];
+    const answer = await checkout();
+    expect(answer.status).toBe(409);
+    expect(answer.body.error.reason).toBe("already_subscribed");
+    expect(stripe.state.subscriptionLists).toEqual(["cus_test_9"]);
+    stripe.state.subscriptions = [{ status: "canceled" }, { status: "incomplete_expired" }];
+    expect((await checkout()).status).toBe(201);
+  });
+
+  it("doesn't link a customer to a team closed after the membership check", async () => {
+    let gets = 0;
+    table.afterGet = () => {
+      // The team's read for the checkout: close it right after
+      if (++gets === 1) patchTeam({ closedAt: new Date(now).toISOString() });
+    };
+    const { status } = await checkout();
+    expect(status).toBe(409);
+    expect(meta().stripeCustomerId).toBeUndefined();
+    expect(table.get("STRIPE#cus_test_1", "TEAM")).toBeUndefined();
     expect(stripe.state.sessions).toHaveLength(0);
   });
 

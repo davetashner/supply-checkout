@@ -1,0 +1,149 @@
+// Billing's conditional writes against DynamoDB Local (ADR 0009): linking a
+// customer, applying a subscription to its team (never to a closed, purging or
+// purged team, and never another customer's), the event record and the
+// once-per-owner notice claim. Skipped unless DYNAMODB_ENDPOINT is set (CI
+// sets it).
+
+import { randomUUID } from "node:crypto";
+import { DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { describe, expect, it } from "vitest";
+import { connection } from "../src/data/client.js";
+import {
+  applySubscription,
+  authorizeTeam,
+  claimBillingNotice,
+  closeTeam,
+  ConflictError,
+  createTeam,
+  getBillingTeam,
+  isWebhookProcessed,
+  linkStripeCustomer,
+  listOwnerContacts,
+  markWebhookProcessed,
+  stripeCustomerTeam,
+  type SubscriptionState,
+  teamContextForStripeCustomer,
+} from "../src/data/index.js";
+import { endpoint, newUser, rawItem, useTable } from "./helpers.js";
+
+describe.skipIf(!endpoint)("billing on DynamoDB Local", () => {
+  const table = useTable();
+  const now = new Date();
+
+  /** A new team with a linked customer, and the webhook's context for it. */
+  async function linkedTeam() {
+    const ownerId = newUser();
+    const { team, context } = await createTeam(table.db, { userId: ownerId, email: "owner@example.com" }, { name: `Billing ${ownerId}` }, now);
+    const customer = `cus_${randomUUID().replaceAll("-", "")}`;
+    await linkStripeCustomer(table.db, context, customer);
+    const ctx = await teamContextForStripeCustomer(table.db, customer);
+    if (!ctx) throw new Error("no context");
+    return { team, owner: context, ownerId, customer, ctx };
+  }
+  const state = (customer: string, fields: Partial<SubscriptionState> = {}): SubscriptionState => ({
+    customerId: customer,
+    subscriptionId: "sub_test_1",
+    plan: "starter",
+    interval: "month",
+    seats: 3,
+    status: "trialing",
+    currentPeriodEnd: "2026-10-11T00:00:00.000Z",
+    cancelAtPeriodEnd: false,
+    ...fields,
+  });
+
+  it("links a customer once, finds the team from it, and never moves it to another team", async () => {
+    const { team, customer, ctx } = await linkedTeam();
+    expect(await stripeCustomerTeam(table.db, customer)).toBe(team.teamId);
+    expect(ctx).toMatchObject({ teamId: team.teamId, role: "system" });
+    expect(await stripeCustomerTeam(table.db, "cus_nobody")).toBeUndefined();
+    const other = await linkedTeam();
+    await expect(linkStripeCustomer(table.db, other.owner, customer)).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  it("won't link a customer to a closed team", async () => {
+    const ownerId = newUser();
+    const { team, context } = await createTeam(table.db, { userId: ownerId }, { name: `Closing ${ownerId}` }, now);
+    await closeTeam(table.db, context, { confirmName: team.name }, now);
+    // A context issued before the closure: the write's own condition refuses it
+    await expect(linkStripeCustomer(table.db, context, "cus_after_close")).rejects.toBeInstanceOf(ConflictError);
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).not.toHaveProperty("stripeCustomerId");
+    expect(await rawItem(table.db, "STRIPE#cus_after_close", "TEAM")).toBeUndefined();
+  });
+
+  it("applies a subscription, and applying it again changes only the sync time and version", async () => {
+    const { team, customer, ctx } = await linkedTeam();
+    expect(await applySubscription(table.db, ctx, state(customer), now)).toBe("applied");
+    const first = await rawItem(table.db, `TEAM#${team.teamId}`, "META");
+    expect(first).toMatchObject({ plan: "starter", seats: 3, status: "trialing", stripeSubscriptionId: "sub_test_1", billingInterval: "month", cancelAtPeriodEnd: false, version: 2 });
+    expect(await applySubscription(table.db, ctx, state(customer), now)).toBe("applied");
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toEqual({ ...first, version: 3 });
+    expect(await getBillingTeam(table.db, ctx, now)).toMatchObject({ status: "trialing", stripeSubscriptionId: "sub_test_1", closed: false, purging: false, readOnly: false });
+  });
+
+  it("never touches a closed team", async () => {
+    const { team, owner, customer, ctx } = await linkedTeam();
+    await closeTeam(table.db, owner, { confirmName: team.name }, now);
+    expect(await applySubscription(table.db, ctx, state(customer), now)).toBe("ignored");
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).not.toHaveProperty("stripeSubscriptionId");
+  });
+
+  it("never touches a team the purge has marked", async () => {
+    const { team, customer, ctx } = await linkedTeam();
+    await connection(table.db).doc.send(new UpdateCommand({ TableName: table.db.tableName, Key: { PK: `TEAM#${team.teamId}`, SK: "META" }, UpdateExpression: "SET purging = :at", ExpressionAttributeValues: { ":at": now.toISOString() } }));
+    expect(await applySubscription(table.db, ctx, state(customer), now)).toBe("ignored");
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).not.toHaveProperty("stripeSubscriptionId");
+  });
+
+  it("never recreates a purged team's META item", async () => {
+    const { team, customer, ctx } = await linkedTeam();
+    await connection(table.db).doc.send(new DeleteCommand({ TableName: table.db.tableName, Key: { PK: `TEAM#${team.teamId}`, SK: "META" } }));
+    expect(await applySubscription(table.db, ctx, state(customer), now)).toBe("ignored");
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toBeUndefined();
+    expect(await getBillingTeam(table.db, ctx, now)).toBeUndefined();
+    expect(await teamContextForStripeCustomer(table.db, customer)).toBeUndefined();
+  });
+
+  it("refuses another customer's subscription, and another subscription unless it replaces the team's", async () => {
+    const { team, customer, ctx } = await linkedTeam();
+    expect(await applySubscription(table.db, ctx, state("cus_someone_else"), now)).toBe("ignored");
+    await applySubscription(table.db, ctx, state(customer), now);
+    await expect(applySubscription(table.db, ctx, state(customer, { subscriptionId: "sub_test_2" }), now)).rejects.toBeInstanceOf(ConflictError);
+    expect(await applySubscription(table.db, ctx, state(customer, { subscriptionId: "sub_test_2", replaces: "sub_test_1", status: "active" }), now)).toBe("applied");
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ stripeSubscriptionId: "sub_test_2", status: "active" });
+  });
+
+  it("leaves the plan, interval and period end alone when the subscription doesn't say", async () => {
+    const { team, customer, ctx } = await linkedTeam();
+    await applySubscription(table.db, ctx, { customerId: customer, subscriptionId: "sub_test_1", seats: 2, status: "active", cancelAtPeriodEnd: true }, now);
+    const meta = await rawItem(table.db, `TEAM#${team.teamId}`, "META");
+    expect(meta).toMatchObject({ plan: "trial", seats: 2, status: "active", cancelAtPeriodEnd: true });
+    expect(meta).not.toHaveProperty("billingInterval");
+  });
+
+  it("refuses an owner's context and a malformed state", async () => {
+    const { owner, customer, ctx } = await linkedTeam();
+    await expect(applySubscription(table.db, owner, state(customer), now)).rejects.toThrow("system role");
+    await expect(applySubscription(table.db, ctx, state(customer, { seats: -1 }), now)).rejects.toBeInstanceOf(ConflictError);
+    await expect(applySubscription(table.db, ctx, state(customer, { replaces: "sub/x" }), now)).rejects.toThrow("Invalid Stripe subscription ID");
+  });
+
+  it("makes a team whose subscription ended read-only for its members", async () => {
+    const { team, ownerId, customer, ctx } = await linkedTeam();
+    await applySubscription(table.db, ctx, state(customer, { status: "canceled" }), now);
+    expect((await authorizeTeam(table.db, ownerId, team.teamId)).subscriptionEnded).toBe(true);
+    expect(await getBillingTeam(table.db, ctx, now)).toMatchObject({ readOnly: true });
+  });
+
+  it("records an event once, and claims each owner's notice once", async () => {
+    const { ctx, ownerId } = await linkedTeam();
+    const eventId = `evt_${randomUUID().replaceAll("-", "")}`;
+    expect(await isWebhookProcessed(table.db, eventId)).toBe(false);
+    expect(await markWebhookProcessed(table.db, eventId, now)).toBe(true);
+    expect(await markWebhookProcessed(table.db, eventId, now)).toBe(false);
+    expect(await isWebhookProcessed(table.db, eventId)).toBe(true);
+    expect(await claimBillingNotice(table.db, eventId, ownerId, now)).toBe(true);
+    expect(await claimBillingNotice(table.db, eventId, ownerId, now)).toBe(false);
+    expect(await listOwnerContacts(table.db, ctx)).toEqual([{ userId: ownerId, email: "owner@example.com" }]);
+  });
+});

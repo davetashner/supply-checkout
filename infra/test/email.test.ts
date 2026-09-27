@@ -207,7 +207,7 @@ describe("grantSendEmail", () => {
     });
   });
 
-  it("is given only to the account function, which sends invites", () => {
+  it("is given only to the account function, which sends invites, and the billing worker, which emails owners about billing", () => {
     const { app, stacks } = build();
     void app;
     for (const stack of stacks.all) {
@@ -216,7 +216,7 @@ describe("grantSendEmail", () => {
         .filter(([, p]) => JSON.stringify(p).includes("ses:SendEmail"))
         .map(([id]) => id);
       // In every region's api stack, the account function's role; nowhere else
-      expect(senders, stack.stackName).toEqual(stack.stackName.endsWith("-api") ? [expect.stringMatching(/^AccountFunctionRole/)] : []);
+      expect(senders, stack.stackName).toEqual(stack.stackName.endsWith("-api") ? [expect.stringMatching(/^AccountFunctionRole/), expect.stringMatching(/^BillingWorkerFunctionRole/)] : []);
       // No other SES action anywhere (no raw or templated sends)
       expect(JSON.stringify(policies)).not.toMatch(/ses:Send(Raw|Templated|Bulk)/);
     }

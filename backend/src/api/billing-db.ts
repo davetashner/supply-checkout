@@ -52,7 +52,10 @@ export function billingScopedDbs(options: BillingDbOptions): DbForBilling {
 
   return (scope: BillingScope) => {
     if (typeof scope.teamId !== "string" || !ID.test(scope.teamId)) throw new InvalidInputError("Invalid team ID");
-    if (scope.stripeCustomer !== undefined && (typeof scope.stripeCustomer !== "string" || !ID.test(scope.stripeCustomer))) throw new InvalidInputError("Invalid Stripe customer ID");
+    // Never the unused marker: that would let a session put STRIPE#. (and ID doesn't allow ".")
+    if (scope.stripeCustomer !== undefined && (typeof scope.stripeCustomer !== "string" || scope.stripeCustomer === BILLING_TAG_UNUSED || !ID.test(scope.stripeCustomer))) {
+      throw new InvalidInputError("Invalid Stripe customer ID");
+    }
     const tags = {
       [BILLING_SESSION_TAGS.teamId]: scope.teamId,
       [BILLING_SESSION_TAGS.stripeCustomer]: scope.stripeCustomer ?? BILLING_TAG_UNUSED,
