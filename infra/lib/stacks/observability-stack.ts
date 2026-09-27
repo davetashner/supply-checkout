@@ -12,6 +12,7 @@ import { apiOutputParameters } from "./api-stack.js";
 import { identityOutputParameters } from "../identity.js";
 import { OpsDashboard } from "../observability/dashboard.js";
 import { JourneyAlarms } from "../observability/journey-alarms.js";
+import { DeletionRecordsWatch } from "../observability/deletion-records-watch.js";
 import { OperatorAuditWatch } from "../observability/operator-audit-watch.js";
 import { OpsChecks } from "../observability/ops-checks.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
@@ -62,6 +63,13 @@ export const OPERATOR_RULE_SILENCING_EVENTS = ["DeleteRule", "DisableRule", "Rem
 
 /** EventBridge calls that rewrite an operator alert rule's pattern or targets: P1 unless CloudFormation made them for a deploy. */
 export const OPERATOR_RULE_CHANGE_EVENTS = ["PutRule", "PutTargets"] as const;
+
+/**
+ * The rule that watches the deletion records watch's two rules: fixed, like
+ * the one below, so the operator tampering rules can name it in a short
+ * string (their patterns are near EventBridge's 4,096 characters).
+ */
+export const deletionsRuleTamperingName = (envName: string) => `supply-checkout-${envName}-deletions-rule-tampering`;
 
 /** The name of the second rule-tampering rule: fixed, so the first can watch it without the two templates referring to each other. */
 export const tamperingWatchRuleName = (envName: string) => `supply-checkout-${envName}-operator-rule-tampering-watch`;
@@ -147,6 +155,9 @@ export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySo
  * - `operatorAudit`: primary region only, the P1 alarm on any change or
  *   deletion of an operator audit item other than its TTL expiry, from the
  *   table's stream (operator-audit-watch.ts).
+ * - `deletionRecords`: primary region only, the P2 alarm on a deletion
+ *   record written over or deleted, from the bucket's S3 events, and the P1
+ *   rule on changes to the bucket (deletion-records-watch.ts).
  *
  * Log retention and X-Ray tracing for every function are set app-wide by
  * ObservabilityDefaults (observability/defaults.ts).
@@ -158,6 +169,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
   readonly checks?: OpsChecks;
   readonly operatorChanges?: Rule[];
   readonly operatorAudit?: OperatorAuditWatch;
+  readonly deletionRecords?: DeletionRecordsWatch;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "observability", layer: "stateless" });
@@ -182,7 +194,9 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     if (this.isPrimaryRegion) {
       this.checks = new OpsChecks(this, "OpsChecks", { envName: config.envName, tableName: table, topics: this.topics });
       this.operatorAudit = new OperatorAuditWatch(this, "OperatorAuditWatch", { envName: config.envName, region, tableName: table, topics: this.topics });
-      this.operatorChanges = this.alertOnOperatorChanges(config.envName, this.operatorAudit);
+      this.deletionRecords = new DeletionRecordsWatch(this, "DeletionRecordsWatch", { envName: config.envName, region, topics: this.topics });
+      // The tampering rules also watch the deletion records watch's two rules (supply-checkout-72d.17)
+      this.operatorChanges = this.alertOnOperatorChanges(config.envName, this.operatorAudit, [this.deletionRecords.rule, this.deletionRecords.bucketChanges]);
       // The backup stack (primary region, deployed after this one) alerts P1
       // when its vault, plan or key is changed (backup-alerts.ts): only its
       // two rules, by name, may publish
@@ -199,7 +213,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         envName: config.envName,
         regions: config.regions,
         tableName: table,
-        alarms: [...this.alarms.alarms, this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing, this.operatorAudit.dropped, this.operatorAudit.silent],
+        alarms: [...this.alarms.alarms, this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing, this.operatorAudit.dropped, this.operatorAudit.silent, this.deletionRecords.rewritten, this.deletionRecords.failing],
       });
     }
   }
@@ -254,8 +268,13 @@ export class ObservabilityStack extends SupplyCheckoutStack {
    *   rule can't report its own deletion, so each of the two also watches
    *   the other: deleting either first alerts through the other. What's left
    *   is listed under "Operators" in docs/infrastructure.md.
+   * - `DeletionsRuleTampering` (supply-checkout-72d.17): the same calls on
+   *   `alsoWatched` (the deletion records watch's rule and its bucket-changes
+   *   rule). It's a rule of its own, with a fixed name the two above watch,
+   *   because adding those rules to theirs would take their patterns past
+   *   EventBridge's 4,096 characters.
    */
-  private alertOnOperatorChanges(envName: string, watch: OperatorAuditWatch): Rule[] {
+  private alertOnOperatorChanges(envName: string, watch: OperatorAuditWatch, alsoWatched: Rule[]): Rule[] {
     const poolId = StringParameter.valueForStringParameter(this, identityOutputParameters(envName).opsUserPoolId);
     const cloudTrail = { detailType: ["AWS API Call via CloudTrail"] };
     const base = { source: ["aws.cognito-idp"], ...cloudTrail };
@@ -388,7 +407,14 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         ],
       },
     });
-    const others = [admin, selfService, watchChanges, dataPathChanges, alarmChanges, routeChanges].map((r) => r.ruleName);
+    // The deletion records watch's rules get a tampering rule of their own, which these two watch in turn:
+    // adding them here would take these patterns past EventBridge's limit
+    const deletionsTampering = new Rule(this, "DeletionsRuleTampering", {
+      ruleName: deletionsRuleTamperingName(envName),
+      description: "A deletion records watch rule was deleted, disabled or lost its target, or was rewritten outside a deploy (supply-checkout-72d.17)",
+      eventPattern: tamperingPattern(alsoWatched.map((r) => r.ruleName)),
+    });
+    const others = [...[admin, selfService, watchChanges, dataPathChanges, alarmChanges, routeChanges].map((r) => r.ruleName), deletionsRuleTamperingName(envName)];
     const tampering = new Rule(this, "OperatorRuleTampering", {
       description: "An operator alert rule was deleted, disabled or lost its target, or was rewritten outside a deploy (ADR 0015)",
       eventPattern: tamperingPattern([...others, tamperingWatchRuleName(envName)]),
@@ -398,7 +424,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       description: "The same as OperatorRuleTampering, which it watches in turn, so neither can be removed first unseen (supply-checkout-6uw.11)",
       eventPattern: tamperingPattern([...others, tampering.ruleName]),
     });
-    const rules = [admin, selfService, watchChanges, dataPathChanges, alarmChanges, routeChanges, tampering, tamperingWatch];
+    const rules = [admin, selfService, watchChanges, dataPathChanges, alarmChanges, routeChanges, tampering, tamperingWatch, deletionsTampering];
     const topic = this.topics.topics.P1;
     // EventBridge publishes to the encrypted topic: it may use the key, for this account's rules only
     this.topics.key.addToResourcePolicy(
@@ -432,6 +458,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       [routeChanges, message("the alarm topics, their key or CloudTrail")],
       [tampering, message("an operator alert rule")],
       [tamperingWatch, message("an operator alert rule")],
+      [deletionsTampering, message("a deletion records watch rule")],
     ]);
     for (const rule of rules) {
       // A plain target: events-targets' SnsTopic would add a topic policy for every rule in the account

@@ -209,6 +209,27 @@
               "Action": "sns:Publish",
               "Condition": {
                 "ArnEquals": {
+                  "aws:SourceArn": {
+                    "Fn::GetAtt": [
+                      "DeletionRecordsWatchBucketChanges2A17468E",
+                      "Arn"
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "events.amazonaws.com"
+              },
+              "Resource": {
+                "Ref": "AlarmTopicsP1E7C597D3"
+              },
+              "Sid": "AllowDeletionsBucketAlertToPublish"
+            },
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "ArnEquals": {
                   "aws:SourceArn": [
                     {
                       "Fn::GetAtt": [
@@ -255,6 +276,12 @@
                     {
                       "Fn::GetAtt": [
                         "OperatorRuleTamperingWatch5D76B3BF",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "DeletionsRuleTamperingA967EDC8",
                         "Arn"
                       ]
                     }
@@ -4397,6 +4424,595 @@
         "TreatMissingData": "breaching"
       }
     },
+    "DeletionRecordsWatchLogs3E3D4A7A": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "DeletionRecordsWatchRole57B2BD42": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the deletion records watch",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "DeletionRecordsWatchRoleDefaultPolicy37BE5A96": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "DeletionRecordsWatchLogs3E3D4A7A",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "s3:ListBucketVersions",
+              "Condition": {
+                "StringLike": {
+                  "s3:prefix": [
+                    "users/*",
+                    "teams/*"
+                  ]
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":s3:::supply-checkout-prod-deletions-us-east-1-",
+                    {
+                      "Ref": "AWS::AccountId"
+                    }
+                  ]
+                ]
+              },
+              "Sid": "ListRecordVersions"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "DeletionRecordsWatchRoleDefaultPolicy37BE5A96",
+        "Roles": [
+          {
+            "Ref": "DeletionRecordsWatchRole57B2BD42"
+          }
+        ]
+      }
+    },
+    "DeletionRecordsWatchFunction4B1F6979": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "Alarms when a deletion record is written over or deleted",
+        "Environment": {
+          "Variables": {
+            "NODE_OPTIONS": "--enable-source-maps",
+            "DELETIONS_BUCKET": {
+              "Fn::Join": [
+                "",
+                [
+                  "supply-checkout-prod-deletions-us-east-1-",
+                  {
+                    "Ref": "AWS::AccountId"
+                  }
+                ]
+              ]
+            },
+            "DELETIONS_REGION": "us-east-1",
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "SUPPLY_CHECKOUT_ENV": "prod"
+          }
+        },
+        "FunctionName": "supply-checkout-prod-deletion-records-watch",
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "DeletionRecordsWatchLogs3E3D4A7A"
+          }
+        },
+        "MemorySize": 256,
+        "Role": {
+          "Fn::GetAtt": [
+            "DeletionRecordsWatchRole57B2BD42",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 30,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "DeletionRecordsWatchRoleDefaultPolicy37BE5A96",
+        "DeletionRecordsWatchRole57B2BD42"
+      ]
+    },
+    "DeletionRecordsWatchFunctionXRayWrite7C861478": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTraceSegments",
+                "xray:PutTelemetryRecords"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "DeletionRecordsWatchFunctionXRayWrite7C861478",
+        "Roles": [
+          {
+            "Ref": "DeletionRecordsWatchRole57B2BD42"
+          }
+        ]
+      }
+    },
+    "DeletionRecordsWatchRule232BDD0D": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Deletion records: objects written or deleted (not by the lifecycle rule), for the deletion records watch",
+        "EventPattern": {
+          "source": [
+            "aws.s3"
+          ],
+          "detail-type": [
+            "Object Created",
+            "Object Deleted"
+          ],
+          "detail": {
+            "bucket": {
+              "name": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "supply-checkout-prod-deletions-us-east-1-",
+                      {
+                        "Ref": "AWS::AccountId"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            },
+            "reason": [
+              {
+                "anything-but": [
+                  "Lifecycle Expiration"
+                ]
+              }
+            ]
+          }
+        },
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Fn::GetAtt": [
+                "DeletionRecordsWatchFunction4B1F6979",
+                "Arn"
+              ]
+            },
+            "Id": "Target0",
+            "RetryPolicy": {
+              "MaximumEventAgeInSeconds": 3600,
+              "MaximumRetryAttempts": 2
+            }
+          }
+        ]
+      }
+    },
+    "DeletionRecordsWatchRuleAllowEventRulesupplycheckoutproduseast1observabilityDeletionRecordsWatchFunction688ADAAD8A93DBE6": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "DeletionRecordsWatchFunction4B1F6979",
+            "Arn"
+          ]
+        },
+        "Principal": "events.amazonaws.com",
+        "SourceArn": {
+          "Fn::GetAtt": [
+            "DeletionRecordsWatchRule232BDD0D",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "DeletionRecordsWatchRewritten0F9EA081": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2. Deletion record rewritten: a deletion record was written over, deleted or hidden behind a delete marker, or something that isn't a record was written to the bucket. The watch's log has the version and request IDs. Runbook: docs/backups.md, When a deletion record is rewritten.",
+        "AlarmName": "supply-checkout-prod-p2-deletion-record-rewritten",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "DeletionRecordRewrites (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "DeletionRecordRewrites",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "DeletionRecordsWatchFailingD53CC301": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2. Deletion records watch failing: the function that checks deletion records for rewrites threw, so a rewrite could go unseen. Its log has the error. Runbook: docs/backups.md, When a deletion record is rewritten.",
+        "AlarmName": "supply-checkout-prod-p2-deletion-records-watch-failing",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Expression": "FILL(errors, 0) + FILL(dropped, 0) + FILL(failed, 0)",
+            "Id": "expr_1",
+            "Label": "Deletion records watch errors and missed events",
+            "ReturnData": true
+          },
+          {
+            "Id": "errors",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "FunctionName",
+                    "Value": {
+                      "Ref": "DeletionRecordsWatchFunction4B1F6979"
+                    }
+                  }
+                ],
+                "MetricName": "Errors",
+                "Namespace": "AWS/Lambda"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "dropped",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "FunctionName",
+                    "Value": {
+                      "Ref": "DeletionRecordsWatchFunction4B1F6979"
+                    }
+                  }
+                ],
+                "MetricName": "AsyncEventsDropped",
+                "Namespace": "AWS/Lambda"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "failed",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "RuleName",
+                    "Value": {
+                      "Ref": "DeletionRecordsWatchRule232BDD0D"
+                    }
+                  }
+                ],
+                "MetricName": "FailedInvocations",
+                "Namespace": "AWS/Events"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "DeletionRecordsWatchBucketChanges2A17468E": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Deletion records bucket: lifecycle, notifications, policy, replication, ownership, public access, Object Lock or versioning changed",
+        "EventPattern": {
+          "source": [
+            "aws.s3"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "s3.amazonaws.com"
+            ],
+            "eventName": [
+              "PutBucketLifecycle",
+              "DeleteBucketLifecycle",
+              "PutBucketNotification",
+              "PutBucketPolicy",
+              "DeleteBucketPolicy",
+              "PutBucketReplication",
+              "DeleteBucketReplication",
+              "PutBucketOwnershipControls",
+              "DeleteBucketOwnershipControls",
+              "PutBucketPublicAccessBlock",
+              "DeleteBucketPublicAccessBlock",
+              "PutObjectLockConfiguration",
+              "PutBucketVersioning"
+            ],
+            "requestParameters": {
+              "bucketName": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "supply-checkout-prod-deletions-us-east-1-",
+                      {
+                        "Ref": "AWS::AccountId"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the deletion records bucket at <detail-eventTime> (CloudTrail event <detail-eventID> says who). Expected only during a deploy of the data stack. Otherwise follow \\\"When the deletion records bucket is changed\\\" in docs/backups.md.\""
+            }
+          }
+        ]
+      }
+    },
     "OperatorPoolChangesD40F920E": {
       "Type": "AWS::Events::Rule",
       "Properties": {
@@ -5483,6 +6099,148 @@
         ]
       }
     },
+    "DeletionsRuleTamperingA967EDC8": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "A deletion records watch rule was deleted, disabled or lost its target, or was rewritten outside a deploy (supply-checkout-72d.17)",
+        "EventPattern": {
+          "source": [
+            "aws.events"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "events.amazonaws.com"
+            ],
+            "$or": [
+              {
+                "eventName": [
+                  "DeleteRule",
+                  "DisableRule"
+                ],
+                "requestParameters": {
+                  "name": [
+                    {
+                      "Ref": "DeletionRecordsWatchRule232BDD0D"
+                    },
+                    {
+                      "Ref": "DeletionRecordsWatchBucketChanges2A17468E"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "RemoveTargets"
+                ],
+                "requestParameters": {
+                  "rule": [
+                    {
+                      "Ref": "DeletionRecordsWatchRule232BDD0D"
+                    },
+                    {
+                      "Ref": "DeletionRecordsWatchBucketChanges2A17468E"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "PutRule"
+                ],
+                "requestParameters": {
+                  "name": [
+                    {
+                      "Ref": "DeletionRecordsWatchRule232BDD0D"
+                    },
+                    {
+                      "Ref": "DeletionRecordsWatchBucketChanges2A17468E"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "PutTargets"
+                ],
+                "requestParameters": {
+                  "rule": [
+                    {
+                      "Ref": "DeletionRecordsWatchRule232BDD0D"
+                    },
+                    {
+                      "Ref": "DeletionRecordsWatchBucketChanges2A17468E"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-deletions-rule-tampering",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on a deletion records watch rule at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
     "OperatorRuleTamperingDB445FE1": {
       "Type": "AWS::Events::Rule",
       "Properties": {
@@ -5524,6 +6282,7 @@
                     {
                       "Ref": "OperatorAlertRouteChangesB6D06886"
                     },
+                    "supply-checkout-prod-deletions-rule-tampering",
                     "supply-checkout-prod-operator-rule-tampering-watch"
                   ]
                 }
@@ -5552,6 +6311,7 @@
                     {
                       "Ref": "OperatorAlertRouteChangesB6D06886"
                     },
+                    "supply-checkout-prod-deletions-rule-tampering",
                     "supply-checkout-prod-operator-rule-tampering-watch"
                   ]
                 }
@@ -5580,6 +6340,7 @@
                     {
                       "Ref": "OperatorAlertRouteChangesB6D06886"
                     },
+                    "supply-checkout-prod-deletions-rule-tampering",
                     "supply-checkout-prod-operator-rule-tampering-watch"
                   ]
                 },
@@ -5618,6 +6379,7 @@
                     {
                       "Ref": "OperatorAlertRouteChangesB6D06886"
                     },
+                    "supply-checkout-prod-deletions-rule-tampering",
                     "supply-checkout-prod-operator-rule-tampering-watch"
                   ]
                 },
@@ -5717,6 +6479,7 @@
                     {
                       "Ref": "OperatorAlertRouteChangesB6D06886"
                     },
+                    "supply-checkout-prod-deletions-rule-tampering",
                     {
                       "Ref": "OperatorRuleTamperingDB445FE1"
                     }
@@ -5747,6 +6510,7 @@
                     {
                       "Ref": "OperatorAlertRouteChangesB6D06886"
                     },
+                    "supply-checkout-prod-deletions-rule-tampering",
                     {
                       "Ref": "OperatorRuleTamperingDB445FE1"
                     }
@@ -5777,6 +6541,7 @@
                     {
                       "Ref": "OperatorAlertRouteChangesB6D06886"
                     },
+                    "supply-checkout-prod-deletions-rule-tampering",
                     {
                       "Ref": "OperatorRuleTamperingDB445FE1"
                     }
@@ -5817,6 +6582,7 @@
                     {
                       "Ref": "OperatorAlertRouteChangesB6D06886"
                     },
+                    "supply-checkout-prod-deletions-rule-tampering",
                     {
                       "Ref": "OperatorRuleTamperingDB445FE1"
                     }
@@ -6102,6 +6868,20 @@
                   "Arn"
                 ]
               },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "DeletionRecordsWatchRewritten0F9EA081",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "DeletionRecordsWatchFailingD53CC301",
+                  "Arn"
+                ]
+              },
               "\"]}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":7,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Traffic: API requests\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
@@ -6210,7 +6990,11 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorAuditWatchHeartbeat\",\"Region\",\"us-east-1\",{\"label\":\"OperatorAuditWatchHeartbeat (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorAuditWatchHeartbeat\",\"Region\",\"us-west-2\",{\"label\":\"OperatorAuditWatchHeartbeat (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
+              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorAuditWatchHeartbeat\",\"Region\",\"us-east-1\",{\"label\":\"OperatorAuditWatchHeartbeat (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorAuditWatchHeartbeat\",\"Region\",\"us-west-2\",{\"label\":\"OperatorAuditWatchHeartbeat (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":55,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Backups: deletion records rewritten or deleted\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-east-1\",{\"label\":\"DeletionRecordRewrites (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-west-2\",{\"label\":\"DeletionRecordRewrites (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
             ]
           ]
         },

@@ -9,7 +9,7 @@ import {
 } from "aws-cdk-lib/aws-dynamodb";
 import { Effect, PolicyStatement, type Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { Key } from "aws-cdk-lib/aws-kms";
-import { BlockPublicAccess, Bucket, BucketEncryption, ObjectLockRetention, ObjectOwnership } from "aws-cdk-lib/aws-s3";
+import { BlockPublicAccess, Bucket, BucketEncryption, type CfnBucket, ObjectLockRetention, ObjectOwnership } from "aws-cdk-lib/aws-s3";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import { GSI1, GSI1PK, GSI1SK, GSI2, GSI2PK, GSI2SK, GSI3, GSI3PK, GSI3SK, OPS_INDEX_ATTRIBUTES, PK, SK, TTL_ATTRIBUTE, tableName } from "../../../backend/src/data/schema.js";
@@ -53,7 +53,8 @@ export function logsBucketName(envName: string, region: string, account: string 
  *   restore can delete them again (supply-checkout-0ic7, docs/backups.md).
  *   It replicates to the backup account (deletions.ts), so the stack reads
  *   /supply-checkout/<env>/backup/copy-vault-arn and organization-id at
- *   deploy time; `-c backupCopy=false` leaves the replication out.
+ *   deploy time; `-c backupCopy=false` leaves the replication out. Its object
+ *   events go to EventBridge, for the deletion records watch.
  * - Everything added here must use RemovalPolicy.RETAIN.
  */
 export class DataStack extends SupplyCheckoutStack {
@@ -205,6 +206,12 @@ export class DataStack extends SupplyCheckoutStack {
       serverAccessLogsPrefix: "s3/deletions/",
       removalPolicy: RemovalPolicy.RETAIN,
     });
+    // Its object events go to EventBridge, where the deletion records watch
+    // (observability/deletion-records-watch.ts) looks for a record written
+    // over or deleted (supply-checkout-72d.16). Set on the CloudFormation
+    // resource: the Bucket's eventBridgeEnabled adds a custom resource whose
+    // function may change any bucket's notifications.
+    (this.deletionsBucket.node.defaultChild as CfnBucket).notificationConfiguration = { eventBridgeConfiguration: { eventBridgeEnabled: true } };
     publish("DeletionsBucketParam", "deletions-bucket-name", this.deletionsBucket.bucketName, "Deletion records bucket (primary region)");
 
     // ...and replicated to the backup account (supply-checkout-72d.10), which

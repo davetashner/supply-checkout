@@ -991,6 +991,170 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "deletionsreplicationstuck4DC28879": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp2arnC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+        ],
+        "AlarmDescription": "P2 Deletion records replication stuck. A deletion record has waited to replicate to the backup account's copy for 60 minutes: some were pending, or the oldest was more than that behind, in every 15 minutes of the last hour. Runbook: docs/backups.md, When deletion records stop replicating.",
+        "AlarmName": "supply-checkout-prod-p2-deletions-replication-stuck",
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "DatapointsToAlarm": 4,
+        "EvaluationPeriods": 4,
+        "Metrics": [
+          {
+            "Expression": "IF(FILL(pending, 0) > 0 OR FILL(latency, 0) > 3600, 1, 0)",
+            "Id": "expr_1",
+            "Label": "Deletion records waiting to replicate",
+            "ReturnData": true
+          },
+          {
+            "Id": "pending",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "DestinationBucket",
+                    "Value": {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "supply-checkout-prod-deletions-copy-us-east-1-",
+                          {
+                            "Fn::Select": [
+                              4,
+                              {
+                                "Fn::Split": [
+                                  ":",
+                                  {
+                                    "Ref": "SsmParameterValuesupplycheckoutprodbackupcopyvaultarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      ]
+                    }
+                  },
+                  {
+                    "Name": "RuleId",
+                    "Value": "deletion-records-to-backup-account"
+                  },
+                  {
+                    "Name": "SourceBucket",
+                    "Value": {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "supply-checkout-prod-deletions-us-east-1-",
+                          {
+                            "Ref": "AWS::AccountId"
+                          }
+                        ]
+                      ]
+                    }
+                  }
+                ],
+                "MetricName": "OperationsPendingReplication",
+                "Namespace": "AWS/S3"
+              },
+              "Period": 900,
+              "Stat": "Maximum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "latency",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "DestinationBucket",
+                    "Value": {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "supply-checkout-prod-deletions-copy-us-east-1-",
+                          {
+                            "Fn::Select": [
+                              4,
+                              {
+                                "Fn::Split": [
+                                  ":",
+                                  {
+                                    "Ref": "SsmParameterValuesupplycheckoutprodbackupcopyvaultarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      ]
+                    }
+                  },
+                  {
+                    "Name": "RuleId",
+                    "Value": "deletion-records-to-backup-account"
+                  },
+                  {
+                    "Name": "SourceBucket",
+                    "Value": {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "supply-checkout-prod-deletions-us-east-1-",
+                          {
+                            "Ref": "AWS::AccountId"
+                          }
+                        ]
+                      ]
+                    }
+                  }
+                ],
+                "MetricName": "ReplicationLatency",
+                "Namespace": "AWS/S3"
+              },
+              "Period": 900,
+              "Stat": "Maximum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp2arnC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 1,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "ChangeAlertsChanges7D967739": {
       "Type": "AWS::Events::Rule",
       "Properties": {

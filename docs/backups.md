@@ -175,16 +175,22 @@ A compromised workload administrator can delete the plan and its alarms in the s
 | Workload | `supply-checkout-<env>-p2-backup-failed` | A backup or copy job failed, aborted or expired in the last hour | P2 topic |
 | Workload | `supply-checkout-<env>-p2-no-recent-backup` | No backup completed in 24 hours | P2 topic |
 | Workload | `supply-checkout-<env>-p2-deletions-replication-failed` | S3 failed to replicate a deletion record to the backup account's copy in the last hour (not with `-c backupCopy=false`) | P2 topic |
+| Workload | `supply-checkout-<env>-p2-deletions-replication-stuck` | A deletion record has waited 60 minutes to replicate (`DELETIONS_REPLICATION_STUCK_MINUTES`): `OperationsPendingReplication` above 0, or `ReplicationLatency` above an hour, in every 15 minutes of the last hour (not with `-c backupCopy=false`) | P2 topic |
+| Workload | `supply-checkout-<env>-p2-deletion-record-rewritten` (observability stack) | A deletion record was written over, deleted or hidden behind a delete marker, or something that isn't a record was written to the bucket | P2 topic |
+| Workload | `supply-checkout-<env>-p2-deletion-records-watch-failing` (observability stack) | The function that checks for those threw, Lambda dropped an event after its retries (`AsyncEventsDropped`), or EventBridge couldn't invoke it (`FailedInvocations`) | P2 topic |
+| Workload | Rule `DeletionRecordsWatchBucketChanges` (observability stack) | The deletion records bucket's lifecycle, notifications, policy, replication, ownership controls, public access block, Object Lock configuration or versioning was changed (`DELETIONS_BUCKET_CHANGE_EVENTS`), CloudFormation's calls included | P1 topic |
+| Workload | Rule `supply-checkout-<env>-deletions-rule-tampering` (observability stack) | Either deletion records rule deleted, disabled or its target removed, or rewritten outside a deploy. The operator tampering rules watch this rule in turn | P1 topic |
 | Workload | Rule `supply-checkout-<env>-backup-changes` | A vault's access policy or lock was put or deleted, a vault deleted, the plan updated or deleted, a selection deleted, or the region's opt-in settings changed (`BACKUP_CHANGE_EVENTS`) | P1 topic |
 | Workload | Rule `supply-checkout-<env>-backup-key-changes` | The vault key was scheduled for deletion, disabled or given a new key policy (`BACKUP_KEY_EVENTS`) | P1 topic |
 | Backup | `supply-checkout-<env>-backup-copies-missing` | No copy completed in the copy vault for 36 hours (three 12-hour periods; no data counts as none) | `supply-checkout-<env>-backup-alerts` |
 | Backup | Rules `supply-checkout-<env>-backup-vault-changes` and `-backup-vault-key-changes` | The same calls, in the backup account, on its vaults and its vault key | `supply-checkout-<env>-backup-alerts` |
+| Backup | Rule `supply-checkout-<env>-backup-vault-deletions-copy-changes` | The deletion records copy's bucket policy, ownership controls, lifecycle or public access block was put or deleted, or its Object Lock configuration or versioning put (`DELETIONS_COPY_CHANGE_EVENTS`) | `supply-checkout-<env>-backup-alerts` |
 
 - The rules read CloudTrail's management events, which reach EventBridge in the region of the call, and send a message naming the event, its time and its CloudTrail event ID, never who made it. Look that up in CloudTrail.
 - The change rules match CloudFormation's own calls too: a deploy of a backup stack that changes a vault policy or the plan alerts. That's rare and worth knowing about.
 - The workload rules alert on any vault, plan or selection in the account and region, not only Supply Checkout's; there are no others.
 - The copies-missing alarm is what notices a workload account whose plan, copy rule or alarms were deleted: nothing in the workload account can stop it.
-- The backup account's topic is encrypted with its own key and lets only that account's alarms and its two rules publish. Its recipients are the `/supply-checkout/<env>/alarms/email-<n>` parameters in the backup account ([step 3](#setting-it-up)).
+- The backup account's topic is encrypted with its own key and lets only that account's alarms and its three rules publish. Its recipients are the `/supply-checkout/<env>/alarms/email-<n>` parameters in the backup account ([step 3](#setting-it-up)).
 
 ### When copies stop arriving
 
@@ -195,11 +201,34 @@ A compromised workload administrator can delete the plan and its alarms in the s
 
 ### When deletion records stop replicating
 
-`supply-checkout-<env>-p2-deletions-replication-failed` fired: S3 couldn't write a record into the backup account's copy. The record itself is safe in the workload bucket; only the copy is behind.
+`supply-checkout-<env>-p2-deletions-replication-failed` fired: S3 couldn't write a record into the backup account's copy. Or `-p2-deletions-replication-stuck` fired: a record has been waiting an hour to replicate, which S3 doesn't count as failed (a replica bucket or permission it keeps retrying, or an S3 delay; the AWS Health dashboard shows the latter). Either way the record itself is safe in the workload bucket; only the copy is behind.
 
-1. Find the record: `aws s3api list-object-versions --bucket supply-checkout-prod-deletions-us-east-1-<prod account> --profile supply-prod --region us-east-1`, then `head-object` on the newest ones. `ReplicationStatus: FAILED` marks the ones that didn't go.
+1. Find the record: `aws s3api list-object-versions --bucket supply-checkout-prod-deletions-us-east-1-<prod account> --profile supply-prod --region us-east-1`, then `head-object` on the newest ones. `ReplicationStatus: FAILED` marks the ones that didn't go, and `PENDING` the ones still waiting.
 2. The usual causes: the copy bucket's policy changed, `SourceAccountIds` or `OrganizationId` on the vault stack no longer include this account, the copy bucket isn't there (the vault stack not yet deployed in that region), or `copy-vault-arn` names another account. CloudTrail in the backup account shows the refused `PutObject` (replication writes appear as it).
-3. After the fix, re-replicate the failed records with S3 Batch Replication ([Deletion records' copy](#deletion-records-copy-in-the-backup-account), with `ReplicationStatus` `FAILED` in the manifest filter).
+3. After the fix, re-replicate the failed records with S3 Batch Replication ([Deletion records' copy](#deletion-records-copy-in-the-backup-account), with `ReplicationStatus` `FAILED` in the manifest filter). Pending records go by themselves once the cause is fixed; the stuck alarm goes back to `OK` when nothing has been pending for 15 minutes.
+4. If the backup account's `deletions-copy-changes` rule fired too, someone changed the copy bucket: see [When backups are tampered with](#when-backups-are-tampered-with).
+
+### When a deletion record is rewritten
+
+`supply-checkout-<env>-p2-deletion-record-rewritten` fired. A record is written once (the writers may only put with `If-None-Match`), so something else wrote to the deletion records bucket: a version over an existing record, a delete marker or a deletion (other than the lifecycle rule's expiry after 401 days), or an object that isn't a record. Object Lock keeps every earlier version, so nothing is lost, but a restore needs to know.
+
+1. Find it: in the log group of `supply-checkout-<env>-deletion-records-watch` (the function's Monitor tab links to it), the `Deletion record rewritten` lines give the outcome (`rewritten`, `deleted` or `unexpected-key`), the kind (`users` or `teams`), the S3 version ID and the request ID. They don't give the ID in the key. `aws s3api list-object-versions --bucket <deletions bucket> --profile supply-prod` shows the version and its key.
+2. Find who: the bucket's server access log (the data stack's logs bucket, under `s3/deletions/`) has the request ID with the requester's ARN. Nothing in the app can do this, so a writer role here means that function's code or credentials are compromised.
+3. Treat it as a compromise if nobody expected it: revoke the principal's sessions and credentials, and review what else it did in CloudTrail.
+4. Note the write's time. A restore must not trust records written at or after it: read every version and leave those out (the restore's `--records-before`, bead `supply-checkout-72d.15`; see [Put a restored table back into service](#put-a-restored-table-back-into-service)).
+
+`-p2-deletion-records-watch-failing` means the check itself threw (most likely it couldn't list the key's versions; its log has the error), Lambda dropped an event after its retries, or EventBridge couldn't invoke the function (the rule's `FailedInvocations`: the function or its permission is gone). A missed event isn't retried again, so until it's fixed check the bucket's versions by hand with `list-object-versions`.
+
+### When the deletion records bucket is changed
+
+The `DeletionRecordsWatchBucketChanges` rule (P1) fired: someone changed the deletion records bucket's lifecycle, notifications, policy, replication, ownership, public access, Object Lock configuration or versioning. It's expected only during a deploy of the data stack. Any of these can silence the watch or the copy: a short lifecycle rule puts delete markers on every record as "Lifecycle Expiration", which the watch leaves out; turning EventBridge notifications off starves it; removing replication stops the copy.
+
+1. Find the event in CloudTrail by the event ID in the message: who, from where, and what changed.
+2. Compare with the data stack's template (`aws s3api get-bucket-lifecycle-configuration`, `get-bucket-notification-configuration`, `get-bucket-replication`, `get-bucket-policy`) and redeploy the data stack to put it back.
+3. Records under the compliance lock can't be deleted, so a lifecycle rule only hides them behind delete markers; a restore reading every version still finds them. Check with `list-object-versions`.
+4. If nobody expected it, treat the account as compromised (see [When backups are tampered with](#when-backups-are-tampered-with)).
+
+`deletions-rule-tampering` firing (or an operator tampering rule, on it) means the watch or this rule was deleted, disabled or retargeted: redeploy the observability stack, and treat it the same way.
 
 ### When backups are tampered with
 
@@ -209,7 +238,8 @@ A change rule fired. If it matches a deploy someone just ran of a backup stack, 
 2. **Key scheduled for deletion or disabled:** cancel it now (`aws kms cancel-key-deletion`, then `enable-key`). A key waits at least 7 days before it's deleted; after that, nothing it encrypted can be read.
 3. **Vault access policy or lock changed or deleted:** compare with the template (redeploy the stack to put it back). A compliance-mode lock can't be removed after its grace period, so a `DeleteBackupVaultLockConfiguration` that succeeded means it was still in the grace period.
 4. **Plan or selection deleted or changed:** redeploy the backup stack, and see [When copies stop arriving](#when-copies-stop-arriving).
-5. If nobody expected it, treat the account as compromised: revoke the principal's sessions and credentials, and review what else it did in CloudTrail.
+5. **Deletion records copy changed** (`deletions-copy-changes`): compare its bucket policy (`aws s3api get-bucket-policy`), ownership controls, Object Lock configuration and versioning with the vault stack's template, and redeploy it to put them back. A changed policy or ownership can stop replication (see [When deletion records stop replicating](#when-deletion-records-stop-replicating)); existing replicas keep their compliance-mode lock whatever happens to the bucket's settings.
+6. If nobody expected it, treat the account as compromised: revoke the principal's sessions and credentials, and review what else it did in CloudTrail.
 
 ## When a backup fails
 
@@ -359,6 +389,7 @@ So every deletion also writes a record to the deletion records bucket, `supply-c
 - **Every version is read.** A writer can't delete a record, but a compromised one could put a new version over it (junk that hides a real deletion, or a forged one); Object Lock keeps the earlier versions. So the restore lists every version of every record (`ListObjectVersions`) and reads each by its version ID, not only the current ones. Any valid version of a key is a deletion, and when a key has more than one, the earliest `deletedAt` is the one that decides whether an account outlived its record. It counts, and the runbook stops on, versions that aren't valid records, keys with more than one version (each record is written once) and delete markers (no writer may delete). `--records-before <ISO time>` leaves out every version S3 says was written (`LastModified`) at or after that time, for a restore after a suspected compromise of a writer.
 - **What reading them needs.** The owner's SSO permission set, in the workload account for the bucket and in the backup account for its copy (`--records-profile`): `s3:ListBucketVersions` on the bucket and `s3:GetObjectVersion` on its objects (`s3:ListBucket` and `s3:GetObject` aren't enough: they only reach current versions). An administrator permission set has both. Bead `supply-checkout-72d.12` tracks a narrower permission set for restores, which must include these.
 - **Copied to the backup account.** S3 replicates each record, as it's written, to the backup account's copy (below), so a restore into a new account after losing the workload account can still re-apply deletions.
+- **Watched for rewrites** (bead `supply-checkout-72d.16`). The bucket sends its object events to EventBridge (set on the bucket's CloudFormation resource, so there's no notifications custom resource), and the primary region's observability stack runs `supply-checkout-<env>-deletion-records-watch` on its `Object Created` events and its `Object Deleted` events other than lifecycle expirations. The function counts in `DeletionRecordRewrites` any deletion, any write to a key that isn't a record's, and any write to a record's key that then has more than one version or a delete marker, for the P2 "Deletion record rewritten" alarm ([runbook](#when-a-deletion-record-is-rewritten)). S3's events don't say whether a write replaced an object, and neither do CloudTrail's, so it lists the key's versions. A first write of a well-formed record key doesn't alarm, by design: the writers' IAM (only `s3:PutObject` with `If-None-Match`, each under its own prefix) is what limits fake records, and a restore checks each record's contents. S3's events were chosen over CloudTrail data events because they need no trail: a trail with S3 data events would add the trail, its bucket and a charge per event, and still need the version check. Its role may only `s3:ListBucketVersions` on this bucket, with `s3:prefix` limited to `users/*` and `teams/*`: it can't read a record or write anything.
 
 ### Deletion records' copy in the backup account
 
@@ -368,7 +399,8 @@ Bead `supply-checkout-72d.10`. The data stack sets up S3 replication on the dele
 - **Locked the same way.** Versioned, Object Lock in compliance mode with the same 400-day default retention, and each replica keeps its source record's retain-until date. Nobody in either account can delete a replica or shorten its retention. After 401 days the lifecycle rule expires it.
 - **Owned by the backup account.** The rule translates ownership to the destination (`AccessControlTranslation`), and the bucket has ACLs off (`BucketOwnerEnforced`).
 - **Only the replication role writes to it.** Its bucket policy allows `s3:ReplicateObject` and `s3:ObjectOwnerOverrideToBucketOwner` on its objects, and `s3:GetBucketVersioning` and `s3:GetBucketObjectLockConfiguration` on the bucket, only to a role named `supply-checkout-<env>-deletions-replication` in a `SourceAccountIds` account in the organization. Delete markers aren't replicated, and the role has no `ReplicateDelete`.
-- **Metrics on.** Replication metrics are on for the rule, which the `p2-deletions-replication-failed` alarm watches.
+- **Metrics on.** Replication metrics are on for the rule, which the `p2-deletions-replication-failed` and `p2-deletions-replication-stuck` alarms watch (bead `supply-checkout-72d.14`).
+- **Changes alert.** The backup account's `supply-checkout-<env>-backup-vault-deletions-copy-changes` rule tells the backup alerts topic when the copy's bucket policy, ownership controls, Object Lock configuration or versioning is changed, CloudFormation's calls included (bead `supply-checkout-72d.13`). A backup-account administrator could otherwise stop replication quietly by changing the policy or ownership. Stopping them outright is for an SCP (bead `supply-checkout-72d.6`).
 - **Only new records replicate.** S3 replication copies objects written after it's turned on. Records written before (if the data stack was deployed with `-c backupCopy=false`, or before this change) need a one-off S3 Batch Replication job.
 - **Not yet tested against real AWS.** Object Lock replication across accounts with ownership translation hasn't been run yet. The first real record is the test: check it below.
 
@@ -376,6 +408,13 @@ Bead `supply-checkout-72d.10`. The data stack sets up S3 replication on the dele
 
 1. If the bucket already has records, replicate them with a Batch Replication job. S3 generates the manifest from the bucket's replication configuration and can create its own role for the job; use the console (bucket, Management, Replication rules, "Create Batch Operations job" is offered when you save or change the rule), or `aws s3control create-job` with `--operation '{"S3ReplicateObject":{}}'` and a `--manifest-generator` for the bucket with `"EligibleForReplication": true` and `"ObjectReplicationStatuses": ["NONE","FAILED"]`. The job's completion report lists anything that failed.
 2. Check the next record written lands: `aws s3api head-object --bucket <deletions bucket> --key <key> --profile supply-prod` shows `ReplicationStatus: COMPLETED`, and in the backup account `aws s3api list-objects-v2 --bucket supply-checkout-prod-deletions-copy-us-east-1-<backup account> --profile supply-backup` lists it, with `get-object-retention` showing `COMPLIANCE` and the same retain-until date. If it says `FAILED`, see [When deletion records stop replicating](#when-deletion-records-stop-replicating); the permissions most likely to need loosening are the role's `aws:ResourceOrgID` condition and the bucket-level reads.
+
+**Deploy checks for the deletion records alerts** (beads `supply-checkout-72d.13`, `72d.16`, `72d.17`), once, after the first deploy of the data, observability and vault stacks:
+
+1. **CloudTrail management events reach EventBridge in each account.** The change rules (both accounts) read `AWS API Call via CloudTrail` events on the default bus. Check that they arrive without a trail of your own: in the workload account, re-apply a setting the template already has, `aws s3api put-bucket-versioning --bucket <deletions bucket> --versioning-configuration Status=Enabled --profile supply-prod`, and in the backup account the same on the copy bucket. Each should bring a P1 (workload) or backup-alerts (backup account) message within a few minutes. If none comes, the account needs a trail logging management events (the organization's trail counts), and every CloudTrail-based rule here depends on it.
+2. **The watch rule's tampering alert.** `aws events disable-rule --name <the DeletionRecordsWatchRule's name>` then `enable-rule`: `supply-checkout-<env>-deletions-rule-tampering` should send P1 for the disable. Then the same on `deletions-rule-tampering` itself: `OperatorRuleTampering` should send P1.
+3. **S3's events.** Write a test object, `aws s3api put-object --bucket <deletions bucket> --key check/deploy-check.txt --body /dev/null --profile supply-prod` (it's under the compliance lock for 400 days, so keep it tiny). "Deletion record rewritten" should fire as `unexpected-key`. In the watch's log, check the event had `reason` (`PutObject`), and whether its key came through as written or URL-encoded (record keys only use letters, digits, `_`, `-`, `/` and `.json`, so either works, but note it here). The first lifecycle expiry, 401 days on, should show `reason: Lifecycle Expiration` and not alarm.
+4. Record the results in the [Drill log](#drill-log).
 
 **A new workload account** (after losing the old one) replicates into the same copy once it's in `SourceAccountIds` (redeploy the vault stack with it added) and its data stack is deployed. The copy then holds both accounts' records, which is what a restore wants.
 

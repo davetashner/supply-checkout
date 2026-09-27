@@ -6,9 +6,10 @@ import { AnyPrincipal, Effect, PolicyDocument, PolicyStatement, Role, ServicePri
 import { Key } from "aws-cdk-lib/aws-kms";
 import { BlockPublicAccess, Bucket, BucketEncryption, ObjectLockRetention, ObjectOwnership } from "aws-cdk-lib/aws-s3";
 import { Subscription, SubscriptionProtocol, Topic } from "aws-cdk-lib/aws-sns";
+import type { Rule } from "aws-cdk-lib/aws-events";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
-import { BackupChangeAlerts, backupAlertRuleArns } from "../backup-alerts.js";
+import { BackupChangeAlerts, backupAlertRuleArns, deletionsCopyAlertRuleName, deletionsCopyChangeAlert } from "../backup-alerts.js";
 import { COMPLIANCE_GRACE_DAYS, COPY_LOCK, copyVaultName } from "../backup.js";
 import { alarmContactParameter, alarmContactsFromContext } from "../observability/alarm-topics.js";
 import type { DeploymentConfig } from "../config.js";
@@ -63,7 +64,9 @@ export const ORGANIZATION_ID_PATTERN = "^o-[a-z0-9]{10,32}$";
  *     account whose plan, copy rule or alarms were deleted by someone holding it.
  *   - EventBridge rules (backup-alerts.ts) when a vault's access policy or
  *     lock is changed or removed, a plan or selection is changed or deleted,
- *     or the vault key is disabled, scheduled for deletion or re-policied.
+ *     or the vault key is disabled, scheduled for deletion or re-policied,
+ *     and when the deletion records copy's bucket policy, ownership
+ *     controls, Object Lock configuration or versioning is changed.
  * - The deletion records' replica (supply-checkout-72d.10): S3 replication
  *   from each source account's deletion records bucket writes here, as the
  *   role named deletionsReplicationRoleName and nothing else. Each record is
@@ -80,6 +83,8 @@ export class BackupAccountStack extends SupplyCheckoutStack {
   readonly changeAlerts: BackupChangeAlerts;
   /** The replica of the workload accounts' deletion records (supply-checkout-72d.10). */
   readonly deletionsReplica: Bucket;
+  /** Alerts when the replica's policy, ownership, Object Lock or versioning changes. */
+  readonly deletionsCopyChanges: Rule;
   readonly logsBucket: Bucket;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
@@ -197,7 +202,7 @@ export class BackupAccountStack extends SupplyCheckoutStack {
         "wildcard to those accounts' supply-checkout-* vaults.",
     });
 
-    // Alerts: an encrypted topic only this account's alarms and the two change rules may publish to
+    // Alerts: an encrypted topic only this account's alarms and its three change rules may publish to
     const alertKey = new Key(this, "AlertKey", {
       alias: `alias/supply-checkout-${config.envName}-backup-alerts`,
       description: `Encrypts the Supply Checkout ${config.envName} backup alerts topic`,
@@ -238,7 +243,14 @@ export class BackupAccountStack extends SupplyCheckoutStack {
         principals: [new ServicePrincipal("events.amazonaws.com")],
         actions: ["sns:Publish"],
         resources: [this.alertTopic.topicArn],
-        conditions: { ArnEquals: { "aws:SourceArn": backupAlertRuleArns(config.envName, "backup-account") } },
+        conditions: {
+          ArnEquals: {
+            "aws:SourceArn": [
+              ...backupAlertRuleArns(config.envName, "backup-account"),
+              `arn:${Aws.PARTITION}:events:${Aws.REGION}:${Aws.ACCOUNT_ID}:rule/${deletionsCopyAlertRuleName(config.envName)}`,
+            ],
+          },
+        },
       }),
     );
     for (let n = 1; n <= alarmContactsFromContext(this.node).email; n++) {
@@ -348,6 +360,13 @@ export class BackupAccountStack extends SupplyCheckoutStack {
         conditions: replicationRole,
       }),
     );
+
+    // Changes that could stop replication into the copy, or weaken it (supply-checkout-72d.13)
+    this.deletionsCopyChanges = deletionsCopyChangeAlert(this, "DeletionsCopyChanges", {
+      envName: config.envName,
+      bucketName: deletionsReplicaBucketName(config.envName, Aws.REGION, Aws.ACCOUNT_ID),
+      topic: this.alertTopic,
+    });
 
     new CfnOutput(this, "DeletionsReplicaBucket", {
       value: this.deletionsReplica.bucketName,

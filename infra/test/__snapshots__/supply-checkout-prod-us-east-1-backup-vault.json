@@ -566,6 +566,26 @@
                           ":rule/supply-checkout-prod-backup-vault-key-changes"
                         ]
                       ]
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition"
+                          },
+                          ":events:",
+                          {
+                            "Ref": "AWS::Region"
+                          },
+                          ":",
+                          {
+                            "Ref": "AWS::AccountId"
+                          },
+                          ":rule/supply-checkout-prod-backup-vault-deletions-copy-changes"
+                        ]
+                      ]
                     }
                   ]
                 }
@@ -1198,6 +1218,97 @@
           ],
           "Version": "2012-10-17"
         }
+      }
+    },
+    "DeletionsCopyChanges82E64460": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Deletion records copy (backup account): its policy, ownership, Object Lock, versioning, lifecycle or public access changed",
+        "EventPattern": {
+          "source": [
+            "aws.s3"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "s3.amazonaws.com"
+            ],
+            "eventName": [
+              "PutBucketLifecycle",
+              "DeleteBucketLifecycle",
+              "PutBucketPublicAccessBlock",
+              "DeleteBucketPublicAccessBlock",
+              "PutBucketPolicy",
+              "DeleteBucketPolicy",
+              "PutBucketOwnershipControls",
+              "DeleteBucketOwnershipControls",
+              "PutObjectLockConfiguration",
+              "PutBucketVersioning"
+            ],
+            "requestParameters": {
+              "bucketName": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "supply-checkout-prod-deletions-copy-",
+                      {
+                        "Ref": "AWS::Region"
+                      },
+                      "-",
+                      {
+                        "Ref": "AWS::AccountId"
+                      }
+                    ]
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "Name": "supply-checkout-prod-backup-vault-deletions-copy-changes",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup-vault"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlertTopic2720D535"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "account": "$.account",
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod deletion records copy, backup account <account>: <detail-eventName> at <detail-eventTime> (CloudTrail event <detail-eventID> says who). Expected only during a deploy of the backup vault stack. Otherwise follow \\\"When backups are tampered with\\\" in docs/backups.md.\""
+            }
+          }
+        ]
       }
     }
   },

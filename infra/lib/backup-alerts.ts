@@ -28,6 +28,35 @@ export const BACKUP_CHANGE_EVENTS = [
 /** KMS calls on a vault's key that make its recovery points unreadable or hand the key to someone else. */
 export const BACKUP_KEY_EVENTS = ["ScheduleKeyDeletion", "DisableKey", "PutKeyPolicy"] as const;
 
+/**
+ * S3 calls on the backup account's deletion records copy that could stop
+ * replication into it or weaken what it keeps: its bucket policy (who may
+ * replicate), ownership controls (who owns the replicas), Object Lock
+ * configuration (the default retention), versioning (which replication and
+ * Object Lock need), lifecycle (expiry) and public access. CloudTrail names the IAM actions' API calls:
+ * PutObjectLockConfiguration is the s3:PutBucketObjectLockConfiguration action.
+ */
+export const DELETIONS_COPY_CHANGE_EVENTS = [
+  "PutBucketLifecycle",
+  "DeleteBucketLifecycle",
+  "PutBucketPublicAccessBlock",
+  "DeleteBucketPublicAccessBlock",
+  "PutBucketPolicy",
+  "DeleteBucketPolicy",
+  "PutBucketOwnershipControls",
+  "DeleteBucketOwnershipControls",
+  "PutObjectLockConfiguration",
+  "PutBucketVersioning",
+] as const;
+
+/**
+ * The backup account's rule on DELETIONS_COPY_CHANGE_EVENTS; fixed so the
+ * alerts topic's policy can name it.
+ */
+export function deletionsCopyAlertRuleName(envName: string): string {
+  return `supply-checkout-${envName}-backup-vault-deletions-copy-changes`;
+}
+
 /** Where the rules are, which names them. */
 export type BackupAlertSide = "workload" | "backup-account";
 
@@ -101,4 +130,37 @@ export class BackupChangeAlerts extends Construct {
       rule.addTarget({ bind: () => ({ arn: props.topic.topicArn, input: message }) });
     }
   }
+}
+
+export interface DeletionsCopyChangeAlertProps {
+  readonly envName: string;
+  /** The deletion records copy's bucket name. */
+  readonly bucketName: string;
+  /** The topic told. Its policy must let deletionsCopyAlertRuleName publish. */
+  readonly topic: ITopic;
+}
+
+/**
+ * An EventBridge rule in the backup account on DELETIONS_COPY_CHANGE_EVENTS
+ * for the deletion records copy (supply-checkout-72d.13). They're CloudTrail
+ * management events, so no trail is needed. Like the rules above, it matches
+ * CloudFormation's own calls: a deploy of the vault stack that changes the
+ * bucket alerts. The message names the CloudTrail event, not the person.
+ */
+export function deletionsCopyChangeAlert(scope: Construct, id: string, props: DeletionsCopyChangeAlertProps): Rule {
+  const rule = new Rule(scope, id, {
+    ruleName: deletionsCopyAlertRuleName(props.envName),
+    description: "Deletion records copy (backup account): its policy, ownership, Object Lock, versioning, lifecycle or public access changed",
+    eventPattern: {
+      source: ["aws.s3"],
+      detailType: ["AWS API Call via CloudTrail"],
+      detail: { eventSource: ["s3.amazonaws.com"], eventName: [...DELETIONS_COPY_CHANGE_EVENTS], requestParameters: { bucketName: [props.bucketName] } },
+    },
+  });
+  const message = RuleTargetInput.fromText(
+    `Supply Checkout ${props.envName} deletion records copy, backup account ${EventField.account}: ${EventField.fromPath("$.detail.eventName")} at ${EventField.fromPath("$.detail.eventTime")} (CloudTrail event ${EventField.fromPath("$.detail.eventID")} says who). Expected only during a deploy of the backup vault stack. Otherwise follow "When backups are tampered with" in docs/backups.md.`,
+  );
+  // A plain target, as above
+  rule.addTarget({ bind: () => ({ arn: props.topic.topicArn, input: message }) });
+  return rule;
 }
