@@ -112,6 +112,72 @@ test("explains a short, expired or refused code, too many tries, and a lost conn
   await expect(dialog(page).locator("#verifyDone")).toBeVisible();
 });
 
+test("an address that changed while a code was sent starts over at sending, with the new address", async ({ page }) => {
+  const backend = new FakeBackend({ teams: [], user: UNVERIFIED });
+  backend.rewriteEmail = "pat.lee@example.com";
+  await openAws(page, backend);
+  await account(page).getByRole("button", { name: "Verify email" }).click();
+  const send = dialog(page).getByRole("button", { name: "Send code" });
+  await send.click();
+  await expect(fail(page)).toHaveText("Your email address changed; send a new code.");
+  await expect(dialog(page)).toContainText("We'll email a 6-digit code to pat.lee@example.com.");
+  await expect(dialog(page).getByLabel("Code from the email")).toBeHidden();
+  await expect(send).toBeFocused();
+  expect(backend.requests("GET", "/me")).toHaveLength(2);
+  await expectAccessible(page);
+
+  // Sending again works, for the new address, and its code verifies it
+  await sendCode(page);
+  await expect(fail(page)).toBeHidden();
+  await expect(dialog(page)).toContainText("We sent a code to pat.lee@example.com.");
+  await enter(page, "123456");
+  await expect(dialog(page).locator("#verifyDone")).toHaveText("pat.lee@example.com is verified.");
+  expect(backend.user).toMatchObject({ email: "pat.lee@example.com", emailVerified: true });
+});
+
+test("a code checked after the address changed starts over at sending, and the countdown is dropped", async ({ page }) => {
+  await page.clock.install();
+  const backend = new FakeBackend({ teams: [], user: UNVERIFIED });
+  await openAws(page, backend);
+  await account(page).getByRole("button", { name: "Verify email" }).click();
+  await sendCode(page);
+  await expect(dialog(page).getByRole("button", { name: "Resend code in 60s" })).toBeDisabled();
+  // A provider rewrote the address after the code was sent
+  backend.user = { ...UNVERIFIED, email: "pat.lee@example.com" };
+  await enter(page, "123456");
+  await expect(fail(page)).toHaveText("Your email address changed; send a new code.");
+  const send = dialog(page).getByRole("button", { name: "Send code", exact: true });
+  await expect(send).toBeEnabled();
+  await expect(send).toBeFocused();
+  await expect(dialog(page)).toContainText("We'll email a 6-digit code to pat.lee@example.com.");
+  await expect(dialog(page).getByLabel("Code from the email")).toBeHidden();
+  await page.clock.runFor(5e3);
+  await expect(send).toHaveText("Send code");
+  expect(backend.user.emailVerified).toBe(false);
+
+  // The old code is spent; a new one for the new address verifies it
+  await sendCode(page);
+  await expect(dialog(page).getByLabel("Code from the email")).toHaveValue("");
+  await enter(page, "123456");
+  await expect(dialog(page).locator("#verifyDone")).toHaveText("pat.lee@example.com is verified.");
+  expect(backend.requests("POST", "/me/email/verify")).toHaveLength(2);
+});
+
+test("an address change still starts over when /me can't be loaded, keeping the address shown", async ({ page }) => {
+  const backend = new FakeBackend({ teams: [], user: UNVERIFIED });
+  await openAws(page, backend);
+  await account(page).getByRole("button", { name: "Verify email" }).click();
+  await sendCode(page);
+  backend.on("POST", "/me/email/verify", error(409, "aborted", "email_changed"));
+  backend.on("GET", "/me", { abort: true });
+  await enter(page, "123456");
+  await expect(fail(page)).toHaveText("Your email address changed; send a new code.");
+  await expect(dialog(page)).toContainText("We'll email a 6-digit code to pat@example.com.");
+  await sendCode(page);
+  await enter(page, "123456");
+  await expect(dialog(page).locator("#verifyDone")).toHaveText("pat@example.com is verified.");
+});
+
 test("a new code can be asked for once a minute", async ({ page }) => {
   await page.clock.install();
   const backend = new FakeBackend({ teams: [], user: UNVERIFIED });
