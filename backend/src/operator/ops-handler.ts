@@ -101,7 +101,7 @@ export function opsTeamBody(team: OpsTeam, now: Date, owners?: OpsOwner[]) {
     status: team.status,
     trialEndsAt: team.trialEndsAt ?? null,
     ownerCount: team.owners,
-    members: team.members ?? null,
+    closedAt: team.closedAt ?? null,
     createdAt: team.createdAt,
     stripeCustomerId: team.stripeCustomerId ?? null,
     version: team.version,

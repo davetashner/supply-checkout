@@ -10,7 +10,7 @@ const NOW = Date.parse("2026-09-26T12:00:00Z");
 const ISS = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_ops";
 const jwt = (claims) => `h.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.s`;
 const TOKEN = jwt({ exp: NOW / 1000 + 900, iss: ISS, sub: "op-1" });
-const TEAM = { id: "team-a", name: "Acme", plan: "trial", status: "trialing", seats: 1, ownerCount: 1, members: 3, createdAt: "2026-09-01T00:00:00.000Z", version: 4, comp: null, owners: [{ userId: "u1", email: "owner@example.com" }] };
+const TEAM = { id: "team-a", name: "Acme", plan: "trial", status: "trialing", seats: 1, ownerCount: 1, closedAt: null, createdAt: "2026-09-01T00:00:00.000Z", version: 4, comp: null, owners: [{ userId: "u1", email: "owner@example.com" }] };
 
 /** Fakes for everything main() touches, with an API that answers from `routes`. */
 function harness({ cached = TOKEN, routes = {}, env = {} } = {}) {
@@ -185,6 +185,11 @@ test("shows one team, and the audit, and prints JSON when asked", async () => {
   await main(["team", "team-a"], one.deps);
   assert.match(one.logs[0], /comp free \(3 seats\) until 2026-12-31T00:00:00.000Z: Pilot/);
   assert.match(one.logs[0], /owner owner@example.com \(u1\)/);
+  const closed = harness({ routes: { "GET /ops/teams/team-a": { status: 200, body: { team: { ...TEAM, closedAt: "2026-09-20T00:00:00.000Z" } } }, "GET /ops/teams": { status: 200, body: { teams: [{ ...TEAM, closedAt: "2026-09-20T00:00:00.000Z" }] } } } });
+  await main(["team", "team-a"], closed.deps);
+  assert.match(closed.logs[0], /CLOSED 2026-09-20T00:00:00.000Z/);
+  await main(["teams"], closed.deps);
+  assert.match(closed.logs[1], /closed 2026-09-20/);
   const audit = harness({ routes });
   await main(["audit", "--team", "team-a"], audit.deps);
   assert.deepEqual(audit.requests[0].query, { teamId: "team-a" });

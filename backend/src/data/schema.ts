@@ -147,6 +147,8 @@ export const OWNER_OPERATOR_AUDIT_ATTRIBUTES = [PK, SK, "eventId", "ts", "action
  * its SK:
  *
  * - A team's account record: never its `homeRegion` or anything about its data.
+ *   `closedAt` (a closed team is read-only until the purge deletes it, and
+ *   can't be comped) rather than the member count, for want of room.
  * - An owner's email and join date.
  * - An operator audit event's action and operator, for the month's summary.
  *   The reason and the before and after values are read per team, from the
@@ -159,7 +161,7 @@ export const OPS_INDEX_ATTRIBUTES = [
   "status",
   "trialEndsAt",
   "owners",
-  "members",
+  "closedAt",
   "createdAt",
   "stripeCustomerId",
   "version",

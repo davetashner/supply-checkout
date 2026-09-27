@@ -254,13 +254,13 @@ const date = (iso) => (typeof iso === "string" ? iso.slice(0, 10) : "-");
 export function teamLine(team) {
   const comp = team.comp ? ` comp:${team.comp.plan} until ${date(team.comp.until)}${team.comp.live ? "" : " (ended)"}` : "";
   const owners = (team.owners ?? []).map((o) => o.email ?? o.userId).join(", ");
-  return `${pad(team.id, 38)} ${pad(team.name, 28)} ${pad(`${team.plan}/${team.status}`, 20)} created ${date(team.createdAt)}${comp}${owners ? `  owners: ${owners}` : ""}`;
+  return `${pad(team.id, 38)} ${pad(team.name, 28)} ${pad(`${team.plan}/${team.status}`, 20)} created ${date(team.createdAt)}${team.closedAt ? ` closed ${date(team.closedAt)}` : ""}${comp}${owners ? `  owners: ${owners}` : ""}`;
 }
 
 function teamDetail(team) {
   const lines = [
     `${team.name} (${team.id})`,
-    `  plan ${team.plan}, status ${team.status}, seats ${team.seats}, members ${team.members ?? "?"}, owners ${team.ownerCount}`,
+    `  plan ${team.plan}, status ${team.status}, seats ${team.seats}, owners ${team.ownerCount}${team.closedAt ? `, CLOSED ${team.closedAt} (read-only until it's deleted)` : ""}`,
     `  created ${team.createdAt}${team.trialEndsAt ? `, trial ends ${team.trialEndsAt}` : ""}`,
     `  Stripe customer ${team.stripeCustomerId ?? "none"}`,
     team.comp

@@ -178,7 +178,7 @@
                 "status",
                 "trialEndsAt",
                 "owners",
-                "members",
+                "closedAt",
                 "createdAt",
                 "stripeCustomerId",
                 "version",

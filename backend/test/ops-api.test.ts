@@ -214,7 +214,7 @@ describe("teams", () => {
     expect(res.status).toBe(200);
     expect(res.body.teams.map((t: { name: string }) => t.name)).toEqual(["Bravo Janitorial", "Acme Cleaning"]);
     const acme = res.body.teams[1];
-    expect(acme).toMatchObject({ id: teamA, plan: "trial", status: "trialing", seats: 1, ownerCount: 1, version: 1, comp: null });
+    expect(acme).toMatchObject({ id: teamA, plan: "trial", status: "trialing", seats: 1, ownerCount: 1, closedAt: null, version: 1, comp: null });
     expect(acme.owners).toEqual([{ userId: OWNER, email: OWNER_EMAIL, joinedAt: expect.any(String) }]);
     expect(JSON.stringify(res.body)).not.toContain("Secret client");
     // Only what the index projects: never the team's home region
@@ -345,6 +345,26 @@ describe("comps", () => {
     expect(latestCompEnd(new Date(NOW)).toISOString()).toBe("2027-09-26T12:00:00.000Z");
     expect((await call("PUT", `/ops/teams/${teamA}/comp`, { body: { plan: "free", until: "2027-09-26T12:00:00Z", reason: "Pilot", expectedVersion: 1 } })).status).toBe(400);
     expect((await comp({ plan: "free", until: "2027-09-26T12:00:00Z", reason: "Pilot", expectedVersion: 1 })).status).toBe(200);
+  });
+
+  it("refuses to comp a closed team, or end its comp, and shows it closed", async () => {
+    await comp({ plan: "free", until, reason: "Pilot", expectedVersion: 1 });
+    table.put({ ...teamOf(teamA), closedAt: "2026-09-26T11:00:00.000Z", purgeAfter: "2026-10-26T11:00:00.000Z" });
+    expect((await call("GET", `/ops/teams/${teamA}`)).body.team.closedAt).toBe("2026-09-26T11:00:00.000Z");
+    const again = await comp({ plan: "free", until: "2027-01-31", reason: "Extend", expectedVersion: 2 }, "comp-key-0009");
+    expect(again.status).toBe(409);
+    expect(again.body.error.message).toMatch(/closed/);
+    expect((await call("DELETE", `/ops/teams/${teamA}/comp`, { body: { reason: "Done", expectedVersion: 2 }, key: "end-key-0009" })).status).toBe(409);
+    expect(teamOf(teamA)).toMatchObject({ compUntil: "2026-12-31T00:00:00.000Z", version: 2 });
+  });
+
+  it("drops a purged team from the list and answers 404 for it, keeping its operator audit", async () => {
+    await comp({ plan: "free", until, reason: "Pilot", expectedVersion: 1 });
+    for (const [k, item] of [...table.items.entries()]) if (item.PK === `TEAM#${teamA}`) table.items.delete(k);
+    expect((await call("GET", "/ops/teams")).body.teams.map((t: { id: string }) => t.id)).toEqual([teamB]);
+    expect((await call("GET", `/ops/teams/${teamA}`)).status).toBe(404);
+    expect((await comp({ plan: "free", until, reason: "Pilot", expectedVersion: 2 }, "comp-key-0010")).status).toBe(404);
+    expect((await call("GET", "/ops/audit", { query: { teamId: teamA } })).body.events.map((e: { action: string }) => e.action)).toEqual(["ops.comp.set"]);
   });
 
   it("answers 404 for a team that isn't there", async () => {

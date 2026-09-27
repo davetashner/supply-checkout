@@ -37,8 +37,9 @@ export interface OpsTeam {
   readonly status: string;
   readonly trialEndsAt?: string;
   readonly owners: number;
-  readonly members?: number;
   readonly createdAt: string;
+  /** Set once an owner closed the team: it's read-only, and the purge deletes it later (and so drops it from the index). */
+  readonly closedAt?: string;
   readonly stripeCustomerId?: string;
   readonly version: number;
   readonly compPlan?: string;
@@ -96,6 +97,13 @@ export const MAX_COMP_MONTHS = 12;
 export const MAX_OPS_TEAMS = 5000;
 
 const DAY_SECONDS = 24 * 60 * 60;
+/**
+ * Comps never touch a closed team: it's read-only until the purge deletes it.
+ * The check reads the index, which lags a close by a moment; a comp that
+ * slipped into that window would only set comp attributes on a team that's
+ * still closed and still purged.
+ */
+const CLOSED = "This team is closed: it's read-only until it's deleted, and can't be comped";
 const PLAN = /^[a-z][a-z0-9_-]{0,31}$/;
 const REQUEST_KEY = /^[A-Za-z0-9_-]{8,128}$/;
 // eslint-disable-next-line no-control-regex -- rejecting control characters is the point
@@ -424,6 +432,7 @@ export async function setComp(
   const reason = operatorReason(input.reason);
   const team = await findTeam(db, teamId);
   if (!team) throw new NotFoundError("No such team");
+  if (team.closedAt) throw new ConflictError(CLOSED);
   const at = now.toISOString();
   const values: Record<string, unknown> = { ":plan": plan, ":until": until, ":reason": reason, ":by": sub, ":at": at };
   const sets = ["compPlan = :plan", "compUntil = :until", "compReason = :reason", "compBy = :by", "compAt = :at", "#version = #version + :one"];
@@ -466,6 +475,7 @@ export async function endComp(
   const reason = operatorReason(input.reason);
   const team = await findTeam(db, teamId);
   if (!team) throw new NotFoundError("No such team");
+  if (team.closedAt) throw new ConflictError(CLOSED);
   if (team.compPlan === undefined) throw new ConflictError("This team has no comp");
   return change(
     db,
