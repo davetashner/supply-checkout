@@ -189,7 +189,6 @@ function cancellationCodes(error: unknown): (string | undefined)[] | undefined {
 
 const RETRYABLE = new Set([undefined, "None", "ConditionalCheckFailed", "TransactionConflict"]);
 
-
 /** A sheet's line for `key`, only if the sheet has one: never a built-in like `constructor` from the map's prototype. */
 function lineOf(items: Item | undefined, key: string): unknown {
   return items !== undefined && Object.hasOwn(items, key) ? items[key] : undefined;
@@ -246,8 +245,8 @@ async function execute<R = CommandResult>(
       );
       return { result, replayed: false };
     } catch (error) {
-      const codes = cancellationCodes(error);
       if (isCancelledAsTooLarge(error)) throw new TooLargeError("This sheet is too large to add to; start another sheet");
+      const codes = cancellationCodes(error);
       // Anything but a failed condition or a race (a malformed item, say) won't get better by retrying
       if (!codes || !codes.every((c) => RETRYABLE.has(c))) throw error;
       // The same operation got in first, from a concurrent retry

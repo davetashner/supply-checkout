@@ -160,6 +160,32 @@ test("a typed price on a sheet line or a new item is saved rounded to cents", as
   expect(saved).toEqual([1.01, 1.01]);
 });
 
+test("a price over the API's limit on a sheet line or a new item says so, and isn't saved", async ({ page }) => {
+  await openEcho(page);
+  const message = (field) => field.evaluate((el) => el.validationMessage);
+  await lineRow(page, "Paper towels").click();
+  const linePrice = modal(page).getByLabel("Price each on this sheet ($)");
+  await linePrice.fill("2000000");
+  expect(await message(linePrice)).toBe("Prices and costs go up to $1,000,000.00.");
+  await modal(page).getByRole("button", { name: "Save" }).click();
+  await expect(linePrice).toBeVisible();
+  expect(await page.evaluate(() => window.__mock.docs.get("sheets/s1").items.SKU1.price)).not.toBe(2000000);
+  await modal(page).getByRole("button", { name: "Cancel" }).click();
+
+  await enterBarcode(page, "NEW3");
+  await modal(page).getByLabel("Item name").fill("Sponges");
+  const price = modal(page).getByLabel("Price each ($)");
+  await price.fill("1000000.5");
+  expect(await message(price)).toBe("Prices and costs go up to $1,000,000.00.");
+  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await expect(price).toBeVisible();
+  expect(await page.evaluate(() => window.__mock.docs.has("products/NEW3"))).toBe(false);
+  await price.fill("999999.99");
+  expect(await message(price)).toBe("");
+  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await expect(lineRow(page, "Sponges")).toContainText("$999,999.99");
+});
+
 test("removes a line from a sheet with two taps", async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Storage bins").click();

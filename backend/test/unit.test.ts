@@ -17,6 +17,7 @@ import {
 import { connection } from "../src/data/client.js";
 import { conflictOnConditionFailure, isCancelledAsTooLarge, isItemTooLarge, startsWithAny } from "../src/data/errors.js";
 import { retryDelay } from "../src/data/documents.js";
+import { MAX_MONEY, money } from "../src/data/money.js";
 import { gsi1, keys, strip } from "../src/data/keys.js";
 import { MEMBERS_PER_TEAM, MEMBERS_PER_TRIAL_TEAM, memberCap, teamCounts } from "../src/data/model.js";
 import { tableName } from "../src/data/schema.js";
@@ -258,6 +259,16 @@ describe("DynamoDB's item-size refusal (supply-checkout-j1mu)", () => {
       expect(ms).toBeGreaterThanOrEqual(0);
       expect(ms).toBeLessThan(200);
     }
+  });
+});
+
+describe("money (ADR 0014, supply-checkout-mryk)", () => {
+  it("stores whole cents, including a sum a hair off them", () => {
+    expect(money(0.1 + 0.2, "price")).toBe(0.3);
+    expect(money(12.5, "price")).toBe(12.5);
+    expect(money(0, "price")).toBe(0);
+    expect(money(MAX_MONEY, "price")).toBe(MAX_MONEY);
+    for (const bad of [0.001, 1.005, -0.01, MAX_MONEY + 0.01, Number.NaN, "3"]) expect(() => money(bad, "price"), String(bad)).toThrow(data.InvalidInputError);
   });
 });
 
