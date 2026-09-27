@@ -155,10 +155,12 @@ window.addEventListener("online", () => {
   const f = $("#saveFailed"); if (f) f.textContent = "Not saved yet. You're back online: tap Try again.";
 });
 
-// The view, then the first-run checklist above the sheet list or inventory (web build)
+// The view, then the first-run checklist above the sheet list or inventory (web build). Only
+// an owner of an open team gets one; if a write is refused because the team was closed
+// meanwhile, the page is read-only (canWrite) and it hides, as for a team that opens closed.
 function draw() {
   drawView();
-  if (WEB && firstRun) firstRun.draw(connected && !$("#main").hidden, Object.keys(products).length, sheets.length);
+  if (WEB && firstRun) firstRun.draw(connected && canWrite && !$("#main").hidden, Object.keys(products).length, sheets.length);
 }
 function drawView() {
   $("#tab-sheets").setAttribute("aria-pressed", ui.tab === "sheets");
