@@ -55,7 +55,7 @@ info:
     - A document is any JSON object up to 350,000 bytes (UTF-8 JSON), nested
       at most 16 levels, with numbers DynamoDB can store. These top-level
       fields are the server's and are refused in a body: `PK`, `SK`, `GSI1PK`,
-      `GSI1SK`, `GSI2PK`, `GSI2SK`, `type`, `id`, `key`, `version`, `teamId`. For sheets, `date` must be a string
+      `GSI1SK`, `GSI2PK`, `GSI2SK`, `GSI3PK`, `GSI3SK` (and any `GSI<n>PK` or `GSI<n>SK`), `type`, `id`, `key`, `version`, `teamId`. For sheets, `date` must be a string
       and `items` an object. A barcode (`code`, on a product and on each line
       in a sheet's `items`) must be a string of at most 256 characters, the
       product key limit; it's empty for an item without a barcode. A line's
@@ -904,7 +904,7 @@ paths:
     get:
       tags: [ops]
       operationId: opsListTeams
-      summary: Teams, newest first, 50 a page, with their owners.
+      summary: Teams, newest first, 50 a page, with their owners. Audited as `ops.teams.list` (with `q` and the teams returned).
       security: [{ opsCognito: [] }]
       parameters:
         - { name: q, in: query, description: "A team ID, or part of a team's name (any case).", schema: { type: string, maxLength: 200 } }
@@ -1016,7 +1016,7 @@ paths:
     get:
       tags: [ops]
       operationId: opsListAudit
-      summary: The operator audit, newest first, for one team or one month (default this month, UTC).
+      summary: The operator audit, newest first, for one team (`teamId`; `PLATFORM` for team lists and searches) or one month (default this month, UTC).
       security: [{ opsCognito: [] }]
       parameters:
         - { name: teamId, in: query, schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" } }
@@ -1042,7 +1042,7 @@ paths:
                         ts: { type: string, format: date-time }
                         teamId: { type: string }
                         operatorSub: { type: string, description: The operator's `sub` in the operator pool. }
-                        action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end] }
+                        action: { type: string, enum: [ops.teams.list, ops.team.read, ops.comp.set, ops.comp.end] }
                         target: { type: string }
                         reason: { type: string }
                         before: { oneOf: [{ $ref: "#/components/schemas/CompRecord" }, { type: "null" }] }

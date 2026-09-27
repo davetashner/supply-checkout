@@ -209,12 +209,20 @@
               "Action": "sns:Publish",
               "Condition": {
                 "ArnEquals": {
-                  "aws:SourceArn": {
-                    "Fn::GetAtt": [
-                      "OperatorPoolChangesD40F920E",
-                      "Arn"
-                    ]
-                  }
+                  "aws:SourceArn": [
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorPoolChangesD40F920E",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorSelfServiceChanges0E27141E",
+                        "Arn"
+                      ]
+                    }
+                  ]
                 }
               },
               "Effect": "Allow",
@@ -2496,7 +2504,7 @@
     "OperatorPoolChangesD40F920E": {
       "Type": "AWS::Events::Rule",
       "Properties": {
-        "Description": "Operator pool: a user created, or added to or removed from a group (ADR 0015)",
+        "Description": "Operator pool: users, groups, passwords, MFA or pool and client settings changed outside a deploy (ADR 0015)",
         "EventPattern": {
           "source": [
             "aws.cognito-idp"
@@ -2511,7 +2519,21 @@
             "eventName": [
               "AdminCreateUser",
               "AdminAddUserToGroup",
-              "AdminRemoveUserFromGroup"
+              "AdminRemoveUserFromGroup",
+              "AdminSetUserPassword",
+              "AdminResetUserPassword",
+              "AdminEnableUser",
+              "AdminSetUserMFAPreference",
+              "AdminUpdateUserAttributes",
+              "AdminLinkProviderForUser",
+              "CreateGroup",
+              "UpdateGroup",
+              "DeleteGroup",
+              "UpdateUserPool",
+              "SetUserPoolMfaConfig",
+              "CreateUserPoolClient",
+              "UpdateUserPoolClient",
+              "CreateIdentityProvider"
             ],
             "requestParameters": {
               "userPoolId": [
@@ -2519,7 +2541,102 @@
                   "Ref": "SsmParameterValuesupplycheckoutprodidentityopsuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter"
                 }
               ]
+            },
+            "userIdentity": {
+              "invokedBy": [
+                {
+                  "exists": false
+                },
+                {
+                  "anything-but": "cloudformation.amazonaws.com"
+                }
+              ]
             }
+          }
+        },
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the operator pool at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorSelfServiceChanges0E27141E": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Operator pool: an operator's token replaced TOTP, changed MFA or attributes, or deleted the user (ADR 0015)",
+        "EventPattern": {
+          "source": [
+            "aws.cognito-idp"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "cognito-idp.amazonaws.com"
+            ],
+            "eventName": [
+              "AssociateSoftwareToken",
+              "VerifySoftwareToken",
+              "SetUserMFAPreference",
+              "UpdateUserAttributes",
+              "DeleteUser"
+            ],
+            "$or": [
+              {
+                "requestParameters": {
+                  "userPoolId": [
+                    {
+                      "Ref": "SsmParameterValuesupplycheckoutprodidentityopsuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter"
+                    }
+                  ]
+                }
+              },
+              {
+                "additionalEventData": {
+                  "userPoolId": [
+                    {
+                      "Ref": "SsmParameterValuesupplycheckoutprodidentityopsuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter"
+                    }
+                  ]
+                }
+              }
+            ]
           }
         },
         "State": "ENABLED",

@@ -13,6 +13,7 @@ import { LOG_RETENTION } from "../lib/observability/defaults.js";
 import { journeyAlarmSpecs } from "../lib/observability/journey-alarms.js";
 import { CHECK_EVERY_MINUTES, STUCK_IMPORT_AFTER_MINUTES } from "../../backend/src/ops/names.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
+import { OPERATOR_POOL_ADMIN_EVENTS, OPERATOR_SELF_SERVICE_EVENTS } from "../lib/stacks/observability-stack.js";
 
 // Region names live only in lib/config.ts (ADR 0010); tests use its constants.
 const [EAST, WEST] = APPROVED_REGIONS;
@@ -552,29 +553,47 @@ describe("defaults for every function and log group", () => {
   });
 });
 
-describe("operator pool alert (ADR 0015)", () => {
-  it("tells P1 whenever a user is created in the operator pool or added to or removed from a group there, in the primary region only", () => {
+describe("operator pool alerts (ADR 0015)", () => {
+  it("tell P1 about user, group, password, MFA and pool changes (not CloudFormation's), and what an operator's own token changes, in the primary region only", () => {
     const { region } = build();
     const west = Template.fromStack(region(WEST).observability);
     expect(Object.values(west.findResources("AWS::Events::Rule")).filter((r) => r.Properties.EventPattern)).toEqual([]);
     const t = observability();
-    const [[ruleId, rule], ...others] = Object.entries(t.findResources("AWS::Events::Rule")).filter(([, r]) => r.Properties.EventPattern);
-    expect(others).toEqual([]);
-    expect(rule.Properties.EventPattern).toEqual({
+    const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([, r]) => r.Properties.EventPattern);
+    expect(rules).toHaveLength(2);
+    const [[adminId, admin], [selfId, self]] = rules.sort(([a], [b]) => a.localeCompare(b)) as [[string, { Properties: Record<string, unknown> }], [string, { Properties: Record<string, unknown> }]];
+    const poolId = { Ref: expect.stringMatching(/identityopsuserpoolid/i) };
+    expect(admin.Properties.EventPattern).toEqual({
       source: ["aws.cognito-idp"],
       "detail-type": ["AWS API Call via CloudTrail"],
       detail: {
         eventSource: ["cognito-idp.amazonaws.com"],
-        eventName: ["AdminCreateUser", "AdminAddUserToGroup", "AdminRemoveUserFromGroup"],
-        requestParameters: { userPoolId: [{ Ref: expect.stringMatching(/identityopsuserpoolid/i) }] },
+        eventName: [...OPERATOR_POOL_ADMIN_EVENTS],
+        requestParameters: { userPoolId: [poolId] },
+        userIdentity: { invokedBy: [{ exists: false }, { "anything-but": "cloudformation.amazonaws.com" }] },
       },
     });
-    expect(rule.Properties.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP1/) } })]);
-    // Only this rule may publish, and the message names no one
+    for (const name of ["AdminCreateUser", "AdminAddUserToGroup", "AdminRemoveUserFromGroup", "UpdateUserPool", "SetUserPoolMfaConfig", "CreateUserPoolClient", "UpdateUserPoolClient", "AdminSetUserPassword", "AdminResetUserPassword", "AdminEnableUser", "AdminSetUserMFAPreference", "AdminUpdateUserAttributes", "CreateGroup", "UpdateGroup", "DeleteGroup", "CreateIdentityProvider", "AdminLinkProviderForUser"]) {
+      expect(OPERATOR_POOL_ADMIN_EVENTS, name).toContain(name);
+    }
+    expect(self.Properties.EventPattern).toEqual({
+      source: ["aws.cognito-idp"],
+      "detail-type": ["AWS API Call via CloudTrail"],
+      detail: {
+        eventSource: ["cognito-idp.amazonaws.com"],
+        eventName: ["AssociateSoftwareToken", "VerifySoftwareToken", "SetUserMFAPreference", "UpdateUserAttributes", "DeleteUser"],
+        $or: [{ requestParameters: { userPoolId: [poolId] } }, { additionalEventData: { userPoolId: [poolId] } }],
+      },
+    });
+    expect([...OPERATOR_SELF_SERVICE_EVENTS]).toHaveLength(5);
+    for (const rule of [admin, self]) {
+      expect(rule.Properties.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP1/) } })]);
+      expect(JSON.stringify(rule.Properties.Targets)).not.toContain("userIdentity");
+    }
+    // Only these rules may publish
     const statements = Object.values(t.findResources("AWS::SNS::TopicPolicy")).flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
     expect(statements.filter((st) => (st.Principal as { Service?: unknown } | undefined)?.Service === "events.amazonaws.com")).toEqual([
-      expect.objectContaining({ Sid: "AllowOperatorPoolAlertToPublish", Condition: { ArnEquals: { "aws:SourceArn": { "Fn::GetAtt": [ruleId, "Arn"] } } } }),
+      expect.objectContaining({ Sid: "AllowOperatorPoolAlertToPublish", Condition: { ArnEquals: { "aws:SourceArn": [{ "Fn::GetAtt": [adminId, "Arn"] }, { "Fn::GetAtt": [selfId, "Arn"] }] } } }),
     ]);
-    expect(JSON.stringify(rule.Properties.Targets)).not.toContain("userIdentity");
   });
 });

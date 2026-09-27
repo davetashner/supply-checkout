@@ -222,6 +222,16 @@ describe("teams", () => {
     expect(Object.keys(teamOf(teamA))).toContain("homeRegion");
     expect(denied).toEqual([]);
     expect(tags.every((t) => t.endsWith(" ."))).toBe(true);
+    // Audited like one team's record: it shows owners' emails
+    expect(auditItems("PLATFORM")).toEqual([
+      expect.objectContaining({ action: "ops.teams.list", operatorSub: OPERATOR, target: "teams", after: { q: null, cursor: null, teams: [teamB, teamA] }, GSI3PK: "OPS#AUDIT#2026-09" }),
+    ]);
+  });
+
+  it("finds a team by its ID in any case it was made with, and audits the search", async () => {
+    table.put({ ...teamOf(teamA), PK: "TEAM#MixedCase-1", GSI3SK: "MixedCase-1", name: "Mixed" });
+    expect((await call("GET", "/ops/teams", { query: { q: "MixedCase-1" } })).body.teams.map((t: { id: string }) => t.id)).toEqual(["MixedCase-1"]);
+    expect(auditItems("PLATFORM").map((a) => (a.after as { q: string }).q)).toEqual(["MixedCase-1"]);
   });
 
   it("searches by name or ID, and pages", async () => {
@@ -245,6 +255,9 @@ describe("teams", () => {
     expect(res.body.team).toMatchObject({ id: teamA, name: "Acme Cleaning", owners: [{ userId: OWNER, email: OWNER_EMAIL }] });
     const [audit] = auditItems(teamA);
     expect(audit).toMatchObject({ type: "operatorAudit", action: "ops.team.read", operatorSub: OPERATOR, teamId: teamA, GSI3PK: "OPS#AUDIT#2026-09" });
+    // One direct lookup of the team's index entry, not a walk of every team
+    const lookups = table.requests.filter((r) => r.command === "QueryCommand" && (r.input.ExpressionAttributeValues as Record<string, unknown>)[":pk"] === "OPS#TEAMS");
+    expect(lookups.map((r) => (r.input.ExpressionAttributeValues as Record<string, unknown>)[":sk"])).toEqual([teamA]);
     expect(denied).toEqual([]);
   });
 

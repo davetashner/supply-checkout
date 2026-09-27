@@ -72,7 +72,10 @@ export interface OperatorAuditEvent {
   readonly expiresAt: number;
 }
 
-export type OperatorAction = "ops.team.read" | "ops.comp.set" | "ops.comp.end";
+export type OperatorAction = "ops.teams.list" | "ops.team.read" | "ops.comp.set" | "ops.comp.end";
+
+/** The operator audit partition for actions on no one team: listing and searching teams (and, later, campaigns). */
+export const PLATFORM_AUDIT = "PLATFORM";
 
 /** An audit event as a month's listing has it (the index projects only these). */
 export interface OperatorAuditSummary {
@@ -190,7 +193,10 @@ function toTeam(item: Record<string, unknown>): OpsTeam | undefined {
 
 /** Every team, newest first, as the operators' index holds them. */
 async function allTeams(db: Db): Promise<OpsTeam[]> {
-  return (await indexPartition(db, OPS_TEAMS_PARTITION, MAX_OPS_TEAMS)).map(toTeam).filter((t): t is OpsTeam => t !== undefined);
+  return (await indexPartition(db, OPS_TEAMS_PARTITION, MAX_OPS_TEAMS))
+    .map(toTeam)
+    .filter((t): t is OpsTeam => t !== undefined)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || a.teamId.localeCompare(b.teamId));
 }
 
 /**
@@ -201,20 +207,30 @@ export async function listOpsTeams(
   db: Db,
   operator: Operator,
   options: { readonly q?: string; readonly limit?: number; readonly cursor?: string } = {},
+  now = new Date(),
 ): Promise<{ teams: OpsTeam[]; cursor?: string }> {
   operatorSub(operator);
-  const q = options.q?.trim().toLowerCase();
-  if (q !== undefined && (q.length > 200 || CONTROL.test(q))) throw new InvalidInputError("Invalid search");
+  const raw = options.q?.trim();
+  if (raw !== undefined && (raw.length > 200 || CONTROL.test(raw))) throw new InvalidInputError("Invalid search");
+  const q = raw?.toLowerCase();
   const limit = options.limit ?? 50;
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new InvalidInputError("limit is a number from 1 to 100");
   let teams = await allTeams(db);
-  if (q) teams = teams.filter((t) => t.teamId === q || t.name.toLowerCase().includes(q));
+  if (q) teams = teams.filter((t) => t.teamId === raw || t.name.toLowerCase().includes(q));
   if (options.cursor !== undefined) {
     const at = teams.findIndex((t) => t.teamId === id(options.cursor, "cursor"));
     if (at < 0) throw new InvalidInputError("Invalid cursor");
     teams = teams.slice(at + 1);
   }
   const page = teams.slice(0, limit);
+  // The list shows owners' emails like one team's record does, so it's audited too, before anything is returned
+  await connection(db).doc.send(
+    new PutCommand({
+      TableName: db.tableName,
+      Item: auditItem(operator, PLATFORM_AUDIT, { action: "ops.teams.list", before: null, after: { q: raw ?? null, cursor: options.cursor ?? null, teams: page.map((t) => t.teamId) } }, now),
+      ConditionExpression: "attribute_not_exists(PK)",
+    }),
+  );
   return { teams: page, ...(teams.length > limit ? { cursor: page[page.length - 1]?.teamId } : {}) };
 }
 
@@ -230,9 +246,19 @@ export async function listOpsOwners(db: Db, operator: Operator, teamId: string):
   return owners;
 }
 
+/** One team's account record: a direct lookup of its index entry (GSI3SK is the team ID). */
 async function findTeam(db: Db, teamId: string): Promise<OpsTeam | undefined> {
-  id(teamId, "team ID");
-  return (await allTeams(db)).find((t) => t.teamId === teamId);
+  const { Items } = await connection(db).doc.send(
+    new QueryCommand({
+      TableName: db.tableName,
+      IndexName: GSI3,
+      KeyConditionExpression: "GSI3PK = :pk AND GSI3SK = :sk",
+      Select: "ALL_PROJECTED_ATTRIBUTES",
+      ExpressionAttributeValues: { ":pk": OPS_TEAMS_PARTITION, ":sk": gsi3.team(teamId).GSI3SK },
+    }),
+  );
+  const team = Items?.[0] ? toTeam(Items[0]) : undefined;
+  return team?.teamId === teamId ? team : undefined;
 }
 
 function auditItem(
@@ -252,7 +278,7 @@ function auditItem(
     teamId,
     operatorSub: operatorSub(operator),
     action: input.action,
-    target: `team/${teamId}`,
+    target: teamId === PLATFORM_AUDIT ? "teams" : `team/${teamId}`,
     ...(input.reason === undefined ? {} : { reason: input.reason }),
     ...(input.before === undefined ? {} : { before: input.before }),
     ...(input.after === undefined ? {} : { after: input.after }),
@@ -271,7 +297,9 @@ export async function getOpsTeam(db: Db, operator: Operator, teamId: string, now
   operatorSub(operator);
   const team = await findTeam(db, teamId);
   if (!team) throw new NotFoundError("No such team");
-  await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: auditItem(operator, teamId, { action: "ops.team.read" }, now) }));
+  await connection(db).doc.send(
+    new PutCommand({ TableName: db.tableName, Item: auditItem(operator, teamId, { action: "ops.team.read" }, now), ConditionExpression: "attribute_not_exists(PK)" }),
+  );
   return { team, owners: await listOpsOwners(db, operator, teamId) };
 }
 

@@ -343,7 +343,12 @@ npm run ops -- sign-out                        # revokes every token (GlobalSign
 
 The first command opens `ops-auth.<env domain>` in the browser (username, password, TOTP) and takes the redirect on `http://localhost:8765/`, listening on the loopback addresses only. It keeps only the access token, for its 15 minutes, in `~/.config/supply-checkout/ops-<env>.json` (mode 600); no refresh token is stored. The ops client ID comes from `--client-id`, `SUPPLY_OPS_CLIENT_ID`, or SSM with the AWS CLI (`--profile`, default `supply-prod`). `--env staging` points it at another environment, `--json` prints the API's answers. `comp` reads the team first and sends its `version` with a new `Idempotency-Key`, so a comp never overwrites a change it didn't see.
 
-**The alert.** The primary region's `observability` stack has an EventBridge rule that sends the P1 topic a message whenever CloudTrail records `AdminCreateUser`, `AdminAddUserToGroup` or `AdminRemoveUserFromGroup` on the operator pool. It needs CloudTrail's management events, which every account has; the message names the CloudTrail event, not the person.
+**The alerts.** The primary region's `observability` stack has two EventBridge rules on CloudTrail's management events that send the P1 topic a message naming the CloudTrail event, not the person:
+
+- `OperatorPoolChanges`: user, group, password, MFA, identity-provider and pool or client settings calls on the operator pool (`OPERATOR_POOL_ADMIN_EVENTS` in `lib/stacks/observability-stack.ts`: `AdminCreateUser`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup`, `AdminSetUserPassword`, `AdminResetUserPassword`, `AdminEnableUser`, `AdminSetUserMFAPreference`, `AdminUpdateUserAttributes`, `AdminLinkProviderForUser`, `CreateGroup`, `UpdateGroup`, `DeleteGroup`, `UpdateUserPool`, `SetUserPoolMfaConfig`, `CreateUserPoolClient`, `UpdateUserPoolClient`, `CreateIdentityProvider`), except calls CloudFormation makes for a deploy.
+- `OperatorSelfServiceChanges`: what an operator's own token can change: `AssociateSoftwareToken`, `VerifySoftwareToken`, `SetUserMFAPreference`, `UpdateUserAttributes`, `DeleteUser`. CloudTrail records these with the pool ID in `requestParameters` or `additionalEventData`, so the rule matches either.
+
+After the first deploy, check both fire: add a test user to the pool and to the group (the first rule), and have a test operator set up TOTP at first sign-in (the second). If the second doesn't arrive, look at that CloudTrail event's fields and adjust the pattern.
 
 **Deploying.** In order: the `domain` stack in `GLOBAL_SERVICES_REGION` (the `ops-auth.` certificate), `data` (adds GSI3; DynamoDB builds it in the background, and queries on it fail until it's `ACTIVE`), `identity` (the pool; its domain can take up to an hour, like `auth.`), then `api` and `observability`:
 
@@ -356,6 +361,21 @@ npx cdk deploy supply-checkout-prod-us-east-1-identity supply-checkout-prod-us-e
 ```
 
 Teams created before GSI3 existed have no `GSI3PK`, so the ops routes don't list them until they're backfilled.
+
+**Stray index keys, before and after the first deploy.** Until this change, a document write or an item could carry a field named `GSI3PK` (documents now refuse every `GSI<n>PK` and `GSI<n>SK` field, `isReservedField` in `backend/src/data/documents.ts`). An item with a forged `GSI3PK` would put customer-chosen values in the operators' index. So before deploying the `data` stack that adds GSI3, and once more after, find every item with `GSI3PK` that isn't a team's `META`, a `MEMBER#` item or an `OPAUDIT#` item, and strip the keys:
+
+```bash
+P="--profile supply-prod --region us-east-1"; T=supply-checkout-prod-app
+aws dynamodb scan $P --table-name $T --projection-expression "PK, SK" \
+  --filter-expression "(attribute_exists(GSI3PK) OR attribute_exists(GSI3SK)) AND SK <> :meta AND NOT begins_with(SK, :member) AND NOT begins_with(PK, :audit)" \
+  --expression-attribute-values '{":meta":{"S":"META"},":member":{"S":"MEMBER#"},":audit":{"S":"OPAUDIT#"}}' \
+  --output json > stray-gsi3.json
+jq -c '.Items[]' stray-gsi3.json | while read -r key; do
+  aws dynamodb update-item $P --table-name $T --key "$key" --update-expression "REMOVE GSI3PK, GSI3SK"
+done
+```
+
+Expect none. Any found is worth a look (whose team, and when it was written) before it's removed: it came from a document write with that field. `MEMBER#` items with `GSI3PK` must be owners; the data layer removes it when an owner is demoted.
 
 The role's IAM conditions (`dynamodb:Attributes`, `dynamodb:Select`, `dynamodb:LeadingKeys` patterns) aren't enforced by DynamoDB Local, so after the first deploy, and after any change to the role or to `backend/src/data/operator.ts`, list teams, read a test team, comp it and end the comp, and confirm `/aws/lambda/<ops function>` logs no `AccessDeniedException`.
 
@@ -371,7 +391,23 @@ aws cognito-idp admin-add-user-to-group $P --user-pool-id "$POOL" --username ale
 
 The P1 alert fires for both calls. **Removing one:** `admin-remove-user-from-group` and `admin-disable-user` (which also revokes their tokens), then `admin-delete-user` when you're sure.
 
-**A stolen operator token or password.** Sign them out and disable them at once (`admin-user-global-sign-out`, `admin-disable-user`): both take effect on the next request. Then read what the account did: `GET /ops/audit` for the month, or CloudWatch Logs Insights on the ops function's log group, `filter operator = "<sub>"`. Comps it made can be ended with `DELETE /ops/teams/{teamId}/comp`; its audit items can't be changed or removed by the ops role, and CloudTrail has every Cognito admin call.
+**A stolen operator token or password.** A stolen access token lasts at most 15 minutes, but with the `aws.cognito.signin.user.admin` scope (which the ops function's `GetUser` check needs) it can also replace the operator's TOTP, change their MFA preference or attributes, or delete the user: each of those alerts P1 (below). So:
+
+1. Cut them off at once; both take effect on the next request:
+   ```bash
+   aws cognito-idp admin-user-global-sign-out $P --user-pool-id "$POOL" --username alex
+   aws cognito-idp admin-disable-user $P --user-pool-id "$POOL" --username alex
+   ```
+2. Reset their MFA and password, so a replaced TOTP or a known password is useless. Turning TOTP off makes the pool, which requires MFA, ask for a new TOTP setup at the next sign-in; the new temporary password goes to them in person:
+   ```bash
+   aws cognito-idp admin-set-user-mfa-preference $P --user-pool-id "$POOL" --username alex --software-token-mfa-settings Enabled=false,PreferredMfa=false
+   aws cognito-idp admin-set-user-password $P --user-pool-id "$POOL" --username alex --no-permanent \
+     --password "$(openssl rand -base64 18)Aa1!"   # note it, then hand it over in person
+   ```
+3. Read what the account did: `npm run ops -- audit` for the month (and `--team PLATFORM` for team lists and searches), CloudWatch Logs Insights on the ops function's log group (`filter operator = "<sub>"`), and CloudTrail for the pool's calls. Comps it made can be ended with `npm run ops -- uncomp`; its audit items can't be changed or removed by the ops role.
+4. Re-enable them (`admin-enable-user`) once they've a clean device. They set up TOTP again at sign-in.
+
+The ops client's write attributes are limited to `given_name` and `family_name`, which nothing trusts. Cognito can't grant `GetUser` without the rest of the admin scope, so the alerts are the control for the rest.
 
 ## Live updates
 

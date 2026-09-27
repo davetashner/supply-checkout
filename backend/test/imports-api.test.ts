@@ -106,6 +106,18 @@ function sampleCsv(n: number): string {
 }
 
 describe("importing a file", () => {
+  it("never writes an index key from the file, and drops a stray one from an item it updates (ADR 0015)", async () => {
+    // An item written before index keys were refused, with a forged GSI3 entry
+    seedProduct("0123", { code: "0123", name: "Nitrile gloves", price: 12.5, stock: 10, GSI3PK: "OPS#TEAMS", GSI3SK: "9999#x" }, 4);
+    const res = await post({ importId: randomUUID(), csv: "name,barcode,price,GSI3PK,GSI3SK\nNitrile gloves,0123,13.00,OPS#TEAMS,9999#y\nRags,,1.50,OPS#TEAMS,9999#z\n" });
+    expect(res.status).toBe(200);
+    for (const item of products()) {
+      expect(item.GSI3PK, String(item.SK)).toBeUndefined();
+      expect(item.GSI3SK, String(item.SK)).toBeUndefined();
+    }
+    expect(product("0123")).toMatchObject({ price: 13 });
+  });
+
   it("imports 200 rows in one request: items, stock movements, a finished job, and the summary", async () => {
     const id = randomUUID();
     const started = Date.now();

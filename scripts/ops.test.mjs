@@ -72,6 +72,38 @@ test("makes an S256 PKCE pair, and reads a JWT's claims without trusting them", 
   assert.deepEqual(jwtClaims("garbage"), {});
 });
 
+test("never reads or writes the token through a symlink, and keeps the folder owner-only", async () => {
+  const { symlinkSync, statSync: stat, existsSync } = await import("node:fs");
+  const home = mkdtempSync(path.join(tmpdir(), "ops-link-"));
+  const target = path.join(home, "elsewhere.json");
+  writeFileSync(target, JSON.stringify({ accessToken: TOKEN }));
+  const dir = path.join(home, "cfg");
+  mkdirSync(dir, { mode: 0o755 });
+  symlinkSync(target, path.join(dir, "ops-prod.json"));
+  assert.equal(readCachedToken(path.join(dir, "ops-prod.json"), NOW), undefined);
+  assert.throws(() => writeCachedToken(path.join(dir, "ops-prod.json"), TOKEN), /ELOOP|symbolic/i);
+  assert.equal(stat(dir).mode & 0o777, 0o700);
+  assert.equal(existsSync(target), true);
+});
+
+test("warns when it can't also listen on ::1", async () => {
+  const { createServer } = await import("node:http");
+  const port = 18766;
+  const blocker = createServer();
+  const listening = await new Promise((resolve) => {
+    blocker.once("error", () => resolve(false));
+    blocker.listen(port, "::1", () => resolve(true));
+  });
+  const warnings = [];
+  const waiting = waitForCode("s", { port, timeoutMs: 2000, warn: (m) => warnings.push(m) });
+  await new Promise((r) => setTimeout(r, 50));
+  await fetch(`http://127.0.0.1:${port}/?code=c&state=s`);
+  assert.equal(await waiting, "c");
+  blocker.close();
+  // Where the machine has IPv6, the blocked ::1 was reported
+  if (listening) assert.match(warnings[0], /Couldn't listen on \[::1\]/);
+});
+
 test("caches only the access token, owner-only, and ignores it within a minute of expiry", () => {
   const home = mkdtempSync(path.join(tmpdir(), "ops-cache-"));
   const file = path.join(home, "sub", "ops-prod.json");
@@ -176,18 +208,27 @@ test("reports the API's error, and forgets a token the API refused", async () =>
   assert.equal(readCachedToken(path.join(home, ".config", "supply-checkout", "ops-prod.json"), NOW), undefined);
 });
 
-test("sign-out revokes every token with GlobalSignOut at the token's pool, and forgets it", async () => {
-  const { deps, requests, logs, home } = harness({ routes: { "POST /": { status: 200, body: {} } } });
+test("sign-out revokes every token with GlobalSignOut at the token's pool, forgets it, and logs out of the sign-in page", async () => {
+  const { deps, requests, logs, home } = harness({ routes: { "POST /": { status: 200, body: {} } }, env: { SUPPLY_OPS_CLIENT_ID: "client-1" } });
+  const opened = [];
+  deps.openBrowser = (url) => opened.push(new URL(url));
   await main(["sign-out"], deps);
+  assert.equal(opened[0].origin + opened[0].pathname, "https://ops-auth.supplycheckout.com/logout");
+  assert.deepEqual(Object.fromEntries(opened[0].searchParams), { client_id: "client-1", logout_uri: CALLBACK_URL });
   assert.equal(requests[0].origin, "https://cognito-idp.test-local-1.amazonaws.com");
   assert.equal(requests[0].headers["x-amz-target"], "AWSCognitoIdentityProviderService.GlobalSignOut");
   assert.deepEqual(requests[0].body, { AccessToken: TOKEN });
-  assert.equal(logs[0], "Signed out everywhere.");
+  assert.match(logs[0], /^Signed out everywhere/);
   assert.equal(readCachedToken(path.join(home, ".config", "supply-checkout", "ops-prod.json"), NOW), undefined);
   const none = harness({ cached: null });
+  none.deps.run = () => {
+    throw new Error("no SSO session");
+  };
+  none.deps.openBrowser = () => assert.fail("no client ID, so no logout page");
   await main(["sign-out"], none.deps);
   assert.deepEqual(none.requests, []);
-  assert.match(none.logs[0], /nothing was revoked/);
+  assert.match(none.logs[0], /nothing was revoked.*admin-user-global-sign-out/);
+  assert.match(none.logs[1], /Couldn't open the sign-in page's logout \(no SSO session\)/);
 });
 
 test("prints usage for help or no command", async () => {

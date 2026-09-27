@@ -170,8 +170,8 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
     async listTeams(event, op) {
       const q = event.queryStringParameters ?? {};
       const db = deps.dbFor(op.sub);
-      const page = await listOpsTeams(db, op, { q: q.q, cursor: q.cursor, limit: limitFrom(q.limit) });
       const at = new Date(now());
+      const page = await listOpsTeams(db, op, { q: q.q, cursor: q.cursor, limit: limitFrom(q.limit) }, at);
       const teams = await Promise.all(page.teams.map(async (team) => opsTeamBody(team, at, await listOpsOwners(db, op, team.teamId))));
       return { response: json(200, { teams, ...(page.cursor ? { cursor: page.cursor } : {}) }) };
     },

@@ -27,7 +27,7 @@
 // a new Idempotency-Key.
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { closeSync, fchmodSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, fchmodSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -106,19 +106,26 @@ export function jwtClaims(token) {
 
 /** The cached access token for `env`, if it's still good for a minute. */
 export function readCachedToken(file, now = Date.now()) {
+  let fd;
   try {
-    const { accessToken } = JSON.parse(readFileSync(file, "utf8"));
+    // Never through a symlink someone else planted
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const { accessToken } = JSON.parse(readFileSync(fd, "utf8"));
     const exp = Number(jwtClaims(accessToken).exp);
     return Number.isFinite(exp) && exp * 1000 - 60_000 > now ? accessToken : undefined;
   } catch {
     return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
 export function writeCachedToken(file, accessToken) {
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  // Owner-only before the token is written, even if the file already existed with another mode
-  const fd = openSync(file, "w", 0o600);
+  // mkdir's mode doesn't apply to a directory that already existed
+  chmodSync(path.dirname(file), 0o700);
+  // Owner-only before the token is written, even if the file already existed with another mode, and never through a symlink
+  const fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
   try {
     fchmodSync(fd, 0o600);
     writeFileSync(fd, JSON.stringify({ accessToken }));
@@ -142,7 +149,7 @@ export function clientIdFor(env, flags, deps) {
  * Waits for the sign-in redirect on localhost and returns its `code`, after checking
  * `state`. Listens on 127.0.0.1 and ::1 only, never on other interfaces.
  */
-export function waitForCode(state, { port = CALLBACK_PORT, timeoutMs = SIGN_IN_TIMEOUT_MS } = {}) {
+export function waitForCode(state, { port = CALLBACK_PORT, timeoutMs = SIGN_IN_TIMEOUT_MS, warn = (m) => console.error(m) } = {}) {
   return new Promise((resolve, reject) => {
     const servers = [];
     let done = false;
@@ -176,9 +183,11 @@ export function waitForCode(state, { port = CALLBACK_PORT, timeoutMs = SIGN_IN_T
     for (const host of ["127.0.0.1", "::1"]) {
       const server = createServer(handler);
       servers.push(server);
-      // IPv6 may be off, so ::1 is best effort; 127.0.0.1 must work
+      // IPv6 may be off, so ::1 is best effort; 127.0.0.1 must work. Cognito
+      // allows http callbacks only for "localhost", so the URL can't name 127.0.0.1.
       server.on("error", (e) => {
         if (host === "127.0.0.1") finish(new Error(`Can't listen on ${CALLBACK_URL}: ${e.code ?? e.message}`));
+        else warn(`Couldn't listen on [::1]:${port} (${e.code ?? e.message}). If the browser can't reach ${CALLBACK_URL} after you sign in, make localhost resolve to 127.0.0.1 or free the port.`);
       });
       server.listen(port, host);
     }
@@ -284,7 +293,21 @@ export async function main(argv, deps) {
     const cached = readCachedToken(cacheFile, deps.now());
     const revoked = cached ? await signOut(cached, deps) : false;
     rmSync(cacheFile, { force: true });
-    deps.log(revoked ? "Signed out everywhere." : "Forgot the cached token. (None was live, so nothing was revoked; tokens expire within 15 minutes.)");
+    deps.log(
+      revoked
+        ? "Signed out everywhere: every token you held is revoked."
+        : "Forgot the cached token. None was live, so nothing was revoked. To revoke every token (a lost laptop, say), run any command to sign in, then sign-out again, or ask an administrator to run admin-user-global-sign-out.",
+    );
+    // End the sign-in page's own session too, so the next sign-in asks for the password and TOTP again
+    try {
+      const logout = new URL("/logout", endpoints(env).auth);
+      logout.searchParams.set("client_id", clientIdFor(env, flags, deps));
+      logout.searchParams.set("logout_uri", CALLBACK_URL);
+      deps.openBrowser(logout.toString(), deps);
+      deps.log("Opened the sign-in page's logout; the browser may then say it can't reach localhost, which is fine.");
+    } catch (error) {
+      deps.log(`Couldn't open the sign-in page's logout (${error.message}); its session ends by itself within an hour.`);
+    }
     return 0;
   }
 
