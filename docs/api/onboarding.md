@@ -20,7 +20,7 @@ After sign-in (and after every page load with a session), call `GET /me`:
 {
   "user": { "id": "<sub>", "email": "pat@example.com", "emailVerified": true },
   "teams": [
-    { "id": "…", "name": "Echo Cleaning", "role": "owner", "plan": "trial", "status": "trialing", "trialEndsAt": "2026-10-10T12:00:00.000Z", "homeRegion": "…" }
+    { "id": "…", "name": "Echo Cleaning", "role": "owner", "plan": "trial", "status": "trialing", "trialEndsAt": "2026-10-10T12:00:00.000Z", "homeRegion": "…", "comp": null }
   ],
   "invites": [
     { "id": "…", "teamName": "Bravo Co", "role": "contributor", "expiresAt": "2026-10-03T12:00:00.000Z" }
@@ -127,7 +127,8 @@ message and point owners at revoking an invite or removing a member. See
   closed stay out: owners invite them again. Every owner is emailed (best
   effort). Within an hour of `deletesAt` it's refused with 409 `aborted`,
   `reason: "team_deleting"`: the purge may already be deleting it. Reopening
-  an open team returns it as it is. The web app offers it to owners in the
+  an open team returns it as it is. A team can be reopened 3 times a UTC day
+  (429 `quota_exceeded` after that). The web app offers it to owners in the
   closed team's notice, with the team's name typed to confirm.
 - **Deleting an account.** `DELETE /me` with `{"confirm": "DELETE"}` (typed by
   the user). 409 `last_owner` while they're the only owner of an open team

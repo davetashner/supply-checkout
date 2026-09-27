@@ -50,6 +50,38 @@ export interface Team {
   readonly purgeAfter?: string;
   readonly createdAt: string;
   readonly version: number;
+  /**
+   * A comp (ADR 0015): a plan an operator granted until `compUntil` (ISO
+   * 8601), at most 12 months ahead. While it's live (liveComp) the team is
+   * active on it whatever its Stripe status says. Only the ops function writes
+   * these, and it never writes `plan` or `status` (ADR 0009).
+   */
+  readonly compPlan?: string;
+  readonly compSeats?: number;
+  readonly compUntil?: string;
+  readonly compReason?: string;
+  /** The operator's `sub`. Never shown to the team. */
+  readonly compBy?: string;
+  readonly compAt?: string;
+}
+
+/** A comp that's live now: one whose `compUntil` is in the future. */
+export interface Comp {
+  readonly plan: string;
+  readonly seats?: number;
+  readonly until: string;
+}
+
+/**
+ * The team's comp, if it has one and it hasn't run out. The entitlement
+ * checks (memberCap, the live-update audience, /me) treat a team with one as
+ * active, whatever Stripe says, and fall back to the Stripe status after it.
+ */
+export function liveComp(team: { readonly compPlan?: unknown; readonly compSeats?: unknown; readonly compUntil?: unknown }, now = new Date()): Comp | undefined {
+  if (typeof team.compPlan !== "string" || typeof team.compUntil !== "string") return undefined;
+  const until = Date.parse(team.compUntil);
+  if (!(until > now.getTime())) return undefined;
+  return { plan: team.compPlan, until: team.compUntil, ...(typeof team.compSeats === "number" ? { seats: team.compSeats } : {}) };
 }
 
 export interface Member {
@@ -155,6 +187,14 @@ export const CLOSED_TEAM_RETENTION_DAYS = 30;
  */
 export const REOPEN_CUTOFF_MINUTES = 60;
 
+/**
+ * Times one team may be reopened per UTC day. Each reopening and each
+ * closure after it emails every owner, so this bounds how often an owner can
+ * make those emails by closing and reopening, without ever silencing a
+ * closure notice.
+ */
+export const REOPENS_PER_TEAM_PER_DAY = 3;
+
 /** The free trial every new team starts with: 14 days, no card (ADR 0009). */
 export const TRIAL_DAYS = 14;
 
@@ -203,9 +243,12 @@ export const PAID_STATUSES: readonly string[] = ["active", "past_due"];
  * This is the one place the cap is decided. Seat billing (bead
  * supply-checkout-l50) plugs in here: when a paid team's members must fit its
  * paid seats, return `Math.min(MEMBERS_PER_TEAM, team.seats)` for paying
- * teams. Until then seats aren't enforced.
+ * teams. Until then seats aren't enforced. A team with a live comp
+ * (liveComp) counts as paying.
  */
-export function memberCap(team: { readonly status?: unknown; readonly seats?: unknown }): number {
+export function memberCap(team: { readonly status?: unknown; readonly seats?: unknown; readonly compPlan?: unknown; readonly compUntil?: unknown }, now = new Date()): number {
+  // A live comp counts as paying (ADR 0015)
+  if (liveComp(team, now)) return MEMBERS_PER_TEAM;
   return typeof team.status === "string" && PAID_STATUSES.includes(team.status) ? MEMBERS_PER_TEAM : MEMBERS_PER_TRIAL_TEAM;
 }
 

@@ -776,7 +776,9 @@
                     "userId",
                     "role",
                     "status",
-                    "closedAt"
+                    "closedAt",
+                    "compPlan",
+                    "compUntil"
                   ]
                 },
                 "StringEqualsIfExists": {

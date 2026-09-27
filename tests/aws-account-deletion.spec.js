@@ -169,6 +169,7 @@ test.describe("a closed team", () => {
     for (const [answer, text] of [
       [error(409, "aborted", { reason: "team_deleting" }), "This team is about to be deleted, so it can't be reopened any more."],
       [error(400, "bad_request"), "Type the team's name as it's shown."],
+      [error(429, "quota_exceeded"), "This team has been reopened as many times as it can be today. Try again tomorrow."],
       [error(409, "aborted"), "Someone else changed the team just now. Try again."],
       [error(403, "permission_denied", { reason: "not_member" }), "Only the team's owners can reopen it."],
       [{ abort: true }, "Couldn't reopen the team. Check your connection and try again."],

@@ -38,6 +38,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `scripts/render-icons.mjs` | Renders the favicon's PNG fallbacks from `src/icons/favicon.svg` with Playwright's Chromium (`npm run icons`). Run it after changing the SVG, and commit the PNGs. |
 | `scripts/land-pr.sh` | Waits for CI, squash-merges a PR (or adds it to the merge queue and waits for the queue to merge it), cleans up its worktree and branch, and closes its beads (`npm run land -- <pr>`). Exits non-zero if the PR isn't merged, and explains a PR that main's ruleset blocks. |
 | `scripts/land-pr.test.sh` | Tests for `land-pr.sh` against a fake `gh` in a throwaway repo (`npm run test:scripts`, which also runs shellcheck). |
+| `scripts/ops.mjs` | The operator CLI (`npm run ops`, ADR 0015): list and search teams, comp a team, read the operator audit, signed in to the operator pool with TOTP. Tests: `scripts/ops.test.mjs` (`npm run test:scripts`). See [Operators](docs/infrastructure.md#operators). |
 | `scripts/check-public-safety.mjs` | Blocks AWS identifiers, email addresses and credentials from this public repo (pre-commit hook and CI). |
 | `scripts/check-region-strings.mjs` | Blocks AWS region names in `infra/`, `backend/` and `src/` outside `infra/lib/config.ts` (ADR 0010; pre-commit hook and CI). |
 | `scripts/export-beads.mjs` | Writes the beads backlog export without owner emails (`npm run beads:export`). |

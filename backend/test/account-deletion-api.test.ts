@@ -452,6 +452,21 @@ describe("reopening a team", () => {
     expect((await reopen()).status).toBe(200);
   });
 
+  it("reopens a team at most three times a UTC day, so cycling can't flood the owners with email", async () => {
+    for (let i = 0; i < 3; i++) {
+      expect((await close("team-b")).status).toBe(200);
+      expect((await reopen("team-b")).status).toBe(200);
+    }
+    await close("team-b");
+    const sent = notices.length;
+    expect(await reopen("team-b")).toMatchObject({ status: 429, body: { error: { code: "quota_exceeded", message: "A team can be reopened 3 times a day. Try again tomorrow." } } });
+    expect(meta("team-b")?.closedAt).toBeDefined();
+    expect(notices).toHaveLength(sent);
+    expect(counts[BusinessMetric.TeamsReopened]).toBe(3);
+    now = Date.parse("2026-09-27T00:00:01Z");
+    expect((await reopen("team-b")).status).toBe(200);
+  });
+
   it("refuses an owner demoted after their check, or a closure that changed meanwhile, and changes nothing", async () => {
     await close();
     table.beforeTransactWrite = () => {

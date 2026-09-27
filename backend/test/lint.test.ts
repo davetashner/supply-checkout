@@ -64,3 +64,31 @@ describe("the data-access module's internals", () => {
     expect(await ruleIds('import { connection } from "./client.js";\nimport { keys } from "../data/keys.js";', "src/data/new-entity.ts")).toEqual([]);
   });
 });
+
+describe("operator code and team contexts (ADR 0015)", () => {
+  const OPS = "src/operator/ops-handler.ts";
+  it.each([
+    'import { authorizeTeam } from "../data/index.js";',
+    'import { TeamContext } from "../data/index.js";',
+    'import { createTeam, listOpsTeams } from "../data/index.js";',
+    'import { teamContextForStripeCustomer } from "../data/index.js";',
+  ])("can't import a context issuer outside src/data: %s", async (code) => {
+    expect(await ruleIds(code, OPS)).toContain("no-restricted-imports");
+  });
+
+  it("keeps the other data-module rules in the ops code", async () => {
+    expect(await ruleIds('import { GetCommand } from "@aws-sdk/lib-dynamodb";', OPS)).toContain("no-restricted-imports");
+    expect(await ruleIds('import { connection } from "../data/client.js";', OPS)).toContain("no-restricted-imports");
+  });
+
+  it("may import the operator functions", async () => {
+    expect(await ruleIds('import { listOpsTeams, setComp } from "../data/index.js";', OPS)).toEqual([]);
+  });
+
+  it.each([
+    ['import { authorizeTeam } from "./team-context.js";', "no-restricted-imports"],
+    ['export const m = await import("./team-context.js");', "no-restricted-syntax"],
+  ])("keeps team-context.ts out of data/operator.ts: %s", async (code, rule) => {
+    expect(await ruleIds(code, "src/data/operator.ts")).toContain(rule);
+  });
+});

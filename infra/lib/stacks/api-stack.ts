@@ -29,14 +29,30 @@ import {
   AUTH_ROUTES,
   DATA_ROUTES,
   IDEMPOTENCY_HEADER,
+  OPS_ROUTES,
+  OPS_SESSION_TAG,
   routeKey,
   TEAM_SESSION_TAG,
 } from "../../../backend/src/api/routes.js";
-import { GSI1, GSI2, INVITE_LIMIT_ATTRIBUTES, INVITE_LIMIT_PREFIX, MEMBER_ROW_ATTRIBUTES, tableName } from "../../../backend/src/data/schema.js";
+import {
+  COMP_ATTRIBUTES,
+  GSI1,
+  GSI2,
+  GSI3,
+  INVITE_LIMIT_ATTRIBUTES,
+  INVITE_LIMIT_PREFIX,
+  MEMBER_ROW_ATTRIBUTES,
+  OPERATOR_AUDIT_PREFIX,
+  OPS_AUDIT_INDEX_PREFIX,
+  OPS_OWNERS_PREFIX,
+  OPS_TEAMS_PARTITION,
+  OWNER_OPERATOR_AUDIT_ATTRIBUTES,
+  tableName,
+} from "../../../backend/src/data/schema.js";
 import type { DeploymentConfig } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import { grantSendEmail } from "../email.js";
-import { cognitoJwtAuthorizer, identityOptionsFromContext, identityOutputParameters, LOCAL_DEV_ORIGIN } from "../identity.js";
+import { cognitoJwtAuthorizer, identityOptionsFromContext, identityOutputParameters, LOCAL_DEV_ORIGIN, opsJwtAuthorizer } from "../identity.js";
 import { LOG_RETENTION } from "../observability/defaults.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
@@ -123,6 +139,9 @@ export class ApiStack extends SupplyCheckoutStack {
   readonly accountFunction: NodejsFunction;
   readonly dataAccessRole: Role;
   readonly accountAccessRole: Role;
+  /** Primary region only (ADR 0015). */
+  readonly opsFunction?: NodejsFunction;
+  readonly operatorAccessRole?: Role;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "api", layer: "stateless" });
@@ -195,6 +214,22 @@ export class ApiStack extends SupplyCheckoutStack {
               resources: [tableArn, `${tableArn}/index/${GSI1}`],
               conditions: {
                 "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`TEAM#${teamTag}`, `TEAM#${teamTag}#SHEETS`] },
+              },
+            }),
+            // Owners read what operators did to their team (ADR 0015): read
+            // only, only the team's own OPAUDIT# partition, and only the
+            // attributes that don't name the operator
+            new PolicyStatement({
+              sid: "OwnOperatorAuditReadOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:Query"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [`${OPERATOR_AUDIT_PREFIX}${teamTag}`],
+                  "dynamodb:Attributes": [...OWNER_OPERATOR_AUDIT_ATTRIBUTES],
+                },
+                StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
               },
             }),
             tableKeyStatement(),
@@ -358,6 +393,18 @@ export class ApiStack extends SupplyCheckoutStack {
       stage.node.addDependency(...added);
       routeSettings[routeKey(route)] = { ThrottlingRateLimit: route.throttle.rate, ThrottlingBurstLimit: route.throttle.burst };
     }
+    if (this.isPrimaryRegion) {
+      const ops = this.addOps(config, table, tableArn, tableKeyStatement);
+      this.opsFunction = ops.fn;
+      this.operatorAccessRole = ops.role;
+      const opsAuthorizer = opsJwtAuthorizer(this, { envName: config.envName });
+      const opsIntegration = new HttpLambdaIntegration("OpsIntegration", this.live(ops.fn));
+      for (const route of OPS_ROUTES) {
+        const added = this.api.addRoutes({ path: route.path, methods: [route.method as HttpMethod], integration: opsIntegration, authorizer: opsAuthorizer });
+        stage.node.addDependency(...added);
+        routeSettings[routeKey(route)] = { ThrottlingRateLimit: route.throttle.rate, ThrottlingBurstLimit: route.throttle.burst };
+      }
+    }
     (stage.node.defaultChild as CfnStage).routeSettings = routeSettings;
     const authIntegration = new HttpLambdaIntegration("AuthIntegration", this.live(this.authFunction));
     for (const route of AUTH_ROUTES) {
@@ -386,8 +433,100 @@ export class ApiStack extends SupplyCheckoutStack {
     new StringParameter(this, "ApiUrlParam", { parameterName: outputs.url, stringValue: `https://${names.api}`, description: "API base URL" });
   }
 
-  /** A function from backend/src/api/<name>.ts. */
-  private handler(id: string, name: string, props: { memorySize: number; description: string; environment: Record<string, string> }): NodejsFunction {
+  /**
+   * The ops function and the operator-access role it assumes (ADR 0015),
+   * primary region only. The function's own role can't reach the table: it
+   * may assume the operator-access role (tagged with the team a comp changes,
+   * or "."), and call AdminListGroupsForUser on the operator pool. The
+   * operator-access role may:
+   *
+   * - Query GSI3's OPS#TEAMS, OPS#OWNERS#* and OPS#AUDIT#* partitions, and
+   *   only for what the index projects (dynamodb:Select), so never a team's
+   *   sheets, inventory or invites: no base-table read of a TEAM# partition.
+   * - UpdateItem in the tagged team's partition, naming only COMP_ATTRIBUTES
+   *   (dynamodb:Attributes) and returning at most those.
+   * - PutItem and Query in OPAUDIT#* partitions, never update or delete.
+   */
+  private addOps(config: DeploymentConfig, table: string, tableArn: string, tableKeyStatement: () => PolicyStatement) {
+    const identity = identityOutputParameters(config.envName);
+    const ssm = (name: string) => StringParameter.valueForStringParameter(this, name);
+    const fn = this.handler(
+      "OpsFunction",
+      "ops",
+      {
+        memorySize: 512,
+        description: "Platform operators: teams, comps and the operator audit (ADR 0015)",
+        environment: {
+          [API_ENV.tableName]: table,
+          [API_ENV.opsIssuerUrl]: ssm(identity.opsIssuerUrl),
+          [API_ENV.opsClientId]: ssm(identity.opsClientId),
+          [API_ENV.opsUserPoolId]: ssm(identity.opsUserPoolId),
+        },
+      },
+      "operator",
+    );
+    const fnRole = fn.role;
+    if (!fnRole) throw new Error("The ops function has no role");
+    const tag = `\${aws:PrincipalTag/${OPS_SESSION_TAG}}`;
+    const role = new Role(this, "OperatorAccessRole", {
+      description: "Assumed by the ops function per request (ADR 0015): the operators' index, one team's comp attributes, and append-only operator audit",
+      maxSessionDuration: Duration.hours(1),
+      assumedBy: new ArnPrincipal(fnRole.roleArn)
+        .withConditions({
+          StringLike: { [`aws:RequestTag/${OPS_SESSION_TAG}`]: "?*" },
+          "ForAllValues:StringEquals": { "aws:TagKeys": [OPS_SESSION_TAG] },
+        })
+        .withSessionTags(),
+      inlinePolicies: {
+        OperatorScope: new PolicyDocument({
+          statements: [
+            new PolicyStatement({
+              sid: "OpsIndexProjectionOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:Query"],
+              resources: [`${tableArn}/index/${GSI3}`],
+              conditions: {
+                "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [OPS_TEAMS_PARTITION, `${OPS_OWNERS_PREFIX}*`, `${OPS_AUDIT_INDEX_PREFIX}*`] },
+                StringEquals: { "dynamodb:Select": ["ALL_PROJECTED_ATTRIBUTES", "SPECIFIC_ATTRIBUTES"] },
+              },
+            }),
+            // The comp: only UpdateItem, only the tagged team's partition,
+            // only the comp attributes (and the keys, type and version its
+            // condition names). No PutItem or DeleteItem there, which would
+            // replace or remove whole items
+            new PolicyStatement({
+              sid: "CompAttributesOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:UpdateItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [`TEAM#${tag}`],
+                  "dynamodb:Attributes": [...COMP_ATTRIBUTES],
+                },
+                StringEqualsIfExists: { "dynamodb:ReturnValues": ["NONE", "UPDATED_OLD", "UPDATED_NEW"] },
+              },
+            }),
+            new PolicyStatement({
+              sid: "OperatorAuditAppendOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:PutItem", "dynamodb:Query"],
+              resources: [tableArn],
+              conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`${OPERATOR_AUDIT_PREFIX}*`] } },
+            }),
+            tableKeyStatement(),
+          ],
+        }),
+      },
+    });
+    fn.addToRolePolicy(new PolicyStatement({ actions: ["sts:AssumeRole", "sts:TagSession"], resources: [role.roleArn] }));
+    fn.addToRolePolicy(new PolicyStatement({ actions: ["cognito-idp:AdminListGroupsForUser"], resources: [ssm(identity.opsUserPoolArn)] }));
+    fn.addEnvironment(API_ENV.opsRoleArn, role.roleArn);
+    return { fn, role };
+  }
+
+  /** A function from backend/src/<dir>/<name>.ts. */
+  private handler(id: string, name: string, props: { memorySize: number; description: string; environment: Record<string, string> }, dir = "api"): NodejsFunction {
     // Its own log group and a role that can write only to it (instead of
     // AWSLambdaBasicExecutionRole, which allows every log group)
     const logGroup = new LogGroup(this, `${id}Logs`, { retention: LOG_RETENTION });
@@ -399,7 +538,7 @@ export class ApiStack extends SupplyCheckoutStack {
     return new NodejsFunction(this, id, {
       role,
       logGroup,
-      entry: `${BACKEND}src/api/${name}.ts`,
+      entry: `${BACKEND}src/${dir}/${name}.ts`,
       projectRoot: BACKEND,
       depsLockFilePath: `${BACKEND}package-lock.json`,
       runtime: Runtime.NODEJS_24_X,

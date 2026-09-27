@@ -208,6 +208,7 @@ function wireClose(api, team, m, leave) {
 const reopenFailure = (e) =>
   e.reason === "team_deleting" ? "This team is about to be deleted, so it can't be reopened any more."
     : e.code === "bad_request" ? "Type the team's name as it's shown."
+    : e.code === "quota_exceeded" ? "This team has been reopened as many times as it can be today. Try again tomorrow."
     : e.code === "aborted" ? "Someone else changed the team just now. Try again."
     : e.code === "permission_denied" ? "Only the team's owners can reopen it."
     : "Couldn't reopen the team. Check your connection and try again.";

@@ -1,8 +1,8 @@
 import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { ACCOUNT_ROUTES, AUTH_ROUTES, DATA_ROUTES, routeKey } from "../../backend/src/api/routes.js";
-import { INVITE_LIMIT_ATTRIBUTES, MEMBER_ROW_ATTRIBUTES } from "../../backend/src/data/schema.js";
+import { ACCOUNT_ROUTES, AUTH_ROUTES, DATA_ROUTES, OPS_ROUTES, routeKey } from "../../backend/src/api/routes.js";
+import { COMP_ATTRIBUTES, INVITE_LIMIT_ATTRIBUTES, MEMBER_ROW_ATTRIBUTES, OWNER_OPERATOR_AUDIT_ATTRIBUTES } from "../../backend/src/data/schema.js";
 import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
 import { apiOutputParameters } from "../lib/stacks/api-stack.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
@@ -24,10 +24,12 @@ type Resource = { Properties: Record<string, unknown>; [k: string]: unknown };
 const resources = (t: Template, type: string) => Object.entries(t.findResources(type)) as [string, Resource][];
 
 describe("HTTP API routes", () => {
-  it("serves every data, account and auth route, and no others", () => {
+  it("serves every data, account, auth and ops route in the primary region, the ops routes nowhere else, and no others", () => {
     const { template } = api();
     const keys = resources(template, "AWS::ApiGatewayV2::Route").map(([, r]) => r.Properties.RouteKey).sort();
-    expect(keys).toEqual([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...AUTH_ROUTES].map(routeKey).sort());
+    expect(keys).toEqual([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...AUTH_ROUTES, ...OPS_ROUTES].map(routeKey).sort());
+    const west = resources(api(WEST).template, "AWS::ApiGatewayV2::Route").map(([, r]) => r.Properties.RouteKey).sort();
+    expect(west).toEqual([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...AUTH_ROUTES].map(routeKey).sort());
     // The inventory commands and the stock history, next to the document routes
     expect(keys).toEqual(
       expect.arrayContaining([
@@ -39,28 +41,38 @@ describe("HTTP API routes", () => {
     );
   });
 
-  it("puts the Cognito JWT authorizer on every data and account route and none on the auth routes", () => {
+  it("puts the customer pool's JWT authorizer on every data and account route, the operator pool's on every ops route, and none on the auth routes", () => {
     const { template } = api();
-    const [[authorizerId, authorizer]] = resources(template, "AWS::ApiGatewayV2::Authorizer") as [[string, Resource]];
+    const authorizers = resources(template, "AWS::ApiGatewayV2::Authorizer");
+    expect(authorizers).toHaveLength(2);
+    const [authorizerId, authorizer] = authorizers.find(([, a]) => a.Properties.Name === "cognito-jwt") as [string, Resource];
+    const [opsAuthorizerId, opsAuthorizer] = authorizers.find(([, a]) => a.Properties.Name === "ops-cognito-jwt") as [string, Resource];
     expect(authorizer.Properties).toMatchObject({ AuthorizerType: "JWT", IdentitySource: ["$request.header.Authorization"] });
+    // Each checks its own pool's issuer and client: a token from one fails the other
+    const jwt = (a: Resource) => JSON.stringify(a.Properties.JwtConfiguration);
+    expect(jwt(authorizer)).toMatch(/identityissuerurl/i);
+    expect(jwt(authorizer)).toMatch(/identitywebclientid/i);
+    expect(jwt(opsAuthorizer)).toMatch(/identityopsissuerurl/i);
+    expect(jwt(opsAuthorizer)).toMatch(/identityopsclientid/i);
+    expect(jwt(opsAuthorizer)).not.toMatch(/webclientid|identityissuerurl/i);
     for (const [, route] of resources(template, "AWS::ApiGatewayV2::Route")) {
       const key = route.Properties.RouteKey as string;
       if ([...DATA_ROUTES, ...ACCOUNT_ROUTES].some((r) => routeKey(r) === key)) {
         expect(route.Properties, key).toMatchObject({ AuthorizationType: "JWT", AuthorizerId: { Ref: authorizerId } });
+      } else if (OPS_ROUTES.some((r) => routeKey(r) === key)) {
+        expect(route.Properties, key).toMatchObject({ AuthorizationType: "JWT", AuthorizerId: { Ref: opsAuthorizerId } });
       } else {
         expect(route.Properties.AuthorizationType ?? "NONE", key).toBe("NONE");
       }
     }
   });
 
-  it("routes data, account and auth requests to their functions' live aliases", () => {
+  it("routes data, account, auth and ops requests to their functions' live aliases", () => {
     const { template } = api();
     const integrations = resources(template, "AWS::ApiGatewayV2::Integration").map(([, r]) => JSON.stringify(r.Properties.IntegrationUri));
-    expect(integrations).toHaveLength(3);
-    expect(integrations.some((i) => /DataFunctionLive/.test(i))).toBe(true);
-    expect(integrations.some((i) => /AccountFunctionLive/.test(i))).toBe(true);
-    expect(integrations.some((i) => /AuthFunctionLive/.test(i))).toBe(true);
-    template.resourcePropertiesCountIs("AWS::Lambda::Alias", { Name: "live" }, 3);
+    expect(integrations).toHaveLength(4);
+    for (const fn of ["DataFunctionLive", "AccountFunctionLive", "AuthFunctionLive", "OpsFunctionLive"]) expect(integrations.some((i) => i.includes(fn)), fn).toBe(true);
+    template.resourcePropertiesCountIs("AWS::Lambda::Alias", { Name: "live" }, 4);
   });
 
   it("allows only the app's origin (and localhost outside prod), with credentials for the cookie", () => {
@@ -101,6 +113,11 @@ describe("HTTP API routes", () => {
       "DELETE /me": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "POST /me/email/code": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /me/email/verify": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
+      "GET /ops/teams": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
+      "GET /ops/teams/{teamId}": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
+      "PUT /ops/teams/{teamId}/comp": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "DELETE /ops/teams/{teamId}/comp": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "GET /ops/audit": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
     });
     // Created after the routes it names
     expect((stage.DependsOn as string[]).filter((d) => d.startsWith("HttpApi")).length).toBeGreaterThanOrEqual(ACCOUNT_ROUTES.length + 1);
@@ -129,10 +146,12 @@ describe("HTTP API routes", () => {
 });
 
 describe("functions", () => {
-  it("run Node.js 24 on arm64, with the data function at 1 GB", () => {
+  it("run Node.js 24 on arm64, with the data function at 1 GB, and the ops function in the primary region only", () => {
     const { template } = api();
     const fns = resources(template, "AWS::Lambda::Function").map(([id, r]) => [id, r.Properties] as const);
-    expect(fns).toHaveLength(3);
+    expect(fns).toHaveLength(4);
+    expect(fns.some(([id]) => id.startsWith("OpsFunction"))).toBe(true);
+    expect(resources(api(WEST).template, "AWS::Lambda::Function").some(([id]) => id.startsWith("OpsFunction"))).toBe(false);
     for (const [, p] of fns) expect(p).toMatchObject({ Runtime: "nodejs24.x", Architectures: ["arm64"], Timeout: 10, TracingConfig: { Mode: "Active" } });
     expect(fns.find(([id]) => id.startsWith("DataFunction"))?.[1].MemorySize).toBe(1024);
   });
@@ -181,7 +200,20 @@ describe("data-access role (LeadingKeys)", () => {
 
   it("reaches only items in the session team's partitions, and only through the item and query actions", () => {
     const [policy] = role().Policies;
-    const [items, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    const [items, opsAudit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    // Owners read what operators did to their team: read only, without the operator's identity (ADR 0015)
+    expect(opsAudit).toEqual({
+      Sid: "OwnOperatorAuditReadOnly",
+      Effect: "Allow",
+      Action: "dynamodb:Query",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["OPAUDIT#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": [...OWNER_OPERATOR_AUDIT_ATTRIBUTES] },
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
+    });
+    expect(OWNER_OPERATOR_AUDIT_ATTRIBUTES).not.toContain("operatorSub");
+    expect(JSON.stringify(opsAudit?.Resource)).not.toMatch(/index|\*/);
     expect(rest).toEqual([]);
     expect(items).toMatchObject({
       Sid: "TeamItemsOnly",
@@ -301,5 +333,113 @@ describe("account-access role (LeadingKeys)", () => {
     );
     expect(assumes.filter(([, r]) => /AccountAccessRole/.test(r as string)).map(([id]) => id)).toEqual([expect.stringMatching(/^AccountFunctionRole/)]);
     expect(assumes.filter(([, r]) => /DataAccessRole/.test(r as string)).map(([id]) => id)).toEqual([expect.stringMatching(/^DataFunctionRole/)]);
+  });
+});
+
+describe("operator-access role (ADR 0015)", () => {
+  const role = () => {
+    const { template } = api();
+    const [[, r]] = resources(template, "AWS::IAM::Role").filter(([id]) => id.startsWith("OperatorAccessRole")) as [[string, Resource]];
+    return r.Properties as { AssumeRolePolicyDocument: { Statement: Record<string, unknown>[] }; Policies: { PolicyDocument: { Statement: Record<string, unknown>[] } }[]; MaxSessionDuration: number };
+  };
+
+  it("can be assumed only by the ops function's role, with exactly one teamId session tag", () => {
+    const r = role();
+    expect(r.MaxSessionDuration).toBe(3600);
+    const [trust, ...rest] = r.AssumeRolePolicyDocument.Statement;
+    expect(rest).toEqual([]);
+    expect(trust).toMatchObject({
+      Effect: "Allow",
+      Action: ["sts:AssumeRole", "sts:TagSession"],
+      Principal: { AWS: { "Fn::GetAtt": [expect.stringMatching(/^OpsFunctionRole/), "Arn"] } },
+      Condition: { StringLike: { "aws:RequestTag/teamId": "?*" }, "ForAllValues:StringEquals": { "aws:TagKeys": ["teamId"] } },
+    });
+  });
+
+  it("queries only the operators' index partitions, for projected attributes only; updates only comp attributes of the tagged team; and only appends operator audit", () => {
+    const [policy, ...others] = role().Policies;
+    expect(others).toEqual([]);
+    const [index, comp, audit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    expect(rest).toEqual([]);
+    expect(index).toEqual({
+      Sid: "OpsIndexProjectionOnly",
+      Effect: "Allow",
+      Action: "dynamodb:Query",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["OPS#TEAMS", "OPS#OWNERS#*", "OPS#AUDIT#*"] },
+        // Never ALL_ATTRIBUTES, which would fetch unprojected attributes from the table
+        StringEquals: { "dynamodb:Select": ["ALL_PROJECTED_ATTRIBUTES", "SPECIFIC_ATTRIBUTES"] },
+      },
+    });
+    expect(JSON.stringify(index?.Resource)).toContain("/index/GSI3");
+    expect(JSON.stringify(index?.Resource)).not.toMatch(/GSI1|GSI2/);
+    expect(comp).toEqual({
+      Sid: "CompAttributesOnly",
+      Effect: "Allow",
+      // No PutItem or DeleteItem in a team's partition, and no reads there at all
+      Action: "dynamodb:UpdateItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": [...COMP_ATTRIBUTES] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": ["NONE", "UPDATED_OLD", "UPDATED_NEW"] },
+      },
+    });
+    // ADR 0009: never plan or status; and nothing about the team's data
+    expect([...COMP_ATTRIBUTES]).toEqual(["PK", "SK", "type", "version", "compPlan", "compSeats", "compUntil", "compReason", "compBy", "compAt"]);
+    expect(JSON.stringify(comp?.Resource)).not.toMatch(/index|\*/);
+    expect(audit).toEqual({
+      Sid: "OperatorAuditAppendOnly",
+      Effect: "Allow",
+      // No UpdateItem or DeleteItem: audit items can't be changed or removed
+      Action: ["dynamodb:PutItem", "dynamodb:Query"],
+      Resource: expect.anything(),
+      Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["OPAUDIT#*"] } },
+    });
+    expect(JSON.stringify(audit?.Resource)).not.toContain("index");
+    expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } });
+    // Nothing reads a team's partition from the table: no GetItem, no Query there, no Scan anywhere
+    expect(JSON.stringify(policy)).not.toMatch(/GetItem|Scan|Batch|DeleteItem|ConditionCheck/);
+  });
+
+  it("is the only thing the ops function may assume, and it may call only AdminListGroupsForUser on the operator pool in Cognito", () => {
+    const { template } = api();
+    const statements = resources(template, "AWS::IAM::Policy")
+      .filter(([id]) => id.startsWith("OpsFunctionRole"))
+      .flatMap(([, p]) => (p.Properties.PolicyDocument as { Statement: { Action: unknown; Resource: unknown }[] }).Statement);
+    expect(statements.filter((s) => JSON.stringify(s.Action).includes("sts:")).map((s) => JSON.stringify(s.Resource))).toEqual([expect.stringMatching(/OperatorAccessRole/)]);
+    const cognito = statements.filter((s) => JSON.stringify(s.Action).includes("cognito-idp:"));
+    expect(cognito).toEqual([expect.objectContaining({ Action: "cognito-idp:AdminListGroupsForUser", Resource: { Ref: expect.stringMatching(/identityopsuserpoolarn/i) } })]);
+    // No other function may assume the operator-access role
+    const assumes = resources(template, "AWS::IAM::Policy").filter(([id, p]) => !id.startsWith("OpsFunctionRole") && /OperatorAccessRole/.test(JSON.stringify(p.Properties.PolicyDocument)));
+    expect(assumes).toEqual([]);
+  });
+
+  it("gives the ops function the operator pool's settings and its role", () => {
+    const { template } = api();
+    const fn = resources(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("OpsFunction"))?.[1].Properties.Environment as { Variables: Record<string, unknown> };
+    expect(fn.Variables).toMatchObject({
+      TABLE_NAME: "supply-checkout-prod-app",
+      OPS_ROLE_ARN: { "Fn::GetAtt": [expect.stringMatching(/^OperatorAccessRole/), "Arn"] },
+      OPS_ISSUER_URL: { Ref: expect.stringMatching(/opsissuerurl/i) },
+      OPS_CLIENT_ID: { Ref: expect.stringMatching(/opsclientid/i) },
+      OPS_USER_POOL_ID: { Ref: expect.stringMatching(/opsuserpoolid/i) },
+    });
+  });
+});
+
+describe("no role can manage users or groups (ADR 0015)", () => {
+  it("never grants creating users or changing groups in any stack, so nothing but an SSO administrator can add an operator", () => {
+    const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [] } });
+    const stacks = addSupplyCheckout(app, config);
+    for (const stack of stacks.all) {
+      const template = Template.fromStack(stack);
+      for (const type of ["AWS::IAM::Policy", "AWS::IAM::Role", "AWS::IAM::ManagedPolicy"]) {
+        for (const [id, r] of resources(template, type)) {
+          const text = JSON.stringify(r.Properties);
+          expect(text, `${stack.stackName} ${id}`).not.toMatch(/AdminCreateUser|AdminAddUserToGroup|AdminRemoveUserFromGroup|CreateGroup|cognito-idp:\*|"Action":"\*"/);
+        }
+      }
+    }
   });
 });

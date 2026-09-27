@@ -10,7 +10,7 @@
  * idempotent by operation ID, and a product's stock history. And the CSV
  * inventory import.
  */
-export type Operation = "list" | "get" | "set" | "update" | "delete" | "checkout" | "return" | "addLines" | "adjustStock" | "movements" | "importProducts";
+export type Operation = "list" | "get" | "set" | "update" | "delete" | "checkout" | "return" | "addLines" | "adjustStock" | "movements" | "importProducts" | "supportActions";
 export type HttpMethod = "GET" | "PUT" | "PATCH" | "DELETE" | "POST";
 
 /**
@@ -24,7 +24,8 @@ export const TEAM_ROLES: readonly TeamRole[] = ["viewer", "contributor", "owner"
 export interface DataRoute {
   readonly method: HttpMethod;
   readonly path: string;
-  readonly collection: "products" | "sheets";
+  /** The documents it serves; `team` for a route about the team itself. */
+  readonly collection: "products" | "sheets" | "team";
   readonly operation: Operation;
   /**
    * The least role that may call it. The handler checks it on every request,
@@ -54,6 +55,8 @@ const commandRoutes: DataRoute[] = [
   // CSV inventory import, all or nothing and idempotent by import ID (backend/src/data/imports.ts). Owners only.
   // Up to 1,000 rows each, so it has its own throttle: imports are occasional, onboarding work.
   { method: "POST", path: "/teams/{teamId}/imports", collection: "products", operation: "importProducts", minRole: "owner", throttle: { rate: 5, burst: 10 } },
+  // What platform operators did to the team (ADR 0015), attributed to "Supply Checkout support". Owners only.
+  { method: "GET", path: "/teams/{teamId}/support-actions", collection: "team", operation: "supportActions", minRole: "owner" },
 ];
 
 /** Team data. Every one needs a Cognito access token (the JWT authorizer). */
@@ -140,6 +143,36 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
   { method: "POST", path: "/me/email/verify", action: "verifyEmail", throttle: { rate: 10, burst: 20 } },
 ];
 
+export interface OpsRoute {
+  readonly method: "GET" | "PUT" | "DELETE";
+  readonly path: string;
+  readonly action: "listTeams" | "getTeam" | "setComp" | "endComp" | "listAudit";
+  readonly throttle: { readonly rate: number; readonly burst: number };
+}
+
+/**
+ * Platform operators (ADR 0015): list and search teams, read one team's
+ * account record, comp a team or end its comp, and read the operator audit.
+ * Each needs an access token from the operator user pool (its own JWT
+ * authorizer; a customer's token fails it), and the `ops` function checks
+ * the `operators` group with Cognito on every request. Primary region only.
+ */
+export const OPS_ROUTES: readonly OpsRoute[] = [
+  { method: "GET", path: "/ops/teams", action: "listTeams", throttle: { rate: 5, burst: 10 } },
+  { method: "GET", path: "/ops/teams/{teamId}", action: "getTeam", throttle: { rate: 5, burst: 10 } },
+  { method: "PUT", path: "/ops/teams/{teamId}/comp", action: "setComp", throttle: { rate: 2, burst: 5 } },
+  { method: "DELETE", path: "/ops/teams/{teamId}/comp", action: "endComp", throttle: { rate: 2, burst: 5 } },
+  { method: "GET", path: "/ops/audit", action: "listAudit", throttle: { rate: 5, burst: 10 } },
+];
+
+/**
+ * The session tag the ops function puts on its operator-access role session:
+ * the team a comp changes, or OPS_TAG_UNUSED. The role may update the comp
+ * attributes of `TEAM#<tag>` only (dynamodb:LeadingKeys).
+ */
+export const OPS_SESSION_TAG = "teamId";
+export const OPS_TAG_UNUSED = ".";
+
 /** The header that makes `POST /teams` idempotent: the client's key for one "create team" attempt. */
 export const IDEMPOTENCY_HEADER = "idempotency-key";
 
@@ -183,6 +216,14 @@ export const API_ENV = {
   clientId: "CLIENT_ID",
   /** Comma-separated origins allowed to call the auth endpoints, e.g. `https://app.<env domain>`. */
   allowedOrigins: "ALLOWED_ORIGINS",
+  /** The role the ops function assumes (ADR 0015). */
+  opsRoleArn: "OPS_ROLE_ARN",
+  /** The operator pool's issuer URL: only its tokens reach the ops function. */
+  opsIssuerUrl: "OPS_ISSUER_URL",
+  /** The operator pool's `ops` client: the only audience the ops function accepts. */
+  opsClientId: "OPS_CLIENT_ID",
+  /** The operator pool, for AdminListGroupsForUser on every request. */
+  opsUserPoolId: "OPS_USER_POOL_ID",
 } as const;
 
 /** The refresh-token cookie, scoped to the auth endpoints. */

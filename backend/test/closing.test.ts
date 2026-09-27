@@ -23,6 +23,7 @@ import {
   getTeam,
   InvalidInputError,
   LastOwnerError,
+  LimitReachedError,
   linkStripeCustomer,
   listInvitesForEmail,
   listTeamsForUser,
@@ -31,6 +32,7 @@ import {
   NotFoundError,
   purgeTeam,
   REOPEN_CUTOFF_MINUTES,
+  REOPENS_PER_TEAM_PER_DAY,
   removeMember,
   reopenTeam,
   setDocument,
@@ -202,6 +204,21 @@ describe.skipIf(!endpoint)("closing teams and deleting accounts (DynamoDB Local)
     expect(await listTeamsForUser(table.db, other.ownerId)).toHaveLength(1);
   });
 
+  it("reopens a team at most REOPENS_PER_TEAM_PER_DAY times a UTC day", async () => {
+    const now = new Date("2026-09-01T08:00:00.000Z");
+    const { teamId, owner, ownerId } = await team(now);
+    const cycle = async (at: Date) => {
+      await closeTeam(table.db, await authorizeTeam(table.db, ownerId, teamId), { confirmName: "Echo Cleaning" }, at);
+      return reopenTeam(table.db, await authorizeTeam(table.db, ownerId, teamId), { confirmName: "Echo Cleaning" }, at);
+    };
+    for (let i = 0; i < REOPENS_PER_TEAM_PER_DAY; i++) expect((await cycle(new Date(now.getTime() + i * 60_000))).reopenedNow).toBe(true);
+    await expect(cycle(new Date(now.getTime() + 3600_000))).rejects.toBeInstanceOf(LimitReachedError);
+    expect((await getTeam(table.db, owner)).closedAt).toBeDefined();
+    expect(await rawItem(table.db, `TEAM#${teamId}`, "LIMIT#REOPENS#2026-09-01")).toMatchObject({ count: REOPENS_PER_TEAM_PER_DAY });
+    // The next UTC day it can
+    expect((await reopenTeam(table.db, await authorizeTeam(table.db, ownerId, teamId), { confirmName: "Echo Cleaning" }, new Date("2026-09-02T00:00:01.000Z"))).reopenedNow).toBe(true);
+  });
+
   it("reopens a closed team: writable, out of the purge index, live updates back, audited, and idempotent", async () => {
     const now = new Date("2026-09-01T00:00:00.000Z");
     const { teamId, owner, ownerId, crew, crewId } = await team(now);
@@ -235,7 +252,7 @@ describe.skipIf(!endpoint)("closing teams and deleting accounts (DynamoDB Local)
     expect((await listTeamsToPurge(table.db, new Date(later.getTime() + (CLOSED_TEAM_RETENTION_DAYS + 1) * DAY))).map((t) => t.teamId)).toContain(teamId);
   });
 
-  it("refuses to reopen near the purge, for an owner demoted meanwhile, or a closure that changed; a system context can", async () => {
+  it("refuses to reopen near the purge, for an owner removed meanwhile, or for a system context", async () => {
     const now = new Date("2026-09-01T00:00:00.000Z");
     const { teamId, owner, ownerId, crewId } = await team(now);
     await setMemberRole(table.db, owner, crewId, "owner");
@@ -254,11 +271,12 @@ describe.skipIf(!endpoint)("closing teams and deleting accounts (DynamoDB Local)
     const later = new Date(now.getTime() + DAY);
     await closeTeam(table.db, await authorizeTeam(table.db, crewId, teamId), { confirmName: "Echo Cleaning" }, later);
     expect((await reopenTeam(table.db, stale, { confirmName: "Echo Cleaning" }, later)).reopenedNow).toBe(true);
-    // Operator support (6uw.6) reopens with a system context; the audit names it
+    // No system context (billing, email events) can reopen a team
     await closeTeam(table.db, await authorizeTeam(table.db, crewId, teamId), { confirmName: "Echo Cleaning" }, later);
     const system = await teamContextForEmailEvent(table.db, teamId);
     if (!system) throw new Error("no team");
-    expect((await reopenTeam(table.db, system, { confirmName: "Echo Cleaning" }, later)).reopenedNow).toBe(true);
-    expect((await partition(`TEAM#${teamId}`)).filter((i) => i.action === "team.reopened").map((i) => i.userId).sort()).toEqual([crewId, crewId, "system:email"].sort());
+    await expect(reopenTeam(table.db, system, { confirmName: "Echo Cleaning" }, later)).rejects.toBeInstanceOf(ForbiddenError);
+    expect((await rawItem(table.db, `TEAM#${teamId}`, "META"))?.closedAt).toBe(later.toISOString());
+    expect((await partition(`TEAM#${teamId}`)).filter((i) => i.action === "team.reopened").map((i) => i.userId)).toEqual([crewId, crewId]);
   });
 });
