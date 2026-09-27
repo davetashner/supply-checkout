@@ -1223,7 +1223,7 @@
     "DeletionsCopyChanges82E64460": {
       "Type": "AWS::Events::Rule",
       "Properties": {
-        "Description": "Deletion records copy (backup account): its bucket policy, ownership controls, Object Lock configuration or versioning changed",
+        "Description": "Deletion records copy (backup account): its policy, ownership, Object Lock, versioning, lifecycle or public access changed",
         "EventPattern": {
           "source": [
             "aws.s3"
@@ -1236,6 +1236,10 @@
               "s3.amazonaws.com"
             ],
             "eventName": [
+              "PutBucketLifecycle",
+              "DeleteBucketLifecycle",
+              "PutBucketPublicAccessBlock",
+              "DeleteBucketPublicAccessBlock",
               "PutBucketPolicy",
               "DeleteBucketPolicy",
               "PutBucketOwnershipControls",

@@ -32,11 +32,15 @@ export const BACKUP_KEY_EVENTS = ["ScheduleKeyDeletion", "DisableKey", "PutKeyPo
  * S3 calls on the backup account's deletion records copy that could stop
  * replication into it or weaken what it keeps: its bucket policy (who may
  * replicate), ownership controls (who owns the replicas), Object Lock
- * configuration (the default retention) and versioning (which replication and
- * Object Lock need). CloudTrail names the IAM actions' API calls:
+ * configuration (the default retention), versioning (which replication and
+ * Object Lock need), lifecycle (expiry) and public access. CloudTrail names the IAM actions' API calls:
  * PutObjectLockConfiguration is the s3:PutBucketObjectLockConfiguration action.
  */
 export const DELETIONS_COPY_CHANGE_EVENTS = [
+  "PutBucketLifecycle",
+  "DeleteBucketLifecycle",
+  "PutBucketPublicAccessBlock",
+  "DeleteBucketPublicAccessBlock",
   "PutBucketPolicy",
   "DeleteBucketPolicy",
   "PutBucketOwnershipControls",
@@ -146,7 +150,7 @@ export interface DeletionsCopyChangeAlertProps {
 export function deletionsCopyChangeAlert(scope: Construct, id: string, props: DeletionsCopyChangeAlertProps): Rule {
   const rule = new Rule(scope, id, {
     ruleName: deletionsCopyAlertRuleName(props.envName),
-    description: "Deletion records copy (backup account): its bucket policy, ownership controls, Object Lock configuration or versioning changed",
+    description: "Deletion records copy (backup account): its policy, ownership, Object Lock, versioning, lifecycle or public access changed",
     eventPattern: {
       source: ["aws.s3"],
       detailType: ["AWS API Call via CloudTrail"],

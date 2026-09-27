@@ -131,9 +131,10 @@ export class ObservabilityStack extends SupplyCheckoutStack {
 
     if (this.isPrimaryRegion) {
       this.checks = new OpsChecks(this, "OpsChecks", { envName: config.envName, tableName: table, topics: this.topics });
-      this.operatorChanges = this.alertOnOperatorChanges(config.envName);
-      this.operatorAudit = new OperatorAuditWatch(this, "OperatorAuditWatch", { envName: config.envName, region, topics: this.topics });
       this.deletionRecords = new DeletionRecordsWatch(this, "DeletionRecordsWatch", { envName: config.envName, region, topics: this.topics });
+      // The tampering rule also watches the deletion records watch's two rules (supply-checkout-72d.17)
+      this.operatorChanges = this.alertOnOperatorChanges(config.envName, [this.deletionRecords.rule, this.deletionRecords.bucketChanges]);
+      this.operatorAudit = new OperatorAuditWatch(this, "OperatorAuditWatch", { envName: config.envName, region, topics: this.topics });
       // The backup stack (primary region, deployed after this one) alerts P1
       // when its vault, plan or key is changed (backup-alerts.ts): only its
       // two rules, by name, may publish
@@ -185,11 +186,12 @@ export class ObservabilityStack extends SupplyCheckoutStack {
    * - `OperatorRuleTampering`: deleting or disabling either rule above, or
    *   removing its target (OPERATOR_RULE_SILENCING_EVENTS), whoever does it,
    *   and rewriting its pattern or targets (OPERATOR_RULE_CHANGE_EVENTS)
-   *   outside a deploy. A rule can't report its own deletion, so this is a
+   *   outside a deploy. `alsoWatched` rules (the deletion records watch's
+   *   two) are watched the same way. A rule can't report its own deletion, so this is a
    *   separate rule; silencing this one first isn't caught (see "Operators"
    *   in docs/infrastructure.md).
    */
-  private alertOnOperatorChanges(envName: string): Rule[] {
+  private alertOnOperatorChanges(envName: string, alsoWatched: Rule[]): Rule[] {
     const poolId = StringParameter.valueForStringParameter(this, identityOutputParameters(envName).opsUserPoolId);
     const cloudTrail = { detailType: ["AWS API Call via CloudTrail"] };
     const base = { source: ["aws.cognito-idp"], ...cloudTrail };
@@ -221,7 +223,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       },
     });
     // DeleteRule, DisableRule and PutRule name the rule in `name`; RemoveTargets and PutTargets in `rule`
-    const watched = [admin.ruleName, selfService.ruleName];
+    const watched = [admin.ruleName, selfService.ruleName, ...alsoWatched.map((r) => r.ruleName)];
     const silencing = OPERATOR_RULE_SILENCING_EVENTS.filter((e) => e !== "RemoveTargets");
     const tampering = new Rule(this, "OperatorRuleTampering", {
       description: "An operator alert rule was deleted, disabled or lost its target, or was rewritten outside a deploy (ADR 0015)",
@@ -267,7 +269,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     const messages = new Map([
       [admin, message("the operator pool")],
       [selfService, message("the operator pool")],
-      [tampering, message("an operator alert rule")],
+      [tampering, message("a watched alert rule (the operator pool's or the deletion records')")],
     ]);
     for (const rule of rules) {
       // A plain target: events-targets' SnsTopic would add a topic policy for every rule in the account

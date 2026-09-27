@@ -582,7 +582,17 @@ describe("backup account vault stack", () => {
   it("alerts when the deletion records copy's policy, ownership, Object Lock or versioning changes (supply-checkout-72d.13)", () => {
     const { template } = backupAccount();
     expect([...DELETIONS_COPY_CHANGE_EVENTS]).toEqual(
-      expect.arrayContaining(["PutBucketPolicy", "DeleteBucketPolicy", "PutBucketOwnershipControls", "PutObjectLockConfiguration", "PutBucketVersioning"]),
+      expect.arrayContaining([
+        "PutBucketPolicy",
+        "DeleteBucketPolicy",
+        "PutBucketOwnershipControls",
+        "PutObjectLockConfiguration",
+        "PutBucketVersioning",
+        "PutBucketLifecycle",
+        "DeleteBucketLifecycle",
+        "PutBucketPublicAccessBlock",
+        "DeleteBucketPublicAccessBlock",
+      ]),
     );
     const rule = byName(template, deletionsCopyAlertRuleName("prod"));
     expect(rule.Properties.EventPattern).toEqual({

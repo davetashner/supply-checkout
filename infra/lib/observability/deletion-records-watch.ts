@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { Aws, Duration } from "aws-cdk-lib";
-import { Alarm, ComparisonOperator, TreatMissingData } from "aws-cdk-lib/aws-cloudwatch";
-import { Rule } from "aws-cdk-lib/aws-events";
+import { Alarm, ComparisonOperator, MathExpression, Metric, TreatMissingData } from "aws-cdk-lib/aws-cloudwatch";
+import { EventField, Rule, RuleTargetInput } from "aws-cdk-lib/aws-events";
 import { LambdaFunction } from "aws-cdk-lib/aws-events-targets";
 import { PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { Architecture, Runtime } from "aws-cdk-lib/aws-lambda";
@@ -17,6 +17,31 @@ import { LOG_RETENTION } from "./defaults.js";
 import { business, FIVE_MINUTES } from "./metrics.js";
 
 const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
+
+/**
+ * S3 calls on the deletion records bucket that could silence the watch or
+ * weaken the records: a lifecycle rule (its expirations make delete markers
+ * the watch leaves out), notifications (turning EventBridge off starves it),
+ * the bucket policy, replication, ownership, public access, Object Lock and
+ * versioning. CloudTrail's names: PutBucketLifecycle is
+ * PutBucketLifecycleConfiguration, PutBucketNotification
+ * PutBucketNotificationConfiguration.
+ */
+export const DELETIONS_BUCKET_CHANGE_EVENTS = [
+  "PutBucketLifecycle",
+  "DeleteBucketLifecycle",
+  "PutBucketNotification",
+  "PutBucketPolicy",
+  "DeleteBucketPolicy",
+  "PutBucketReplication",
+  "DeleteBucketReplication",
+  "PutBucketOwnershipControls",
+  "DeleteBucketOwnershipControls",
+  "PutBucketPublicAccessBlock",
+  "DeleteBucketPublicAccessBlock",
+  "PutObjectLockConfiguration",
+  "PutBucketVersioning",
+] as const;
 
 export interface DeletionRecordsWatchProps {
   readonly envName: string;
@@ -41,9 +66,19 @@ export interface DeletionRecordsWatchProps {
  *   an object, so it lists the key's versions).
  * - `rewritten`: P2 when DeletionRecordRewrites is above 0 in 5 minutes
  *   ("Deletion record rewritten").
- * - `failing`: P2 when the watch itself fails ("Deletion records watch
- *   failing"). EventBridge retries it twice; after that the event is gone and
- *   the bucket's access log is what's left.
+ * - `failing`: P2 when the watch itself fails or misses an event ("Deletion
+ *   records watch failing"): the function's errors, events Lambda dropped
+ *   after its retries (AsyncEventsDropped), and invocations EventBridge
+ *   couldn't make (FailedInvocations). After that the event is gone and the
+ *   bucket's access log is what's left. No reserved concurrency: a new
+ *   account's limit can leave nothing to reserve, and a throttled event waits
+ *   in Lambda's queue for up to 6 hours, and alarms if it's dropped.
+ * - `bucketChanges`: P1 (the level of the rule-tampering alerts) on
+ *   DELETIONS_BUCKET_CHANGE_EVENTS, from CloudTrail, CloudFormation's calls
+ *   included: one such call (a one-day lifecycle rule, notifications off)
+ *   would silence the watch. The P1 topic lets only this rule, by ARN,
+ *   publish. The operator rule-tampering rule (observability-stack.ts) alerts
+ *   when this rule or `rule` is deleted, disabled or retargeted.
  *
  * Why S3's events and not CloudTrail data events: neither says whether a
  * write replaced an object, so either needs the version check. S3's events to
@@ -58,6 +93,7 @@ export class DeletionRecordsWatch extends Construct {
   readonly rule: Rule;
   readonly rewritten: Alarm;
   readonly failing: Alarm;
+  readonly bucketChanges: Rule;
 
   constructor(scope: Construct, id: string, props: DeletionRecordsWatchProps) {
     super(scope, id);
@@ -120,12 +156,46 @@ export class DeletionRecordsWatch extends Construct {
       alarmDescription:
         "P2. Deletion records watch failing: the function that checks deletion records for rewrites threw, so a rewrite could go unseen. " +
         "Its log has the error. Runbook: docs/backups.md, When a deletion record is rewritten.",
-      metric: this.fn.metricErrors({ period: FIVE_MINUTES, statistic: "Sum" }),
+      metric: new MathExpression({
+        expression: "FILL(errors, 0) + FILL(dropped, 0) + FILL(failed, 0)",
+        usingMetrics: {
+          errors: this.fn.metricErrors({ period: FIVE_MINUTES, statistic: "Sum" }),
+          dropped: this.fn.metric("AsyncEventsDropped", { period: FIVE_MINUTES, statistic: "Sum" }),
+          failed: new Metric({ namespace: "AWS/Events", metricName: "FailedInvocations", dimensionsMap: { RuleName: this.rule.ruleName }, period: FIVE_MINUTES, statistic: "Sum" }),
+        },
+        period: FIVE_MINUTES,
+        label: "Deletion records watch errors and missed events",
+      }),
       threshold: 0,
       evaluationPeriods: 1,
       comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
       treatMissingData: TreatMissingData.NOT_BREACHING,
     });
     props.topics.notify(this.failing, "P2");
+
+    this.bucketChanges = new Rule(this, "BucketChanges", {
+      description: "Deletion records bucket: lifecycle, notifications, policy, replication, ownership, public access, Object Lock or versioning changed",
+      eventPattern: {
+        source: ["aws.s3"],
+        detailType: ["AWS API Call via CloudTrail"],
+        detail: { eventSource: ["s3.amazonaws.com"], eventName: [...DELETIONS_BUCKET_CHANGE_EVENTS], requestParameters: { bucketName: [bucket] } },
+      },
+    });
+    const p1 = props.topics.topics.P1;
+    // EventBridge may already use the topics' key (the operator alerts add that, for this account's rules)
+    p1.addToResourcePolicy(
+      new PolicyStatement({
+        sid: "AllowDeletionsBucketAlertToPublish",
+        principals: [new ServicePrincipal("events.amazonaws.com")],
+        actions: ["sns:Publish"],
+        resources: [p1.topicArn],
+        conditions: { ArnEquals: { "aws:SourceArn": this.bucketChanges.ruleArn } },
+      }),
+    );
+    const message = RuleTargetInput.fromText(
+      `Supply Checkout ${props.envName}: ${EventField.fromPath("$.detail.eventName")} on the deletion records bucket at ${EventField.fromPath("$.detail.eventTime")} (CloudTrail event ${EventField.fromPath("$.detail.eventID")} says who). Expected only during a deploy of the data stack. Otherwise follow "When the deletion records bucket is changed" in docs/backups.md.`,
+    );
+    // A plain target: events-targets' SnsTopic would add a topic policy for every rule in the account
+    this.bucketChanges.addTarget({ bind: () => ({ arn: p1.topicArn, input: message }) });
   }
 }
