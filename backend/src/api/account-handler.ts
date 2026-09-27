@@ -308,6 +308,9 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
    */
   async function keepMemberEmail(db: ReturnType<DbForAccount>, ctx: TeamContext, email: string): Promise<void> {
     if (ctx.closed) return;
+    // Two /me calls at once, around an address change, could each read and write: the
+    // last write wins, and if it carried the older address the next /me corrects it
+    // (both only ever write an address Cognito verified for this user). Self-healing.
     try {
       const member = await getMember(db, ctx, ctx.userId);
       if (member && member.email !== email) await setOwnMemberEmail(db, ctx, email);
@@ -413,8 +416,16 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const leaving = pathId(event, "userId", "user ID") === userId;
     if (!leaving) requireRole(ctx.role, "owner");
     const { target, db } = await targetMember(event, userId, teamId, ctx);
-    // Leaving also revokes invites to the caller's verified address now, whatever their member item holds
-    const email = leaving ? verifiedEmail(await cognitoUser(event, userId)) : undefined;
+    // Leaving also revokes invites to the caller's verified address now, whatever their member item holds.
+    // Best effort: if Cognito can't say (an outage, throttling), leaving still works, with the member item's address
+    const email = leaving
+      ? await cognitoUser(event, userId)
+          .then(verifiedEmail)
+          .catch((error: unknown) => {
+            obs.logger.warn("Verified email not read for leaving", { teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+            return undefined;
+          })
+      : undefined;
     await removeMember(db, ctx, target, email ? { verifiedEmail: email } : {});
     return noContent();
   }

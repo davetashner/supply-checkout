@@ -43,6 +43,7 @@ let scopes: AccountScope[];
 let mails: ReturnType<typeof fakeMailer>;
 let counts: [string, number, Record<string, unknown> | undefined][];
 let logs: unknown[];
+let cognitoDown: boolean;
 let handler: ReturnType<typeof createAccountHandler>;
 
 function member(teamId: string, userId: string, role: string) {
@@ -59,6 +60,7 @@ function team(teamId: string, name: string, members: Record<string, string>) {
 
 beforeEach(() => {
   now = START;
+  cognitoDown = false;
   table = new MemoryTable();
   scopes = [];
   counts = [];
@@ -78,6 +80,7 @@ beforeEach(() => {
     flush: () => {},
   } as unknown as Observability;
   const userInfo = async (token: string) => {
+    if (cognitoDown) throw new Error("GetUser failed: 500");
     const user = USERS[token.replace(/^token-/, "")];
     if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
     return user;
@@ -614,6 +617,16 @@ describe("removing a member", () => {
     expect((await call("DELETE", `/teams/team-a/members/${SAM}`, SAM)).status).toBe(204);
     expect(stored("sam-second")).toBeUndefined();
     expect(stored("pat-1")).toBeDefined();
+  });
+
+  it("still lets someone leave when Cognito can't be reached, revoking invites to the member item's address", async () => {
+    staleInvite("sam@example.com", "sam-second");
+    cognitoDown = true;
+    expect((await call("DELETE", `/teams/team-a/members/${SAM}`, SAM)).status).toBe(204);
+    expect(table.get("TEAM#team-a", `MEMBER#${SAM}`)).toBeUndefined();
+    expect(stored("sam-second")).toBeUndefined();
+    expect(logs).toContainEqual(["warn", "Verified email not read for leaving", { teamId: "team-a", code: "Error" }]);
+    expect(JSON.stringify(logs)).not.toMatch(/sam@/);
   });
 
   it("revokes invites to both the stored and the verified address when they differ", async () => {
