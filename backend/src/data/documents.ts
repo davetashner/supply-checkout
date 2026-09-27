@@ -22,7 +22,7 @@
 import { randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
-import { ConflictError, InvalidInputError, NotFoundError, TooLargeError } from "./errors.js";
+import { ConflictError, InvalidInputError, NotFoundError, TooLargeError, isItemTooLarge } from "./errors.js";
 import { barcode, id as checkId, keys, prefixes, productKey, teamPartition } from "./keys.js";
 import { money, storedMoney } from "./money.js";
 import type { Movement } from "./commands.js";
@@ -136,14 +136,14 @@ function checkValue(value: unknown, depth: number): void {
 const sameValue = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b);
 
 /**
- * A sheet line's price or cost as the write leaves it. A value the write
- * changes (or a new line's) must follow the money rule. One the line already
- * had is legacy money the write doesn't touch (ADR 0014: the server accepts
- * it on read and rejects only what's written), so it doesn't block the
- * write: it's rounded to cents, as ADR 0014 says it is "when next saved", or
- * kept as it is if it isn't an amount at all.
+ * A product's or sheet line's price or cost as the write leaves it. A value
+ * the write changes (or a new product's or line's) must follow the money
+ * rule. One `stored` already had is legacy money the write doesn't touch
+ * (ADR 0014: the server accepts it on read and rejects only what's written),
+ * so it doesn't block the write: it's rounded to cents, as ADR 0014 says it
+ * is "when next saved", or kept as it is if it isn't an amount at all.
  */
-function lineMoney(value: unknown, stored: Record<string, unknown> | undefined, field: "price" | "cost"): unknown {
+function writtenMoney(value: unknown, stored: Record<string, unknown> | undefined, field: "price" | "cost"): unknown {
   if (stored && Object.hasOwn(stored, field) && sameValue(stored[field], value)) return storedMoney(value) ?? value;
   return money(value, field);
 }
@@ -163,6 +163,8 @@ function checkDocument(collection: Collection, data: unknown, before?: StoredDoc
   if (collection === "products") {
     if ("stock" in data && typeof data.stock !== "number") throw new InvalidInputError("Invalid stock");
     if ("code" in data) barcode(data.code);
+    // A product's price and cost follow the money rule like a sheet line's (ADR 0014)
+    for (const field of ["price", "cost"] as const) if (Object.hasOwn(data, field)) data[field] = writtenMoney(data[field], before?.data, field);
   }
   if (collection === "sheets") {
     if ("date" in data && typeof data.date !== "string") throw new InvalidInputError("Invalid date");
@@ -174,7 +176,7 @@ function checkDocument(collection: Collection, data: unknown, before?: StoredDoc
       if (!isMap(line)) continue;
       const stored = Object.hasOwn(storedLines, key) && isMap(storedLines[key]) ? storedLines[key] : undefined;
       if ("code" in line) barcode(line.code);
-      for (const field of ["price", "cost"] as const) if (Object.hasOwn(line, field)) line[field] = lineMoney(line[field], stored, field);
+      for (const field of ["price", "cost"] as const) if (Object.hasOwn(line, field)) line[field] = writtenMoney(line[field], stored, field);
     }
   }
   if (Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_DOCUMENT_BYTES) {
@@ -235,8 +237,18 @@ const RACE_CODES = new Set([undefined, "None", "ConditionalCheckFailed", "Transa
 const isCancelledByRace = (error: unknown) =>
   (error as { name?: string } | null)?.name === "TransactionCanceledException" &&
   ((error as { CancellationReasons?: { Code?: string }[] }).CancellationReasons ?? []).every((r) => RACE_CODES.has(r.Code));
-const isTooLarge = (error: unknown) =>
-  (error as { name?: string } | null)?.name === "ValidationException" && /size/i.test((error as Error).message);
+
+/** Up to this long, in milliseconds, before the next attempt after a lost race. */
+const MAX_BACKOFF_MS = 200;
+/**
+ * The wait before attempt `attempt + 1` after a lost race: "full jitter", a
+ * random time up to an exponentially growing cap, so writers that keep
+ * racing for one item spread out instead of colliding again in step.
+ */
+export function retryDelay(attempt: number, random: () => number = Math.random): number {
+  return Math.floor(random() * Math.min(MAX_BACKOFF_MS, 10 * 2 ** attempt));
+}
+const backoff = (attempt: number) => new Promise((resolve) => setTimeout(resolve, retryDelay(attempt)));
 
 /**
  * Reads the current item, lets `build` make the next document from it, and
@@ -285,9 +297,11 @@ async function write(
       );
       return { before, after: { id, version, data } };
     } catch (error) {
-      if (isTooLarge(error)) throw new TooLargeError("This document is too large to save");
+      // DynamoDB's "Item size has exceeded the maximum allowed size"; any other ValidationException is a 500
+      if (isItemTooLarge(error)) throw new TooLargeError("This document is too large to save");
       if (!isRace(error)) throw error;
       if (expected !== undefined || attempt >= MAX_ATTEMPTS) throw new ConflictError("This document changed; reload and try again");
+      await backoff(attempt);
     }
   }
 }
@@ -493,6 +507,7 @@ async function deleteProductDocument(db: Db, ctx: TeamContext, id: string, expec
       // Cancelled because the product changed (or another transaction had it): read it again
       if (!isCancelledByRace(error)) throw error;
       if (expected !== undefined || attempt >= MAX_ATTEMPTS) throw new ConflictError("This document changed; reload and try again");
+      await backoff(attempt);
     }
   }
 }

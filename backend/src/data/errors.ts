@@ -57,6 +57,41 @@ export class InvalidInputError extends Error {
   override readonly name = "InvalidInputError";
 }
 
+/**
+ * DynamoDB's messages for an item over its 400 KB limit: a put's (a PutItem,
+ * or a Put in a transaction) and an update's. Matched from the start of the
+ * message, so a suffix DynamoDB adds later still matches but another message
+ * that merely mentions a size doesn't.
+ */
+export const ITEM_TOO_LARGE_MESSAGES: readonly string[] = ["Item size has exceeded the maximum allowed size", "Item size to update has exceeded the maximum allowed size"];
+
+/** True if `message` starts with one of `messages` (DynamoDB's own words). */
+export function startsWithAny(message: unknown, messages: readonly string[]): boolean {
+  const text = typeof message === "string" ? message.trim() : "";
+  return messages.some((m) => text.startsWith(m));
+}
+
+/**
+ * True when DynamoDB refused a write because an item would pass its 400 KB
+ * limit: a ValidationException with one of ITEM_TOO_LARGE_MESSAGES, or a
+ * transaction cancelled with a ValidationError reason carrying one. Any other
+ * ValidationException is a bug, and surfaces as one (500).
+ */
+export function isItemTooLarge(error: unknown): boolean {
+  const e = error as { name?: unknown; message?: unknown; CancellationReasons?: { Code?: string; Message?: string }[] } | null;
+  if (e?.name === "ValidationException") return startsWithAny(e.message, ITEM_TOO_LARGE_MESSAGES);
+  if (e?.name !== "TransactionCanceledException") return false;
+  return (e.CancellationReasons ?? []).some((r) => r?.Code === "ValidationError" && startsWithAny(r.Message, ITEM_TOO_LARGE_MESSAGES));
+}
+
+/**
+ * True when DynamoDB cancelled a transaction because an item in it would pass
+ * its 400 KB limit (see isItemTooLarge).
+ */
+export function isCancelledAsTooLarge(error: unknown): boolean {
+  return (error as { name?: unknown } | null)?.name === "TransactionCanceledException" && isItemTooLarge(error);
+}
+
 /** Maps DynamoDB's condition failures to ConflictError and rethrows anything else. */
 export function conflictOnConditionFailure(message: string): (error: unknown) => never {
   return (error: unknown) => {
