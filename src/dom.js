@@ -17,8 +17,9 @@ export function openModal(html, mount) {
 }
 export function closeModal() { $("#overlay").hidden = true; $("#modal").innerHTML = ""; }
 // Not while the modal's form is saving (saving() in src/main.js): closing it would lose what
-// was entered if the save then failed. Says whether the modal is closed now.
-export const dismiss = () => { if ($("#modal [aria-busy]")) return false; closeModal(); return true; };
+// was entered if the save then failed. Nor while a checkout's storage count is owed (owing() in
+// src/main.js): only its Cancel closes it, after a warning. Says whether the modal is closed now.
+export const dismiss = () => { if ($("#modal [aria-busy], #modal [data-owing]")) return false; closeModal(); return true; };
 $("#overlay").addEventListener("click", e => { if (e.target.id === "overlay") dismiss(); });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#overlay").hidden) dismiss(); });
 

@@ -146,7 +146,7 @@ test("a return whose answer was lost counts once on Try again", async ({ page })
 // The artifact writes the sheet line, then the storage count. If the storage count fails, the
 // form stays open with its quantity fixed, and Try again writes only the storage count, with a
 // mark on the item so it counts once (src/moves.js). (In the web build's mock runtime too.)
-const OWING = "Saved on the sheet, but the storage count didn't save. Tap Try again to finish; nothing is counted twice.";
+const OWING = "Saved on the sheet, but the storage count didn't save. Tap Try again to finish; nothing is counted twice. Cancel leaves storage as it is.";
 const qtyLocked = async (page, id) => {
   await expect(modal(page).locator("#" + id)).toBeDisabled();
   await expect(modal(page).getByRole("button", { name: "More" })).toBeDisabled();
@@ -175,6 +175,45 @@ test("a checkout whose storage count didn't save keeps the form open, and Try ag
   // Only the storage count was written again; the line is as it was
   expect(await writes(page)).toBe(before + 1);
   expect((await doc(page, "sheets/s1")).items.SKU1).toEqual(line);
+});
+
+// Closing the form then would leave storage uncounted, so only Cancel closes it, on a second tap
+test("a checkout whose storage count is owed warns before Cancel closes it", async ({ page }) => {
+  await openEcho(page);
+  await enterBarcode(page, "SKU1");
+  await failWrites(page, { prefix: "products/", code: "unavailable" });
+  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await expect(failedNote(page)).toHaveText(OWING);
+  // Escape and a tap outside don't close it
+  await page.keyboard.press("Escape");
+  await page.locator("#overlay").click({ position: { x: 5, y: 5 } });
+  await expect(failedNote(page)).toBeVisible();
+  const cancel = modal(page).locator("#cancel");
+  await cancel.click();
+  await expect(cancel).toHaveText("Tap again to leave storage as it is");
+  await expect(failedNote(page)).toBeVisible();
+  await cancel.click();
+  await expect(page.locator("#overlay")).toBeHidden();
+  // On the sheet, and storage as it was
+  expect((await doc(page, "sheets/s1")).items.SKU1.out).toBe(4);
+  expect((await doc(page, "products/SKU1")).stock).toBe(10);
+});
+
+test("a return whose storage count is owed can still be finished after Cancel warns", async ({ page }) => {
+  await openEcho(page);
+  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await enterBarcode(page, "SKU1");
+  await failWrites(page, { prefix: "products/", code: "unavailable" });
+  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await expect(failedNote(page)).toHaveText(OWING);
+  const cancel = modal(page).locator("#cancel");
+  await cancel.click();
+  await expect(cancel).toHaveText("Tap again to leave storage as it is");
+  await failWrites(page, null);
+  await modal(page).getByRole("button", { name: "Try again" }).click();
+  await expect(toast(page)).toHaveText("1 returned · 2 of 3 back");
+  await expect(page.locator("#overlay")).toBeHidden();
+  expect((await doc(page, "products/SKU1")).stock).toBe(11);
 });
 
 test("a return whose storage count was refused or lost is finished once by trying again", async ({ page }) => {
