@@ -572,7 +572,7 @@ describe("operator pool alert (ADR 0015)", () => {
     expect(rule.Properties.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP1/) } })]);
     // Only this rule may publish, and the message names no one
     const statements = Object.values(t.findResources("AWS::SNS::TopicPolicy")).flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
-    expect(statements.filter((st) => JSON.stringify(st.Principal).includes("events.amazonaws.com"))).toEqual([
+    expect(statements.filter((st) => (st.Principal as { Service?: unknown } | undefined)?.Service === "events.amazonaws.com")).toEqual([
       expect.objectContaining({ Sid: "AllowOperatorPoolAlertToPublish", Condition: { ArnEquals: { "aws:SourceArn": { "Fn::GetAtt": [ruleId, "Arn"] } } } }),
     ]);
     expect(JSON.stringify(rule.Properties.Targets)).not.toContain("userIdentity");

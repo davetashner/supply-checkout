@@ -27,7 +27,7 @@
 // a new Idempotency-Key.
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, fchmodSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -117,9 +117,14 @@ export function readCachedToken(file, now = Date.now()) {
 
 export function writeCachedToken(file, accessToken) {
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  writeFileSync(file, JSON.stringify({ accessToken }), { mode: 0o600 });
-  // writeFileSync keeps an existing file's mode
-  chmodSync(file, 0o600);
+  // Owner-only before the token is written, even if the file already existed with another mode
+  const fd = openSync(file, "w", 0o600);
+  try {
+    fchmodSync(fd, 0o600);
+    writeFileSync(fd, JSON.stringify({ accessToken }));
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** The ops client ID: the flag, the environment, or SSM through the AWS CLI. */
