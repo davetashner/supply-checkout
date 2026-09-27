@@ -151,6 +151,18 @@ export const COMP_ATTRIBUTES = [PK, SK, "type", "version", ...COMP_FIELDS] as co
 export const IMPORT_INDEX_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK] as const;
 
 /**
+ * The only attributes the operator-reopen role (supply-checkout-6uw.6), which
+ * the operator reopen function assumes tagged with one team, may name in
+ * that team's partition, reading or updating (dynamodb:Attributes):
+ * the keys, `type`, `version` and `owners` (its read and condition), and the
+ * closure fields it removes. Not the operator-access role: with `closedAt`
+ * and `purgeAfter` it could close a team and have the purge delete it. The
+ * reopen function takes no expressions from its caller and only ever removes
+ * them, so the ops function can reopen a team but never close one.
+ */
+export const REOPEN_ATTRIBUTES = [PK, SK, "type", "version", "owners", "closedAt", "closedBy", "purgeAfter", GSI1PK, GSI1SK] as const;
+
+/**
  * What an operator audit item holds. Owners read their own team's items
  * through the data function (OWNER_OPERATOR_AUDIT_ATTRIBUTES); operators read
  * them all through the ops function.

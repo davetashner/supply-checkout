@@ -10,14 +10,20 @@
 // attributes of the one team its session is tagged with, and put (never
 // update or delete) operator audit items.
 //
+// Reopening a closed team (reopenOpsTeam) is the exception: the ops function
+// can't write closure fields, so it asks the operator reopen function
+// (src/operator/reopen-handler.ts) to, and that function runs reopenOpsTeam on
+// the operator-reopen role, which may read and update only REOPEN_ATTRIBUTES
+// of the one team its session is tagged with.
+//
 // Every change writes its audit item in the same transaction, with a record
 // of the request's Idempotency-Key, so a retry replays instead of acting
 // twice. Reading one team's record is audited too.
 
 import { createHash, randomUUID } from "node:crypto";
-import { PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
-import { ConflictError, InvalidInputError, NotFoundError } from "./errors.js";
+import { ConflictError, InvalidInputError, NotFoundError, TeamDeletingError } from "./errors.js";
 import { gsi3, id, keys, month, operatorAuditPartition, operatorKeys, opsAuditIndexPartition, opsOwnersPartition, strip } from "./keys.js";
 import { type Comp, MEMBERS_PER_TEAM, liveComp } from "./model.js";
 import { type Page, queryPage } from "./query.js";
@@ -74,7 +80,7 @@ export interface OperatorAuditEvent {
   readonly expiresAt: number;
 }
 
-export type OperatorAction = "ops.teams.list" | "ops.team.read" | "ops.comp.set" | "ops.comp.end" | "ops.import.clear";
+export type OperatorAction = "ops.teams.list" | "ops.team.read" | "ops.comp.set" | "ops.comp.end" | "ops.import.clear" | "ops.team.reopen";
 
 /** The operator audit partition for actions on no one team: listing and searching teams (and, later, campaigns). */
 export const PLATFORM_AUDIT = "PLATFORM";
@@ -395,18 +401,30 @@ async function auditedUpdate<T extends { readonly eventId: string; readonly repl
     if (e.name !== "TransactionCanceledException") throw error;
     const codes = (e.CancellationReasons ?? []).map((r) => r.Code);
     if (codes[2] === "ConditionalCheckFailed") {
-      const { Items } = await connection(db).doc.send(
-        new QueryCommand({ TableName: db.tableName, KeyConditionExpression: "PK = :pk AND SK = :sk", ExpressionAttributeValues: { ":pk": request.PK, ":sk": request.SK }, ConsistentRead: true }),
-      );
-      const done = Items?.[0];
+      const done = await replay<T>(db, request, hash);
       // The record can expire between the condition and this read; then the retry is just late
-      if (done && done.bodyHash === hash) return { ...(done.outcome as T), replayed: true };
+      if (done) return done;
       throw new ConflictError("This Idempotency-Key was already used for a different request");
     }
     if (codes[0] === "ConditionalCheckFailed") throw new ConflictError(input.changed);
     if (codes.includes("TransactionConflict")) throw new ConflictError("It's changing right now; try again");
     throw error;
   }
+}
+
+/**
+ * The first result of the request with this idempotency record, if it was
+ * made with the same body, marked `replayed`; undefined if there's no record
+ * (never made, or expired); ConflictError if the key was used for another body.
+ */
+async function replay<T>(db: Db, request: { PK: string; SK: string }, hash: string): Promise<T | undefined> {
+  const { Items } = await connection(db).doc.send(
+    new QueryCommand({ TableName: db.tableName, KeyConditionExpression: "PK = :pk AND SK = :sk", ExpressionAttributeValues: { ":pk": request.PK, ":sk": request.SK }, ConsistentRead: true }),
+  );
+  const done = Items?.[0];
+  if (!done) return undefined;
+  if (done.bodyHash !== hash) throw new ConflictError("This Idempotency-Key was already used for a different request");
+  return { ...(done.outcome as T), replayed: true };
 }
 
 /** A comp change on the team's META item, at the version the operator saw. */
@@ -650,6 +668,108 @@ export async function clearStuckImport(
       },
       outcome: (eventId) => ({ eventId, replayed: false }),
       changed: "That import isn't stuck: it finished, was cleared already, doesn't exist, or started too recently",
+    },
+    now,
+  );
+}
+
+/**
+ * An operator can reopen a closed team until this long before its
+ * `purgeAfter`, past the owners' REOPEN_CUTOFF_MINUTES (supply-checkout-6uw.6:
+ * restoring a disputed closure in its last hour). The purge deletes a team
+ * only once `purgeAfter` has passed, re-reading the META item first, so a
+ * reopen conditioned on `purgeAfter` still being ahead can't meet a purge
+ * part-way; the margin covers the clocks of two Lambdas.
+ */
+export const OPS_REOPEN_CUTOFF_MINUTES = 5;
+
+/** The result of an operator reopen. `replayed` when the Idempotency-Key had already done it. */
+export interface ReopenOutcome {
+  readonly eventId: string;
+  readonly replayed: boolean;
+  /** The team's version after the reopen. */
+  readonly version: number;
+}
+
+const NOT_CLOSED = "This team isn't closed";
+const TOO_LATE_FOR_OPS = "This team is about to be deleted and can't be reopened any more";
+
+/**
+ * Reopens a closed team for an operator (supply-checkout-6uw.6), at the
+ * version the operator read (`expectedVersion`) and with a reason, until
+ * OPS_REOPEN_CUTOFF_MINUTES before its purge (TeamDeletingError after). Like
+ * an owner's reopen (reopenTeam), the META item loses `closedAt`, `closedBy`,
+ * `purgeAfter` and its closed-teams index keys, so the purge no longer finds
+ * it and it's writable again, and its version moves. In the same transaction
+ * an `ops.team.reopen` audit item records when it was closed and when it
+ * would have been deleted, which its owners read in their support actions,
+ * attributed to "Supply Checkout support". The update is conditioned on the
+ * closure read being unchanged, on `purgeAfter` still being far enough
+ * ahead, and on the team having an owner.
+ *
+ * Unlike an owner's reopen there's no daily limit (the route's throttle and
+ * the audit are the operators' limits) and no email to owners yet. Invites
+ * deleted at closing stay deleted, as for an owner's reopen.
+ *
+ * Runs on the operator-reopen role (REOPEN_ATTRIBUTES), never the
+ * operator-access role: it reads the META item's closure fields directly,
+ * since GSI3 doesn't project `purgeAfter`.
+ */
+export async function reopenOpsTeam(
+  db: Db,
+  operator: Operator,
+  teamId: string,
+  input: { readonly reason: unknown; readonly expectedVersion: unknown; readonly idempotencyKey: unknown },
+  now = new Date(),
+): Promise<ReopenOutcome> {
+  operatorSub(operator);
+  id(teamId, "team ID");
+  const key = requestKey(input.idempotencyKey);
+  const version = expectedVersion(input.expectedVersion);
+  const reason = operatorReason(input.reason);
+  const body = { reason, expectedVersion: version };
+  const { Item: team } = await connection(db).doc.send(
+    new GetCommand({
+      TableName: db.tableName,
+      Key: keys.team(teamId),
+      ConsistentRead: true,
+      // Only REOPEN_ATTRIBUTES: the role may read nothing else of the team
+      ProjectionExpression: "#type, #version, #owners, closedAt, purgeAfter",
+      ExpressionAttributeNames: { "#type": "type", "#version": "version", "#owners": "owners" },
+    }),
+  );
+  if (!team || team.type !== "team") throw new NotFoundError("No such team");
+  if (typeof team.closedAt !== "string") {
+    // A retry of a reopen that already happened replays it
+    const done = await replay<ReopenOutcome>(db, operatorKeys.request(teamId, keyHash(operator, teamId, "ops.team.reopen", key)), bodyHash(body));
+    if (done) return done;
+    throw new ConflictError(NOT_CLOSED);
+  }
+  if (team.version !== version) throw new ConflictError("The team changed since you read it; read it again and retry");
+  const cutoff = new Date(now.getTime() + OPS_REOPEN_CUTOFF_MINUTES * 60_000).toISOString();
+  if (typeof team.purgeAfter !== "string" || team.purgeAfter <= cutoff) throw new TeamDeletingError(TOO_LATE_FOR_OPS);
+  if (typeof team.owners !== "number" || team.owners < 1) throw new ConflictError("This team has no owner left to reopen it for");
+  return auditedUpdate<ReopenOutcome>(
+    db,
+    operator,
+    teamId,
+    {
+      action: "ops.team.reopen",
+      key,
+      body,
+      reason,
+      before: { closedAt: team.closedAt, purgeAfter: team.purgeAfter },
+      after: null,
+      update: {
+        Key: keys.team(teamId),
+        UpdateExpression: "REMOVE closedAt, closedBy, purgeAfter, GSI1PK, GSI1SK SET #version = #version + :one",
+        // The META item, at the version and with the closure the operator saw, still ahead of the purge
+        ConditionExpression: "#type = :team AND #version = :v AND closedAt = :at AND purgeAfter = :purge AND purgeAfter > :cutoff AND #owners > :zero",
+        ExpressionAttributeNames: { "#type": "type", "#version": "version", "#owners": "owners" },
+        ExpressionAttributeValues: { ":team": "team", ":v": version, ":at": team.closedAt, ":purge": team.purgeAfter, ":cutoff": cutoff, ":one": 1, ":zero": 0 },
+      },
+      outcome: (eventId) => ({ eventId, replayed: false, version: version + 1 }),
+      changed: "The team changed since you read it; read it again and retry",
     },
     now,
   );

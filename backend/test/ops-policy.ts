@@ -12,6 +12,7 @@ import {
   OPS_AUDIT_INDEX_PREFIX,
   OPS_OWNERS_PREFIX,
   OPS_TEAMS_PARTITION,
+  REOPEN_ATTRIBUTES,
   STUCK_IMPORT_ATTRIBUTES,
 } from "../src/data/schema.js";
 import { namedAttributes } from "./helpers.js";
@@ -53,6 +54,39 @@ export function opsPolicy(team: string, denied: { command: string; input: Input 
           );
         default:
           // No GetItem, Scan, DeleteItem or batch calls anywhere
+          return false;
+      }
+    })();
+    if (!ok) denied.push({ command, input });
+    return ok;
+  };
+}
+
+/**
+ * The calls the operator-reopen role allows for a session tagged with `team`
+ * (infra/lib/stacks/api-stack.ts, supply-checkout-6uw.6): GetItem and
+ * UpdateItem in that team's partition naming only REOPEN_ATTRIBUTES
+ * (UpdateItem returning nothing), and PutItem and Query in its OPAUDIT#
+ * partition.
+ */
+export function reopenPolicy(team: string, denied: { command: string; input: Input }[] = []) {
+  const teamItem = (input: Input) => partitionKey(input) === `TEAM#${team}` && [...namedAttributes(input)].every((a) => (REOPEN_ATTRIBUTES as readonly string[]).includes(a));
+  const update = (input: Input) => teamItem(input) && (input.ReturnValues === undefined || input.ReturnValues === "NONE");
+  const audit = (pk: unknown) => pk === `${OPERATOR_AUDIT_PREFIX}${team}`;
+  return (command: string, input: Input): boolean => {
+    const ok = (() => {
+      switch (command) {
+        case "GetCommand":
+          return teamItem(input) && typeof input.ProjectionExpression === "string";
+        case "QueryCommand":
+          return input.IndexName === undefined && audit((input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"]);
+        case "PutCommand":
+          return audit(partitionKey(input));
+        case "UpdateCommand":
+          return update(input);
+        case "TransactWriteCommand":
+          return (input.TransactItems as Record<string, Input>[]).every((op) => (op.Put ? audit(partitionKey(op.Put)) : op.Update ? update(op.Update) : false));
+        default:
           return false;
       }
     })();

@@ -6,6 +6,7 @@ import { createObservability, withObservability } from "../observability/index.j
 import { operatorDirectory } from "./cognito.js";
 import { createOpsHandler } from "./ops-handler.js";
 import { opsScopedDbs } from "./ops-db.js";
+import { lambdaReopener } from "./reopen-client.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -21,6 +22,7 @@ export const handler = withObservability(
   createOpsHandler({
     dbFor: opsScopedDbs({ roleArn: required(API_ENV.opsRoleArn) }),
     directory: operatorDirectory({ issuerUrl, userPoolId: required(API_ENV.opsUserPoolId) }),
+    reopen: lambdaReopener({ functionName: required(API_ENV.opsReopenFunction), region: required("AWS_REGION") }),
     issuerUrl,
     clientId: required(API_ENV.opsClientId),
     obs,

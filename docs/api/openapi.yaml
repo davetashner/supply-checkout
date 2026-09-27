@@ -1098,7 +1098,7 @@ paths:
                         eventId: { type: string }
                         ts: { type: string, format: date-time }
                         actor: { type: string, const: Supply Checkout support }
-                        action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end, ops.import.clear] }
+                        action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end, ops.import.clear, ops.team.reopen] }
                         reason: { type: string }
                         before: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
                         after: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
@@ -1218,6 +1218,55 @@ paths:
           description: "`not_found`: no such team."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "409": { $ref: "#/components/responses/CompConflict" }
+  /ops/teams/{teamId}/reopen:
+    parameters: [{ $ref: "#/components/parameters/opsTeamId" }]
+    post:
+      tags: [ops]
+      operationId: opsReopenTeam
+      summary: Reopen a closed team before the purge deletes it. Audited as `ops.team.reopen`.
+      description: |
+        Removes the team's closure, as an owner's reopen does, so it's
+        writable again and won't be deleted. Allowed until 5 minutes before
+        its deletion time, past the owners' one-hour cutoff, for a disputed
+        closure. Send the team's `version` from `GET /ops/teams/{teamId}` as
+        `expectedVersion`. Invites deleted at closing stay deleted. The
+        owners see it in their support actions. The ops function can't write
+        closure fields itself: it asks the operator reopen function, which
+        can only remove them.
+      security: [{ opsCognito: [] }]
+      parameters: [{ $ref: "#/components/parameters/opsIdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason, expectedVersion]
+              properties:
+                reason: { type: string, minLength: 3, maxLength: 500, description: Why, on one line. The team's owners see it. }
+                expectedVersion: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Reopened, now or by an earlier request with the same Idempotency-Key (`replayed`).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [eventId, replayed, version]
+                properties:
+                  eventId: { type: string, description: The audit event. }
+                  replayed: { type: boolean }
+                  version: { type: integer, description: The team's version after the reopen. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/OperatorsOnly" }
+        "404":
+          description: "`not_found`: no such team."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: "`aborted`, nothing changed: the team isn't closed, changed since it was read, has no owner, or the Idempotency-Key was used for a different request; or, with reason `team_deleting`, it's within 5 minutes of its deletion."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /ops/audit:
     get:
       tags: [ops]
@@ -1248,7 +1297,7 @@ paths:
                         ts: { type: string, format: date-time }
                         teamId: { type: string }
                         operatorSub: { type: string, description: The operator's `sub` in the operator pool. }
-                        action: { type: string, enum: [ops.teams.list, ops.team.read, ops.comp.set, ops.comp.end, ops.import.clear] }
+                        action: { type: string, enum: [ops.teams.list, ops.team.read, ops.comp.set, ops.comp.end, ops.import.clear, ops.team.reopen] }
                         target: { type: string }
                         reason: { type: string }
                         before: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
