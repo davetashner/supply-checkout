@@ -603,6 +603,7 @@ function exportAllModal() {
       <button type="button" class="btn" data-export="inventory">Inventory (CSV)</button>
       <button type="button" class="btn" data-export="json">Everything (JSON)</button>
     </div>
+    ${WEB ? "" : `<p class="hint" id="moveHint" style="margin-top:12px">Moving to the Supply Checkout web app? Download Everything (JSON) and send that file to us. We'll bring your items and sheets into your new team.</p>`}
     <div class="modal-actions"><button type="button" class="btn" id="cancel">Close</button></div>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     const day = todayISO();

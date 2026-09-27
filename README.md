@@ -2,7 +2,7 @@
 
 A shared supply tracker for taking supplies from storage to client jobs and bringing back what wasn't used.
 
-- **Sheets** – one per client and date, recording who prepared it. Scan a barcode (or pick an item without one) to check supplies out, scan again on return to record what came back unused, then tap **Finished Return**. Each sheet totals what was used and what to charge, and downloads as CSV. Owners can export every sheet and the inventory at once, as CSV or JSON (**Export data**).
+- **Sheets** – one per client and date, recording who prepared it. Scan a barcode (or pick an item without one) to check supplies out, scan again on return to record what came back unused, then tap **Finished Return**. Each sheet totals what was used and what to charge, and downloads as CSV. Owners can export every sheet and the inventory at once, as CSV or JSON (**Export data**). A team moving from the artifact to the web app sends us the JSON file ([Moving to the web app](docs/moving-to-the-web-app.md)).
 - **Inventory** – items, prices and how many are in storage. Checkouts subtract from storage; returns add back.
 - **Receipts** – photograph a store receipt and Claude reads the line items and prices, suggests matches against existing inventory, and lets you assign each item to a client's sheet or to general inventory before anything is saved.
 
@@ -153,6 +153,7 @@ Dependabot opens weekly update PRs for npm packages and GitHub Actions.
 | [docs/testing.md](docs/testing.md) | Supported browsers, test suites, local runs and coverage |
 | [docs/releases.md](docs/releases.md) | The real-device check and publishing to claude.ai |
 | [docs/journeys.md](docs/journeys.md) | Customer journeys that must never break, their tests and alarms |
+| [docs/moving-to-the-web-app.md](docs/moving-to-the-web-app.md) | For customers: moving from the claude.ai artifact to the web app (export, what carries over, what happens to the artifact) |
 | [docs/architecture/README.md](docs/architecture/README.md) | The AWS design and diagrams |
 | [docs/adr/](docs/adr/) | Architecture decision records |
 | [docs/api/](docs/api/) | The HTTP API: OpenAPI description, inventory commands, onboarding and live updates |
