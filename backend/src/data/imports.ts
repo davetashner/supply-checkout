@@ -55,7 +55,7 @@ import { type Db, connection, storable } from "./client.js";
 import { type Movement, OPERATION_TTL_DAYS } from "./commands.js";
 import { parseCsv } from "./csv.js";
 import { MAX_DOCUMENT_BYTES, isReservedField } from "./documents.js";
-import { ConflictError, InvalidInputError, TooLargeError } from "./errors.js";
+import { ConflictError, InvalidInputError, TooLargeError, isCancelledAsTooLarge, startsWithAny } from "./errors.js";
 import { MAX_CODE_LENGTH, gsi1, keys, prefixes, teamPartition } from "./keys.js";
 import { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
 import { queryAll } from "./query.js";
@@ -450,11 +450,6 @@ function cancellationCodes(error: unknown): (string | undefined)[] | undefined {
 
 const RETRYABLE = new Set([undefined, "None", "ConditionalCheckFailed", "TransactionConflict"]);
 
-function itemTooLarge(error: unknown): boolean {
-  const reasons = (error as { CancellationReasons?: { Code?: string; Message?: string }[] }).CancellationReasons ?? [];
-  return reasons.some((r) => r.Code === "ValidationError" && /size/i.test(r.Message ?? ""));
-}
-
 function importId(value: unknown): string {
   const lower = typeof value === "string" ? value.toLowerCase() : "";
   if (!IMPORT_ID.test(lower)) throw new InvalidInputError("importId must be a UUID");
@@ -541,11 +536,12 @@ const bytesOf = (writes: TransactItem[]) => writes.reduce((sum, w) => sum + Buff
 /**
  * DynamoDB's messages refusing a whole transaction for its size (not a
  * cancellation): the transaction over 4 MB, or an item in it over 400 KB.
- * Any other ValidationException is a bug, and surfaces as one (500).
+ * Matched from the start of the message (startsWithAny). Any other
+ * ValidationException is a bug, and surfaces as one (500).
  */
 export const TRANSACTION_TOO_LARGE_MESSAGES: readonly string[] = ["Transaction request cannot be larger than 4 MB", "Item size has exceeded the maximum allowed size"];
 const transactionTooLarge = (error: unknown) =>
-  (error as { name?: string } | null)?.name === "ValidationException" && TRANSACTION_TOO_LARGE_MESSAGES.includes(String((error as Error).message).trim());
+  (error as { name?: string } | null)?.name === "ValidationException" && startsWithAny((error as Error).message, TRANSACTION_TOO_LARGE_MESSAGES);
 /** The longest DynamoDB message kept as a TooLargeError's cause, for the logs. */
 export const MAX_CAUSE_MESSAGE = 200;
 /** What the logs keep of DynamoDB's error: its name and the start of its message (DynamoDB's own words, never item data). */
@@ -639,7 +635,7 @@ async function commitRows(db: Db, ctx: TeamContext, id: string, first: Item, now
           continue;
         }
         const codes = cancellationCodes(error);
-        if (codes && itemTooLarge(error)) throw new TooLargeError(`An item on line ${pending[0]?.line ?? 0} or after is too large to save`);
+        if (isCancelledAsTooLarge(error)) throw new TooLargeError(`An item on line ${pending[0]?.line ?? 0} or after is too large to save`);
         if (!codes || !codes.every((c) => RETRYABLE.has(c))) throw error;
         // The job moved on: a concurrent retry of this import committed these rows
         if (codes[writes.length - 1] === "ConditionalCheckFailed") {
