@@ -4,6 +4,7 @@ import { PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import { tableName } from "../../../backend/src/data/schema.js";
+import { opsResourceNames } from "../../../backend/src/ops/names.js";
 import { backupAlertRuleArns } from "../backup-alerts.js";
 import type { DeploymentConfig } from "../config.js";
 import { AlarmTopics, alarmContactsFromContext } from "../observability/alarm-topics.js";
@@ -61,6 +62,32 @@ export const OPERATOR_RULE_SILENCING_EVENTS = ["DeleteRule", "DisableRule", "Rem
 
 /** EventBridge calls that rewrite an operator alert rule's pattern or targets: P1 unless CloudFormation made them for a deploy. */
 export const OPERATOR_RULE_CHANGE_EVENTS = ["PutRule", "PutTargets"] as const;
+
+/** The name of the second rule-tampering rule: fixed, so the first can watch it without the two templates referring to each other. */
+export const tamperingWatchRuleName = (envName: string) => `supply-checkout-${envName}-operator-rule-tampering-watch`;
+
+/**
+ * Lambda calls that stop the operator audit watch from seeing the stream or
+ * change what runs, matched by prefix (CloudTrail adds an API version, e.g.
+ * UpdateEventSourceMapping20150331). The mapping's are P1 whoever makes them
+ * (Delete) or outside a deploy (Update); the function's outside a deploy.
+ */
+export const AUDIT_WATCH_MAPPING_EVENTS = { always: ["DeleteEventSourceMapping"], outsideDeploys: ["UpdateEventSourceMapping"] } as const;
+export const AUDIT_WATCH_FUNCTION_EVENTS = { always: ["DeleteFunction"], outsideDeploys: ["PutFunctionConcurrency", "UpdateFunctionCode", "UpdateFunctionConfiguration"] } as const;
+/** IAM calls on the watch's role that could take away its stream access. */
+export const AUDIT_WATCH_ROLE_EVENTS = {
+  always: ["DeleteRole", "DeleteRolePolicy", "DetachRolePolicy"],
+  outsideDeploys: ["PutRolePolicy", "AttachRolePolicy", "UpdateAssumeRolePolicy", "PutRolePermissionsBoundary"],
+} as const;
+/** CloudWatch calls that silence or rewrite the operator audit alarms. */
+export const OPERATOR_ALARM_EVENTS = { always: ["DisableAlarmActions", "DeleteAlarms"], outsideDeploys: ["PutMetricAlarm"] } as const;
+/** SNS calls that stop an alarm topic delivering: on either topic, or on a subscription to one. */
+export const ALARM_TOPIC_EVENTS = { always: ["DeleteTopic", "RemovePermission"], outsideDeploys: ["SetTopicAttributes"] } as const;
+export const ALARM_SUBSCRIPTION_EVENTS = { outsideDeploys: ["Unsubscribe", "SetSubscriptionAttributes"] } as const;
+/** KMS calls that stop the alarm topics' key working, or will. */
+export const ALARM_KEY_EVENTS = { always: ["DisableKey", "ScheduleKeyDeletion"], outsideDeploys: ["PutKeyPolicy"] } as const;
+/** CloudTrail calls that stop or narrow a trail in this account: without CloudTrail, none of these rules sees anything. */
+export const TRAIL_EVENTS = ["StopLogging", "DeleteTrail", "UpdateTrail", "PutEventSelectors", "PutAdvancedEventSelectors"] as const;
 
 /** A deploy's own calls carry this in userIdentity.invokedBy; a person's or a script's have none. */
 const NOT_CLOUDFORMATION = { invokedBy: [{ exists: false }, { "anything-but": "cloudformation.amazonaws.com" }] };
@@ -126,8 +153,8 @@ export class ObservabilityStack extends SupplyCheckoutStack {
 
     if (this.isPrimaryRegion) {
       this.checks = new OpsChecks(this, "OpsChecks", { envName: config.envName, tableName: table, topics: this.topics });
-      this.operatorChanges = this.alertOnOperatorChanges(config.envName);
       this.operatorAudit = new OperatorAuditWatch(this, "OperatorAuditWatch", { envName: config.envName, region, topics: this.topics });
+      this.operatorChanges = this.alertOnOperatorChanges(config.envName, this.operatorAudit);
       // The backup stack (primary region, deployed after this one) alerts P1
       // when its vault, plan or key is changed (backup-alerts.ts): only its
       // two rules, by name, may publish
@@ -144,7 +171,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         envName: config.envName,
         regions: config.regions,
         tableName: table,
-        alarms: [...this.alarms.alarms, this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing],
+        alarms: [...this.alarms.alarms, this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing, this.operatorAudit.dropped],
       });
     }
   }
@@ -169,14 +196,29 @@ export class ObservabilityStack extends SupplyCheckoutStack {
    *   puts the pool ID in requestParameters or additionalEventData for
    *   these, so the rule matches either ("Operators" in docs/infrastructure.md
    *   says how to check it after a deploy).
-   * - `OperatorRuleTampering`: deleting or disabling either rule above, or
-   *   removing its target (OPERATOR_RULE_SILENCING_EVENTS), whoever does it,
-   *   and rewriting its pattern or targets (OPERATOR_RULE_CHANGE_EVENTS)
-   *   outside a deploy. A rule can't report its own deletion, so this is a
-   *   separate rule; silencing this one first isn't caught (see "Operators"
-   *   in docs/infrastructure.md).
+   * - `OperatorAuditWatchChanges` (supply-checkout-6uw.11): deleting the
+   *   operator audit watch's event source mapping, function or role policies
+   *   whoever does it, and updating the mapping (disabling it), the function's
+   *   code, configuration or concurrency (zero stops it) or its role outside
+   *   a deploy.
+   * - `OperatorAlarmChanges`: disabling or deleting the operator audit
+   *   alarms whoever does it, and rewriting them outside a deploy.
+   * - `OperatorAlertRouteChanges`: deleting either alarm topic, or taking
+   *   its permissions away, whoever does it; changing its attributes (its
+   *   policy or key) or a subscription to it, including unsubscribing,
+   *   outside a deploy; disabling or scheduling the deletion of the topics'
+   *   key whoever does it, and changing its policy outside a deploy; and
+   *   stopping, deleting or narrowing any CloudTrail trail in the account.
+   *   It tells both topics, so deleting one still reaches the other.
+   * - `OperatorRuleTampering` and `OperatorRuleTamperingWatch`: deleting or
+   *   disabling any rule above, or removing its target
+   *   (OPERATOR_RULE_SILENCING_EVENTS), whoever does it, and rewriting its
+   *   pattern or targets (OPERATOR_RULE_CHANGE_EVENTS) outside a deploy. A
+   *   rule can't report its own deletion, so each of the two also watches
+   *   the other: deleting either first alerts through the other. What's left
+   *   is listed under "Operators" in docs/infrastructure.md.
    */
-  private alertOnOperatorChanges(envName: string): Rule[] {
+  private alertOnOperatorChanges(envName: string, watch: OperatorAuditWatch): Rule[] {
     const poolId = StringParameter.valueForStringParameter(this, identityOutputParameters(envName).opsUserPoolId);
     const cloudTrail = { detailType: ["AWS API Call via CloudTrail"] };
     const base = { source: ["aws.cognito-idp"], ...cloudTrail };
@@ -207,26 +249,92 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         },
       },
     });
-    // DeleteRule, DisableRule and PutRule name the rule in `name`; RemoveTargets and PutTargets in `rule`
-    const watched = [admin.ruleName, selfService.ruleName];
-    const silencing = OPERATOR_RULE_SILENCING_EVENTS.filter((e) => e !== "RemoveTargets");
-    const tampering = new Rule(this, "OperatorRuleTampering", {
-      description: "An operator alert rule was deleted, disabled or lost its target, or was rewritten outside a deploy (ADR 0015)",
+    // Something that changes the watch, its alarms or the route an alert takes: `always` whoever makes it, `outsideDeploys` unless CloudFormation did
+    const calls = (events: { readonly always?: readonly string[]; readonly outsideDeploys?: readonly string[] }, match: Record<string, unknown>, prefix = false) => {
+      const names = (list: readonly string[]) => (prefix ? list.map((e) => ({ prefix: e })) : [...list]);
+      return [
+        ...(events.always?.length ? [{ eventName: names(events.always), ...match }] : []),
+        ...(events.outsideDeploys?.length ? [{ eventName: names(events.outsideDeploys), ...match, userIdentity: NOT_CLOUDFORMATION }] : []),
+      ];
+    };
+    // The name as a string (the template knows it), so the patterns hold no references
+    const functionName = opsResourceNames(envName).operatorAuditWatchFunction;
+    const functionNames = [functionName, { wildcard: `*:function:${functionName}` }, { wildcard: `*:function:${functionName}:*` }];
+    const watchChanges = new Rule(this, "OperatorAuditWatchChanges", {
+      description: "The operator audit watch's stream mapping, function or role was deleted, or changed outside a deploy (supply-checkout-6uw.11)",
       eventPattern: {
-        source: ["aws.events"],
+        source: ["aws.lambda", "aws.iam"],
         ...cloudTrail,
         detail: {
-          eventSource: ["events.amazonaws.com"],
           $or: [
-            { eventName: [...silencing], requestParameters: { name: watched } },
-            { eventName: ["RemoveTargets"], requestParameters: { rule: watched } },
-            { eventName: ["PutRule"], requestParameters: { name: watched }, userIdentity: NOT_CLOUDFORMATION },
-            { eventName: ["PutTargets"], requestParameters: { rule: watched }, userIdentity: NOT_CLOUDFORMATION },
+            // Update and Delete name the mapping by its UUID
+            ...calls(AUDIT_WATCH_MAPPING_EVENTS, { eventSource: ["lambda.amazonaws.com"], requestParameters: { uUID: [watch.mapping.eventSourceMappingId] } }, true),
+            ...calls(AUDIT_WATCH_FUNCTION_EVENTS, { eventSource: ["lambda.amazonaws.com"], requestParameters: { functionName: functionNames } }, true),
+            ...calls(AUDIT_WATCH_ROLE_EVENTS, { eventSource: ["iam.amazonaws.com"], requestParameters: { roleName: [watch.role.roleName] } }),
           ],
         },
       },
     });
-    const rules = [admin, selfService, tampering];
+    const alarmNames = [watch.changed.alarmName, watch.failing.alarmName, watch.dropped.alarmName];
+    const alarmChanges = new Rule(this, "OperatorAlarmChanges", {
+      description: "An operator audit alarm was disabled or deleted, or rewritten outside a deploy (supply-checkout-6uw.11)",
+      eventPattern: {
+        source: ["aws.monitoring"],
+        ...cloudTrail,
+        detail: {
+          eventSource: ["monitoring.amazonaws.com"],
+          // DisableAlarmActions and DeleteAlarms take a list, `alarmNames`; PutMetricAlarm one `alarmName`
+          $or: [...calls({ always: OPERATOR_ALARM_EVENTS.always }, { requestParameters: { alarmNames } }), ...calls({ outsideDeploys: OPERATOR_ALARM_EVENTS.outsideDeploys }, { requestParameters: { alarmName: alarmNames } })],
+        },
+      },
+    });
+    const topics = Object.values(this.topics.topics);
+    const topicArns = topics.map((t) => t.topicArn);
+    const routeChanges = new Rule(this, "OperatorAlertRouteChanges", {
+      description: "An alarm topic, a subscription to one or the topics' key was deleted, disabled or changed outside a deploy, or a CloudTrail trail was stopped or changed (supply-checkout-6uw.11)",
+      eventPattern: {
+        source: ["aws.sns", "aws.kms", "aws.cloudtrail"],
+        ...cloudTrail,
+        detail: {
+          $or: [
+            ...calls(ALARM_TOPIC_EVENTS, { eventSource: ["sns.amazonaws.com"], requestParameters: { topicArn: topicArns } }),
+            // A subscription's ARN is its topic's ARN, a colon and an ID
+            ...calls(ALARM_SUBSCRIPTION_EVENTS, { eventSource: ["sns.amazonaws.com"], requestParameters: { subscriptionArn: topicArns.map((arn) => ({ prefix: `${arn}:` })) } }),
+            // KMS takes a key ID or ARN (no alias names this key)
+            ...calls(ALARM_KEY_EVENTS, { eventSource: ["kms.amazonaws.com"], requestParameters: { keyId: [this.topics.key.keyId, this.topics.key.keyArn] } }),
+            { eventSource: ["cloudtrail.amazonaws.com"], eventName: [...TRAIL_EVENTS] },
+          ],
+        },
+      },
+    });
+    // DeleteRule, DisableRule and PutRule name the rule in `name`; RemoveTargets and PutTargets in `rule`.
+    // Each tampering rule watches every other rule and the other tampering rule; the second has a fixed name
+    // so the first can name it without a reference back.
+    const silencing = OPERATOR_RULE_SILENCING_EVENTS.filter((e) => e !== "RemoveTargets");
+    const tamperingPattern = (watched: string[]) => ({
+      source: ["aws.events"],
+      ...cloudTrail,
+      detail: {
+        eventSource: ["events.amazonaws.com"],
+        $or: [
+          { eventName: [...silencing], requestParameters: { name: watched } },
+          { eventName: ["RemoveTargets"], requestParameters: { rule: watched } },
+          { eventName: ["PutRule"], requestParameters: { name: watched }, userIdentity: NOT_CLOUDFORMATION },
+          { eventName: ["PutTargets"], requestParameters: { rule: watched }, userIdentity: NOT_CLOUDFORMATION },
+        ],
+      },
+    });
+    const others = [admin, selfService, watchChanges, alarmChanges, routeChanges].map((r) => r.ruleName);
+    const tampering = new Rule(this, "OperatorRuleTampering", {
+      description: "An operator alert rule was deleted, disabled or lost its target, or was rewritten outside a deploy (ADR 0015)",
+      eventPattern: tamperingPattern([...others, tamperingWatchRuleName(envName)]),
+    });
+    const tamperingWatch = new Rule(this, "OperatorRuleTamperingWatch", {
+      ruleName: tamperingWatchRuleName(envName),
+      description: "The same as OperatorRuleTampering, which it watches in turn, so neither can be removed first unseen (supply-checkout-6uw.11)",
+      eventPattern: tamperingPattern([...others, tampering.ruleName]),
+    });
+    const rules = [admin, selfService, watchChanges, alarmChanges, routeChanges, tampering, tamperingWatch];
     const topic = this.topics.topics.P1;
     // EventBridge publishes to the encrypted topic: it may use the key, for this account's rules only
     this.topics.key.addToResourcePolicy(
@@ -254,12 +362,28 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     const messages = new Map([
       [admin, message("the operator pool")],
       [selfService, message("the operator pool")],
+      [watchChanges, message("the operator audit watch")],
+      [alarmChanges, message("an operator audit alarm")],
+      [routeChanges, message("the alarm topics, their key or CloudTrail")],
       [tampering, message("an operator alert rule")],
+      [tamperingWatch, message("an operator alert rule")],
     ]);
     for (const rule of rules) {
       // A plain target: events-targets' SnsTopic would add a topic policy for every rule in the account
       rule.addTarget({ bind: () => ({ arn: topic.topicArn, input: messages.get(rule) }) });
     }
+    // Changes to the route an alert takes also go to P2: deleting or breaking the P1 topic still reaches someone
+    const p2 = this.topics.topics.P2;
+    routeChanges.addTarget({ bind: () => ({ arn: p2.topicArn, input: messages.get(routeChanges) }) });
+    p2.addToResourcePolicy(
+      new PolicyStatement({
+        sid: "AllowAlertRouteChangesToPublish",
+        principals: [new ServicePrincipal("events.amazonaws.com")],
+        actions: ["sns:Publish"],
+        resources: [p2.topicArn],
+        conditions: { ArnEquals: { "aws:SourceArn": [routeChanges.ruleArn] } },
+      }),
+    );
     return rules;
   }
 }

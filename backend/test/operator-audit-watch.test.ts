@@ -1,10 +1,12 @@
 // The operator audit watch (supply-checkout-6uw.5): every change or deletion
-// of an OPAUDIT# item, other than its TTL expiry, counts as tampering.
+// of an OPAUDIT# item, other than its TTL expiry, counts as tampering, and so
+// does a new audit entry set to expire early (supply-checkout-6uw.11).
 
 import type { DynamoDBRecord } from "aws-lambda";
 import { describe, expect, it } from "vitest";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
-import { createOperatorAuditWatchHandler, isExpiry, isTampering } from "../src/ops/operator-audit-watch-handler.js";
+import { OPERATOR_AUDIT_RETENTION_DAYS } from "../src/data/index.js";
+import { createOperatorAuditWatchHandler, isExpiry, isShortLived, isTampering, SHORT_RETENTION_SLACK_DAYS } from "../src/ops/operator-audit-watch-handler.js";
 
 const NOW = Date.parse("2026-09-27T12:00:00.000Z");
 const LATER = Math.floor(NOW / 1000) + 3600;
@@ -19,7 +21,7 @@ function record(eventName: "INSERT" | "MODIFY" | "REMOVE", pk: string, extra: Pa
     awsRegion: "test-local-1",
     dynamodb: {
       Keys: keys,
-      ...(eventName === "INSERT" ? {} : { OldImage: { ...keys, reason: { S: "a secret reason" }, operatorSub: { S: "operator-sub" }, ...(expiresAt === undefined ? {} : { expiresAt: { N: String(expiresAt) } }) } }),
+      [eventName === "INSERT" ? "NewImage" : "OldImage"]: { ...keys, reason: { S: "a secret reason" }, operatorSub: { S: "operator-sub" }, ...(expiresAt === undefined ? {} : { expiresAt: { N: String(expiresAt) } }) },
     },
     ...rest,
   };
@@ -66,8 +68,43 @@ describe("operator audit watch", () => {
     expect(isExpiry(record("MODIFY", "OPAUDIT#team-1", { ...TTL, expiresAt: EARLIER }), NOW)).toBe(false);
   });
 
-  it("ignores inserts and every other partition", () => {
+  it("counts a new audit entry set to expire well short of 2 years, from the stream's time for the write (supply-checkout-6uw.11)", () => {
+    const DAY = 86_400;
+    const at = Math.floor(NOW / 1000);
+    const written = at - 3600;
+    const full = at + OPERATOR_AUDIT_RETENTION_DAYS * DAY;
+    const edge = written + (OPERATOR_AUDIT_RETENTION_DAYS - SHORT_RETENTION_SLACK_DAYS) * DAY;
+    const insert = (expiresAt: number | undefined, extra: Partial<DynamoDBRecord["dynamodb"]> = {}) => {
+      const r = record("INSERT", "OPAUDIT#team-1", expiresAt === undefined ? {} : { expiresAt });
+      Object.assign(r.dynamodb as object, extra);
+      return r;
+    };
+    // As written: 2 years from now, or from the write
+    expect(isTampering(insert(full), NOW)).toBe(false);
+    expect(isTampering(insert(edge, { ApproximateCreationDateTime: written }), NOW)).toBe(false);
+    // Short by more than the slack, or not a number: counted
+    expect(isTampering(insert(edge - 1, { ApproximateCreationDateTime: written }), NOW)).toBe(true);
+    expect(isTampering(insert(at + 60), NOW)).toBe(true);
+    expect(isShortLived(insert(EARLIER), NOW)).toBe(true);
+    const nan = insert(full);
+    (nan.dynamodb as { NewImage: Record<string, unknown> }).NewImage.expiresAt = { N: "soon" };
+    expect(isTampering(nan, NOW)).toBe(true);
+    // No expiry at all is kept forever: nothing hidden
+    expect(isTampering(insert(undefined), NOW)).toBe(false);
+    // Idempotency records live 24 hours by design, and other partitions aren't watched
+    const request = insert(at + 60);
+    (request.dynamodb as { Keys: Record<string, unknown> }).Keys.SK = { S: "REQUEST#abc" };
+    expect(isTampering(request, NOW)).toBe(false);
+    expect(isTampering(record("INSERT", "TEAM#team-1", { expiresAt: at + 60 }), NOW)).toBe(false);
+    expect(isShortLived(record("MODIFY", "OPAUDIT#team-1", { expiresAt: at + 60 }), NOW)).toBe(false);
+    const noKey = insert(at + 60);
+    delete (noKey.dynamodb as { Keys: { SK?: unknown } }).Keys.SK;
+    expect(isShortLived(noKey, NOW)).toBe(false);
+  });
+
+  it("ignores inserts kept for their 2 years, other events, and every other partition", () => {
     expect(isTampering(record("INSERT", "OPAUDIT#team-1"), NOW)).toBe(false);
+    expect(isTampering({ eventName: "UNKNOWN" as never, dynamodb: { Keys: { PK: { S: "OPAUDIT#team-1" } } } } as DynamoDBRecord, NOW)).toBe(false);
     expect(isTampering(record("MODIFY", "TEAM#team-1"), NOW)).toBe(false);
     expect(isTampering(record("REMOVE", "TEAM#OPAUDIT#x"), NOW)).toBe(false);
     expect(isTampering({ eventName: "MODIFY" } as DynamoDBRecord, NOW)).toBe(false);
@@ -81,12 +118,13 @@ describe("operator audit watch", () => {
     (odd.dynamodb as { Keys: Record<string, unknown> }).Keys.SK = { S: "AUDIT#<script>" };
     delete (odd as { eventID?: string }).eventID;
     const result = await handler({
-      Records: [record("MODIFY", "OPAUDIT#team-1", { expiresAt: LATER }), record("REMOVE", "OPAUDIT#team-1", { ...TTL, expiresAt: EARLIER }), record("INSERT", "OPAUDIT#team-1"), odd],
+      Records: [record("MODIFY", "OPAUDIT#team-1", { expiresAt: LATER }), record("REMOVE", "OPAUDIT#team-1", { ...TTL, expiresAt: EARLIER }), record("INSERT", "OPAUDIT#team-1"), record("INSERT", "OPAUDIT#team-3", { expiresAt: LATER }), odd],
     });
-    expect(result).toEqual({ changed: 2 });
-    expect(counts).toEqual([{ metric: BusinessMetric.OperatorAuditChanged, value: 2 }]);
+    expect(result).toEqual({ changed: 3 });
+    expect(counts).toEqual([{ metric: BusinessMetric.OperatorAuditChanged, value: 3 }]);
     expect(logs).toEqual([
       { level: "error", message: "Operator audit item changed", data: { eventName: "MODIFY", pk: "OPAUDIT#team-1", sk: "AUDIT#2026-09-27T11:00:00.000Z#evt-1", eventId: "stream-event-1", region: "test-local-1" } },
+      { level: "error", message: "Operator audit item written to expire early", data: { eventName: "INSERT", pk: "OPAUDIT#team-3", sk: "AUDIT#2026-09-27T11:00:00.000Z#evt-1", eventId: "stream-event-1", region: "test-local-1" } },
       { level: "error", message: "Operator audit item changed", data: { eventName: "REMOVE", pk: "OPAUDIT#team-2", sk: "(unexpected key)", eventId: "(unexpected key)", region: "test-local-1" } },
     ]);
     expect(JSON.stringify(logs)).not.toMatch(/secret reason|operator-sub/);

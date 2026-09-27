@@ -18,13 +18,21 @@
 //   live item look expired, `expiresAt` must first be changed, which is a
 //   MODIFY and alarms.
 //
+// It also counts an INSERT of an `AUDIT#` item whose `expiresAt` is well short
+// of the 2 years every audit item is written with (more than
+// SHORT_RETENTION_SLACK_DAYS short of OPERATOR_AUDIT_RETENTION_DAYS after the
+// write, supply-checkout-6uw.11): the TTL would then delete it early as a
+// "TTL expiry", which a REMOVE can't be told apart from. An item with no
+// `expiresAt` is kept forever, which hides nothing, so it isn't counted.
+//
 // The event source mapping only passes MODIFY and REMOVE records whose
-// partition key starts with OPAUDIT# (infra/lib/stacks/observability-stack.ts),
-// so this function never sees team data. It logs each change with its keys'
+// partition key starts with OPAUDIT#, and INSERTs whose sort key also starts
+// with AUDIT# (infra/lib/observability/operator-audit-watch.ts), so this
+// function never sees team data. It logs each change with its keys'
 // IDs and the event name: never the item's attributes (reasons, operator subs).
 
 import type { DynamoDBRecord, DynamoDBStreamEvent } from "aws-lambda";
-import { OPERATOR_AUDIT_PREFIX } from "../data/index.js";
+import { OPERATOR_AUDIT_PREFIX, OPERATOR_AUDIT_RETENTION_DAYS } from "../data/index.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 
 export interface OperatorAuditWatchDeps {
@@ -35,6 +43,9 @@ export interface OperatorAuditWatchDeps {
 /** The TTL process's identity on the stream records of the items it deletes. */
 const TTL_PRINCIPAL = "dynamodb.amazonaws.com";
 const KEY = /^[A-Za-z0-9_#:.+-]{1,300}$/;
+const DAY_SECONDS = 86_400;
+/** How far short of OPERATOR_AUDIT_RETENTION_DAYS a new audit item's `expiresAt` may be (clock skew, stream delay) before it counts. */
+export const SHORT_RETENTION_SLACK_DAYS = 7;
 
 /** A REMOVE made by DynamoDB's TTL process, or of an item whose TTL had already passed. */
 export function isExpiry(record: DynamoDBRecord, nowMs: number): boolean {
@@ -45,11 +56,29 @@ export function isExpiry(record: DynamoDBRecord, nowMs: number): boolean {
   return Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt * 1000 <= nowMs;
 }
 
-/** An operator audit item's change that isn't its expiry: tampering. */
+/**
+ * A new operator audit entry (`AUDIT#`) set to expire well before its 2
+ * years: more than SHORT_RETENTION_SLACK_DAYS short of
+ * OPERATOR_AUDIT_RETENTION_DAYS after it was written (the stream's time for
+ * the write, or now).
+ */
+export function isShortLived(record: DynamoDBRecord, nowMs: number): boolean {
+  if (record.eventName !== "INSERT") return false;
+  const sk = record.dynamodb?.Keys?.SK?.S;
+  if (typeof sk !== "string" || !sk.startsWith("AUDIT#")) return false;
+  const raw = record.dynamodb?.NewImage?.expiresAt?.N;
+  if (raw === undefined) return false;
+  const expiresAt = Number(raw);
+  const written = Number(record.dynamodb?.ApproximateCreationDateTime) || nowMs / 1000;
+  return !Number.isFinite(expiresAt) || expiresAt < written + (OPERATOR_AUDIT_RETENTION_DAYS - SHORT_RETENTION_SLACK_DAYS) * DAY_SECONDS;
+}
+
+/** An operator audit item's change that isn't its expiry, or a new entry set to expire early: tampering. */
 export function isTampering(record: DynamoDBRecord, nowMs: number): boolean {
-  if (record.eventName !== "MODIFY" && record.eventName !== "REMOVE") return false;
   const pk = record.dynamodb?.Keys?.PK?.S;
   if (typeof pk !== "string" || !pk.startsWith(OPERATOR_AUDIT_PREFIX)) return false;
+  if (record.eventName === "INSERT") return isShortLived(record, nowMs);
+  if (record.eventName !== "MODIFY" && record.eventName !== "REMOVE") return false;
   return !isExpiry(record, nowMs);
 }
 
@@ -67,7 +96,7 @@ export function createOperatorAuditWatchHandler(deps: OperatorAuditWatchDeps) {
     for (const record of event.Records ?? []) {
       if (!isTampering(record, at)) continue;
       changed++;
-      obs.logger.error("Operator audit item changed", {
+      obs.logger.error(record.eventName === "INSERT" ? "Operator audit item written to expire early" : "Operator audit item changed", {
         eventName: record.eventName,
         pk: loggable(record.dynamodb?.Keys?.PK?.S),
         sk: loggable(record.dynamodb?.Keys?.SK?.S),
