@@ -224,6 +224,14 @@ export const INVITES_PER_TEAM_ADDRESS_PER_DAY = 3;
 export const INVITES_PER_ADDRESS_PER_DAY = 15;
 
 /**
+ * Invites (new or re-sent) one user may send one address per UTC day, from
+ * every team they own together. The same as one team's, so an account that
+ * owns many teams can't use up the address's allowance by spreading invites
+ * over them.
+ */
+export const INVITES_PER_USER_ADDRESS_PER_DAY = 3;
+
+/**
  * Members a team may have while it isn't paying (trialing, or its
  * subscription is anything but PAID_STATUSES): enough for a crew to try it,
  * few enough that free accounts can't make a team whose live updates are

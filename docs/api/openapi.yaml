@@ -972,6 +972,9 @@ paths:
         "404":
           description: "`not_found`: the invite was accepted or revoked."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: "`aborted`: the address has become a member's since the invite was made (revoke it instead), or another live invite to it was made meanwhile."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429": { $ref: "#/components/responses/TooManyInvites" }
   /teams/{teamId}/close:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
@@ -2053,7 +2056,7 @@ components:
             properties:
               team: { $ref: "#/components/schemas/Team" }
     TooManyInvites:
-      description: "`quota_exceeded`: the team has sent 50 invites today (UTC) or 3 to this address, or the address has been sent 15 from all teams. Try again tomorrow. With `reason: \"team_full\"` (new invites only): the team's members and live invites fill its member cap."
+      description: "`quota_exceeded`: the team has sent 50 invites today (UTC) or 3 to this address, the caller has sent 3 to this address from all their teams, or the address has been sent 15 from all teams. Try again tomorrow. With `reason: \"team_full\"` (new invites only): the team's members and live invites fill its member cap."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     TooManyTeams:
       description: "`quota_exceeded`: the caller has created 5 teams today (UTC), or is already in 20 teams (the message says which)."
