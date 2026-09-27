@@ -16,8 +16,11 @@ import { BusinessMetric, type Observability } from "../src/observability/index.j
 import { PURGE_BUDGET_MS } from "../src/ops/names.js";
 import { createTeamPurgeHandler } from "../src/ops/team-purge-handler.js";
 import { TEAM_PURGE_ATTRIBUTES } from "../src/data/schema.js";
-import { REGION, accountPartitions, fakeMailer, unusedEmailCodes } from "./helpers.js";
+import { REGION, accountPartitions, fakeDb, fakeMailer, unusedEmailCodes } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
+import { connection } from "../src/data/client.js";
+import { EmailNotSentError, type Mailer } from "../src/email/mailer.js";
+import type { EmailInput } from "../src/email/templates.js";
 
 const mails = fakeMailer();
 const ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_pool";
@@ -30,11 +33,11 @@ const VIEWER = "user-viewer";
 const SOLO = "user-solo";
 
 const USERS: Record<string, CognitoUser> = {
-  [OWNER]: { sub: OWNER, email: "owner@example.com", emailVerified: true },
-  [CO_OWNER]: { sub: CO_OWNER, email: "co@example.com", emailVerified: true },
-  [PAT]: { sub: PAT, email: "pat@example.com", emailVerified: true },
-  [VIEWER]: { sub: VIEWER, email: "viewer@example.com", emailVerified: false },
-  [SOLO]: { sub: SOLO, email: "solo@example.com", emailVerified: true },
+  [OWNER]: { sub: OWNER, email: "owner@example.com", emailVerified: true, emailVerifiedInCognito: true },
+  [CO_OWNER]: { sub: CO_OWNER, email: "co@example.com", emailVerified: true, emailVerifiedInCognito: true },
+  [PAT]: { sub: PAT, email: "pat@example.com", emailVerified: true, emailVerifiedInCognito: true },
+  [VIEWER]: { sub: VIEWER, email: "viewer@example.com", emailVerified: false, emailVerifiedInCognito: false },
+  [SOLO]: { sub: SOLO, email: "solo@example.com", emailVerified: true, emailVerifiedInCognito: true },
 };
 
 let table: MemoryTable;
@@ -44,6 +47,11 @@ let counts: Record<string, number>;
 let logs: [string, string, unknown][];
 let deleted: string[];
 let deleteFails: boolean;
+// Closure emails, per recipient: SES refuses the addresses in `refuse`
+let notices: { to: string; input: EmailInput; teamId?: string }[];
+let refuse: Set<string>;
+// The owners of a team that just closed can't be listed
+let memberListFails: boolean;
 let accountHandler: ReturnType<typeof createAccountHandler>;
 let dataHandler: ReturnType<typeof createDataHandler>;
 
@@ -98,6 +106,9 @@ beforeEach(() => {
   logs = [];
   deleted = [];
   deleteFails = false;
+  notices = [];
+  refuse = new Set();
+  memberListFails = false;
   table = new MemoryTable();
   // team-a: an owner, a contributor and a viewer; team-b: two owners and Pat
   team("team-a", { [OWNER]: "owner", [PAT]: "contributor", [VIEWER]: "viewer" });
@@ -107,7 +118,12 @@ beforeEach(() => {
   invite("team-a", "inv-a1", "newbie@example.com");
   const dbFor: DbForAccount = (scope) => {
     scopes.push(scope);
-    return table.scoped(accountPartitions(scope));
+    const db = table.scoped(accountPartitions(scope));
+    if (!memberListFails) return db;
+    return fakeDb(async (command) => {
+      if (command.constructor.name === "QueryCommand" && JSON.stringify(command.input).includes('"MEMBER#')) throw Object.assign(new Error("Throttled"), { name: "ThrottlingException" });
+      return connection(db).doc.send(command as never);
+    });
   };
   const userInfo = async (token: string) => {
     const user = USERS[token.replace(/^token-/, "")];
@@ -119,7 +135,16 @@ beforeEach(() => {
     deleted.push(token.replace(/^token-/, ""));
   };
   const obs = observability();
-  accountHandler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer: mails.mailer, emailCodes: unusedEmailCodes, deleteUser, now: () => now });
+  // Invite emails go to the shared fake; closure notices are recorded here, one per recipient
+  const mailer: Mailer = {
+    async send(to, input, tags = {}) {
+      if (input.kind !== "teamClosed") return mails.mailer.send(to, input, tags);
+      if (refuse.has(to)) throw new EmailNotSentError("MessageRejected");
+      notices.push({ to, input, teamId: tags.teamId });
+      return { messageId: `notice-${notices.length}` };
+    },
+  };
+  accountHandler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer, emailCodes: unusedEmailCodes, deleteUser, now: () => now });
   dataHandler = createDataHandler({ dbForTeam: (teamId) => table.db(teamId), obs, now: () => now });
 });
 
@@ -244,7 +269,7 @@ describe("closing a team", () => {
 
   it("takes nobody new, even with an invite that's still there", async () => {
     await close();
-    USERS["user-new"] = { sub: "user-new", email: "newbie@example.com", emailVerified: true };
+    USERS["user-new"] = { sub: "user-new", email: "newbie@example.com", emailVerified: true, emailVerifiedInCognito: true };
     invite("team-a", "inv-late", "newbie@example.com");
     expect(await call("POST", "/invites/inv-late/accept", "user-new", { token: "t".repeat(32) })).toMatchObject({ status: 404, body: { error: { code: "not_found" } } });
     expect(table.get("TEAM#team-a", "MEMBER#user-new")).toBeUndefined();
@@ -272,6 +297,50 @@ describe("closing a team", () => {
     expect(audits("team-a")).toHaveLength(1);
   });
 
+  it("emails every owner the day the team will be deleted, and nobody else, once", async () => {
+    const deletesAt = new Date(NOW + CLOSED_TEAM_RETENTION_DAYS * DAY).toISOString();
+    expect((await close("team-b")).status).toBe(200);
+    expect(notices.map((n) => n.to).sort()).toEqual(["co@example.com", "owner@example.com"]);
+    for (const n of notices) expect(n).toMatchObject({ input: { kind: "teamClosed", teamName: "Team team-b", purgeAfter: deletesAt }, teamId: "team-b" });
+    expect(counts[BusinessMetric.TeamClosedNotices]).toBe(2);
+    expect(counts[BusinessMetric.TeamClosedNoticeFailures]).toBeUndefined();
+    // Closing it again sends nothing more
+    await close("team-b", "anything");
+    expect(notices).toHaveLength(2);
+    // No address or name in any log line
+    expect(JSON.stringify(logs)).not.toMatch(/@example\.com|Team team-b/);
+  });
+
+  it("closes the team even when an owner can't be emailed, and counts each owner who wasn't", async () => {
+    refuse.add("co@example.com");
+    // An owner with no address on file
+    table.put({ ...table.get("TEAM#team-b", `MEMBER#${PAT}`), role: "owner", email: undefined });
+    const { status, body } = await close("team-b");
+    expect(status).toBe(200);
+    expect(body.team.closedAt).toBe(new Date(NOW).toISOString());
+    expect(meta("team-b")?.closedAt).toBe(new Date(NOW).toISOString());
+    expect(notices.map((n) => n.to)).toEqual(["owner@example.com"]);
+    expect(counts[BusinessMetric.TeamClosedNotices]).toBe(1);
+    expect(counts[BusinessMetric.TeamClosedNoticeFailures]).toBe(2);
+    expect(logs).toContainEqual(["warn", "Team closure emails not sent", { teamId: "team-b", failed: 2, owners: 3, codes: expect.stringMatching(/^(MessageRejected,NoAddress|NoAddress,MessageRejected)$/) }]);
+    expect(JSON.stringify(logs)).not.toMatch(/@example\.com/);
+  });
+
+  it("counts nobody emailed when SES refuses them all, or the owners can't be listed", async () => {
+    refuse.add("owner@example.com");
+    await close("team-a");
+    expect(meta("team-a")?.closedAt).toBeDefined();
+    expect(counts[BusinessMetric.TeamClosedNotices]).toBeUndefined();
+    expect(counts[BusinessMetric.TeamClosedNoticeFailures]).toBe(1);
+
+    memberListFails = true;
+    expect((await close("team-b")).status).toBe(200);
+    expect(meta("team-b")?.closedAt).toBeDefined();
+    expect(notices).toEqual([]);
+    expect(counts[BusinessMetric.TeamClosedNoticeFailures]).toBe(2);
+    expect(logs).toContainEqual(["warn", "Team closure emails not sent", { teamId: "team-b", code: "ThrottlingException" }]);
+  });
+
   it("refuses an owner who was demoted after their check, and changes nothing", async () => {
     table.beforeTransactWrite = () => {
       table.put({ ...table.get("TEAM#team-a", `MEMBER#${OWNER}`), role: "viewer" });
@@ -292,6 +361,9 @@ describe("deleting an account", () => {
     table.put({ PK: `USER#${PAT}`, SK: "TEAM#gone", type: "userTeam", userId: PAT, teamId: "gone", teamName: "Gone", role: "viewer" });
     table.put({ PK: `USER#${PAT}`, SK: "LIMIT#TEAMS#2026-09-26", type: "teamsCreated", count: 1, expiresAt: NOW / 1000 + 86400 });
     table.put({ PK: `USER#${PAT}`, SK: "LIMIT#EMAILCODES#2026-09-26", type: "emailCodes", count: 2, expiresAt: NOW / 1000 + 86400 });
+    // The proven address and the last code's address (supply-checkout-ytr2, supply-checkout-cjw7) go too
+    table.put({ PK: `USER#${PAT}`, SK: "VERIFIED_EMAIL", type: "verifiedEmail", verifiedEmailHash: "a".repeat(64), verifiedAt: new Date(NOW).toISOString() });
+    table.put({ PK: `USER#${PAT}`, SK: "EMAIL_CODE_SENT", type: "emailCodeSent", sentEmailHash: "b".repeat(64), sentAt: new Date(NOW).toISOString(), expiresAt: NOW / 1000 + 86400 });
 
     expect(await deleteAccount(PAT, " delete ")).toEqual({ status: 204, body: undefined });
     expect(deleted).toEqual([PAT]);
@@ -314,7 +386,7 @@ describe("deleting an account", () => {
     expect(partition(`USER#${PAT}`).map((i) => i.SK).sort()).toEqual(["DELETING", "LIMIT#EMAILCODES#2026-09-26", "LIMIT#TEAMS#2026-09-26"]);
     expect(table.get(`USER#${PAT}`, "DELETING")).toMatchObject({ type: "accountDeletion", expiresAt: NOW / 1000 + 30 * 86400 });
     expect(counts).toMatchObject({ [BusinessMetric.AccountsDeleted]: 1, [BusinessMetric.TeamsClosed]: 1 });
-    expect(logs).toContainEqual(["info", "Account deleted", { userId: PAT, teamsLeft: 3, teamsClosed: 1, invitesDeleted: 2, rowsDeleted: 1 }]);
+    expect(logs).toContainEqual(["info", "Account deleted", { userId: PAT, teamsLeft: 3, teamsClosed: 1, invitesDeleted: 2, rowsDeleted: 3 }]);
     // No addresses or team names in any log line
     expect(JSON.stringify(logs)).not.toMatch(/@|Team /);
     // Every session was for Pat, and reached only Pat's teams and the teams that invited Pat's verified address

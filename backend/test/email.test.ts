@@ -27,6 +27,7 @@ const samples: EmailInput[] = [
   { kind: "paymentFailed", teamName: "Echo Cleaning", nextAttemptAt: "2026-10-12T00:00:00.000Z" },
   { kind: "readOnly", teamName: "Echo Cleaning" },
   { kind: "exportReady", teamName: "Echo Cleaning", exportId: "exp-1", expiresAt: "2026-10-05T00:00:00.000Z" },
+  { kind: "teamClosed", teamName: "Echo Cleaning", purgeAfter: "2026-10-26T12:00:00.000Z" },
 ];
 
 describe("templates", () => {
@@ -133,6 +134,19 @@ describe("templates", () => {
     for (const name of ["Echo Cleaning", "J.R. Cleaning", "Crew: north", "3.5 Stars", "A & B, Inc.", "Café Ltd."]) expect(teamLabel(name)).toBe(name);
     expect(teamLabel("Acme.co")).toBe("Acme[.]co");
     expect(teamLabel("mailto:x")).toBe("mailto[:]x");
+  });
+
+  it("tells an owner their team closed and the day it'll be deleted, with its name defanged", () => {
+    const email = renderEmail(samples[5] as EmailInput, { appUrl: APP });
+    expect(email.subject).toBe("Echo Cleaning was closed on Supply Checkout");
+    expect(email.text).toContain("On October 26, 2026, the team, its sheets and its inventory will be deleted for good.");
+    expect(email.html).toContain("It will be deleted for good on October 26, 2026.");
+    const hostile = renderEmail({ kind: "teamClosed", teamName: "<b>Reopen</b> at https://evil.example/restore", purgeAfter: "2026-10-26T12:00:00.000Z" }, { appUrl: APP });
+    for (const part of [hostile.subject, hostile.html, hostile.text]) expect(part).not.toMatch(/evil\.example|https:\/\/evil/);
+    expect(hostile.html).not.toContain("<b>");
+    expect(hostile.html).toContain("&lt;b&gt;Reopen&lt;/b&gt; at https[:]//evil[.]example/restore");
+    expect([...hostile.html.matchAll(/href="([^"]+)"/g)].every((m) => new URL((m[1] as string).replaceAll("&amp;", "&")).origin === APP)).toBe(true);
+    expect(() => renderEmail({ kind: "teamClosed", teamName: "Echo", purgeAfter: "" }, { appUrl: APP })).toThrow("Invalid date");
   });
 
   it("shortens long names and names a blank one", () => {

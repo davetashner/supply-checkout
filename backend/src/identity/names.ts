@@ -32,8 +32,8 @@ export const PROVIDER_HOSTED_DOMAIN_ATTRIBUTE = `custom:${PROVIDER_HOSTED_DOMAIN
  * The email a native user had when the linking trigger linked a Google or Apple
  * identity to it, without the `custom:` prefix. No IdP maps it and the web
  * client can't write it, so only triggers set it (AdminUpdateUserAttributes):
- * the linking trigger, and the email_verified trigger after Cognito verified a new
- * address with a code. Cognito rewrites a linked user's `email` from the
+ * the linking trigger, and the email_verified trigger after the person proved a
+ * new address with a code through the account API (supply-checkout-ytr2). Cognito rewrites a linked user's `email` from the
  * provider at every provider sign-in; while it differs from this, the user
  * isn't a link target and the email_verified trigger unverifies it
  * (supply-checkout-kgw).
