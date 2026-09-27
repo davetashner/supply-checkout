@@ -158,6 +158,12 @@ jobs:
         env:
           CI: true
           BUILD: ${{ matrix.build }}
+      # TEMPORARY (supply-checkout-sav5): repeat the sign-out race 25 times; dropped before merge
+      - if: matrix.build == 'web'
+        run: npx playwright test tests/aws-account.spec.js -g "signing out while a refresh" --repeat-each=25 --project=${{ matrix.project }}
+        env:
+          CI: true
+          BUILD: ${{ matrix.build }}
           # Fails the run below 98% coverage; see tests/coverage.js
           COVERAGE: ${{ matrix.coverage }}
       - name: Coverage summary
