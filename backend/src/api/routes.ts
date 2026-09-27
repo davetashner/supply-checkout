@@ -6,11 +6,11 @@
 /**
  * The generic document operations, which the app's edit screens use, and the
  * inventory commands next to them (backend/src/data/commands.ts,
- * docs/api/commands.md): checkout, return and stock adjust, each one atomic and
+ * docs/api/commands.md): checkout, return, adding a receipt's lines and stock adjust, each one atomic and
  * idempotent by operation ID, and a product's stock history. And the CSV
  * inventory import.
  */
-export type Operation = "list" | "get" | "set" | "update" | "delete" | "checkout" | "return" | "adjustStock" | "movements" | "importProducts" | "supportActions";
+export type Operation = "list" | "get" | "set" | "update" | "delete" | "checkout" | "return" | "addLines" | "adjustStock" | "movements" | "importProducts" | "supportActions";
 export type HttpMethod = "GET" | "PUT" | "PATCH" | "DELETE" | "POST";
 
 /**
@@ -48,6 +48,8 @@ const collectionRoutes = (collection: "products" | "sheets", param: string): Dat
 const commandRoutes: DataRoute[] = [
   { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/checkout", collection: "sheets", operation: "checkout", minRole: "contributor" },
   { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/return", collection: "sheets", operation: "return", minRole: "contributor" },
+  // A receipt's lines for a client, added to an existing sheet in one transaction (no stock moves)
+  { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/lines", collection: "sheets", operation: "addLines", minRole: "contributor" },
   { method: "POST", path: "/teams/{teamId}/products/{key}/stock", collection: "products", operation: "adjustStock", minRole: "contributor" },
   { method: "GET", path: "/teams/{teamId}/products/{key}/movements", collection: "products", operation: "movements", minRole: "viewer" },
   // CSV inventory import, all or nothing and idempotent by import ID (backend/src/data/imports.ts). Owners only.

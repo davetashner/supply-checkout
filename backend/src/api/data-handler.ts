@@ -16,7 +16,7 @@
 //    whose IAM policy allows only that team's partition (team-db.ts).
 //
 // Next to the document routes are the inventory commands (checkout, return,
-// stock adjust), each one transaction that's idempotent by operation ID, and
+// adding a receipt's lines, stock adjust), each one transaction that's idempotent by operation ID, and
 // a product's stock history (backend/src/data/commands.ts, docs/api/commands.md),
 // and the CSV inventory import, owners only (backend/src/data/imports.ts).
 
@@ -26,6 +26,7 @@ import type {
   Context,
 } from "aws-lambda";
 import {
+  addLines,
   adjustStockCommand,
   authorizeTeam,
   checkout,
@@ -151,6 +152,7 @@ export function sheetMovement(result: WriteResult): { checkouts: number; returns
 
 const CHECKOUT_FIELDS = ["operationId", "productKey", "quantity", "name", "price", "code", "cost"];
 const RETURN_FIELDS = ["operationId", "productKey", "quantity"];
+const LINES_FIELDS = ["operationId", "lines"];
 const STOCK_FIELDS = ["operationId", "reason", "quantity", "unitCost", "count"];
 
 /**
@@ -197,6 +199,17 @@ async function runCommand(deps: DataHandlerDeps, route: DataRoute, event: DataEv
     return commandResponse(deps, ctx, await adjustStockCommand(db, ctx, { ...body, productKey: documentId(event, 1) } as Parameters<typeof adjustStockCommand>[2], at));
   }
   const sheetId = documentId(event, 1);
+  if (route.operation === "addLines") {
+    const body = jsonBody(event, LINES_FIELDS);
+    const { result, replayed } = await addLines(db, ctx, { ...body, sheetId } as Parameters<typeof addLines>[2], at);
+    if (!replayed) {
+      deps.obs.count(BusinessMetric.Writes, 1, { teamId: ctx.teamId });
+      deps.obs.count(BusinessMetric.Checkouts, result.lines.reduce((n, l) => n + l.quantity, 0), { teamId: ctx.teamId });
+    }
+    // The sheet as it is now, read after the write (null if it's since been deleted)
+    const sheet = await getDocument(db, ctx, "sheets", sheetId);
+    return json(200, { operationId: result.operationId, replayed, result, sheet: sheet ? toBody(sheet) : null });
+  }
   if (route.operation === "checkout") {
     const body = jsonBody(event, CHECKOUT_FIELDS);
     return commandResponse(deps, ctx, await checkout(db, ctx, { ...body, sheetId } as Parameters<typeof checkout>[2], at));
@@ -205,7 +218,7 @@ async function runCommand(deps: DataHandlerDeps, route: DataRoute, event: DataEv
   return commandResponse(deps, ctx, await returnItems(db, ctx, { ...body, sheetId } as Parameters<typeof returnItems>[2], at));
 }
 
-const COMMANDS = new Set(["checkout", "return", "adjustStock", "movements"]);
+const COMMANDS = new Set(["checkout", "return", "addLines", "adjustStock", "movements"]);
 const IMPORT_FIELDS = ["importId", "csv", "dryRun"];
 
 /**

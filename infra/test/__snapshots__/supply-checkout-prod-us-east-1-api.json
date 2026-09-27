@@ -1864,6 +1864,60 @@
         }
       }
     },
+    "HttpApiPOSTteamsteamIdsheetssheetIdlinesDataIntegrationPermission42B14AFD": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "DataFunctionLive5A545D6E"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/sheets/{sheetId}/lines"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTteamsteamIdsheetssheetIdlines355660EC": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /teams/{teamId}/sheets/{sheetId}/lines",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETteamsteamIdproductsDataIntegration012ABD77"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiPOSTteamsteamIdproductskeystockDataIntegrationPermission83D69AB4": {
       "Type": "AWS::Lambda::Permission",
       "Properties": {

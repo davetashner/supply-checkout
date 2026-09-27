@@ -23,6 +23,8 @@
 //    overwriting the command's change. Checking
 //    out a new line also checks the product's version, so the snapshot is the
 //    product as it is when the transaction commits.
+//    (A receipt's lines for a client, addLines, change only the sheet: those
+//    items were never in storage.)
 // 4. Put a movement record `MOVE#<escaped key>#<at>#<operationId>`: the
 //    product's stock history, which the nightly drift check reconciles against
 //    `stock`.
@@ -42,7 +44,7 @@ import { type Page, queryPage } from "./query.js";
 import { PK } from "./schema.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
-export type CommandName = "checkout" | "return" | "stockAdjust";
+export type CommandName = "checkout" | "return" | "stockAdjust" | "addLines";
 
 /** Why a product's stock moved. `import` is a CSV inventory import setting stock (imports.ts). */
 export type MovementReason = "checkout" | "return" | "receipt" | "count" | "import";
@@ -90,8 +92,8 @@ export interface CommandResult {
   readonly at: string;
 }
 
-export interface CommandOutcome {
-  readonly result: CommandResult;
+export interface CommandOutcome<R = CommandResult> {
+  readonly result: R;
   /** True when this was a retry of an operation that had already run. */
   readonly replayed: boolean;
 }
@@ -146,9 +148,9 @@ export interface StockAdjustInput {
 type Item = Record<string, unknown>;
 type TransactItem = Record<string, Record<string, unknown>>;
 
-interface Plan {
+interface Plan<R = CommandResult> {
   readonly writes: TransactItem[];
-  readonly result: CommandResult;
+  readonly result: R;
 }
 
 const isMap = (v: unknown): v is Item => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -200,11 +202,11 @@ async function getItem(db: Db, key: Item): Promise<Item | undefined> {
 }
 
 /** The first run's result, if this operation ID was used before. */
-async function priorOutcome(db: Db, ctx: TeamContext, opId: string, request: string): Promise<CommandOutcome | undefined> {
+async function priorOutcome<R>(db: Db, ctx: TeamContext, opId: string, request: string): Promise<CommandOutcome<R> | undefined> {
   const item = await getItem(db, keys.operation(ctx.teamId, opId));
   if (!item) return undefined;
   if (item.request !== request) throw new InvalidInputError("This operationId was already used for a different request; use a new one");
-  return { result: item.result as CommandResult, replayed: true };
+  return { result: item.result as R, replayed: true };
 }
 
 /**
@@ -212,16 +214,16 @@ async function priorOutcome(db: Db, ctx: TeamContext, opId: string, request: str
  * transaction from a fresh read and commits it with the operation record
  * first, retrying when another write got in between.
  */
-async function execute(
+async function execute<R = CommandResult>(
   db: Db,
   ctx: TeamContext,
   opId: string,
   command: CommandName,
   request: string,
   now: Date,
-  plan: () => Promise<Plan>,
-): Promise<CommandOutcome> {
-  const prior = await priorOutcome(db, ctx, opId, request);
+  plan: () => Promise<Plan<NoInfer<R>>>,
+): Promise<CommandOutcome<R>> {
+  const prior = await priorOutcome<R>(db, ctx, opId, request);
   if (prior) return prior;
   const epoch = Math.floor(now.getTime() / 1000);
   for (let attempt = 1; ; attempt++) {
@@ -251,7 +253,7 @@ async function execute(
       if (!codes || !codes.every((c) => RETRYABLE.has(c))) throw error;
       // The same operation got in first, from a concurrent retry
       if (codes[0] === "ConditionalCheckFailed") {
-        const replay = await priorOutcome(db, ctx, opId, request);
+        const replay = await priorOutcome<R>(db, ctx, opId, request);
         if (replay) return replay;
       }
       if (attempt >= MAX_ATTEMPTS) throw new ConflictError("Too many changes to this item at once; try again");
@@ -526,6 +528,132 @@ export async function returnItems(db: Db, ctx: TeamContext, input: ReturnInput, 
         },
         productItem,
         movementPut(db, ctx, { productKey: key, reason: "return", delta: stockDelta, tracked, quantity: qty, sheetId, operationId: opId, userId: ctx.userId, at }),
+      ],
+    };
+  });
+}
+
+/** The most lines one addLines request takes: its expressions stay well inside DynamoDB's 4 KB limit. */
+export const MAX_ADD_LINES = 40;
+
+export interface AddLinesInput {
+  readonly operationId: unknown;
+  readonly sheetId: unknown;
+  /** [{ productKey, quantity, name, price, code?, cost? }], each product at most once. */
+  readonly lines: unknown;
+}
+
+/** What addLines did. The operation record keeps it, and a retry returns it unchanged. */
+export interface AddLinesResult {
+  readonly operationId: string;
+  readonly command: "addLines";
+  readonly sheetId: string;
+  /** Each line as requested, and whether this added it to the sheet (false: it added to an existing line). */
+  readonly lines: readonly { readonly productKey: string; readonly quantity: number; readonly lineCreated: boolean }[];
+  readonly userId: string;
+  readonly at: string;
+}
+
+interface NewLine extends LineSnapshot {
+  readonly key: string;
+  readonly qty: number;
+}
+
+function addLinesInput(value: unknown): NewLine[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_ADD_LINES) throw new InvalidInputError(`lines must be a list of 1 to ${MAX_ADD_LINES} lines`);
+  const seen = new Set<string>();
+  return value.map((raw: unknown) => {
+    if (!isMap(raw)) throw new InvalidInputError("Each line must be an object");
+    for (const field of Object.keys(raw)) {
+      if (!["productKey", "quantity", "name", "price", "code", "cost"].includes(field)) throw new InvalidInputError(`Unexpected line field "${field}"`);
+    }
+    const key = productKey(raw.productKey);
+    if (seen.has(key)) throw new InvalidInputError("Each product can be in lines only once");
+    seen.add(key);
+    const cost = raw.cost === undefined ? undefined : money(raw.cost, "cost");
+    return {
+      key,
+      qty: checkQuantity(raw.quantity),
+      code: raw.code === undefined ? "" : barcode(raw.code),
+      name: lineName(raw.name),
+      price: money(raw.price, "price"),
+      ...(cost === undefined ? {} : { cost }),
+    };
+  });
+}
+
+/**
+ * Adds lines bought for a sheet's client (a receipt saved to an existing
+ * sheet): each line's `quantity` goes on the sheet's `out` for its product,
+ * creating the line, with the request's `code`, `name`, `price` and `cost`,
+ * if the sheet doesn't have it. An existing line keeps its copy. All the lines
+ * change in one transaction, or none do, and a retry with the same operation
+ * ID changes nothing.
+ *
+ * Stock doesn't move: the items were bought for the client and never were in
+ * storage. The sheet must be open.
+ */
+export async function addLines(db: Db, ctx: TeamContext, input: AddLinesInput, now = new Date()): Promise<CommandOutcome<AddLinesResult>> {
+  writable(db, ctx);
+  const opId = operationId(input.operationId);
+  const sheetId = checkId(input.sheetId, "sheet ID");
+  const lines = addLinesInput(input.lines);
+  const request = JSON.stringify({ command: "addLines", userId: ctx.userId, sheetId, lines });
+  const at = now.toISOString();
+
+  return execute<AddLinesResult>(db, ctx, opId, "addLines", request, now, async () => {
+    const sheet = openSheet(await getItem(db, keys.sheet(ctx.teamId, sheetId)), "add to it");
+    const items = sheet.items as Item | undefined;
+    const names: Record<string, string> = { "#i": "items", "#s": "status", "#v": "version" };
+    const values: Item = { ":one": 1, ":closed": "closed" };
+    const sets: string[] = [];
+    const clauses: string[] = [];
+    const added: Item = {};
+    const result = lines.map(({ key, qty, ...snapshot }, n) => {
+      const existing = lineOf(items, key);
+      if (existing !== undefined && !isMap(existing)) throw new InvalidInputError("A line on this sheet is malformed; correct it first");
+      if (existing) {
+        lineCounts(existing);
+        names[`#k${n}`] = key;
+        names["#o"] = "out";
+        values[`:q${n}`] = qty;
+        sets.push(`#i.#k${n}.#o = #i.#k${n}.#o + :q${n}`);
+        clauses.push(`attribute_exists(#i.#k${n}.#o)`);
+      } else {
+        const line = { ...snapshot, out: qty, returned: 0 };
+        added[key] = line;
+        if (items) {
+          names[`#k${n}`] = key;
+          values[`:l${n}`] = line;
+          sets.push(`#i.#k${n} = :l${n}`);
+          clauses.push(`attribute_not_exists(#i.#k${n})`);
+        }
+      }
+      return { productKey: key, quantity: qty, lineCreated: !existing };
+    });
+    if (Buffer.byteLength(JSON.stringify(sheet), "utf8") + Buffer.byteLength(JSON.stringify(added), "utf8") > MAX_DOCUMENT_BYTES) {
+      throw new TooLargeError(`Sheets are limited to ${MAX_DOCUMENT_BYTES} bytes; start another sheet`);
+    }
+    if (items) clauses.unshift("attribute_exists(#i)");
+    else {
+      // No items map yet, so every line is new. An own field even for a key like "constructor".
+      values[":items"] = added;
+      sets.push("#i = :items");
+      clauses.push("attribute_exists(PK)", "attribute_not_exists(#i)");
+    }
+    return {
+      result: { operationId: opId, command: "addLines", sheetId, lines: result, userId: ctx.userId, at },
+      writes: [
+        {
+          Update: {
+            TableName: db.tableName,
+            Key: keys.sheet(ctx.teamId, sheetId),
+            UpdateExpression: `SET ${sets.join(", ")} ADD #v :one`,
+            ConditionExpression: anyOf(clauses, [["attribute_not_exists(#s)"], ["#s <> :closed"]]),
+            ExpressionAttributeNames: names,
+            ExpressionAttributeValues: storable(values),
+          },
+        },
       ],
     };
   });
