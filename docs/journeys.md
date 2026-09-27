@@ -59,7 +59,7 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 2. Sign up and accept the terms.
 3. Name the team.
 
-**Expected:** an empty team ready to use in under a minute, with a 14-day trial and no card needed. The terms acceptance time is stored.
+**Expected:** an empty team ready to use in under a minute, with a 14-day trial and no card needed. The terms acceptance time is stored. In the web app, the new team opens with a short **Get your team started** checklist above the sheets and inventory: add supplies (by hand, or import a CSV using the import's template), invite the crew from Members, and create a first sheet. Each step ticks itself off from what's saved, and the checklist shows to the team's owners on that device until every step is done or they dismiss it (`supply-checkout-dhc`: `tests/aws-first-run.spec.js`, including accessibility in light and dark mode and a phone-width layout).
 
 **Status:** planned. `supply-checkout-21q` (landing and sign-up), `supply-checkout-zsm` (sign-in), `supply-checkout-l5y` (team creation: `GET /me` and `POST /teams`, see [docs/api/onboarding.md](api/onboarding.md)), `supply-checkout-x0l` (trial).
 
@@ -75,7 +75,7 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Status:** partly tested. Adding items works today. Creating the team first is planned (`supply-checkout-l5y`), as is importing an existing inventory (`supply-checkout-ig9`).
 
-**Tests:** `inventory.spec.js` (all tests), `barcode.spec.js`: "an item's barcode can be scanned when adding it to inventory".
+**Tests:** `inventory.spec.js` (all tests), `barcode.spec.js`: "an item's barcode can be scanned when adding it to inventory", and in the web app, `aws-first-run.spec.js` (the new team's checklist leads here).
 
 ### J3. Invite the crew
 
