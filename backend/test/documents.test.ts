@@ -156,6 +156,26 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
     await expect(updateDocument(db, ctx, "sheets", "s1", { items: { b: { price: 1.001 } } })).rejects.toThrow(InvalidInputError);
   });
 
+  it("saves a product with legacy price and cost when another field changes, rounding them to cents", async () => {
+    const ctx = await team();
+    await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: { ...keys.product(ctx.teamId, "p1"), type: "product", key: "p1", version: 1, code: "A", name: "Gloves", price: 2.345, cost: 1.005 } }));
+    const { after } = await updateDocument(db, ctx, "products", "p1", { name: "Nitrile gloves" });
+    expect(after.data).toMatchObject({ name: "Nitrile gloves", price: 2.35, cost: 1.01 });
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#p1")).toMatchObject({ version: 2, price: 2.35, cost: 1.01 });
+    await expect(updateDocument(db, ctx, "products", "p1", { cost: 1.006 })).rejects.toThrow(InvalidInputError);
+    await expect(setDocument(db, ctx, "products", "p2", { code: "B", name: "Rags", price: 1.001 })).rejects.toThrow(InvalidInputError);
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#p2")).toBeUndefined();
+  });
+
+  it("maps DynamoDB's own item-size refusal to TooLargeError", async () => {
+    const ctx = await team();
+    // Under the document limit as JSON, but over 400 KB as DynamoDB counts it (each number in a list takes more than its 2 bytes of JSON)
+    const counts = Array.from({ length: 170_000 }, () => 1);
+    expect(Buffer.byteLength(JSON.stringify({ counts }), "utf8")).toBeLessThan(MAX_DOCUMENT_BYTES);
+    await expect(setDocument(db, ctx, "products", "p1", { code: "A", name: "Gloves", counts })).rejects.toThrow(new TooLargeError("This document is too large to save"));
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#p1")).toBeUndefined();
+  });
+
   it("edits a product whose stored stock isn't a number, dropping it", async () => {
     const ctx = await team();
     await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: { ...keys.product(ctx.teamId, "p1"), type: "product", key: "p1", version: 1, name: "Gloves", stock: "5" } }));
