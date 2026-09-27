@@ -345,6 +345,8 @@ export function createDataHandler(deps: DataHandlerDeps) {
       status = apiError.status;
       if (apiError.status === 409) deps.obs.count(BusinessMetric.ConditionalWriteConflicts, 1, teamId ? { teamId } : {});
       if (apiError.status >= 500) deps.obs.logger.error("Request failed", error as Error);
+      // DynamoDB's refusal behind a 413, when the data layer kept it: its name and the start of its message
+      else if (error instanceof TooLargeError && error.cause !== undefined) deps.obs.logger.warn("Refused as too large", { cause: error.cause });
       return errorResponse(apiError);
     } finally {
       deps.obs.logger.info("Request", { route: event.routeKey, teamId: teamId ?? "", status, ms: now() - started });
