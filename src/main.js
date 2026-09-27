@@ -310,7 +310,7 @@ function newSheetModal(existing) {
   openModal(`
     <h2>${editing ? "Edit sheet" : "New sheet"}</h2>
     <form id="f" style="display:grid;gap:14px">
-      <div class="field"><label for="fClient">Client</label><input type="text" id="fClient" required autofocus value="${esc(editing ? existing.client : "")}" placeholder="Client or job name"></div>
+      <div class="field"><label for="fClient">Client</label><input type="text" id="fClient" required data-autofocus value="${esc(editing ? existing.client : "")}" placeholder="Client or job name"></div>
       <div class="field"><label for="fDate">Date</label><input type="date" id="fDate" required value="${esc(editing ? existing.date : todayISO())}"></div>
       ${needName ? `<div class="field"><label for="fBy">Prepared by</label><input type="text" id="fBy" required placeholder="Your name"></div>` : ""}
       <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">${editing ? "Save" : "Create sheet"}</button></div>
@@ -347,7 +347,7 @@ function checkoutModal(s, code, key = keyOf(code)) {
     <form id="f" style="display:grid;gap:14px">
       ${prod ? `<div class="item-known"><strong>${esc(prod.name)}</strong><span class="num">${money(prod.price)} each</span></div>${hasStock(prod) ? `<div class="summary"><span>In storage</span><b>${prod.stock}</b></div>` : ""}`
              : `<p class="hint" style="margin-top:-4px">${code ? "New barcode. Name it and set a price, and it'll be saved to inventory." : "Name the item and set a price."}</p>
-                <div class="field"><label for="fName">Item name</label><input type="text" id="fName" required autofocus placeholder="${code ? "e.g. Nitrile gloves, box of 100" : "e.g. Leftover storage bins"}"></div>
+                <div class="field"><label for="fName">Item name</label><input type="text" id="fName" required data-autofocus placeholder="${code ? "e.g. Nitrile gloves, box of 100" : "e.g. Leftover storage bins"}"></div>
                 <div class="field"><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" step="0.01" inputmode="decimal" placeholder="0.00"></div>
                 ${code ? "" : `<label class="check"><input type="checkbox" id="fSave" checked> Save to inventory for next time</label>`}`}
       ${line ? `<div class="summary"><span>Already on this sheet</span><b>${int(line.out)} taken</b></div>` : ""}
@@ -529,7 +529,7 @@ function productModal(key) {
         ${p ? `<div class="code" style="margin:0">${esc(codeText(p.code))}</div>`
             : `<div class="manual"><input type="text" id="fCode" inputmode="numeric" autocomplete="off" placeholder="Type, scan, or leave blank"><label class="btn" for="fScan">Scan</label></div><input class="vh" type="file" id="fScan" accept="image/*" capture="environment">`}
       </div>
-      <div class="field"><label for="fName">Item name</label><input type="text" id="fName" required value="${esc(p ? p.name : "")}" ${p ? "autofocus" : ""}></div>
+      <div class="field"><label for="fName">Item name</label><input type="text" id="fName" required value="${esc(p ? p.name : "")}" ${p ? "data-autofocus" : ""}></div>
       <div class="field"><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" step="0.01" inputmode="decimal" value="${p ? round2(p.price) : ""}" placeholder="0.00"></div>
       <div class="field"><label for="fCost">Cost each ($)</label><input type="number" id="fCost" min="0" step="0.01" inputmode="decimal" value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="Leave blank if not known"></div>
       <div class="field"><label for="fStock">In storage now</label><input type="number" id="fStock" min="0" inputmode="numeric" value="${hasStock(p) ? p.stock : ""}" placeholder="Leave blank if not counted"></div>
