@@ -46,8 +46,12 @@ import { type TeamContext, readable, writable } from "./team-context.js";
 
 export type CommandName = "checkout" | "return" | "stockAdjust" | "addLines";
 
-/** Why a product's stock moved. `import` is a CSV inventory import setting stock (imports.ts). */
-export type MovementReason = "checkout" | "return" | "receipt" | "count" | "import";
+/**
+ * Why a product's stock moved. `import` is a CSV inventory import setting
+ * stock (imports.ts); `delete` is the product's document being deleted,
+ * taking its stock to 0 (documents.ts).
+ */
+export type MovementReason = "checkout" | "return" | "receipt" | "count" | "import" | "delete";
 
 /** How long a retry with the same operation ID returns the first result. */
 export const OPERATION_TTL_DAYS = 7;

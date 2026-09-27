@@ -4,8 +4,9 @@
 // edit made against the version before a stock change conflicts instead of
 // overwriting it.
 
-import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
+import { deleteDocument } from "./documents.js";
 import { InvalidInputError, conflictOnConditionFailure } from "./errors.js";
 import { barcode, keys, prefixes, productKey, strip, teamPartition } from "./keys.js";
 import { queryAll, versionedSet } from "./query.js";
@@ -92,18 +93,10 @@ export async function adjustStock(db: Db, ctx: TeamContext, key: string, delta: 
   return Attributes?.stock as number;
 }
 
-/** Deletes a product, if unchanged since `expectedVersion` when given. */
+/**
+ * Deletes a product, if unchanged since `expectedVersion` when given. As
+ * deleteDocument does it: one that tracks stock gets a `delete` movement.
+ */
 export async function deleteProduct(db: Db, ctx: TeamContext, key: string, expectedVersion?: number): Promise<void> {
-  writable(db, ctx);
-  await connection(db).doc
-    .send(
-      new DeleteCommand({
-        TableName: db.tableName,
-        Key: keys.product(ctx.teamId, key),
-        ...(expectedVersion === undefined
-          ? {}
-          : { ConditionExpression: "#version = :expected", ExpressionAttributeNames: { "#version": "version" }, ExpressionAttributeValues: { ":expected": expectedVersion } }),
-      }),
-    )
-    .catch(conflictOnConditionFailure("This item changed; reload and try again"));
+  await deleteDocument(db, ctx, "products", key, { expectedVersion });
 }
