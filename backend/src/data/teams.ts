@@ -4,7 +4,7 @@
 import { DeleteCommand, GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { auditPut } from "./audit.js";
 import { type Db, connection } from "./client.js";
-import { ConflictError, InvalidInputError, LastOwnerError, conflictOnConditionFailure } from "./errors.js";
+import { ConflictError, ForbiddenError, InvalidInputError, LastOwnerError, LimitReachedError, TeamDeletingError, conflictOnConditionFailure } from "./errors.js";
 import { gsi1, gsi3, id, keys, prefixes, strip, teamPartition } from "./keys.js";
 import {
   type Invite,
@@ -13,6 +13,8 @@ import {
   type Team,
   type UserTeam,
   CLOSED_TEAM_RETENTION_DAYS,
+  REOPEN_CUTOFF_MINUTES,
+  REOPENS_PER_TEAM_PER_DAY,
   isClosed,
   memberRole,
   normalizeEmail,
@@ -26,7 +28,7 @@ import { queryAll, versionedSet } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
 export type { Invite, InviteFailure, Member, MemberRole, Team, UserTeam } from "./model.js";
-export { CLOSED_TEAM_RETENTION_DAYS, isClosed } from "./model.js";
+export { CLOSED_TEAM_RETENTION_DAYS, REOPEN_CUTOFF_MINUTES, REOPENS_PER_TEAM_PER_DAY, isClosed } from "./model.js";
 
 const CHANGED = "Someone else changed this team's members just now; reload and try again";
 const LAST_OWNER = "A team needs at least one owner. Make someone else an owner first.";
@@ -376,6 +378,108 @@ export async function closeTeam(
 }
 
 const CONFIRM = "Type the team's name to close it";
+
+const REOPEN_CONFIRM = "Type the team's name to reopen it";
+const TOO_LATE = "This team is about to be deleted and can't be reopened any more";
+const TOO_OFTEN = `A team can be reopened ${REOPENS_PER_TEAM_PER_DAY} times a day. Try again tomorrow.`;
+
+/**
+ * Reopens a closed team before the purge deletes it. The caller types the
+ * team's name to confirm (`confirmName`, compared as closeTeam compares it).
+ *
+ * Only owners reopen a team: an owner who is still a member of it, re-checked
+ * at write time as closeTeam does, so an owner removed or demoted since the
+ * context was issued can't. System contexts (billing, email events) are
+ * refused (ForbiddenError). Operator reopen (bead 6uw.6) will need its own
+ * path: operators never get a TeamContext (ADR 0015).
+ *
+ * A team can be reopened REOPENS_PER_TEAM_PER_DAY times a UTC day
+ * (LimitReachedError after that): each reopening and the closure after it
+ * email every owner, so this caps those emails without silencing a closure.
+ *
+ * In one transaction: the META item loses `closedAt`, `closedBy`,
+ * `purgeAfter` and its closed-teams index keys (GSI1PK, GSI1SK), so the
+ * purge no longer finds it, and its version moves; a `team.reopened` audit
+ * event records when it was closed and by whom, and the day's reopen counter
+ * moves. The update is conditioned on
+ * the team still having the closure that was read (same `closedAt` and
+ * `purgeAfter`), on `purgeAfter` being more than REOPEN_CUTOFF_MINUTES away
+ * (TeamDeletingError otherwise: the purge may already be deleting it), and on
+ * the team having an owner.
+ *
+ * From then on the team is writable again (authorizeTeam reads `closedAt`)
+ * and its members get live updates again (liveUpdateRecipients). Nothing
+ * the closure undid comes back: its invites stay deleted, and anyone who
+ * left or was removed while it was closed stays out, so owners invite people
+ * again. The Stripe subscription isn't touched: closing doesn't cancel it yet
+ * either (billing, supply-checkout-x0l, will need to resume it here).
+ *
+ * Idempotent: reopening a team that isn't closed changes nothing and returns
+ * it as it is, with `reopenedNow: false`.
+ */
+export async function reopenTeam(
+  db: Db,
+  ctx: TeamContext,
+  input: { readonly confirmName: string },
+  now = new Date(),
+): Promise<{ team: Team; reopenedNow: boolean }> {
+  writable(db, ctx, "owner", { whileClosed: true });
+  // Owners only: writable lets system contexts (billing, email events) through
+  if (ctx.role !== "owner") throw new ForbiddenError("Only the team's owners can reopen it");
+  if (typeof input.confirmName !== "string") throw new InvalidInputError(REOPEN_CONFIRM);
+  const current = await getTeam(db, ctx);
+  if (!current) throw new ConflictError(CHANGED);
+  if (!isClosed(current)) return { team: current, reopenedNow: false };
+  if (confirmation(input.confirmName) !== confirmation(current.name)) throw new InvalidInputError(REOPEN_CONFIRM);
+  const cutoff = new Date(now.getTime() + REOPEN_CUTOFF_MINUTES * 60_000).toISOString();
+  if (typeof current.purgeAfter !== "string" || current.purgeAfter <= cutoff) throw new TeamDeletingError(TOO_LATE);
+  await connection(db)
+    .doc.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Update: {
+              TableName: db.tableName,
+              Key: keys.team(ctx.teamId),
+              UpdateExpression: "REMOVE closedAt, closedBy, purgeAfter, GSI1PK, GSI1SK SET #version = #version + :one",
+              ConditionExpression: "closedAt = :at AND purgeAfter = :purge AND purgeAfter > :cutoff AND owners > :zero",
+              ExpressionAttributeNames: { "#version": "version" },
+              ExpressionAttributeValues: { ":at": current.closedAt, ":purge": current.purgeAfter, ":cutoff": cutoff, ":one": 1, ":zero": 0 },
+            },
+          },
+          // The caller's own membership, as it is now
+          {
+            ConditionCheck: {
+              TableName: db.tableName,
+              Key: keys.member(ctx.teamId, ctx.userId),
+              ConditionExpression: "#role = :owner",
+              ExpressionAttributeNames: { "#role": "role" },
+              ExpressionAttributeValues: { ":owner": "owner" },
+            },
+          },
+          auditPut(db, ctx, { action: "team.reopened", detail: { closedAt: current.closedAt, ...(current.closedBy ? { closedBy: current.closedBy } : {}) } }, now),
+          // The day's reopen counter, refused at the limit
+          {
+            Update: {
+              TableName: db.tableName,
+              Key: keys.reopens(ctx.teamId, now.toISOString().slice(0, 10)),
+              UpdateExpression: "ADD #count :one SET #type = :type, expiresAt = :expires",
+              ConditionExpression: "attribute_not_exists(#count) OR #count < :max",
+              ExpressionAttributeNames: { "#count": "count", "#type": "type" },
+              ExpressionAttributeValues: { ":one": 1, ":max": REOPENS_PER_TEAM_PER_DAY, ":type": "reopenLimit", ":expires": Math.floor(now.getTime() / 1000) + 2 * 24 * 60 * 60 },
+            },
+          },
+        ],
+      }),
+    )
+    .catch((error: unknown) => {
+      const reasons = (error as { name?: string; CancellationReasons?: { Code?: string }[] } | null)?.name === "TransactionCanceledException" ? ((error as { CancellationReasons?: { Code?: string }[] }).CancellationReasons ?? []) : [];
+      // Only the counter refused it: every other condition held
+      if (reasons[3]?.Code === "ConditionalCheckFailed" && reasons.slice(0, 3).every((r) => r.Code === "None")) throw new LimitReachedError(TOO_OFTEN);
+      return conflictOnConditionFailure(CHANGED)(error);
+    });
+  return { team: (await getTeam(db, ctx)) as Team, reopenedNow: true };
+}
 
 /**
  * The verified user's teams, for the team switcher. This reads the user's own

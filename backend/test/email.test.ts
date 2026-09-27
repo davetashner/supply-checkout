@@ -28,6 +28,7 @@ const samples: EmailInput[] = [
   { kind: "readOnly", teamName: "Echo Cleaning" },
   { kind: "exportReady", teamName: "Echo Cleaning", exportId: "exp-1", expiresAt: "2026-10-05T00:00:00.000Z" },
   { kind: "teamClosed", teamName: "Echo Cleaning", purgeAfter: "2026-10-26T12:00:00.000Z" },
+  { kind: "teamReopened", teamName: "Echo Cleaning" },
 ];
 
 describe("templates", () => {
@@ -147,6 +148,17 @@ describe("templates", () => {
     expect(hostile.html).toContain("&lt;b&gt;Reopen&lt;/b&gt; at https[:]//evil[.]example/restore");
     expect([...hostile.html.matchAll(/href="([^"]+)"/g)].every((m) => new URL((m[1] as string).replaceAll("&amp;", "&")).origin === APP)).toBe(true);
     expect(() => renderEmail({ kind: "teamClosed", teamName: "Echo", purgeAfter: "" }, { appUrl: APP })).toThrow("Invalid date");
+  });
+
+  it("tells an owner their team was reopened and what didn't come back, with its name defanged", () => {
+    const email = renderEmail(samples[6] as EmailInput, { appUrl: APP });
+    expect(email.subject).toBe("Echo Cleaning was reopened on Supply Checkout");
+    expect(email.text).toContain("An owner of Echo Cleaning reopened the team, so it won't be deleted.");
+    expect(email.text).toContain("Invites that were cancelled when it closed stay cancelled");
+    const hostile = renderEmail({ kind: "teamReopened", teamName: "<b>Pay</b> at https://evil.example/pay" }, { appUrl: APP });
+    for (const part of [hostile.subject, hostile.html, hostile.text]) expect(part).not.toMatch(/evil\.example|https:\/\/evil/);
+    expect(hostile.html).not.toContain("<b>");
+    expect([...hostile.html.matchAll(/href="([^"]+)"/g)].every((m) => new URL((m[1] as string).replaceAll("&amp;", "&")).origin === APP)).toBe(true);
   });
 
   it("shortens long names and names a blank one", () => {

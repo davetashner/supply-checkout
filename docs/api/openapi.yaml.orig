@@ -150,8 +150,7 @@ tags:
       user pool (`opsCognito`), whose user must be in the `operators` group;
       a customer's token is refused. Removing, disabling or signing out an
       operator takes effect on their next request. Operators never read a
-      team's sheets, inventory, invites or receipts. They can list imports
-      stuck part-way and take one out of the stuck-import check. Every change, and every
+      team's sheets, inventory, invites or receipts. Every change, and every
       read of one team's record, is audited, and the team's owners see it
       (`GET /teams/{teamId}/support-actions`). `npm run ops` is the client.
 paths:
@@ -535,10 +534,7 @@ paths:
         it, leaving out teams the caller is already in. The user is always the
         token's `sub`: there is no way to ask about anyone else. Needs the
         `aws.cognito.signin.user.admin` scope in the access token (the server
-        reads the email with Cognito's GetUser). When the verified email
-        differs from the one on the caller's membership in a team (it changed
-        since they joined), the membership is updated to it, so owners' member
-        lists and notices use the current address.
+        reads the email with Cognito's GetUser).
       responses:
         "200":
           description: The caller's account.
@@ -736,9 +732,7 @@ paths:
         with Google or Apple linked, the refresh is when the address is
         recorded and starts to count (docs/infrastructure.md, Sign-in).
         After that, `GET /me` shows `emailVerified: true` and the invites
-        sent to the address. Cognito limits wrong tries (429). Once the
-        address counts as verified, the caller's membership in each of their
-        teams is updated to it.
+        sent to the address. Cognito limits wrong tries (429).
       requestBody:
         required: true
         content:
@@ -835,11 +829,7 @@ paths:
       description: |
         The member loses access on their next request, and their live updates
         stop. The team's last owner can't be removed or leave (409 with
-        `reason: "last_owner"`), enforced in the same transaction. Their
-        pending invites to the team go too: to the address on their
-        membership and, when they leave, to the address they have verified
-        now. Leaving needs the `aws.cognito.signin.user.admin` scope, like
-        `GET /me`.
+        `reason: "last_owner"`), enforced in the same transaction.
       responses:
         "204": { description: Removed. }
         "400": { $ref: "#/components/responses/BadRequest" }
@@ -985,8 +975,8 @@ paths:
         later (`deletesAt`) all of its data is deleted: sheets, inventory,
         stock history, members and the audit trail. `name` must be the
         team's name (ignoring case and surrounding spaces), or it's 400 and
-        nothing changes. Closing a closed team returns it as it is. Until an
-        hour before `deletesAt`, an owner can reopen it (`reopenTeam`).
+        nothing changes. Closing a closed team returns it as it is. The team
+        can't be reopened.
       requestBody:
         required: true
         content:
@@ -1014,57 +1004,6 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
           description: "`aborted`: the caller's role, or the team, changed meanwhile; reload and try again."
-          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-  /teams/{teamId}/reopen:
-    parameters: [{ $ref: "#/components/parameters/teamId" }]
-    post:
-      tags: [members]
-      operationId: reopenTeam
-      summary: Reopen a closed team before it's deleted. Owners who are still in it, typing its name to confirm.
-      description: |
-        The team is writable again at once, it won't be deleted, and live
-        updates start again. What the closure undid stays undone: its
-        invites were deleted, and anyone who left or was removed while it
-        was closed isn't back (owners invite them again). Every owner is
-        emailed that it was reopened (best effort). `name` must be the
-        team's name (ignoring case and surrounding spaces), or it's 400 and
-        nothing changes. Reopening a team that isn't closed returns it as
-        it is. Refused within an hour of `deletesAt` (409, reason
-        `team_deleting`), when the scheduled purge may already be deleting
-        it. An owner who left the closed team isn't a member any more
-        (403 `not_member`). A team can be reopened 3 times a UTC day (429
-        `quota_exceeded` after that), which bounds the owner emails that
-        closing and reopening send.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [name]
-              properties:
-                name: { type: string, description: The team's name, as the owner typed it to confirm. }
-      responses:
-        "200":
-          description: The reopened team, with `closedAt` and `deletesAt` null.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [team]
-                properties:
-                  team: { $ref: "#/components/schemas/Team" }
-        "400":
-          description: "`bad_request`: `name` isn't the team's name, or the body is malformed."
-          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "409":
-          description: "`aborted`: the caller's role, or the team's closure, changed meanwhile (reload and try again); or, with `reason: \"team_deleting\"`, the team is less than an hour from being deleted and can't be reopened."
-          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-        "429":
-          description: "`quota_exceeded`: the team was already reopened 3 times today (UTC); try again tomorrow."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /teams/{teamId}/support-actions:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
@@ -1098,10 +1037,10 @@ paths:
                         eventId: { type: string }
                         ts: { type: string, format: date-time }
                         actor: { type: string, const: Supply Checkout support }
-                        action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end, ops.import.clear] }
+                        action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end] }
                         reason: { type: string }
-                        before: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
-                        after: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
+                        before: { oneOf: [{ $ref: "#/components/schemas/CompRecord" }, { type: "null" }] }
+                        after: { oneOf: [{ $ref: "#/components/schemas/CompRecord" }, { type: "null" }] }
                   cursor: { type: string, description: Absent on the last page. }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
@@ -1248,88 +1187,16 @@ paths:
                         ts: { type: string, format: date-time }
                         teamId: { type: string }
                         operatorSub: { type: string, description: The operator's `sub` in the operator pool. }
-                        action: { type: string, enum: [ops.teams.list, ops.team.read, ops.comp.set, ops.comp.end, ops.import.clear] }
+                        action: { type: string, enum: [ops.teams.list, ops.team.read, ops.comp.set, ops.comp.end] }
                         target: { type: string }
                         reason: { type: string }
-                        before: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
-                        after: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
+                        before: { oneOf: [{ $ref: "#/components/schemas/CompRecord" }, { type: "null" }] }
+                        after: { oneOf: [{ $ref: "#/components/schemas/CompRecord" }, { type: "null" }] }
                         idempotencyKey: { type: string }
                   cursor: { type: string, description: Absent on the last page. }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/OperatorsOnly" }
-  /ops/imports:
-    get:
-      tags: [ops]
-      operationId: opsListStuckImports
-      summary: Imports still committing more than an hour after they started, oldest first (the "Imports stuck" alarm).
-      description: Only each job's team, ID, start and progress. See "Imports stuck" in docs/journeys.md.
-      security: [{ opsCognito: [] }]
-      responses:
-        "200":
-          description: The stuck imports.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [imports, stuckAfterMinutes]
-                properties:
-                  imports:
-                    type: array
-                    items:
-                      type: object
-                      required: [teamId, importId, startedAt, committed, total]
-                      properties:
-                        teamId: { type: string }
-                        importId: { type: string }
-                        startedAt: { type: string, format: date-time }
-                        committed: { type: integer, description: Rows committed so far. }
-                        total: { type: integer }
-                  stuckAfterMinutes: { type: integer }
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "403": { $ref: "#/components/responses/OperatorsOnly" }
-  /ops/teams/{teamId}/imports/{importId}/clear:
-    parameters:
-      - { $ref: "#/components/parameters/opsTeamId" }
-      - { name: importId, in: path, required: true, schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" } }
-    post:
-      tags: [ops]
-      operationId: opsClearStuckImport
-      summary: Take a stuck import out of the stuck-import check. Audited as `ops.import.clear`.
-      description: |
-        Only the job's index keys change: the job and its staged plan stay,
-        so a retry of it still works until it expires. Refused for an import
-        that isn't stuck (finished, still within the hour, cleared already or
-        unknown).
-      security: [{ opsCognito: [] }]
-      parameters: [{ $ref: "#/components/parameters/opsIdempotencyKey" }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [reason]
-              properties:
-                reason: { type: string, minLength: 3, maxLength: 500, description: Why, on one line. The team's owners see it. }
-      responses:
-        "200":
-          description: Cleared, now or by an earlier request with the same Idempotency-Key (`replayed`).
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [eventId, replayed]
-                properties:
-                  eventId: { type: string, description: The audit event. }
-                  replayed: { type: boolean }
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "403": { $ref: "#/components/responses/OperatorsOnly" }
-        "409":
-          description: "`aborted`, nothing changed: the import isn't stuck, or the Idempotency-Key was used for a different request."
-          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /auth/session:
     post:
       tags: [auth]
@@ -1849,7 +1716,7 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, code_mismatch, code_expired, already_verified, email_in_use, email_changed]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, code_mismatch, code_expired, already_verified, email_in_use, email_changed]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -1857,8 +1724,6 @@ components:
                 doesn't exist). `last_owner`: the change would leave the team
                 without an owner. `team_full`: the team is at its member cap.
                 `team_closed`: the team was closed and is read-only.
-                `team_deleting`: the closed team is about to be deleted and
-                can't be reopened.
                 Verifying an email address: `code_mismatch` (the code isn't
                 right), `code_expired`, `already_verified`, `email_in_use`
                 (another account has the address), and `email_changed` (the

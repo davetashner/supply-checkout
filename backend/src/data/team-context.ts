@@ -94,7 +94,8 @@ export function readable(ctx: TeamContext): TeamContext {
  * local; phase 2 forwards to the home region here.
  *
  * A closed team is read-only (TeamClosedError), except for what `whileClosed`
- * allows: leaving or removing a member, revoking invites, and closing it again.
+ * allows: leaving or removing a member, revoking invites, closing it again and
+ * reopening it (reopenTeam).
  * System processes (billing, email events) aren't held to it.
  */
 export function writable(db: Db, ctx: TeamContext, minimum: Role = "contributor", options: { readonly whileClosed?: boolean } = {}): TeamContext {

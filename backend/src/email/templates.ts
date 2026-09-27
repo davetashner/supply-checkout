@@ -1,5 +1,5 @@
 // The app's transactional email: an invite, and the billing and account
-// notices (including a team's closure, to every owner). Each renders to a subject, an HTML body and a plain-text body.
+// notices (including a team's closure and reopening, to every owner). Each renders to a subject, an HTML body and a plain-text body.
 //
 // Built for the mail clients people actually use (Gmail, Outlook including
 // Word-rendered desktop Outlook, iOS Mail):
@@ -41,7 +41,8 @@ export type EmailInput =
       readonly teamName: string;
       /** When the purge deletes the team: the team item's purgeAfter (ISO 8601). */
       readonly purgeAfter: string;
-    };
+    }
+  | { readonly kind: "teamReopened"; readonly teamName: string };
 
 export interface RenderedEmail {
   readonly kind: EmailKind;
@@ -253,12 +254,24 @@ function content(input: EmailInput, appUrl: string): Content {
         heading: `${team} was closed`,
         paragraphs: [
           `An owner of ${team} closed the team. It's read-only now: its members can still see its sheets and inventory, but nobody can change them or join it, and its invites were cancelled.`,
-          `On ${purge}, the team, its sheets and its inventory will be deleted for good. Until then, owners can export its data in the app.`,
+          `On ${purge}, the team, its sheets and its inventory will be deleted for good. Until then, owners can export its data, or reopen the team, in the app.`,
           "You're getting this because you're an owner of the team. If you didn't expect it to close, check with its other owners, and make sure nobody else can sign in to your account.",
         ],
         button: { label: "Open Supply Checkout", url: appLink(appUrl, "/") },
       };
     }
+    case "teamReopened":
+      return {
+        subject: `${team} was reopened on Supply Checkout`,
+        preheader: "It won't be deleted, and its members can change it again.",
+        heading: `${team} was reopened`,
+        paragraphs: [
+          `An owner of ${team} reopened the team, so it won't be deleted. Its members can change its sheets and inventory again.`,
+          "Invites that were cancelled when it closed stay cancelled, and anyone who left or was removed while it was closed isn't back. Owners can invite them again in the app.",
+          "You're getting this because you're an owner of the team. If you didn't expect it to reopen, check with its other owners, and make sure nobody else can sign in to your account.",
+        ],
+        button: { label: "Open Supply Checkout", url: appLink(appUrl, "/") },
+      };
   }
 }
 
