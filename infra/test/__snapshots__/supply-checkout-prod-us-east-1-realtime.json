@@ -1026,7 +1026,7 @@
         ],
         "MaximumBatchingWindowInSeconds": 0,
         "MaximumRecordAgeInSeconds": 3600,
-        "MaximumRetryAttempts": 10,
+        "MaximumRetryAttempts": 25,
         "ParallelizationFactor": 1,
         "StartingPosition": "LATEST",
         "Tags": [

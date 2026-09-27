@@ -11,7 +11,7 @@ import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
 import { alarmContactParameter, alarmContactsFromContext } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
 import { journeyAlarmSpecs } from "../lib/observability/journey-alarms.js";
-import { CHECK_EVERY_MINUTES, STUCK_IMPORT_AFTER_MINUTES } from "../../backend/src/ops/names.js";
+import { CHECK_EVERY_MINUTES, PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS, STUCK_IMPORT_AFTER_MINUTES } from "../../backend/src/ops/names.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
 
 // Region names live only in lib/config.ts (ADR 0010); tests use its constants.
@@ -42,6 +42,7 @@ const ALARM_IDS = [
   "sign-out-not-revoking",
   "imports-stuck",
   "email-verification-not-saved",
+  "email-codes-failing",
   "near-sending-limit",
   "email-bouncing",
   "email-complaints",
@@ -50,9 +51,12 @@ const ALARM_IDS = [
   "live-updates-failing",
   "live-updates-delayed",
   "live-updates-dropped",
+  "live-updates-deferred",
   "receipt-reading-failing",
   "checkout-broken",
   "webhook-signature-failures",
+  "deletion-overdue",
+  "team-closed-notices-failing",
 ];
 
 describe("alarm topics", () => {
@@ -353,6 +357,53 @@ describe("alarms on sign-in, email and import failures the functions don't throw
     // Each 15-minute period holds at least one run of the checks
     expect(CHECK_EVERY_MINUTES).toBeLessThanOrEqual(15);
     expect(STUCK_IMPORT_AFTER_MINUTES).toBe(60);
+  });
+});
+
+describe("alarms added with the email code routes, the live update budget, team closure and the purge", () => {
+  it("alarms on repeated 5xx answers from the email code routes (J3)", () => {
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-email-codes-failing",
+      Threshold: 2,
+      EvaluationPeriods: 1,
+      Metrics: Match.arrayWith([
+        Match.objectLike({ Expression: "FILL(s, 0) + FILL(c, 0)" }),
+        Match.objectLike({ Id: "s", MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.EmailCodeSendFailures }), Period: 900, Stat: "Sum" }) }),
+        Match.objectLike({ Id: "c", MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.EmailCodeVerifyFailures }), Period: 900, Stat: "Sum" }) }),
+      ]),
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+    });
+  });
+
+  it("alarms on live updates deferred in 3 consecutive 5-minute periods, not on one (J4)", () => {
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-live-updates-deferred",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.LiveUpdatesDeferred }), Stat: "Sum", Period: 300 }) })],
+      Threshold: 0,
+      EvaluationPeriods: 3,
+      DatapointsToAlarm: 3,
+      TreatMissingData: "notBreaching",
+    });
+  });
+
+  it("alarms on any owner not emailed that their team closed (J11)", () => {
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-team-closed-notices-failing",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.TeamClosedNoticeFailures }), Stat: "Sum", Period: 900 }) })],
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+    });
+  });
+
+  it("alarms on any closed team overdue for deletion, over periods that always hold a purge run (J11)", () => {
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-deletion-overdue",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ClosedTeamsOverdue }), Stat: "Maximum", Period: 2 * PURGE_EVERY_HOURS * 3600 }) })],
+      Threshold: 0,
+      AlarmDescription: Match.stringLikeRegexp(`more than ${PURGE_OVERDUE_AFTER_HOURS} hours`),
+    });
+    expect(PURGE_OVERDUE_AFTER_HOURS).toBeGreaterThanOrEqual(PURGE_EVERY_HOURS);
   });
 });
 

@@ -2,7 +2,7 @@ import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { LIVE_AUDIENCE_ATTRIBUTES } from "../../backend/src/data/schema.js";
-import { CONSUMER_TIMEOUT_SECONDS, REALTIME_ENV, STREAM_BATCH_SIZE } from "../../backend/src/realtime/channels.js";
+import { CONSUMER_TIMEOUT_SECONDS, REALTIME_ENV, STREAM_BATCH_SIZE, STREAM_RETRY_ATTEMPTS } from "../../backend/src/realtime/channels.js";
 import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { realtimeOutputParameters } from "../lib/stacks/realtime-stack.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
@@ -108,11 +108,13 @@ describe("the stream consumer", () => {
       FunctionResponseTypes: ["ReportBatchItemFailures"],
       BisectBatchOnFunctionError: true,
       MaximumBatchingWindowInSeconds: 0,
-      MaximumRetryAttempts: 10,
+      MaximumRetryAttempts: STREAM_RETRY_ATTEMPTS,
       MaximumRecordAgeInSeconds: 3600,
       ParallelizationFactor: 1,
       DestinationConfig: { OnFailure: { Destination: { "Fn::GetAtt": [expect.stringMatching(/^DeadLetterQueue/), "Arn"] } } },
     });
+    // Every budget stop may spend a retry and moves at least one record, so a batch's worth of retries always drains it
+    expect(STREAM_RETRY_ATTEMPTS).toBeGreaterThanOrEqual(STREAM_BATCH_SIZE);
     const patterns = (mapping.Properties.FilterCriteria as { Filters: { Pattern: string }[] }).Filters.map((f) => JSON.parse(f.Pattern));
     expect(patterns).toEqual([
       { dynamodb: { Keys: { SK: { S: [{ prefix: "PRODUCT#" }] } } } },
