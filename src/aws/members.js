@@ -17,7 +17,7 @@
 // in the team bar's closed-team notice, typing the team's name the same way.
 //
 // The screen also shows how many of the team's seats are used ("7 of 10 members", the cap
-// from /me's memberCap), turning Send invite off once members and invites waiting fill it,
+// from /me's memberCap, asked again as it opens), turning Send invite off once members and invites waiting fill it,
 // as the server would refuse (team_full); and what Supply Checkout support did to the team
 // (GET /teams/{teamId}/support-actions, ADR 0015).
 import { esc } from "../format.js";
@@ -275,7 +275,8 @@ function supportHTML(a) {
   return `<li class="support-action"><span class="muted">${esc(when(a.ts))}</span> ${esc(what)}${a.reason ? `<br><span class="muted">Reason: ${esc(a.reason)}</span>` : ""}</li>`;
 }
 
-// What Supply Checkout support did to the team, newest first, a page at a time
+// What Supply Checkout support did to the team, newest first, a page at a time. If the first
+// page doesn't load, Try again asks for it again; a later one, Show more does.
 function wireSupport(api, team, m) {
   const path = `/teams/${encodeURIComponent(team.id)}/support-actions?limit=${SUPPORT_PAGE}`;
   const list = m.querySelector("#supportList"), more = m.querySelector("#supportMore"), fail = m.querySelector("#supportFail");
@@ -290,7 +291,13 @@ function wireSupport(api, team, m) {
       if (shown) list.querySelector("ul").insertAdjacentHTML("beforeend", page.actions.map(supportHTML).join(""));
       cursor = page.cursor || null;
     } catch {
-      if (!shown) list.innerHTML = "";
+      if (!shown) {
+        list.innerHTML = `<button type="button" class="btn" id="supportRetry">Try again</button>`;
+        list.querySelector("#supportRetry").addEventListener("click", () => {
+          list.innerHTML = `<p class="muted" role="status">Loading…</p>`;
+          load();
+        });
+      }
       fail.textContent = "Couldn't load what support did. Check your connection and try again.";
       fail.hidden = false;
     }
@@ -307,9 +314,11 @@ function wireSupport(api, team, m) {
 export function openMembers(api, team, me, leave, invited) {
   const path = `/teams/${encodeURIComponent(team.id)}/members`;
   const closed = !!team.closedAt;
-  // From /me; an API from before it has none, and the screen then shows no count
-  const cap = team.memberCap;
-  let members = [], waiting = 0;
+  // From /me, asked again as the screen opens, since the plan (and so the cap) can change
+  // while the page is open; until it answers, or if it doesn't, the one from page load. An
+  // API from before it has none, and the screen then shows no count.
+  let cap = team.memberCap;
+  let members = [], waiting = 0, loaded = false;
   openModal(`<h2>Members</h2>
     <p class="hint">${ROLES.map(([, name, what]) => `<strong>${name}</strong>: ${what}.`).join(" ")}</p>
     <p class="seats" id="seats" hidden></p>
@@ -336,13 +345,25 @@ export function openMembers(api, team, me, leave, invited) {
       if (invites) invites.setFull(!!cap && members.length + waiting >= cap);
     }
 
-    function draw() {
-      if (cap) {
-        const seats = m.querySelector("#seats");
-        seats.textContent = `${members.length} of ${cap} members`;
-        seats.hidden = false;
-      }
+    // How many seats are used, once the members have loaded
+    function seats() {
+      const el = m.querySelector("#seats");
+      el.hidden = !(cap && loaded);
+      if (!el.hidden) el.textContent = `${members.length} of ${cap} members`;
       gate();
+    }
+
+    (async () => {
+      let teams;
+      try { teams = (await api("GET", "/me")).teams; } catch { return; }
+      const now = teams.find((t) => t.id === team.id);
+      if (!now) return;
+      cap = team.memberCap = now.memberCap;
+      seats();
+    })();
+
+    function draw() {
+      seats();
       const owners = members.filter((x) => x.role === "owner").length;
       list.innerHTML = `<ul class="members">${members.map((x) => rowHTML(x, me, owners, closed)).join("")}</ul>`
         + (owners === 1 && !closed ? `<p class="hint">A team needs at least one owner. To step down, make someone else an owner first.</p>` : "");
@@ -391,6 +412,7 @@ export function openMembers(api, team, me, leave, invited) {
     (async () => {
       try {
         members = (await api("GET", path)).members;
+        loaded = true;
         draw();
       } catch (e) {
         list.innerHTML = "";
