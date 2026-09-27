@@ -55,6 +55,9 @@ export interface JourneyAlarmsProps {
   readonly topics: AlarmTopics;
 }
 
+/** Invites sent in an hour, across every team, that "Invite surge" alarms above. */
+export const INVITE_SURGE_PER_HOUR = 300;
+
 const TEN_MINUTES = Duration.minutes(10);
 const FIFTEEN_MINUTES = Duration.minutes(15);
 /** Two of the hourly purge's runs, so every period holds at least one gauge reading. */
@@ -194,6 +197,15 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       metric: business(BusinessMetric.EmailQuotaUsedPercent, region, FIFTEEN_MINUTES, "Maximum"),
       threshold: 80,
       primaryOnly: true,
+    },
+    {
+      id: "invite-surge",
+      title: "Invite surge",
+      journeys: "J3",
+      severity: "P2",
+      rule: `InvitesSent above ${INVITE_SURGE_PER_HOUR} in an hour, across every team: far more than crews joining, so a bug resending invites, or free trial teams used to send mail. Per-team, per-address and per-inviter daily limits bound each sender; this is the account-wide watch (SES's own quota is the hard ceiling, see Near the sending limit).`,
+      metric: business(BusinessMetric.InvitesSent, region, Duration.hours(1)),
+      threshold: INVITE_SURGE_PER_HOUR,
     },
     {
       id: "email-bouncing",
