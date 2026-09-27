@@ -9,6 +9,12 @@ import {
   authorizeTeam,
   ConflictError,
   countEmailCode,
+  clearCodeSent,
+  codeSentHash,
+  provenEmailHash,
+  recordCodeSent,
+  recordVerifiedEmail,
+  verifiedEmailHash,
   createInvite,
   createProduct,
   createSheet,
@@ -124,6 +130,41 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await expect(countEmailCode(db, userId, now)).rejects.toThrow(LimitReachedError);
       await countEmailCode(db, newUser(), now);
       await countEmailCode(db, userId, new Date("2026-09-27T00:00:00.000Z"));
+    });
+
+    it("keeps the hash of the address a user's code went to and the one they proved, in their own partition", async () => {
+      db = table.db;
+      const userId = newUser();
+      const at = new Date("2026-09-26T12:00:00.000Z");
+      const hash = verifiedEmailHash("pat@example.com");
+      expect(await provenEmailHash(db, userId)).toBeUndefined();
+      expect(await codeSentHash(db, userId, at)).toBeUndefined();
+      // No code sent for it: nothing is recorded
+      expect(await recordVerifiedEmail(db, userId, "pat@example.com", at)).toBe(false);
+      expect(await rawItem(db, `USER#${userId}`, "VERIFIED_EMAIL")).toBeUndefined();
+      await recordCodeSent(db, userId, " Pat@Example.com ", at);
+      expect(await rawItem(db, `USER#${userId}`, "EMAIL_CODE_SENT")).toEqual({
+        PK: `USER#${userId}`,
+        SK: "EMAIL_CODE_SENT",
+        type: "emailCodeSent",
+        sentEmailHash: hash,
+        sentAt: at.toISOString(),
+        expiresAt: at.getTime() / 1000 + 2 * 86400,
+      });
+      expect(await codeSentHash(db, userId, at)).toBe(hash);
+      // A code sent to one address doesn't prove another
+      expect(await recordVerifiedEmail(db, userId, "pat.other@example.com", at)).toBe(false);
+      expect(await recordVerifiedEmail(db, userId, "pat@example.com", at)).toBe(true);
+      expect(await rawItem(db, `USER#${userId}`, "EMAIL_CODE_SENT")).toBeUndefined();
+      expect(await rawItem(db, `USER#${userId}`, "VERIFIED_EMAIL")).toEqual({ PK: `USER#${userId}`, SK: "VERIFIED_EMAIL", type: "verifiedEmail", verifiedEmailHash: hash, verifiedAt: at.toISOString() });
+      expect(await provenEmailHash(db, userId, { timeoutMs: 5_000, now: () => at.getTime() })).toBe(hash);
+      expect(await provenEmailHash(db, userId)).toBeUndefined();
+      // Used once
+      expect(await recordVerifiedEmail(db, userId, "pat@example.com", at)).toBe(false);
+      await recordCodeSent(db, userId, "pat@example.com", at);
+      await clearCodeSent(db, userId);
+      expect(await codeSentHash(db, userId, at)).toBeUndefined();
+      await expect(provenEmailHash(db, "USER#x")).rejects.toThrow(InvalidInputError);
     });
 
     it("starts a trial, and makes one team per request key however often it's sent", async () => {

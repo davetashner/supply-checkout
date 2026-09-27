@@ -30,11 +30,11 @@ const VIEWER = "user-viewer";
 const SOLO = "user-solo";
 
 const USERS: Record<string, CognitoUser> = {
-  [OWNER]: { sub: OWNER, email: "owner@example.com", emailVerified: true },
-  [CO_OWNER]: { sub: CO_OWNER, email: "co@example.com", emailVerified: true },
-  [PAT]: { sub: PAT, email: "pat@example.com", emailVerified: true },
-  [VIEWER]: { sub: VIEWER, email: "viewer@example.com", emailVerified: false },
-  [SOLO]: { sub: SOLO, email: "solo@example.com", emailVerified: true },
+  [OWNER]: { sub: OWNER, email: "owner@example.com", emailVerified: true, emailVerifiedInCognito: true },
+  [CO_OWNER]: { sub: CO_OWNER, email: "co@example.com", emailVerified: true, emailVerifiedInCognito: true },
+  [PAT]: { sub: PAT, email: "pat@example.com", emailVerified: true, emailVerifiedInCognito: true },
+  [VIEWER]: { sub: VIEWER, email: "viewer@example.com", emailVerified: false, emailVerifiedInCognito: false },
+  [SOLO]: { sub: SOLO, email: "solo@example.com", emailVerified: true, emailVerifiedInCognito: true },
 };
 
 let table: MemoryTable;
@@ -244,7 +244,7 @@ describe("closing a team", () => {
 
   it("takes nobody new, even with an invite that's still there", async () => {
     await close();
-    USERS["user-new"] = { sub: "user-new", email: "newbie@example.com", emailVerified: true };
+    USERS["user-new"] = { sub: "user-new", email: "newbie@example.com", emailVerified: true, emailVerifiedInCognito: true };
     invite("team-a", "inv-late", "newbie@example.com");
     expect(await call("POST", "/invites/inv-late/accept", "user-new", { token: "t".repeat(32) })).toMatchObject({ status: 404, body: { error: { code: "not_found" } } });
     expect(table.get("TEAM#team-a", "MEMBER#user-new")).toBeUndefined();
@@ -292,6 +292,9 @@ describe("deleting an account", () => {
     table.put({ PK: `USER#${PAT}`, SK: "TEAM#gone", type: "userTeam", userId: PAT, teamId: "gone", teamName: "Gone", role: "viewer" });
     table.put({ PK: `USER#${PAT}`, SK: "LIMIT#TEAMS#2026-09-26", type: "teamsCreated", count: 1, expiresAt: NOW / 1000 + 86400 });
     table.put({ PK: `USER#${PAT}`, SK: "LIMIT#EMAILCODES#2026-09-26", type: "emailCodes", count: 2, expiresAt: NOW / 1000 + 86400 });
+    // The proven address and the last code's address (supply-checkout-ytr2, supply-checkout-cjw7) go too
+    table.put({ PK: `USER#${PAT}`, SK: "VERIFIED_EMAIL", type: "verifiedEmail", verifiedEmailHash: "a".repeat(64), verifiedAt: new Date(NOW).toISOString() });
+    table.put({ PK: `USER#${PAT}`, SK: "EMAIL_CODE_SENT", type: "emailCodeSent", sentEmailHash: "b".repeat(64), sentAt: new Date(NOW).toISOString(), expiresAt: NOW / 1000 + 86400 });
 
     expect(await deleteAccount(PAT, " delete ")).toEqual({ status: 204, body: undefined });
     expect(deleted).toEqual([PAT]);
@@ -314,7 +317,7 @@ describe("deleting an account", () => {
     expect(partition(`USER#${PAT}`).map((i) => i.SK).sort()).toEqual(["DELETING", "LIMIT#EMAILCODES#2026-09-26", "LIMIT#TEAMS#2026-09-26"]);
     expect(table.get(`USER#${PAT}`, "DELETING")).toMatchObject({ type: "accountDeletion", expiresAt: NOW / 1000 + 30 * 86400 });
     expect(counts).toMatchObject({ [BusinessMetric.AccountsDeleted]: 1, [BusinessMetric.TeamsClosed]: 1 });
-    expect(logs).toContainEqual(["info", "Account deleted", { userId: PAT, teamsLeft: 3, teamsClosed: 1, invitesDeleted: 2, rowsDeleted: 1 }]);
+    expect(logs).toContainEqual(["info", "Account deleted", { userId: PAT, teamsLeft: 3, teamsClosed: 1, invitesDeleted: 2, rowsDeleted: 3 }]);
     // No addresses or team names in any log line
     expect(JSON.stringify(logs)).not.toMatch(/@|Team /);
     // Every session was for Pat, and reached only Pat's teams and the teams that invited Pat's verified address

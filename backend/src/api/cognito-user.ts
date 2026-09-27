@@ -16,8 +16,11 @@
 // email_verified "true"; the pre token generation trigger unverifies such an
 // address at that sign-in, and this is the same rule, so a rewritten address
 // never lists another person's invites, even if the trigger's write failed.
-// After the person verifies a new address with a Cognito code, the trigger
-// records it at their next token refresh, and from then it counts.
+// After the person verifies a new address with a Cognito code through
+// POST /me/email/verify, the account function records its hash as the
+// address they proved (data/verified-email.ts), the trigger records it in
+// `custom:linked_email` at their next token refresh, and from then it counts
+// (supply-checkout-ytr2).
 //
 // A user whose downgrade is pending (`custom:downgrade_pending` set: the
 // trigger's downgrade failed after it flagged it, supply-checkout-0qr8)
@@ -44,6 +47,12 @@ export interface CognitoUser {
   readonly email?: string;
   /** True only when Cognito says `email_verified` is "true" with no downgrade pending (and, for a linked user, the email is the recorded one). */
   readonly emailVerified: boolean;
+  /**
+   * Cognito's own `email_verified` is "true", whatever else holds. Only for
+   * the verify route's check that the code verified the address; never a
+   * reason to trust the email.
+   */
+  readonly emailVerifiedInCognito: boolean;
 }
 
 /**
@@ -110,6 +119,7 @@ export function cognitoUserInfo(issuerUrl: string, doFetch: typeof fetch = fetch
       sub: attributes.sub ?? "",
       email: attributes.email,
       emailVerified: emailVerifiedFrom(Username, attributes),
+      emailVerifiedInCognito: attributes.email_verified === "true",
     };
   };
 }
