@@ -22,6 +22,14 @@ export const PURGE_EVERY_HOURS = 1;
 /** How long one purge run may start new teams for; the function's timeout is a minute more. */
 export const PURGE_BUDGET_MS = 4 * 60_000;
 
+/**
+ * A closed team still there this long after its deletion date is overdue:
+ * the purge's gauge (ClosedTeamsOverdue) counts them, and the "Deletion
+ * overdue" alarm fires on any. A day leaves room for 24 hourly runs to have
+ * tried it, well inside the privacy policy's promise.
+ */
+export const PURGE_OVERDUE_AFTER_HOURS = 24;
+
 /** Functions the observability stack names. */
 export const opsResourceNames = (envName: string) => ({
   stuckImportsFunction: `supply-checkout-${envName}-stuck-imports`,
