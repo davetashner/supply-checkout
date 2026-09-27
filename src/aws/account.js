@@ -5,7 +5,7 @@
 // Account (deleting it) and Sign out. A team an owner closed is read-only, with a notice
 // saying when its data will be deleted, and for its owners a way to reopen it.
 import { esc } from "../format.js";
-import { armButton, toast } from "../dom.js";
+import { armButton, closeModal, toast } from "../dom.js";
 import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, firstRunKey, forgetLocal, local, tab } from "./session.js";
 import { createDb } from "./db.js";
 import { openImport } from "./import.js";
@@ -49,14 +49,28 @@ function takeInvite() {
 }
 const dropInvite = () => tab.remove(INVITE_KEY);
 
+// The saved invite, if it's for this user. It's marked with the first user it's offered to,
+// so after that user's session ends without Sign out, the next person to sign in in this tab
+// isn't offered it, unless it's one of their own invites (/me lists those).
+function inviteFor(me) {
+  const invite = takeInvite();
+  if (!invite) return null;
+  if (invite.user && invite.user !== me.user.id && !me.invites.some((i) => i.id === invite.id)) { dropInvite(); return null; }
+  tab.set(INVITE_KEY, JSON.stringify({ ...invite, user: me.user.id }));
+  return invite;
+}
+
 // The saved team and receipt drafts are someone else's (or from before they were marked
 // with their user): forget them before anything reads them. Checked at every sign-in rather
 // than cleared when a session ends, because a session can end with nothing running (it
 // expires while the app is closed), and so the same user coming back keeps their drafts.
+// Marked as theirs only once nothing is left; if something couldn't be removed, the mark goes
+// instead, so the next sign-in tries again, and another tab open as the last user still sees
+// the change.
 function claim(userId) {
   if (local.get(OWNER_KEY) === userId) return;
-  forgetLocal();
-  local.set(OWNER_KEY, userId);
+  if (forgetLocal()) local.set(OWNER_KEY, userId);
+  else local.remove(OWNER_KEY);
 }
 
 export async function start(config) {
@@ -212,9 +226,29 @@ export async function start(config) {
     });
   });
 
+  // Another tab signed someone else in, or signed out (the owner mark changed, see OWNER_KEY
+  // in session.js): what this tab shows, and anything it has yet to save, is the last user's.
+  // Stop before anything else is sent or saved (no refresh, no live updates, API calls refused,
+  // the app hidden), then load the page again, which opens as whoever is signed in now. Only
+  // when the mark is this user's: if it couldn't be written, there's nothing to watch.
+  function watchOwner(userId) {
+    if (local.get(OWNER_KEY) !== userId) return;
+    addEventListener("storage", function changed() {
+      if (local.get(OWNER_KEY) === userId) return;
+      // Once: a sign-in elsewhere changes several keys
+      removeEventListener("storage", changed);
+      session.end();
+      if (db) db.stop();
+      closeModal();
+      show(`<h2>Your account changed</h2>
+        <p>Someone signed in or out in another tab. Loading Supply Checkout again…</p>`);
+      location.reload();
+    });
+  }
+
   // A team to open, or { [AGAIN]: me } after the user verified their email
   async function chooseTeam(me) {
-    const invite = takeInvite();
+    const invite = inviteFor(me);
     const joined = invite && await joinInvite(me, invite);
     if (joined) return joined;
     if (!me.teams.length) return newTeam(me);
@@ -307,12 +341,15 @@ export async function start(config) {
   const invited = (fr) => () => { if (fr) { fr.state.invited = true; fr.save(); fr.onChange(); } };
 
   function open(me, team) {
+    // The session ended while the team was being chosen (a refresh found it over, or another
+    // tab changed who's signed in): the sign-in screen, or a reload, has taken over
+    const claims = session.claims();
+    if (!claims) return until(() => {});
     local.set(TEAM_KEY, team.id);
     document.body.classList.remove("account-open");
     box.innerHTML = "";
     const fr = firstRun(me, team);
     teamBar(me, team, fr);
-    const claims = session.claims();
     const name = [claims.given_name, claims.family_name].filter(Boolean).join(" ") || claims.email;
     const profile = { id: me.user.id, name, avatarUrl: AVATAR, isMe: true };
     db = createDb({ api: session.api, config, teamId: team.id, userId: me.user.id, token: session.token, onRemoved: () => removed(team) });
@@ -342,6 +379,7 @@ export async function start(config) {
       if (!await session.start()) return signIn();
       let me = await session.api("GET", "/me");
       claim(me.user.id);
+      watchOwner(me.user.id);
       for (;;) {
         const team = await chooseTeam(me);
         if (!team[AGAIN]) return open(me, team);

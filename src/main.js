@@ -56,6 +56,9 @@ async function write(fn, okMsg, sheetId) {
     // checkout and return commands, src/aws/db.js): the message says why. The latest is showing.
     // `refused` is that adapter's own code, so no other write shows a raw message.
     else if (e && e.code === "refused") { closeModal(); toast(e.message); }
+    // The web build's session ended (signed out, here or in another tab, or it expired): the
+    // connection isn't the problem, and trying again won't help until they sign in
+    else if (WEB && e && e.code === "unauthenticated") toast("You're signed out, so that wasn't saved. Sign in, then make your change again.");
     else { retryable = true; toast("That didn't save. Check your connection and try again."); }
     return false;
   }

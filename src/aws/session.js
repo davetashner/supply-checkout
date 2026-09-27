@@ -29,7 +29,8 @@ export const firstRunKey = (teamId) => `${FIRST_RUN_KEY}.${teamId}`;
 // Whose the team choice and drafts on this device are: the user ID from /me. A session can
 // end without Sign out (it expired, or a sign-out timed out here but went through), and then
 // the next person to sign in may be someone else; account.js forgets the saved team and
-// drafts when the user doesn't match.
+// drafts when the user doesn't match. Another tab still open as the last user sees the mark
+// change (or go, on sign-out) and stops (account.js).
 export const OWNER_KEY = "supplyCheckout.owner";
 
 // localStorage and sessionStorage, where any access can throw (blocked site data, some
@@ -45,9 +46,11 @@ const store = (area) => ({
 export const local = store("localStorage"), tab = store("sessionStorage");
 
 // Forgets the chosen team and every team's receipt draft, one key at a time, so one that
-// can't be removed doesn't keep the rest
+// can't be removed doesn't keep the rest. True when none are left.
+const saved = () => local.keys().filter((k) => k === TEAM_KEY || k === DRAFT_KEY || k.startsWith(DRAFT_KEY + "."));
 export function forgetLocal() {
-  for (const key of [TEAM_KEY, ...local.keys().filter((k) => k === DRAFT_KEY || k.startsWith(DRAFT_KEY + "."))]) local.remove(key);
+  for (const key of saved()) local.remove(key);
+  return !saved().length;
 }
 
 // A first Google or Apple sign-in whose email already has an account: the pre sign-up trigger
@@ -58,11 +61,15 @@ const LINKED = /\bACCOUNT_LINKED:(Google|SignInWithApple)\b/;
 
 const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const random = (n) => b64url(crypto.getRandomValues(new Uint8Array(n)));
+// Why a call is refused once the session has ended here
+const ENDED = { code: "unauthenticated", message: "Signed out" };
 const claimsOf = (jwt) => JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0))));
 
 export function createSession(config, { onSignedOut, onRefreshed }) {
   const redirectUri = location.origin + "/";
-  let tokens = null, refreshing = null, timer, signingOut = false;
+  // ended: this tab is done with the session for good (the account was deleted, or another
+  // tab changed who's signed in), so a refresh still on its way isn't taken up
+  let tokens = null, refreshing = null, timer, signingOut = false, ended = false;
   const post = (path, body) => request(config.apiUrl + path, { ...json("POST", body), credentials: "include" });
   const logoutUrl = () => `${config.authUrl}/logout?${new URLSearchParams({ client_id: config.clientId, logout_uri: redirectUri })}`;
 
@@ -91,11 +98,14 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
 
   // One refresh at a time; a 401 means the session is over. None while signing out: with
   // refresh-token rotation, one that started after the revoke (a 401 from a live update's
-  // fetch, say) would set a new refresh cookie and sign the user back in.
+  // fetch, say) would set a new refresh cookie and sign the user back in. One that answers
+  // after the session ended here is dropped: after another tab signed in, its tokens are
+  // the other user's.
   function refresh() {
+    if (ended) return Promise.reject(ENDED);
     if (signingOut) return Promise.reject({ code: "unavailable", message: "Signing out" });
     refreshing ||= post("/auth/refresh")
-      .then((t) => { accept(t); onRefreshed(); }, (e) => { if (e.code === "unauthenticated") { tokens = null; onSignedOut(); } throw e; })
+      .then((t) => { if (ended) throw ENDED; accept(t); onRefreshed(); }, (e) => { if (e.code === "unauthenticated") { tokens = null; onSignedOut(); } throw e; })
       .finally(() => { refreshing = null; });
     return refreshing;
   }
@@ -145,15 +155,17 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
     // (verify-email.js), this is what has the pre token generation trigger record it.
     refresh: () => refresh(),
 
-    token: () => tokens.accessToken,
-    claims: () => claimsOf(tokens.idToken),
+    // The access token and the ID token's claims; "" and null once the session has ended
+    // (signed out, or a refresh found it over), rather than throwing
+    token: () => (tokens ? tokens.accessToken : ""),
+    claims: () => (tokens ? claimsOf(tokens.idToken) : null),
 
     // An API call with the access token. A 401 refreshes the token and tries once more.
     // Once the session has ended (signed out, or a refresh found it over) there's no token:
     // a call then, such as a save while the Managed Login sign-out page loads, is refused
     // as unauthenticated without reaching the API.
     async api(method, path, body, headers) {
-      if (!tokens) throw { code: "unauthenticated", message: "Signed out" };
+      if (!tokens) throw ENDED;
       const send = () => {
         const init = body ? json(method, body, headers) : { method, headers: { ...headers } };
         init.headers.authorization = "Bearer " + tokens.accessToken;
@@ -185,13 +197,24 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
       return true;
     },
 
+    // Another tab signed someone else in, or signed out: this tab stops using the session at
+    // once. Nothing is revoked or forgotten (that's the other tab's), no refresh is sent or
+    // taken up (the refresh cookie may be the other user's now), and every API call is
+    // refused as unauthenticated without reaching the API. Calls already sent finish as
+    // they were: with this user's token.
+    end() {
+      signingOut = ended = true;
+      clearTimeout(timer);
+      tokens = null;
+    },
+
     // After the account was deleted (DELETE /me): Cognito already ended every session, so
     // nothing is revoked. Forgets what signOut forgets, and asks for a refresh, which the
     // API refuses now the user is gone and answers by clearing the refresh cookie. No
     // refresh after that (a live update's 401, say) signs anyone in or out again. Resolves
     // to Managed Login's sign-out URL.
     async forgetDeleted() {
-      signingOut = true;
+      signingOut = ended = true;
       clearTimeout(timer);
       tokens = null;
       forget();

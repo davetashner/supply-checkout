@@ -343,8 +343,13 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
     saveItem,
     // A new access token: reconnect live updates with it
     reconnect: () => live.reconnect(),
-    // The session ended (signed out, or it expired) or the account was deleted: no more
-    // live updates or re-lists, which need a token, and the team isn't reported as lost
-    stop: () => { removed = true; live.stop(); },
+    // The session ended (signed out, it expired, or another tab changed who's signed in) or
+    // the account was deleted: no more live updates or re-lists, which need a token, not even
+    // a burst's re-list still waiting, and the team isn't reported as lost
+    stop: () => {
+      removed = true;
+      live.stop();
+      for (const c of Object.values(colls)) if (c.held) { clearTimeout(c.held.timer); c.held = null; }
+    },
   };
 }
