@@ -127,6 +127,16 @@ test("edits the price and counts on a sheet line", async ({ page }) => {
   await expect(lineRow(page, "Paper towels").locator("td").nth(3)).toHaveText("4");
 });
 
+// WebKit focuses an inserted autofocus field again a frame later, even once focus has moved
+// on, so a quick tap into the price typed into the name. The modal focuses its first field
+// itself and leaves the browser nothing to refocus.
+test("a new item's modal focuses the name without an autofocus attribute", async ({ page }) => {
+  await openEcho(page);
+  await enterBarcode(page, "NEW3");
+  await expect(modal(page).getByLabel("Item name")).toBeFocused();
+  await expect(page.locator("[autofocus]")).toHaveCount(0);
+});
+
 // ADR 0014: a typed price is saved in whole cents, halves up. The fields' step="0.01" makes a
 // browser that validates forms refuse 1.005, so the test lifts it to check the save itself.
 const anyStep = (field) => field.evaluate((el) => { el.step = "any"; });
