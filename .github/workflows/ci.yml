@@ -88,10 +88,23 @@ jobs:
           curl -sSfLO "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
           grep " $tarball\$" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" | sha256sum -c -
           tar xzf "$tarball" gitleaks
+      # A pull request scans only its own commits (base..head), so a flagged
+      # string on some other branch can't fail every PR. The merge queue, pushes
+      # to main, and the nightly and manual runs scan every commit on every
+      # branch, which is gitleaks' default.
+      - name: Scan the pull request's commits for secrets
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./gitleaks git --redact --no-banner --verbose --log-opts="${BASE_SHA}..${HEAD_SHA}" .
       - name: Scan every commit for secrets
+        if: github.event_name != 'pull_request'
         run: ./gitleaks git --redact --no-banner --verbose .
       - name: Scan files for AWS identifiers and email addresses
         run: node scripts/check-public-safety.mjs
+      - name: No merge or patch leftovers (*.orig, *.rej)
+        run: node scripts/check-stray-files.mjs
 
   regions:
     name: No region names outside the config module
