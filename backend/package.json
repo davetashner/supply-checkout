@@ -13,6 +13,7 @@
     "check": "npm run lint && npm test",
     "test:ddb": "node scripts/test-ddb.ts",
     "backfill": "esbuild scripts/backfill.ts --bundle --platform=node --format=esm --packages=external --log-level=warning --outfile=node_modules/.cache/backfill/backfill.mjs && node node_modules/.cache/backfill/backfill.mjs",
+    "import-artifact": "esbuild scripts/import-artifact.ts --bundle --platform=node --format=esm --packages=external --log-level=warning --outfile=node_modules/.cache/import-artifact/import-artifact.mjs && node node_modules/.cache/import-artifact/import-artifact.mjs",
     "restore": "esbuild scripts/restore.ts --bundle --platform=node --format=esm --packages=external --log-level=warning --outfile=node_modules/.cache/restore/restore.mjs && node node_modules/.cache/restore/restore.mjs"
   },
   "dependencies": {
