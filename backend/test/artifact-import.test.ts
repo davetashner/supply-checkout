@@ -22,7 +22,7 @@ import {
   sheetTotals,
   verifyArtifactImport,
 } from "../src/data/artifact-import.js";
-import { main, USAGE } from "../scripts/import-artifact.js";
+import { main, readExportFile, USAGE } from "../scripts/import-artifact.js";
 import { contextFor, endpoint, newUser, offlineDb, REGION, useTable } from "./helpers.js";
 
 const FIXTURE = readFileSync(new URL("./fixtures/artifact-export.json", import.meta.url), "utf8");
@@ -487,6 +487,13 @@ describe("the import CLI's arguments", () => {
     const right = await run(args, { SUPPLY_CHECKOUT_EXPECTED_ACCOUNT: "acct-test" });
     expect(right.out.split("\n")[0]).toBe(`import into team t1 on supply-checkout-prod-app in ${REGION} in account acct-test (profile supply-prod) (dry run)`);
     expect(right).toMatchObject({ code: 1, err: "Failed: Error: unexpected DynamoDB call" });
+  });
+
+  it("reads the export file, and refuses one over the limit before loading it", async () => {
+    const path = new URL("./fixtures/artifact-export.json", import.meta.url).pathname;
+    expect(await readExportFile(path)).toBe(FIXTURE);
+    await expect(readExportFile(path, 100)).rejects.toThrow("The file is larger than 0.0001 MB");
+    await expect(readExportFile(`${path}.missing`)).rejects.toThrow(/ENOENT/);
   });
 
   it("reads a bad file before it signs in", async () => {

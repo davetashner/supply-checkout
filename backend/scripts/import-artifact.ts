@@ -9,7 +9,7 @@
 //
 // --endpoint points it at DynamoDB Local instead (tests, local development).
 
-import { readFile, stat } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
@@ -54,6 +54,17 @@ export interface Deps {
   readonly readExport: (path: string) => Promise<string>;
 }
 
+/** The export's text. One open file, sized before it's read: a huge file is refused without loading it. */
+export async function readExportFile(path: string, maxBytes = MAX_EXPORT_BYTES): Promise<string> {
+  const file = await open(path, "r");
+  try {
+    if ((await file.stat()).size > maxBytes) throw new Error(`The file is larger than ${maxBytes / 1_000_000} MB`);
+    return await file.readFile("utf8");
+  } finally {
+    await file.close();
+  }
+}
+
 const defaultDeps: Deps = {
   connect: createDb,
   async callerAccount(region, credentials) {
@@ -66,11 +77,7 @@ const defaultDeps: Deps = {
       sts.destroy();
     }
   },
-  async readExport(path) {
-    // Before reading it: a huge file is refused without loading it
-    if ((await stat(path)).size > MAX_EXPORT_BYTES) throw new Error(`The file is larger than ${MAX_EXPORT_BYTES / 1_000_000} MB`);
-    return readFile(path, "utf8");
-  },
+  readExport: readExportFile,
 };
 
 const dollars = (c: number) => (c / 100).toFixed(2);
