@@ -5,7 +5,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./helpers.js";
 import { currentBuild } from "../scripts/builds.mjs";
 import { usedState } from "./fixtures.js";
-import { FakeBackend, TEAM, USER, ORIGIN, AUTH, CONFIG, openAws, connected, lastSocket, emit } from "./fake-aws.js";
+import { FakeBackend, TEAM, USER, ORIGIN, AUTH, CONFIG, openAws, connected, lastSocket, sockets, emit } from "./fake-aws.js";
 
 test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 
@@ -284,6 +284,19 @@ test.describe("sign-in", () => {
     expect(backend.signedIn).toBe(false);
     await page.clock.fastForward(600e3);
     expect(backend.requests("POST", "/auth/refresh")).toHaveLength(2);
+    // (The Managed Login sign-out is a 204 here, so the page stays.) Live updates stopped
+    // with the session: the socket's keep-alive, a reconnect and the 10-minute re-list
+    // all fall due, and none opens a socket or calls the API without a token
+    const socketCount = (await sockets(page)).length, calls = backend.calls.length;
+    await page.clock.runFor(700e3);
+    expect(await sockets(page)).toHaveLength(socketCount);
+    expect(backend.calls.slice(calls).map((c) => `${c.method} ${c.path}`)).toEqual([]);
+    // A save now is refused without reaching the API
+    await page.getByRole("button", { name: "+ New sheet" }).click();
+    await page.getByLabel("Client", { exact: true }).fill("After sign-out");
+    await page.getByRole("button", { name: "Create sheet" }).click();
+    await page.clock.runFor(5e3);
+    expect(backend.calls.slice(calls).map((c) => `${c.method} ${c.path}`)).toEqual([]);
 
     // Opening the app again shows sign-in
     const again = await page.context().newPage();

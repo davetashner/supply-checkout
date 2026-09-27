@@ -41,7 +41,7 @@ export function offlineDb(region = REGION): Db {
 }
 
 /** A Db whose document client answers with `send`. */
-export function fakeDb(send: (command: { input: Record<string, unknown> }) => Promise<unknown>, region = REGION): Db {
+export function fakeDb(send: (command: { input: Record<string, unknown> }, ...rest: unknown[]) => Promise<unknown>, region = REGION): Db {
   const doc = { send } as unknown as ReturnType<typeof connection>["doc"];
   return dbFromConnection({ client: {} as ReturnType<typeof connection>["client"], doc, tableName: "fake", region });
 }
