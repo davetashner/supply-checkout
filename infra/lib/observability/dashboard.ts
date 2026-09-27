@@ -123,6 +123,8 @@ export class OpsDashboard extends Construct {
     this.dashboard.addWidgets(
       // The operator audit watch (primary region): any point here is a P1
       businessGraph("Operators: audit items changed or deleted (not by TTL)", [BusinessMetric.OperatorAuditChanged]),
+      // The deletion records watch (primary region): any point here is a P2
+      businessGraph("Backups: deletion records rewritten or deleted", [BusinessMetric.DeletionRecordRewrites]),
     );
   }
 }

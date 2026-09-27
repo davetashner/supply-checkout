@@ -92,6 +92,8 @@ export const BusinessMetric = {
   TeamsPurged: "TeamsPurged",
   /** Operator audit items (OPAUDIT#) changed or deleted other than by their TTL: the audit trail was tampered with (ADR 0015). From the operator audit watch (primary region). */
   OperatorAuditChanged: "OperatorAuditChanged",
+  /** Deletion records written over, deleted or hidden behind a delete marker, or objects in the bucket that aren't records: from the deletion records watch (primary region). */
+  DeletionRecordRewrites: "DeletionRecordRewrites",
 } as const;
 
 export type BusinessMetricName = (typeof BusinessMetric)[keyof typeof BusinessMetric];

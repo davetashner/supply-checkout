@@ -19,7 +19,7 @@ import {
   restoreTablePrefix,
 } from "../backup.js";
 import { BackupChangeAlerts } from "../backup-alerts.js";
-import { DELETIONS_REPLICATION_RULE_ID, backupAccountFromCopyVaultArn } from "../deletions.js";
+import { DELETIONS_REPLICATION_RULE_ID, DELETIONS_REPLICATION_STUCK_MINUTES, backupAccountFromCopyVaultArn } from "../deletions.js";
 import { deletionsBucketName, deletionsReplicaBucketName } from "../../../backend/src/deletions/names.js";
 import type { DeploymentConfig } from "../config.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
@@ -48,7 +48,8 @@ export const COPY_KEY_USE = ["kms:Decrypt", "kms:DescribeKey", "kms:GenerateData
  *   `<table>-restore-*`.
  * - P2 alarms (the observability stack's P2 topic, from SSM): a backup or
  *   copy job failed, no backup finished in the last day, or (with the copy)
- *   a deletion record failed to replicate to the backup account.
+ *   a deletion record failed to replicate to the backup account or has
+ *   waited DELETIONS_REPLICATION_STUCK_MINUTES to.
  * - P1 alerts (the observability stack's P1 topic, which lets only these
  *   rules' names publish) when a vault's access policy or lock is changed or
  *   removed, the plan or a selection is changed or deleted, or the vault key
@@ -313,8 +314,8 @@ export class BackupStack extends SupplyCheckoutStack {
     const p2 = new SnsAction(
       Topic.fromTopicArn(this, "P2Topic", ssm(`/supply-checkout/${config.envName}/observability/alarm-topic-p2-arn`)),
     );
-    const alarm = (id: string, props: Omit<ConstructorParameters<typeof Alarm>[2], "alarmName" | "evaluationPeriods">) => {
-      const a = new Alarm(this, id, { ...props, alarmName: `supply-checkout-${config.envName}-p2-${id}`, evaluationPeriods: 1 });
+    const alarm = (id: string, props: Omit<ConstructorParameters<typeof Alarm>[2], "alarmName" | "evaluationPeriods"> & { evaluationPeriods?: number }) => {
+      const a = new Alarm(this, id, { evaluationPeriods: 1, ...props, alarmName: `supply-checkout-${config.envName}-p2-${id}` });
       a.addAlarmAction(p2);
       a.addOkAction(p2);
       return a;
@@ -353,24 +354,49 @@ export class BackupStack extends SupplyCheckoutStack {
     if (copyVaultArn) {
       // The data stack replicates the deletion records to the backup account
       // (deletions.ts); replication metrics are on for its one rule
+      const replication = (metricName: string, statistic: string, period: Duration) =>
+        new Metric({
+          namespace: "AWS/S3",
+          metricName,
+          dimensionsMap: {
+            SourceBucket: deletionsBucketName(config.envName, region, Aws.ACCOUNT_ID),
+            DestinationBucket: deletionsReplicaBucketName(config.envName, region, backupAccountFromCopyVaultArn(copyVaultArn)),
+            RuleId: DELETIONS_REPLICATION_RULE_ID,
+          },
+          statistic,
+          period,
+        });
+      const stuckPeriod = Duration.minutes(15);
+      const stuckPeriods = DELETIONS_REPLICATION_STUCK_MINUTES / 15;
       this.alarms.push(
         alarm("deletions-replication-failed", {
           alarmDescription:
             "P2 Deletion records not replicated. S3 couldn't replicate a deletion record to the backup account's copy in the last hour. " +
             "Runbook: docs/backups.md, When deletion records stop replicating.",
-          metric: new Metric({
-            namespace: "AWS/S3",
-            metricName: "OperationsFailedReplication",
-            dimensionsMap: {
-              SourceBucket: deletionsBucketName(config.envName, region, Aws.ACCOUNT_ID),
-              DestinationBucket: deletionsReplicaBucketName(config.envName, region, backupAccountFromCopyVaultArn(copyVaultArn)),
-              RuleId: DELETIONS_REPLICATION_RULE_ID,
-            },
-            statistic: "Sum",
-            period: Duration.hours(1),
-          }),
+          metric: replication("OperationsFailedReplication", "Sum", Duration.hours(1)),
           threshold: 0,
           comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+          treatMissingData: TreatMissingData.NOT_BREACHING,
+        }),
+        // A record can stay pending without counting as failed (supply-checkout-72d.14)
+        alarm("deletions-replication-stuck", {
+          alarmDescription:
+            `P2 Deletion records replication stuck. A deletion record has waited to replicate to the backup account's copy for ` +
+            `${DELETIONS_REPLICATION_STUCK_MINUTES} minutes: some were pending, or the oldest was more than that behind, in every ` +
+            "15 minutes of the last hour. Runbook: docs/backups.md, When deletion records stop replicating.",
+          metric: new MathExpression({
+            expression: `IF(FILL(pending, 0) > 0 OR FILL(latency, 0) > ${DELETIONS_REPLICATION_STUCK_MINUTES * 60}, 1, 0)`,
+            usingMetrics: {
+              pending: replication("OperationsPendingReplication", "Maximum", stuckPeriod),
+              latency: replication("ReplicationLatency", "Maximum", stuckPeriod),
+            },
+            period: stuckPeriod,
+            label: "Deletion records waiting to replicate",
+          }),
+          threshold: 1,
+          comparisonOperator: ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+          evaluationPeriods: stuckPeriods,
+          datapointsToAlarm: stuckPeriods,
           treatMissingData: TreatMissingData.NOT_BREACHING,
         }),
       );

@@ -26,6 +26,13 @@ export function deletionsReplicationRoleName(envName: string): string {
 export const DELETIONS_REPLICATION_RULE_ID = "deletion-records-to-backup-account";
 
 /**
+ * A record still waiting to replicate this long alarms ("Deletion records
+ * replication stuck", backup stack). One replicates in seconds to minutes; a
+ * record can stay pending without S3 counting it failed.
+ */
+export const DELETIONS_REPLICATION_STUCK_MINUTES = 60;
+
+/**
  * The backup account's ID, from the copy vault's ARN
  * (arn:<partition>:backup:<region>:<account>:backup-vault:<name>), the SSM
  * parameter the owner sets for the backup copies (backup.ts, backupParameters).

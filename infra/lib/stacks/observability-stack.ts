@@ -11,6 +11,7 @@ import { apiOutputParameters } from "./api-stack.js";
 import { identityOutputParameters } from "../identity.js";
 import { OpsDashboard } from "../observability/dashboard.js";
 import { JourneyAlarms } from "../observability/journey-alarms.js";
+import { DeletionRecordsWatch } from "../observability/deletion-records-watch.js";
 import { OperatorAuditWatch } from "../observability/operator-audit-watch.js";
 import { OpsChecks } from "../observability/ops-checks.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
@@ -92,6 +93,9 @@ export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySo
  * - `operatorAudit`: primary region only, the P1 alarm on any change or
  *   deletion of an operator audit item other than its TTL expiry, from the
  *   table's stream (operator-audit-watch.ts).
+ * - `deletionRecords`: primary region only, the P2 alarm on a deletion
+ *   record written over or deleted, from the bucket's S3 events
+ *   (deletion-records-watch.ts).
  *
  * Log retention and X-Ray tracing for every function are set app-wide by
  * ObservabilityDefaults (observability/defaults.ts).
@@ -103,6 +107,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
   readonly checks?: OpsChecks;
   readonly operatorChanges?: Rule[];
   readonly operatorAudit?: OperatorAuditWatch;
+  readonly deletionRecords?: DeletionRecordsWatch;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "observability", layer: "stateless" });
@@ -128,6 +133,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       this.checks = new OpsChecks(this, "OpsChecks", { envName: config.envName, tableName: table, topics: this.topics });
       this.operatorChanges = this.alertOnOperatorChanges(config.envName);
       this.operatorAudit = new OperatorAuditWatch(this, "OperatorAuditWatch", { envName: config.envName, region, topics: this.topics });
+      this.deletionRecords = new DeletionRecordsWatch(this, "DeletionRecordsWatch", { envName: config.envName, region, topics: this.topics });
       // The backup stack (primary region, deployed after this one) alerts P1
       // when its vault, plan or key is changed (backup-alerts.ts): only its
       // two rules, by name, may publish
@@ -144,7 +150,14 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         envName: config.envName,
         regions: config.regions,
         tableName: table,
-        alarms: [...this.alarms.alarms, this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing],
+        alarms: [
+          ...this.alarms.alarms,
+          this.checks.purgeNotRunning,
+          this.operatorAudit.changed,
+          this.operatorAudit.failing,
+          this.deletionRecords.rewritten,
+          this.deletionRecords.failing,
+        ],
       });
     }
   }

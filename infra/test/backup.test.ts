@@ -12,10 +12,10 @@ import {
   backupParameters,
 } from "../lib/backup.js";
 import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
-import { BACKUP_CHANGE_EVENTS, BACKUP_KEY_EVENTS, backupAlertRuleNames } from "../lib/backup-alerts.js";
+import { BACKUP_CHANGE_EVENTS, BACKUP_KEY_EVENTS, DELETIONS_COPY_CHANGE_EVENTS, backupAlertRuleNames, deletionsCopyAlertRuleName } from "../lib/backup-alerts.js";
 import { ACCOUNT_ID_PATTERN, COPIES_MISSING_AFTER_HOURS, OPTIONAL_ACCOUNT_ID_PATTERN, ORGANIZATION_ID_PATTERN } from "../lib/stacks/backup-account-stack.js";
 import { addBackupAccount, addSupplyCheckout } from "../lib/supply-checkout.js";
-import { DELETIONS_REPLICATION_RULE_ID, deletionsReplicationRoleName } from "../lib/deletions.js";
+import { DELETIONS_REPLICATION_RULE_ID, DELETIONS_REPLICATION_STUCK_MINUTES, deletionsReplicationRoleName } from "../lib/deletions.js";
 import { DELETION_RECORD_RETENTION_DAYS, deletionsReplicaBucketName } from "../../backend/src/deletions/names.js";
 
 // Region names live only in lib/config.ts (ADR 0010); tests use its constants.
@@ -64,8 +64,8 @@ const ruleArn = (name: string) => ({
 });
 
 /** Both accounts' change rules: the same patterns, on that account's vault key, to that account's topic. */
-function expectChangeRules(template: Template, names: { changes: string; keyChanges: string }, topic: unknown, keyId: RegExp) {
-  expect(rules(template).map((r) => r.Properties.Name).sort()).toEqual([names.changes, names.keyChanges].sort());
+function expectChangeRules(template: Template, names: { changes: string; keyChanges: string }, topic: unknown, keyId: RegExp, others: string[] = []) {
+  expect(rules(template).map((r) => r.Properties.Name).sort()).toEqual([names.changes, names.keyChanges, ...others].sort());
   expect(byName(template, names.changes).Properties.EventPattern).toEqual({
     source: ["aws.backup"],
     "detail-type": ["AWS API Call via CloudTrail"],
@@ -305,7 +305,7 @@ describe("backup stack (workload account)", () => {
   it("alarms to the P2 topic when a backup or copy fails, or no backup finished in a day", () => {
     const { template } = workload();
     const topic = ssmParameter(template, "/supply-checkout/prod/observability/alarm-topic-p2-arn");
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 3);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 4);
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "supply-checkout-prod-p2-backup-failed",
       ComparisonOperator: "GreaterThanThreshold",
@@ -358,6 +358,48 @@ describe("backup stack (workload account)", () => {
       OKActions: [{ Ref: topic }],
     });
     workload({ backupCopy: "false" }).template.resourceCountIs("AWS::CloudWatch::Alarm", 2);
+  });
+
+  it("alarms to the P2 topic when a deletion record has waited an hour to replicate, pending or behind, and not without the copy (supply-checkout-72d.14)", () => {
+    const { template } = workload();
+    const topic = ssmParameter(template, "/supply-checkout/prod/observability/alarm-topic-p2-arn");
+    const periods = DELETIONS_REPLICATION_STUCK_MINUTES / 15;
+    expect(Number.isInteger(periods)).toBe(true);
+    const metric = (name: string) =>
+      Match.objectLike({
+        Id: name === "OperationsPendingReplication" ? "pending" : "latency",
+        ReturnData: false,
+        MetricStat: Match.objectLike({
+          Metric: Match.objectLike({ Namespace: "AWS/S3", MetricName: name, Dimensions: Match.arrayWith([{ Name: "RuleId", Value: DELETIONS_REPLICATION_RULE_ID }]) }),
+          Period: 900,
+          Stat: "Maximum",
+        }),
+      });
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-deletions-replication-stuck",
+      Metrics: Match.arrayWith([
+        Match.objectLike({ Expression: `IF(FILL(pending, 0) > 0 OR FILL(latency, 0) > ${DELETIONS_REPLICATION_STUCK_MINUTES * 60}, 1, 0)` }),
+        metric("OperationsPendingReplication"),
+        metric("ReplicationLatency"),
+      ]),
+      ComparisonOperator: "GreaterThanOrEqualToThreshold",
+      Threshold: 1,
+      EvaluationPeriods: periods,
+      DatapointsToAlarm: periods,
+      TreatMissingData: "notBreaching",
+      AlarmDescription: Match.stringLikeRegexp("When deletion records stop replicating"),
+      AlarmActions: [{ Ref: topic }],
+      OKActions: [{ Ref: topic }],
+    });
+    // Same dimensions as the failed-replication alarm
+    const alarms = Object.values(template.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties);
+    const failed = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-deletions-replication-failed");
+    const stuck = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-deletions-replication-stuck");
+    for (const m of (stuck?.Metrics as { MetricStat?: { Metric: { Dimensions: unknown } } }[]).filter((m) => m.MetricStat)) {
+      expect(m.MetricStat?.Metric.Dimensions).toEqual(failed?.Dimensions);
+    }
+    const names = Object.values(workload({ backupCopy: "false" }).template.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties.AlarmName);
+    expect(names).not.toContain("supply-checkout-prod-p2-deletions-replication-stuck");
   });
 
   it("tells P1 when a vault policy or lock, the plan, a selection or the vault key changes, and P1 lets only those rules publish", () => {
@@ -534,7 +576,24 @@ describe("backup account vault stack", () => {
 
   it("alerts when a vault policy or lock, a plan, a selection or the vault key changes", () => {
     const { template } = backupAccount();
-    expectChangeRules(template, backupAlertRuleNames("prod", "backup-account"), { Ref: expect.stringMatching(/^AlertTopic/) }, /^VaultKey/);
+    expectChangeRules(template, backupAlertRuleNames("prod", "backup-account"), { Ref: expect.stringMatching(/^AlertTopic/) }, /^VaultKey/, [deletionsCopyAlertRuleName("prod")]);
+  });
+
+  it("alerts when the deletion records copy's policy, ownership, Object Lock or versioning changes (supply-checkout-72d.13)", () => {
+    const { template } = backupAccount();
+    expect([...DELETIONS_COPY_CHANGE_EVENTS]).toEqual(
+      expect.arrayContaining(["PutBucketPolicy", "DeleteBucketPolicy", "PutBucketOwnershipControls", "PutObjectLockConfiguration", "PutBucketVersioning"]),
+    );
+    const rule = byName(template, deletionsCopyAlertRuleName("prod"));
+    expect(rule.Properties.EventPattern).toEqual({
+      source: ["aws.s3"],
+      "detail-type": ["AWS API Call via CloudTrail"],
+      detail: {
+        eventSource: ["s3.amazonaws.com"],
+        eventName: [...DELETIONS_COPY_CHANGE_EVENTS],
+        requestParameters: { bucketName: [{ "Fn::Join": ["", [`supply-checkout-prod-deletions-copy-`, { Ref: "AWS::Region" }, "-", { Ref: "AWS::AccountId" }]] }] },
+      },
+    });
   });
 
   it("emails the alerts to the addresses in this account's SSM parameters, over an encrypted topic only its alarms and rules may use", () => {
@@ -558,7 +617,7 @@ describe("backup account vault stack", () => {
     expect(allows.find((s) => s.Sid === "AllowBackupChangeAlertsToPublish")).toMatchObject({
       Principal: { Service: "events.amazonaws.com" },
       Action: "sns:Publish",
-      Condition: { ArnEquals: { "aws:SourceArn": [ruleArn(names.changes), ruleArn(names.keyChanges)] } },
+      Condition: { ArnEquals: { "aws:SourceArn": [ruleArn(names.changes), ruleArn(names.keyChanges), ruleArn(deletionsCopyAlertRuleName("prod"))] } },
     });
     expect(allows.find((s) => s.Sid === "AllowCloudWatchAlarmsToPublish")?.Condition).toMatchObject({
       StringEquals: { "aws:SourceAccount": { Ref: "AWS::AccountId" } },

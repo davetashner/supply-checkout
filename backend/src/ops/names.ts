@@ -43,6 +43,7 @@ export const opsResourceNames = (envName: string) => ({
   emailQuotaFunction: `supply-checkout-${envName}-email-quota`,
   teamPurgeFunction: `supply-checkout-${envName}-team-purge`,
   operatorAuditWatchFunction: `supply-checkout-${envName}-operator-audit-watch`,
+  deletionRecordsWatchFunction: `supply-checkout-${envName}-deletion-records-watch`,
 });
 
 /** Environment variables the checks read. */

@@ -11,6 +11,7 @@ import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
 import { alarmContactParameter, alarmContactsFromContext } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
 import { journeyAlarmSpecs } from "../lib/observability/journey-alarms.js";
+import { DELETION_PREFIXES, LIFECYCLE_EXPIRATION } from "../../backend/src/deletions/names.js";
 import { CHECK_EVERY_MINUTES, PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS, PURGE_SILENT_ALARM_HOURS, STUCK_IMPORT_AFTER_MINUTES } from "../../backend/src/ops/names.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
 import {
@@ -222,10 +223,10 @@ describe("journey alarms (docs/journeys.md)", () => {
   it("creates the same alarms in every region, each notifying its severity's topic on alarm and recovery", () => {
     for (const r of config.regions) {
       const t = observability(r);
-      // The purge's own alarm is with the purge, and the operator audit watch's two are with the watch, in the primary region only (tested below)
+      // The purge's own alarm is with the purge, and the two watches' alarms are with the watches, in the primary region only (tested below)
       const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm"))
         .map((a) => a.Properties)
-        .filter((a) => a.AlarmName !== "supply-checkout-prod-p2-deletion-not-running" && !String(a.AlarmName).includes("operator-audit"));
+        .filter((a) => a.AlarmName !== "supply-checkout-prod-p2-deletion-not-running" && !/operator-audit|deletion-record/.test(String(a.AlarmName)));
       const specs = journeyAlarmSpecs(r, "t", "api", "prod");
       expect(alarms.map((a) => a.AlarmName).sort()).toEqual(
         specs.map((s) => `supply-checkout-prod-${s.severity.toLowerCase()}-${s.id}`).sort(),
@@ -445,6 +446,7 @@ describe("scheduled checks", () => {
     west.resourceCountIs("AWS::Events::Rule", 0);
     const t = observability();
     expect(functions(t).map((f) => f.FunctionName).sort()).toEqual([
+      "supply-checkout-prod-deletion-records-watch",
       "supply-checkout-prod-email-quota",
       "supply-checkout-prod-operator-audit-watch",
       "supply-checkout-prod-stuck-imports",
@@ -721,7 +723,8 @@ describe("operator pool alerts (ADR 0015)", () => {
 
   function operatorRules() {
     const t = observability();
-    const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([, r]) => r.Properties.EventPattern);
+    // The deletion records watch's rule (on S3's events, not CloudTrail's) is tested with the watch
+    const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch"));
     expect(rules).toHaveLength(3);
     const byId = (prefix: string) => {
       const found = rules.find(([id]) => id.startsWith(prefix));
@@ -893,5 +896,95 @@ describe("operator audit watch (supply-checkout-6uw.5)", () => {
     // Neither exists in the second region
     const west = Object.values(Template.fromStack(build().region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => String(a.Properties.AlarmName));
     expect(west.filter((n) => n.includes("operator-audit"))).toEqual([]);
+  });
+});
+
+describe("deletion records watch (supply-checkout-72d.16)", () => {
+  const BUCKET = { "Fn::Join": ["", [`supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }]] };
+
+  function watch(t: Template) {
+    const [entry] = Object.entries(t.findResources("AWS::Lambda::Function")).filter(([, f]) => f.Properties.FunctionName === "supply-checkout-prod-deletion-records-watch");
+    if (!entry) throw new Error("No watch function");
+    const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id]) => id.startsWith("DeletionRecordsWatch"));
+    expect(rules).toHaveLength(1);
+    return { id: entry[0], props: entry[1].Properties as Record<string, unknown>, rule: rules[0]?.[1].Properties as Record<string, unknown> };
+  }
+
+  it("has the deletion records bucket send its events to EventBridge, without a notifications custom resource", () => {
+    const data = Template.fromStack(build().region(EAST).data);
+    data.hasResourceProperties("AWS::S3::Bucket", { BucketName: BUCKET, NotificationConfiguration: { EventBridgeConfiguration: { EventBridgeEnabled: true } } });
+    data.resourceCountIs("Custom::S3BucketNotifications", 0);
+  });
+
+  it("passes the function the bucket's writes and deletions, other than the lifecycle rule's, in the primary region only", () => {
+    const west = Template.fromStack(build().region(WEST).observability);
+    expect(Object.keys(west.findResources("AWS::Events::Rule")).filter((id) => id.startsWith("DeletionRecordsWatch"))).toEqual([]);
+    const t = observability();
+    const fn = watch(t);
+    expect(fn.rule.EventPattern).toEqual({
+      source: ["aws.s3"],
+      "detail-type": ["Object Created", "Object Deleted"],
+      detail: { bucket: { name: [BUCKET] }, reason: [{ "anything-but": [LIFECYCLE_EXPIRATION] }] },
+    });
+    expect(fn.rule.Targets).toEqual([
+      expect.objectContaining({ Arn: { "Fn::GetAtt": [fn.id, "Arn"] }, RetryPolicy: { MaximumRetryAttempts: 2, MaximumEventAgeInSeconds: 3600 } }),
+    ]);
+    // Only this rule may invoke it
+    t.hasResourceProperties("AWS::Lambda::Permission", {
+      Action: "lambda:InvokeFunction",
+      Principal: "events.amazonaws.com",
+      FunctionName: { "Fn::GetAtt": [fn.id, "Arn"] },
+      SourceArn: { "Fn::GetAtt": [Match.stringLikeRegexp("^DeletionRecordsWatchRule"), "Arn"] },
+    });
+    expect(fn.props).toMatchObject({ Runtime: "nodejs24.x", Environment: { Variables: expect.objectContaining({ DELETIONS_BUCKET: BUCKET, DELETIONS_REGION: EAST }) } });
+  });
+
+  it("lets the watch list the versions of record keys in the one bucket, and nothing else", () => {
+    const t = observability();
+    const fn = watch(t);
+    const role = (fn.props.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0];
+    const found = Object.values(t.findResources("AWS::IAM::Policy"))
+      .filter((p) => (p.Properties.Roles as { Ref: string }[]).some((r) => r.Ref === role) && !String(p.Properties.PolicyName).includes("XRayWrite"))
+      .flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
+    expect(found).toHaveLength(2);
+    expect(found.map((s) => s.Action)).toEqual([["logs:CreateLogStream", "logs:PutLogEvents"], "s3:ListBucketVersions"]);
+    expect(found[1]).toEqual({
+      Sid: "ListRecordVersions",
+      Effect: "Allow",
+      Action: "s3:ListBucketVersions",
+      Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:s3:::supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }]] },
+      Condition: { StringLike: { "s3:prefix": Object.values(DELETION_PREFIXES).map((p) => `${p}*`) } },
+    });
+  });
+
+  it("alarms P2 on any DeletionRecordRewrites, and P2 when the watch fails, both on the dashboard", () => {
+    const t = observability();
+    const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties);
+    const rewritten = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-deletion-record-rewritten");
+    expect(rewritten).toMatchObject({
+      Metrics: [
+        expect.objectContaining({
+          MetricStat: expect.objectContaining({
+            Metric: { Namespace: "SupplyCheckout", MetricName: BusinessMetric.DeletionRecordRewrites, Dimensions: [{ Name: "Region", Value: EAST }] },
+            Period: 300,
+            Stat: "Sum",
+          }),
+        }),
+      ],
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+    });
+    expect(rewritten?.AlarmDescription).toContain("docs/backups.md, When a deletion record is rewritten");
+    expect(rewritten?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
+    expect(rewritten?.OKActions).toEqual(rewritten?.AlarmActions);
+    const failing = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-deletion-records-watch-failing");
+    expect(failing).toMatchObject({ MetricName: "Errors", Namespace: "AWS/Lambda", Threshold: 0, TreatMissingData: "notBreaching" });
+    expect(failing?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
+    const dashboard = JSON.stringify(Object.values(t.findResources("AWS::CloudWatch::Dashboard"))[0]);
+    expect(dashboard).toMatch(/"DeletionRecordsWatchRewritten[0-9A-F]+","Arn"/);
+    expect(dashboard).toMatch(/"DeletionRecordsWatchFailing[0-9A-F]+","Arn"/);
+    const west = Object.values(Template.fromStack(build().region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => String(a.Properties.AlarmName));
+    expect(west.filter((n) => n.includes("deletion-record"))).toEqual([]);
   });
 });

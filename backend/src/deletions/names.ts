@@ -40,3 +40,10 @@ export const DELETIONS_ENV = {
   /** The bucket's region: the primary region, wherever the writer runs. */
   region: "DELETIONS_REGION",
 } as const;
+
+/**
+ * S3's `reason` on an Object Deleted event its lifecycle rule made: the
+ * deletion records watch leaves those out (backend/src/deletions/watch-handler.ts,
+ * infra/lib/observability/deletion-records-watch.ts).
+ */
+export const LIFECYCLE_EXPIRATION = "Lifecycle Expiration";
