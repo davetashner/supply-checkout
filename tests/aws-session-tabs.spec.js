@@ -163,6 +163,70 @@ test.describe("another tab", () => {
     await connected(page);
     // The draft went; the team key couldn't, so the mark goes too, and the next sign-in tries again
     expect(await page.evaluate(() => [localStorage.getItem("supplyCheckout.owner"), localStorage.getItem("supplyCheckout.receiptDraft.t1")])).toEqual([null, null]);
+    // With no mark of this user's, there's nothing to watch
+    await setVisible(page, true);
+    await expect(page.locator(".teambar")).toBeVisible();
+    expect(backend.pageLoads).toBe(1);
+  });
+
+  test("a receipt save that fails as someone else signs in doesn't write the draft back", async ({ page }) => {
+    const line = { id: "l1", name: "Paper towels", raw: "", qty: 2, price: 8, dest: "stock", code: "", match: "SKU1", suggested: false, useName: "inv", usePrice: "receipt" };
+    const draft = { store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines: [line] };
+    const backend = new FakeBackend({ docs: seeded() });
+    await openAws(page, backend, { storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.receiptDraft.t1": JSON.stringify(draft) } } });
+    await connected(page);
+    await page.getByRole("button", { name: "Continue review" }).click();
+    const release = backend.hold("PUT", "/teams/t1/products/SKU1");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => backend.requests("PUT", "/teams/t1/products/SKU1").length).toBe(1);
+
+    backend.user = SAM;
+    const other = await otherTab(page, backend);
+    await connected(other);
+    await expect(changedScreen(page)).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.receiptDraft.t1"))).toBeNull();
+    // The save fails (401, or cancelled by the reload), and Pat's draft isn't kept again
+    release();
+    await expect(page.locator("#toast")).toBeVisible();
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 200)));
+    expect(await page.evaluate(() => [localStorage.getItem("supplyCheckout.receiptDraft.t1"), localStorage.getItem("supplyCheckout.owner")])).toEqual([null, SAM.id]);
+    await other.close();
+  });
+
+  test("a refresh answered with someone else's tokens stops this tab, even when the other tab couldn't mark the device", async ({ page }) => {
+    const backend = await openPat(page);
+    // Sam signs in in another tab where the owner mark can't be changed
+    backend.user = SAM;
+    const other = await page.context().newPage();
+    await other.addInitScript(() => {
+      const { setItem, removeItem } = Storage.prototype;
+      Storage.prototype.setItem = function (k, v) { if (k === "supplyCheckout.owner") throw new DOMException("Full", "QuotaExceededError"); return setItem.call(this, k, v); };
+      Storage.prototype.removeItem = function (k) { if (k === "supplyCheckout.owner") throw new DOMException("Blocked", "SecurityError"); return removeItem.call(this, k); };
+    });
+    backend.pageLoads = 0;
+    await openAws(other, backend);
+    await connected(other);
+    // The mark is still Pat's, so Pat's tab carries on...
+    expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.owner"))).toBe(USER.id);
+    await expect(page.locator(".teambar")).toBeVisible();
+    // ...until a refresh (after a re-list's 401) answers with Sam's tokens
+    backend.on("GET", "/teams/t1/sheets", { status: 401, body: { message: "Unauthorized" } });
+    const tokens = backend.tokens;
+    await setVisible(page, true);
+    await expect(changedScreen(page)).toBeVisible();
+    await expect.poll(() => backend.pageLoads).toBe(2);
+    // Sam's new token was never used here
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 200)));
+    expect(bearer(backend, `at-${tokens + 1}`)).toEqual([]);
+    await other.close();
+  });
+
+  test("a change this tab missed is noticed when it's shown again", async ({ page }) => {
+    const backend = await openPat(page);
+    // As if Sam signed in while this page was in the back-forward cache
+    await page.evaluate(() => { localStorage.setItem("supplyCheckout.owner", "u-sam"); dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })); });
+    await expect(changedScreen(page)).toBeVisible();
+    await expect.poll(() => backend.pageLoads).toBe(2);
   });
 });
 

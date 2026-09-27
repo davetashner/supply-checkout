@@ -73,13 +73,13 @@ function inviteFor(me) {
 // with their user): forget them before anything reads them. Checked at every sign-in rather
 // than cleared when a session ends, because a session can end with nothing running (it
 // expires while the app is closed), and so the same user coming back keeps their drafts.
-// Marked as theirs only once nothing is left; if something couldn't be removed, the mark goes
-// instead, so the next sign-in tries again, and another tab open as the last user still sees
-// the change.
+// The last user's mark goes first, so another tab open as them sees the change even if
+// nothing else can be written; the new user's is set only once nothing of the last user's is
+// left, so if something couldn't be removed the next sign-in tries again.
 function claim(userId) {
   if (local.get(OWNER_KEY) === userId) return;
+  local.remove(OWNER_KEY);
   if (forgetLocal()) local.set(OWNER_KEY, userId);
-  else local.remove(OWNER_KEY);
 }
 
 export async function start(config) {
@@ -88,10 +88,13 @@ export async function start(config) {
   box.className = "account";
   box.setAttribute("aria-live", "polite");
   document.querySelector(".top").after(box);
-  let db = null, created = null;
+  // owner: the signed-in user, once the device's owner mark says it's them (see watchOwner)
+  let db = null, created = null, owner = null, switched = false;
   const session = createSession(config, {
     onSignedOut: () => { if (db) db.stop(); signIn(); },
     onRefreshed: () => { if (db) db.reconnect(); },
+    // A refresh answered with another user's tokens: the refresh cookie is someone else's now
+    onUserChanged: () => accountChanged(),
   });
 
   // Signed out: a link to Managed Login. Following it leaves the page.
@@ -235,25 +238,29 @@ export async function start(config) {
     });
   });
 
-  // Another tab signed someone else in, or signed out (the owner mark changed, see OWNER_KEY
-  // in session.js): what this tab shows, and anything it has yet to save, is the last user's.
-  // Stop before anything else is sent or saved (no refresh, no live updates, API calls refused,
-  // the app hidden), then load the page again, which opens as whoever is signed in now. Only
-  // when the mark is this user's: if it couldn't be written, there's nothing to watch.
-  function watchOwner(userId) {
-    if (local.get(OWNER_KEY) !== userId) return;
-    addEventListener("storage", function changed() {
-      if (local.get(OWNER_KEY) === userId) return;
-      // Once: a sign-in elsewhere changes several keys
-      removeEventListener("storage", changed);
-      session.end();
-      if (db) db.stop();
-      closeModal();
-      show(`<h2>Your account changed</h2>
-        <p>Someone signed in or out in another tab. Loading Supply Checkout again…</p>`);
-      location.reload();
-    });
+  // Someone else signed in, or this user signed out, in another tab: what this tab shows, and
+  // anything it has yet to save, is the last user's. Stop before anything else is sent or saved
+  // (no refresh, no live updates, API calls refused, drafts no longer kept, the app hidden),
+  // then load the page again, which opens as whoever is signed in now. Once: a sign-in
+  // elsewhere changes several keys.
+  function accountChanged() {
+    if (switched) return;
+    switched = true;
+    session.end();
+    if (db) db.stop();
+    closeModal();
+    show(`<h2>Your account changed</h2>
+      <p>Someone signed in or out in another tab. Loading Supply Checkout again…</p>`);
+    location.reload();
   }
+  // The owner mark (OWNER_KEY in session.js) changed from this user's: when another tab writes
+  // storage, and when this tab is shown again (it may have missed the change, asleep or in the
+  // back-forward cache). Not before the mark is this user's: if it couldn't be written, there's
+  // nothing to watch.
+  const checkOwner = () => { if (owner && local.get(OWNER_KEY) !== owner) accountChanged(); };
+  addEventListener("storage", checkOwner);
+  addEventListener("pageshow", checkOwner);
+  document.addEventListener("visibilitychange", checkOwner);
 
   // A team to open, or { [AGAIN]: me } after the user verified their email
   async function chooseTeam(me) {
@@ -421,7 +428,9 @@ export async function start(config) {
       },
       downloads: { save: download },
       // Where src/main.js keeps this team's receipt draft
-      drafts: { key: draftKey(team.id) },
+      // Read on every load and save: null once the session has ended (signed out, it expired,
+      // or someone else signed in), so a save failing then can't write this user's draft back
+      drafts: { get key() { return session.token() ? draftKey(team.id) : null; } },
       firstRun: fr,
     };
   }
@@ -434,7 +443,7 @@ export async function start(config) {
       if (!await session.start()) return signIn();
       let me = await session.api("GET", "/me");
       claim(me.user.id);
-      watchOwner(me.user.id);
+      owner = local.get(OWNER_KEY) === me.user.id ? me.user.id : null;
       for (;;) {
         const team = await chooseTeam(me);
         if (!team[AGAIN]) return open(me, team);

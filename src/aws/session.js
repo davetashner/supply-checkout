@@ -65,11 +65,12 @@ const random = (n) => b64url(crypto.getRandomValues(new Uint8Array(n)));
 const ENDED = { code: "unauthenticated", message: "Signed out" };
 const claimsOf = (jwt) => JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0))));
 
-export function createSession(config, { onSignedOut, onRefreshed }) {
+export function createSession(config, { onSignedOut, onRefreshed, onUserChanged }) {
   const redirectUri = location.origin + "/";
   // ended: this tab is done with the session for good (the account was deleted, or another
   // tab changed who's signed in), so a refresh still on its way isn't taken up
-  let tokens = null, refreshing = null, timer, signingOut = false, ended = false;
+  // user: the ID token's sub from sign-in, which every refresh must match
+  let tokens = null, refreshing = null, timer, signingOut = false, ended = false, user = null;
   const post = (path, body) => request(config.apiUrl + path, { ...json("POST", body), credentials: "include" });
   const logoutUrl = () => `${config.authUrl}/logout?${new URLSearchParams({ client_id: config.clientId, logout_uri: redirectUri })}`;
 
@@ -80,6 +81,12 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
     for (const key of [PKCE_KEY, INVITE_KEY]) tab.remove(key);
     forgetLocal();
     local.remove(OWNER_KEY);
+  }
+
+  // The tokens this session starts with, and whose they are
+  function begin(t) {
+    user = claimsOf(t.idToken).sub;
+    accept(t);
   }
 
   function accept(t) {
@@ -96,6 +103,17 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
     if (e.code !== "unauthenticated" && !signingOut) { clearTimeout(timer); timer = setTimeout(background, 60_000); }
   });
 
+  // Another tab signed someone else in, or signed out: this tab stops using the session at
+  // once. Nothing is revoked or forgotten (that's the other tab's), no refresh is sent or
+  // taken up (the refresh cookie may be the other user's now), and every API call is
+  // refused as unauthenticated without reaching the API. Calls already sent finish as
+  // they were: with this user's token.
+  function end() {
+    signingOut = ended = true;
+    clearTimeout(timer);
+    tokens = null;
+  }
+
   // One refresh at a time; a 401 means the session is over. None while signing out: with
   // refresh-token rotation, one that started after the revoke (a 401 from a live update's
   // fetch, say) would set a new refresh cookie and sign the user back in. One that answers
@@ -105,7 +123,14 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
     if (ended) return Promise.reject(ENDED);
     if (signingOut) return Promise.reject({ code: "unavailable", message: "Signing out" });
     refreshing ||= post("/auth/refresh")
-      .then((t) => { if (ended) throw ENDED; accept(t); onRefreshed(); }, (e) => { if (e.code === "unauthenticated") { tokens = null; onSignedOut(); } throw e; })
+      .then((t) => {
+        if (ended) throw ENDED;
+        // Someone else signed in in another tab (the refresh cookie is shared), and this tab
+        // didn't hear of it: never take up their tokens here
+        if (claimsOf(t.idToken).sub !== user) { end(); onUserChanged(); throw ENDED; }
+        accept(t);
+        onRefreshed();
+      }, (e) => { if (e.code === "unauthenticated") { tokens = null; onSignedOut(); } throw e; })
       .finally(() => { refreshing = null; });
     return refreshing;
   }
@@ -129,13 +154,13 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
         const linked = !code && state && state === saved.state && !saved.relinked && LINKED.exec(q.get("error_description") || "");
         if (linked) { this.relink = linked[1]; return false; }
         if (code && state && state === saved.state) {
-          try { accept(await post("/auth/session", { code, codeVerifier: saved.verifier, redirectUri })); return true; }
+          try { begin(await post("/auth/session", { code, codeVerifier: saved.verifier, redirectUri })); return true; }
           catch (e) { if (e.code !== "unauthenticated") throw e; }
         }
         this.notice = "Sign-in didn't finish. Please try again.";
         return false;
       }
-      try { accept(await post("/auth/refresh")); return true; }
+      try { begin(await post("/auth/refresh")); return true; }
       catch (e) { if (e.code === "unauthenticated") return false; throw e; }
     },
 
@@ -197,16 +222,7 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
       return true;
     },
 
-    // Another tab signed someone else in, or signed out: this tab stops using the session at
-    // once. Nothing is revoked or forgotten (that's the other tab's), no refresh is sent or
-    // taken up (the refresh cookie may be the other user's now), and every API call is
-    // refused as unauthenticated without reaching the API. Calls already sent finish as
-    // they were: with this user's token.
-    end() {
-      signingOut = ended = true;
-      clearTimeout(timer);
-      tokens = null;
-    },
+    end,
 
     // After the account was deleted (DELETE /me): Cognito already ended every session, so
     // nothing is revoked. Forgets what signOut forgets, and asks for a refresh, which the
