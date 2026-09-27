@@ -16,6 +16,7 @@ import {
   type UserPoolClient,
   UserPoolClientIdentityProvider,
   UserPoolDomain,
+  UserPoolGroup,
   UserPoolEmail,
   UserPoolIdentityProviderApple,
   UserPoolIdentityProviderGoogle,
@@ -35,6 +36,7 @@ import {
   DOWNGRADE_PENDING,
   LINKED_EMAIL,
   LOG_CORRELATION_KEY_ENV,
+  OPERATORS_GROUP,
   PROVIDER_EMAIL_VERIFIED,
   PROVIDER_EMAIL_VERIFIED_ATTRIBUTE,
   PROVIDER_HOSTED_DOMAIN,
@@ -46,6 +48,7 @@ import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import {
   type IdentityOptions,
   LOCAL_DEV_ORIGIN,
+  OPS_CLI_CALLBACK,
   identityOptionsFromContext,
   identityOutputParameters,
   identityProviderSecrets,
@@ -100,6 +103,11 @@ export class IdentityStack extends SupplyCheckoutStack {
   readonly webClient: UserPoolClient;
   readonly domain: UserPoolDomain;
   readonly options: IdentityOptions;
+  /** The operator pool (ADR 0015): password plus TOTP, no self sign-up, an `operators` group. */
+  readonly opsPool: UserPool;
+  readonly opsClient: UserPoolClient;
+  readonly opsDomain: UserPoolDomain;
+  readonly operatorsGroup: UserPoolGroup;
   /** The pre authentication, pre token generation and pre sign-up triggers, when Google or Apple sign-in is on. */
   readonly federatedTriggers?: { readonly signInGuard: NodejsFunction; readonly emailVerified: NodejsFunction; readonly accountLink: NodejsFunction };
 
@@ -258,6 +266,123 @@ export class IdentityStack extends SupplyCheckoutStack {
     publish("WebClientIdParam", outputs.webClientId, this.webClient.userPoolClientId, "Web app client ID (public, PKCE): the JWT audience");
     publish("IssuerUrlParam", outputs.issuerUrl, this.userPool.userPoolProviderUrl, "JWT issuer for the API authorizer");
     publish("AuthUrlParam", outputs.authUrl, `https://${names.auth}`, "Managed Login and OAuth endpoints");
+
+    const ops = this.addOperatorPool(config, zone);
+    this.opsPool = ops.pool;
+    this.opsClient = ops.client;
+    this.opsDomain = ops.domain;
+    this.operatorsGroup = ops.group;
+    publish("OpsUserPoolIdParam", outputs.opsUserPoolId, ops.pool.userPoolId, "Operator user pool ID (ADR 0015)");
+    publish("OpsUserPoolArnParam", outputs.opsUserPoolArn, ops.pool.userPoolArn, "Operator user pool ARN (ADR 0015)");
+    publish("OpsClientIdParam", outputs.opsClientId, ops.client.userPoolClientId, "Operator pool's ops client ID (public, PKCE): the ops authorizer's audience");
+    publish("OpsIssuerUrlParam", outputs.opsIssuerUrl, ops.pool.userPoolProviderUrl, "JWT issuer for the ops authorizer");
+    publish("OpsAuthUrlParam", outputs.opsAuthUrl, `https://${names.opsAuth}`, "Operator pool's Managed Login and OAuth endpoints");
+  }
+
+  /**
+   * The operator pool (ADR 0015), separate from the customers' pool:
+   *
+   * - No self sign-up. Operators are created only with `aws cognito-idp
+   *   admin-create-user` (or the console) under an SSO role, and put in the
+   *   `operators` group with `admin-add-user-to-group`. No Lambda role and no
+   *   app client can create users or change groups.
+   * - Username and password, then TOTP, which is required: the first sign-in
+   *   sets it up, and the pool can't issue a token without it. So every token
+   *   from this pool proves its session used MFA. No email codes, passkeys,
+   *   SMS, Google or Apple, and no email at all: a forgotten password is
+   *   reset by an administrator (`admin-set-user-password`), so nothing here
+   *   sends mail.
+   * - Managed Login at `ops-auth.<env domain>`, its own sign-in host.
+   * - One public client, `ops`: authorization code with PKCE, calling back
+   *   only to `npm run ops` on localhost (the ops page adds its origin,
+   *   supply-checkout-8jc.8). Access and ID tokens last 15 minutes and
+   *   refresh tokens 8 hours, with rotation and revocation. The
+   *   aws.cognito.signin.user.admin scope is there for GetUser, which the ops
+   *   function calls with the operator's token on every request.
+   * - Primary region only: operators don't need phase 2's failover.
+   */
+  private addOperatorPool(config: DeploymentConfig, zone: ReturnType<typeof importZone>) {
+    const names = hostNames(config);
+    const pool = new UserPool(this, "OpsUserPool", {
+      userPoolName: `supply-checkout-${config.envName}-ops`,
+      featurePlan: FeaturePlan.ESSENTIALS,
+      deletionProtection: true,
+      removalPolicy: RemovalPolicy.RETAIN,
+      selfSignUpEnabled: false,
+      signInAliases: { username: true },
+      signInCaseSensitive: false,
+      accountRecovery: AccountRecovery.NONE,
+      signInPolicy: { allowedFirstAuthFactors: { password: true } },
+      mfa: Mfa.REQUIRED,
+      mfaSecondFactor: { otp: true, sms: false, email: false },
+      passwordPolicy: {
+        minLength: 16,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: true,
+        tempPasswordValidity: Duration.days(1),
+      },
+    });
+    Validations.of(pool).acknowledge(
+      {
+        id: "AwsSolutions-COG3",
+        reason: "ADR 0015: the operator pool is on the Essentials tier like the customer pool (threat protection is Plus). It requires password plus TOTP, has no self sign-up, and a handful of users; CloudTrail alerts on its admin calls.",
+      },
+      {
+        id: "AwsSolutions-COG8",
+        reason: "ADR 0015: the Essentials tier, as for the customer pool (ADR 0007). The pool requires TOTP for every sign-in and has a handful of users; Plus's threat protection is revisited with supply-checkout-4p1.",
+      },
+    );
+    const group = new UserPoolGroup(this, "OpsOperatorsGroup", {
+      userPool: pool,
+      groupName: OPERATORS_GROUP,
+      description: "May call the /ops routes (ADR 0015). Granted only with admin-add-user-to-group under an SSO role.",
+    });
+
+    const certificate = Certificate.fromCertificateArn(
+      this,
+      "OpsAuthCertificate",
+      StringParameter.valueForStringParameter(this, domainOutputParameters(config.envName).opsAuthCertificateArn),
+    );
+    const domain = pool.addDomain("OpsDomain", {
+      customDomain: { domainName: names.opsAuth, certificate },
+      managedLoginVersion: ManagedLoginVersion.NEWER_MANAGED_LOGIN,
+    });
+    const target = RecordTarget.fromAlias({
+      bind: () => ({ hostedZoneId: CloudFrontTarget.getHostedZoneId(this), dnsName: domain.cloudFrontEndpoint }),
+    });
+    new ARecord(this, "OpsAuthAlias", { zone, recordName: names.opsAuth, target });
+    new AaaaRecord(this, "OpsAuthAliasIpv6", { zone, recordName: names.opsAuth, target });
+
+    const client = pool.addClient("OpsClient", {
+      userPoolClientName: "ops",
+      generateSecret: false,
+      // Sign-in only through Managed Login (authorization code with PKCE); no API sign-in flows
+      authFlows: { user: false, userSrp: false, userPassword: false, adminUserPassword: false, custom: false },
+      oAuth: {
+        flows: { authorizationCodeGrant: true },
+        scopes: [OAuthScope.OPENID, OAuthScope.COGNITO_ADMIN],
+        callbackUrls: [OPS_CLI_CALLBACK],
+        logoutUrls: [OPS_CLI_CALLBACK],
+      },
+      supportedIdentityProviders: [UserPoolClientIdentityProvider.COGNITO],
+      // Nothing the ops API trusts: groups aren't attributes, and no attribute is read
+      readAttributes: new ClientAttributes().withStandardAttributes({ givenName: true, familyName: true }),
+      writeAttributes: new ClientAttributes().withStandardAttributes({ givenName: true, familyName: true }),
+      preventUserExistenceErrors: true,
+      enableTokenRevocation: true,
+      accessTokenValidity: Duration.minutes(15),
+      idTokenValidity: Duration.minutes(15),
+      refreshTokenValidity: Duration.hours(8),
+      refreshTokenRotationGracePeriod: Duration.seconds(10),
+    });
+    new CfnManagedLoginBranding(this, "OpsBranding", {
+      userPoolId: pool.userPoolId,
+      clientId: client.userPoolClientId,
+      useCognitoProvidedValues: true,
+    });
+    return { pool, client, domain, group };
   }
 
   private addSocialProviders(secrets: ReturnType<typeof identityProviderSecrets>): IUserPoolIdentityProvider[] {

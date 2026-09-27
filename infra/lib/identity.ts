@@ -22,8 +22,24 @@ export const identityOutputParameters = (envName: string) => {
     issuerUrl: `${prefix}/issuer-url`,
     /** `https://auth.<env domain>`: Managed Login and the OAuth endpoints (/oauth2/authorize, /oauth2/token). */
     authUrl: `${prefix}/auth-url`,
+    /** The operator pool (ADR 0015). */
+    opsUserPoolId: `${prefix}/ops-user-pool-id`,
+    opsUserPoolArn: `${prefix}/ops-user-pool-arn`,
+    /** The operator pool's public `ops` client (PKCE): the ops authorizer's audience. */
+    opsClientId: `${prefix}/ops-client-id`,
+    /** The operator pool's JWT issuer. */
+    opsIssuerUrl: `${prefix}/ops-issuer-url`,
+    /** `https://ops-auth.<env domain>`: the operator pool's Managed Login and OAuth endpoints. */
+    opsAuthUrl: `${prefix}/ops-auth-url`,
   };
 };
+
+/**
+ * Where `npm run ops` listens for the operator pool's sign-in redirect
+ * (scripts/ops.mjs). A fixed port, because Cognito matches callback URLs
+ * exactly; http is allowed only for localhost.
+ */
+export const OPS_CLI_CALLBACK = "http://localhost:8765/";
 
 /**
  * Secrets Manager secrets the operator creates before turning on a social
@@ -100,6 +116,20 @@ export function cognitoJwtAuthorizer(scope: Construct, props: CognitoJwtAuthoriz
     jwtAudience: [clientId],
     identitySource: props.identitySource,
   });
+}
+
+/**
+ * The HTTP API's JWT authorizer for the operator pool (ADR 0015): the /ops
+ * routes' only authorizer. Its issuer is the operator pool and its audience
+ * the `ops` client, so a customer's token fails it, and an operator's token
+ * fails the customer authorizer. The ops function checks the operators group
+ * and asks Cognito on every request.
+ */
+export function opsJwtAuthorizer(scope: Construct, props: { readonly envName: string }): HttpJwtAuthorizer {
+  const names = identityOutputParameters(props.envName);
+  const issuer = StringParameter.valueForStringParameter(scope, names.opsIssuerUrl);
+  const clientId = StringParameter.valueForStringParameter(scope, names.opsClientId);
+  return new HttpJwtAuthorizer("OpsCognitoJwt", issuer, { authorizerName: "ops-cognito-jwt", jwtAudience: [clientId] });
 }
 
 // Managed Login colors, from the app's tokens in src/styles.css. Cognito wants

@@ -8,15 +8,16 @@
 // dynamodb:Attributes), so the consumer can't read documents, emails or
 // anything else:
 //
-// - META: the subscription status and closure. A team that doesn't exist,
-//   has ended (hasEnded) or was closed (isClosed) has no audience.
+// - META: the subscription status, closure and comp. A team that doesn't
+//   exist, was closed (isClosed, whatever its comp), or has ended (hasEnded)
+//   with no live comp (ADR 0015) has no audience.
 // - MEMBER#<user>: the user ID and role. A MEMBER item with a missing or
 //   unknown role counts as no membership, as in authorizeTeam.
 
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { id, keys, prefixes, teamPartition } from "./keys.js";
-import { hasEnded, isClosed, isMemberRole } from "./model.js";
+import { hasEnded, isClosed, isMemberRole, liveComp } from "./model.js";
 
 function validUser(value: unknown): string | undefined {
   try {
@@ -31,19 +32,20 @@ function validUser(value: unknown): string | undefined {
  * exist, its subscription has ended or an owner closed it. Strongly consistent, so a member
  * removed before the call is never in the answer.
  */
-export async function liveUpdateRecipients(db: Db, teamId: string): Promise<string[]> {
+export async function liveUpdateRecipients(db: Db, teamId: string, now = new Date()): Promise<string[]> {
   const pk = teamPartition(id(teamId, "team ID"));
   const { doc } = connection(db);
   const { Item: meta } = await doc.send(
     new GetCommand({
       TableName: db.tableName,
       Key: keys.team(teamId),
-      ProjectionExpression: "#status, closedAt",
+      ProjectionExpression: "#status, closedAt, compPlan, compUntil",
       ExpressionAttributeNames: { "#status": "status" },
       ConsistentRead: true,
     }),
   );
-  if (!meta || hasEnded(meta.status) || isClosed(meta)) return [];
+  // Closed wins over a comp: a closed team is read-only until the purge deletes it
+  if (!meta || isClosed(meta) || (hasEnded(meta.status) && !liveComp(meta, now))) return [];
 
   const users: string[] = [];
   let ExclusiveStartKey: Record<string, unknown> | undefined;

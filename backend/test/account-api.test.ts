@@ -173,6 +173,7 @@ describe("POST /teams", () => {
       homeRegion: REGION,
       closedAt: null,
       deletesAt: null,
+      comp: null,
     });
     const id = body.team.id as string;
     expect(table.get(`TEAM#${id}`, "META")).toMatchObject({ owners: 1, homeRegion: REGION, createdAt: new Date(now).toISOString() });
@@ -234,9 +235,17 @@ describe("GET /me", () => {
     expect(body.user).toEqual({ id: PAT, email: "Pat@Example.com", emailVerified: true });
     expect(body.teams).toEqual([
       created,
-      { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION, closedAt: null, deletesAt: null },
+      { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION, closedAt: null, deletesAt: null, comp: null },
     ].map((t) => JSON.parse(JSON.stringify(t))));
     expect(body.invites).toEqual([]);
+  });
+
+  it("shows a live comp from support (ADR 0015), but not one that has run out", async () => {
+    table.put({ ...table.get("TEAM#team-a", "META"), compPlan: "free", compUntil: new Date(now + DAY).toISOString(), compReason: "Pilot", compBy: "op-1" });
+    const live = (await call("GET", "/me", { user: PAT })).body.teams[0];
+    expect(live.comp).toEqual({ plan: "free", until: new Date(now + DAY).toISOString() });
+    now += 2 * DAY;
+    expect((await call("GET", "/me", { user: PAT })).body.teams[0].comp).toBeNull();
   });
 
   it("shows a new user no teams and no invites", async () => {

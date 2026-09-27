@@ -46,6 +46,17 @@ describe("liveUpdateRecipients", () => {
     expect(await liveUpdateRecipients(table.db(), TEAM)).toEqual([]);
   });
 
+  it.each(ENDED_STATUSES)("still reaches members of a %s team while it has a live comp (ADR 0015), and not after", async (status) => {
+    table.put({ ...table.get(`TEAM#${TEAM}`, "META"), status, compPlan: "free", compUntil: "2026-12-31T00:00:00.000Z" });
+    expect(await liveUpdateRecipients(table.db(), TEAM, new Date("2026-10-01T00:00:00Z"))).toHaveLength(3);
+    expect(await liveUpdateRecipients(table.db(), TEAM, new Date("2027-01-01T00:00:00Z"))).toEqual([]);
+  });
+
+  it("is nobody once the team is closed, even with a live comp", async () => {
+    table.put({ ...table.get(`TEAM#${TEAM}`, "META"), status: "active", closedAt: "2026-09-30T00:00:00.000Z", compPlan: "free", compUntil: "2026-12-31T00:00:00.000Z" });
+    expect(await liveUpdateRecipients(table.db(), TEAM, new Date("2026-10-01T00:00:00Z"))).toEqual([]);
+  });
+
   it.each(["trialing", "active", "past_due", undefined])("still reaches members while the status is %s", async (status) => {
     table.put({ ...table.get(`TEAM#${TEAM}`, "META"), status });
     expect(await liveUpdateRecipients(table.db(), TEAM)).toHaveLength(3);

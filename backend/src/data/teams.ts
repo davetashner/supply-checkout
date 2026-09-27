@@ -5,7 +5,7 @@ import { DeleteCommand, GetCommand, TransactWriteCommand, UpdateCommand } from "
 import { auditPut } from "./audit.js";
 import { type Db, connection } from "./client.js";
 import { ConflictError, InvalidInputError, LastOwnerError, conflictOnConditionFailure } from "./errors.js";
-import { gsi1, id, keys, prefixes, strip, teamPartition } from "./keys.js";
+import { gsi1, gsi3, id, keys, prefixes, strip, teamPartition } from "./keys.js";
 import {
   type Invite,
   type Member,
@@ -161,19 +161,33 @@ export async function setMemberRole(db: Db, ctx: TeamContext, userId: string, ro
   const from = await currentRole(db, ctx, userId);
   if (from === role) return;
   const set = { UpdateExpression: "SET #role = :role", ExpressionAttributeNames: { "#role": "role" } };
+  const owner = gsi3.owner(ctx.teamId, userId);
   await connection(db)
     .doc.send(
       new TransactWriteCommand({
         TransactItems: [
-          {
-            Update: {
-              TableName: db.tableName,
-              Key: keys.member(ctx.teamId, userId),
-              ...set,
-              ConditionExpression: "#role = :from",
-              ExpressionAttributeValues: { ":role": role, ":from": from },
-            },
-          },
+          // The MEMBER item, in or out of the operators' index of owners (ADR 0015)
+          role === "owner"
+            ? {
+                Update: {
+                  TableName: db.tableName,
+                  Key: keys.member(ctx.teamId, userId),
+                  UpdateExpression: "SET #role = :role, GSI3PK = :gpk, GSI3SK = :gsk",
+                  ExpressionAttributeNames: { "#role": "role" },
+                  ConditionExpression: "#role = :from",
+                  ExpressionAttributeValues: { ":role": role, ":from": from, ":gpk": owner.GSI3PK, ":gsk": owner.GSI3SK },
+                },
+              }
+            : {
+                Update: {
+                  TableName: db.tableName,
+                  Key: keys.member(ctx.teamId, userId),
+                  UpdateExpression: "SET #role = :role REMOVE GSI3PK, GSI3SK",
+                  ExpressionAttributeNames: { "#role": "role" },
+                  ConditionExpression: "#role = :from",
+                  ExpressionAttributeValues: { ":role": role, ":from": from },
+                },
+              },
           // The member's team-switcher row: only `role`, and only if the row exists, so this
           // can't create a partial row. MEMBER_ROW_ATTRIBUTES lists what it may name.
           {

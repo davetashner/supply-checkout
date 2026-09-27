@@ -167,7 +167,7 @@ export async function createInvite(
   const [members, invites, count] = await Promise.all([
     queryAll<Member>(db, teamPartition(ctx.teamId), prefixes.member),
     queryAll<Invite>(db, teamPartition(ctx.teamId), prefixes.invite),
-    memberCount(db, ctx.teamId),
+    memberCount(db, ctx.teamId, now),
   ]);
   if (!count) throw new ConflictError("This team no longer exists");
   if (members.some((m) => m.email === email)) throw new ConflictError("They're already a member of this team");

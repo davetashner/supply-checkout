@@ -114,6 +114,14 @@
           {
             "AttributeName": "GSI2SK",
             "AttributeType": "S"
+          },
+          {
+            "AttributeName": "GSI3PK",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "GSI3SK",
+            "AttributeType": "S"
           }
         ],
         "BillingMode": "PAY_PER_REQUEST",
@@ -149,6 +157,44 @@
             "Projection": {
               "ProjectionType": "ALL"
             }
+          },
+          {
+            "IndexName": "GSI3",
+            "KeySchema": [
+              {
+                "AttributeName": "GSI3PK",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "GSI3SK",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "NonKeyAttributes": [
+                "name",
+                "plan",
+                "seats",
+                "status",
+                "trialEndsAt",
+                "owners",
+                "closedAt",
+                "createdAt",
+                "stripeCustomerId",
+                "version",
+                "compPlan",
+                "compSeats",
+                "compUntil",
+                "compReason",
+                "compBy",
+                "compAt",
+                "email",
+                "joinedAt",
+                "action",
+                "operatorSub"
+              ],
+              "ProjectionType": "INCLUDE"
+            }
           }
         ],
         "KeySchema": [
@@ -170,6 +216,9 @@
               },
               {
                 "IndexName": "GSI2"
+              },
+              {
+                "IndexName": "GSI3"
               }
             ],
             "PointInTimeRecoverySpecification": {

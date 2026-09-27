@@ -35,7 +35,8 @@ export function delegatedEnvsFromContext(node: { tryGetContext(key: string): unk
  * - Every region: an ACM certificate for `api.` (API Gateway custom domains
  *   need a certificate in their own region).
  * - GLOBAL_SERVICES_REGION: certificates for CloudFront (apex, www., app.),
- *   Cognito's custom domain (auth.) and AppSync's (realtime.), all of which
+ *   Cognito's custom domains (auth., and ops-auth. for the operator pool,
+ *   ADR 0015) and AppSync's (realtime.), all of which
  *   AWS requires there. The app adds a domain stack in that region even when
  *   it isn't one of the deployed regions.
  * - Primary region: the SES domain identity with Easy DKIM, a custom MAIL FROM
@@ -59,6 +60,7 @@ export class DomainStack extends SupplyCheckoutStack {
   readonly apiCertificate?: ICertificate;
   readonly webCertificate?: ICertificate;
   readonly authCertificate?: ICertificate;
+  readonly opsAuthCertificate?: ICertificate;
   readonly realtimeCertificate?: ICertificate;
   readonly emailIdentity?: EmailIdentity;
   readonly configurationSet?: ConfigurationSet;
@@ -92,9 +94,11 @@ export class DomainStack extends SupplyCheckoutStack {
     if (region === GLOBAL_SERVICES_REGION) {
       this.webCertificate = certificate("WebCertificate", names.app, [names.apex, names.www]);
       this.authCertificate = certificate("AuthCertificate", names.auth);
+      this.opsAuthCertificate = certificate("OpsAuthCertificate", names.opsAuth);
       this.realtimeCertificate = certificate("RealtimeCertificate", names.realtime);
       publish("WebCertificateParam", outputs.webCertificateArn, this.webCertificate.certificateArn, "CloudFront certificate: app., apex and www.");
       publish("AuthCertificateParam", outputs.authCertificateArn, this.authCertificate.certificateArn, "Cognito custom domain certificate: auth.");
+      publish("OpsAuthCertificateParam", outputs.opsAuthCertificateArn, this.opsAuthCertificate.certificateArn, "Operator pool's Cognito custom domain certificate: ops-auth.");
       publish("RealtimeCertificateParam", outputs.realtimeCertificateArn, this.realtimeCertificate.certificateArn, "AppSync custom domain certificate: realtime.");
     }
 

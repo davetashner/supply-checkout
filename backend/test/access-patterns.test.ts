@@ -284,6 +284,11 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       expect(await setOwnMemberEmail(db, contributor, "contributor.new@example.com")).toBe(true);
       expect((await getMember(db, owner, contributor.userId))?.email).toBe("contributor.new@example.com");
       expect((await getMember(db, owner, owner.userId))?.email).toBe("owner@example.com");
+      // An owner's item keeps its operators' index entry, which projects the new address
+      const ownerItem = await rawItem(db, `TEAM#${owner.teamId}`, `MEMBER#${owner.userId}`);
+      expect(await setOwnMemberEmail(db, owner, "owner.new@example.com")).toBe(true);
+      expect(await rawItem(db, `TEAM#${owner.teamId}`, `MEMBER#${owner.userId}`)).toEqual({ ...ownerItem, email: "owner.new@example.com" });
+      expect(ownerItem?.GSI3PK).toBeDefined();
       await expect(setOwnMemberEmail(db, viewer, "not an address")).rejects.toThrow(InvalidInputError);
       // Gone meanwhile (left the team): nothing is recreated
       await removeMember(db, viewer, viewer.userId);
