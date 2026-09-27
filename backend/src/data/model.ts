@@ -48,6 +48,12 @@ export interface Team {
   readonly closedBy?: string;
   /** When the purge may delete the team (ISO 8601): CLOSED_TEAM_RETENTION_DAYS after `closedAt`. */
   readonly purgeAfter?: string;
+  /**
+   * When the purge started deleting the team (ISO 8601; purgeTeam). It's set,
+   * on the condition the team is still closed and due, before anything is
+   * deleted, and never removed: reopenTeam refuses a team with it.
+   */
+  readonly purging?: string;
   readonly createdAt: string;
   readonly version: number;
   /**
