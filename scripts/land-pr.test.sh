@@ -3,8 +3,8 @@
 #
 # Each case runs land-pr.sh in a throwaway git repo (with a bare "origin", a
 # feature branch and its worktree) against a fake `gh` that answers from a
-# scenario directory, so nothing touches GitHub. `sleep`, `bd` and `node` are
-# stubbed too. Needs git and jq. SHOW_ALL=1 prints every case's output, not
+# scenario directory, so nothing touches GitHub. `sleep`, `bd`, `node` and
+# `npm` are stubbed too. Needs git and jq. SHOW_ALL=1 prints every case's output, not
 # just the failing ones.
 #
 # Scenario files, in $FAKE:
@@ -19,14 +19,20 @@
 #   seq.queue        JSON objects, one per line, merged into pr.json by each
 #                    `gh api graphql` read (the merge queue status); the last
 #                    one then sticks
-#   export_stale     if present, `node scripts/export-beads.mjs --check` fails
+#   export_stale     if present, `node scripts/export-beads.mjs --check` exits 1
+#   export_error     if present, it exits 2 (bd failed)
+#   page_fails       if present, `node scripts/backlog-page.mjs` fails
+#   page_hash        the data hash the page build writes (default h1)
+#   beads_pr_rc      exit code of `npm run -s beads:pr` (default 0)
 #   hold             while present, `gh pr checks --watch` blocks (it touches
 #                    `holding` first), to keep a land running
 #   real_sleep       if present, `sleep` really waits a moment
 #   ln_lost_race     if present, the next `ln` fails once without creating
 #                    anything, as if another land's lock was released just
 #                    after `ln` found it
-#   calls            every gh, bd and sleep call, appended by the fakes
+#   calls            every gh, bd, sleep, backlog-page and npm call, appended by
+#                    the fakes; npm's line also says whether the land lock was
+#                    held and whether LAND_SKIP_BACKLOG was set
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -123,7 +129,28 @@ exec /bin/ln "$@"
 EOF
 cat > "$tmp/bin/node" <<'EOF'
 #!/usr/bin/env bash
-[ ! -e "$FAKE/export_stale" ]
+case "$1" in
+  scripts/export-beads.mjs)
+    [ ! -e "$FAKE/export_error" ] || exit 2
+    [ ! -e "$FAKE/export_stale" ] ;;
+  scripts/backlog-page.mjs)
+    echo "node $*" >> "$FAKE/calls"
+    [ ! -e "$FAKE/page_fails" ] || { echo "bd: database not found" >&2; exit 1; }
+    mkdir -p dist/backlog
+    echo "<html>" > dist/backlog/index.html
+    cat "$FAKE/page_hash" 2>/dev/null > dist/backlog/.hash || echo h1 > dist/backlog/.hash
+    echo "Wrote the backlog page (1 beads): $PWD/dist/backlog/index.html" ;;
+  *) echo "fake node: unexpected: node $*" >&2; exit 2 ;;
+esac
+EOF
+cat > "$tmp/bin/npm" <<'EOF'
+#!/usr/bin/env bash
+lock="$(git rev-parse --path-format=absolute --git-common-dir)/land-pr.lock"
+echo "npm $* (lock $([ -e "$lock" ] && echo held || echo free), skip=${LAND_SKIP_BACKLOG:-})" >> "$FAKE/calls"
+case "$*" in
+  "run -s beads:pr") echo "Opened https://github.com/example/repo/pull/77"; exit "$(cat "$FAKE/beads_pr_rc" 2>/dev/null || echo 0)" ;;
+  *) echo "fake npm: unexpected: npm $*" >&2; exit 2 ;;
+esac
 EOF
 chmod +x "$tmp/bin/"*
 export PATH="$tmp/bin:$PATH"
@@ -284,49 +311,104 @@ check "says it wasn't merged" says "PR #42 was not merged."
 check "releases the lock" unlocked
 done_case
 
+republish="then run: npm run backlog:published"
+last_line() { [ "$(tail -1 <<< "$out")" = "$1" ]; }
+last_says() { grep -qF -- "$1" <<< "$(tail -1 <<< "$out")"; }
+
+echo "backlog page: rebuilt, and never published"
+scenario page-new
+land
+check "exits 0" exits 0
+check "rebuilds the page" called "node scripts/backlog-page.mjs"
+check "ends asking to republish it" last_says "/dist/backlog/index.html to the backlog artifact, $republish"
+check "doesn't run beads:pr for a current export" not_called "beads:pr"
+done_case
+
+echo "backlog page: rebuilt, and unchanged since it was published"
+scenario page-published
+mkdir -p "$repo/dist/backlog" && echo h1 > "$repo/dist/backlog/.published"
+land
+check "exits 0" exits 0
+check "rebuilds the page" called "node scripts/backlog-page.mjs"
+check "says it's unchanged" last_line "The backlog page is unchanged since it was last published."
+check "doesn't ask to republish it" not_says "$republish"
+done_case
+
+echo "backlog page: rebuilt, and changed since it was published"
+scenario page-changed
+mkdir -p "$repo/dist/backlog" && echo h0 > "$repo/dist/backlog/.published"
+land
+check "exits 0" exits 0
+check "ends asking to republish it" last_says "$republish"
+done_case
+
+echo "backlog page: the build fails"
+scenario page-fails
+touch "$FAKE/page_fails"
+mkdir -p "$repo/dist/backlog" && echo old > "$repo/dist/backlog/.hash"
+land
+check "exits 0" exits 0
+check "says it couldn't rebuild it" says "Couldn't rebuild the backlog page"
+check "prints the error" says "bd: database not found"
+check "doesn't ask to republish the old page" not_says "$republish"
+done_case
+
 echo "beads export is stale"
 scenario export-stale
 touch "$FAKE/export_stale"
 land
 check "exits 0" exits 0
-check "suggests npm run beads:pr in one line" [ "$(grep -c "beads" <<< "$out")" -eq 2 ]
-check "names the command" says "refresh it with: npm run beads:pr"
+check "says it's refreshing it" says "The beads export is stale: refreshing it with npm run beads:pr"
+check "runs beads:pr after releasing the land lock" called "npm run -s beads:pr (lock free"
+check "tells the export's land to skip the backlog" called "npm run -s beads:pr (lock free, skip=1)"
+check "runs it once" [ "$(count "beads:pr")" -eq 1 ]
+check "rebuilds the page after" [ "$(grep -n -e beads:pr -e backlog-page "$FAKE/calls" | tail -1 | grep -c backlog-page)" -eq 1 ]
+check "ends asking to republish the page" last_says "$republish"
+check "releases the lock" unlocked
 done_case
 
-backlog_reminder="The backlog page is out of date; rebuild it with npm run backlog:page and republish it"
-echo "backlog page is missing"
-scenario page-missing
-pr '.mergedAt = "2026-09-20T12:00:00Z"'
+echo "beads export is stale, and its PR doesn't land"
+scenario export-pr-fails
+touch "$FAKE/export_stale"
+echo 1 > "$FAKE/beads_pr_rc"
 land
-check "exits 0" exits 0
-check "says to rebuild and republish it, in one line" [ "$(grep -c "backlog page" <<< "$out")" -eq 1 ]
-check "names the command" says "$backlog_reminder"
+check "exits 0: #42 is merged" exits 0
+check "says the export PR didn't land" says "#42 merged, but the beads export PR didn't land (see above)."
+check "doesn't say #42 wasn't merged" not_says "was not merged"
+check "still rebuilds the page" called "node scripts/backlog-page.mjs"
+check "still ends asking to republish the page" last_says "$republish"
 done_case
 
-echo "backlog page is older than the merge"
-scenario page-old
-pr '.mergedAt = "2026-09-20T12:00:00Z"'
-mkdir -p "$repo/dist/backlog" && touch -t 202609191200 "$repo/dist/backlog/index.html"
+echo "beads export is stale after landing the export's own PR"
+scenario export-own-pr
+touch "$FAKE/export_stale"
+pr '.headRefName = "chore/beads-export-20260927-120000" | .body = "Refreshes the export."'
 land
 check "exits 0" exits 0
-check "says to rebuild and republish it" says "$backlog_reminder"
+check "doesn't run beads:pr again" not_called "beads:pr"
+check "says the export is stale again" says "The beads export is stale again; refresh it with: npm run beads:pr"
+check "rebuilds the page" called "node scripts/backlog-page.mjs"
 done_case
 
-echo "backlog page is newer than the merge"
-scenario page-fresh
-pr '.mergedAt = "2026-09-20T12:00:00Z"'
-mkdir -p "$repo/dist/backlog" && touch -t 202609211200 "$repo/dist/backlog/index.html"
+echo "beads export can't be checked"
+scenario export-error
+touch "$FAKE/export_error"
 land
 check "exits 0" exits 0
-check "says nothing about the backlog page" not_says "backlog page"
+check "says it couldn't check" says "Couldn't check the beads export"
+check "doesn't run beads:pr" not_called "beads:pr"
 done_case
 
-echo "backlog page, and GitHub gives no merge time"
-scenario page-no-time
-mkdir -p "$repo/dist/backlog" && touch -t 202609211200 "$repo/dist/backlog/index.html"
-land
+echo "LAND_SKIP_BACKLOG=1"
+scenario skip-backlog
+touch "$FAKE/export_stale"
+rc=0
+out="$(cd "$repo" && LAND_SKIP_BACKLOG=1 bash "$script" 42 2>&1)" || rc=$?
 check "exits 0" exits 0
-check "treats the page as older than the merge" says "$backlog_reminder"
+check "merges" called "gh pr merge 42"
+check "doesn't run beads:pr" not_called "beads:pr"
+check "doesn't rebuild the page" not_called "backlog-page"
+check "says so" says "LAND_SKIP_BACKLOG is set"
 done_case
 
 echo "blocked with green CI and no approval (release-please)"
@@ -349,6 +431,7 @@ check "gives the approve command" says "gh pr review 42 --approve"
 check "says it wasn't merged" says "PR #42 was not merged."
 check "leaves the worktree and branch" untouched
 check "closes no beads" not_called "bd close"
+check "doesn't rebuild the backlog page" not_called "backlog-page"
 done_case
 
 echo "blocked with green CI and an approval"
@@ -401,6 +484,7 @@ check "doesn't wait for CI or merge" not_called "gh pr checks"
 check "reports the merge commit" says "Merged as abcdef1"
 check "removes the worktree and branch" cleaned_up
 check "closes the Closes bead" called "bd close supply-checkout-abc"
+check "rebuilds the backlog page" called "node scripts/backlog-page.mjs"
 done_case
 
 echo "already merged while another land holds the lock"

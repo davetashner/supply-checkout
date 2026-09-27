@@ -14,9 +14,13 @@
 #
 #   4. removes the local worktree and branch, and pulls main
 #   5. closes every bead named in a "Closes <bead-id>" line of the PR body
-#   6. if .beads/issues.jsonl is stale, suggests npm run beads:pr in one line,
-#      and if the backlog page (dist/backlog/index.html) is missing or older
-#      than the merge, suggests rebuilding and republishing it in one line
+#   6. releases the land lock, and if .beads/issues.jsonl is stale (and this
+#      isn't the export's own PR), runs npm run beads:pr, which opens the export
+#      PR and lands it with a land of its own
+#   7. rebuilds the backlog page (dist/backlog/index.html), and if it differs
+#      from the page last published, ends with one line asking the lead to
+#      republish it and run npm run backlog:published
+#   LAND_SKIP_BACKLOG=1 skips steps 6 and 7.
 #
 # Only one land runs at a time across every worktree and session: without a
 # merge queue, two lands at once keep pushing each other's PRs behind main. A
@@ -27,7 +31,10 @@
 # queue needs main's repo to be owned by an organization.
 #
 # Exits non-zero whenever the PR ends up not merged, and says why. A PR that
-# someone else already merged still gets steps 4 to 6.
+# someone else already merged still gets steps 4 to 7. Steps 6 and 7 never
+# change the exit code: the PR is merged by then, and a failed export PR is
+# reported, left open to land, and flagged again by the Stop hook
+# (scripts/backlog-stop-hook.mjs) while the export stays stale.
 #
 # Usage: npm run land -- <pr-number>     (or scripts/land-pr.sh <pr-number>)
 set -euo pipefail
@@ -368,22 +375,51 @@ if [ -n "$ids" ]; then
   done
 fi
 
-# One line, not a warning: refresh the export once after a batch of merges
-if ! node scripts/export-beads.mjs --check >/dev/null; then
-  echo "The beads export is stale; after this batch of merges, refresh it with: npm run beads:pr"
+# Keep both views of the backlog current (see CLAUDE.md): the committed
+# export for machines, and the backlog page for people. LAND_SKIP_BACKLOG=1
+# skips both. The beads:pr run below passes it on to the export PR's land,
+# since this land rebuilds the page once that's done.
+if [ -n "${LAND_SKIP_BACKLOG:-}" ]; then
+  echo "LAND_SKIP_BACKLOG is set: left the beads export and the backlog page alone"
+  exit 0
 fi
 
-# The backlog page is gitignored, so it goes stale after every merge until the
-# lead rebuilds it (see CLAUDE.md). Older than the merge, or than now if
-# GitHub doesn't give the merge time.
-page="$main/dist/backlog/index.html"
-merged_at="$(gh pr view "$pr" --json mergedAt -q '.mergedAt // ""' 2>/dev/null || true)"
-if ! python3 - "$page" "$merged_at" <<'PY' 2>/dev/null
-import datetime, os, sys
-page, merged_at = sys.argv[1:]
-when = datetime.datetime.fromisoformat(merged_at.replace("Z", "+00:00")).timestamp() if merged_at else datetime.datetime.now().timestamp()
-sys.exit(0 if os.path.getmtime(page) >= when else 1)
-PY
-then
-  echo "The backlog page is out of date; rebuild it with npm run backlog:page and republish it"
+# Release the land lock first: beads:pr lands its PR with a land of its own,
+# which takes the lock, and would otherwise wait for this one forever.
+release_lock
+
+export_failed=""
+export_rc=0
+node scripts/export-beads.mjs --check >/dev/null 2>&1 || export_rc=$?
+if [ "$export_rc" -eq 2 ]; then
+  echo "Couldn't check the beads export (bd failed). Check it with: node scripts/export-beads.mjs --check"
+elif [ "$export_rc" -ne 0 ]; then
+  if [[ "$branch" == chore/beads-export-* ]]; then
+    # Beads changed while the export's own PR landed: no loop, just say so
+    echo "The beads export is stale again; refresh it with: npm run beads:pr"
+  else
+    say "The beads export is stale: refreshing it with npm run beads:pr"
+    # Not a failure of this land: #$pr is merged either way, and the Stop hook
+    # keeps asking for beads:pr while the export stays stale
+    LAND_SKIP_BACKLOG=1 npm run -s beads:pr || export_failed=1
+  fi
+fi
+
+say "Rebuilding the backlog page"
+page_built=""
+if node scripts/backlog-page.mjs; then page_built=1
+else echo "Couldn't rebuild the backlog page (see above). Rebuild it with npm run backlog:page, then republish it."; fi
+if [ -n "$export_failed" ]; then
+  echo
+  echo "#$pr merged, but the beads export PR didn't land (see above). Once it can merge, land it, or run npm run beads:pr again."
+fi
+# The page can only be published with Claude's Artifact tool, so that one
+# step is left to the lead, in the last line
+if [ -n "$page_built" ]; then
+  echo
+  if cmp -s "$main/dist/backlog/.hash" "$main/dist/backlog/.published"; then
+    echo "The backlog page is unchanged since it was last published."
+  else
+    echo "Republish $main/dist/backlog/index.html to the backlog artifact, then run: npm run backlog:published"
+  fi
 fi
