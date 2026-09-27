@@ -7,7 +7,7 @@
 // The Db handle is opaque: it exposes no DynamoDB client.
 
 export { closeDb, createDb, type Db, type DbOptions } from "./client.js";
-export { ConflictError, ForbiddenError, InvalidInputError, LastOwnerError, LimitReachedError, NotFoundError, TeamFullError, TooLargeError } from "./errors.js";
+export { ConflictError, ForbiddenError, InvalidInputError, LastOwnerError, LimitReachedError, NotFoundError, TeamClosedError, TeamFullError, TooLargeError } from "./errors.js";
 export { localRegion, writeRegionFor, type HomedTeam } from "./region.js";
 export {
   acceptInvite,
@@ -44,6 +44,8 @@ export * from "./billing.js";
 export * from "./documents.js";
 export * from "./commands.js";
 export * from "./imports.js";
+export * from "./accounts.js";
+export { listTeamsToPurge, purgeTeam, type PurgeResult, type TeamDue } from "./team-purge.js";
 export * from "./email-codes.js";
 export { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
 export { audienceChangeFromStream, documentChangeFromStream, type DocumentChange } from "./changes.js";

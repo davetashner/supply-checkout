@@ -55,12 +55,12 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
     onRemoved();
   }
 
-  // A write the API refused (403 permission_denied): a viewer's is rejected with the
-  // artifact runtime's view-only code, which the app acts on (src/main.js); anything
-  // else means this user is no longer in the team.
+  // A write the API refused (403 permission_denied): a viewer's, or one to a team an owner
+  // closed meanwhile (read-only), is rejected with the artifact runtime's view-only code,
+  // which the app acts on (src/main.js); anything else means this user is no longer in the team.
   function denied(e) {
     if (e.code !== "permission_denied") return e;
-    if (e.reason === "view_only") return { ...e, code: "invalid_argument" };
+    if (e.reason === "view_only" || e.reason === "team_closed") return { ...e, code: "invalid_argument" };
     lost();
     return e;
   }
@@ -343,8 +343,8 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
     saveItem,
     // A new access token: reconnect live updates with it
     reconnect: () => live.reconnect(),
-    // The session ended (signed out, or it expired): no more live updates or re-lists,
-    // which would need a token there no longer is
+    // The session ended (signed out, or it expired) or the account was deleted: no more
+    // live updates or re-lists, which need a token, and the team isn't reported as lost
     stop: () => { removed = true; live.stop(); },
   };
 }

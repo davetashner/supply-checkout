@@ -227,11 +227,14 @@ describe("member cap", () => {
     expect(join).toMatchObject({
       Key: keys.team("team"),
       UpdateExpression: "ADD #members :members, owners :owners",
-      ConditionExpression: "attribute_exists(PK) AND #members < :cap",
+      ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(closedAt) AND #members < :cap",
       ExpressionAttributeValues: { ":members": 1, ":owners": 1, ":cap": 10 },
     });
     const leave = teamCounts("t", "team", { members: -1, owners: -1 }).Update;
     expect(leave.ConditionExpression).toBe("attribute_exists(PK) AND attribute_exists(#members) AND owners > :one");
+    // The last owner may leave a closed team
+    const closed = teamCounts("t", "team", { members: -1, owners: -1, closed: true }).Update;
+    expect(closed.ConditionExpression).toBe("attribute_exists(PK) AND attribute_exists(#members) AND attribute_exists(closedAt)");
     const first = teamCounts("t", "team", { members: -1, counted: 0 }).Update;
     expect(first).toMatchObject({ UpdateExpression: "SET #members = :members", ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(#members)", ExpressionAttributeValues: { ":members": 0 } });
     expect(() => teamCounts("t", "team", { members: 1 })).toThrow("cap");

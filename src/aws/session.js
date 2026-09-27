@@ -58,6 +58,16 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
   const redirectUri = location.origin + "/";
   let tokens = null, refreshing = null, timer, signingOut = false;
   const post = (path, body) => request(config.apiUrl + path, { ...json("POST", body), credentials: "include" });
+  const logoutUrl = () => `${config.authUrl}/logout?${new URLSearchParams({ client_id: config.clientId, logout_uri: redirectUri })}`;
+
+  // Sign-in's saved state, the chosen team, every team's receipt draft and whose they were.
+  // Storage that can't be written (blocked site data) mustn't stop the Managed Login
+  // sign-out, and a key that can't be removed mustn't keep the others.
+  function forget() {
+    for (const key of [PKCE_KEY, INVITE_KEY]) tab.remove(key);
+    forgetLocal();
+    local.remove(OWNER_KEY);
+  }
 
   function accept(t) {
     tokens = t;
@@ -164,13 +174,23 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
       try { await post("/auth/sign-out"); } catch { signingOut = false; timer = setTimeout(background, 60_000); return false; }
       tokens = null;
       clearTimeout(timer);
-      // Storage that can't be written (blocked site data) mustn't stop the Managed Login
-      // sign-out, and a key that can't be removed mustn't keep the others
-      for (const key of [PKCE_KEY, INVITE_KEY]) tab.remove(key);
-      forgetLocal();
-      local.remove(OWNER_KEY);
-      location.assign(`${config.authUrl}/logout?${new URLSearchParams({ client_id: config.clientId, logout_uri: redirectUri })}`);
+      forget();
+      location.assign(logoutUrl());
       return true;
+    },
+
+    // After the account was deleted (DELETE /me): Cognito already ended every session, so
+    // nothing is revoked. Forgets what signOut forgets, and asks for a refresh, which the
+    // API refuses now the user is gone and answers by clearing the refresh cookie. No
+    // refresh after that (a live update's 401, say) signs anyone in or out again. Resolves
+    // to Managed Login's sign-out URL.
+    async forgetDeleted() {
+      signingOut = true;
+      clearTimeout(timer);
+      tokens = null;
+      forget();
+      await post("/auth/refresh").catch(() => {});
+      return logoutUrl();
     },
   };
 }

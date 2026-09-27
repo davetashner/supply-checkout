@@ -89,6 +89,8 @@ export interface AccountRoute {
     | "createInvite"
     | "revokeInvite"
     | "resendInvite"
+    | "closeTeam"
+    | "deleteAccount"
     | "sendEmailCode"
     | "verifyEmail";
   /**
@@ -105,7 +107,9 @@ export interface AccountRoute {
  * And a team's members: owners list them, change their roles and remove them,
  * and any member can leave. And a team's invites: owners invite people by
  * email, see each invite as pending, failed or expired, revoke it and re-send
- * it. And verifying the user's email address with a code Cognito emails them.
+ * it. Owners close a team, and anyone deletes their own account (the
+ * account handler's "Closing a team" and "Deleting an account"). And
+ * verifying the user's email address with a code Cognito emails them.
  * Each needs a Cognito access token (the JWT
  * authorizer). They write the user's own `USER#` rows (or, for a member
  * change, that member's), which the team-scoped data function can't reach,
@@ -124,6 +128,10 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
   { method: "POST", path: "/teams/{teamId}/invites", action: "createInvite", throttle: { rate: 5, burst: 10 } },
   { method: "DELETE", path: "/teams/{teamId}/invites/{inviteId}", action: "revokeInvite", throttle: { rate: 10, burst: 20 } },
   { method: "POST", path: "/teams/{teamId}/invites/{inviteId}/resend", action: "resendInvite", throttle: { rate: 5, burst: 10 } },
+  // Rare, and each does a lot: closing deletes the team's invites, and deleting an
+  // account visits every team the user is in and deletes the Cognito user
+  { method: "POST", path: "/teams/{teamId}/close", action: "closeTeam", throttle: { rate: 2, burst: 5 } },
+  { method: "DELETE", path: "/me", action: "deleteAccount", throttle: { rate: 2, burst: 5 } },
   // Cognito emails the code and limits codes and tries per user; these keep the total down too
   { method: "POST", path: "/me/email/code", action: "sendEmailCode", throttle: { rate: 5, burst: 10 } },
   { method: "POST", path: "/me/email/verify", action: "verifyEmail", throttle: { rate: 10, burst: 20 } },

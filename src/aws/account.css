@@ -16,6 +16,9 @@
 .teambar strong{color:var(--ink);font-weight:600}
 .teambar label{font-weight:600}
 .teambar select{flex:0 1 260px}
+.teambar .closed-note{flex-basis:100%;margin:0;color:var(--ink);background:var(--sunk);border-radius:10px;padding:8px 12px}
+.delete-form{display:grid;gap:10px}
+.delete-form input,.close-form input{background:var(--ground);border:1px solid var(--line);border-radius:9px;padding:9px 12px;width:100%}
 /* Importing inventory (src/aws/import.js), in the app's modal */
 .import-guide{font-size:14px}
 .import-guide summary{cursor:pointer;font-weight:600}
