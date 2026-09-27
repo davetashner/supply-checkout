@@ -14,6 +14,7 @@ import { journeyAlarmSpecs } from "../lib/observability/journey-alarms.js";
 import { CHECK_EVERY_MINUTES, PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS, PURGE_SILENT_ALARM_HOURS, STUCK_IMPORT_AFTER_MINUTES } from "../../backend/src/ops/names.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
 import {
+  ALARM_KEY_ALIAS_EVENTS,
   ALARM_KEY_EVENTS,
   ALARM_SUBSCRIPTION_EVENTS,
   ALARM_TOPIC_EVENTS,
@@ -909,7 +910,8 @@ describe("operator pool alerts (ADR 0015)", () => {
     const { routeChanges } = operatorRules();
     const topics = [{ Ref: expect.stringMatching(/^AlarmTopicsP1/) }, { Ref: expect.stringMatching(/^AlarmTopicsP2/) }];
     const subscriptions = topics.map((ref) => ({ prefix: { "Fn::Join": ["", [ref, ":"]] } }));
-    const key = [{ Ref: expect.stringMatching(/^AlarmTopicsKey/) }, { "Fn::GetAtt": [expect.stringMatching(/^AlarmTopicsKey/), "Arn"] }];
+    const keyArn = { "Fn::GetAtt": [expect.stringMatching(/^AlarmTopicsKey/), "Arn"] };
+    const key = [{ Ref: expect.stringMatching(/^AlarmTopicsKey/) }, keyArn];
     expect(routeChanges.props.EventPattern).toEqual({
       source: ["aws.sns", "aws.kms", "aws.cloudtrail"],
       "detail-type": ["AWS API Call via CloudTrail"],
@@ -918,8 +920,11 @@ describe("operator pool alerts (ADR 0015)", () => {
           { eventName: ["DeleteTopic", "RemovePermission"], eventSource: ["sns.amazonaws.com"], requestParameters: { topicArn: topics } },
           { eventName: ["SetTopicAttributes"], eventSource: ["sns.amazonaws.com"], requestParameters: { topicArn: topics }, userIdentity: NOT_CLOUDFORMATION },
           { eventName: ["Unsubscribe", "SetSubscriptionAttributes"], eventSource: ["sns.amazonaws.com"], requestParameters: { subscriptionArn: subscriptions }, userIdentity: NOT_CLOUDFORMATION },
-          { eventName: ["DisableKey", "ScheduleKeyDeletion"], eventSource: ["kms.amazonaws.com"], requestParameters: { keyId: key } },
-          { eventName: ["PutKeyPolicy"], eventSource: ["kms.amazonaws.com"], requestParameters: { keyId: key }, userIdentity: NOT_CLOUDFORMATION },
+          // By the key's ARN in `resources`, so a call through an alias (or an alias ARN) still matches
+          { eventName: ["DisableKey", "ScheduleKeyDeletion"], eventSource: ["kms.amazonaws.com"], resources: { ARN: [keyArn] } },
+          { eventName: ["PutKeyPolicy"], eventSource: ["kms.amazonaws.com"], resources: { ARN: [keyArn] }, userIdentity: NOT_CLOUDFORMATION },
+          // Any alias pointed at the key, whoever makes it
+          { eventName: ["CreateAlias", "UpdateAlias"], eventSource: ["kms.amazonaws.com"], requestParameters: { targetKeyId: key } },
           { eventSource: ["cloudtrail.amazonaws.com"], eventName: [...TRAIL_EVENTS] },
         ],
       },
@@ -927,6 +932,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     expect([...TRAIL_EVENTS]).toEqual(expect.arrayContaining(["StopLogging", "DeleteTrail"]));
     expect([...ALARM_TOPIC_EVENTS.always, ...ALARM_TOPIC_EVENTS.outsideDeploys, ...ALARM_SUBSCRIPTION_EVENTS.outsideDeploys]).toEqual(expect.arrayContaining(["DeleteTopic", "SetTopicAttributes", "Unsubscribe"]));
     expect([...ALARM_KEY_EVENTS.always, ...ALARM_KEY_EVENTS.outsideDeploys]).toEqual(["DisableKey", "ScheduleKeyDeletion", "PutKeyPolicy"]);
+    expect([...ALARM_KEY_ALIAS_EVENTS.always]).toEqual(["CreateAlias", "UpdateAlias"]);
   });
 });
 

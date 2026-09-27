@@ -86,6 +86,8 @@ export const ALARM_TOPIC_EVENTS = { always: ["DeleteTopic", "RemovePermission"],
 export const ALARM_SUBSCRIPTION_EVENTS = { outsideDeploys: ["Unsubscribe", "SetSubscriptionAttributes"] } as const;
 /** KMS calls that stop the alarm topics' key working, or will. */
 export const ALARM_KEY_EVENTS = { always: ["DisableKey", "ScheduleKeyDeletion"], outsideDeploys: ["PutKeyPolicy"] } as const;
+/** KMS calls that point an alias at the topics' key: none is ever made for it, so each alerts, and a call through an alias still names the key in `resources`. */
+export const ALARM_KEY_ALIAS_EVENTS = { always: ["CreateAlias", "UpdateAlias"] } as const;
 /** CloudTrail calls that stop or narrow a trail in this account: without CloudTrail, none of these rules sees anything. */
 export const TRAIL_EVENTS = ["StopLogging", "DeleteTrail", "UpdateTrail", "PutEventSelectors", "PutAdvancedEventSelectors"] as const;
 
@@ -300,8 +302,10 @@ export class ObservabilityStack extends SupplyCheckoutStack {
             ...calls(ALARM_TOPIC_EVENTS, { eventSource: ["sns.amazonaws.com"], requestParameters: { topicArn: topicArns } }),
             // A subscription's ARN is its topic's ARN, a colon and an ID
             ...calls(ALARM_SUBSCRIPTION_EVENTS, { eventSource: ["sns.amazonaws.com"], requestParameters: { subscriptionArn: topicArns.map((arn) => ({ prefix: `${arn}:` })) } }),
-            // KMS takes a key ID or ARN (no alias names this key)
-            ...calls(ALARM_KEY_EVENTS, { eventSource: ["kms.amazonaws.com"], requestParameters: { keyId: [this.topics.key.keyId, this.topics.key.keyArn] } }),
+            // KMS takes a key ID, key ARN, alias name or alias ARN; CloudTrail names the key's ARN in `resources` whichever was used
+            ...calls(ALARM_KEY_EVENTS, { eventSource: ["kms.amazonaws.com"], resources: { ARN: [this.topics.key.keyArn] } }),
+            // An alias made or moved to point at the key (the key ID or ARN in `targetKeyId`)
+            ...calls(ALARM_KEY_ALIAS_EVENTS, { eventSource: ["kms.amazonaws.com"], requestParameters: { targetKeyId: [this.topics.key.keyId, this.topics.key.keyArn] } }),
             { eventSource: ["cloudtrail.amazonaws.com"], eventName: [...TRAIL_EVENTS] },
           ],
         },

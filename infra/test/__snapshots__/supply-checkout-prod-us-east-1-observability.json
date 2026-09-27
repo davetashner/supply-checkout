@@ -4725,11 +4725,8 @@
                 "eventSource": [
                   "kms.amazonaws.com"
                 ],
-                "requestParameters": {
-                  "keyId": [
-                    {
-                      "Ref": "AlarmTopicsKey1622932D"
-                    },
+                "resources": {
+                  "ARN": [
                     {
                       "Fn::GetAtt": [
                         "AlarmTopicsKey1622932D",
@@ -4746,11 +4743,8 @@
                 "eventSource": [
                   "kms.amazonaws.com"
                 ],
-                "requestParameters": {
-                  "keyId": [
-                    {
-                      "Ref": "AlarmTopicsKey1622932D"
-                    },
+                "resources": {
+                  "ARN": [
                     {
                       "Fn::GetAtt": [
                         "AlarmTopicsKey1622932D",
@@ -4766,6 +4760,28 @@
                     },
                     {
                       "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "CreateAlias",
+                  "UpdateAlias"
+                ],
+                "eventSource": [
+                  "kms.amazonaws.com"
+                ],
+                "requestParameters": {
+                  "targetKeyId": [
+                    {
+                      "Ref": "AlarmTopicsKey1622932D"
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "AlarmTopicsKey1622932D",
+                        "Arn"
+                      ]
                     }
                   ]
                 }
