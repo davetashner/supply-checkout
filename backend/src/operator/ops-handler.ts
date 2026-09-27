@@ -5,6 +5,8 @@
 //   GET    /ops/teams/{teamId}          One team's account record and owners (audited)
 //   PUT    /ops/teams/{teamId}/comp     Comp a team or change or extend its comp
 //   DELETE /ops/teams/{teamId}/comp     End a comp early
+//   POST   /ops/teams/{teamId}/reopen   Reopen a closed team, through the
+//                                       operator reopen function (reopen-handler.ts)
 //   GET    /ops/audit?month=|teamId=    The operator audit trail
 //   GET    /ops/imports                 Imports stuck part-way (the "Imports stuck" alarm)
 //   POST   /ops/teams/{teamId}/imports/{importId}/clear
@@ -56,6 +58,7 @@ import type { Observability } from "../observability/index.js";
 import { ApiError, errorFor as apiErrorFor, errorResponse, header, json, jsonBody } from "../api/http.js";
 import { IDEMPOTENCY_HEADER, OPS_ROUTES, type OpsRoute, routeKey } from "../api/routes.js";
 import type { OperatorDirectory } from "./cognito.js";
+import type { Reopener } from "./reopen-client.js";
 import type { DbForOps } from "./ops-db.js";
 
 export type OpsEvent = APIGatewayProxyEventV2WithJWTAuthorizer;
@@ -63,6 +66,8 @@ export type OpsEvent = APIGatewayProxyEventV2WithJWTAuthorizer;
 export interface OpsHandlerDeps {
   readonly dbFor: DbForOps;
   readonly directory: OperatorDirectory;
+  /** Reopens a closed team through the operator reopen function: this function's role can't write closure fields. */
+  readonly reopen: Reopener;
   /** The operator pool's issuer URL. */
   readonly issuerUrl: string;
   /** The operator pool's `ops` client ID. */
@@ -218,6 +223,18 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
       const body = jsonBody(event, ["reason"]);
       const outcome = await clearStuckImport(deps.dbFor(op.sub, teamId), op, teamId, importId, { reason: body.reason, idempotencyKey: header(event, IDEMPOTENCY_HEADER), startedBefore: stuckBefore() }, new Date(now()));
       return { teamId, response: json(200, outcome) };
+    },
+    async reopenTeam(event, op) {
+      const teamId = teamIdFrom(event);
+      const body = jsonBody(event, ["reason", "expectedVersion"]);
+      const answer = await deps.reopen({ operatorSub: op.sub, teamId, reason: body.reason, expectedVersion: body.expectedVersion, idempotencyKey: header(event, IDEMPOTENCY_HEADER) });
+      if (!answer.ok) {
+        const { kind, message } = answer.error;
+        if (kind === "bad_request") throw new ApiError(400, "bad_request", message);
+        if (kind === "not_found") throw new ApiError(404, "not_found", message);
+        throw new ApiError(409, "aborted", message, kind === "team_deleting" ? "team_deleting" : undefined);
+      }
+      return { teamId, response: json(200, answer.outcome) };
     },
     async listAudit(event, op) {
       const q = event.queryStringParameters ?? {};

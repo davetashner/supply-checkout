@@ -3247,6 +3247,60 @@
         }
       }
     },
+    "HttpApiPOSTopsteamsteamIdreopenOpsIntegrationPermissionAFD6BA42": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "OpsFunctionLive79C895FB"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/ops/teams/{teamId}/reopen"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTopsteamsteamIdreopen05315197": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiOpsCognitoJwtEE918F68"
+        },
+        "RouteKey": "POST /ops/teams/{teamId}/reopen",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETopsteamsOpsIntegrationD9495125"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiGETopsauditOpsIntegrationPermission0032A9FC": {
       "Type": "AWS::Lambda::Permission",
       "Properties": {
@@ -3706,6 +3760,10 @@
             "ThrottlingRateLimit": 2,
             "ThrottlingBurstLimit": 5
           },
+          "POST /ops/teams/{teamId}/reopen": {
+            "ThrottlingRateLimit": 1,
+            "ThrottlingBurstLimit": 2
+          },
           "GET /ops/audit": {
             "ThrottlingRateLimit": 5,
             "ThrottlingBurstLimit": 10
@@ -3763,6 +3821,8 @@
         "HttpApiPOSTmeemailverify7BFB4943",
         "HttpApiPOSTopsteamsteamIdimportsimportIdclearOpsIntegrationPermission461B2CE3",
         "HttpApiPOSTopsteamsteamIdimportsimportIdclear20755C3C",
+        "HttpApiPOSTopsteamsteamIdreopenOpsIntegrationPermissionAFD6BA42",
+        "HttpApiPOSTopsteamsteamIdreopen05315197",
         "HttpApiPOSTteamsteamIdcloseAccountIntegrationPermission1183DF2C",
         "HttpApiPOSTteamsteamIdclose39531DA2",
         "HttpApiPOSTteamsteamIdimportsDataIntegrationPermission8AC0ABAB",
@@ -3916,6 +3976,17 @@
               "Resource": {
                 "Ref": "SsmParameterValuesupplycheckoutprodidentityopsuserpoolarnC96584B6F00A464EAD1953AFF4B05118Parameter"
               }
+            },
+            {
+              "Action": "lambda:InvokeFunction",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "OpsReopenFunctionBC322A9C",
+                  "Arn"
+                ]
+              },
+              "Sid": "InvokeReopenOnly"
             }
           ],
           "Version": "2012-10-17"
@@ -3949,6 +4020,9 @@
             },
             "OPS_ISSUER_URL": {
               "Ref": "SsmParameterValuesupplycheckoutprodidentityopsissuerurlC96584B6F00A464EAD1953AFF4B05118Parameter"
+            },
+            "OPS_REOPEN_FUNCTION": {
+              "Ref": "OpsReopenFunctionBC322A9C"
             },
             "OPS_ROLE_ARN": {
               "Fn::GetAtt": [
@@ -4307,6 +4381,392 @@
               "Version": "2012-10-17"
             },
             "PolicyName": "OperatorScope"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "OpsReopenFunctionLogs05BE5600": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "OpsReopenFunctionRoleECA7511A": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the reopen function",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "OpsReopenFunctionRoleDefaultPolicyAB292D12": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "OpsReopenFunctionLogs05BE5600",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": [
+                "sts:AssumeRole",
+                "sts:TagSession"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "OperatorReopenRoleF576B28C",
+                  "Arn"
+                ]
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OpsReopenFunctionRoleDefaultPolicyAB292D12",
+        "Roles": [
+          {
+            "Ref": "OpsReopenFunctionRoleECA7511A"
+          }
+        ]
+      }
+    },
+    "OpsReopenFunctionBC322A9C": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "Reopens a closed team for the ops function, audited (ADR 0015)",
+        "Environment": {
+          "Variables": {
+            "NODE_OPTIONS": "--enable-source-maps",
+            "TABLE_NAME": "supply-checkout-prod-app",
+            "OPS_REOPEN_ROLE_ARN": {
+              "Fn::GetAtt": [
+                "OperatorReopenRoleF576B28C",
+                "Arn"
+              ]
+            },
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "SUPPLY_CHECKOUT_ENV": "prod"
+          }
+        },
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "OpsReopenFunctionLogs05BE5600"
+          }
+        },
+        "MemorySize": 256,
+        "Role": {
+          "Fn::GetAtt": [
+            "OpsReopenFunctionRoleECA7511A",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 10,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "OpsReopenFunctionRoleDefaultPolicyAB292D12",
+        "OpsReopenFunctionRoleECA7511A"
+      ]
+    },
+    "OpsReopenFunctionXRayWriteB02AA641": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTraceSegments",
+                "xray:PutTelemetryRecords"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OpsReopenFunctionXRayWriteB02AA641",
+        "Roles": [
+          {
+            "Ref": "OpsReopenFunctionRoleECA7511A"
+          }
+        ]
+      }
+    },
+    "OperatorReopenRoleF576B28C": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "sts:AssumeRole",
+                "sts:TagSession"
+              ],
+              "Condition": {
+                "StringLike": {
+                  "aws:RequestTag/teamId": "?*"
+                },
+                "ForAllValues:StringEquals": {
+                  "aws:TagKeys": [
+                    "teamId"
+                  ]
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "OpsReopenFunctionRoleECA7511A",
+                    "Arn"
+                  ]
+                }
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Assumed by the operator reopen function per request, tagged with the team (ADR 0015): that team's closure fields, and its operator audit",
+        "MaxSessionDuration": 3600,
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "dynamodb:GetItem",
+                    "dynamodb:UpdateItem"
+                  ],
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "TEAM#${aws:PrincipalTag/teamId}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "type",
+                        "version",
+                        "owners",
+                        "closedAt",
+                        "closedBy",
+                        "purgeAfter",
+                        "purging",
+                        "GSI1PK",
+                        "GSI1SK"
+                      ]
+                    },
+                    "StringEqualsIfExists": {
+                      "dynamodb:Select": "SPECIFIC_ATTRIBUTES",
+                      "dynamodb:ReturnValues": "NONE"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "ReopenClosureFieldsOnly"
+                },
+                {
+                  "Action": [
+                    "dynamodb:PutItem",
+                    "dynamodb:Query"
+                  ],
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "OPAUDIT#${aws:PrincipalTag/teamId}"
+                      ]
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "TeamOperatorAuditAppendOnly"
+                },
+                {
+                  "Action": [
+                    "kms:Decrypt",
+                    "kms:DescribeKey",
+                    "kms:Encrypt",
+                    "kms:GenerateDataKey"
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "kms:ViaService": {
+                        "Fn::Join": [
+                          "",
+                          [
+                            "dynamodb.",
+                            {
+                              "Ref": "AWS::Region"
+                            },
+                            ".amazonaws.com"
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                  },
+                  "Sid": "TableKeyThroughDynamoDb"
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "ReopenScope"
           }
         ],
         "Tags": [

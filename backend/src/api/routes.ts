@@ -146,14 +146,15 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
 export interface OpsRoute {
   readonly method: "GET" | "PUT" | "DELETE" | "POST";
   readonly path: string;
-  readonly action: "listTeams" | "getTeam" | "setComp" | "endComp" | "listAudit" | "listStuckImports" | "clearStuckImport";
+  readonly action: "listTeams" | "getTeam" | "setComp" | "endComp" | "reopenTeam" | "listAudit" | "listStuckImports" | "clearStuckImport";
   readonly throttle: { readonly rate: number; readonly burst: number };
 }
 
 /**
  * Platform operators (ADR 0015): list and search teams, read one team's
- * account record, comp a team or end its comp, read the operator audit, and
- * list stuck imports and take one out of the stuck-import check.
+ * account record, comp a team or end its comp, reopen a closed team, read
+ * the operator audit, and list stuck imports and take one out of the
+ * stuck-import check.
  * Each needs an access token from the operator user pool (its own JWT
  * authorizer; a customer's token fails it), and the `ops` function checks
  * the `operators` group with Cognito on every request. Primary region only.
@@ -163,6 +164,8 @@ export const OPS_ROUTES: readonly OpsRoute[] = [
   { method: "GET", path: "/ops/teams/{teamId}", action: "getTeam", throttle: { rate: 5, burst: 10 } },
   { method: "PUT", path: "/ops/teams/{teamId}/comp", action: "setComp", throttle: { rate: 2, burst: 5 } },
   { method: "DELETE", path: "/ops/teams/{teamId}/comp", action: "endComp", throttle: { rate: 2, burst: 5 } },
+  // Through the operator reopen function (supply-checkout-6uw.6): the operator-access role can't write closure fields
+  { method: "POST", path: "/ops/teams/{teamId}/reopen", action: "reopenTeam", throttle: { rate: 1, burst: 2 } },
   { method: "GET", path: "/ops/audit", action: "listAudit", throttle: { rate: 5, burst: 10 } },
   // Imports stuck part-way (the "Imports stuck" alarm, docs/journeys.md J2), and taking one out of the check
   { method: "GET", path: "/ops/imports", action: "listStuckImports", throttle: { rate: 5, burst: 10 } },
@@ -228,6 +231,10 @@ export const API_ENV = {
   opsClientId: "OPS_CLIENT_ID",
   /** The operator pool, for AdminListGroupsForUser on every request. */
   opsUserPoolId: "OPS_USER_POOL_ID",
+  /** The operator reopen function the ops function invokes to reopen a closed team (supply-checkout-6uw.6). */
+  opsReopenFunction: "OPS_REOPEN_FUNCTION",
+  /** The role the operator reopen function assumes, tagged with the team it reopens. */
+  opsReopenRoleArn: "OPS_REOPEN_ROLE_ARN",
 } as const;
 
 /** The refresh-token cookie, scoped to the auth endpoints. */

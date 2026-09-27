@@ -5,6 +5,7 @@
 //   npm run ops -- team <teamId>
 //   npm run ops -- comp <teamId> --plan free --until 2026-12-31 --reason "Pilot, 90 days" [--seats N]
 //   npm run ops -- uncomp <teamId> --reason "Pilot over"
+//   npm run ops -- reopen <teamId> --reason "Owner disputes the closure"
 //   npm run ops -- audit [--team <teamId> | --month YYYY-MM]
 //   npm run ops -- stuck-imports
 //   npm run ops -- clear-import <teamId> <importId> --reason "Owner re-imported it"
@@ -25,8 +26,8 @@
 // every token they hold) and forgets the cached one.
 //
 // Every command goes through the same routes, MFA and audit as everything else: a
-// comp reads the team first (audited), then sends its version as expectedVersion with
-// a new Idempotency-Key.
+// comp or a reopen reads the team first (audited), then sends its version as
+// expectedVersion with a new Idempotency-Key.
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, fchmodSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -50,6 +51,7 @@ export const USAGE = `Usage: npm run ops -- <command> [options]
   comp <teamId> --plan <plan> --until <date> --reason <text> [--seats N]
                                                 Comp a team or change or extend its comp (at most 12 months)
   uncomp <teamId> --reason <text>               End a team's comp now
+  reopen <teamId> --reason <text>               Reopen a closed team before it's deleted (until 5 minutes before)
   audit [--team <teamId> | --month YYYY-MM]     The operator audit (default: this month)
   stuck-imports                                 Imports stuck part-way for over an hour (the "Imports stuck" alarm)
   clear-import <teamId> <importId> --reason <text>
@@ -278,7 +280,16 @@ function teamDetail(team) {
 }
 
 function auditLine(e) {
-  const change = e.action === "ops.import.clear" && e.after ? ` import ${e.after.importId}` : e.after ? ` -> ${e.after.plan} until ${date(e.after.until)}` : e.action === "ops.comp.end" ? " -> none" : "";
+  const change =
+    e.action === "ops.import.clear" && e.after
+      ? ` import ${e.after.importId}`
+      : e.action === "ops.team.reopen"
+        ? ` closed ${e.before?.closedAt ?? "?"} -> open`
+        : e.after
+          ? ` -> ${e.after.plan} until ${date(e.after.until)}`
+          : e.action === "ops.comp.end"
+            ? " -> none"
+            : "";
   return `${e.ts}  ${pad(e.action, 14)} team ${e.teamId}  by ${e.operatorSub}${change}${e.reason ? `  "${e.reason}"` : ""}`;
 }
 
@@ -321,7 +332,7 @@ export async function main(argv, deps) {
     if (!id || !ID.test(id)) throw new UsageError(`${command} needs a team ID`);
     return id;
   };
-  const known = { teams: true, team: true, comp: true, uncomp: true, audit: true, "stuck-imports": true, "clear-import": true };
+  const known = { teams: true, team: true, comp: true, uncomp: true, reopen: true, audit: true, "stuck-imports": true, "clear-import": true };
   if (!known[command]) throw new UsageError(`Unknown command ${command}`);
 
   let token = readCachedToken(cacheFile, deps.now());
@@ -360,6 +371,16 @@ export async function main(argv, deps) {
     const { team } = await call("GET", `/ops/teams/${id}`);
     const outcome = await call(command === "comp" ? "PUT" : "DELETE", `/ops/teams/${id}/comp`, { body: { ...body, expectedVersion: team.version }, idempotent: true });
     print(outcome, (o) => (o.comp ? `Comped ${team.name} (${id}): ${o.comp.plan} until ${o.comp.until}. Audit event ${o.eventId}.` : `Ended the comp of ${team.name} (${id}). Audit event ${o.eventId}.`));
+  } else if (command === "reopen") {
+    const id = teamId();
+    if (!flags.reason) throw new UsageError("reopen needs --reason");
+    const { team } = await call("GET", `/ops/teams/${id}`);
+    if (!team.closedAt) {
+      print({ team }, () => `${team.name} (${id}) isn't closed; nothing to reopen.`);
+      return 0;
+    }
+    const outcome = await call("POST", `/ops/teams/${id}/reopen`, { body: { reason: flags.reason, expectedVersion: team.version }, idempotent: true });
+    print(outcome, (o) => `Reopened ${team.name} (${id}), closed ${team.closedAt}: it won't be deleted, and its owners see it in their support actions. Audit event ${o.eventId}.`);
   } else if (command === "stuck-imports") {
     const answer = await call("GET", "/ops/imports");
     print(answer, (a) =>

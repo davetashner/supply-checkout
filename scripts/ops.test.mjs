@@ -328,3 +328,37 @@ test("lists stuck imports and clears one with a new Idempotency-Key", async () =
   await main(["audit"], audit.deps);
   assert.match(audit.logs[0], /ops.import.clear team team-a {2}by op-1 import imp-1/);
 });
+
+test("reopens a closed team at the version it read, with a new Idempotency-Key, and leaves an open one alone", async () => {
+  const closed = { id: "team-c", name: "Charlie", plan: "trial", status: "trialing", seats: 3, ownerCount: 1, closedAt: "2026-09-01T10:00:00.000Z", createdAt: "2026-08-01T00:00:00.000Z", version: 4, comp: null };
+  const routes = {
+    "GET /ops/teams/team-c": { status: 200, body: { team: closed } },
+    "POST /ops/teams/team-c/reopen": { status: 200, body: { eventId: "ev-9", replayed: false, version: 5 } },
+  };
+  const run = harness({ routes });
+  await main(["reopen", "team-c", "--reason", "Owner disputes the closure"], run.deps);
+  assert.deepEqual(
+    run.requests.map((r) => r.method),
+    ["GET", "POST"],
+  );
+  assert.deepEqual(run.requests[1].body, { reason: "Owner disputes the closure", expectedVersion: 4 });
+  assert.match(run.requests[1].headers["idempotency-key"], /^[0-9a-f-]{36}$/);
+  assert.match(run.logs[0], /Reopened Charlie \(team-c\), closed 2026-09-01T10:00:00.000Z: it won't be deleted.*Audit event ev-9./);
+
+  const open = harness({ routes: { "GET /ops/teams/team-c": { status: 200, body: { team: { ...closed, closedAt: null } } } } });
+  await main(["reopen", "team-c", "--reason", "Owner disputes the closure"], open.deps);
+  assert.deepEqual(
+    open.requests.map((r) => r.method),
+    ["GET"],
+  );
+  assert.equal(open.logs[0], "Charlie (team-c) isn't closed; nothing to reopen.");
+
+  const late = harness({ routes: { ...routes, "POST /ops/teams/team-c/reopen": { status: 409, body: { error: { code: "aborted", message: "This team is about to be deleted and can't be reopened any more", reason: "team_deleting" } } } } });
+  await assert.rejects(main(["reopen", "team-c", "--reason", "Too late"], late.deps), /about to be deleted/);
+  for (const argv of [["reopen", "--reason", "x"], ["reopen", "team-c"], ["reopen", "bad id", "--reason", "x"]]) {
+    await assert.rejects(main(argv, harness().deps), UsageError, argv.join(" "));
+  }
+  const audit = harness({ routes: { "GET /ops/audit": { status: 200, body: { events: [{ ts: "t", action: "ops.team.reopen", teamId: "team-c", operatorSub: "op-1", reason: "Disputed", before: { closedAt: "2026-09-01T10:00:00.000Z", purgeAfter: "2026-10-01T10:00:00.000Z" }, after: null }] } } } });
+  await main(["audit"], audit.deps);
+  assert.match(audit.logs[0], /ops.team.reopen team team-c {2}by op-1 closed 2026-09-01T10:00:00.000Z -> open {2}"Disputed"/);
+});
