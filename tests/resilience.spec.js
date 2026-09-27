@@ -61,5 +61,6 @@ test("a permission failure switches the page to view-only", async ({ page }) => 
   await page.getByRole("button", { name: "+ New sheet" }).click();
   await page.getByLabel("Client", { exact: true }).fill("Hotel Group");
   await page.getByRole("button", { name: "Create sheet" }).click();
+  await expect(page.locator("#toast")).toHaveText("You have view-only access. Ask the owner for Contributor access to make changes.");
   await expect(page.locator("#notice")).toContainText("view-only access");
 });

@@ -148,3 +148,132 @@ test("fits a 320px screen", async ({ page }) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
   expect(await page.locator("#modal").evaluate((m) => m.scrollWidth - m.clientWidth)).toBeLessThanOrEqual(0);
 });
+
+test.describe("seats", () => {
+  const DAY = 86400e3;
+  const invite = (id, email, expiresIn, extra = {}) => ({ id, email, role: "contributor", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + expiresIn).toISOString(), inviteStatus: "pending", failureReason: null, failedAt: null, ...extra });
+  const seats = (page) => dialog(page).locator("#seats");
+  const send = (page) => dialog(page).getByRole("button", { name: "Send invite" });
+  const full = (page) => dialog(page).locator("#teamFull");
+
+  test("shows how many seats are used, and turns Send invite off once members and invites fill them", async ({ page }) => {
+    const backend = new FakeBackend({
+      teams: [{ ...TEAM, members: 2, memberCap: 4 }],
+      members: { t1: [ME, SAM] },
+      // An expired invite doesn't count; a failed one that hasn't expired does, as the server counts it
+      teamInvites: { t1: [invite("inv-old", "old@example.com", -DAY, { inviteStatus: "expired" }), invite("inv-f", "bounced@example.com", DAY, { inviteStatus: "failed", failureReason: "bounced" })] },
+    });
+    await openMembers(page, backend);
+    await expect(seats(page)).toHaveText("2 of 4 members");
+    await expect(send(page)).toBeEnabled();
+    await expect(full(page)).toBeHidden();
+    const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+    expect(violations.map((v) => v.id)).toEqual([]);
+
+    await dialog(page).getByLabel("Email").fill("new@example.com");
+    await send(page).click();
+    await expect(page.locator("#toast")).toHaveText("Invite sent to new@example.com");
+    // Two members and two invites waiting: full
+    await expect(send(page)).toBeDisabled();
+    await expect(full(page)).toHaveText("The team is full, counting invites waiting. Remove someone or revoke an invite to invite someone else.");
+    await expect(seats(page)).toHaveText("2 of 4 members");
+
+    // Removing a member makes room
+    await row(page, "sam@example.com").getByRole("button", { name: "Remove" }).click();
+    await row(page, "sam@example.com").getByRole("button", { name: "Tap again to remove" }).click();
+    await expect(seats(page)).toHaveText("1 of 4 members");
+    await expect(send(page)).toBeEnabled();
+    await expect(full(page)).toBeHidden();
+  });
+
+  test("a team whose members fill it can't invite anyone until someone goes", async ({ page }) => {
+    const backend = new FakeBackend({ teams: [{ ...TEAM, members: 2, memberCap: 2 }], members: { t1: [ME, SAM] }, teamInvites: { t1: [] } });
+    await openMembers(page, backend);
+    await expect(seats(page)).toHaveText("2 of 2 members");
+    await expect(send(page)).toBeDisabled();
+    await expect(full(page)).toBeVisible();
+  });
+
+  test("a closed team still shows its seats", async ({ page }) => {
+    await openMembers(page, new FakeBackend({ teams: [{ ...TEAM, closedAt: "2026-09-26T12:00:00.000Z", deletesAt: "2026-10-26T12:00:00.000Z", memberCap: 10 }], members: { t1: [ME, SAM] } }));
+    await expect(seats(page)).toHaveText("2 of 10 members");
+  });
+
+  test("an API without the cap shows no count and leaves inviting to the server", async ({ page }) => {
+    await openMembers(page, new FakeBackend({ members: { t1: [ME, SAM] } }));
+    await expect(dialog(page).locator(".member")).toHaveCount(2);
+    await expect(seats(page)).toBeHidden();
+    await expect(send(page)).toBeEnabled();
+  });
+});
+
+test.describe("support activity", () => {
+  const SUPPORT = "/teams/t1/support-actions";
+  const action = (n, act, extra = {}) => ({ eventId: `e${n}`, ts: new Date(Date.UTC(2026, 8, 20, 15, 4) - n * 3600e3).toISOString(), actor: "Supply Checkout support", action: act, ...extra });
+  const list = (page) => dialog(page).locator("#supportList");
+  const items = (page) => list(page).locator(".support-action");
+
+  test("an owner sees what support did to the team, newest first, with why", async ({ page }) => {
+    const backend = new FakeBackend({
+      members: { t1: [ME] },
+      supportActions: {
+        t1: [
+          action(0, "ops.comp.set", { reason: "Goodwill after the outage", before: null, after: { plan: "team", seats: null, until: "2026-12-31T12:00:00.000Z", reason: "Goodwill after the outage" } }),
+          action(1, "ops.comp.set", { before: null, after: null }),
+          action(2, "ops.comp.end", { reason: "Paid now" }),
+          action(3, "ops.team.read", { reason: "Ticket 1234" }),
+          action(4, "ops.import.clear", { reason: "Stuck import" }),
+          action(5, "ops.something.new"),
+        ],
+      },
+    });
+    await openMembers(page, backend);
+    await expect(items(page)).toHaveCount(6);
+    await expect(items(page).nth(0)).toContainText("Gave the team a free plan until Dec 31, 2026");
+    await expect(items(page).nth(0)).toContainText("Reason: Goodwill after the outage");
+    await expect(items(page).nth(1)).toContainText("Gave the team a free plan");
+    await expect(items(page).nth(1)).not.toContainText("until");
+    await expect(items(page).nth(1)).not.toContainText("Reason");
+    await expect(items(page).nth(2)).toContainText("Ended the team's free plan");
+    await expect(items(page).nth(3)).toContainText("Looked at the team's account");
+    await expect(items(page).nth(3)).toContainText("Reason: Ticket 1234");
+    await expect(items(page).nth(4)).toContainText("Cleared an import that didn't finish");
+    await expect(items(page).nth(5)).toContainText("Changed the team's account");
+    await expect(items(page).nth(0)).toContainText("2026");
+    await expect(dialog(page).getByRole("button", { name: "Show more" })).toBeHidden();
+    expect(backend.requests("GET", SUPPORT).map((c) => c.query)).toEqual([{ limit: "20" }]);
+    const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+    expect(violations.map((v) => v.id)).toEqual([]);
+  });
+
+  test("shows more a page at a time, and says so when a page doesn't load", async ({ page }) => {
+    const backend = new FakeBackend({ members: { t1: [ME] }, supportActions: { t1: Array.from({ length: 45 }, (_, i) => action(i, "ops.team.read")) } });
+    await openMembers(page, backend);
+    await expect(items(page)).toHaveCount(20);
+    const more = dialog(page).getByRole("button", { name: "Show more" });
+    backend.on("GET", SUPPORT, { abort: true });
+    await more.click();
+    await expect(dialog(page).locator("#supportFail")).toHaveText("Couldn't load what support did. Check your connection and try again.");
+    // What was shown stays, and it can be tried again
+    await expect(items(page)).toHaveCount(20);
+    await more.click();
+    await expect(items(page)).toHaveCount(40);
+    await expect(dialog(page).locator("#supportFail")).toBeHidden();
+    await more.click();
+    await expect(items(page)).toHaveCount(45);
+    await expect(more).toBeHidden();
+    expect(backend.requests("GET", SUPPORT).map((c) => c.query.cursor)).toEqual([undefined, "20", "20", "40"]);
+  });
+
+  test("says when support hasn't done anything, or when it doesn't load", async ({ page }) => {
+    const backend = new FakeBackend({ members: { t1: [ME] } });
+    backend.on("GET", SUPPORT, error(500, "internal"));
+    await openMembers(page, backend);
+    await expect(dialog(page).locator("#supportFail")).toHaveText("Couldn't load what support did. Check your connection and try again.");
+    await expect(list(page)).toHaveText("");
+    await dialog(page).getByRole("button", { name: "Close", exact: true }).click();
+    await page.locator(".teambar").getByRole("button", { name: "Members" }).click();
+    await expect(list(page)).toHaveText("Supply Checkout support hasn't done anything to this team.");
+    await expect(dialog(page).locator("#supportFail")).toBeHidden();
+  });
+});
