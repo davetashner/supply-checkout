@@ -55,8 +55,10 @@ Then:
      a new invite.
    - `429 quota_exceeded`: the user is already in 20 teams; they must leave one.
    - `403 permission_denied`: the email isn't verified. `/me` says so too
-     (`emailVerified: false`, and `invites` is always empty then). Ask the
-     user to verify their email in Managed Login.
+     (`emailVerified: false`, and `invites` is always empty then). Offer to
+     verify it: `POST /me/email/code` emails a 6-digit code, and
+     `POST /me/email/verify` with `{"code": "…"}` checks it. Then refresh the
+     tokens (`POST /auth/refresh`) and load `/me` again.
    - `409 aborted`: they're already in the team. Open it.
 
    **Invites in `/me` without a link** (the user signed in some other way):

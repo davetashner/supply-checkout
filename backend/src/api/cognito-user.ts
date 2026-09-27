@@ -17,6 +17,15 @@
 // never lists another person's invites, even if the trigger's write failed.
 // After the person verifies a new address with a Cognito code, the trigger
 // records it at their next token refresh, and from then it counts.
+//
+// Verifying: cognitoEmailCodes() asks Cognito to email the caller a code
+// (GetUserAttributeVerificationCode) and checks the code they enter
+// (VerifyUserAttribute), both with the caller's own access token, like
+// GetUser. The API makes these calls rather than the browser so that the app
+// only ever talks to our API (the content security policy's connect-src has
+// no Cognito regional endpoint, and the app's config names no region), and
+// API Gateway's throttle sits in front of Cognito's own limits. Neither the
+// token nor the code is ever logged.
 
 import { isRecordedEmail, linkedUser } from "../identity/email-verified-handler.js";
 import { ApiError } from "./http.js";
@@ -43,30 +52,94 @@ export type UserInfo = (accessToken: string) => Promise<CognitoUser>;
 const TIMEOUT_MS = 5000;
 const ISSUER = /^https:\/\/cognito-idp\.[a-z0-9-]+\.amazonaws\.com\/[A-Za-z0-9_-]+$/;
 
+/** Cognito's user pool endpoint for `issuerUrl`, checked to be a Cognito issuer. */
+function poolEndpoint(issuerUrl: string): string {
+  if (!ISSUER.test(issuerUrl)) throw new Error("ISSUER_URL is not a Cognito user pool issuer");
+  return `${new URL(issuerUrl).origin}/`;
+}
+
+interface CognitoReply {
+  readonly ok: boolean;
+  readonly status: number;
+  /** The error's name, without Cognito's namespace prefix, or "". */
+  readonly type: string;
+  readonly body: Record<string, unknown>;
+}
+
+/** One call to a Cognito user pool action authorized by the caller's access token. */
+async function callCognito(endpoint: string, doFetch: typeof fetch, action: string, body: Record<string, string>): Promise<CognitoReply> {
+  const response = await doFetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/x-amz-json-1.1", "x-amz-target": `AWSCognitoIdentityProviderService.${action}` },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  const parsed = (await response.json().catch(() => ({}))) as Record<string, unknown> | null;
+  const reply = parsed && typeof parsed === "object" ? parsed : {};
+  const type = typeof reply.__type === "string" ? (reply.__type.split("#").pop() ?? "") : "";
+  return { ok: response.ok, status: response.status, type, body: reply };
+}
+
+/** A revoked token (signed out elsewhere), or one without the admin scope. */
+const signInAgain = () => new ApiError(401, "unauthenticated", "Sign in again");
+
 /** GetUser against the pool that issued the token (`issuerUrl`). */
 export function cognitoUserInfo(issuerUrl: string, doFetch: typeof fetch = fetch): UserInfo {
-  if (!ISSUER.test(issuerUrl)) throw new Error("ISSUER_URL is not a Cognito user pool issuer");
-  const endpoint = `${new URL(issuerUrl).origin}/`;
+  const endpoint = poolEndpoint(issuerUrl);
   return async (accessToken: string) => {
-    const response = await doFetch(endpoint, {
-      method: "POST",
-      headers: { "content-type": "application/x-amz-json-1.1", "x-amz-target": "AWSCognitoIdentityProviderService.GetUser" },
-      body: JSON.stringify({ AccessToken: accessToken }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    const body = (await response.json().catch(() => ({}))) as { __type?: string; Username?: string; UserAttributes?: { Name?: string; Value?: string }[] };
-    if (!response.ok) {
-      // A revoked token (signed out elsewhere), or one without the admin scope
-      if (response.status === 400 && /NotAuthorized/.test(body.__type ?? "")) throw new ApiError(401, "unauthenticated", "Sign in again");
-      throw new Error(`GetUser failed: ${response.status} ${body.__type ?? ""}`);
+    const { ok, status, type, body } = await callCognito(endpoint, doFetch, "GetUser", { AccessToken: accessToken });
+    if (!ok) {
+      if (status === 400 && type === "NotAuthorizedException") throw signInAgain();
+      throw new Error(`GetUser failed: ${status} ${type}`);
     }
+    const { Username, UserAttributes } = body as { Username?: string; UserAttributes?: { Name?: string; Value?: string }[] };
     const attributes: Record<string, string | undefined> = Object.fromEntries(
-      (body.UserAttributes ?? []).filter((a) => typeof a.Name === "string" && typeof a.Value === "string").map((a) => [a.Name, a.Value]),
+      (Array.isArray(UserAttributes) ? UserAttributes : []).filter((a) => typeof a?.Name === "string" && typeof a.Value === "string").map((a) => [a.Name, a.Value]),
     );
     return {
       sub: attributes.sub ?? "",
       email: attributes.email,
-      emailVerified: emailVerifiedFrom(body.Username, attributes),
+      emailVerified: emailVerifiedFrom(Username, attributes),
     };
+  };
+}
+
+/** Emailing the caller a verification code for their address, and checking it. */
+export interface EmailCodes {
+  /** Cognito emails a new code to the caller's `email`. */
+  send(accessToken: string): Promise<void>;
+  /** Marks the caller's `email` verified if `code` is the one Cognito sent. */
+  verify(accessToken: string, code: string): Promise<void>;
+}
+
+/**
+ * Cognito's refusals the person can act on, as the API answers them. Cognito
+ * does the rate limiting: a few codes an hour, and a few wrong tries per code.
+ */
+const REFUSALS = new Map<string, () => ApiError>(Object.entries({
+  NotAuthorizedException: signInAgain,
+  CodeMismatchException: () => new ApiError(400, "bad_request", "That code isn't right", "code_mismatch"),
+  ExpiredCodeException: () => new ApiError(400, "bad_request", "That code has expired; send a new one", "code_expired"),
+  LimitExceededException: () => new ApiError(429, "quota_exceeded", "Too many attempts; try again later"),
+  TooManyRequestsException: () => new ApiError(429, "quota_exceeded", "Too many attempts; try again later"),
+  TooManyFailedAttemptsException: () => new ApiError(429, "quota_exceeded", "Too many attempts; try again later"),
+  AliasExistsException: () => new ApiError(409, "aborted", "Another account already uses this email address", "email_in_use"),
+  CodeDeliveryFailureException: () => new ApiError(503, "internal", "Couldn't send the code; try again"),
+}));
+
+/** GetUserAttributeVerificationCode and VerifyUserAttribute for `email`, against the pool that issued the token. */
+export function cognitoEmailCodes(issuerUrl: string, doFetch: typeof fetch = fetch): EmailCodes {
+  const endpoint = poolEndpoint(issuerUrl);
+  const call = async (action: string, body: Record<string, string>) => {
+    const { ok, status, type } = await callCognito(endpoint, doFetch, action, body);
+    if (ok) return;
+    const refusal = status === 400 ? REFUSALS.get(type) : undefined;
+    if (refusal) throw refusal();
+    // Only the status and the error's name: never the token, the code or Cognito's message
+    throw new Error(`${action} failed: ${status} ${type}`);
+  };
+  return {
+    send: (accessToken) => call("GetUserAttributeVerificationCode", { AccessToken: accessToken, AttributeName: "email" }),
+    verify: (accessToken, code) => call("VerifyUserAttribute", { AccessToken: accessToken, AttributeName: "email", Code: code }),
   };
 }
