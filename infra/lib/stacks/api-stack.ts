@@ -35,10 +35,12 @@ import {
   TEAM_SESSION_TAG,
 } from "../../../backend/src/api/routes.js";
 import {
+  COMMITTING_IMPORTS_PARTITION,
   COMP_ATTRIBUTES,
   GSI1,
   GSI2,
   GSI3,
+  IMPORT_INDEX_ATTRIBUTES,
   INVITE_LIMIT_ATTRIBUTES,
   INVITE_LIMIT_PREFIX,
   MEMBER_ROW_ATTRIBUTES,
@@ -47,6 +49,7 @@ import {
   OPS_OWNERS_PREFIX,
   OPS_TEAMS_PARTITION,
   OWNER_OPERATOR_AUDIT_ATTRIBUTES,
+  STUCK_IMPORT_ATTRIBUTES,
   tableName,
 } from "../../../backend/src/data/schema.js";
 import type { DeploymentConfig } from "../config.js";
@@ -446,6 +449,10 @@ export class ApiStack extends SupplyCheckoutStack {
    * - UpdateItem in the tagged team's partition, naming only COMP_ATTRIBUTES
    *   (dynamodb:Attributes) and returning at most those.
    * - PutItem and Query in OPAUDIT#* partitions, never update or delete.
+   * - Query GSI1's IMPORTS#COMMITTING partition for STUCK_IMPORT_ATTRIBUTES,
+   *   and UpdateItem in the tagged team's partition naming only its GSI1
+   *   keys (IMPORT_INDEX_ATTRIBUTES): listing stuck imports and taking one
+   *   out of the stuck-import check.
    */
   private addOps(config: DeploymentConfig, table: string, tableArn: string, tableKeyStatement: () => PolicyStatement) {
     const identity = identityOutputParameters(config.envName);
@@ -505,6 +512,37 @@ export class ApiStack extends SupplyCheckoutStack {
                   "dynamodb:Attributes": [...COMP_ATTRIBUTES],
                 },
                 StringEqualsIfExists: { "dynamodb:ReturnValues": ["NONE", "UPDATED_OLD", "UPDATED_NEW"] },
+              },
+            }),
+            // Stuck imports (docs/journeys.md, J2): list GSI1's committing-imports
+            // partition, naming only the keys and progress, as the scheduled
+            // check does; and take one out of it by removing its GSI1 keys,
+            // naming nothing else. The update's condition (GSI1PK is that
+            // partition) keeps it to an import job: IAM can't limit the sort key
+            new PolicyStatement({
+              sid: "StuckImportsListOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:Query"],
+              resources: [`${tableArn}/index/${GSI1}`],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [COMMITTING_IMPORTS_PARTITION],
+                  "dynamodb:Attributes": [...STUCK_IMPORT_ATTRIBUTES],
+                },
+                StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+              },
+            }),
+            new PolicyStatement({
+              sid: "StuckImportIndexKeysOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:UpdateItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [`TEAM#${tag}`],
+                  "dynamodb:Attributes": [...IMPORT_INDEX_ATTRIBUTES],
+                },
+                StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
               },
             }),
             new PolicyStatement({

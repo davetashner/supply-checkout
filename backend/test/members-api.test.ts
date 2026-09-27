@@ -54,7 +54,12 @@ beforeEach(() => {
     count: () => {},
     flush: () => {},
   } as unknown as Observability;
-  handler = createAccountHandler({ dbFor, userInfo: async () => Promise.reject(new Error("not used")), issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser: unusedDeleteUser, emailCodes: unusedEmailCodes, now: () => NOW });
+  // Leaving reads the caller's verified address from Cognito (their pending invites to it go too)
+  const userInfo = async (token: string) => {
+    const sub = token.replace(/^token-/, "");
+    return { sub, email: `${sub.slice(5)}@example.com`, emailVerified: true, emailVerifiedInCognito: true };
+  };
+  handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser: unusedDeleteUser, emailCodes: unusedEmailCodes, now: () => NOW });
 });
 
 function event(method: string, path: string, user: string, body?: unknown, rawBody?: string): DataEvent {
@@ -72,7 +77,7 @@ function event(method: string, path: string, user: string, body?: unknown, rawBo
     routeKey: route ? routeKey(route) : `${method} ${path}`,
     rawPath: path,
     rawQueryString: "",
-    headers: {},
+    headers: { authorization: `Bearer token-${user}` },
     pathParameters,
     body: rawBody ?? (body === undefined ? undefined : JSON.stringify(body)),
     isBase64Encoded: false,

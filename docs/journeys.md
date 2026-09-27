@@ -297,20 +297,15 @@ Every other alarm on this page waits for the resource or code it watches, and is
 
 **Imports stuck: what to do.** An import stops part-way when its Lambda times out or items keep changing under it, and the owner didn't press **Try again**. Nothing is lost: every row already committed is complete, and the plan for the rest is staged. Imports that no retry could finish (a row too large to save, or a planned key another item took) leave the check on their own when they stop: the owner was told which line and to choose the file again. So everything this alarm lists is something a retry would finish.
 
-1. Find the import in the check's logs: in Logs Insights on `/aws/lambda/supply-checkout-<env>-stuck-imports`, `filter message = "Import stuck"` gives each one's `teamId`, `importId`, `startedAt` and `committed` of `total` rows. They're IDs only; look up the team's owners from the team ID.
+1. List the stuck imports with the operator CLI ([Operators](infrastructure.md#operators)): `npm run ops -- stuck-imports` gives each one's team ID, import ID, start time and `committed` of `total` rows. They're IDs only; `npm run ops -- team <teamId>` shows the team's owners (and is audited). The check's own logs have the same: in Logs Insights on `/aws/lambda/supply-checkout-<env>-stuck-imports`, `filter message = "Import stuck"`.
 2. Tell an owner of the team that their import stopped part-way, and ask them to import the same file again. If the app still shows **Try again**, that carries on from the first row not committed. Otherwise, choosing the file again starts a new import that re-plans against the inventory as it is now, leaves the rows already imported unchanged and finishes the rest. We can't finish it for them: the job keeps the plan, not the file, and a retry must send the same file.
-3. If the owner finished it as a new import (or doesn't want it), take the old job out of the check so the alarm recovers. This leaves the job itself alone, so a retry of it still works until it expires:
+3. If the owner finished it as a new import (or doesn't want it), take the old job out of the check so the alarm recovers. This leaves the job itself alone, so a retry of it still works until it expires. It's audited (`ops.import.clear`), and the team's owners see it under support actions:
 
    ```bash
-   aws dynamodb update-item --profile supply-prod --region us-east-1 \
-     --table-name supply-checkout-prod-app \
-     --key '{"PK":{"S":"TEAM#<teamId>"},"SK":{"S":"IMPORT#<importId>"}}' \
-     --update-expression 'REMOVE GSI1PK, GSI1SK' \
-     --condition-expression '#s = :committing' \
-     --expression-attribute-names '{"#s":"status"}' \
-     --expression-attribute-values '{":committing":{"S":"committing"}}'
+   npm run ops -- clear-import <teamId> <importId> --reason "Owner re-imported the file"
    ```
 
+   It refuses an import that isn't stuck: one that finished, was cleared already, or started less than an hour ago.
    Job records expire after 7 days anyway, which also clears the alarm.
 4. If imports keep getting stuck, look at the data function's logs for the import route (`POST /teams/{teamId}/imports`): timeouts mean the batches need to be smaller or the function's timeout longer.
 

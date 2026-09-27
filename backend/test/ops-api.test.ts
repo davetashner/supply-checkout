@@ -458,3 +458,65 @@ describe("comps and entitlement", () => {
     expect(memberCap({ status: "trialing", compPlan: "free", compUntil: "2026-09-01T00:00:00.000Z" }, at)).toBe(MEMBERS_PER_TRIAL_TEAM);
   });
 });
+
+describe("stuck imports (supply-checkout-6uw.2)", () => {
+  const job = (teamId: string, importId: string, startedAt: string, extra: Record<string, unknown> = {}) =>
+    table.put({ PK: `TEAM#${teamId}`, SK: `IMPORT#${importId}`, GSI1PK: "IMPORTS#COMMITTING", GSI1SK: `${startedAt}#${importId}`, type: "import", status: "committing", committed: 49, total: 200, createdBy: OWNER, ...extra });
+
+  beforeEach(() => {
+    job(teamA, "imp-old", "2026-09-26T09:00:00.000Z");
+    job(teamB, "imp-new", "2026-09-26T11:30:00.000Z");
+  });
+
+  it("lists imports stuck more than an hour, with their keys and progress only", async () => {
+    const res = await call("GET", "/ops/imports");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ imports: [{ teamId: teamA, importId: "imp-old", startedAt: "2026-09-26T09:00:00.000Z", committed: 49, total: 200 }], stuckAfterMinutes: 60 });
+    expect(JSON.stringify(res.body)).not.toContain(OWNER);
+    expect(denied).toEqual([]);
+  });
+
+  it("clears one from the check with an audit entry, leaving the job itself alone", async () => {
+    table.requests.length = 0;
+    const res = await call("POST", `/ops/teams/${teamA}/imports/imp-old/clear`, { body: { reason: "Owner re-imported it" }, key: "clear-key-0001" });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ eventId: expect.any(String), replayed: false });
+    const item = table.get(`TEAM#${teamA}`, "IMPORT#imp-old") as Record<string, unknown>;
+    expect(item.GSI1PK).toBeUndefined();
+    expect(item.GSI1SK).toBeUndefined();
+    expect(item).toMatchObject({ status: "committing", committed: 49, total: 200 });
+    const [write] = table.requests.filter((r) => r.command === "TransactWriteCommand");
+    expect((write?.input.TransactItems as Record<string, unknown>[]).map((i) => Object.keys(i)[0])).toEqual(["Update", "Put", "Put"]);
+    expect(auditItems(teamA)).toEqual([expect.objectContaining({ action: "ops.import.clear", reason: "Owner re-imported it", before: { importId: "imp-old", committing: true }, after: { importId: "imp-old", committing: false } })]);
+    expect(tags).toContain(`${OPERATOR} ${teamA}`);
+    expect(denied).toEqual([]);
+    expect((await call("GET", "/ops/imports")).body.imports).toEqual([]);
+    // A retry replays; the owners see it
+    const again = await call("POST", `/ops/teams/${teamA}/imports/imp-old/clear`, { body: { reason: "Owner re-imported it" }, key: "clear-key-0001" });
+    expect(again.body).toEqual({ ...res.body, replayed: true });
+  });
+
+  it("refuses an import that's still running, finished, or isn't there, and anything that isn't an import", async () => {
+    const clear = (path: string, key: string) => call("POST", path, { body: { reason: "Clearing it" }, key });
+    expect((await clear(`/ops/teams/${teamB}/imports/imp-new/clear`, "clear-key-0002")).status).toBe(409);
+    expect(table.get(`TEAM#${teamB}`, "IMPORT#imp-new")?.GSI1PK).toBe("IMPORTS#COMMITTING");
+    job(teamA, "imp-done", "2026-09-26T08:00:00.000Z", { GSI1PK: undefined, GSI1SK: undefined, status: "done" });
+    expect((await clear(`/ops/teams/${teamA}/imports/imp-done/clear`, "clear-key-0003")).status).toBe(409);
+    expect((await clear(`/ops/teams/${teamA}/imports/nope/clear`, "clear-key-0004")).status).toBe(409);
+    expect(auditItems(teamA)).toEqual([]);
+    expect(auditItems(teamB)).toEqual([]);
+  });
+
+  it.each<[string, Record<string, unknown> | undefined, string | undefined]>([
+    ["no reason", {}, "clear-key-0005"],
+    ["an extra field", { reason: "Clearing it", GSI1PK: "x" }, "clear-key-0006"],
+    ["no Idempotency-Key", { reason: "Clearing it" }, undefined],
+  ])("refuses a clear with %s", async (_what, body, key) => {
+    expect((await call("POST", `/ops/teams/${teamA}/imports/imp-old/clear`, { body, key })).status).toBe(400);
+    expect(table.get(`TEAM#${teamA}`, "IMPORT#imp-old")?.GSI1PK).toBe("IMPORTS#COMMITTING");
+  });
+
+  it("refuses a bad import ID", async () => {
+    expect((await call("POST", `/ops/teams/${teamA}/imports/bad%20id/clear`, { body: { reason: "Clearing it" }, key: "clear-key-0007" })).status).toBe(400);
+  });
+});
