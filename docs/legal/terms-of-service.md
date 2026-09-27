@@ -99,7 +99,8 @@ If a payment fails, we email the owner and show a banner in the app. The team ke
 - **You own your data.** "Your data" means everything your team puts into the Service: inventory, sheets, client names, prices, receipt photos, and receipt results after you save them.
 - You give us permission to store, copy, process and display your data only as needed to run, secure, back up and support the Service for you, and as the Privacy Policy describes. We don't sell your data. We don't use it to train AI models.
 - **Export**: owners can export the team's data as CSV and JSON at any time, including during the 30-day read-only period after cancellation.
-- **Deletion**: owners can close the team and delete its data. Deleted data is removed from backups within [35] days.
+- **Deletion**: owners can close the team and delete its data. A closed team's data is deleted 30 days after it's closed. When a member deletes their own account, we delete it straight away; what they added to a team stays with the team.
+- **Backups**: we keep backups so we can recover from mistakes and outages. Deleted data stays in them for up to **90 days** after we delete it (up to 35 days in our main backups, and up to 90 days in a separate backup copy), then the backups holding it expire. We don't use backups for anything but recovery. If we ever restore from a backup, we delete again every account and team that was deleted after that backup was taken, so they don't come back.
 - You are responsible for having the right to put your data into the Service, including any information about your clients.
 - We may use anonymous, combined usage figures (for example, how many receipts are read each month in total) to run and improve the Service. These can't identify you, your team or your clients.
 
@@ -182,7 +183,7 @@ You will defend and indemnify us against third-party claims arising from your da
 7. **Unpaid accounts.** How long after the grace period before we cancel and delete data? This draft says 30 days.
 8. **Liability cap.** Is "12 months of fees or $100, whichever is greater" acceptable? Should we carry errors-and-omissions or cyber insurance to back it?
 9. **AI results.** Is the receipt-reading disclaimer (section 9) strong enough, given that results may end up on a client's bill?
-10. **Backup deletion window.** Confirm the 35-day figure against the backup design (bead `supply-checkout-8x1`).
+10. **Backup deletion window.** Section 8 matches the backup design as built (`docs/backups.md`): point-in-time recovery and daily backups keep 35 days, the copy in the separate backup account keeps 90, and a restore re-applies recorded account and team deletions. Is 90 days acceptable, and should the wording allow a few days' margin for AWS to remove an expired backup? The Privacy Policy, when written, must say the same.
 11. **Support response target.** Is 2 business days realistic for a small team?
 12. **Mobile apps.** Do the Apple and Google store terms require extra wording (for example, Apple's standard end-user license terms)?
 13. **Outside the US.** Do we block sign-ups from outside the US at launch, or add terms for other countries?
