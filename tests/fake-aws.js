@@ -35,8 +35,9 @@ export class FakeBackend {
   // members: { "<teamId>": [{ userId, email, role, joinedAt }] }, for the members screen
   // teamInvites: { "<teamId>": [{ id, email, role, createdAt, expiresAt, inviteStatus, failureReason, failedAt }] },
   // the invites its owners see there (invites is the signed-in user's own, for /me)
-  constructor({ teams = [TEAM], invites = [], members = {}, teamInvites = {}, user = USER, docs = {}, signedIn = true, claims = { given_name: "Pat", family_name: "Lee", email: USER.email }, config = CONFIG, expiresIn = 3600 } = {}) {
-    Object.assign(this, { teams: clone(teams), invites: clone(invites), members: clone(members), teamInvites: clone(teamInvites), user, signedIn, claims, config, expiresIn });
+  // supportActions: { "<teamId>": [{ eventId, ts, actor, action, reason, before, after }] }, newest first
+  constructor({ teams = [TEAM], invites = [], members = {}, teamInvites = {}, supportActions = {}, user = USER, docs = {}, signedIn = true, claims = { given_name: "Pat", family_name: "Lee", email: USER.email }, config = CONFIG, expiresIn = 3600 } = {}) {
+    Object.assign(this, { teams: clone(teams), invites: clone(invites), members: clone(members), teamInvites: clone(teamInvites), supportActions: clone(supportActions), user, signedIn, claims, config, expiresIn });
     // Invites for the user's address that /me lists once they verify it (the email routes)
     this.pendingInvites = [];
     // An address a provider rewrites the user's email to while a code is being sent: that
@@ -209,6 +210,9 @@ export class FakeBackend {
     m = path.match(/^\/teams\/([^/]+)\/reopen$/);
     if (m && method === "POST") return this.reopenTeam(decodeURIComponent(m[1]), call.body, err);
 
+    m = path.match(/^\/teams\/([^/]+)\/support-actions$/);
+    if (m) return this.support(decodeURIComponent(m[1]), call.query, err);
+
     m = path.match(/^\/teams\/([^/]+)\/members(?:\/([^/]+))?$/);
     if (m) return this.member(decodeURIComponent(m[1]), m[2] && decodeURIComponent(m[2]), method, call.body, err);
 
@@ -288,6 +292,16 @@ export class FakeBackend {
     return [200, { member: clone(target) }];
   }
 
+  // What support did to the team, as owners read it: a page of `limit`, and a cursor for the next
+  support(team, query, err) {
+    const mine = this.teams.find((t) => t.id === team);
+    if (!mine) return err(403, "permission_denied", "not_member");
+    if (mine.role !== "owner") return err(403, "permission_denied", "owners_only");
+    const all = this.supportActions[team] || [], from = Number(query.cursor || 0), limit = Number(query.limit || 100);
+    const actions = all.slice(from, from + limit);
+    return [200, from + limit < all.length ? { actions, cursor: String(from + limit) } : { actions }];
+  }
+
   // Closing a team as the API runs it: owners, typing its name (any case, spaces around);
   // closing it again returns it as it is
   closeTeam(team, body, err) {
@@ -298,7 +312,7 @@ export class FakeBackend {
     if (!mine.closedAt) {
       if (typed(body.name) !== typed(mine.name)) return err(400, "bad_request");
       const now = Date.now();
-      Object.assign(mine, { closedAt: new Date(now).toISOString(), deletesAt: new Date(now + 30 * 86400_000).toISOString() });
+      Object.assign(mine, { closedAt: new Date(now).toISOString(), deletesAt: new Date(now + 30 * 86400_000).toISOString(), reopenBy: new Date(now + 30 * 86400_000 - 3600_000).toISOString() });
       this.teamInvites[team] = [];
     }
     return [200, { team: clone(mine) }];
@@ -313,7 +327,7 @@ export class FakeBackend {
     const typed = (v) => String(v).normalize("NFKC").trim().toLowerCase();
     if (mine.closedAt) {
       if (typed(body.name) !== typed(mine.name)) return err(400, "bad_request");
-      Object.assign(mine, { closedAt: null, deletesAt: null });
+      Object.assign(mine, { closedAt: null, deletesAt: null, reopenBy: null });
     }
     return [200, { team: clone(mine) }];
   }
