@@ -6,8 +6,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { type Db, ENDED_STATUSES, hasEnded, InvalidInputError, liveUpdateRecipients } from "../src/data/index.js";
 import { LIVE_AUDIENCE_ATTRIBUTES } from "../src/data/schema.js";
-import { createAudience } from "../src/realtime/audience.js";
-import { AUDIENCE_TTL_MS } from "../src/realtime/channels.js";
+import { AudienceReadTimeout, createAudience } from "../src/realtime/audience.js";
+import { AUDIENCE_READ_TIMEOUT_MS, AUDIENCE_TTL_MS } from "../src/realtime/channels.js";
 import { fakeDb } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
@@ -179,6 +179,43 @@ describe("the consumer's audience cache", () => {
     await a.recipients(OTHER);
     await a.recipients(TEAM);
     expect(reads).toEqual([TEAM, OTHER, TEAM]);
+  });
+
+  it("gives up on a read that takes longer than AUDIENCE_READ_TIMEOUT_MS, aborting it, and doesn't keep it", async () => {
+    expect(AUDIENCE_READ_TIMEOUT_MS).toBeLessThanOrEqual(2_000);
+    let signal: AbortSignal | undefined;
+    let hang = true;
+    const a = createAudience({
+      db,
+      now: () => clock,
+      readTimeoutMs: 20,
+      read: async (_, teamId, _now, s) => {
+        reads.push(teamId);
+        signal = s;
+        return hang ? new Promise<string[]>(() => {}) : ["u1"];
+      },
+    });
+    await expect(a.recipients(TEAM)).rejects.toBeInstanceOf(AudienceReadTimeout);
+    expect(signal?.aborted).toBe(true);
+    hang = false;
+    expect(await a.recipients(TEAM)).toEqual(["u1"]);
+    expect(signal?.aborted).toBe(false);
+    expect(reads).toEqual([TEAM, TEAM]);
+  });
+
+  it("passes the abort signal to every DynamoDB request of the read", async () => {
+    const table = new MemoryTable();
+    table.seedTeam(TEAM, { u9: "viewer" });
+    const inner = table.db();
+    const signals: unknown[] = [];
+    const { connection } = await import("../src/data/client.js");
+    const watched = fakeDb(async (command, options) => {
+      signals.push((options as { abortSignal?: unknown } | undefined)?.abortSignal);
+      return connection(inner).doc.send(command as never);
+    });
+    const controller = new AbortController();
+    expect(await liveUpdateRecipients(watched, TEAM, new Date(), controller.signal)).toEqual(["u9"]);
+    expect(signals).toEqual([controller.signal, controller.signal]);
   });
 
   it("defaults to the data module's read, the real clock and the TTL", async () => {

@@ -92,8 +92,35 @@ export const PUBLISH_BUDGET_MS = 5_000;
 /** One publish request's timeout, in milliseconds. A publish normally takes about 30 ms. */
 export const PUBLISH_TIMEOUT_MS = 3_000;
 
+/**
+ * How long the consumer waits for one read of a team's members (a GetItem and
+ * a Query) before giving up and retrying the team's records later. It reads
+ * before each chunk (usually from its cache), so a chunk takes at most this
+ * plus PUBLISH_TIMEOUT_MS, and the batch's first chunk, which starts at once,
+ * ends well inside CONSUMER_TIMEOUT_SECONDS whatever DynamoDB does (a test
+ * checks). A read started after PUBLISH_BUDGET_MS publishes nothing.
+ */
+export const AUDIENCE_READ_TIMEOUT_MS = 2_000;
+
+/**
+ * One DynamoDB request's timeout in the consumer, in milliseconds. A strongly
+ * consistent GetItem or a one-page Query normally takes a few milliseconds;
+ * this ends a hung request so the SDK's retry can go inside
+ * AUDIENCE_READ_TIMEOUT_MS.
+ */
+export const CONSUMER_DB_REQUEST_TIMEOUT_MS = 1_000;
+
 /** The consumer function's timeout. PUBLISH_BUDGET_MS + PUBLISH_TIMEOUT_MS must fit well inside it (a test checks). */
 export const CONSUMER_TIMEOUT_SECONDS = 10;
+
+/**
+ * A batch with more than this many changes to one team's collection (a CSV
+ * import, say) publishes one CollectionEvent for them instead of an event per
+ * document, so a 200-row import costs each member a few publishes, not 200.
+ * The same as the web app's BURST_FETCHES (src/aws/db.js): past that many
+ * changes a client re-lists the collection anyway.
+ */
+export const COLLECTION_EVENT_AFTER = 10;
 
 /** The change event's format version. A client ignores events with a version it doesn't know. */
 export const CHANGE_EVENT_FORMAT = 1;
@@ -133,6 +160,40 @@ export interface ChangeEvent {
 
 /** Every field a ChangeEvent may have. Tests check that nothing else, least of all document data, goes out. */
 export const CHANGE_EVENT_FIELDS: readonly (keyof ChangeEvent)[] = ["v", "teamId", "eventId", "collection", "id", "op", "version", "at"];
+
+/**
+ * The collection event's format version. A different `v` from ChangeEvent's,
+ * so a client that knows only `v: 1` ignores it (docs/api/realtime.md,
+ * "Deploying"), rather than reading it as a change to a document.
+ */
+export const COLLECTION_EVENT_FORMAT = 2;
+
+/**
+ * Many documents in one collection changed (more than COLLECTION_EVENT_AFTER
+ * in one batch): re-list the collection. Published to `/users/<userId>` for
+ * each current member of the team, in place of the ChangeEvents it stands
+ * for. Like a ChangeEvent it carries nothing from the documents, not even
+ * their IDs.
+ */
+export interface CollectionEvent {
+  readonly v: typeof COLLECTION_EVENT_FORMAT;
+  readonly teamId: string;
+  /**
+   * `<first record's ID>~<last record's ID>`: the stream records it stands
+   * for. A retried batch publishes it again with the same ID if it stands for
+   * the same records, and with another if the retry starts part way through.
+   */
+  readonly eventId: string;
+  readonly collection: "products" | "sheets";
+  readonly op: "list";
+  /** How many changes it stands for. */
+  readonly changes: number;
+  /** When the stream saw the last of them, epoch milliseconds (to the second). */
+  readonly at?: number;
+}
+
+/** Every field a CollectionEvent may have. */
+export const COLLECTION_EVENT_FIELDS: readonly (keyof CollectionEvent)[] = ["v", "teamId", "eventId", "collection", "op", "changes", "at"];
 
 /** AppSync Events takes at most 5 events per publish request. */
 export const EVENTS_PER_PUBLISH = 5;

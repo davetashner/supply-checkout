@@ -1,18 +1,22 @@
 // The DynamoDB stream consumer: which records become change events, what the
 // events look like, who they go to, and how failed publishes are retried.
 
+import { readFileSync } from "node:fs";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import type { DynamoDBRecord } from "aws-lambda";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { audienceChangeFromStream, documentChangeFromStream } from "../src/data/index.js";
 import { keys, prefixes } from "../src/data/keys.js";
-import type { Observability } from "../src/observability/index.js";
+import { createObservability, type Observability, withObservability } from "../src/observability/index.js";
 import type { Audience } from "../src/realtime/audience.js";
 import { MEMBERS_PER_TEAM } from "../src/data/index.js";
 import {
   AUDIENCE_SK,
+  AUDIENCE_READ_TIMEOUT_MS,
   CHANGE_EVENT_FIELDS,
   type ChangeEvent,
+  COLLECTION_EVENT_AFTER,
+  COLLECTION_EVENT_FIELDS,
   CONSUMER_TIMEOUT_SECONDS,
   DOCUMENT_SK_PREFIXES,
   EVENTS_PER_PUBLISH,
@@ -168,6 +172,11 @@ describe("audienceChangeFromStream", () => {
 });
 
 describe("channels", () => {
+  it("sends a collection event past the web app's own burst limit (BURST_FETCHES in src/aws/db.js)", () => {
+    const db = readFileSync(new URL("../../src/aws/db.js", import.meta.url), "utf8");
+    expect(db).toMatch(new RegExp(`\\bBURST_FETCHES = ${COLLECTION_EVENT_AFTER}\\b`));
+  });
+
   it("filters the stream on the document and audience keys the data module uses", () => {
     expect([...DOCUMENT_SK_PREFIXES]).toEqual([prefixes.product, prefixes.sheet]);
     expect(AUDIENCE_SK).toEqual({ exact: keys.team(TEAM).SK, prefix: prefixes.member });
@@ -267,7 +276,9 @@ describe("the stream handler", () => {
     published.push({ channel, events: events.filter((_, i) => result.successful.includes(i)).map((e) => JSON.parse(e) as ChangeEvent) });
     return result;
   };
-  const run = (records: DynamoDBRecord[], concurrency?: number) => createPublisherHandler({ publish, audience, obs: fakeObservability(), concurrency })({ Records: records });
+  // An event per document, however many: collection events have their own tests below
+  const run = (records: DynamoDBRecord[], concurrency?: number) =>
+    createPublisherHandler({ publish, audience, obs: fakeObservability(), concurrency, collectionEventAfter: Infinity })({ Records: records });
   const byChannel = () => {
     const out: Record<string, string[]> = {};
     for (const p of published) (out[p.channel] ??= []).push(...p.events.map((e) => `${e.op} ${e.id}`));
@@ -461,7 +472,7 @@ describe("the stream handler", () => {
   describe("publish budget", () => {
     const products = (team: string, n: number, from = 0) => Array.from({ length: n }, (_, i) => record("INSERT", product(team, `p${from + i}`), { new: productItem(`p${from + i}`, 1) }));
     const handler = (options: { maxPublishes?: number; budgetMs?: number; now?: () => number; concurrency?: number; audience?: Audience }) =>
-      createPublisherHandler({ publish, audience: options.audience ?? audience, obs: fakeObservability(), ...options });
+      createPublisherHandler({ publish, audience: options.audience ?? audience, obs: fakeObservability(), collectionEventAfter: Infinity, ...options });
 
     it("stops after its most publishes, reports the earliest unfinished record, and doesn't count it as a failure", async () => {
       // 12 changes, 3 chunks, 2 members: 6 publishes; the budget allows 3
@@ -571,5 +582,203 @@ describe("the stream handler", () => {
       expect(await handler({})({ Records: records })).toEqual({ batchItemFailures: [] });
       expect(published).toHaveLength(STREAM_BATCH_SIZE * MEMBERS_PER_TEAM);
     });
+  });
+
+  describe("collection events", () => {
+    const products = (team: string, n: number, from = 0) => Array.from({ length: n }, (_, i) => record("INSERT", product(team, `p${from + i}`), { new: productItem(`p${from + i}`, 1, { name: "Secret supplier" }) }));
+    const handler = (options: { collectionEventAfter?: number; maxPublishes?: number; concurrency?: number } = {}) =>
+      createPublisherHandler({ publish, audience, obs: fakeObservability(), ...options });
+    const events = (channel: string) => published.filter((p) => p.channel === channel).flatMap((p) => p.events as unknown as Record<string, unknown>[]);
+
+    it("publishes one 'list' event for more than COLLECTION_EVENT_AFTER changes to one team's collection, naming no document", async () => {
+      const imported = products(TEAM, COLLECTION_EVENT_AFTER + 2);
+      const records = [
+        ...imported.slice(0, 3),
+        record("MODIFY", sheet(TEAM, "s1"), { old: sheetItem("s1", 1), new: sheetItem("s1", 2) }),
+        ...imported.slice(3),
+        record("INSERT", product(TEAM_B, "b"), { new: productItem("b", 1) }),
+      ];
+      expect(await handler()({ Records: records })).toEqual({ batchItemFailures: [] });
+      const list = events(`/users/${A1}`);
+      // In the first import record's place, ahead of the sheet change that came after it
+      expect(list).toEqual([
+        { v: 2, teamId: TEAM, eventId: `${imported[0]?.eventID}~${imported.at(-1)?.eventID}`, collection: "products", op: "list", changes: imported.length, at: AT * 1000 },
+        { v: 1, teamId: TEAM, eventId: records[3]?.eventID, collection: "sheets", id: "s1", op: "put", version: 2, at: AT * 1000 },
+      ]);
+      expect(events(`/users/${A2}`)).toEqual(list);
+      // Another team's single change is a document event as ever
+      expect(events(`/users/${B1}`)).toMatchObject([{ v: 1, id: "b", op: "put" }]);
+      // One request per member for the team, not three
+      expect(published).toHaveLength(3);
+      const text = JSON.stringify(list[0]);
+      expect(Object.keys(list[0] as object).every((k) => (COLLECTION_EVENT_FIELDS as readonly string[]).includes(k))).toBe(true);
+      expect(text).not.toMatch(/Secret|"p\d|id"/);
+      expect(counts).toEqual({ LiveUpdates: records.length });
+      expect(logs.at(-1)).toMatchObject({ message: "Batch", fields: { events: records.length, collectionEvents: 1, publishes: 3, sent: records.length, failed: 0, deferred: 0 } });
+    });
+
+    it("sends document events for COLLECTION_EVENT_AFTER changes or fewer, counting each collection on its own", async () => {
+      members[TEAM] = [A1];
+      const records = [
+        ...products(TEAM, COLLECTION_EVENT_AFTER),
+        ...Array.from({ length: COLLECTION_EVENT_AFTER }, (_, i) => record("INSERT", sheet(TEAM, `s${i}`), { new: sheetItem(`s${i}`, 1) })),
+      ];
+      await handler()({ Records: records });
+      const list = events(`/users/${A1}`);
+      expect(list).toHaveLength(2 * COLLECTION_EVENT_AFTER);
+      expect(list.every((e) => e.v === 1)).toBe(true);
+      expect(logs.at(-1)?.fields.collectionEvents).toBe(0);
+    });
+
+    it("is the same event on a retry of the same records, and a new one when the retry starts part way", async () => {
+      members[TEAM] = [A1];
+      const records = products(TEAM, 4);
+      await handler({ collectionEventAfter: 2 })({ Records: records });
+      await handler({ collectionEventAfter: 2 })({ Records: records });
+      await handler({ collectionEventAfter: 2 })({ Records: records.slice(1) });
+      const ids = events(`/users/${A1}`).map((e) => e.eventId);
+      expect(ids[0]).toBe(ids[1]);
+      expect(ids[2]).not.toBe(ids[0]);
+      // Without stream times, it has none either
+      published = [];
+      const bare = records.map((r) => ({ ...r, dynamodb: { ...r.dynamodb, ApproximateCreationDateTime: undefined } }));
+      await handler({ collectionEventAfter: 2 })({ Records: bare });
+      expect(events(`/users/${A1}`)[0]).not.toHaveProperty("at");
+    });
+
+    it("retries from its first record when it doesn't reach every member, counting every change it stands for", async () => {
+      const records = [record("INSERT", sheet(TEAM, "s1"), { new: sheetItem("s1", 1) }), ...products(TEAM, 5)];
+      // Both events are in one chunk: the sheet reached A2, the collection event didn't
+      answer = async (channel, evs) => (channel === `/users/${A2}` ? { successful: [0], failed: [{ index: 1, code: "BadRequest" }] } : all(evs));
+      const result = await handler({ collectionEventAfter: 3 })({ Records: records });
+      expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: records[1]?.dynamodb?.SequenceNumber }] });
+      expect(counts).toEqual({ LiveUpdates: 6, LiveUpdateFailures: 5 });
+      expect(logs.at(-1)).toMatchObject({ message: "Batch", fields: { sent: 1, failed: 5 } });
+    });
+
+    it("goes as the batch's first chunk when it holds the batch's first record, so the shard moves on", async () => {
+      let clock = 0;
+      answer = async (_, evs) => {
+        clock += 600;
+        return all(evs);
+      };
+      members[TEAM] = Array.from({ length: MEMBERS_PER_TEAM }, (_, i) => `m${i}`);
+      const records = [...products(TEAM, STREAM_BATCH_SIZE - 1), record("INSERT", sheet(TEAM, "s1"), { new: sheetItem("s1", 1) })];
+      const result = await createPublisherHandler({ publish, audience, obs: fakeObservability(), budgetMs: 1_000, now: () => clock, concurrency: 1 })({ Records: records });
+      // The collection event and the sheet were one chunk, which went to all 100 members outside the budget
+      expect(result).toEqual({ batchItemFailures: [] });
+      expect(published).toHaveLength(MEMBERS_PER_TEAM);
+      expect(counts).toEqual({ LiveUpdates: STREAM_BATCH_SIZE });
+    });
+
+    it("defers the changes it stands for when the budget stops before it", async () => {
+      members[TEAM_C] = ["c0"];
+      const records = [record("INSERT", product(TEAM_C, "c"), { new: productItem("c", 1) }), ...products(TEAM, 4, 1)];
+      const result = await handler({ collectionEventAfter: 2, maxPublishes: 1, concurrency: 1 })({ Records: records });
+      expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: records[1]?.dynamodb?.SequenceNumber }] });
+      expect(counts).toEqual({ LiveUpdates: 5, LiveUpdatesDeferred: 4 });
+    });
+  });
+
+  describe("members read before each chunk", () => {
+    const products = (n: number) => Array.from({ length: n }, (_, i) => record("INSERT", product(TEAM, `p${i}`), { new: productItem(`p${i}`, 1) }));
+
+    it("stops publishing to a member the Audience drops part way through a team's events", async () => {
+      const reads: string[] = [];
+      let calls = 0;
+      const shrinking: Audience = {
+        recipients: async (teamId) => {
+          reads.push(teamId);
+          // A2 is removed while the first chunk goes out, and the cache has moved on
+          return ++calls === 1 ? [A1, A2, "bad_id"] : [A1, "bad_id"];
+        },
+        forget: () => {},
+      };
+      const records = products(12);
+      const result = await createPublisherHandler({ publish, audience: shrinking, obs: fakeObservability(), collectionEventAfter: Infinity })({ Records: records });
+      expect(result).toEqual({ batchItemFailures: [] });
+      expect(reads).toEqual([TEAM, TEAM, TEAM]);
+      expect(byChannel()).toEqual({ [`/users/${A1}`]: records.map((_, i) => `put p${i}`), [`/users/${A2}`]: records.slice(0, 5).map((_, i) => `put p${i}`) });
+      // A bad user ID is warned about once per team, not per chunk
+      expect(logs.filter((l) => l.level === "warn")).toHaveLength(1);
+    });
+
+    it("retries from the chunk whose members couldn't be read, keeping what went out before it", async () => {
+      let calls = 0;
+      const failing: Audience = {
+        recipients: async () => {
+          if (++calls === 2) throw new Error("DynamoDB down");
+          return [A1];
+        },
+        forget: () => {},
+      };
+      const records = products(7);
+      const result = await createPublisherHandler({ publish, audience: failing, obs: fakeObservability(), collectionEventAfter: Infinity })({ Records: records });
+      expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: records[5]?.dynamodb?.SequenceNumber }] });
+      expect(counts).toEqual({ LiveUpdates: 7, LiveUpdateFailures: 2 });
+      expect(logs.at(-1)).toMatchObject({ message: "Batch", fields: { sent: 5, failed: 2 } });
+    });
+
+    it("keeps a read and the first chunk's publish inside the function's timeout", () => {
+      expect(AUDIENCE_READ_TIMEOUT_MS + PUBLISH_TIMEOUT_MS).toBeLessThanOrEqual(CONSUMER_TIMEOUT_SECONDS * 1000 - 1_000);
+      // A read that starts just before the budget ends publishes nothing after it
+      expect(PUBLISH_BUDGET_MS + Math.max(AUDIENCE_READ_TIMEOUT_MS, PUBLISH_TIMEOUT_MS)).toBeLessThanOrEqual(CONSUMER_TIMEOUT_SECONDS * 1000 - 1_000);
+    });
+  });
+});
+
+describe("the consumer's logs", () => {
+  // Stream images carry whole items: a MEMBER item's email and name, a sheet's client and lines.
+  // The consumer may read them to find the change, and must never write them out.
+  const EMAIL = "crew.member@example.com";
+  let out: string[];
+  beforeEach(() => {
+    out = [];
+    const capture = (chunk: string | Uint8Array) => {
+      out.push(String(chunk));
+      return true;
+    };
+    vi.spyOn(process.stdout, "write").mockImplementation(capture);
+    vi.spyOn(process.stderr, "write").mockImplementation(capture);
+    vi.spyOn(console, "log").mockImplementation((...a) => void out.push(a.join(" ")));
+    vi.spyOn(console, "info").mockImplementation((...a) => void out.push(a.join(" ")));
+    vi.spyOn(console, "warn").mockImplementation((...a) => void out.push(a.join(" ")));
+    vi.spyOn(console, "error").mockImplementation((...a) => void out.push(a.join(" ")));
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const records = () => [
+    record("INSERT", { PK: `TEAM#${TEAM}`, SK: `MEMBER#${A2}` }, { new: { userId: A2, role: "viewer", email: EMAIL, name: "Pat Secretname" } }),
+    record("MODIFY", sheet(TEAM, "s1"), { old: sheetItem("s1", 1, { client: "Secret client" }), new: sheetItem("s1", 2, { client: "Secret client" }) }),
+    ...Array.from({ length: COLLECTION_EVENT_AFTER + 1 }, (_, i) => record("INSERT", product(TEAM, `k${i}`), { new: productItem(`k${i}`, 1, { name: "Secret supplier" }) })),
+    record("REMOVE", product(TEAM_B, "gone"), { old: productItem("gone", 3, { name: "Secret supplier" }) }),
+  ];
+  const context = { awsRequestId: "req-1", functionName: "supply-checkout-prod-live-updates" } as never;
+
+  it("never writes a stream record, an image or an event, whatever happens", async () => {
+    const obs = createObservability({ service: "live-updates", env: { AWS_REGION: REGION, SUPPLY_CHECKOUT_ENV: "prod" } });
+    const cases: { publish: Publish; audience: Audience; maxPublishes?: number }[] = [
+      // Everything goes out
+      { publish: async (_, e) => ({ successful: e.map((_, i) => i), failed: [] }), audience: { recipients: async () => [A1, A2, "bad_id"], forget: () => {} } },
+      // AppSync refuses, or the request fails
+      { publish: async () => ({ successful: [], failed: [{ index: 0, code: "BadRequest", message: "no" }] }), audience: { recipients: async () => [A1], forget: () => {} } },
+      { publish: async () => Promise.reject(new Error("HTTP 500")), audience: { recipients: async () => [A1], forget: () => {} } },
+      // The members can't be read, or the budget runs out
+      { publish: async (_, e) => ({ successful: e.map((_, i) => i), failed: [] }), audience: { recipients: async () => Promise.reject(new Error("timed out")), forget: () => {} } },
+      { publish: async (_, e) => ({ successful: e.map((_, i) => i), failed: [] }), audience: { recipients: async () => [A1], forget: () => {} }, maxPublishes: 0 },
+      // Something throws out of the handler
+      { publish: async (_, e) => ({ successful: e.map((_, i) => i), failed: [] }), audience: { recipients: async () => [A1], forget: () => { throw new Error("cache broke"); } } },
+    ];
+    for (const c of cases) {
+      const handler = withObservability(obs, createPublisherHandler({ ...c, obs }));
+      await handler({ Records: records() }, context).catch(() => undefined);
+    }
+    const text = out.join("\n");
+    // It did log (so the test would see a leak)
+    expect(text).toContain('"Batch"');
+    expect(text).toContain("Unhandled error");
+    for (const leak of [EMAIL, "Secretname", "Secret client", "Secret supplier", "NewImage", "OldImage", "SequenceNumber", '"eventID"', '"op":', "event-"]) {
+      expect(text).not.toContain(leak);
+    }
   });
 });

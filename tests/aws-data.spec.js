@@ -680,6 +680,61 @@ test.describe("live updates", () => {
     expect(lists(backend)).toEqual({ products: 4, sheets: 2 });
   });
 
+  test("a collection event from the consumer re-lists at once, in place of a burst being held", async ({ page }) => {
+    const backend = await open(page);
+    const productGets = () => backend.requests("GET", /^\/teams\/t1\/products\/./).length;
+    // An import the consumer sent as one event: no document named, so re-list
+    for (let i = 0; i < 12; i++) backend.write("t1", "products", `IMP${i}`, { name: `Imported ${i}`, price: 1, stock: i });
+    await emit(page, { v: 2, eventId: "i1~i12", collection: "products", op: "list", changes: 12, at: Date.now() });
+    await expect.poll(() => lists(backend).products).toBe(3);
+    await page.getByRole("button", { name: "Inventory" }).click();
+    await expect(page.locator("#main tbody tr", { hasText: "Imported 11" })).toBeVisible();
+    expect(productGets()).toBe(0);
+    // The re-list used up the second's fetches, so more events are held for a re-list when they go quiet.
+    // A collection event meanwhile re-lists at once, and there's no second re-list when they do
+    await page.evaluate((evs) => evs.forEach((e) => window.__sockets.at(-1).event(e)),
+      Array.from({ length: 3 }, (_, i) => ({ v: 1, teamId: "t1", collection: "products", id: `IMP${i}`, op: "put", version: 9 })));
+    await emit(page, { v: 2, eventId: "i13~i30", collection: "products", op: "list", changes: 18 });
+    await expect.poll(() => lists(backend).products).toBe(4);
+    await page.waitForTimeout(500);
+    expect(lists(backend)).toEqual({ products: 4, sheets: 2 });
+    expect(productGets()).toBe(0);
+    // A v 2 event that isn't a re-list, or for another team, is ignored
+    await emit(page, { v: 2, eventId: "odd", collection: "products", op: "put", id: "IMP1" });
+    await emit(page, { v: 2, teamId: "t2", eventId: "other", collection: "products", op: "list", changes: 20 });
+    await page.waitForTimeout(100);
+    expect(lists(backend)).toEqual({ products: 4, sheets: 2 });
+  });
+
+  test("an event sent again by a retried batch is applied once", async ({ page }) => {
+    const backend = await open(page);
+    const gets = () => backend.requests("GET", "/teams/t1/sheets/s9").length;
+    let v = backend.write("t1", "sheets", "s9", { client: "Retry job", date: "2026-09-26", status: "open", items: {} });
+    await emit(page, { v: 1, eventId: "x1", collection: "sheets", id: "s9", op: "put", version: v });
+    await expect(card(page, "Retry job")).toBeVisible();
+    // The same event again, even naming a newer version: already seen
+    v = backend.write("t1", "sheets", "s9", { client: "Retry job 2", date: "2026-09-26", status: "open", items: {} });
+    await emit(page, { v: 1, eventId: "x1", collection: "sheets", id: "s9", op: "put", version: v });
+    // An event without an ID always goes through
+    await emit(page, { v: 1, eventId: "", collection: "sheets", id: "s9", op: "put", version: v });
+    await expect(card(page, "Retry job 2")).toBeVisible();
+    expect(gets()).toBe(2);
+    // Only the last 500 IDs are remembered
+    await page.evaluate(() => { for (let i = 0; i < 500; i++) window.__sockets.at(-1).event({ v: 1, teamId: "t2", eventId: `other-${i}`, collection: "sheets", id: "z", op: "put", version: 1 }); });
+    v = backend.write("t1", "sheets", "s9", { client: "Retry job 3", date: "2026-09-26", status: "open", items: {} });
+    await emit(page, { v: 1, eventId: "x1", collection: "sheets", id: "s9", op: "put", version: v });
+    await expect(card(page, "Retry job 3")).toBeVisible();
+    expect(gets()).toBe(3);
+    // A collection event already seen doesn't re-list again
+    await emit(page, { v: 2, eventId: "a~b", collection: "sheets", op: "list", changes: 11 });
+    await expect.poll(() => lists(backend).sheets).toBe(3);
+    await emit(page, { v: 2, eventId: "a~b", collection: "sheets", op: "list", changes: 11 });
+    await emit(page, { v: 2, eventId: "c~d", collection: "sheets", op: "list", changes: 11 });
+    await expect.poll(() => lists(backend).sheets).toBe(4);
+    await page.waitForTimeout(200);
+    expect(lists(backend).sheets).toBe(4);
+  });
+
   test("a re-list keeps changes that arrive while it's being read", async ({ page }) => {
     const backend = await open(page, new FakeBackend({ docs: { ...seeded(), "t1/sheets/old": { client: "Old job", date: "2026-09-01", status: "open", items: {} } } }));
     const before = lists(backend);
