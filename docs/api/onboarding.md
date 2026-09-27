@@ -125,7 +125,7 @@ message and point owners at revoking an invite or removing a member. See
   start again; `closedAt` and `deletesAt` go back to `null`. Invites deleted
   at closing stay deleted, and people who left or were removed while it was
   closed stay out: owners invite them again. Every owner is emailed (best
-  effort). Within an hour of `deletesAt`, or once the purge has started on
+  effort). After `reopenBy` (an hour before `deletesAt`), or once the purge has started on
   it, it's refused with 409 `aborted`, `reason: "team_deleting"`. Reopening
   an open team returns it as it is. A team can be reopened 3 times a UTC day
   (429 `quota_exceeded` after that). The web app offers it to owners in the
