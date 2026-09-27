@@ -5,6 +5,14 @@ export class ForbiddenError extends Error {
   override readonly name = "ForbiddenError";
 }
 
+/**
+ * The team was closed (closeTeam): it's read-only until the purge deletes it.
+ * (403, reason `team_closed`)
+ */
+export class TeamClosedError extends Error {
+  override readonly name = "TeamClosedError";
+}
+
 /** A version check or an existence check failed: someone else changed it first. (409) */
 export class ConflictError extends Error {
   override readonly name: string = "ConflictError";

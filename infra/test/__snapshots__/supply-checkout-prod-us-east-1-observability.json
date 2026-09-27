@@ -2135,7 +2135,7 @@
     "OpsChecksStuckImportsScheduleE9CBFAA2": {
       "Type": "AWS::Events::Rule",
       "Properties": {
-        "Description": "Runs the stuck-imports check every 10 minutes",
+        "Description": "Runs the stuck-imports function every 10 minutes",
         "ScheduleExpression": "rate(10 minutes)",
         "State": "ENABLED",
         "Tags": [
@@ -2394,7 +2394,7 @@
     "OpsChecksEmailQuotaScheduleF379C4B1": {
       "Type": "AWS::Events::Rule",
       "Properties": {
-        "Description": "Runs the email-quota check every 10 minutes",
+        "Description": "Runs the email-quota function every 10 minutes",
         "ScheduleExpression": "rate(10 minutes)",
         "State": "ENABLED",
         "Tags": [
@@ -2449,6 +2449,421 @@
         "SourceArn": {
           "Fn::GetAtt": [
             "OpsChecksEmailQuotaScheduleF379C4B1",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "OpsChecksTeamPurgeLogs4D3E987A": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "OpsChecksTeamPurgeRole75FDFC86": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the team-purge check",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "OpsChecksTeamPurgeRoleDefaultPolicy425FFFE7": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "OpsChecksTeamPurgeLogs4D3E987A",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "dynamodb:Query",
+              "Condition": {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [
+                    "TEAMS#CLOSED"
+                  ],
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "GSI1PK",
+                    "GSI1SK",
+                    "closedAt",
+                    "purgeAfter",
+                    "stripeCustomerId",
+                    "teamId"
+                  ]
+                },
+                "StringEquals": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app/index/GSI1"
+                  ]
+                ]
+              },
+              "Sid": "ClosedTeamsIndexOnly"
+            },
+            {
+              "Action": "dynamodb:Query",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "TEAM#*",
+                    "USER#*",
+                    "STRIPE#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "GSI1PK",
+                    "GSI1SK",
+                    "closedAt",
+                    "purgeAfter",
+                    "stripeCustomerId",
+                    "teamId"
+                  ]
+                },
+                "StringEquals": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "ListClosedTeamKeys"
+            },
+            {
+              "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:DeleteItem"
+              ],
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "TEAM#*",
+                    "USER#*",
+                    "STRIPE#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "GSI1PK",
+                    "GSI1SK",
+                    "closedAt",
+                    "purgeAfter",
+                    "stripeCustomerId",
+                    "teamId"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "dynamodb:ReturnValues": "NONE"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "DeleteClosedTeamItems"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "dynamodb.",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ".amazonaws.com"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "Sid": "TableKeyThroughDynamoDb"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OpsChecksTeamPurgeRoleDefaultPolicy425FFFE7",
+        "Roles": [
+          {
+            "Ref": "OpsChecksTeamPurgeRole75FDFC86"
+          }
+        ]
+      }
+    },
+    "OpsChecksTeamPurge5DED7A8D": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "Deletes closed teams once their 30-day read-only period ends",
+        "Environment": {
+          "Variables": {
+            "NODE_OPTIONS": "--enable-source-maps",
+            "TABLE_NAME": "supply-checkout-prod-app",
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "SUPPLY_CHECKOUT_ENV": "prod"
+          }
+        },
+        "FunctionName": "supply-checkout-prod-team-purge",
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "OpsChecksTeamPurgeLogs4D3E987A"
+          }
+        },
+        "MemorySize": 256,
+        "Role": {
+          "Fn::GetAtt": [
+            "OpsChecksTeamPurgeRole75FDFC86",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 300,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "OpsChecksTeamPurgeRoleDefaultPolicy425FFFE7",
+        "OpsChecksTeamPurgeRole75FDFC86"
+      ]
+    },
+    "OpsChecksTeamPurgeXRayWrite406D5494": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTraceSegments",
+                "xray:PutTelemetryRecords"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OpsChecksTeamPurgeXRayWrite406D5494",
+        "Roles": [
+          {
+            "Ref": "OpsChecksTeamPurgeRole75FDFC86"
+          }
+        ]
+      }
+    },
+    "OpsChecksTeamPurgeSchedule1A8E9699": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Runs the team-purge function every 1 hour",
+        "ScheduleExpression": "rate(1 hour)",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Fn::GetAtt": [
+                "OpsChecksTeamPurge5DED7A8D",
+                "Arn"
+              ]
+            },
+            "Id": "Target0",
+            "RetryPolicy": {
+              "MaximumRetryAttempts": 0
+            }
+          }
+        ]
+      }
+    },
+    "OpsChecksTeamPurgeScheduleAllowEventRulesupplycheckoutproduseast1observabilityOpsChecksTeamPurge55B7430B14E08F4A": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "OpsChecksTeamPurge5DED7A8D",
+            "Arn"
+          ]
+        },
+        "Principal": "events.amazonaws.com",
+        "SourceArn": {
+          "Fn::GetAtt": [
+            "OpsChecksTeamPurgeSchedule1A8E9699",
             "Arn"
           ]
         }
@@ -2681,7 +3096,11 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"StuckImports\",\"Region\",\"us-east-1\",{\"label\":\"StuckImports (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"EmailQuotaUsedPercent\",\"Region\",\"us-east-1\",{\"label\":\"EmailQuotaUsedPercent (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"StuckImports\",\"Region\",\"us-west-2\",{\"label\":\"StuckImports (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"EmailQuotaUsedPercent\",\"Region\",\"us-west-2\",{\"label\":\"EmailQuotaUsedPercent (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}}]}"
+              "\",\"metrics\":[[\"SupplyCheckout\",\"StuckImports\",\"Region\",\"us-east-1\",{\"label\":\"StuckImports (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"EmailQuotaUsedPercent\",\"Region\",\"us-east-1\",{\"label\":\"EmailQuotaUsedPercent (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"StuckImports\",\"Region\",\"us-west-2\",{\"label\":\"StuckImports (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"EmailQuotaUsedPercent\",\"Region\",\"us-west-2\",{\"label\":\"EmailQuotaUsedPercent (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":43,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Accounts: teams closed, accounts deleted, teams purged\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamsClosed\",\"Region\",\"us-east-1\",{\"label\":\"TeamsClosed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"AccountsDeleted\",\"Region\",\"us-east-1\",{\"label\":\"AccountsDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsPurged\",\"Region\",\"us-east-1\",{\"label\":\"TeamsPurged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsClosed\",\"Region\",\"us-west-2\",{\"label\":\"TeamsClosed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"AccountsDeleted\",\"Region\",\"us-west-2\",{\"label\":\"AccountsDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsPurged\",\"Region\",\"us-west-2\",{\"label\":\"TeamsPurged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
             ]
           ]
         },

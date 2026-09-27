@@ -1,4 +1,5 @@
-// The caller's email address, and whether Cognito has verified it.
+// The caller's email address, and whether Cognito has verified it; and
+// deleting the caller's own Cognito user when they delete their account.
 //
 // Cognito access tokens don't carry the email. The account function needs a
 // verified one to find and accept invites, so it calls Cognito's GetUser with
@@ -34,6 +35,9 @@
 
 import { isDowngradePending, isRecordedEmail, linkedUser } from "../identity/email-verified-handler.js";
 import { ApiError } from "./http.js";
+
+/** Deletes the user whose access token this is. */
+export type DeleteUser = (accessToken: string) => Promise<void>;
 
 export interface CognitoUser {
   readonly sub: string;
@@ -94,7 +98,8 @@ export function cognitoUserInfo(issuerUrl: string, doFetch: typeof fetch = fetch
   return async (accessToken: string) => {
     const { ok, status, type, body } = await callCognito(endpoint, doFetch, "GetUser", { AccessToken: accessToken });
     if (!ok) {
-      if (status === 400 && type === "NotAuthorizedException") throw signInAgain();
+      // A revoked token (signed out elsewhere, or the account was deleted), or one without the admin scope
+      if (status === 400 && (type === "NotAuthorizedException" || type === "UserNotFoundException")) throw signInAgain();
       throw new Error(`GetUser failed: ${status} ${type}`);
     }
     const { Username, UserAttributes } = body as { Username?: string; UserAttributes?: { Name?: string; Value?: string }[] };
@@ -106,6 +111,27 @@ export function cognitoUserInfo(issuerUrl: string, doFetch: typeof fetch = fetch
       email: attributes.email,
       emailVerified: emailVerifiedFrom(Username, attributes),
     };
+  };
+}
+
+/**
+ * Cognito's DeleteUser with the caller's own access token (it needs the same
+ * aws.cognito.signin.user.admin scope as GetUser). Like GetUser it's
+ * authorized by the token alone, so the account function needs no IAM
+ * permission to delete users, and it can only ever delete the user who sent
+ * the request: AdminDeleteUser would let a bug delete anyone in the pool.
+ * The user's refresh tokens stop working at once; their access tokens pass
+ * API Gateway's check until they expire, but every account route that
+ * matters calls GetUser, which refuses them, and they're in no team.
+ */
+export function cognitoDeleteUser(issuerUrl: string, doFetch: typeof fetch = fetch): DeleteUser {
+  const endpoint = poolEndpoint(issuerUrl);
+  return async (accessToken: string) => {
+    const { ok, status, type } = await callCognito(endpoint, doFetch, "DeleteUser", { AccessToken: accessToken });
+    if (ok) return;
+    if (status === 400 && (type === "NotAuthorizedException" || type === "UserNotFoundException")) throw signInAgain();
+    // Only the status and error type: Cognito's messages can echo the username
+    throw new Error(`DeleteUser failed: ${status} ${type}`);
   };
 }
 

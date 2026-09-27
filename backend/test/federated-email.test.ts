@@ -25,7 +25,7 @@ import {
 } from "../src/identity/email-verified-handler.js";
 import { DOWNGRADE_PENDING_ATTRIBUTE, FEDERATED_PROVIDERS, LINKED_EMAIL_ATTRIBUTE, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "../src/identity/names.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
-import { REGION, accountPartitions, fakeMailer, unusedEmailCodes } from "./helpers.js";
+import { REGION, accountPartitions, fakeMailer, unusedDeleteUser, unusedEmailCodes } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const mails = fakeMailer();
@@ -601,7 +601,7 @@ describe("invites for Google and Apple users", () => {
       return { sub: user.sub, email: user.attributes.email, emailVerified: emailVerifiedFrom(token.replace(/^token-/, ""), user.attributes) };
     };
     const emailCodes = { ...unusedEmailCodes, send: async (token: string) => void codesSent.push(token) };
-    handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, emailCodes, now: () => now });
+    handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, deleteUser: unusedDeleteUser, emailCodes, now: () => now });
   });
 
   /** A first sign-in through Managed Login: Cognito creates the user from the provider's claims, then runs the trigger. */

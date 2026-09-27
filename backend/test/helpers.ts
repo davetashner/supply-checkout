@@ -88,3 +88,6 @@ export function accountPartitions(scope: { userId: string; teamId?: string; invi
     `INVITELIMIT#${scope.inviteLimit ?? "."}`,
   ];
 }
+
+/** The account handler's deleteUser, for tests that never delete an account. */
+export const unusedDeleteUser = async (): Promise<void> => Promise.reject(new Error("deleteUser not used"));
