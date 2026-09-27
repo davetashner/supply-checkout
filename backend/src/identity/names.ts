@@ -40,3 +40,23 @@ export const PROVIDER_HOSTED_DOMAIN_ATTRIBUTE = `custom:${PROVIDER_HOSTED_DOMAIN
  */
 export const LINKED_EMAIL = "linked_email";
 export const LINKED_EMAIL_ATTRIBUTE = `custom:${LINKED_EMAIL}`;
+
+/**
+ * Set ("1") on a linked user by the email_verified trigger before it
+ * downgrades a changed email at a Managed Login token, and cleared (written
+ * empty) in the same AdminUpdateUserAttributes call that sets email_verified
+ * to "false", so it's cleared only by a successful downgrade. While it's set,
+ * the trigger records no address in `custom:linked_email`, the account API
+ * treats the email as unverified, and the linking trigger doesn't link to the
+ * user (supply-checkout-0qr8). Like `custom:linked_email`, no IdP maps it and
+ * the web client can't write it: only the trigger (or an administrator) sets it.
+ */
+export const DOWNGRADE_PENDING = "downgrade_pending";
+export const DOWNGRADE_PENDING_ATTRIBUTE = `custom:${DOWNGRADE_PENDING}`;
+
+/**
+ * The Lambda environment variable holding the key the email_verified trigger
+ * uses to turn a user's `sub` into a log correlation handle (an HMAC), so a
+ * failure log names no user yet an operator can find them.
+ */
+export const LOG_CORRELATION_KEY_ENV = "LOG_CORRELATION_KEY";

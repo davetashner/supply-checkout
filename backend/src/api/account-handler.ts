@@ -62,6 +62,7 @@ import type { APIGatewayProxyStructuredResultV2, Context } from "aws-lambda";
 import {
   acceptInvite,
   authorizeTeam,
+  countEmailCode,
   createInvite,
   createTeam,
   findInviteForEmail,
@@ -392,6 +393,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const user = await cognitoUser(event, userId);
     if (!user.email) throw new ApiError(400, "bad_request", "There's no email address to verify");
     if (verifiedEmail(user)) throw new ApiError(409, "aborted", "Your email address is already verified", "already_verified");
+    await countEmailCode(dbFor({ userId }), userId, new Date(now()));
     await deps.emailCodes.send(accessToken(event));
     return noContent();
   }

@@ -18,6 +18,11 @@
 // After the person verifies a new address with a Cognito code, the trigger
 // records it at their next token refresh, and from then it counts.
 //
+// A user whose downgrade is pending (`custom:downgrade_pending` set: the
+// trigger's downgrade failed after it flagged it, supply-checkout-0qr8)
+// doesn't count as verified either, whatever its email, until a Managed Login
+// sign-in downgrades it or an administrator clears it.
+//
 // Verifying: cognitoEmailCodes() asks Cognito to email the caller a code
 // (GetUserAttributeVerificationCode) and checks the code they enter
 // (VerifyUserAttribute), both with the caller's own access token, like
@@ -27,23 +32,23 @@
 // API Gateway's throttle sits in front of Cognito's own limits. Neither the
 // token nor the code is ever logged.
 
-import { isRecordedEmail, linkedUser } from "../identity/email-verified-handler.js";
+import { isDowngradePending, isRecordedEmail, linkedUser } from "../identity/email-verified-handler.js";
 import { ApiError } from "./http.js";
 
 export interface CognitoUser {
   readonly sub: string;
   readonly email?: string;
-  /** True only when Cognito says `email_verified` is "true" (and, for a linked user, the email is the recorded one). */
+  /** True only when Cognito says `email_verified` is "true" with no downgrade pending (and, for a linked user, the email is the recorded one). */
   readonly emailVerified: boolean;
 }
 
 /**
  * Whether GetUser's attributes (or a trigger's) say the email is verified:
- * email_verified is "true" and, for a native user with a Google or Apple
- * identity linked, the email is the recorded one.
+ * email_verified is "true", no downgrade is pending, and, for a native user
+ * with a Google or Apple identity linked, the email is the recorded one.
  */
 export function emailVerifiedFrom(username: unknown, attributes: Readonly<Record<string, string | undefined>>): boolean {
-  if (attributes.email_verified !== "true") return false;
+  if (attributes.email_verified !== "true" || isDowngradePending(attributes)) return false;
   return !linkedUser(username, attributes) || isRecordedEmail(attributes);
 }
 

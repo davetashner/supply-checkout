@@ -653,8 +653,9 @@ paths:
         (GetUserAttributeVerificationCode with the caller's own access token,
         so it needs the `aws.cognito.signin.user.admin` scope). Only for an
         address that isn't verified yet: `emailVerified` is false in
-        `GET /me`. A new code replaces the last one. Cognito limits how many
-        codes a user can ask for (429). No request body, or an empty object.
+        `GET /me`. A new code replaces the last one. A user can ask for 10
+        codes a UTC day, and Cognito limits them too (429 for either). No
+        request body, or an empty object.
       responses:
         "204": { description: The code is on its way. }
         "400": { $ref: "#/components/responses/BadRequest" }

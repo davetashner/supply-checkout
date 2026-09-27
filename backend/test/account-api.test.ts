@@ -11,7 +11,7 @@ import type { CognitoUser } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
-import { authorizeTeam, createInvite, hashEmail, MAX_TEAMS_PER_USER, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS } from "../src/data/index.js";
+import { authorizeTeam, createInvite, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS } from "../src/data/index.js";
 import type { Observability } from "../src/observability/index.js";
 import { REGION, accountPartitions, fakeMailer } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -418,6 +418,17 @@ describe("verifying the caller's email address", () => {
     expect(await call("POST", "/me/email/verify", { user: UNVERIFIED, body: { code: "123456" } })).toMatchObject({ status: 500, body: { error: { code: "internal" } } });
     cognitoDown = true;
     expect((await call("POST", "/me/email/code", { user: UNVERIFIED })).status).toBe(500);
+  });
+
+  it("limits how many codes a user asks for a day, in their own partition", async () => {
+    for (let i = 0; i < EMAIL_CODES_PER_USER_PER_DAY; i++) expect((await call("POST", "/me/email/code", { user: UNVERIFIED })).status).toBe(204);
+    expect(await call("POST", "/me/email/code", { user: UNVERIFIED })).toMatchObject({ status: 429, body: { error: { code: "quota_exceeded" } } });
+    expect(codesSent).toHaveLength(EMAIL_CODES_PER_USER_PER_DAY);
+    expect(table.get(`USER#${UNVERIFIED}`, `LIMIT#EMAILCODES#${new Date(now).toISOString().slice(0, 10)}`)).toMatchObject({ count: EMAIL_CODES_PER_USER_PER_DAY, type: "emailCodes" });
+    expect(scopes.at(-1)).toEqual({ userId: UNVERIFIED });
+    // The next day starts again
+    now += DAY;
+    expect((await call("POST", "/me/email/code", { user: UNVERIFIED })).status).toBe(204);
   });
 
   it("only for the token's own user", async () => {

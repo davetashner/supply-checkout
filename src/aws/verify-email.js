@@ -80,7 +80,7 @@ export function openVerifyEmail(session, email, onVerified) {
       busy(false);
       if (!me || !me.user.emailVerified) {
         again.hidden = false;
-        say("Your code was accepted, but your account hasn't caught up yet. Try again in a moment.");
+        say("Your code was accepted, but your account hasn't caught up yet. Try again in a moment, or sign out and sign in again.");
         return;
       }
       stop();

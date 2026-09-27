@@ -170,7 +170,7 @@ test("a code accepted before the account catches up can be tried again", async (
   backend.on("GET", "/me", { status: 200, body: { user: UNVERIFIED, teams: [], invites: [] } });
   await enter(page, "123456");
   const again = dialog(page).getByRole("button", { name: "Try again" });
-  await expect(fail(page)).toHaveText("Your code was accepted, but your account hasn't caught up yet. Try again in a moment.");
+  await expect(fail(page)).toHaveText("Your code was accepted, but your account hasn't caught up yet. Try again in a moment, or sign out and sign in again.");
   await again.click();
   await expect.poll(() => backend.requests("GET", "/me").length).toBe(2);
   await expect(fail(page)).toBeVisible();

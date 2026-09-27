@@ -55,19 +55,30 @@
 //   rewritten from the provider: the trigger sets email_verified to "false"
 //   (outcome "linked-unverified"). It never restores the recorded address or
 //   promotes anyone: it only takes trust away. The person proves the new
-//   address with a Cognito code, as for any change of email. If the downgrade
-//   fails, the sign-in fails too ("linked-downgrade-failed", counted in
-//   EmailUnverifyFailures) and can be tried again: going ahead would issue
+//   address with a Cognito code, as for any change of email. Before the
+//   downgrade it sets `custom:downgrade_pending`, and the downgrade clears it
+//   in the same write, so the flag is cleared only by a successful downgrade
+//   (supply-checkout-0qr8). A failed downgrade is tried once more after a
+//   short pause; if that fails too, the sign-in fails ("linked-downgrade-
+//   failed", counted in EmailUnverifyFailures, logged with the user's
+//   correlation handle) and can be tried again: going ahead would issue
 //   tokens for an unproven address. A native Managed Login sign-in looks the
 //   same here, so a native change of email followed first by a Managed Login
 //   sign-in is unverified too, and needs its code again.
+// - While the flag is set, the downgrade is owed: a Managed Login token with
+//   email_verified "true" downgrades again (even for the recorded address),
+//   and no other token records anything ("linked-downgrade-pending"). If
+//   email_verified is already "false" (an administrator unverified it), any
+//   token clears the flag ("linked-cleared"), since a later "true" can only
+//   come from a Cognito code.
 // - At any other token (a refresh, an API sign-in), Cognito hasn't applied a
 //   provider mapping since the last Managed Login token, which unverified any
 //   rewritten address. So "true" for another address means Cognito verified
 //   it with a code since (a native change of email, or re-verifying after a
 //   downgrade), or an administrator set it: the trigger records it in
 //   `custom:linked_email` ("linked-recorded"), so the API trusts it and a
-//   second provider can still be linked. A failed recording is logged
+//   second provider can still be linked. Never while a downgrade is pending
+//   (above). A failed recording is logged
 //   ("linked-record-failed", counted in EmailVerifyFailures), the sign-in goes
 //   ahead, and the next token tries again.
 //
@@ -76,11 +87,14 @@
 // to what GetUser returns (src/api/cognito-user.ts), so a rewritten address
 // shows no invites even before this trigger has run.
 //
-// Accepted risk: if a Managed Login downgrade fails (or the trigger can't run
-// at all) after Cognito rewrote the email, and a refresh from another session
-// comes before a later sign-in succeeds, that refresh records the rewritten
-// address as verified. That needs a failed Cognito write, which the "Email
-// verification not saved" alarm reports, and the rewritten address still has
+// Accepted risk: if both the flag and the downgrade fail (or the trigger
+// can't run at all) after Cognito rewrote the email, and a refresh from
+// another session comes before a later sign-in succeeds, that refresh records
+// the rewritten address as verified. So does a refresh in the moment between
+// Cognito's rewrite and the flag's write. Someone could try to force the
+// failures by flooding the pool's shared user-update quota. The "Email
+// verification not saved" alarm reports the failure, with `flagged: false`
+// and the user's handle for the runbook, and the rewritten address still has
 // to be one the provider put on the person's own account.
 //
 // What it does: email_verified becomes "true" when the provider says the email
@@ -95,16 +109,50 @@
 // EmailUnverifyFailures), which an alarm watches.
 //
 // Logs carry the provider and the outcome, never the email or the username
-// (which contains the provider's user ID).
+// (which contains the provider's user ID). A linked user's failed downgrade
+// also carries a correlation handle, an HMAC of the user's sub with a key
+// only the operator and the function have (logCorrelation()).
 
+import { createHmac } from "node:crypto";
 import type { PreTokenGenerationTriggerEvent } from "aws-lambda";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import type { UpdateUserAttributes } from "./cognito-admin.js";
-import { FEDERATED_PROVIDERS, type FederatedProvider, LINKED_EMAIL_ATTRIBUTE, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "./names.js";
+import {
+  DOWNGRADE_PENDING_ATTRIBUTE,
+  FEDERATED_PROVIDERS,
+  type FederatedProvider,
+  LINKED_EMAIL_ATTRIBUTE,
+  PROVIDER_EMAIL_VERIFIED_ATTRIBUTE,
+} from "./names.js";
 
 export interface EmailVerifiedDeps {
   readonly updateUserAttributes: UpdateUserAttributes;
   readonly obs: Observability;
+  /** A user's log correlation handle from their `sub` (logCorrelation()). Without it, failure logs say "unavailable". */
+  readonly correlate?: (sub: string) => string;
+  /** For tests. */
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly now?: () => number;
+}
+
+/** Each Cognito call's timeout (email-verified.ts passes it to the client). */
+export const CALL_TIMEOUT_MS = 1_200;
+/** The pause before trying a failed downgrade again. */
+export const RETRY_PAUSE_MS = 250;
+/**
+ * The time the downgrade's writes may take, within the 5 seconds Cognito
+ * gives the trigger: the flag, the downgrade, a pause and one more try, each
+ * call at most CALL_TIMEOUT_MS, is 3.85 seconds.
+ */
+export const WRITE_BUDGET_MS = 4_000;
+
+/**
+ * A user's log correlation handle: the first 16 hex digits of
+ * HMAC-SHA256(key, sub). It names no user to someone reading the logs, and an
+ * operator with the key can find the user it belongs to (docs/journeys.md).
+ */
+export function logCorrelation(key: string): (sub: string) => string {
+  return (sub) => createHmac("sha256", key).update(sub, "utf8").digest("hex").slice(0, 16);
 }
 
 /** True only for the provider's claim saying yes: boolean true or the text "true" (any case, trimmed). */
@@ -185,6 +233,11 @@ export function isRecordedEmail(attributes: Readonly<Record<string, string | und
   return !!recorded && asciiLower(attributes.email?.trim() ?? "") === asciiLower(recorded);
 }
 
+/** Whether a linked user's downgrade is pending (`custom:downgrade_pending` set): its email mustn't be trusted or recorded. */
+export function isDowngradePending(attributes: Readonly<Record<string, string | undefined>>): boolean {
+  return !!attributes[DOWNGRADE_PENDING_ATTRIBUTE]?.trim();
+}
+
 /** Tokens that never follow a provider sign-in, so Cognito hasn't just rewritten the email. */
 const NOT_AFTER_PROVIDER = new Set(["TokenGeneration_RefreshTokens", "TokenGeneration_Authentication", "TokenGeneration_NewPasswordChallenge", "TokenGeneration_AuthenticateDevice"]);
 
@@ -211,23 +264,98 @@ export type Outcome =
   /** A linked user's email, verified by Cognito since the last Managed Login token, is now the recorded one. */
   | "linked-recorded"
   /** Couldn't record it: the API treats the email as unverified until a later token records it. */
-  | "linked-record-failed";
+  | "linked-record-failed"
+  /** A linked user's downgrade is pending (an earlier one failed): nothing is recorded until one succeeds. */
+  | "linked-downgrade-pending"
+  /** A linked user already unverified had a pending downgrade: the flag is cleared. */
+  | "linked-cleared"
+  /** Couldn't clear it: the user stays untrusted until a later token clears it. */
+  | "linked-clear-failed";
 
 export function createEmailVerifiedHandler(deps: EmailVerifiedDeps) {
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const now = deps.now ?? Date.now;
+  const handleOf = (attributes: Readonly<Record<string, string | undefined>>) => (deps.correlate && attributes.sub ? deps.correlate(attributes.sub) : "unavailable");
+
+  /**
+   * Unverifies a linked user's changed email at a Managed Login token. Order,
+   * so each failure leaves the user no more trusted than before:
+   *
+   * 1. Flag the downgrade as pending (skipped when it already is). If this
+   *    fails, the downgrade is still tried: it's what matters.
+   * 2. Set email_verified to "false" and clear the flag in one call, so the
+   *    flag is cleared only by a successful downgrade. Tried again once after
+   *    a short pause if there's time left in Cognito's 5 seconds.
+   *
+   * If step 2 fails, the sign-in fails. With the flag set (step 1 worked, or
+   * an earlier sign-in set it), no later token records the address and the
+   * API doesn't trust it, until a Managed Login sign-in downgrades it. With
+   * neither write through, a refresh could still record it: the failure log
+   * says which (`flagged`), with the user's correlation handle, for the
+   * runbook (docs/journeys.md, "Email verification not saved").
+   */
+  const downgrade = async (event: PreTokenGenerationTriggerEvent, attributes: Readonly<Record<string, string | undefined>>, pending: boolean): Promise<{ outcome: Outcome }> => {
+    const started = now();
+    let flagged = pending;
+    if (!flagged) {
+      try {
+        await deps.updateUserAttributes(event.userPoolId, event.userName, { [DOWNGRADE_PENDING_ATTRIBUTE]: "1" });
+        flagged = true;
+      } catch (error) {
+        deps.obs.logger.warn("Couldn't flag a linked user's downgrade as pending; trying the downgrade anyway", { outcome: "linked-flag-failed", error: (error as Error).message });
+      }
+    }
+    const unverify = () => deps.updateUserAttributes(event.userPoolId, event.userName, { email_verified: "false", [DOWNGRADE_PENDING_ATTRIBUTE]: "" });
+    let failure: unknown;
+    try {
+      await unverify();
+      return { outcome: "linked-unverified" };
+    } catch (error) {
+      failure = error;
+    }
+    if (now() - started + RETRY_PAUSE_MS + CALL_TIMEOUT_MS <= WRITE_BUDGET_MS) {
+      await sleep(RETRY_PAUSE_MS);
+      try {
+        await unverify();
+        return { outcome: "linked-unverified" };
+      } catch (error) {
+        failure = error;
+      }
+    }
+    deps.obs.logger.error("Couldn't mark a linked user's changed email unverified; the sign-in fails", {
+      outcome: "linked-downgrade-failed",
+      flagged,
+      user: handleOf(attributes),
+      error: (failure as Error).message,
+    });
+    deps.obs.count(BusinessMetric.EmailUnverifyFailures);
+    throw new Error(LINKED_FAILED_ERROR, { cause: failure });
+  };
+
   const linked = async (event: PreTokenGenerationTriggerEvent, attributes: Readonly<Record<string, string | undefined>>): Promise<{ outcome: Outcome }> => {
     if (!attributes.email) return { outcome: "no-email" };
-    if (attributes.email_verified !== "true" || isRecordedEmail(attributes)) return { outcome: "linked-unchanged" };
-    if (event.triggerSource === "TokenGeneration_HostedAuth") {
+    const pending = isDowngradePending(attributes);
+    if (attributes.email_verified !== "true") {
+      if (!pending) return { outcome: "linked-unchanged" };
+      // Unverified already (an administrator, following the runbook): the
+      // flag has done its job, and a later "true" can only come from a code
       try {
-        await deps.updateUserAttributes(event.userPoolId, event.userName, { email_verified: "false" });
+        await deps.updateUserAttributes(event.userPoolId, event.userName, { [DOWNGRADE_PENDING_ATTRIBUTE]: "" });
       } catch (error) {
-        deps.obs.logger.error("Couldn't mark a linked user's changed email unverified; the sign-in fails", { outcome: "linked-downgrade-failed", error: (error as Error).message });
-        deps.obs.count(BusinessMetric.EmailUnverifyFailures);
-        throw new Error(LINKED_FAILED_ERROR, { cause: error });
+        deps.obs.logger.error("Couldn't clear a linked user's pending downgrade", { outcome: "linked-clear-failed", error: (error as Error).message });
+        deps.obs.count(BusinessMetric.EmailVerifyFailures);
+        return { outcome: "linked-clear-failed" };
       }
-      return { outcome: "linked-unverified" };
+      return { outcome: "linked-cleared" };
+    }
+    if (event.triggerSource === "TokenGeneration_HostedAuth") {
+      // A pending downgrade is owed even if the email now looks like the recorded one
+      return pending || !isRecordedEmail(attributes) ? downgrade(event, attributes, pending) : { outcome: "linked-unchanged" };
     }
     if (!NOT_AFTER_PROVIDER.has(event.triggerSource)) return { outcome: "linked-unchanged" };
+    // A downgrade failed after Cognito may have rewritten the email: record nothing until one succeeds
+    if (pending) return { outcome: "linked-downgrade-pending" };
+    if (isRecordedEmail(attributes)) return { outcome: "linked-unchanged" };
     try {
       await deps.updateUserAttributes(event.userPoolId, event.userName, { [LINKED_EMAIL_ATTRIBUTE]: asciiLower(attributes.email.trim()) });
     } catch (error) {
