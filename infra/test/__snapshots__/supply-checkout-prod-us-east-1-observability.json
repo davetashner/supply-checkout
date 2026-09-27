@@ -221,6 +221,12 @@
                         "OperatorSelfServiceChanges0E27141E",
                         "Arn"
                       ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorRuleTamperingDB445FE1",
+                        "Arn"
+                      ]
                     }
                   ]
                 }
@@ -3224,7 +3230,7 @@
     "OperatorPoolChangesD40F920E": {
       "Type": "AWS::Events::Rule",
       "Properties": {
-        "Description": "Operator pool: users, groups, passwords, MFA or pool and client settings changed outside a deploy (ADR 0015)",
+        "Description": "Operator pool: users, groups, passwords or MFA changed (even by a deploy), or pool and client settings changed outside a deploy (ADR 0015)",
         "EventPattern": {
           "source": [
             "aws.cognito-idp"
@@ -3236,25 +3242,6 @@
             "eventSource": [
               "cognito-idp.amazonaws.com"
             ],
-            "eventName": [
-              "AdminCreateUser",
-              "AdminAddUserToGroup",
-              "AdminRemoveUserFromGroup",
-              "AdminSetUserPassword",
-              "AdminResetUserPassword",
-              "AdminEnableUser",
-              "AdminSetUserMFAPreference",
-              "AdminUpdateUserAttributes",
-              "AdminLinkProviderForUser",
-              "CreateGroup",
-              "UpdateGroup",
-              "DeleteGroup",
-              "UpdateUserPool",
-              "SetUserPoolMfaConfig",
-              "CreateUserPoolClient",
-              "UpdateUserPoolClient",
-              "CreateIdentityProvider"
-            ],
             "requestParameters": {
               "userPoolId": [
                 {
@@ -3262,16 +3249,43 @@
                 }
               ]
             },
-            "userIdentity": {
-              "invokedBy": [
-                {
-                  "exists": false
-                },
-                {
-                  "anything-but": "cloudformation.amazonaws.com"
+            "$or": [
+              {
+                "eventName": [
+                  "AdminCreateUser",
+                  "AdminAddUserToGroup",
+                  "AdminRemoveUserFromGroup",
+                  "AdminSetUserPassword",
+                  "AdminResetUserPassword",
+                  "AdminEnableUser",
+                  "AdminSetUserMFAPreference",
+                  "AdminUpdateUserAttributes",
+                  "AdminLinkProviderForUser"
+                ]
+              },
+              {
+                "eventName": [
+                  "CreateGroup",
+                  "UpdateGroup",
+                  "DeleteGroup",
+                  "UpdateUserPool",
+                  "SetUserPoolMfaConfig",
+                  "CreateUserPoolClient",
+                  "UpdateUserPoolClient",
+                  "CreateIdentityProvider"
+                ],
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
                 }
-              ]
-            }
+              }
+            ]
           }
         },
         "State": "ENABLED",
@@ -3398,6 +3412,561 @@
             }
           }
         ]
+      }
+    },
+    "OperatorRuleTamperingDB445FE1": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "An operator alert rule was deleted, disabled or lost its target, or was rewritten outside a deploy (ADR 0015)",
+        "EventPattern": {
+          "source": [
+            "aws.events"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "events.amazonaws.com"
+            ],
+            "$or": [
+              {
+                "eventName": [
+                  "DeleteRule",
+                  "DisableRule"
+                ],
+                "requestParameters": {
+                  "name": [
+                    {
+                      "Ref": "OperatorPoolChangesD40F920E"
+                    },
+                    {
+                      "Ref": "OperatorSelfServiceChanges0E27141E"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "RemoveTargets"
+                ],
+                "requestParameters": {
+                  "rule": [
+                    {
+                      "Ref": "OperatorPoolChangesD40F920E"
+                    },
+                    {
+                      "Ref": "OperatorSelfServiceChanges0E27141E"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "PutRule"
+                ],
+                "requestParameters": {
+                  "name": [
+                    {
+                      "Ref": "OperatorPoolChangesD40F920E"
+                    },
+                    {
+                      "Ref": "OperatorSelfServiceChanges0E27141E"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "PutTargets"
+                ],
+                "requestParameters": {
+                  "rule": [
+                    {
+                      "Ref": "OperatorPoolChangesD40F920E"
+                    },
+                    {
+                      "Ref": "OperatorSelfServiceChanges0E27141E"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on an operator alert rule at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorAuditWatchLogsC88D29BF": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "OperatorAuditWatchRole832B8493": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the operator audit watch",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "OperatorAuditWatchRoleDefaultPolicy2B0E5F57": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "OperatorAuditWatchLogsC88D29BF",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": [
+                "dynamodb:DescribeStream",
+                "dynamodb:GetRecords",
+                "dynamodb:GetShardIterator"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutproddatatablestreamarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "Sid": "ReadTableStream"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "dynamodb.",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ".amazonaws.com"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "Sid": "TableKeyThroughDynamoDb"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OperatorAuditWatchRoleDefaultPolicy2B0E5F57",
+        "Roles": [
+          {
+            "Ref": "OperatorAuditWatchRole832B8493"
+          }
+        ]
+      }
+    },
+    "OperatorAuditWatchFunctionA8D3267D": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "Alarms on any change or deletion of an operator audit item other than its TTL expiry",
+        "Environment": {
+          "Variables": {
+            "NODE_OPTIONS": "--enable-source-maps",
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "SUPPLY_CHECKOUT_ENV": "prod"
+          }
+        },
+        "FunctionName": "supply-checkout-prod-operator-audit-watch",
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "OperatorAuditWatchLogsC88D29BF"
+          }
+        },
+        "MemorySize": 256,
+        "Role": {
+          "Fn::GetAtt": [
+            "OperatorAuditWatchRole832B8493",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 30,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "OperatorAuditWatchRoleDefaultPolicy2B0E5F57",
+        "OperatorAuditWatchRole832B8493"
+      ]
+    },
+    "OperatorAuditWatchFunctionXRayWrite0A485EB1": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTraceSegments",
+                "xray:PutTelemetryRecords"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OperatorAuditWatchFunctionXRayWrite0A485EB1",
+        "Roles": [
+          {
+            "Ref": "OperatorAuditWatchRole832B8493"
+          }
+        ]
+      }
+    },
+    "OperatorAuditWatchListStreams62A526E6": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "dynamodb:ListStreams",
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OperatorAuditWatchListStreams62A526E6",
+        "Roles": [
+          {
+            "Ref": "OperatorAuditWatchRole832B8493"
+          }
+        ]
+      }
+    },
+    "OperatorAuditWatchTableStreamEB0253F3": {
+      "Type": "AWS::Lambda::EventSourceMapping",
+      "Properties": {
+        "BatchSize": 100,
+        "BisectBatchOnFunctionError": true,
+        "EventSourceArn": {
+          "Ref": "SsmParameterValuesupplycheckoutproddatatablestreamarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "FilterCriteria": {
+          "Filters": [
+            {
+              "Pattern": "{\"eventName\":[\"MODIFY\",\"REMOVE\"],\"dynamodb\":{\"Keys\":{\"PK\":{\"S\":[{\"prefix\":\"OPAUDIT#\"}]}}}}"
+            }
+          ]
+        },
+        "FunctionName": {
+          "Ref": "OperatorAuditWatchFunctionA8D3267D"
+        },
+        "MaximumBatchingWindowInSeconds": 0,
+        "MaximumRetryAttempts": 5,
+        "StartingPosition": "LATEST",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "OperatorAuditWatchChanged4FF93CBF": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "AlarmDescription": "P1. Operator audit changed: an OPAUDIT# item was modified, replaced or deleted other than by its TTL. Operator audit items are append-only, so this is tampering or a bug. The watch's log has the item's keys; follow \"Operators\" in docs/infrastructure.md.",
+        "AlarmName": "supply-checkout-prod-p1-operator-audit-changed",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "OperatorAuditChanged (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "OperatorAuditChanged",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "OperatorAuditWatchFailing470993DE": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2. Operator audit watch failing: the function that watches operator audit items for changes threw, so a change could go unseen. Its log has the error.",
+        "AlarmName": "supply-checkout-prod-p2-operator-audit-watch-failing",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "FunctionName",
+            "Value": {
+              "Ref": "OperatorAuditWatchFunctionA8D3267D"
+            }
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "Errors",
+        "Namespace": "AWS/Lambda",
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Period": 300,
+        "Statistic": "Sum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
       }
     },
     "Dashboard7A714131": {
@@ -3575,6 +4144,20 @@
                   "Arn"
                 ]
               },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "OperatorAuditWatchChanged4FF93CBF",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "OperatorAuditWatchFailing470993DE",
+                  "Arn"
+                ]
+              },
               "\"]}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":7,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Traffic: API requests\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
@@ -3675,7 +4258,11 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailCodeSendFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailCodeSendFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeVerifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailCodeVerifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeSendFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailCodeSendFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeVerifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailCodeVerifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
+              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailCodeSendFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailCodeSendFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeVerifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailCodeVerifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeSendFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailCodeSendFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeVerifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailCodeVerifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":55,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: audit items changed or deleted (not by TTL)\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorAuditChanged\",\"Region\",\"us-east-1\",{\"label\":\"OperatorAuditChanged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorAuditChanged\",\"Region\",\"us-west-2\",{\"label\":\"OperatorAuditChanged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
             ]
           ]
         },
@@ -3725,6 +4312,10 @@
     "SsmParameterValuesupplycheckoutprodidentityopsuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter": {
       "Type": "AWS::SSM::Parameter::Value<String>",
       "Default": "/supply-checkout/prod/identity/ops-user-pool-id"
+    },
+    "SsmParameterValuesupplycheckoutproddatatablestreamarnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/data/table-stream-arn"
     },
     "BootstrapVersion": {
       "Type": "AWS::SSM::Parameter::Value<String>",

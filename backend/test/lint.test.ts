@@ -92,3 +92,29 @@ describe("operator code and team contexts (ADR 0015)", () => {
     expect(await ruleIds(code, "src/data/operator.ts")).toContain(rule);
   });
 });
+
+describe("operator code and old or whole item values (supply-checkout-6uw.5)", () => {
+  const FILES = ["src/operator/ops-handler.ts", "src/data/operator.ts"];
+  const banned = [
+    'export const input = { ReturnValuesOnConditionCheckFailure: "ALL_OLD" };',
+    'export const input = { "ReturnValuesOnConditionCheckFailure": "NONE" };',
+    'const input: Record<string, string> = {}; input.ReturnValuesOnConditionCheckFailure = "NONE";',
+    'const input: Record<string, string> = {}; input["ReturnValuesOnConditionCheckFailure"] = "NONE";',
+    'export const input = { ReturnValues: "ALL_OLD" };',
+    'export const input = { ReturnValues: "ALL_NEW" };',
+    "export const input = { ReturnValues: `ALL_OLD` };",
+    'export const input = { [`ReturnValuesOnConditionCheckFailure`]: "NONE" };',
+  ];
+  it.each(FILES.flatMap((file) => banned.map((code) => [file, code] as const)))("bans it in %s: %s", async (file, code) => {
+    expect(await ruleIds(code, file)).toContain("no-restricted-syntax");
+  });
+
+  it("allows the return values the operator-access role permits, and leaves other code alone", async () => {
+    for (const file of FILES) expect(await ruleIds('export const input = { ReturnValues: "UPDATED_NEW" };', file)).toEqual([]);
+    expect(await ruleIds('export const input = { ReturnValuesOnConditionCheckFailure: "ALL_OLD" };', "src/data/sheets.ts")).toEqual([]);
+  });
+
+  it("keeps the other data-module rules in the ops code", async () => {
+    expect(await ruleIds('export const m = await import("@aws-sdk/lib-dynamodb");', "src/operator/ops-handler.ts")).toContain("no-restricted-syntax");
+  });
+});

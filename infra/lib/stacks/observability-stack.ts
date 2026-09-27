@@ -10,11 +10,17 @@ import { apiOutputParameters } from "./api-stack.js";
 import { identityOutputParameters } from "../identity.js";
 import { OpsDashboard } from "../observability/dashboard.js";
 import { JourneyAlarms } from "../observability/journey-alarms.js";
+import { OperatorAuditWatch } from "../observability/operator-audit-watch.js";
 import { OpsChecks } from "../observability/ops-checks.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
-/** Admin and configuration calls on the operator pool that alert P1 (ADR 0015), unless CloudFormation made them. */
-export const OPERATOR_POOL_ADMIN_EVENTS = [
+/**
+ * Calls on the operator pool that change who is an operator or how they sign
+ * in: users, group membership, passwords and MFA. Each alerts P1 whoever
+ * makes it, CloudFormation included (supply-checkout-6uw.7): a stack deploy
+ * must never add an operator silently.
+ */
+export const OPERATOR_USER_EVENTS = [
   "AdminCreateUser",
   "AdminAddUserToGroup",
   "AdminRemoveUserFromGroup",
@@ -24,6 +30,14 @@ export const OPERATOR_POOL_ADMIN_EVENTS = [
   "AdminSetUserMFAPreference",
   "AdminUpdateUserAttributes",
   "AdminLinkProviderForUser",
+] as const;
+
+/**
+ * Configuration calls on the operator pool: its groups, settings, app client
+ * and identity providers. Each alerts P1 unless CloudFormation made it for a
+ * deploy, which is how they're meant to change.
+ */
+export const OPERATOR_POOL_CONFIG_EVENTS = [
   "CreateGroup",
   "UpdateGroup",
   "DeleteGroup",
@@ -33,6 +47,22 @@ export const OPERATOR_POOL_ADMIN_EVENTS = [
   "UpdateUserPoolClient",
   "CreateIdentityProvider",
 ] as const;
+
+/** Every admin and configuration call on the operator pool that alerts P1 (ADR 0015). */
+export const OPERATOR_POOL_ADMIN_EVENTS = [...OPERATOR_USER_EVENTS, ...OPERATOR_POOL_CONFIG_EVENTS] as const;
+
+/**
+ * EventBridge calls that silence one of the operator alert rules: delete or
+ * disable it, or take its target away. Each alerts P1 whoever makes it,
+ * CloudFormation included (supply-checkout-6uw.7).
+ */
+export const OPERATOR_RULE_SILENCING_EVENTS = ["DeleteRule", "DisableRule", "RemoveTargets"] as const;
+
+/** EventBridge calls that rewrite an operator alert rule's pattern or targets: P1 unless CloudFormation made them for a deploy. */
+export const OPERATOR_RULE_CHANGE_EVENTS = ["PutRule", "PutTargets"] as const;
+
+/** A deploy's own calls carry this in userIdentity.invokedBy; a person's or a script's have none. */
+const NOT_CLOUDFORMATION = { invokedBy: [{ exists: false }, { "anything-but": "cloudformation.amazonaws.com" }] };
 
 /** What an operator's own access token can change (the aws.cognito.signin.user.admin scope); each alerts P1. */
 export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySoftwareToken", "SetUserMFAPreference", "UpdateUserAttributes", "DeleteUser"] as const;
@@ -52,9 +82,12 @@ export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySo
  * - `checks`: primary region only, the scheduled checks that send the
  *   StuckImports and EmailQuotaUsedPercent gauges (ops-checks.ts).
  * - `operatorChanges`: primary region only, P1 alerts on changes to the
- *   operator pool's users, groups, passwords, MFA and settings, and on what
- *   an operator's own token can change (ADR 0015), from CloudTrail through
- *   EventBridge.
+ *   operator pool's users, groups, passwords, MFA and settings, on what an
+ *   operator's own token can change (ADR 0015), and on anything that
+ *   silences or rewrites those rules, from CloudTrail through EventBridge.
+ * - `operatorAudit`: primary region only, the P1 alarm on any change or
+ *   deletion of an operator audit item other than its TTL expiry, from the
+ *   table's stream (operator-audit-watch.ts).
  *
  * Log retention and X-Ray tracing for every function are set app-wide by
  * ObservabilityDefaults (observability/defaults.ts).
@@ -65,6 +98,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
   readonly dashboard?: OpsDashboard;
   readonly checks?: OpsChecks;
   readonly operatorChanges?: Rule[];
+  readonly operatorAudit?: OperatorAuditWatch;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "observability", layer: "stateless" });
@@ -89,11 +123,12 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     if (this.isPrimaryRegion) {
       this.checks = new OpsChecks(this, "OpsChecks", { envName: config.envName, tableName: table });
       this.operatorChanges = this.alertOnOperatorChanges(config.envName);
+      this.operatorAudit = new OperatorAuditWatch(this, "OperatorAuditWatch", { envName: config.envName, region, topics: this.topics });
       this.dashboard = new OpsDashboard(this, "Dashboard", {
         envName: config.envName,
         regions: config.regions,
         tableName: table,
-        alarms: this.alarms.alarms,
+        alarms: [...this.alarms.alarms, this.operatorAudit.changed, this.operatorAudit.failing],
       });
     }
   }
@@ -105,9 +140,12 @@ export class ObservabilityStack extends SupplyCheckoutStack {
    * or how the pool and its client are set up are rare and deliberate, so
    * every one is worth a message; one nobody expected is an escalation.
    *
-   * - `OperatorPoolAdminChanges`: the admin and configuration calls in
-   *   OPERATOR_POOL_ADMIN_EVENTS on the operator pool, except those
-   *   CloudFormation makes for a deploy.
+   * - `OperatorPoolChanges`: the user, membership, password and MFA calls in
+   *   OPERATOR_USER_EVENTS on the operator pool, whoever makes them, and the
+   *   configuration calls in OPERATOR_POOL_CONFIG_EVENTS unless
+   *   CloudFormation made them for a deploy (supply-checkout-6uw.7). A
+   *   template that created an operator user or added one to the group would
+   *   still alert.
    * - `OperatorSelfServiceChanges`: what an operator's own access token can
    *   do with the aws.cognito.signin.user.admin scope (OPERATOR_SELF_SERVICE_EVENTS):
    *   replace their TOTP, turn MFA settings, change attributes or delete
@@ -115,20 +153,30 @@ export class ObservabilityStack extends SupplyCheckoutStack {
    *   puts the pool ID in requestParameters or additionalEventData for
    *   these, so the rule matches either ("Operators" in docs/infrastructure.md
    *   says how to check it after a deploy).
+   * - `OperatorRuleTampering`: deleting or disabling either rule above, or
+   *   removing its target (OPERATOR_RULE_SILENCING_EVENTS), whoever does it,
+   *   and rewriting its pattern or targets (OPERATOR_RULE_CHANGE_EVENTS)
+   *   outside a deploy. A rule can't report its own deletion, so this is a
+   *   separate rule; silencing this one first isn't caught (see "Operators"
+   *   in docs/infrastructure.md).
    */
   private alertOnOperatorChanges(envName: string): Rule[] {
     const poolId = StringParameter.valueForStringParameter(this, identityOutputParameters(envName).opsUserPoolId);
-    const base = { source: ["aws.cognito-idp"], detailType: ["AWS API Call via CloudTrail"] };
+    const cloudTrail = { detailType: ["AWS API Call via CloudTrail"] };
+    const base = { source: ["aws.cognito-idp"], ...cloudTrail };
     const admin = new Rule(this, "OperatorPoolChanges", {
-      description: "Operator pool: users, groups, passwords, MFA or pool and client settings changed outside a deploy (ADR 0015)",
+      description: "Operator pool: users, groups, passwords or MFA changed (even by a deploy), or pool and client settings changed outside a deploy (ADR 0015)",
       eventPattern: {
         ...base,
         detail: {
           eventSource: ["cognito-idp.amazonaws.com"],
-          eventName: [...OPERATOR_POOL_ADMIN_EVENTS],
           requestParameters: { userPoolId: [poolId] },
-          // Not CloudFormation's own calls during a deploy (an absent invokedBy is a person or a script)
-          userIdentity: { invokedBy: [{ exists: false }, { "anything-but": "cloudformation.amazonaws.com" }] },
+          $or: [
+            // Who is an operator and how they sign in: always
+            { eventName: [...OPERATOR_USER_EVENTS] },
+            // How the pool is set up: not CloudFormation's own calls during a deploy
+            { eventName: [...OPERATOR_POOL_CONFIG_EVENTS], userIdentity: NOT_CLOUDFORMATION },
+          ],
         },
       },
     });
@@ -143,6 +191,26 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         },
       },
     });
+    // DeleteRule, DisableRule and PutRule name the rule in `name`; RemoveTargets and PutTargets in `rule`
+    const watched = [admin.ruleName, selfService.ruleName];
+    const silencing = OPERATOR_RULE_SILENCING_EVENTS.filter((e) => e !== "RemoveTargets");
+    const tampering = new Rule(this, "OperatorRuleTampering", {
+      description: "An operator alert rule was deleted, disabled or lost its target, or was rewritten outside a deploy (ADR 0015)",
+      eventPattern: {
+        source: ["aws.events"],
+        ...cloudTrail,
+        detail: {
+          eventSource: ["events.amazonaws.com"],
+          $or: [
+            { eventName: [...silencing], requestParameters: { name: watched } },
+            { eventName: ["RemoveTargets"], requestParameters: { rule: watched } },
+            { eventName: ["PutRule"], requestParameters: { name: watched }, userIdentity: NOT_CLOUDFORMATION },
+            { eventName: ["PutTargets"], requestParameters: { rule: watched }, userIdentity: NOT_CLOUDFORMATION },
+          ],
+        },
+      },
+    });
+    const rules = [admin, selfService, tampering];
     const topic = this.topics.topics.P1;
     // EventBridge publishes to the encrypted topic: it may use the key, for this account's rules only
     this.topics.key.addToResourcePolicy(
@@ -160,16 +228,22 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         principals: [new ServicePrincipal("events.amazonaws.com")],
         actions: ["sns:Publish"],
         resources: [topic.topicArn],
-        conditions: { ArnEquals: { "aws:SourceArn": [admin.ruleArn, selfService.ruleArn] } },
+        conditions: { ArnEquals: { "aws:SourceArn": rules.map((r) => r.ruleArn) } },
       }),
     );
-    const message = RuleTargetInput.fromText(
-      `Supply Checkout ${envName}: ${EventField.fromPath("$.detail.eventName")} on the operator pool at ${EventField.fromPath("$.detail.eventTime")} (CloudTrail event ${EventField.fromPath("$.detail.eventID")} says who). If nobody expected it, follow "Operators" in docs/infrastructure.md.`,
-    );
-    for (const rule of [admin, selfService]) {
+    const message = (what: string) =>
+      RuleTargetInput.fromText(
+        `Supply Checkout ${envName}: ${EventField.fromPath("$.detail.eventName")} on ${what} at ${EventField.fromPath("$.detail.eventTime")} (CloudTrail event ${EventField.fromPath("$.detail.eventID")} says who). If nobody expected it, follow "Operators" in docs/infrastructure.md.`,
+      );
+    const messages = new Map([
+      [admin, message("the operator pool")],
+      [selfService, message("the operator pool")],
+      [tampering, message("an operator alert rule")],
+    ]);
+    for (const rule of rules) {
       // A plain target: events-targets' SnsTopic would add a topic policy for every rule in the account
-      rule.addTarget({ bind: () => ({ arn: topic.topicArn, input: message }) });
+      rule.addTarget({ bind: () => ({ arn: topic.topicArn, input: messages.get(rule) }) });
     }
-    return [admin, selfService];
+    return rules;
   }
 }
