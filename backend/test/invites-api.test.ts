@@ -43,6 +43,7 @@ let scopes: AccountScope[];
 let mails: ReturnType<typeof fakeMailer>;
 let counts: [string, number, Record<string, unknown> | undefined][];
 let logs: unknown[];
+let cognitoDown: boolean;
 let handler: ReturnType<typeof createAccountHandler>;
 
 function member(teamId: string, userId: string, role: string) {
@@ -59,6 +60,7 @@ function team(teamId: string, name: string, members: Record<string, string>) {
 
 beforeEach(() => {
   now = START;
+  cognitoDown = false;
   table = new MemoryTable();
   scopes = [];
   counts = [];
@@ -78,6 +80,7 @@ beforeEach(() => {
     flush: () => {},
   } as unknown as Observability;
   const userInfo = async (token: string) => {
+    if (cognitoDown) throw new Error("GetUser failed: 500");
     const user = USERS[token.replace(/^token-/, "")];
     if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
     return user;
@@ -595,11 +598,45 @@ describe("removing a member", () => {
     expect(stored("sam-second")).toBeUndefined();
   });
 
-  it("leaves invites alone for a member without an address", async () => {
+  it("leaves invites alone for a member without an address, and never uses the remover's own", async () => {
     table.put({ PK: "TEAM#team-a", SK: "MEMBER#user-anon", type: "member", teamId: "team-a", userId: "user-anon", role: "viewer", joinedAt: "2026-09-01T00:00:00.000Z" });
     staleInvite("pat@example.com", "pat-1");
+    staleInvite("owner@example.com", "owner-1");
     expect((await call("DELETE", "/teams/team-a/members/user-anon")).status).toBe(204);
     expect(stored("pat-1")).toBeDefined();
+    expect(stored("owner-1")).toBeDefined();
+  });
+
+  // supply-checkout-u0vv
+  it("revokes invites to a leaving member's verified address when their member item has none", async () => {
+    const { email: _email, ...noEmail } = table.get("TEAM#team-a", `MEMBER#${SAM}`) as Record<string, unknown>;
+    void _email;
+    table.put(noEmail);
+    staleInvite("sam@example.com", "sam-second");
+    staleInvite("pat@example.com", "pat-1");
+    expect((await call("DELETE", `/teams/team-a/members/${SAM}`, SAM)).status).toBe(204);
+    expect(stored("sam-second")).toBeUndefined();
+    expect(stored("pat-1")).toBeDefined();
+  });
+
+  it("still lets someone leave when Cognito can't be reached, revoking invites to the member item's address", async () => {
+    staleInvite("sam@example.com", "sam-second");
+    cognitoDown = true;
+    expect((await call("DELETE", `/teams/team-a/members/${SAM}`, SAM)).status).toBe(204);
+    expect(table.get("TEAM#team-a", `MEMBER#${SAM}`)).toBeUndefined();
+    expect(stored("sam-second")).toBeUndefined();
+    expect(logs).toContainEqual(["warn", "Verified email not read for leaving", { teamId: "team-a", code: "Error" }]);
+    expect(JSON.stringify(logs)).not.toMatch(/sam@/);
+  });
+
+  it("revokes invites to both the stored and the verified address when they differ", async () => {
+    table.put({ ...(table.get("TEAM#team-a", `MEMBER#${SAM}`) as Record<string, unknown>), email: "sam-old@example.com" });
+    staleInvite("sam-old@example.com", "sam-old");
+    staleInvite("sam@example.com", "sam-new");
+    expect((await call("DELETE", `/teams/team-a/members/${SAM}`, SAM)).status).toBe(204);
+    expect(stored("sam-old")).toBeUndefined();
+    expect(stored("sam-new")).toBeUndefined();
+    expect(JSON.stringify(logs)).not.toMatch(/sam@|sam-old@/);
   });
 });
 
