@@ -187,6 +187,14 @@ describe("web app client", () => {
     }
   });
 
+  it("lets the web client read every attribute, so GetUser returns a linked user's recorded email and identities", () => {
+    // The account API counts a linked user's email as verified only while it's custom:linked_email
+    // (backend/src/api/cognito-user.ts); GetUser returns only attributes the token's client can read
+    for (const context of [{}, { appleSignIn: true, googleSignIn: true }]) {
+      expect(only(build({ envName: "staging" }, context).template, "AWS::Cognito::UserPoolClient").Properties.ReadAttributes).toBeUndefined();
+    }
+  });
+
   it("returns only to app. in prod, and also to the local dev server elsewhere or when asked", () => {
     const urls = (template: Template) => {
       const client = only(template, "AWS::Cognito::UserPoolClient");

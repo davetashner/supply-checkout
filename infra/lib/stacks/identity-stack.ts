@@ -435,8 +435,11 @@ export class IdentityStack extends SupplyCheckoutStack {
    * - Pre token generation (email-verified-handler.ts) sets email_verified
    *   from the provider's claim at each provider sign-in. It relies on the
    *   guard: the attribute it reads is user-writable, and is fresh from the
-   *   provider only at a provider sign-in. Its role may also call
-   *   AdminUpdateUserAttributes on this pool.
+   *   provider only at a provider sign-in. For a linked native user it
+   *   unverifies an email that isn't custom:linked_email at a Managed Login
+   *   token, and records one Cognito verified since at a refresh
+   *   (supply-checkout-kgw). Its role may also call AdminUpdateUserAttributes
+   *   on this pool.
    * - Pre sign-up (account-link-handler.ts) links a first Google or Apple
    *   sign-in whose provider says the email is verified to the one confirmed
    *   native user with that verified email, when the provider is
