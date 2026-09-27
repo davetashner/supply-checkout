@@ -59,6 +59,17 @@ describe("router (CloudFront Function)", () => {
     expect(() => routerCode({ kvsId: "__X__", apex: APEX, www: WWW, app: APP })).toThrow(/__X__/);
   });
 
+  // A SyntaxError in the CloudFront runtime stops every request (503 on app.
+  // and /demo/, supply-checkout-qk1.1), and Node, which runs these tests,
+  // accepts syntax CloudFront doesn't. `for...of` broke prod; keep to the
+  // constructs the router already ran live with.
+  it("uses no syntax the CloudFront runtime rejects", () => {
+    expect(source).not.toMatch(/\bfor\s*\([^)]*\bof\b/);
+    expect(source).not.toMatch(/\.\.\./);
+    expect(source).not.toMatch(/`/);
+    expect(source).not.toMatch(/Object\.assign/);
+  });
+
   it("copies values in literally, with no $ replacement patterns", () => {
     const code = routerCode({ kvsId: "id-$&-$'-$`-$$", apex: APEX, www: WWW, app: APP });
     expect(code).toContain('cf.kvs("id-$&-$\'-$`-$$")');
