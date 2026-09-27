@@ -348,6 +348,8 @@ So every deletion also writes a record to the deletion records bucket, `supply-c
 - **Kept for 400 days** (`DELETION_RECORD_RETENTION_DAYS` in `backend/src/deletions/names.ts`), longer than the vault locks' 365-day maximum, so a record outlives every backup that could hold the data. Object Lock in **compliance mode** means nobody, the root user included, can delete a record or shorten its retention: a stolen administrator session can't erase what a restore has to delete again. After 401 days the lifecycle rule expires it.
 - **Written once.** A retry finds the record there (`If-None-Match`) and keeps the first.
 - **Least privilege.** The account function may only `s3:PutObject` under `users/`, and the team purge only under `teams/`. Neither can read, list or delete a record. Only the owner, with SSO, reads them.
+- **Every version is read.** A writer can't delete a record, but a compromised one could put a new version over it (junk that hides a real deletion, or a forged one); Object Lock keeps the earlier versions. So the restore lists every version of every record (`ListObjectVersions`) and reads each by its version ID, not only the current ones. Any valid version of a key is a deletion, and when a key has more than one, the earliest `deletedAt` is the one that decides whether an account outlived its record. It counts, and the runbook stops on, versions that aren't valid records, keys with more than one version (each record is written once) and delete markers (no writer may delete). `--records-before <ISO time>` leaves out every version S3 says was written (`LastModified`) at or after that time, for a restore after a suspected compromise of a writer.
+- **What reading them needs.** The owner's SSO permission set, in the workload account for the bucket and in the backup account for its copy (`--records-profile`): `s3:ListBucketVersions` on the bucket and `s3:GetObjectVersion` on its objects (`s3:ListBucket` and `s3:GetObject` aren't enough: they only reach current versions). An administrator permission set has both. Bead `supply-checkout-72d.12` tracks a narrower permission set for restores, which must include these.
 - **Copied to the backup account.** S3 replicates each record, as it's written, to the backup account's copy (below), so a restore into a new account after losing the workload account can still re-apply deletions.
 
 ### Deletion records' copy in the backup account
@@ -424,6 +426,8 @@ npm run restore -- copy-back --from $RESTORED --to $LIVE $P   # how many items w
 
 Nothing is written. The copy-back counts tell you how long step 5 will take. A `deletions` line listing teams "left for a person" needs [a decision](#a-team-left-for-a-person) before step 4.
 
+**Stop and investigate** before going on if `deletions` reports any record versions that aren't valid (it exits 1 and lists their S3 version IDs), any records with more than one version, or any delete markers. None of these happen in normal running: each record is written once and never deleted, so any of them means a writer's permissions were used outside the app. Look at each version (`aws s3api list-object-versions --bucket <bucket> --prefix users/` and `--prefix teams/`, then `aws s3api get-object --version-id <id>`), find when the bad writes began (their `LastModified`, and CloudTrail for the writing role), and rotate or lock down that role. Then run `deletions` with `--records-before <that time, ISO 8601 in UTC>`: versions written at or after it are left out, and the first line says so. Valid versions written before it still count, even where a later version overwrote them. A deletion written after that time is lost with them: if the compromise went on while real users were deleting, compare with the app's own logs before applying.
+
 #### 3. Stop writes
 
 Throttle every function that uses the live table to zero, except the live-update function (`supply-checkout-<env>-live-updates`), which only reads the stream and publishes to clients:
@@ -474,7 +478,7 @@ For each record it finds in the restored table:
 
 Pending invites to a deleted account's address from teams it wasn't in can't be found (the record has no address). They expire within 7 days, by TTL.
 
-It exits 1 while a team is left for a person. Records can't be changed or deleted (Object Lock), so this check against the table and the user pool is what keeps a wrong or stale record from deleting someone's data. Every step is idempotent, so a run that stops (a throttle, an expired session) is finished by running it again.
+It exits 1 while a team is left for a person, or while any record version isn't valid (see step 2). Records can't be changed or deleted (Object Lock keeps every version), so this check against the table and the user pool is what keeps a wrong or stale record from deleting someone's data. Every step is idempotent, so a run that stops (a throttle, an expired session) is finished by running it again.
 
 > **Restoring from the backup account into a new account.** The old workload account's records are in the backup account's copy. Read them from there with that account's profile, `--records-profile`; the table, the user pool and `SUPPLY_CHECKOUT_EXPECTED_ACCOUNT` are still the new account's (`--profile`):
 >

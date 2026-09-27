@@ -14,7 +14,7 @@
 // may write only its own prefix (infra). A record is written once: a retry
 // finds it there (If-None-Match) and keeps the first.
 
-import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, ListObjectVersionsCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { DELETION_PREFIXES, DELETIONS_ENV } from "./names.js";
 
 export type DeletionKind = keyof typeof DELETION_PREFIXES;
@@ -36,7 +36,7 @@ export interface DeletionLog {
 
 /** The S3 calls this module makes; an S3Client, or a fake in tests. */
 export interface S3Like {
-  send(command: PutObjectCommand | ListObjectsV2Command | GetObjectCommand): Promise<unknown>;
+  send(command: PutObjectCommand | ListObjectVersionsCommand | GetObjectCommand): Promise<unknown>;
 }
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -99,37 +99,104 @@ export function deletionLogFromEnv(env: NodeJS.ProcessEnv = process.env): Deleti
 }
 
 export interface ReadResult {
+  /** One per key: every valid version of it merged (the earliest deletedAt, every closed team any version lists). */
   readonly records: DeletionRecord[];
-  /** Keys whose object isn't a valid record, or doesn't match its key: left for a person to look at. */
-  readonly invalid: string[];
+  /**
+   * Versions that aren't a valid record, don't match their key, or (with
+   * `before`) have no time to check: left for a person to look at. Only the
+   * key and S3's version ID, never the contents.
+   */
+  readonly invalid: { readonly key: string; readonly versionId: string }[];
+  /** Keys with more than one version. Records are written once, so each is worth a look. */
+  readonly rewritten: number;
+  /** Delete markers. No writer may delete a record, so each is worth a look. */
+  readonly deleteMarkers: number;
+  /** Versions written at or after `before`, left out. */
+  readonly ignored: number;
 }
 
-/** Every record in the bucket, users and teams, in key order. */
-export async function readDeletionRecords(s3: S3Like, bucket: string): Promise<ReadResult> {
-  const records: DeletionRecord[] = [];
-  const invalid: string[] = [];
+interface VersionsPage {
+  Versions?: { Key?: string; VersionId?: string; LastModified?: Date }[];
+  DeleteMarkers?: unknown[];
+  IsTruncated?: boolean;
+  NextKeyMarker?: string;
+  NextVersionIdMarker?: string;
+}
+
+/**
+ * Every version of every record in the bucket, users and teams, in key order,
+ * not only the current ones: Object Lock keeps each version, so a record
+ * overwritten with junk, or hidden by a delete marker, still counts. Any valid
+ * version of a key is a deletion. `before` leaves out versions written (S3's
+ * LastModified) at or after it, for a restore after a suspected compromise of
+ * a writer.
+ */
+export async function readDeletionRecords(s3: S3Like, bucket: string, options: { readonly before?: Date } = {}): Promise<ReadResult> {
+  const byKey = new Map<string, DeletionRecord>();
+  const versions = new Map<string, number>();
+  const invalid: { key: string; versionId: string }[] = [];
+  let deleteMarkers = 0;
+  let ignored = 0;
   for (const [kind, prefix] of Object.entries(DELETION_PREFIXES) as [DeletionKind, string][]) {
-    let ContinuationToken: string | undefined;
-    do {
-      const page = (await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, ContinuationToken }))) as {
-        Contents?: { Key?: string }[];
-        NextContinuationToken?: string;
-      };
-      for (const { Key } of page.Contents ?? []) {
+    let KeyMarker: string | undefined;
+    let VersionIdMarker: string | undefined;
+    let more = true;
+    while (more) {
+      const page = (await s3.send(new ListObjectVersionsCommand({ Bucket: bucket, Prefix: prefix, KeyMarker, VersionIdMarker }))) as VersionsPage;
+      deleteMarkers += page.DeleteMarkers?.length ?? 0;
+      for (const { Key, VersionId, LastModified } of page.Versions ?? []) {
         if (!Key) continue;
-        // A failed read fails the whole listing: a record missed is a deletion not re-applied
-        const object = (await s3.send(new GetObjectCommand({ Bucket: bucket, Key }))) as { Body?: { transformToString(): Promise<string> } };
-        const body = (await object.Body?.transformToString()) ?? "";
-        try {
-          const record = validRecord(JSON.parse(body));
-          if (record.kind !== kind || deletionKey(kind, record.id) !== Key) throw new Error("Doesn't match its key");
-          records.push(record);
-        } catch {
-          invalid.push(Key);
+        // An unversioned object's version ID is "null"
+        const versionId = VersionId ?? "null";
+        versions.set(Key, (versions.get(Key) ?? 0) + 1);
+        if (options.before) {
+          if (!(LastModified instanceof Date) || Number.isNaN(LastModified.getTime())) {
+            invalid.push({ key: Key, versionId });
+            continue;
+          }
+          if (LastModified.getTime() >= options.before.getTime()) {
+            ignored++;
+            continue;
+          }
         }
+        // A failed read fails the whole listing: a record missed is a deletion not re-applied
+        const object = (await s3.send(new GetObjectCommand({ Bucket: bucket, Key, VersionId: versionId }))) as { Body?: { transformToString(): Promise<string> } };
+        const body = (await object.Body?.transformToString()) ?? "";
+        let record: DeletionRecord;
+        try {
+          record = validRecord(JSON.parse(body));
+          if (record.kind !== kind || deletionKey(kind, record.id) !== Key) throw new Error("Doesn't match its key");
+        } catch {
+          invalid.push({ key: Key, versionId });
+          continue;
+        }
+        const seen = byKey.get(Key);
+        byKey.set(Key, seen ? merge(seen, record) : record);
       }
-      ContinuationToken = page.NextContinuationToken;
-    } while (ContinuationToken);
+      more = Boolean(page.IsTruncated);
+      KeyMarker = page.NextKeyMarker;
+      VersionIdMarker = page.NextVersionIdMarker;
+      // A truncated page with no marker would list the same page forever
+      if (more && !KeyMarker) throw new Error("ListObjectVersions was truncated without a marker");
+    }
   }
-  return { records, invalid };
+  // Users then teams, each in S3's (byte) order
+  const order = [...byKey.keys()].sort((a, b) => kindOrder(a) - kindOrder(b) || (a < b ? -1 : 1));
+  return {
+    records: order.map((key) => byKey.get(key) as DeletionRecord),
+    invalid,
+    rewritten: [...versions.values()].filter((n) => n > 1).length,
+    deleteMarkers,
+    ignored,
+  };
+}
+
+const PREFIX_ORDER = Object.values(DELETION_PREFIXES);
+const kindOrder = (key: string) => PREFIX_ORDER.findIndex((p) => key.startsWith(p));
+
+/** Two valid versions of one key: the earlier time (a survivor is judged from the first deletion), and every closed team either lists. */
+function merge(a: DeletionRecord, b: DeletionRecord): DeletionRecord {
+  const teamsClosed = [...new Set([...(a.teamsClosed ?? []), ...(b.teamsClosed ?? [])])].sort();
+  const deletedAt = Date.parse(b.deletedAt) < Date.parse(a.deletedAt) ? b.deletedAt : a.deletedAt;
+  return { kind: a.kind, id: a.id, deletedAt, ...(teamsClosed.length ? { teamsClosed } : {}) };
 }

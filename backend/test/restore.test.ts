@@ -6,7 +6,7 @@
 // test/restore.test.ts).
 
 import { randomUUID } from "node:crypto";
-import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand } from "@aws-sdk/client-s3";
+import { GetObjectCommand, ListObjectVersionsCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { PutCommand, QueryCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import { acceptInvite, authorizeTeam, closeTeam, createInvite, createTeam, type Db, type MemberRole, setDocument } from "../src/data/index.js";
@@ -20,11 +20,23 @@ import { endpoint, fakeDb, newUser, rawItem, REGION, useTable } from "./helpers.
 const NOW = new Date("2026-09-27T12:00:00.000Z");
 const newTeamId = () => `team-${randomUUID()}`;
 
-/** An in-memory bucket behind the three S3 calls records.ts makes, listing `pageSize` keys a page. */
+/**
+ * An in-memory versioned bucket behind the three S3 calls records.ts makes,
+ * listing `pageSize` versions a page, newest first within a key as S3 does.
+ * `objects` is the current versions; setting one adds a version, written at
+ * `state.now`.
+ */
 function fakeS3(pageSize = 2) {
-  const objects = new Map<string, string>();
+  const versions: { key: string; versionId: string; body: string; lastModified: Date | undefined }[] = [];
+  const state = { putError: undefined as string | undefined, getError: undefined as string | undefined, now: NOW as Date | undefined, deleteMarkers: [] as { Key: string }[], unversioned: false };
+  class Current extends Map<string, string> {
+    override set(key: string, body: string) {
+      versions.push({ key, versionId: `v${versions.length + 1}`, body, lastModified: state.now });
+      return super.set(key, body);
+    }
+  }
+  const objects = new Current();
   const calls: string[] = [];
-  const state = { putError: undefined as string | undefined, getError: undefined as string | undefined };
   const s3: S3Like = {
     async send(command) {
       calls.push(command.constructor.name);
@@ -35,18 +47,28 @@ function fakeS3(pageSize = 2) {
         objects.set(Key as string, String(Body));
         return {};
       }
-      if (command instanceof ListObjectsV2Command) {
-        const keys = [...objects.keys()].filter((k) => k.startsWith(command.input.Prefix ?? "")).sort();
-        const start = Number(command.input.ContinuationToken ?? 0);
+      if (command instanceof ListObjectVersionsCommand) {
+        const listed = versions
+          .map((v, i) => ({ ...v, i }))
+          .filter((v) => v.key.startsWith(command.input.Prefix ?? ""))
+          .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : b.i - a.i));
+        const start = Number(command.input.KeyMarker ?? 0);
         const next = start + pageSize;
-        return { Contents: [...keys.slice(start, next).map((Key) => ({ Key })), ...(start === 0 ? [{}] : [])], NextContinuationToken: next < keys.length ? String(next) : undefined };
+        const page = listed.slice(start, next).map((v) => ({ Key: v.key, VersionId: state.unversioned ? undefined : v.versionId, LastModified: v.lastModified }));
+        return {
+          Versions: [...page, ...(start === 0 ? [{}] : [])],
+          ...(start === 0 ? { DeleteMarkers: state.deleteMarkers.filter((m) => m.Key.startsWith(command.input.Prefix ?? "")) } : {}),
+          IsTruncated: next < listed.length,
+          ...(next < listed.length ? { NextKeyMarker: String(next), NextVersionIdMarker: "m" } : {}),
+        };
       }
       if (state.getError) throw Object.assign(new Error(state.getError), { name: state.getError });
-      const body = objects.get((command as GetObjectCommand).input.Key as string);
+      const { Key, VersionId } = (command as GetObjectCommand).input;
+      const body = versions.find((v) => v.key === Key && (state.unversioned ? VersionId === "null" : v.versionId === VersionId))?.body;
       return { Body: body === undefined ? undefined : { transformToString: async () => body } };
     },
   };
-  return { s3, objects, calls, state };
+  return { s3, objects, calls, state, versions };
 }
 
 describe("deletion records", () => {
@@ -115,17 +137,90 @@ describe("deletion records", () => {
     bucket.objects.set("users/u4.json", JSON.stringify({ kind: "team", id: "u4", deletedAt: NOW.toISOString() }));
     const { records, invalid } = await readDeletionRecords(bucket.s3, "b");
     expect(records.map((r) => `${r.kind}:${r.id}`)).toEqual(["user:u1", "user:u2", "user:u3", "team:t1"]);
-    expect(invalid).toEqual(["users/u4.json", "teams/t2.json", "teams/t3.json"]);
+    expect(invalid.map((v) => v.key)).toEqual(["users/u4.json", "teams/t2.json", "teams/t3.json"]);
     // A read that fails fails the whole listing: a missed record is a deletion not re-applied
     bucket.state.getError = "AccessDenied";
     await expect(readDeletionRecords(bucket.s3, "b")).rejects.toMatchObject({ name: "AccessDenied" });
   });
 
-  it("treats an object with no body as invalid", async () => {
+  it("treats an object with no body as invalid, and reads an unversioned object by the version ID null", async () => {
     const s3: S3Like = {
-      send: async (command) => (command instanceof ListObjectsV2Command ? (command.input.Prefix === "users/" ? { Contents: [{ Key: "users/u1.json" }] } : {}) : {}),
+      send: async (command) => (command instanceof ListObjectVersionsCommand ? (command.input.Prefix === "users/" ? { Versions: [{ Key: "users/u1.json", VersionId: "v1" }] } : {}) : {}),
     };
-    expect(await readDeletionRecords(s3, "b")).toEqual({ records: [], invalid: ["users/u1.json"] });
+    expect(await readDeletionRecords(s3, "b")).toEqual({ records: [], invalid: [{ key: "users/u1.json", versionId: "v1" }], rewritten: 0, deleteMarkers: 0, ignored: 0 });
+    const bucket = fakeS3();
+    bucket.state.unversioned = true;
+    await s3DeletionLog({ bucket: "b", s3: bucket.s3 }).record({ kind: "team", id: "t1", deletedAt: NOW.toISOString() });
+    expect((await readDeletionRecords(bucket.s3, "b")).records).toEqual([{ kind: "team", id: "t1", deletedAt: NOW.toISOString() }]);
+  });
+
+  it("reads every version: a record overwritten with junk, or hidden by a delete marker, still counts", async () => {
+    const bucket = fakeS3(2);
+    const log = s3DeletionLog({ bucket: "b", s3: bucket.s3 });
+    await log.record({ kind: "user", id: "u1", deletedAt: NOW.toISOString(), teamsClosed: ["t1"] });
+    await log.record({ kind: "team", id: "t9", deletedAt: NOW.toISOString() });
+    // A compromised writer overwrites both (If-None-Match doesn't stop a writer that leaves it out) and adds a delete marker
+    bucket.objects.set("users/u1.json", "junk");
+    bucket.objects.set("teams/t9.json", JSON.stringify({ kind: "team", id: "t8", deletedAt: NOW.toISOString() }));
+    bucket.state.deleteMarkers = [{ Key: "users/u1.json" }];
+    const read = await readDeletionRecords(bucket.s3, "b");
+    expect(read.records).toEqual([
+      { kind: "user", id: "u1", deletedAt: NOW.toISOString(), teamsClosed: ["t1"] },
+      { kind: "team", id: "t9", deletedAt: NOW.toISOString() },
+    ]);
+    expect(read.invalid).toEqual([
+      { key: "users/u1.json", versionId: "v3" },
+      { key: "teams/t9.json", versionId: "v4" },
+    ]);
+    expect(read).toMatchObject({ rewritten: 2, deleteMarkers: 1, ignored: 0 });
+    // Each version is read by its ID
+    expect(bucket.calls.filter((c) => c === "GetObjectCommand")).toHaveLength(4);
+  });
+
+  it("merges a key's valid versions: the earliest time, and every closed team either lists", async () => {
+    const bucket = fakeS3(1);
+    const later = "2026-09-28T00:00:00.000Z";
+    bucket.objects.set("users/u1.json", JSON.stringify({ kind: "user", id: "u1", deletedAt: later, teamsClosed: ["t1"] }));
+    bucket.objects.set("users/u1.json", JSON.stringify({ kind: "user", id: "u1", deletedAt: NOW.toISOString(), teamsClosed: ["t2", "t1"] }));
+    bucket.objects.set("users/u1.json", JSON.stringify({ kind: "user", id: "u1", deletedAt: later }));
+    bucket.objects.set("users/u2.json", JSON.stringify({ kind: "user", id: "u2", deletedAt: later }));
+    bucket.objects.set("users/u2.json", JSON.stringify({ kind: "user", id: "u2", deletedAt: later }));
+    const read = await readDeletionRecords(bucket.s3, "b");
+    expect(read.records).toEqual([
+      { kind: "user", id: "u1", deletedAt: NOW.toISOString(), teamsClosed: ["t1", "t2"] },
+      { kind: "user", id: "u2", deletedAt: later },
+    ]);
+    expect(read).toMatchObject({ invalid: [], rewritten: 2 });
+  });
+
+  it("with before, leaves out versions written at or after it, and sets aside a version with no time", async () => {
+    const bucket = fakeS3(2);
+    const log = s3DeletionLog({ bucket: "b", s3: bucket.s3 });
+    const before = new Date("2026-09-27T13:00:00.000Z");
+    await log.record({ kind: "user", id: "u1", deletedAt: NOW.toISOString() });
+    await log.record({ kind: "team", id: "t1", deletedAt: NOW.toISOString() });
+    // After the compromise: junk over u1, a forged team, and one written exactly at the time
+    bucket.state.now = new Date("2026-09-27T14:00:00.000Z");
+    bucket.objects.set("users/u1.json", "junk");
+    bucket.objects.set("teams/t-forged.json", JSON.stringify({ kind: "team", id: "t-forged", deletedAt: NOW.toISOString() }));
+    bucket.state.now = before;
+    bucket.objects.set("teams/t-edge.json", JSON.stringify({ kind: "team", id: "t-edge", deletedAt: NOW.toISOString() }));
+    bucket.state.now = undefined;
+    bucket.objects.set("teams/t-untimed.json", JSON.stringify({ kind: "team", id: "t-untimed", deletedAt: NOW.toISOString() }));
+    const read = await readDeletionRecords(bucket.s3, "b", { before });
+    expect(read.records.map((r) => `${r.kind}:${r.id}`)).toEqual(["user:u1", "team:t1"]);
+    expect(read).toMatchObject({ ignored: 3, invalid: [{ key: "teams/t-untimed.json", versionId: "v6" }] });
+    // Nothing written after it was even fetched
+    expect(bucket.calls.filter((c) => c === "GetObjectCommand")).toHaveLength(2);
+    // Without it, every version counts
+    const all = await readDeletionRecords(bucket.s3, "b");
+    expect(all.records.map((r) => r.id)).toEqual(["u1", "t-edge", "t-forged", "t-untimed", "t1"]);
+    expect(all).toMatchObject({ ignored: 0, invalid: [{ key: "users/u1.json", versionId: "v3" }] });
+  });
+
+  it("refuses a truncated listing with no marker, rather than listing the same page forever", async () => {
+    const s3: S3Like = { send: async () => ({ Versions: [], IsTruncated: true }) };
+    await expect(readDeletionRecords(s3, "b")).rejects.toThrow("truncated without a marker");
   });
 });
 
@@ -275,6 +370,10 @@ describe("the restore CLI's arguments", () => {
     [["check", "--table", live, "--records-profile", "backup", ...aws], /--records-profile is only for deletions/],
     [["deletions", "--table", "t", "--region", "r", "--endpoint", "http://127.0.0.1:9", "--bucket", "b", "--records-profile", "backup"], /--records-profile is for AWS, not --endpoint/],
     [["deletions", "--table", "t", "--region", "r", "--endpoint", "http://127.0.0.1:9"], /--bucket is required with --endpoint/],
+    [["check", "--table", live, "--records-before", "2026-09-27T12:00:00Z", ...aws], /--records-before is only for deletions/],
+    [["deletions", "--table", restored, "--records-before", "yesterday", ...aws], /--records-before must be an ISO time in UTC/],
+    [["deletions", "--table", restored, "--records-before", "2026-09-27T12:00:00+02:00", ...aws], /--records-before must be an ISO time in UTC/],
+    [["deletions", "--table", restored, "--records-before", "2026-02-31T12:00:00Z", ...aws], /--records-before must be an ISO time in UTC/],
     [["check", "--table", live, "--apply", ...aws], /check doesn't write/],
   ])("refuses %j", async (args, message) => {
     const result = await run(args);
@@ -318,7 +417,7 @@ describe("the restore CLI's arguments", () => {
       callerAccount: async () => "acct",
       s3: () => ({
         send: async (command) => {
-          buckets.push(String((command as ListObjectsV2Command).input.Bucket));
+          buckets.push(String((command as ListObjectVersionsCommand).input.Bucket));
           throw Object.assign(new Error("Access Denied"), { name: "AccessDenied" });
         },
       }),
@@ -340,7 +439,7 @@ describe("the restore CLI's arguments", () => {
       },
       s3: (_region, credentials) => ({
         send: async (command) => {
-          read.push({ bucket: String((command as ListObjectsV2Command).input.Bucket), credentials });
+          read.push({ bucket: String((command as ListObjectVersionsCommand).input.Bucket), credentials });
           throw Object.assign(new Error("Access Denied"), { name: "AccessDenied" });
         },
       }),
@@ -423,6 +522,39 @@ describe("the restore CLI's arguments", () => {
     expect(result.code).toBe(0);
   });
 
+  it("with --records-before, leaves out later versions, and exits 1 on a version that isn't a valid record, naming only its version ID", async () => {
+    const bucket = fakeS3();
+    const log = s3DeletionLog({ bucket: "b", s3: bucket.s3 });
+    await log.record({ kind: "user", id: "u-gone", deletedAt: NOW.toISOString() });
+    bucket.objects.set("users/u-gone.json", "junk written before");
+    bucket.state.now = new Date("2026-09-27T15:00:00.000Z");
+    bucket.objects.set("users/u-forged.json", JSON.stringify({ kind: "user", id: "u-forged", deletedAt: NOW.toISOString() }));
+    const asked: string[][] = [];
+    const deps: Deps = {
+      callerAccount: async () => "acct",
+      s3: () => bucket.s3,
+      userPoolId: async () => "r_pool",
+      stillInPool: async (_region, _credentials, _pool, ids) => {
+        asked.push([...ids]);
+        return new Set();
+      },
+      connect: () => fakeDb(async () => ({ Items: [{ PK: "USER#u-gone", SK: "TEAM#t1" }] })),
+    };
+    const result = await run(["deletions", "--table", restored, ...aws, "--records-before", "2026-09-27T14:00Z"], deps);
+    expect(asked).toEqual([["u-gone"]]);
+    expect(result.code).toBe(1);
+    expect(result.out.split("\n").slice(0, 2)).toEqual([
+      `deletions on ${restored} in r in account acct (profile p), from supply-checkout-prod-deletions-r-acct (dry run)`,
+      "Only record versions written before 2026-09-27T14:00:00.000Z",
+    ]);
+    expect(result.out).toContain("  record versions written at or after 2026-09-27T14:00:00.000Z, left out: 1");
+    expect(result.out).toContain("  record versions that aren't valid, skipped (stop and look at them in the bucket, docs/backups.md): 1\n    version v2");
+    expect(result.out).toContain("  records with more than one version (each is written once: look at them): 1");
+    expect(result.out).toContain("  accounts with rows to delete: 1 (dry run: would be)");
+    // Never a user ID or a record's contents
+    expect(result.out).not.toMatch(/u-gone|u-forged|junk/);
+  });
+
   it("refuses a user pool parameter that isn't a pool ID, before asking Cognito", async () => {
     const bucket = fakeS3();
     const deps: Deps = { ...unused, callerAccount: async () => "acct", s3: () => bucket.s3, userPoolId: async () => "not a pool" };
@@ -445,9 +577,13 @@ describe("the restore CLI's arguments", () => {
   });
 
   it("formats its reports", () => {
-    expect(formatDeletions({ users: 2, teams: 1, invalid: 1 }, { apply: true, teamsPurged: 2, itemsPurged: 9, membershipsRemoved: 1, userRowsDeleted: 3, blockedTeams: ["t9"], unconfirmedTeams: ["t8"], survivors: 1 })).toEqual([
+    expect(formatDeletions({ users: 2, teams: 1, invalid: ["v7"], rewritten: 1, deleteMarkers: 2, ignored: 3, before: "2026-09-27T13:00:00.000Z" }, { apply: true, teamsPurged: 2, itemsPurged: 9, membershipsRemoved: 1, userRowsDeleted: 3, blockedTeams: ["t9"], unconfirmedTeams: ["t8"], survivors: 1 })).toEqual([
       "Deletion records: 2 accounts, 1 teams",
-      "  records that aren't valid, skipped (look at them in the bucket): 1",
+      "  record versions written at or after 2026-09-27T13:00:00.000Z, left out: 3",
+      "  record versions that aren't valid, skipped (stop and look at them in the bucket, docs/backups.md): 1",
+      "    version v7",
+      "  records with more than one version (each is written once: look at them): 1",
+      "  delete markers (no writer may delete a record: look at them): 2",
       "  accounts that outlived their record (still in the user pool, or joined or created a team after it), left alone: 1",
       "  teams purged: 2 (9 items)",
       "  memberships removed: 1",
@@ -458,7 +594,7 @@ describe("the restore CLI's arguments", () => {
       "    t8",
       "Done.",
     ]);
-    expect(formatDeletions({ users: 0, teams: 0, invalid: 0 }, { apply: false, teamsPurged: 0, itemsPurged: 0, membershipsRemoved: 0, userRowsDeleted: 0, blockedTeams: [], unconfirmedTeams: [], survivors: 0 })).toEqual([
+    expect(formatDeletions({ users: 0, teams: 0, invalid: [], rewritten: 0, deleteMarkers: 0, ignored: 0 }, { apply: false, teamsPurged: 0, itemsPurged: 0, membershipsRemoved: 0, userRowsDeleted: 0, blockedTeams: [], unconfirmedTeams: [], survivors: 0 })).toEqual([
       "Deletion records: 0 accounts, 0 teams",
       "  teams purged: 0 (dry run: would be)",
       "  memberships removed: 0 (dry run: would be)",
