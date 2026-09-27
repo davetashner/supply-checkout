@@ -37,6 +37,8 @@ export class MemoryTable {
   afterGet?: (item: Item | undefined) => void;
   /** Runs before each TransactWriteCommand is applied: a concurrent writer. */
   beforeTransactWrite?: () => void;
+  /** Runs before each PutCommand is applied, after its condition passes: DynamoDB refusing it, say. */
+  beforePut?: (item: Item) => void;
 
   private static id = (k: Item) => `${String(k.PK)}\u0000${String(k.SK)}`;
 
@@ -177,6 +179,7 @@ export class MemoryTable {
         const item = input.Item as Item;
         record([String(item.PK)]);
         this.check(input, this.items.get(MemoryTable.id(item)));
+        this.beforePut?.(item);
         if (MemoryTable.tooBig(item)) throw Object.assign(new Error("Item size has exceeded the maximum allowed size"), { name: "ValidationException" });
         this.items.set(MemoryTable.id(item), structuredClone(item));
         return {};
