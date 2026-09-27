@@ -118,3 +118,24 @@ describe("operator code and old or whole item values (supply-checkout-6uw.5)", (
     expect(await ruleIds('export const m = await import("@aws-sdk/lib-dynamodb");', "src/operator/ops-handler.ts")).toContain("no-restricted-syntax");
   });
 });
+
+describe("the backfill CLI (scripts/backfill.ts)", () => {
+  const CLI = "scripts/backfill.ts";
+
+  it("may import the backfills and the entry point", async () => {
+    expect(await ruleIds('import { runBackfill } from "../src/data/backfill.js";\nimport { createDb } from "../src/data/index.js";', CLI)).toEqual([]);
+  });
+
+  it.each([
+    'import { GetCommand } from "@aws-sdk/lib-dynamodb";',
+    'import { connection } from "../src/data/client.js";',
+    'import { keys } from "../src/data/keys.js";',
+  ])("keeps the other rules: %s", async (code) => {
+    expect(await ruleIds(code, CLI)).toContain("no-restricted-imports");
+  });
+
+  it("gives no other file the backfills", async () => {
+    expect(await ruleIds('import { runBackfill } from "../data/backfill.js";', HANDLER)).toContain("no-restricted-imports");
+    expect(await ruleIds('import { runBackfill } from "../src/data/backfill.js";', "scripts/other.ts")).toContain("no-restricted-imports");
+  });
+});

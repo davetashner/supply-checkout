@@ -1,6 +1,8 @@
 #!/bin/sh
 # Blocks commits that would publish AWS identifiers, personal email addresses
-# or credentials in this public repository, or that name an AWS region outside
-# infra/lib/config.ts (ADR 0010). Install with: npm run hooks:install
+# or credentials in this public repository, that add merge or patch leftovers
+# (*.orig, *.rej), or that name an AWS region outside infra/lib/config.ts
+# (ADR 0010). Install with: npm run hooks:install
 node scripts/check-public-safety.mjs --staged || exit 1
+node scripts/check-stray-files.mjs --staged || exit 1
 exec node scripts/check-region-strings.mjs --staged

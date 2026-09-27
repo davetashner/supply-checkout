@@ -4,6 +4,7 @@ import { PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import { tableName } from "../../../backend/src/data/schema.js";
+import { backupAlertRuleArns } from "../backup-alerts.js";
 import type { DeploymentConfig } from "../config.js";
 import { AlarmTopics, alarmContactsFromContext } from "../observability/alarm-topics.js";
 import { apiOutputParameters } from "./api-stack.js";
@@ -80,11 +81,14 @@ export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySo
  *   here too, with `topics.notify(alarm, severity)`.
  * - `dashboard`: primary region only, drawing every region's metrics.
  * - `checks`: primary region only, the scheduled checks that send the
- *   StuckImports and EmailQuotaUsedPercent gauges (ops-checks.ts).
+ *   StuckImports and EmailQuotaUsedPercent gauges, and the closed-team purge
+ *   with its "Deletion job not running" alarm (ops-checks.ts).
  * - `operatorChanges`: primary region only, P1 alerts on changes to the
  *   operator pool's users, groups, passwords, MFA and settings, on what an
  *   operator's own token can change (ADR 0015), and on anything that
  *   silences or rewrites those rules, from CloudTrail through EventBridge.
+ *   The P1 topic also takes the backup stack's alerts on changes to its
+ *   vault, plan and key (backup-alerts.ts).
  * - `operatorAudit`: primary region only, the P1 alarm on any change or
  *   deletion of an operator audit item other than its TTL expiry, from the
  *   table's stream (operator-audit-watch.ts).
@@ -121,14 +125,26 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     }
 
     if (this.isPrimaryRegion) {
-      this.checks = new OpsChecks(this, "OpsChecks", { envName: config.envName, tableName: table });
+      this.checks = new OpsChecks(this, "OpsChecks", { envName: config.envName, tableName: table, topics: this.topics });
       this.operatorChanges = this.alertOnOperatorChanges(config.envName);
       this.operatorAudit = new OperatorAuditWatch(this, "OperatorAuditWatch", { envName: config.envName, region, topics: this.topics });
+      // The backup stack (primary region, deployed after this one) alerts P1
+      // when its vault, plan or key is changed (backup-alerts.ts): only its
+      // two rules, by name, may publish
+      this.topics.topics.P1.addToResourcePolicy(
+        new PolicyStatement({
+          sid: "AllowBackupChangeAlertsToPublish",
+          principals: [new ServicePrincipal("events.amazonaws.com")],
+          actions: ["sns:Publish"],
+          resources: [this.topics.topics.P1.topicArn],
+          conditions: { ArnEquals: { "aws:SourceArn": backupAlertRuleArns(config.envName, "workload") } },
+        }),
+      );
       this.dashboard = new OpsDashboard(this, "Dashboard", {
         envName: config.envName,
         regions: config.regions,
         tableName: table,
-        alarms: [...this.alarms.alarms, this.operatorAudit.changed, this.operatorAudit.failing],
+        alarms: [...this.alarms.alarms, this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing],
       });
     }
   }
