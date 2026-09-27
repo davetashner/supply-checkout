@@ -5,7 +5,7 @@
 import type { AssumeRoleCommand } from "@aws-sdk/client-sts";
 import { describe, expect, it, vi } from "vitest";
 import { accountScopedDbs } from "../src/api/account-db.js";
-import { cognitoUserInfo } from "../src/api/cognito-user.js";
+import { cognitoDeleteUser, cognitoUserInfo } from "../src/api/cognito-user.js";
 import { ApiError } from "../src/api/http.js";
 import { connection } from "../src/data/client.js";
 import { type Db, hashEmail, InvalidInputError } from "../src/data/index.js";
@@ -120,5 +120,31 @@ describe("cognitoUserInfo", () => {
     for (const issuer of ["https://evil.example.com/pool", "http://cognito-idp.test-local-1.amazonaws.com/pool", "https://cognito-idp.x.amazonaws.com.evil.example/pool"]) {
       expect(() => cognitoUserInfo(issuer), issuer).toThrow(/not a Cognito user pool issuer/);
     }
+  });
+});
+
+describe("cognitoDeleteUser", () => {
+  const ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_pool";
+  const reply = (status: number, body: unknown) => vi.fn(async () => new Response(JSON.stringify(body), { status }));
+
+  it("calls DeleteUser on the issuer's endpoint with the caller's own token: no IAM, and only that user", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 200 }));
+    await cognitoDeleteUser(ISSUER, fetch)("access-token");
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://cognito-idp.test-local-1.amazonaws.com/");
+    expect(init.headers).toEqual({ "content-type": "application/x-amz-json-1.1", "x-amz-target": "AWSCognitoIdentityProviderService.DeleteUser" });
+    expect(JSON.parse(init.body as string)).toEqual({ AccessToken: "access-token" });
+  });
+
+  it("answers 401 to a revoked token or a user already gone, and fails on anything else without Cognito's message", async () => {
+    await expect(cognitoDeleteUser(ISSUER, reply(400, { __type: "NotAuthorizedException" }))("t")).rejects.toThrow(ApiError);
+    await expect(cognitoDeleteUser(ISSUER, reply(400, { __type: "UserNotFoundException" }))("t")).rejects.toThrow(ApiError);
+    await expect(cognitoUserInfo(ISSUER, reply(400, { __type: "UserNotFoundException" }))("t")).rejects.toThrow(ApiError);
+    await expect(cognitoDeleteUser(ISSUER, reply(400, { __type: "InvalidParameterException", message: "pat@example.com" }))("t")).rejects.toThrow(/^DeleteUser failed: 400 InvalidParameterException$/);
+    await expect(cognitoDeleteUser(ISSUER, vi.fn(async () => new Response("<html>", { status: 503 })))("t")).rejects.toThrow(/DeleteUser failed: 503/);
+  });
+
+  it("only talks to a Cognito issuer", () => {
+    expect(() => cognitoDeleteUser("https://evil.example.com/pool")).toThrow(/not a Cognito user pool issuer/);
   });
 });

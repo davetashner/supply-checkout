@@ -24,7 +24,7 @@ export type ErrorCode =
  * the team, or no such team), `last_owner` (the change would leave the team
  * without an owner) and `team_full` (the team is at its member cap).
  */
-export type ErrorReason = "view_only" | "owners_only" | "not_member" | "last_owner" | "team_full";
+export type ErrorReason = "view_only" | "owners_only" | "not_member" | "last_owner" | "team_full" | "team_closed";
 
 /** An error with the HTTP status and code the client sees. */
 export class ApiError extends Error {

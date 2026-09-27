@@ -64,6 +64,12 @@ export const BusinessMetric = {
   StuckImports: "StuckImports",
   /** Gauge: SES sends in the last 24 hours as a percentage of the daily sending quota (J3). */
   EmailQuotaUsedPercent: "EmailQuotaUsedPercent",
+  /** Teams an owner closed (or that closed with their only member's account). */
+  TeamsClosed: "TeamsClosed",
+  /** Accounts their users deleted: the Cognito user and every row that named them. */
+  AccountsDeleted: "AccountsDeleted",
+  /** Closed teams deleted by the scheduled purge once their read-only period ended. */
+  TeamsPurged: "TeamsPurged",
 } as const;
 
 export type BusinessMetricName = (typeof BusinessMetric)[keyof typeof BusinessMetric];

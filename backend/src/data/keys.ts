@@ -3,7 +3,7 @@
 // into another key (for example, a sheet ID containing "#").
 
 import { InvalidInputError } from "./errors.js";
-import { COMMITTING_IMPORTS_PARTITION, INVITE_LIMIT_PREFIX } from "./schema.js";
+import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, INVITE_LIMIT_PREFIX } from "./schema.js";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
@@ -55,6 +55,13 @@ export function month(value: unknown): string {
 
 export const keys = {
   team: (teamId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: "META" }),
+  /**
+   * A membership. Every path that adds or deletes MEMBER items moves the
+   * META item's `members` count (and `owners`, for an owner) in the same
+   * transaction (teamCounts in model.ts): acceptInvite, removeMember (which
+   * leaving and account deletion use). The one exception is the purge of a
+   * closed team (team-purge.ts), which deletes the META item too.
+   */
   member: (teamId: string, userId: string) => ({
     PK: `TEAM#${id(teamId, "team ID")}`,
     SK: `MEMBER#${id(userId, "user ID")}`,
@@ -78,6 +85,13 @@ export const keys = {
     SK: `AUDIT#${ts}#${id(eventId, "event ID")}`,
   }),
   stripe: (customerId: string) => ({ PK: `STRIPE#${id(customerId, "Stripe customer ID")}`, SK: "TEAM" }),
+  /**
+   * Marks a user whose account is being deleted (accounts.ts). While it's
+   * there, createTeam and acceptInvite refuse them in the same transaction as
+   * the membership they'd add, so a join from another device can't slip in
+   * after the deletion has listed the user's teams.
+   */
+  accountDeletion: (userId: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: "DELETING" }),
   /** How many teams the user created on a UTC day (YYYY-MM-DD): the per-user rate limit. */
   teamsCreated: (userId: string, day: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: `LIMIT#TEAMS#${date(day)}` }),
   /** How many invites a team sent (created or re-sent) on a UTC day: the per-team invite limit. */
@@ -142,6 +156,8 @@ export const gsi1 = {
   }),
   sheetsPartition: (teamId: string) => `TEAM#${id(teamId, "team ID")}#SHEETS`,
   inviteToken: (tokenHash: string) => ({ GSI1PK: `INVITE#${tokenHash}`, GSI1SK: "INVITE" }),
+  /** A closed team's META item, in the partition the purge reads, by when it's due (ISO 8601). */
+  closedTeam: (purgeAfter: string, teamId: string) => ({ GSI1PK: CLOSED_TEAMS_PARTITION, GSI1SK: `${purgeAfter}#${id(teamId, "team ID")}` }),
   /** An import job while it's committing: every team's in one index partition, oldest first. */
   importCommitting: (createdAt: string, importId: string) => ({
     GSI1PK: COMMITTING_IMPORTS_PARTITION,

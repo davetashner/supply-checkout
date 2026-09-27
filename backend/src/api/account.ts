@@ -6,7 +6,7 @@ import { mailerFromEnv } from "../email/mailer.js";
 import { createObservability, withObservability } from "../observability/index.js";
 import { accountScopedDbs } from "./account-db.js";
 import { createAccountHandler } from "./account-handler.js";
-import { cognitoUserInfo } from "./cognito-user.js";
+import { cognitoDeleteUser, cognitoUserInfo } from "./cognito-user.js";
 import { API_ENV } from "./routes.js";
 
 function required(name: string): string {
@@ -20,5 +20,5 @@ const issuerUrl = required(API_ENV.issuerUrl);
 const obs = createObservability({ service: "account-api" });
 export const handler = withObservability(
   obs,
-  createAccountHandler({ dbFor: accountScopedDbs({ roleArn: required(API_ENV.accountRoleArn) }), userInfo: cognitoUserInfo(issuerUrl), issuerUrl, obs, mailer: mailerFromEnv() }),
+  createAccountHandler({ dbFor: accountScopedDbs({ roleArn: required(API_ENV.accountRoleArn) }), userInfo: cognitoUserInfo(issuerUrl), issuerUrl, obs, mailer: mailerFromEnv(), deleteUser: cognitoDeleteUser(issuerUrl) }),
 );

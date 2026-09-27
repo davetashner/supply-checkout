@@ -279,7 +279,7 @@ export async function markInviteFailed(
 
 /** Owners revoke an invite: its link stops working. Revoking one that's gone (accepted, revoked or removed by TTL) is harmless. */
 export async function revokeInvite(db: Db, ctx: TeamContext, inviteId: string): Promise<void> {
-  writable(db, ctx, "owner");
+  writable(db, ctx, "owner", { whileClosed: true });
   await connection(db).doc.send(
     new DeleteCommand({
       TableName: db.tableName,
@@ -298,7 +298,7 @@ export async function revokeInvite(db: Db, ctx: TeamContext, inviteId: string): 
  * invite they hadn't used. Needs the same role as the removal.
  */
 export async function revokeInvitesForEmail(db: Db, ctx: TeamContext, email: string, minimum: "viewer" | "owner"): Promise<number> {
-  writable(db, ctx, minimum);
+  writable(db, ctx, minimum, { whileClosed: true });
   const address = normalizeEmail(email);
   const invites = (await queryAll<Invite>(db, teamPartition(ctx.teamId), prefixes.invite)).filter((i) => i.email === address);
   for (const invite of invites) {
@@ -324,7 +324,7 @@ const live = (invite: Invite | undefined, now: Date): invite is Invite =>
  * verified: the address is what entitles the caller to these invites.
  * Reads GSI2, so an invite made a moment ago may not show yet.
  */
-export async function listInvitesForEmail(db: Db, verifiedEmail: string, now = new Date()): Promise<Invite[]> {
+export async function listInvitesForEmail(db: Db, verifiedEmail: string, now = new Date(), options: { readonly includeExpired?: boolean } = {}): Promise<Invite[]> {
   const pk = inviteePartition(hashEmail(verifiedEmail));
   const out: Invite[] = [];
   let ExclusiveStartKey: Record<string, unknown> | undefined;
@@ -336,7 +336,25 @@ export async function listInvitesForEmail(db: Db, verifiedEmail: string, now = n
     ExclusiveStartKey = page.LastEvaluatedKey;
   } while (ExclusiveStartKey);
   // TTL deletion can lag by days, so check expiry here too
-  return out.filter((invite) => live(invite, now) && invite.email === normalizeEmail(verifiedEmail));
+  return out.filter((invite) => (options.includeExpired ? invite?.type === "invite" : live(invite, now)) && invite.email === normalizeEmail(verifiedEmail));
+}
+
+/**
+ * Deletes an invite addressed to the caller's verified email, from whichever
+ * team sent it: account deletion removes every invite that holds the
+ * address. Like findInviteForEmail, the verified address is what entitles
+ * the caller to it, and the delete is conditioned on the stored invite being
+ * for that address. Deleting one that's already gone is harmless.
+ */
+export async function deleteInviteForEmail(db: Db, verifiedEmail: string, invite: Pick<Invite, "teamId" | "inviteId">): Promise<void> {
+  await connection(db).doc.send(
+    new DeleteCommand({
+      TableName: db.tableName,
+      Key: keys.invite(invite.teamId, invite.inviteId),
+      ConditionExpression: "attribute_not_exists(PK) OR email = :email",
+      ExpressionAttributeValues: { ":email": normalizeEmail(verifiedEmail) },
+    }),
+  );
 }
 
 /** One live invite for a verified email address, by its ID, or undefined. */

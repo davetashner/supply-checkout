@@ -88,7 +88,9 @@ export interface AccountRoute {
     | "listInvites"
     | "createInvite"
     | "revokeInvite"
-    | "resendInvite";
+    | "resendInvite"
+    | "closeTeam"
+    | "deleteAccount";
   /**
    * API Gateway's throttle for this route across all callers (requests a
    * second, and burst), below the stage's. /me assumes a role per team, so it
@@ -103,7 +105,8 @@ export interface AccountRoute {
  * And a team's members: owners list them, change their roles and remove them,
  * and any member can leave. And a team's invites: owners invite people by
  * email, see each invite as pending, failed or expired, revoke it and re-send
- * it. Each needs a Cognito access token (the JWT
+ * it. Owners close a team, and anyone deletes their own account (the
+ * account handler's "Closing a team" and "Deleting an account"). Each needs a Cognito access token (the JWT
  * authorizer). They write the user's own `USER#` rows (or, for a member
  * change, that member's), which the team-scoped data function can't reach,
  * so they're served by the `account` function.
@@ -121,6 +124,10 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
   { method: "POST", path: "/teams/{teamId}/invites", action: "createInvite", throttle: { rate: 5, burst: 10 } },
   { method: "DELETE", path: "/teams/{teamId}/invites/{inviteId}", action: "revokeInvite", throttle: { rate: 10, burst: 20 } },
   { method: "POST", path: "/teams/{teamId}/invites/{inviteId}/resend", action: "resendInvite", throttle: { rate: 5, burst: 10 } },
+  // Rare, and each does a lot: closing deletes the team's invites, and deleting an
+  // account visits every team the user is in and deletes the Cognito user
+  { method: "POST", path: "/teams/{teamId}/close", action: "closeTeam", throttle: { rate: 2, burst: 5 } },
+  { method: "DELETE", path: "/me", action: "deleteAccount", throttle: { rate: 2, burst: 5 } },
 ];
 
 /** The header that makes `POST /teams` idempotent: the client's key for one "create team" attempt. */

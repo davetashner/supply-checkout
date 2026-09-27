@@ -112,5 +112,6 @@ export class OpsDashboard extends Construct {
       // Gauges from the scheduled checks (primary region), at their maximum
       graph("J2: stuck imports; J3: SES quota used %", each((r) => [BusinessMetric.StuckImports, BusinessMetric.EmailQuotaUsedPercent].map((name) => business(name, r, FIVE_MINUTES, "Maximum"))), WIDTH / 4),
     );
+    this.dashboard.addWidgets(businessGraph("Accounts: teams closed, accounts deleted, teams purged", [BusinessMetric.TeamsClosed, BusinessMetric.AccountsDeleted, BusinessMetric.TeamsPurged]));
   }
 }

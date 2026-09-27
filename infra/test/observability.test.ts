@@ -359,19 +359,18 @@ describe("alarms on sign-in, email and import failures the functions don't throw
 describe("scheduled checks", () => {
   const functions = (t: Template) => Object.values(t.findResources("AWS::Lambda::Function")).map((f) => f.Properties);
 
-  it("run in the primary region only, every 10 minutes, without retries", () => {
+  it("run in the primary region only, every 10 minutes (the purge every hour), without retries", () => {
     const { region } = build();
     const west = Template.fromStack(region(WEST).observability);
     west.resourceCountIs("AWS::Lambda::Function", 0);
     west.resourceCountIs("AWS::Events::Rule", 0);
     const t = observability();
-    expect(functions(t).map((f) => f.FunctionName).sort()).toEqual(["supply-checkout-prod-email-quota", "supply-checkout-prod-stuck-imports"]);
+    expect(functions(t).map((f) => f.FunctionName).sort()).toEqual(["supply-checkout-prod-email-quota", "supply-checkout-prod-stuck-imports", "supply-checkout-prod-team-purge"]);
     const rules = Object.values(t.findResources("AWS::Events::Rule")).map((r) => r.Properties);
-    expect(rules).toHaveLength(2);
-    for (const rule of rules) {
-      expect(rule.ScheduleExpression).toBe(`rate(${CHECK_EVERY_MINUTES} minutes)`);
-      expect(rule.Targets).toEqual([expect.objectContaining({ RetryPolicy: { MaximumRetryAttempts: 0 } })]);
-    }
+    expect(rules).toHaveLength(3);
+    expect(rules.map((r) => r.ScheduleExpression).sort()).toEqual(["rate(1 hour)", `rate(${CHECK_EVERY_MINUTES} minutes)`, `rate(${CHECK_EVERY_MINUTES} minutes)`]);
+    for (const rule of rules) expect(rule.Targets).toEqual([expect.objectContaining({ RetryPolicy: { MaximumRetryAttempts: 0 } })]);
+    t.hasResourceProperties("AWS::Lambda::Function", { FunctionName: "supply-checkout-prod-team-purge", Timeout: 300 });
     t.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "supply-checkout-prod-stuck-imports",
       Runtime: "nodejs24.x",
@@ -406,6 +405,30 @@ describe("scheduled checks", () => {
     });
     const kms = found.find((s) => JSON.stringify(s.Action).includes("kms")) as Record<string, unknown>;
     expect(kms.Condition).toEqual({ StringEquals: { "kms:ViaService": { "Fn::Join": ["", ["dynamodb.", { Ref: "AWS::Region" }, ".amazonaws.com"]] } } });
+  });
+
+  it("let the team purge find due teams in the closed-teams index and delete whole items, naming only keys and closure fields", () => {
+    const found = statements(observability(), "supply-checkout-prod-team-purge");
+    expect(found.map((s) => s.Action)).toEqual([
+      ["logs:CreateLogStream", "logs:PutLogEvents"],
+      "dynamodb:Query",
+      ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:DeleteItem"],
+      ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"],
+    ]);
+    const attributes = ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "purgeAfter", "stripeCustomerId", "teamId"];
+    const [, index, items] = found as Record<string, unknown>[];
+    expect(index?.Condition).toEqual({
+      "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAMS#CLOSED"], "dynamodb:Attributes": attributes },
+      StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+    });
+    expect(items?.Resource).toEqual({
+      "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]],
+    });
+    expect(items?.Condition).toEqual({
+      "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*", "USER#*", "STRIPE#*"] },
+      "ForAllValues:StringEquals": { "dynamodb:Attributes": attributes },
+      StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE", "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+    });
   });
 
   it("let the SES quota check read the account's quota and nothing else", () => {

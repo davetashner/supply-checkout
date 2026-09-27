@@ -775,7 +775,8 @@
                     "SK",
                     "userId",
                     "role",
-                    "status"
+                    "status",
+                    "closedAt"
                   ]
                 },
                 "StringEqualsIfExists": {
