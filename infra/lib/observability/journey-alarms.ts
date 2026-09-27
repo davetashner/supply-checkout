@@ -10,6 +10,7 @@ import {
 import { Construct } from "constructs";
 import { emailResourceNames } from "../../../backend/src/email/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
+import { PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS } from "../../../backend/src/ops/names.js";
 import { realtimeResourceNames } from "../../../backend/src/realtime/channels.js";
 import type { AlarmTopics, Severity } from "./alarm-topics.js";
 import { apiGateway, business, dynamoDbSystemErrors, dynamoDbThrottles, FIVE_MINUTES, lambda } from "./metrics.js";
@@ -32,6 +33,8 @@ export interface JourneyAlarmSpec {
   readonly rule: string;
   readonly metric: IMetric;
   readonly threshold: number;
+  /** Consecutive periods that must breach before it alarms, for "sustained" rules. Defaults to 1. */
+  readonly periods?: number;
 }
 
 export interface JourneyAlarmsProps {
@@ -46,6 +49,8 @@ export interface JourneyAlarmsProps {
 
 const TEN_MINUTES = Duration.minutes(10);
 const FIFTEEN_MINUTES = Duration.minutes(15);
+/** Two of the hourly purge's runs, so every period holds at least one gauge reading. */
+const TWO_PURGE_RUNS = Duration.hours(2 * PURGE_EVERY_HOURS);
 
 /** `numerator / denominator` as a percentage, or 0 while the denominator is below `minimum`. */
 function percent(numerator: Metric, denominator: Metric, minimum: number, label: string): MathExpression {
@@ -155,6 +160,23 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       threshold: 0,
     },
     {
+      id: "email-codes-failing",
+      title: "Email codes failing",
+      journeys: "J3",
+      severity: "P2",
+      rule: "EmailCodeSendFailures + EmailCodeVerifyFailures at least 3 in 15 minutes: POST /me/email/code or /me/email/verify answered 5xx (Cognito erroring or unreachable, or couldn't deliver the code), so people can't verify their address, and can't accept invites. Refusals (a wrong or expired code, too many attempts) aren't counted. Too few requests for the API errors alarm's 2% to notice.",
+      metric: new MathExpression({
+        expression: "FILL(s, 0) + FILL(c, 0)",
+        usingMetrics: {
+          s: business(BusinessMetric.EmailCodeSendFailures, region, FIFTEEN_MINUTES),
+          c: business(BusinessMetric.EmailCodeVerifyFailures, region, FIFTEEN_MINUTES),
+        },
+        period: FIFTEEN_MINUTES,
+        label: `Email code failures (${region})`,
+      }),
+      threshold: 2,
+    },
+    {
       id: "near-sending-limit",
       title: "Near the sending limit",
       journeys: "J3",
@@ -243,6 +265,16 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       threshold: 30_000,
     },
     {
+      id: "live-updates-deferred",
+      title: "Live updates deferred",
+      journeys: "J4",
+      severity: "P2",
+      rule: "Any LiveUpdatesDeferred in each of 3 consecutive 5-minute periods: the stream consumer keeps running out of its per-invocation publish budget (AppSync slow, or big teams busier than a batch's budget fits), so changes reach other devices late. Every invocation still sends the batch's first chunk, so it can't stall; see Live updates delayed and dropped.",
+      metric: business(BusinessMetric.LiveUpdatesDeferred, region, FIVE_MINUTES),
+      threshold: 0,
+      periods: 3,
+    },
+    {
       id: "live-updates-dropped",
       title: "Live updates dropped",
       journeys: "J4",
@@ -292,6 +324,25 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       metric: business(BusinessMetric.WebhookSignatureFailures, region, FIVE_MINUTES),
       threshold: 0,
     },
+    // J11. Delete an account
+    {
+      id: "deletion-overdue",
+      title: "Deletion overdue",
+      journeys: "J11",
+      severity: "P2",
+      rule: `ClosedTeamsOverdue above 0 at its maximum over ${2 * PURGE_EVERY_HOURS} hours: a closed team is still there more than ${PURGE_OVERDUE_AFTER_HOURS} hours after the day it was due to be deleted, which the privacy policy promises. The hourly closed-team purge (primary region) sends the gauge every run and logs each failed team's ID.`,
+      metric: business(BusinessMetric.ClosedTeamsOverdue, region, TWO_PURGE_RUNS, "Maximum"),
+      threshold: 0,
+    },
+    {
+      id: "team-closed-notices-failing",
+      title: "Team closure emails failing",
+      journeys: "J11",
+      severity: "P2",
+      rule: "Any TeamClosedNoticeFailures over 15 minutes: an owner of a team that just closed wasn't emailed the day it will be deleted (SES refused the message, no address on file, or the owners couldn't be listed). The team closed anyway.",
+      metric: business(BusinessMetric.TeamClosedNoticeFailures, region, FIFTEEN_MINUTES),
+      threshold: 0,
+    },
   ];
 }
 
@@ -316,7 +367,8 @@ export class JourneyAlarms extends Construct {
         metric: spec.metric,
         threshold: spec.threshold,
         comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
-        evaluationPeriods: 1,
+        evaluationPeriods: spec.periods ?? 1,
+        datapointsToAlarm: spec.periods ?? 1,
         treatMissingData: TreatMissingData.NOT_BREACHING,
       });
       props.topics.notify(alarm, spec.severity);

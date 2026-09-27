@@ -20,6 +20,7 @@ import {
   PUBLISH_TIMEOUT_MS,
   PUBLISHES_PER_INVOCATION,
   STREAM_BATCH_SIZE,
+  STREAM_RETRY_ATTEMPTS,
   userChannel,
   userFromChannel,
 } from "../src/realtime/channels.js";
@@ -29,6 +30,7 @@ import { REGION } from "./helpers.js";
 
 const TEAM = "7d3b8a52-5a61-4c3e-9d1f-0b6f2f7c1a11";
 const TEAM_B = "0f0e8a52-5a61-4c3e-9d1f-0b6f2f7c1a22";
+const TEAM_C = "1c2e8a52-5a61-4c3e-9d1f-0b6f2f7c1a33";
 // Members: A1 and A2 in TEAM, B1 in TEAM_B (Cognito user IDs are UUIDs)
 const A1 = "a1a1a1a1-0000-4000-8000-000000000001";
 const A2 = "a2a2a2a2-0000-4000-8000-000000000002";
@@ -359,23 +361,29 @@ describe("the stream handler", () => {
     expect(published.flatMap((p) => p.events.map((e) => e.id))).toEqual(records.map((_, i) => `p${i}`));
   });
 
-  it("keeps at most `concurrency` publishes in flight across teams and members", async () => {
+  it("keeps at most `concurrency` publishes in flight across teams and members, besides the batch's first chunk", async () => {
     members = { [TEAM]: Array.from({ length: 7 }, (_, i) => `a${i}`), [TEAM_B]: Array.from({ length: 5 }, (_, i) => `b${i}`) };
     let active = 0;
     let peak = 0;
-    answer = async (_, events) => {
-      active++;
-      peak = Math.max(peak, active);
+    let first = 0;
+    let firstPeak = 0;
+    answer = async (channel, events) => {
+      // TEAM_B's record is first in the batch: its chunk goes to all 5 members at once, outside the limit
+      const isFirst = channel.startsWith("/users/b");
+      if (isFirst) firstPeak = Math.max(firstPeak, ++first);
+      else peak = Math.max(peak, ++active);
       await new Promise((resolve) => setTimeout(resolve, 2));
-      active--;
+      if (isFirst) first--;
+      else active--;
       return all(events);
     };
     const records = [
-      ...Array.from({ length: 7 }, (_, i) => record("INSERT", product(TEAM, `p${i}`), { new: productItem(`p${i}`, 1) })),
       record("INSERT", product(TEAM_B, "q"), { new: productItem("q", 1) }),
+      ...Array.from({ length: 7 }, (_, i) => record("INSERT", product(TEAM, `p${i}`), { new: productItem(`p${i}`, 1) })),
     ];
     expect(await run(records, 3)).toEqual({ batchItemFailures: [] });
     expect(peak).toBe(3);
+    expect(firstPeak).toBe(5);
     // 7 members x 2 chunks, and 5 members x 1
     expect(published).toHaveLength(19);
   });
@@ -462,7 +470,7 @@ describe("the stream handler", () => {
       // The second chunk reached A1 but not A2, so it goes again from its first record
       expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: records[5]?.dynamodb?.SequenceNumber }] });
       expect(published).toHaveLength(3);
-      expect(counts).toEqual({ LiveUpdates: 12 });
+      expect(counts).toEqual({ LiveUpdates: 12, LiveUpdatesDeferred: 7 });
       expect(logs.find((l) => l.level === "warn")).toMatchObject({ message: expect.stringContaining("budget"), fields: { publishes: 3, deferred: 7, teams: 1 } });
       expect(logs.at(-1)).toMatchObject({ message: "Batch", fields: { events: 12, publishes: 3, sent: 5, failed: 0, deferred: 7 } });
       expect(logs.some((l) => l.level === "error")).toBe(false);
@@ -500,7 +508,9 @@ describe("the stream handler", () => {
     });
 
     it("spends the budget on the earliest records first, so every invocation moves the shard on", async () => {
+      // TEAM_C's record is first in the batch, so it goes outside the budget and the limit.
       // TEAM_B's members are read first and queue first, but TEAM's record is earlier in the batch
+      members[TEAM_C] = ["c0"];
       members[TEAM_B] = Array.from({ length: 5 }, (_, i) => `b${i}`);
       const slowTeam: Audience = {
         recipients: async (teamId) => {
@@ -516,14 +526,37 @@ describe("the stream handler", () => {
         if (channel === "/users/b0") await first;
         return all(events);
       };
-      const records = [...products(TEAM, 1), ...products(TEAM_B, 1, 1)];
-      const running = handler({ maxPublishes: 3, concurrency: 1, audience: slowTeam })({ Records: records });
+      const records = [...products(TEAM_C, 1), ...products(TEAM, 1, 1), ...products(TEAM_B, 1, 2)];
+      const running = handler({ maxPublishes: 4, concurrency: 1, audience: slowTeam })({ Records: records });
       await new Promise((resolve) => setTimeout(resolve, 20));
       release();
       const result = await running;
-      // b0 had the slot; then both of TEAM's members, ahead of TEAM_B's other four; then the budget ran out
-      expect(published.map((p) => p.channel)).toEqual(["/users/b0", `/users/${A1}`, `/users/${A2}`]);
-      expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: records[1]?.dynamodb?.SequenceNumber }] });
+      // c0 went at once; b0 had the slot; then both of TEAM's members, ahead of TEAM_B's other four; then the budget ran out
+      expect(published.map((p) => p.channel)).toEqual(["/users/c0", "/users/b0", `/users/${A1}`, `/users/${A2}`]);
+      expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: records[2]?.dynamodb?.SequenceNumber }] });
+    });
+
+    it("always finishes the batch's first chunk, even for a team at the member cap when AppSync is slow", async () => {
+      // PR #93's worry: each request near its timeout, so the budget runs out before a big team's chunk reaches everyone,
+      // and every retry would stop at the same record until the retries ran out
+      let clock = 0;
+      answer = async (_, events) => {
+        clock += 600;
+        return all(events);
+      };
+      members[TEAM] = Array.from({ length: MEMBERS_PER_TEAM }, (_, i) => `m${i}`);
+      const records = products(TEAM, 10);
+      const result = await handler({ budgetMs: 1_000, now: () => clock, concurrency: 1 })({ Records: records });
+      // The first 5 reached all 100 members; the next 5 wait for the next invocation
+      expect(published).toHaveLength(MEMBERS_PER_TEAM);
+      expect(published.every((p) => p.events.length === EVENTS_PER_PUBLISH)).toBe(true);
+      expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: records[EVENTS_PER_PUBLISH]?.dynamodb?.SequenceNumber }] });
+      expect(counts).toEqual({ LiveUpdates: 10, LiveUpdatesDeferred: 5 });
+      expect(logs.at(-1)).toMatchObject({ message: "Batch", fields: { publishes: MEMBERS_PER_TEAM, sent: 5, failed: 0, deferred: 5 } });
+    });
+
+    it("has enough retry attempts for budget stops alone to drain a full batch", () => {
+      expect(STREAM_RETRY_ATTEMPTS).toBeGreaterThanOrEqual(STREAM_BATCH_SIZE);
     });
 
     it("fits a full batch of changes for teams at the member cap, inside the function's timeout", async () => {

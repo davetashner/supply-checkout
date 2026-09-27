@@ -108,6 +108,8 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 - `failures.spec.js`: failed saves leave the screen as it was
 - `save-states.spec.js` and `aws-save-states.spec.js`: saving on a slow connection, double taps, timeouts, lost answers, and going offline and back
 
+**Live updates deferred: what to do.** A budget stop isn't a failure: the consumer always sends the batch's first chunk (up to 5 changes, to every member of that team) and reports the first record it didn't finish, and Lambda invokes it again from there. Sustained deferral means changes are arriving late. In the consumer's logs (`/aws/lambda/supply-checkout-<env>-live-updates`), the `Publish budget used up` warnings and the `Batch` lines' `publishes`, `deferred` and `lagMs` say how far behind it is. Many publishes per batch means big, busy teams; few publishes with deferrals means AppSync is slow (check its metrics and the AWS Health Dashboard). Each stop may use one of the event source mapping's retry attempts (`STREAM_RETRY_ATTEMPTS`, 25, at least the batch size, so stops alone always drain a batch); a batch that still runs out goes to the dead-letter queue, and Live updates dropped fires.
+
 ### J5. Read a receipt
 
 **Persona:** crew member or owner, after buying supplies.
@@ -191,7 +193,7 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Expected:** done without contacting support. The user is out of every team, a team they were alone in is closed, invites to their address and their sign-in are gone, and a closed team's data is deleted 30 days after it closed. Closing a team will cancel its subscription once billing is built (`supply-checkout-x0l`).
 
-**Status:** built (`supply-checkout-b1h`). **Tests:** `backend/test/account-deletion-api.test.ts` (closing, deleting, the purge, isolation of each session), `backend/test/closing.test.ts` (the same against DynamoDB Local, including that the data is gone after 30 days and not before), `tests/aws-account-deletion.spec.js` (the web app: leaving, closing, a closed team, deleting).
+**Status:** built (`supply-checkout-b1h`). The 30-day deadline is watched: the hourly purge sends `ClosedTeamsOverdue`, the closed teams still there more than 24 hours after their deletion date, and **Deletion overdue** alarms on any ([J9, J10, J11](#j9-j10-j11-roles-cancellation-and-deletion)). **Tests:** `backend/test/account-deletion-api.test.ts` (closing, deleting, the purge and its overdue gauge, isolation of each session), `backend/test/closing.test.ts` (the same against DynamoDB Local, including that the data is gone after 30 days and not before), `tests/aws-account-deletion.spec.js` (the web app: leaving, closing, a closed team, deleting).
 
 ### J12. Choose a plan in the mobile app
 
@@ -243,16 +245,17 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Database throttled | Every journey | P2 | DynamoDB `ReadThrottleEvents` + `WriteThrottleEvents` on the app table |
 | Sign-out not revoking | J0 | P2 | As below |
 | Imports stuck | J2 | P2 | As below, from the stuck-import check |
-| Email verification not saved, Near the sending limit | J3 | P2 | As below. Near the sending limit reads the SES quota check's gauge. |
+| Email verification not saved, Email codes failing, Near the sending limit | J3 | P2 | As below. Near the sending limit reads the SES quota check's gauge. |
 | Email bouncing, Email complaints | J3 | P1 | SES reputation metrics, as below |
 | Email events dropped | J3 | P2 | As below |
 | Writes rejected | J4 | P2 | `ConditionalWriteConflicts` ÷ `Writes`, at least 20 writes |
 | Live updates failing | J4 | P2 | `LiveUpdateFailures` ÷ `LiveUpdates` from the stream consumer (`supply-checkout-dpc`), at least 20 events, over 10 minutes. The canary's live-update check comes with the canary. |
-| Live updates delayed, Live updates dropped | J4 | P2 | As below |
+| Live updates delayed, Live updates dropped, Live updates deferred | J4 | P2 | As below. Live updates deferred needs 3 breaching 5-minute periods in a row. |
 | Receipt reading failing | J5 | P2 | As below |
 | Checkout broken, Webhook signature failures | J7 | P1 | As below |
+| Deletion overdue, Team closure emails failing | J11 | P2 | As below. Deletion overdue reads the closed-team purge's gauge. |
 
-Every other alarm on this page waits for the resource or code it watches, and is added by the bead that builds it (the alarm goes in that region's `observability` stack, with `topics.notify(alarm, severity)`): the canaries (`supply-checkout-pkt`); Site down and Firewall blocking customers (CloudFront and WAF, `supply-checkout-qk1`); API unhealthy (it needs a `/health` route and a Route 53 health check, which the API doesn't have yet); Cognito alarms (`supply-checkout-zsm`); Bedrock alarms and Receipt cost spike (the receipt function); the billing queue, reconciliation and deletion-job alarms; and Checkouts stopped, which compares with the same hour last week, and so needs something other than one CloudWatch alarm. The remaining P3 trends (No sign-ups, Invites not accepted, Failed payments rising, App checkouts abandoned) are read from the dashboard at the weekly review.
+Every other alarm on this page waits for the resource or code it watches, and is added by the bead that builds it (the alarm goes in that region's `observability` stack, with `topics.notify(alarm, severity)`): the canaries (`supply-checkout-pkt`); Site down and Firewall blocking customers (CloudFront and WAF, `supply-checkout-qk1`); API unhealthy (it needs a `/health` route and a Route 53 health check, which the API doesn't have yet); Cognito alarms (`supply-checkout-zsm`); Bedrock alarms and Receipt cost spike (the receipt function); the billing queue and reconciliation alarms; and Checkouts stopped, which compares with the same hour last week, and so needs something other than one CloudWatch alarm. The remaining P3 trends (No sign-ups, Invites not accepted, Failed payments rising, App checkouts abandoned) are read from the dashboard at the weekly review.
 
 ### Every journey
 
@@ -294,20 +297,15 @@ Every other alarm on this page waits for the resource or code it watches, and is
 
 **Imports stuck: what to do.** An import stops part-way when its Lambda times out or items keep changing under it, and the owner didn't press **Try again**. Nothing is lost: every row already committed is complete, and the plan for the rest is staged. Imports that no retry could finish (a row too large to save, or a planned key another item took) leave the check on their own when they stop: the owner was told which line and to choose the file again. So everything this alarm lists is something a retry would finish.
 
-1. Find the import in the check's logs: in Logs Insights on `/aws/lambda/supply-checkout-<env>-stuck-imports`, `filter message = "Import stuck"` gives each one's `teamId`, `importId`, `startedAt` and `committed` of `total` rows. They're IDs only; look up the team's owners from the team ID.
+1. List the stuck imports with the operator CLI ([Operators](infrastructure.md#operators)): `npm run ops -- stuck-imports` gives each one's team ID, import ID, start time and `committed` of `total` rows. They're IDs only; `npm run ops -- team <teamId>` shows the team's owners (and is audited). The check's own logs have the same: in Logs Insights on `/aws/lambda/supply-checkout-<env>-stuck-imports`, `filter message = "Import stuck"`.
 2. Tell an owner of the team that their import stopped part-way, and ask them to import the same file again. If the app still shows **Try again**, that carries on from the first row not committed. Otherwise, choosing the file again starts a new import that re-plans against the inventory as it is now, leaves the rows already imported unchanged and finishes the rest. We can't finish it for them: the job keeps the plan, not the file, and a retry must send the same file.
-3. If the owner finished it as a new import (or doesn't want it), take the old job out of the check so the alarm recovers. This leaves the job itself alone, so a retry of it still works until it expires:
+3. If the owner finished it as a new import (or doesn't want it), take the old job out of the check so the alarm recovers. This leaves the job itself alone, so a retry of it still works until it expires. It's audited (`ops.import.clear`), and the team's owners see it under support actions:
 
    ```bash
-   aws dynamodb update-item --profile supply-prod --region us-east-1 \
-     --table-name supply-checkout-prod-app \
-     --key '{"PK":{"S":"TEAM#<teamId>"},"SK":{"S":"IMPORT#<importId>"}}' \
-     --update-expression 'REMOVE GSI1PK, GSI1SK' \
-     --condition-expression '#s = :committing' \
-     --expression-attribute-names '{"#s":"status"}' \
-     --expression-attribute-values '{":committing":{"S":"committing"}}'
+   npm run ops -- clear-import <teamId> <importId> --reason "Owner re-imported the file"
    ```
 
+   It refuses an import that isn't stuck: one that finished, was cleared already, or started less than an hour ago.
    Job records expire after 7 days anyway, which also clears the alarm.
 4. If imports keep getting stuck, look at the data function's logs for the import route (`POST /teams/{teamId}/imports`): timeouts mean the batches need to be smaller or the function's timeout longer.
 
@@ -320,9 +318,12 @@ Every other alarm on this page waits for the resource or code it watches, and is
 | **Email events dropped** | Messages in the email-events dead-letter queue (`supply-checkout-<env>-email-events-dlq`): a bounce or complaint the handler couldn't record, so a bounced invite may still look pending. SES has still suppressed the address. | any | P2 |
 | **Near the sending limit** | `EmailQuotaUsedPercent`: SES's sends in the last 24 hours as a share of its 24-hour quota. SES has no metric for the quota, and its window is rolling, so a scheduled check (`backend/src/ops/email-quota-handler.ts`, primary region, every 10 minutes) asks SES (`GetAccount`) and sends the share. | above 80% (maximum over 15 minutes) | P2 |
 | **Email verification not saved** | `EmailVerifyFailures` + `EmailUnverifyFailures`: the pre token generation trigger couldn't copy a Google or Apple user's `email_verified` (`backend/src/identity/email-verified-handler.ts`, outcomes `failed` and `downgrade-failed`), or couldn't unverify or record a linked user's changed email, read the address they proved, or clear a pending downgrade (`linked-downgrade-failed`, `linked-record-failed`, `linked-lookup-failed`, `linked-clear-failed`). It logs the error and lets the sign-in go ahead, so the Lambda errors alarm doesn't see it. A failed promotion leaves the user unverified, so they can't accept invites; a failed downgrade leaves them verified. The next sign-in retries. A linked user's failed downgrade (after one retry) fails that sign-in instead, and leaves `custom:downgrade_pending` set when that write went through. Either way no refresh records the address, since only an address proven with a code in the app is recorded (the API already treats the changed email as unverified); a failed read or recording leaves a newly proven address unverified in the API until the next token. | any, over 15 minutes | P2 |
+| **Email codes failing** | `EmailCodeSendFailures` + `EmailCodeVerifyFailures`: `POST /me/email/code` or `POST /me/email/verify` answered 5xx (`backend/src/api/account-handler.ts`), so the person got no code, or their right code didn't verify the address, and they can't accept invites until it does. Refusals (a wrong or expired code, too many attempts, an address that changed) are 4xx and aren't counted. These routes are too quiet for the API errors alarm's 2% to notice. | 3 or more in 15 minutes | P2 |
 | **Invites not accepted** | `InvitesAccepted` ÷ `InvitesSent` business metrics | below 30% over 7 days | P3 |
 
 **Near the sending limit: what to do.** Check the SES console's sending statistics for a burst (a bug resending invites, or abuse of invites), and fix that first. If it's real growth, request a higher sending quota in the SES console (Service Quotas, "Sending quota"), which usually takes a day.
+
+**Email codes failing: what to do.** The account function's logs have each failure: `Request failed` with the error (Cognito's action, HTTP status and error name, never the code, token or address), then the `Request` line with the route and status. `CodeDeliveryFailureException` means Cognito couldn't send the email: check the user pool's email configuration and SES. A 5xx from `GetUser` or `VerifyUserAttribute` is Cognito erroring or unreachable (check the AWS Health Dashboard); DynamoDB errors show in the Database errors alarm too. Nothing needs undoing: the person asks for a new code once it's fixed.
 
 **Email verification not saved: what to do.** The pre token generation function's logs (the identity stack's email-verified trigger; filter on `outcome` `failed` or `downgrade-failed`) have Cognito's error. Throttling (`TooManyRequestsException`) clears on its own at the next sign-in; an access error means the trigger's IAM policy or the pool changed. A user left unverified can sign out and in again once it's fixed.
 
@@ -345,6 +346,7 @@ Keep the key, the pool's user list and the username out of tickets and chat; the
 | **Live updates failing** | The stream consumer's publishes to AppSync Events (`LiveUpdateFailures` ÷ `LiveUpdates`), and the canary's live-update check | publish failures above 1% for 10 minutes (at least 20 events), or the canary's update takes more than 5 seconds twice in a row | P2 |
 | **Live updates delayed** | The stream consumer's Lambda `IteratorAge` (maximum) | above 30 seconds for 5 minutes (the goal is 2 seconds end to end) | P2 |
 | **Live updates dropped** | Messages in the consumer's dead-letter queue (`supply-checkout-<env>-live-updates-dlq`): a batch it gave up on after retries | any | P2 |
+| **Live updates deferred** | `LiveUpdatesDeferred`: change events the consumer's per-invocation publish budget stopped short of, which the next invocation sends. Not failures, but late | any in each of 3 consecutive 5-minute periods | P2 |
 | **Stock counts drifting** | Nightly job comparing each item's storage count with its checkout and return history | any team with a mismatch | P3 |
 
 ### J5. Read a receipt
@@ -384,7 +386,13 @@ Receipt reading is not critical: people can still enter items by hand.
 | --- | --- | --- | --- |
 | **Cross-team access attempts** | Authorizer denials where the signed-in user asked for a team they don't belong to | any, over 15 minutes. Could be a client bug or someone probing. | P2 |
 | **Export failing** | Export runs in the browser from the data API's list routes, so there's no export function: the API errors alarm covers it | as API errors | P2 |
-| **Deletion job failing** | The hourly closed-team purge (`supply-checkout-<env>-team-purge`) throws when any team fails, which the Functions failing alarm counts. Teams past their deletion date aren't a gauge yet | any | P2. The privacy policy promises a deadline. |
+| **Deletion job failing** | The hourly closed-team purge (`supply-checkout-<env>-team-purge`) throws when any team fails, which the Functions failing alarm counts | as Functions failing | P2. The privacy policy promises a deadline. |
+| **Deletion overdue** | `ClosedTeamsOverdue`: closed teams still there more than 24 hours (`PURGE_OVERDUE_AFTER_HOURS`) after their deletion date. The purge (`backend/src/ops/team-purge-handler.ts`, primary region) sends it every run, zero included, even a run that fails | above 0 (maximum over 2 hours, so every period holds a run) | P2 |
+| **Team closure emails failing** | `TeamClosedNoticeFailures`: owners of a team that just closed who weren't emailed the day it will be deleted (SES refused, no address on file, or the owners couldn't be listed). The team closes anyway | any, over 15 minutes | P2 |
+
+**Deletion overdue: what to do.** In Logs Insights on `/aws/lambda/supply-checkout-<env>-team-purge`, `filter message = "Team purge failed"` gives each failing team's `teamId` and the error's name; `message = "Purged closed teams"` shows each run's `due`, `purged`, `failed` and `overdue`. An `AccessDeniedException` means the purge's IAM policy no longer matches what it deletes (`TEAM_PURGE_ATTRIBUTES`); throttling or a timeout clears as later runs carry on. If a run stops at its time budget every hour, a team is bigger than one run can delete: the next runs carry on from where it stopped, so watch that `overdue` falls. Fix the cause and the next hourly run deletes the team; the alarm recovers when the gauge reads 0.
+
+**Team closure emails failing: what to do.** The account function logs `Team closure emails not sent` with the team ID, counts and SES's error names (never addresses). For `MessageRejected` or a suppressed address, check SES's account dashboard and the suppression list; for `NoAddress`, the owner has no email on file. The team is closed either way; if an owner may not know, look them up from the team ID and tell them the deletion date.
 
 ### J12. Choose a plan in the mobile app
 
@@ -407,6 +415,6 @@ Added with us-west-2. Until then, none of these exist.
 
 Several alarms above rely on metrics our own code sends (CloudWatch embedded metric format from Lambda), not ones AWS provides:
 
-`Checkouts`, `Returns`, `LiveUpdates` and `LiveUpdateFailures` (the stream consumer's publishes, for "Live updates failing"), `ReceiptReads`, `ReceiptReadFailures`, `ReceiptLines` (units a receipt adds to existing sheets, apart from `Checkouts` since they never were in storage), `SignUps`, `InvitesSent`, `InvitesAccepted`, `CheckoutSessionErrors`, `WebhookSignatureFailures`, `ConditionalWriteConflicts`, `Writes` (the denominator for "Writes rejected"), `ReceiptTokens` (receipt token usage, with the team ID as metadata rather than a dimension), `SignOutRevokeFailures`, `EmailVerifyFailures` and `EmailUnverifyFailures`. Two are gauges, levels a scheduled check measures and sends with `gauge()`, read at their maximum: `StuckImports` and `EmailQuotaUsedPercent`. Each has a `Region` dimension, even while there is only us-east-1, so they split cleanly when us-west-2 is added.
+`Checkouts`, `Returns`, `LiveUpdates` and `LiveUpdateFailures` (the stream consumer's publishes, for "Live updates failing"), `ReceiptReads`, `ReceiptReadFailures`, `ReceiptLines` (units a receipt adds to existing sheets, apart from `Checkouts` since they never were in storage), `SignUps`, `InvitesSent`, `InvitesAccepted`, `CheckoutSessionErrors`, `WebhookSignatureFailures`, `ConditionalWriteConflicts`, `Writes` (the denominator for "Writes rejected"), `ReceiptTokens` (receipt token usage, with the team ID as metadata rather than a dimension), `SignOutRevokeFailures`, `EmailVerifyFailures`, `EmailUnverifyFailures`, `EmailCodeSendFailures` and `EmailCodeVerifyFailures` (for "Email codes failing"), `LiveUpdatesDeferred` (for "Live updates deferred"), and `TeamClosedNoticeFailures` (for "Team closure emails failing"). Three are gauges, levels a scheduled function measures and sends with `gauge()`, read at their maximum: `StuckImports`, `EmailQuotaUsedPercent` and `ClosedTeamsOverdue` (for "Deletion overdue"). Each has a `Region` dimension, even while there is only us-east-1, so they split cleanly when us-west-2 is added.
 
 The names are in `backend/src/observability/names.ts`, which both the Lambda code and the dashboard and alarms import. Send them with `count()` from `backend/src/observability`, in namespace `SupplyCheckout`. The dashboard already has a graph for each; until the handlers exist, the graphs are empty and the alarms stay OK.

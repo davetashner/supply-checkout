@@ -58,6 +58,19 @@ export const PUBLISH_CONCURRENCY = 20;
 export const STREAM_BATCH_SIZE = 25;
 
 /**
+ * The event source mapping's MaximumRetryAttempts. Every response that
+ * reports a record, a budget stop included, is a failed invocation to Lambda,
+ * which retries up to this many times; AWS doesn't document the count
+ * resetting when the checkpoint moves forward, so assume it doesn't. The
+ * consumer always finishes the batch's first chunk (publisher-handler.ts),
+ * moving at least one record per invocation, so at least STREAM_BATCH_SIZE
+ * attempts means budget stops alone can't send a batch to the dead-letter
+ * queue. Real failures retry this many times too, inside the mapping's
+ * one-hour maximum record age.
+ */
+export const STREAM_RETRY_ATTEMPTS = STREAM_BATCH_SIZE;
+
+/**
  * The most publish requests one invocation makes. Past it, the consumer stops
  * and reports the earliest record it didn't finish, and Lambda invokes it
  * again from there. With parallelizationFactor 1 a shard runs one invocation

@@ -25,9 +25,19 @@
 //   invokes it again from there. So one big, busy team can't hold its shard
 //   (one invocation at a time) for longer than that, and a slow AppSync ends
 //   an invocation with what it sent rather than a timeout that sends the lot
-//   again. Requests go out earliest record first, so each invocation moves
-//   the shard forward. Budget stops aren't failures: they're logged and
-//   counted apart (LiveUpdatesDeferred in the Batch line).
+//   again. Requests go out earliest record first, and the batch's first
+//   chunk (the earliest document record's team, up to 5 events) always goes
+//   to every member, outside the budget and the concurrency limit, so it
+//   finishes within one PUBLISH_TIMEOUT_MS and every invocation moves the
+//   shard forward by at least one record, however big the team or slow
+//   AppSync. Budget stops aren't failures: they're logged, and counted in
+//   LiveUpdatesDeferred ("Live updates deferred" alarms when it keeps
+//   happening).
+// - Retries: each response that reports a record is a failed invocation to
+//   the event source mapping, and AWS doesn't say that progress resets its
+//   count, so we assume a budget stop spends one of its retry attempts.
+//   STREAM_RETRY_ATTEMPTS is at least STREAM_BATCH_SIZE, so budget stops
+//   alone, moving at least one record each, can never use them up.
 // - Partial batch failures: when a publish to any member fails, the handler
 //   reports the earliest record in the batch that didn't reach everyone, and
 //   Lambda retries from there. Records after it are published again, to every
@@ -137,6 +147,10 @@ function publishBudget(max: number, ms: number, now: () => number) {
   let used = 0;
   let spent = false;
   return {
+    /** Counts a request the budget can't refuse (the batch's first chunk). */
+    force(): void {
+      used++;
+    },
     /** Takes one request from the budget, or says it's used up (and stays used up). */
     take(): boolean {
       if (!spent && (used >= max || now() >= deadline)) spent = true;
@@ -159,13 +173,22 @@ const SKIPPED = -2;
 
 /**
  * Publishes one chunk to one channel. Returns the position in the chunk of
- * the first event that didn't go out, -1 when all did, or SKIPPED.
+ * the first event that didn't go out, -1 when all did, or SKIPPED. The
+ * batch's first chunk (`first`) goes at once, whatever the budget and the
+ * concurrency limit.
  */
-async function publishChunk(deps: PublisherDeps, run: Throttle, budget: Budget, teamId: string, channel: string, chunk: readonly Outgoing[]): Promise<number> {
+async function publishChunk(deps: PublisherDeps, run: Throttle, budget: Budget, teamId: string, channel: string, chunk: readonly Outgoing[], first: boolean): Promise<number> {
   try {
     const priority = (chunk[0] as Outgoing).index;
-    // The budget is checked when the request gets its slot, not when it queued
-    const result = await run(priority, async () => (budget.take() ? deps.publish(channel, chunk.map((e) => e.payload)) : undefined));
+    const send = () => deps.publish(channel, chunk.map((e) => e.payload));
+    let result;
+    if (first) {
+      budget.force();
+      result = await send();
+    } else {
+      // The budget is checked when the request gets its slot, not when it queued
+      result = await run(priority, async () => (budget.take() ? send() : undefined));
+    }
     if (!result) return SKIPPED;
     const ok = new Set(result.successful);
     const failedAt = chunk.findIndex((_, j) => !ok.has(j));
@@ -192,6 +215,7 @@ async function publishTeam(
   budget: Budget,
   teamId: string,
   events: readonly Outgoing[],
+  firstIndex: number,
 ): Promise<{ sent: number; publishes: number; firstFailed?: Outgoing; deferred?: boolean }> {
   let users: readonly string[];
   try {
@@ -211,8 +235,9 @@ async function publishTeam(
   let publishes = 0;
   for (let i = 0; i < events.length; i += EVENTS_PER_PUBLISH) {
     const chunk = events.slice(i, i + EVENTS_PER_PUBLISH);
-    if (budget.spent && channels.length) return { sent, publishes, firstFailed: chunk[0], deferred: true };
-    const failures = await Promise.all(channels.map((channel) => publishChunk(deps, run, budget, teamId, channel, chunk)));
+    const first = (chunk[0] as Outgoing).index === firstIndex;
+    if (budget.spent && channels.length && !first) return { sent, publishes, firstFailed: chunk[0], deferred: true };
+    const failures = await Promise.all(channels.map((channel) => publishChunk(deps, run, budget, teamId, channel, chunk, first)));
     const failed = failures.filter((f) => f >= 0);
     const skipped = failures.filter((f) => f === SKIPPED).length;
     publishes += channels.length - skipped;
@@ -243,7 +268,8 @@ export function createPublisherHandler(deps: PublisherDeps) {
     const run = throttle(deps.concurrency ?? PUBLISH_CONCURRENCY);
     const budget = publishBudget(deps.maxPublishes ?? PUBLISHES_PER_INVOCATION, deps.budgetMs ?? PUBLISH_BUDGET_MS, deps.now ?? Date.now);
     const teams = [...byTeam];
-    const results = await Promise.all(teams.map(([teamId, list]) => publishTeam(deps, run, budget, teamId, list)));
+    const firstIndex = events[0]?.index ?? -1;
+    const results = await Promise.all(teams.map(([teamId, list]) => publishTeam(deps, run, budget, teamId, list, firstIndex)));
 
     const sent = results.reduce((n, r) => n + r.sent, 0);
     const publishes = results.reduce((n, r) => n + r.publishes, 0);
@@ -262,6 +288,7 @@ export function createPublisherHandler(deps: PublisherDeps) {
     if (events.length) deps.obs.count(BusinessMetric.LiveUpdates, events.length);
     if (unsent) deps.obs.count(BusinessMetric.LiveUpdateFailures, unsent);
     if (deferred) {
+      deps.obs.count(BusinessMetric.LiveUpdatesDeferred, deferred);
       deps.obs.logger.warn("Publish budget used up; Lambda sends the rest from the earliest unsent record", { publishes, deferred, teams: results.filter((r) => r.deferred).length });
     }
     const oldest = Math.min(...records.map((r) => r.dynamodb?.ApproximateCreationDateTime ?? Infinity));
