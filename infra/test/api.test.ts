@@ -2,7 +2,15 @@ import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { ACCOUNT_ROUTES, AUTH_ROUTES, DATA_ROUTES, OPS_ROUTES, routeKey } from "../../backend/src/api/routes.js";
-import { COMP_ATTRIBUTES, IMPORT_INDEX_ATTRIBUTES, INVITE_LIMIT_ATTRIBUTES, MEMBER_ROW_ATTRIBUTES, OWNER_OPERATOR_AUDIT_ATTRIBUTES, STUCK_IMPORT_ATTRIBUTES } from "../../backend/src/data/schema.js";
+import {
+  COMP_ATTRIBUTES,
+  IMPORT_INDEX_ATTRIBUTES,
+  INVITE_LIMIT_ATTRIBUTES,
+  MEMBER_ROW_ATTRIBUTES,
+  OWNER_OPERATOR_AUDIT_ATTRIBUTES,
+  REOPEN_ATTRIBUTES,
+  STUCK_IMPORT_ATTRIBUTES,
+} from "../../backend/src/data/schema.js";
 import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
 import { apiOutputParameters } from "../lib/stacks/api-stack.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
@@ -117,6 +125,7 @@ describe("HTTP API routes", () => {
       "GET /ops/teams/{teamId}": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "PUT /ops/teams/{teamId}/comp": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "DELETE /ops/teams/{teamId}/comp": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "POST /ops/teams/{teamId}/reopen": { ThrottlingRateLimit: 1, ThrottlingBurstLimit: 2 },
       "GET /ops/audit": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "GET /ops/imports": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /ops/teams/{teamId}/imports/{importId}/clear": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
@@ -148,12 +157,13 @@ describe("HTTP API routes", () => {
 });
 
 describe("functions", () => {
-  it("run Node.js 24 on arm64, with the data function at 1 GB, and the ops function in the primary region only", () => {
+  it("run Node.js 24 on arm64, with the data function at 1 GB, and the ops and reopen functions in the primary region only", () => {
     const { template } = api();
     const fns = resources(template, "AWS::Lambda::Function").map(([id, r]) => [id, r.Properties] as const);
-    expect(fns).toHaveLength(4);
+    expect(fns).toHaveLength(5);
     expect(fns.some(([id]) => id.startsWith("OpsFunction"))).toBe(true);
-    expect(resources(api(WEST).template, "AWS::Lambda::Function").some(([id]) => id.startsWith("OpsFunction"))).toBe(false);
+    expect(fns.some(([id]) => id.startsWith("OpsReopenFunction"))).toBe(true);
+    expect(resources(api(WEST).template, "AWS::Lambda::Function").some(([id]) => id.startsWith("Ops"))).toBe(false);
     for (const [, p] of fns) expect(p).toMatchObject({ Runtime: "nodejs24.x", Architectures: ["arm64"], Timeout: 10, TracingConfig: { Mode: "Active" } });
     expect(fns.find(([id]) => id.startsWith("DataFunction"))?.[1].MemorySize).toBe(1024);
   });
@@ -455,6 +465,8 @@ describe("operator-access role (ADR 0015)", () => {
     expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } });
     // Nothing reads a team's partition from the table: no GetItem, no Query there, no Scan anywhere
     expect(JSON.stringify(policy)).not.toMatch(/GetItem|Scan|Batch|DeleteItem|ConditionCheck/);
+    // And no closure field: with closedAt and purgeAfter it could close a team and have the purge delete it (supply-checkout-6uw.6)
+    expect(JSON.stringify(policy)).not.toMatch(/closedAt|closedBy|purgeAfter|owners/);
   });
 
   it("is the only thing the ops function may assume, and it may call only AdminListGroupsForUser on the operator pool in Cognito", () => {
@@ -463,11 +475,15 @@ describe("operator-access role (ADR 0015)", () => {
       .filter(([id]) => id.startsWith("OpsFunctionRole"))
       .flatMap(([, p]) => (p.Properties.PolicyDocument as { Statement: { Action: unknown; Resource: unknown }[] }).Statement);
     expect(statements.filter((s) => JSON.stringify(s.Action).includes("sts:")).map((s) => JSON.stringify(s.Resource))).toEqual([expect.stringMatching(/OperatorAccessRole/)]);
+    expect(statements.map((s) => JSON.stringify(s.Resource)).join()).not.toMatch(/OperatorReopenRole/);
     const cognito = statements.filter((s) => JSON.stringify(s.Action).includes("cognito-idp:"));
     expect(cognito).toEqual([expect.objectContaining({ Action: "cognito-idp:AdminListGroupsForUser", Resource: { Ref: expect.stringMatching(/identityopsuserpoolarn/i) } })]);
     // No other function may assume the operator-access role
     const assumes = resources(template, "AWS::IAM::Policy").filter(([id, p]) => !id.startsWith("OpsFunctionRole") && /OperatorAccessRole/.test(JSON.stringify(p.Properties.PolicyDocument)));
     expect(assumes).toEqual([]);
+    // Its one other grant: invoking the reopen function, unqualified, and nothing else in Lambda
+    const lambda = statements.filter((s) => JSON.stringify(s.Action).includes("lambda:"));
+    expect(lambda).toEqual([expect.objectContaining({ Action: "lambda:InvokeFunction", Resource: { "Fn::GetAtt": [expect.stringMatching(/^OpsReopenFunction[0-9A-F]+$/), "Arn"] } })]);
   });
 
   it("gives the ops function the operator pool's settings and its role", () => {
@@ -480,6 +496,80 @@ describe("operator-access role (ADR 0015)", () => {
       OPS_CLIENT_ID: { Ref: expect.stringMatching(/opsclientid/i) },
       OPS_USER_POOL_ID: { Ref: expect.stringMatching(/opsuserpoolid/i) },
     });
+  });
+});
+
+describe("operator reopen function and role (supply-checkout-6uw.6)", () => {
+  const role = () => {
+    const { template } = api();
+    const [[, r]] = resources(template, "AWS::IAM::Role").filter(([id]) => id.startsWith("OperatorReopenRole")) as [[string, Resource]];
+    return r.Properties as { AssumeRolePolicyDocument: { Statement: Record<string, unknown>[] }; Policies: { PolicyDocument: { Statement: Record<string, unknown>[] } }[]; MaxSessionDuration: number };
+  };
+
+  it("exists in the primary region only, with no route", () => {
+    expect(resources(api(WEST).template, "AWS::IAM::Role").some(([id]) => id.startsWith("OperatorReopenRole"))).toBe(false);
+    const { template } = api();
+    const integrations = resources(template, "AWS::ApiGatewayV2::Integration").map(([, r]) => JSON.stringify(r.Properties));
+    expect(integrations.some((i) => /OpsReopenFunction/.test(i))).toBe(false);
+  });
+
+  it("can be assumed only by the reopen function's role, with exactly one teamId session tag", () => {
+    const r = role();
+    expect(r.MaxSessionDuration).toBe(3600);
+    const [trust, ...rest] = r.AssumeRolePolicyDocument.Statement;
+    expect(rest).toEqual([]);
+    expect(trust).toMatchObject({
+      Effect: "Allow",
+      Action: ["sts:AssumeRole", "sts:TagSession"],
+      Principal: { AWS: { "Fn::GetAtt": [expect.stringMatching(/^OpsReopenFunctionRole/), "Arn"] } },
+      Condition: { StringLike: { "aws:RequestTag/teamId": "?*" }, "ForAllValues:StringEquals": { "aws:TagKeys": ["teamId"] } },
+    });
+    const { template } = api();
+    const assumes = resources(template, "AWS::IAM::Policy").filter(([, p]) => /OperatorReopenRole/.test(JSON.stringify(p.Properties.PolicyDocument)));
+    expect(assumes.map(([id]) => id)).toEqual([expect.stringMatching(/^OpsReopenFunctionRole/)]);
+  });
+
+  it("reads and updates only the tagged team's keys, version, owners and closure fields, returning nothing, and only appends to that team's operator audit", () => {
+    const [policy, ...others] = role().Policies;
+    expect(others).toEqual([]);
+    const [closure, audit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    expect(rest).toEqual([]);
+    expect(closure).toEqual({
+      Sid: "ReopenClosureFieldsOnly",
+      Effect: "Allow",
+      Action: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": [...REOPEN_ATTRIBUTES] },
+        // A GetItem without a projection would name no attributes and return the whole item
+        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES", "dynamodb:ReturnValues": "NONE" },
+      },
+    });
+    // Nothing about the team's name, plan, status, members or data
+    expect([...REOPEN_ATTRIBUTES]).toEqual(["PK", "SK", "type", "version", "owners", "closedAt", "closedBy", "purgeAfter", "purging", "GSI1PK", "GSI1SK"]);
+    expect(JSON.stringify(closure?.Resource)).not.toMatch(/index|\*/);
+    expect(audit).toEqual({
+      Sid: "TeamOperatorAuditAppendOnly",
+      Effect: "Allow",
+      Action: ["dynamodb:PutItem", "dynamodb:Query"],
+      Resource: expect.anything(),
+      Condition: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["OPAUDIT#${aws:PrincipalTag/teamId}"] } },
+    });
+    expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } });
+    expect(JSON.stringify(policy)).not.toMatch(/Scan|Batch|DeleteItem|ConditionCheck/);
+  });
+
+  it("gives the reopen function its role and table, and the ops function the reopen function's name", () => {
+    const { template } = api();
+    const env = (prefix: string) => (resources(template, "AWS::Lambda::Function").find(([id]) => new RegExp(`^${prefix}[0-9A-F]{8}$`).test(id))?.[1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    expect(env("OpsReopenFunction")).toMatchObject({ TABLE_NAME: "supply-checkout-prod-app", OPS_REOPEN_ROLE_ARN: { "Fn::GetAtt": [expect.stringMatching(/^OperatorReopenRole/), "Arn"] } });
+    expect(env("OpsFunction")).toMatchObject({ OPS_REOPEN_FUNCTION: { Ref: expect.stringMatching(/^OpsReopenFunction[0-9A-F]{8}$/) } });
+    const statements = resources(template, "AWS::IAM::Policy")
+      .filter(([id]) => id.startsWith("OpsReopenFunctionRole"))
+      .flatMap(([, p]) => (p.Properties.PolicyDocument as { Statement: { Action: unknown; Resource: unknown }[] }).Statement);
+    // Its own role: its logs and assuming the reopen role, nothing else
+    expect(statements.map((s) => s.Action)).toEqual(expect.arrayContaining([["sts:AssumeRole", "sts:TagSession"]]));
+    expect(JSON.stringify(statements)).not.toMatch(/dynamodb:|lambda:|cognito/);
   });
 });
 
