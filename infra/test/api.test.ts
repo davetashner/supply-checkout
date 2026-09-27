@@ -98,6 +98,8 @@ describe("HTTP API routes", () => {
       "POST /teams/{teamId}/invites/{inviteId}/resend": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /teams/{teamId}/close": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "DELETE /me": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "POST /me/email/code": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
+      "POST /me/email/verify": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
     });
     // Created after the routes it names
     expect((stage.DependsOn as string[]).filter((d) => d.startsWith("HttpApi")).length).toBeGreaterThanOrEqual(ACCOUNT_ROUTES.length + 1);

@@ -13,7 +13,7 @@ import { hasRole, requireRole } from "../src/api/roles.js";
 import { ACCOUNT_ROUTES, DATA_ROUTES, routeKey, TEAM_ROLES, type TeamRole } from "../src/api/routes.js";
 import { hashEmail, InvalidInputError } from "../src/data/index.js";
 import type { Observability } from "../src/observability/index.js";
-import { accountPartitions, fakeMailer, unusedDeleteUser } from "./helpers.js";
+import { accountPartitions, fakeMailer, unusedDeleteUser, unusedEmailCodes } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const mails = fakeMailer();
@@ -83,7 +83,7 @@ function seed() {
   });
   const dbFor: DbForAccount = (scope) =>
     table.scoped(accountPartitions(scope));
-  accountHandler = createAccountHandler({ dbFor, userInfo: async () => Promise.reject(new Error("not used")), issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser: unusedDeleteUser, now: () => NOW });
+  accountHandler = createAccountHandler({ dbFor, userInfo: async () => Promise.reject(new Error("not used")), issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser: unusedDeleteUser, emailCodes: unusedEmailCodes, now: () => NOW });
 }
 
 beforeEach(seed);

@@ -16,7 +16,7 @@ import { BusinessMetric, type Observability } from "../src/observability/index.j
 import { PURGE_BUDGET_MS } from "../src/ops/names.js";
 import { createTeamPurgeHandler } from "../src/ops/team-purge-handler.js";
 import { TEAM_PURGE_ATTRIBUTES } from "../src/data/schema.js";
-import { REGION, accountPartitions, fakeMailer } from "./helpers.js";
+import { REGION, accountPartitions, fakeMailer, unusedEmailCodes } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const mails = fakeMailer();
@@ -119,7 +119,7 @@ beforeEach(() => {
     deleted.push(token.replace(/^token-/, ""));
   };
   const obs = observability();
-  accountHandler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser, now: () => now });
+  accountHandler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer: mails.mailer, emailCodes: unusedEmailCodes, deleteUser, now: () => now });
   dataHandler = createDataHandler({ dbForTeam: (teamId) => table.db(teamId), obs, now: () => now });
 });
 

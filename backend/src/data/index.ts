@@ -46,6 +46,7 @@ export * from "./commands.js";
 export * from "./imports.js";
 export * from "./accounts.js";
 export { listTeamsToPurge, purgeTeam, type PurgeResult, type TeamDue } from "./team-purge.js";
+export * from "./email-codes.js";
 export { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
 export { audienceChangeFromStream, documentChangeFromStream, type DocumentChange } from "./changes.js";
 export { liveUpdateRecipients } from "./live-audience.js";

@@ -37,6 +37,8 @@ export class FakeBackend {
   // the invites its owners see there (invites is the signed-in user's own, for /me)
   constructor({ teams = [TEAM], invites = [], members = {}, teamInvites = {}, user = USER, docs = {}, signedIn = true, claims = { given_name: "Pat", family_name: "Lee", email: USER.email }, config = CONFIG, expiresIn = 3600 } = {}) {
     Object.assign(this, { teams: clone(teams), invites: clone(invites), members: clone(members), teamInvites: clone(teamInvites), user, signedIn, claims, config, expiresIn });
+    // Invites for the user's address that /me lists once they verify it (the email routes)
+    this.pendingInvites = [];
     this.inviteIds = 0;
     this.docs = new Map(Object.entries(docs).map(([k, data]) => [k, { version: 1, data: clone(data) }]));
     this.calls = [];
@@ -160,6 +162,17 @@ export class FakeBackend {
 
     if (path === "/me" && method === "DELETE") return this.deleteAccount(call.body, err);
     if (path === "/me") return [200, { user: this.user, teams: this.teams, invites: this.invites }];
+    // Verifying the email as Cognito does it: a code for an unverified address, and 123456 is
+    // the code it sent. Verifying lists pendingInvites (invites for the address) in /me.
+    if (path === "/me/email/code" || path === "/me/email/verify") {
+      if (this.user.emailVerified) return err(409, "aborted", "already_verified");
+      if (path === "/me/email/code") { this.codesSent = (this.codesSent || 0) + 1; return [204]; }
+      if (!this.codesSent) return err(400, "bad_request", "code_expired");
+      if (call.body.code !== "123456") return err(400, "bad_request", "code_mismatch");
+      this.user = { ...this.user, emailVerified: true };
+      this.invites.push(...this.pendingInvites.splice(0));
+      return [204];
+    }
     if (path === "/teams" && method === "POST") {
       const team = { ...TEAM, id: "t-" + call.headers["idempotency-key"].slice(0, 8), name: call.body.name, role: "owner" };
       const again = this.teams.find((t) => t.id === team.id);

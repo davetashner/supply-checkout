@@ -52,3 +52,11 @@
 #invitesList p{margin:0}
 .invite-status{font-size:14px;color:var(--muted)}
 .invite-failed{color:var(--danger)}
+/* Verifying the user's email (src/aws/verify-email.js): the prompt on the account screens, and the modal */
+.account .verify-prompt{background:var(--sunk);border-radius:10px;padding:10px 14px;display:grid;gap:8px}
+.account .verify-prompt[hidden]{display:none}
+#modal .verify{display:grid;gap:14px}
+#modal .verify p{margin:0}
+.verify-form{display:grid;gap:10px}
+.verify-form input{background:var(--ground);border:1px solid var(--line);border-radius:9px;padding:9px 12px;width:100%;max-width:12em;font-family:var(--mono);font-size:20px;letter-spacing:.2em}
+.verify-done{font-weight:600}

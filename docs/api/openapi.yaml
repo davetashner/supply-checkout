@@ -98,7 +98,7 @@ info:
     (`dynamodb:LeadingKeys`). A role below the route's is 403
     `permission_denied` with `reason` `view_only` or `owners_only`.
 
-    The account routes (`/me`, `POST /teams`, `POST /invites/{inviteId}/accept`)
+    The account routes (`/me`, `/me/email/*`, `POST /teams`, `POST /invites/{inviteId}/accept`)
     need the same token. They name no team the caller is already in, so they
     run on a separate role session tagged with the caller's `sub` and at most
     one team and one invitee the request is entitled to (the new team, or the
@@ -681,6 +681,66 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429":
           description: "`quota_exceeded`: the caller is already in 20 teams, or (with `reason: \"team_full\"`) the team is at its member cap."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /me/email/code:
+    post:
+      tags: [account]
+      operationId: sendEmailCode
+      summary: Email the caller a code to verify their email address.
+      description: |
+        Cognito emails a 6-digit code to the caller's address
+        (GetUserAttributeVerificationCode with the caller's own access token,
+        so it needs the `aws.cognito.signin.user.admin` scope). Only for an
+        address that isn't verified yet: `emailVerified` is false in
+        `GET /me`. A new code replaces the last one. A user can ask for 10
+        codes a UTC day, and Cognito limits them too (429 for either). No
+        request body, or an empty object.
+      responses:
+        "204": { description: The code is on its way. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409":
+          description: "`aborted` with `reason: \"already_verified\"`: the address is already verified."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          description: "`quota_exceeded`: too many codes asked for. Try again later."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503":
+          description: "`internal`: Cognito couldn't send the email. Try again."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /me/email/verify:
+    post:
+      tags: [account]
+      operationId: verifyEmail
+      summary: Verify the caller's email address with the code from the email.
+      description: |
+        Checks the code with Cognito (VerifyUserAttribute), which marks the
+        address verified. Then refresh the tokens (`POST /auth/refresh`): for
+        a user with Google or Apple linked, the refresh is when the address
+        is recorded and starts to count (docs/infrastructure.md, Sign-in).
+        After that, `GET /me` shows `emailVerified: true` and the invites
+        sent to the address. Cognito limits wrong tries (429).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code]
+              properties:
+                code: { type: string, pattern: "^[0-9]{6}$" }
+      responses:
+        "204": { description: The address is verified. }
+        "400":
+          description: "`bad_request`: with `reason: \"code_mismatch\"`, the code isn't right (or isn't 6 digits); with `reason: \"code_expired\"`, ask for a new one."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409":
+          description: "`aborted`: with `reason: \"already_verified\"`, the address is already verified; with `reason: \"email_in_use\"`, another account has this address."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          description: "`quota_exceeded`: too many tries. Try again later."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /teams/{teamId}/members:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
@@ -1377,7 +1437,7 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, code_mismatch, code_expired, already_verified, email_in_use]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -1385,6 +1445,9 @@ components:
                 doesn't exist). `last_owner`: the change would leave the team
                 without an owner. `team_full`: the team is at its member cap.
                 `team_closed`: the team was closed and is read-only.
+                Verifying an email address: `code_mismatch` (the code isn't
+                right), `code_expired`, `already_verified`, and `email_in_use`
+                (another account has the address).
   responses:
     Document:
       description: The document after the request.

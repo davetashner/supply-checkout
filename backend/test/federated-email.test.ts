@@ -25,7 +25,7 @@ import {
 } from "../src/identity/email-verified-handler.js";
 import { DOWNGRADE_PENDING_ATTRIBUTE, FEDERATED_PROVIDERS, LINKED_EMAIL_ATTRIBUTE, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "../src/identity/names.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
-import { REGION, accountPartitions, fakeMailer, unusedDeleteUser } from "./helpers.js";
+import { REGION, accountPartitions, fakeMailer, unusedDeleteUser, unusedEmailCodes } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const mails = fakeMailer();
@@ -584,9 +584,11 @@ describe("invites for Google and Apple users", () => {
   let table: MemoryTable;
   let handler: ReturnType<typeof createAccountHandler>;
   let now: number;
+  let codesSent: string[];
 
   beforeEach(() => {
     now = Date.now();
+    codesSent = [];
     users = new Map([[OWNER, { sub: OWNER, attributes: { email: "owner@example.com", email_verified: "true" } }]]);
     table = new MemoryTable();
     table.seedTeam("team-a", { [OWNER]: "owner" });
@@ -598,7 +600,8 @@ describe("invites for Google and Apple users", () => {
       if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
       return { sub: user.sub, email: user.attributes.email, emailVerified: emailVerifiedFrom(token.replace(/^token-/, ""), user.attributes) };
     };
-    handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, deleteUser: unusedDeleteUser, now: () => now });
+    const emailCodes = { ...unusedEmailCodes, send: async (token: string) => void codesSent.push(token) };
+    handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, deleteUser: unusedDeleteUser, emailCodes, now: () => now });
   });
 
   /** A first sign-in through Managed Login: Cognito creates the user from the provider's claims, then runs the trigger. */
@@ -687,5 +690,18 @@ describe("invites for Google and Apple users", () => {
     await onToken(event);
     expect(users.get(linked)?.attributes.email_verified).toBe("false");
     expect((await call("POST", `/invites/${inviteId}/accept`, linked, linked, { token })).status).toBe(403);
+  });
+
+  it("lets a user whose downgrade is pending ask for a code: they don't count as verified (supply-checkout-0qr8)", async () => {
+    const linked = "8f0e5b1c-0000-4000-8000-00000000000c";
+    // email_verified still "true" and the email the recorded one, but the downgrade is owed
+    users.set(linked, { sub: linked, attributes: { sub: linked, email: "pat@example.com", email_verified: "true", identities: identities("Google", GOOGLE_ID), [LINKED_EMAIL_ATTRIBUTE]: "pat@example.com", [DOWNGRADE_PENDING_ATTRIBUTE]: "1" } });
+    expect((await call("GET", "/me", linked, linked)).body).toMatchObject({ user: { emailVerified: false } });
+    expect((await call("POST", "/me/email/code", linked, linked)).status).toBe(204);
+    expect(codesSent).toEqual([`token-${linked}`]);
+    // Without the flag the same user is verified, and is refused as such
+    delete users.get(linked)?.attributes[DOWNGRADE_PENDING_ATTRIBUTE];
+    expect(await call("POST", "/me/email/code", linked, linked)).toMatchObject({ status: 409, body: { error: { reason: "already_verified" } } });
+    expect(codesSent).toHaveLength(1);
   });
 });

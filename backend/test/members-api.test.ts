@@ -11,7 +11,7 @@ import type { DataEvent } from "../src/api/data-handler.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
 import { MEMBER_ROW_ATTRIBUTES } from "../src/data/schema.js";
 import type { Observability } from "../src/observability/index.js";
-import { accountPartitions, fakeMailer, unusedDeleteUser } from "./helpers.js";
+import { accountPartitions, fakeMailer, unusedDeleteUser, unusedEmailCodes } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const mails = fakeMailer();
@@ -54,7 +54,7 @@ beforeEach(() => {
     count: () => {},
     flush: () => {},
   } as unknown as Observability;
-  handler = createAccountHandler({ dbFor, userInfo: async () => Promise.reject(new Error("not used")), issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser: unusedDeleteUser, now: () => NOW });
+  handler = createAccountHandler({ dbFor, userInfo: async () => Promise.reject(new Error("not used")), issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser: unusedDeleteUser, emailCodes: unusedEmailCodes, now: () => NOW });
 });
 
 function event(method: string, path: string, user: string, body?: unknown, rawBody?: string): DataEvent {

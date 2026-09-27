@@ -135,6 +135,10 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
       return `${config.authUrl}/oauth2/authorize?${q}`;
     },
 
+    // New tokens now, as the scheduled refresh gets them. After the user verifies their email
+    // (verify-email.js), this is what has the pre token generation trigger record it.
+    refresh: () => refresh(),
+
     token: () => tokens.accessToken,
     claims: () => claimsOf(tokens.idToken),
 

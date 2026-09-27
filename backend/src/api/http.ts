@@ -22,9 +22,11 @@ export type ErrorCode =
  * Why a request was refused, where the code alone doesn't say: `view_only` (a
  * viewer writing), `owners_only` (an owners-only route), `not_member` (not in
  * the team, or no such team), `last_owner` (the change would leave the team
- * without an owner) and `team_full` (the team is at its member cap).
+ * without an owner), `team_full` (the team is at its member cap), and for
+ * verifying an email address: `code_mismatch` and `code_expired` (the code
+ * entered), `already_verified` and `email_in_use` (another account has it).
  */
-export type ErrorReason = "view_only" | "owners_only" | "not_member" | "last_owner" | "team_full" | "team_closed";
+export type ErrorReason = "view_only" | "owners_only" | "not_member" | "last_owner" | "team_full" | "team_closed" | "code_mismatch" | "code_expired" | "already_verified" | "email_in_use";
 
 /** An error with the HTTP status and code the client sees. */
 export class ApiError extends Error {
