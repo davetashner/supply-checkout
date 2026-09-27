@@ -12,7 +12,9 @@ import { alarmContactParameter, alarmContactsFromContext } from "../lib/observab
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
 import { journeyAlarmSpecs } from "../lib/observability/journey-alarms.js";
 import { OPERATOR_AUDIT_HEARTBEAT } from "../../backend/src/data/schema.js";
+import { DELETION_PREFIXES, LIFECYCLE_EXPIRATION } from "../../backend/src/deletions/names.js";
 import { CHECK_EVERY_MINUTES, HEARTBEAT_EVERY_MINUTES, HEARTBEAT_SILENT_ALARM_MINUTES, PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS, PURGE_SILENT_ALARM_HOURS, STUCK_IMPORT_AFTER_MINUTES } from "../../backend/src/ops/names.js";
+import { DELETIONS_BUCKET_CHANGE_EVENTS } from "../lib/observability/deletion-records-watch.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
 import {
   ALARM_KEY_ALIAS_EVENTS,
@@ -35,6 +37,7 @@ import {
   TABLE_KEY_EVENTS,
   TABLE_POLICY_EVENTS,
   TABLE_UPDATE_EVENTS,
+  deletionsRuleTamperingName,
   tamperingWatchRuleName,
   TRAIL_EVENTS,
 } from "../lib/stacks/observability-stack.js";
@@ -88,6 +91,9 @@ const ALARM_IDS = [
   "team-reopened-notices-failing",
 ];
 
+/** Alarms on gauges that only the primary region's scheduled checks and purge send (ops-checks.ts). */
+const PRIMARY_ONLY_ALARM_IDS = ["imports-stuck", "near-sending-limit", "deletion-overdue"];
+
 describe("alarm topics", () => {
   it("has a P1 and a P2 topic, encrypted with a rotating key that CloudWatch may use, refusing plain HTTP", () => {
     const t = observability();
@@ -137,7 +143,8 @@ describe("alarm topics", () => {
         // The primary region's P1 topic also takes the operator-pool alert, from that one rule only (tested below)
         // (and the backup stack's change alerts, by rule name)
         // (and the P2 topic takes the alert-route rule's, tested below)
-        const allow = all.filter((a) => a.Sid !== "AllowOperatorPoolAlertToPublish" && a.Sid !== "AllowBackupChangeAlertsToPublish" && a.Sid !== "AllowAlertRouteChangesToPublish");
+        // (and the deletion records bucket's change rule, tested with the watch)
+        const allow = all.filter((a) => !["AllowOperatorPoolAlertToPublish", "AllowBackupChangeAlertsToPublish", "AllowAlertRouteChangesToPublish", "AllowDeletionsBucketAlertToPublish"].includes(String(a.Sid)));
         if (all.length !== allow.length) expect([r, topics[0]]).toEqual([EAST, expect.stringMatching(/^AlarmTopicsP[12]/)]);
         expect(allow).toEqual([
           {
@@ -240,18 +247,19 @@ describe("alarm topics", () => {
 });
 
 describe("journey alarms (docs/journeys.md)", () => {
-  it("creates the same alarms in every region, each notifying its severity's topic on alarm and recovery", () => {
+  it("creates the alarms in every region, the primary-only ones in the primary region alone, each notifying its severity's topic on alarm and recovery", () => {
     for (const r of config.regions) {
       const t = observability(r);
       // The purge's own alarm is with the purge, and the operator audit watch's two are with the watch, in the primary region only (tested below)
       const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm"))
         .map((a) => a.Properties)
-        .filter((a) => a.AlarmName !== "supply-checkout-prod-p2-deletion-not-running" && !String(a.AlarmName).includes("operator-audit"));
-      const specs = journeyAlarmSpecs(r, "t", "api", "prod");
+        .filter((a) => a.AlarmName !== "supply-checkout-prod-p2-deletion-not-running" && !/operator-audit|deletion-record/.test(String(a.AlarmName)));
+      const specs = journeyAlarmSpecs(r, "t", "api", "prod").filter((s) => r === config.primaryRegion || !s.primaryOnly);
       expect(alarms.map((a) => a.AlarmName).sort()).toEqual(
         specs.map((s) => `supply-checkout-prod-${s.severity.toLowerCase()}-${s.id}`).sort(),
       );
-      expect(specs.map((s) => s.id).sort()).toEqual([...ALARM_IDS].sort());
+      const expected = r === config.primaryRegion ? ALARM_IDS : ALARM_IDS.filter((id) => !PRIMARY_ONLY_ALARM_IDS.includes(id));
+      expect(specs.map((s) => s.id).sort()).toEqual([...expected].sort());
       for (const a of alarms) {
         const topic = a.AlarmName.includes("-p1-") ? /^AlarmTopicsP1/ : /^AlarmTopicsP2/;
         expect(a.AlarmActions[0].Ref).toMatch(topic);
@@ -261,6 +269,23 @@ describe("journey alarms (docs/journeys.md)", () => {
         expect(a.AlarmDescription).toContain("docs/journeys.md");
       }
     }
+  });
+
+  it("creates the alarms on the scheduled checks' and the purge's gauges in the primary region only, where they run", () => {
+    expect(journeyAlarmSpecs(EAST, "t", "api", "prod").filter((s) => s.primaryOnly).map((s) => s.id).sort()).toEqual([...PRIMARY_ONLY_ALARM_IDS].sort());
+    const names = (r: string) => Object.values(observability(r).findResources("AWS::CloudWatch::Alarm")).map((a) => String(a.Properties.AlarmName));
+    const east = names(EAST);
+    const west = names(WEST);
+    for (const id of PRIMARY_ONLY_ALARM_IDS) {
+      expect(east.filter((n) => n.endsWith(`-${id}`))).toHaveLength(1);
+      expect(west.filter((n) => n.endsWith(`-${id}`))).toEqual([]);
+    }
+    // The other region still gets every other journey alarm
+    expect(west).toContain("supply-checkout-prod-p1-functions-failing");
+    // A single-region deployment in the other region makes it the primary, with every alarm
+    const solo = Object.values(Template.fromStack(build({}, { regions: [WEST], primaryRegion: WEST }).region(WEST).observability).findResources("AWS::CloudWatch::Alarm"))
+      .map((a) => String(a.Properties.AlarmName));
+    for (const id of PRIMARY_ONLY_ALARM_IDS) expect(solo.filter((n) => n.endsWith(`-${id}`))).toHaveLength(1);
   });
 
   it("reads business metrics from the SupplyCheckout namespace with the region as their only dimension", () => {
@@ -466,6 +491,7 @@ describe("scheduled checks", () => {
     west.resourceCountIs("AWS::Events::Rule", 0);
     const t = observability();
     expect(functions(t).map((f) => f.FunctionName).sort()).toEqual([
+      "supply-checkout-prod-deletion-records-watch",
       "supply-checkout-prod-email-quota",
       "supply-checkout-prod-operator-audit-watch",
       "supply-checkout-prod-stuck-imports",
@@ -742,8 +768,9 @@ describe("operator pool alerts (ADR 0015)", () => {
 
   function operatorRules() {
     const t = observability();
-    const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([, r]) => r.Properties.EventPattern);
-    expect(rules).toHaveLength(8);
+    // The deletion records watch's rules are tested with the watch
+    const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch"));
+    expect(rules).toHaveLength(9);
     const byId = (prefix: string) => {
       // Logical IDs end in an 8-character hash
       const found = rules.find(([id]) => id.startsWith(prefix) && /^[0-9A-F]{8}$/.test(id.slice(prefix.length)));
@@ -760,6 +787,7 @@ describe("operator pool alerts (ADR 0015)", () => {
       routeChanges: byId("OperatorAlertRouteChanges"),
       tampering: byId("OperatorRuleTampering"),
       tamperingWatch: byId("OperatorRuleTamperingWatch"),
+      deletionsTampering: byId("DeletionsRuleTampering"),
     };
   }
 
@@ -767,7 +795,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     const { region } = build();
     const west = Template.fromStack(region(WEST).observability);
     expect(Object.values(west.findResources("AWS::Events::Rule")).filter((r) => r.Properties.EventPattern)).toEqual([]);
-    const { t, admin, self, watchChanges, dataPath, alarmChanges, routeChanges, tampering, tamperingWatch } = operatorRules();
+    const { t, admin, self, watchChanges, dataPath, alarmChanges, routeChanges, tampering, tamperingWatch, deletionsTampering } = operatorRules();
     const poolId = { Ref: expect.stringMatching(/identityopsuserpoolid/i) };
     expect(admin.props.EventPattern).toEqual({
       source: ["aws.cognito-idp"],
@@ -803,14 +831,16 @@ describe("operator pool alerts (ADR 0015)", () => {
     // Only these rules may publish
     const statements = Object.values(t.findResources("AWS::SNS::TopicPolicy")).flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
     const fromEvents = statements.filter((st) => (st.Principal as { Service?: unknown } | undefined)?.Service === "events.amazonaws.com");
-    expect(fromEvents).toHaveLength(3);
+    expect(fromEvents).toHaveLength(4);
     expect(fromEvents).toEqual(expect.arrayContaining([
       expect.objectContaining({
         Sid: "AllowOperatorPoolAlertToPublish",
-        Condition: { ArnEquals: { "aws:SourceArn": [admin, self, watchChanges, dataPath, alarmChanges, routeChanges, tampering, tamperingWatch].map((r) => ({ "Fn::GetAtt": [r.id, "Arn"] })) } },
+        Condition: { ArnEquals: { "aws:SourceArn": [admin, self, watchChanges, dataPath, alarmChanges, routeChanges, tampering, tamperingWatch, deletionsTampering].map((r) => ({ "Fn::GetAtt": [r.id, "Arn"] })) } },
       }),
       // The route rule on the P2 topic, and nothing else
       expect.objectContaining({ Sid: "AllowAlertRouteChangesToPublish", Resource: { Ref: expect.stringMatching(/^AlarmTopicsP2/) }, Condition: { ArnEquals: { "aws:SourceArn": [{ "Fn::GetAtt": [routeChanges.id, "Arn"] }] } } }),
+      // The deletion records bucket's change rule (tested with the watch)
+      expect.objectContaining({ Sid: "AllowDeletionsBucketAlertToPublish" }),
       // The backup stack's two change-alert rules, by name (tested in backup.test.ts)
       expect.objectContaining({ Sid: "AllowBackupChangeAlertsToPublish" }),
     ]));
@@ -838,8 +868,9 @@ describe("operator pool alerts (ADR 0015)", () => {
   });
 
   it("tell P1 when an operator alert rule is deleted, disabled or loses its target, whoever does it, or is rewritten outside a deploy, with two rules watching each other (supply-checkout-6uw.11)", () => {
-    const { admin, self, watchChanges, dataPath, alarmChanges, routeChanges, tampering, tamperingWatch } = operatorRules();
-    const others = [admin, self, watchChanges, dataPath, alarmChanges, routeChanges].map((r) => ({ Ref: r.id }));
+    const { t, admin, self, watchChanges, dataPath, alarmChanges, routeChanges, tampering, tamperingWatch, deletionsTampering } = operatorRules();
+    // And the deletion records rules' own tampering rule, by its fixed name (supply-checkout-72d.17)
+    const others = [...[admin, self, watchChanges, dataPath, alarmChanges, routeChanges].map((r) => ({ Ref: r.id })), deletionsRuleTamperingName("prod")];
     expect([...OPERATOR_RULE_SILENCING_EVENTS]).toEqual(["DeleteRule", "DisableRule", "RemoveTargets"]);
     expect([...OPERATOR_RULE_CHANGE_EVENTS]).toEqual(["PutRule", "PutTargets"]);
     const pattern = (watched: unknown[]) => ({
@@ -860,14 +891,21 @@ describe("operator pool alerts (ADR 0015)", () => {
     expect(tampering.props.EventPattern).toEqual(pattern([...others, tamperingWatchRuleName("prod")]));
     expect(tamperingWatch.props.EventPattern).toEqual(pattern([...others, { Ref: tampering.id }]));
     for (const rule of [tampering, tamperingWatch]) expect(JSON.stringify(rule.props.Targets)).toContain("an operator alert rule");
+    // That one watches the deletion records watch's rule and its bucket-changes rule, the same way
+    const watchRules = ["DeletionRecordsWatchRule", "DeletionRecordsWatchBucketChanges"].map((prefix) => Object.keys(t.findResources("AWS::Events::Rule")).find((id) => id.startsWith(prefix) && /^[0-9A-F]{8}$/.test(id.slice(prefix.length))));
+    expect(watchRules.every(Boolean)).toBe(true);
+    expect(deletionsTampering.props.Name).toBe(deletionsRuleTamperingName("prod"));
+    expect(deletionsTampering.props.EventPattern).toEqual(pattern(watchRules.map((id) => ({ Ref: id }))));
+    expect(deletionsTampering.props.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP1/) } })]);
+    expect(JSON.stringify(deletionsTampering.props.Targets)).toContain("a deletion records watch rule");
   });
 
   it("keep every pattern well inside EventBridge's 4,096 characters, with each reference as long as a real name or ARN", () => {
-    const { admin, self, watchChanges, dataPath, alarmChanges, routeChanges, tampering, tamperingWatch } = operatorRules();
+    const { admin, self, watchChanges, dataPath, alarmChanges, routeChanges, tampering, tamperingWatch, deletionsTampering } = operatorRules();
     const LONG = `"${"x".repeat(90)}"`;
     const resolve = (value: unknown): unknown =>
       Array.isArray(value) ? value.map(resolve) : value && typeof value === "object" ? (Object.keys(value).some((k) => k === "Ref" || k.startsWith("Fn::")) ? LONG : Object.fromEntries(Object.entries(value).map(([k, v]) => [k, resolve(v)]))) : value;
-    for (const rule of [admin, self, watchChanges, dataPath, alarmChanges, routeChanges, tampering, tamperingWatch]) {
+    for (const rule of [admin, self, watchChanges, dataPath, alarmChanges, routeChanges, tampering, tamperingWatch, deletionsTampering]) {
       expect(JSON.stringify(resolve(rule.props.EventPattern)).length, rule.id).toBeLessThan(3500);
     }
   });
@@ -1146,5 +1184,134 @@ describe("operator audit watch (supply-checkout-6uw.5)", () => {
     expect(HEARTBEAT_SILENT_ALARM_MINUTES).toBeGreaterThanOrEqual(2 * HEARTBEAT_EVERY_MINUTES);
     expect(alarm?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
     expect(JSON.stringify(Object.values(t.findResources("AWS::CloudWatch::Dashboard"))[0])).toMatch(/"OperatorAuditWatchSilent[0-9A-F]+","Arn"/);
+  });
+});
+
+describe("deletion records watch (supply-checkout-72d.16)", () => {
+  const BUCKET = { "Fn::Join": ["", [`supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }]] };
+
+  function watch(t: Template) {
+    const [entry] = Object.entries(t.findResources("AWS::Lambda::Function")).filter(([, f]) => f.Properties.FunctionName === "supply-checkout-prod-deletion-records-watch");
+    if (!entry) throw new Error("No watch function");
+    const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id]) => id.startsWith("DeletionRecordsWatchRule"));
+    expect(rules).toHaveLength(1);
+    return { id: entry[0], props: entry[1].Properties as Record<string, unknown>, rule: rules[0]?.[1].Properties as Record<string, unknown> };
+  }
+
+  it("has the deletion records bucket send its events to EventBridge, without a notifications custom resource", () => {
+    const data = Template.fromStack(build().region(EAST).data);
+    data.hasResourceProperties("AWS::S3::Bucket", { BucketName: BUCKET, NotificationConfiguration: { EventBridgeConfiguration: { EventBridgeEnabled: true } } });
+    data.resourceCountIs("Custom::S3BucketNotifications", 0);
+  });
+
+  it("passes the function the bucket's writes and deletions, other than the lifecycle rule's, in the primary region only", () => {
+    const west = Template.fromStack(build().region(WEST).observability);
+    expect(Object.keys(west.findResources("AWS::Events::Rule")).filter((id) => id.startsWith("DeletionRecordsWatch"))).toEqual([]);
+    const t = observability();
+    const fn = watch(t);
+    expect(fn.rule.EventPattern).toEqual({
+      source: ["aws.s3"],
+      "detail-type": ["Object Created", "Object Deleted"],
+      detail: { bucket: { name: [BUCKET] }, reason: [{ "anything-but": [LIFECYCLE_EXPIRATION] }] },
+    });
+    expect(fn.rule.Targets).toEqual([
+      expect.objectContaining({ Arn: { "Fn::GetAtt": [fn.id, "Arn"] }, RetryPolicy: { MaximumRetryAttempts: 2, MaximumEventAgeInSeconds: 3600 } }),
+    ]);
+    // Only this rule may invoke it
+    t.hasResourceProperties("AWS::Lambda::Permission", {
+      Action: "lambda:InvokeFunction",
+      Principal: "events.amazonaws.com",
+      FunctionName: { "Fn::GetAtt": [fn.id, "Arn"] },
+      SourceArn: { "Fn::GetAtt": [Match.stringLikeRegexp("^DeletionRecordsWatchRule"), "Arn"] },
+    });
+    expect(fn.props).toMatchObject({ Runtime: "nodejs24.x", Environment: { Variables: expect.objectContaining({ DELETIONS_BUCKET: BUCKET, DELETIONS_REGION: EAST }) } });
+  });
+
+  it("lets the watch list the versions of record keys in the one bucket, and nothing else", () => {
+    const t = observability();
+    const fn = watch(t);
+    const role = (fn.props.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0];
+    const found = Object.values(t.findResources("AWS::IAM::Policy"))
+      .filter((p) => (p.Properties.Roles as { Ref: string }[]).some((r) => r.Ref === role) && !String(p.Properties.PolicyName).includes("XRayWrite"))
+      .flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
+    expect(found).toHaveLength(2);
+    expect(found.map((s) => s.Action)).toEqual([["logs:CreateLogStream", "logs:PutLogEvents"], "s3:ListBucketVersions"]);
+    expect(found[1]).toEqual({
+      Sid: "ListRecordVersions",
+      Effect: "Allow",
+      Action: "s3:ListBucketVersions",
+      Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:s3:::supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }]] },
+      Condition: { StringLike: { "s3:prefix": Object.values(DELETION_PREFIXES).map((p) => `${p}*`) } },
+    });
+  });
+
+  it("alarms P2 on any DeletionRecordRewrites, and P2 when the watch fails, both on the dashboard", () => {
+    const t = observability();
+    const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties);
+    const rewritten = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-deletion-record-rewritten");
+    expect(rewritten).toMatchObject({
+      Metrics: [
+        expect.objectContaining({
+          MetricStat: expect.objectContaining({
+            Metric: { Namespace: "SupplyCheckout", MetricName: BusinessMetric.DeletionRecordRewrites, Dimensions: [{ Name: "Region", Value: EAST }] },
+            Period: 300,
+            Stat: "Sum",
+          }),
+        }),
+      ],
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+    });
+    expect(rewritten?.AlarmDescription).toContain("docs/backups.md, When a deletion record is rewritten");
+    expect(rewritten?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
+    expect(rewritten?.OKActions).toEqual(rewritten?.AlarmActions);
+    const failing = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-deletion-records-watch-failing");
+    expect(failing).toMatchObject({ Threshold: 0, ComparisonOperator: "GreaterThanThreshold", TreatMissingData: "notBreaching" });
+    // Its errors, the events Lambda dropped after retries, and invocations EventBridge couldn't make
+    const fn = watch(t);
+    const metrics = failing?.Metrics as { Id: string; Expression?: string; MetricStat?: { Metric: { Namespace: string; MetricName: string; Dimensions: unknown }; Stat: string } }[];
+    expect(metrics.find((m) => m.Expression)?.Expression).toBe("FILL(errors, 0) + FILL(dropped, 0) + FILL(failed, 0)");
+    const stat = (id: string) => metrics.find((m) => m.Id === id)?.MetricStat;
+    expect(stat("errors")?.Metric).toEqual({ Namespace: "AWS/Lambda", MetricName: "Errors", Dimensions: [{ Name: "FunctionName", Value: { Ref: fn.id } }] });
+    expect(stat("dropped")?.Metric).toEqual({ Namespace: "AWS/Lambda", MetricName: "AsyncEventsDropped", Dimensions: [{ Name: "FunctionName", Value: { Ref: fn.id } }] });
+    expect(stat("failed")?.Metric).toEqual({ Namespace: "AWS/Events", MetricName: "FailedInvocations", Dimensions: [{ Name: "RuleName", Value: { Ref: expect.stringMatching(/^DeletionRecordsWatchRule/) } }] });
+    for (const id of ["errors", "dropped", "failed"]) expect(stat(id)?.Stat).toBe("Sum");
+    expect(failing?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
+    const dashboard = JSON.stringify(Object.values(t.findResources("AWS::CloudWatch::Dashboard"))[0]);
+    expect(dashboard).toMatch(/"DeletionRecordsWatchRewritten[0-9A-F]+","Arn"/);
+    expect(dashboard).toMatch(/"DeletionRecordsWatchFailing[0-9A-F]+","Arn"/);
+    const west = Object.values(Template.fromStack(build().region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => String(a.Properties.AlarmName));
+    expect(west.filter((n) => n.includes("deletion-record"))).toEqual([]);
+  });
+
+  it("tells P1 when the bucket's lifecycle, notifications, policy, replication, ownership, public access, Object Lock or versioning changes (review B1)", () => {
+    const t = observability();
+    for (const name of ["PutBucketLifecycle", "DeleteBucketLifecycle", "PutBucketNotification", "PutBucketPolicy", "DeleteBucketPolicy", "PutBucketReplication", "DeleteBucketReplication", "PutBucketOwnershipControls", "PutObjectLockConfiguration", "PutBucketVersioning"]) {
+      expect(DELETIONS_BUCKET_CHANGE_EVENTS, name).toContain(name);
+    }
+    const [entry] = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id]) => id.startsWith("DeletionRecordsWatchBucketChanges"));
+    if (!entry) throw new Error("No bucket changes rule");
+    const [id, rule] = entry;
+    expect(rule.Properties.EventPattern).toEqual({
+      source: ["aws.s3"],
+      "detail-type": ["AWS API Call via CloudTrail"],
+      detail: { eventSource: ["s3.amazonaws.com"], eventName: [...DELETIONS_BUCKET_CHANGE_EVENTS], requestParameters: { bucketName: [BUCKET] } },
+    });
+    expect(rule.Properties.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP1/) } })]);
+    const target = JSON.stringify(rule.Properties.Targets);
+    expect(target).toContain("$.detail.eventID");
+    expect(target).toContain("When the deletion records bucket is changed");
+    expect(target).not.toContain("userIdentity");
+    // The P1 topic lets this rule publish, by its ARN
+    const statements = Object.values(t.findResources("AWS::SNS::TopicPolicy")).flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
+    expect(statements.find((st) => st.Sid === "AllowDeletionsBucketAlertToPublish")).toEqual({
+      Sid: "AllowDeletionsBucketAlertToPublish",
+      Effect: "Allow",
+      Principal: { Service: "events.amazonaws.com" },
+      Action: "sns:Publish",
+      Resource: { Ref: expect.stringMatching(/^AlarmTopicsP1/) },
+      Condition: { ArnEquals: { "aws:SourceArn": { "Fn::GetAtt": [id, "Arn"] } } },
+    });
   });
 });

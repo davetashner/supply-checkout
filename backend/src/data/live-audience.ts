@@ -6,7 +6,8 @@
 // with no caller. It reads only what it needs, and the consumer's IAM policy
 // allows only LIVE_AUDIENCE_ATTRIBUTES (schema.ts, through
 // dynamodb:Attributes), so the consumer can't read documents, emails or
-// anything else:
+// anything else through the table. (It does see them in the stream images it
+// is handed, and must never log those: publisher-handler.ts.)
 //
 // - META: the subscription status, closure and comp. A team that doesn't
 //   exist, was closed (isClosed, whatever its comp), or has ended (hasEnded)
@@ -30,9 +31,10 @@ function validUser(value: unknown): string | undefined {
 /**
  * The user IDs of the team's current members, or none if the team doesn't
  * exist, its subscription has ended or an owner closed it. Strongly consistent, so a member
- * removed before the call is never in the answer.
+ * removed before the call is never in the answer. `abortSignal` ends the
+ * reads early (the consumer's AUDIENCE_READ_TIMEOUT_MS).
  */
-export async function liveUpdateRecipients(db: Db, teamId: string, now = new Date()): Promise<string[]> {
+export async function liveUpdateRecipients(db: Db, teamId: string, now = new Date(), abortSignal?: AbortSignal): Promise<string[]> {
   const pk = teamPartition(id(teamId, "team ID"));
   const { doc } = connection(db);
   const { Item: meta } = await doc.send(
@@ -43,6 +45,7 @@ export async function liveUpdateRecipients(db: Db, teamId: string, now = new Dat
       ExpressionAttributeNames: { "#status": "status" },
       ConsistentRead: true,
     }),
+    { abortSignal },
   );
   // Closed wins over a comp: a closed team is read-only until the purge deletes it
   if (!meta || isClosed(meta) || (hasEnded(meta.status) && !liveComp(meta, now))) return [];
@@ -61,6 +64,7 @@ export async function liveUpdateRecipients(db: Db, teamId: string, now = new Dat
         ConsistentRead: true,
         ExclusiveStartKey,
       }),
+      { abortSignal },
     );
     for (const item of page.Items ?? []) {
       const user = validUser(item.userId);

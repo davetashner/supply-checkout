@@ -722,6 +722,11 @@
           },
           "LogFilePrefix": "s3/deletions/"
         },
+        "NotificationConfiguration": {
+          "EventBridgeConfiguration": {
+            "EventBridgeEnabled": true
+          }
+        },
         "ObjectLockConfiguration": {
           "ObjectLockEnabled": "Enabled",
           "Rule": {

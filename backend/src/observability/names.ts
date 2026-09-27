@@ -100,6 +100,8 @@ export const BusinessMetric = {
   OperatorAuditChanged: "OperatorAuditChanged",
   /** Heartbeats the operator audit watch read from the table's stream (OPERATOR_AUDIT_HEARTBEAT): none for a while means it isn't reading the stream, or its metrics aren't arriving. */
   OperatorAuditWatchHeartbeat: "OperatorAuditWatchHeartbeat",
+  /** Deletion records written over, deleted or hidden behind a delete marker, or objects in the bucket that aren't records: from the deletion records watch (primary region). */
+  DeletionRecordRewrites: "DeletionRecordRewrites",
 } as const;
 
 export type BusinessMetricName = (typeof BusinessMetric)[keyof typeof BusinessMetric];

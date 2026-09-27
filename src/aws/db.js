@@ -48,9 +48,22 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
   const base = `/teams/${encodeURIComponent(teamId)}`;
   const colls = {};
   const inflight = new Map();
+  // Each document's writes, one at a time (queued below)
+  const queues = new Map();
   let removed = false;
   const coll = (name) => (colls[name] ||= { docs: new Map(), loaded: false, listeners: new Set(), touched: null, listing: null, again: false, due: false, fetched: [], held: null });
   const docPath = (name, id) => `${base}/${name}/${encodeURIComponent(id)}`;
+
+  // Runs fn once every write to the same document sent before it has answered, so a write names
+  // the version the one before it made: two quick edits from this page (finishing a sheet, then
+  // saving its details) don't conflict with each other. Someone else's change still does.
+  function queued(key, fn) {
+    const next = (queues.get(key) || Promise.resolve()).then(fn, fn);
+    queues.set(key, next);
+    const done = () => { if (queues.get(key) === next) queues.delete(key); };
+    next.then(done, done);
+    return next;
+  }
 
   // Removed from the team (or it's gone): stop everything once, and say so
   function lost() {
@@ -182,6 +195,13 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     // Only the collections this page reads (not "__proto__", "constructor" and the like)
     if (!Object.hasOwn(colls, ev.collection)) return;
     const c = colls[ev.collection];
+    // Many changes at once (an import): re-list now, in place of any burst being held
+    if (ev.op === "list") {
+      if (c.held) { clearTimeout(c.held.timer); c.held = null; }
+      c.fetched = Array(BURST_FETCHES).fill(Date.now());
+      relist(ev.collection);
+      return;
+    }
     if (ev.op === "delete") { put(ev.collection, ev.id, null); return; }
     const held = c.docs.get(ev.id);
     // Skip what's already here: an older version, or (for sheets) the same one, such as
@@ -212,7 +232,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     // If what changed is that someone deleted it, that's the error: not_found. A set that finds
     // the document already as it was sent is this page's own earlier attempt, whose answer was
     // lost (a new sheet saved again after a timeout): it's saved, so it isn't made twice.
-    const write = async (method, body) => {
+    const write = (method, body) => queued(name + "/" + id, async () => {
       const held = coll(name).docs.get(id), expectedVersion = held ? held.version : 0;
       try {
         const path = docPath(name, id);
@@ -224,7 +244,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
         if (now && method === "PUT" && fields(now.data) === fields(body.data)) return;
         throw now ? e : { code: "not_found", message: "Not found", status: 404 };
       }
-    };
+    });
     return {
       id,
       path,
@@ -242,8 +262,10 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
   // Checkout and return (docs/api/commands.md): one POST that changes the sheet line and the
   // stock together. The answer has the sheet and the product as they are now (null if gone),
   // so the screen updates before the live events arrive. Resolves to how many the command
-  // moved and the line as it is now. A 409 fetches both, as a document write's does, and
-  // passes the error on. So does a 400 or 404, which the command refuses for what the sheet
+  // moved and the line as it is now. A 409 (the line or item busy on the server, or the sheet
+  // closed) is sent again once, as it is: the server adds the quantity to the line as it is then,
+  // so someone else's change meanwhile doesn't make it a conflict. If that's refused too, it
+  // fetches both, as a document write's 409 does, and passes the error on. So does a 400 or 404, which the command refuses for what the sheet
   // holds now; it rejects as `refused` (a code only this adapter uses) with the server's message, for the app to show.
   //
   // `action` stands for one action the person confirmed. It keeps one operation ID for as long
@@ -260,10 +282,12 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
   // A command refused for what the sheet holds now: the server's message says why, with the
   // latest now showing. `refused` is a code only this adapter uses, for the app to show.
   const refused = (e) => ({ code: "refused", message: `${String(e.message).replace(/\.$/, "")}. The latest is showing.`, status: e.status });
-  async function command(name, sheetId, body, action) {
+  const command = (name, sheetId, body, action) => queued("sheets/" + sheetId, async () => {
     const operation = operationId(action, [name, sheetId, body]);
+    const send = () => api("POST", `${docPath("sheets", sheetId)}/${name}`, { operationId: operation, ...body });
     try {
-      const res = await api("POST", `${docPath("sheets", sheetId)}/${name}`, { operationId: operation, ...body });
+      // The same operation ID, so it's applied once whichever attempt the server saw
+      const res = await send().catch((e) => { if (e.code !== "aborted") throw e; return send(); });
       put("sheets", sheetId, res.sheet);
       put("products", body.productKey, res.product);
       // The line as the sheet has it now; {} if the sheet or the line is gone (or has no items)
@@ -276,13 +300,13 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
       if (bad) throw refused(e);
       throw denied(e);
     }
-  }
+  });
 
   // A receipt's lines for a client, added to an existing sheet (docs/api/commands.md): one POST
   // that adds them all or none, without moving stock. lines: [{ productKey, quantity, code,
   // name, price, cost }], at most 40. Idempotent by operation ID, as command() is. A sheet
   // someone deleted rejects as not_found, for the app to say so; a 400 as `refused`.
-  async function addLines(sheetId, lines, action) {
+  const addLines = (sheetId, lines, action) => queued("sheets/" + sheetId, async () => {
     const operation = operationId(action, ["lines", sheetId, lines]);
     try {
       put("sheets", sheetId, (await api("POST", `${docPath("sheets", sheetId)}/lines`, { operationId: operation, lines })).sheet);
@@ -292,12 +316,12 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
       if (bad) throw refused(e);
       throw denied(e);
     }
-  }
+  });
 
   // Stock outside a sheet (docs/api/commands.md): POST products/<key>/stock, one transaction
   // that changes the stock and records a movement saying why. A 409 fetches the item, as a
   // document write's does, and passes the error on.
-  async function adjustStock(key, body, action) {
+  const adjustStock = (key, body, action) => queued("products/" + key, async () => {
     const operation = operationId(action, ["stock", key, body]);
     try {
       put("products", key, (await api("POST", `${docPath("products", key)}/stock`, { operationId: operation, ...body })).product);
@@ -305,7 +329,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
       if (e.code === "aborted") await fetchDoc("products", key);
       throw denied(e);
     }
-  }
+  });
 
   // An item saved from the inventory form or a receipt (src/moves.js saveItem). Stock moves only
   // through the stock command (the document routes keep the stored stock and refuse another), so
@@ -354,8 +378,13 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     saveItem,
     // A new access token: reconnect live updates with it
     reconnect: () => live.reconnect(),
-    // The session ended (signed out, or it expired) or the account was deleted: no more
-    // live updates or re-lists, which need a token, and the team isn't reported as lost
-    stop: () => { removed = true; live.stop(); },
+    // The session ended (signed out, it expired, or another tab changed who's signed in) or
+    // the account was deleted: no more live updates or re-lists, which need a token, not even
+    // a burst's re-list still waiting, and the team isn't reported as lost
+    stop: () => {
+      removed = true;
+      live.stop();
+      for (const c of Object.values(colls)) if (c.held) { clearTimeout(c.held.timer); c.held = null; }
+    },
   };
 }

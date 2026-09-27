@@ -1,0 +1,5 @@
+# Findings gitleaks reports that aren't secrets. One fingerprint per line
+# (commit:file:rule:line), as printed in the Secret scan job's log. Say why for each.
+
+# A Stripe idempotency key in a test assertion ("cancel-…" for a duplicate subscription), not a credential
+b3c6ff6f665407e3919a017e13b409a66d490ebb:backend/test/billing-worker.test.ts:generic-api-key:228

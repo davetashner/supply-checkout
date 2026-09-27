@@ -36,11 +36,19 @@ export interface JourneyAlarmSpec {
   readonly threshold: number;
   /** Consecutive periods that must breach before it alarms, for "sustained" rules. Defaults to 1. */
   readonly periods?: number;
+  /**
+   * Only in the primary region: the metric comes from something that runs
+   * only there (a scheduled check or the closed-team purge, ops-checks.ts),
+   * so the alarm would never see data anywhere else.
+   */
+  readonly primaryOnly?: boolean;
 }
 
 export interface JourneyAlarmsProps {
   readonly envName: string;
   readonly region: string;
+  /** Whether this is the primary region, which alone gets the primaryOnly alarms. */
+  readonly primary: boolean;
   /** The app table's name in this region (a global table has the same name in every region). */
   readonly tableName: string;
   /** The HTTP API's ID in this region (the api stack publishes it to SSM). */
@@ -145,6 +153,7 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       rule: "StuckImports above 0 at its maximum over 15 minutes: an inventory import has been committing for over an hour and is half applied until it's finished. The stuck-import check runs in the primary region every 10 minutes and logs each one's team and import IDs.",
       metric: business(BusinessMetric.StuckImports, region, FIFTEEN_MINUTES, "Maximum"),
       threshold: 0,
+      primaryOnly: true,
     },
     // J3. Invite the crew
     {
@@ -189,6 +198,7 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       rule: "EmailQuotaUsedPercent above 80 at its maximum over 15 minutes: SES has sent over 80% of its rolling 24-hour quota, and stops sending (invites, sign-in codes) at 100%. The SES quota check runs in the primary region every 10 minutes.",
       metric: business(BusinessMetric.EmailQuotaUsedPercent, region, FIFTEEN_MINUTES, "Maximum"),
       threshold: 80,
+      primaryOnly: true,
     },
     {
       id: "invite-surge",
@@ -379,6 +389,7 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       rule: `ClosedTeamsOverdue above 0 at its maximum over ${2 * PURGE_EVERY_HOURS} hours: a closed team is still there more than ${PURGE_OVERDUE_AFTER_HOURS} hours after the day it was due to be deleted, which the privacy policy promises. The hourly closed-team purge (primary region) sends the gauge every run and logs each failed team's ID.`,
       metric: business(BusinessMetric.ClosedTeamsOverdue, region, TWO_PURGE_RUNS, "Maximum"),
       threshold: 0,
+      primaryOnly: true,
     },
     {
       id: "team-closed-notices-failing",
@@ -403,8 +414,8 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
 
 /**
  * The journey alarms for one region, each notifying its severity's topic.
- * Missing data never alarms: most of these metrics only exist once traffic
- * does.
+ * Outside the primary region, the primaryOnly ones are left out. Missing
+ * data never alarms: most of these metrics only exist once traffic does.
  */
 export class JourneyAlarms extends Construct {
   readonly alarms: Alarm[] = [];
@@ -412,6 +423,7 @@ export class JourneyAlarms extends Construct {
   constructor(scope: Construct, id: string, props: JourneyAlarmsProps) {
     super(scope, id);
     for (const spec of journeyAlarmSpecs(props.region, props.tableName, props.apiId, props.envName)) {
+      if (spec.primaryOnly && !props.primary) continue;
       const alarm = new Alarm(this, spec.id, {
         alarmName: `supply-checkout-${props.envName}-${spec.severity.toLowerCase()}-${spec.id}`,
         alarmDescription: [

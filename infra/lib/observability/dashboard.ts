@@ -126,6 +126,8 @@ export class OpsDashboard extends Construct {
       businessGraph("Operators: audit items changed or deleted (not by TTL)", [BusinessMetric.OperatorAuditChanged]),
       // Its heartbeats: a gap means it isn't reading the stream ("Operator audit watch silent")
       businessGraph("Operators: audit watch heartbeats", [BusinessMetric.OperatorAuditWatchHeartbeat]),
+      // The deletion records watch (primary region): any point here is a P2
+      businessGraph("Backups: deletion records rewritten or deleted", [BusinessMetric.DeletionRecordRewrites]),
     );
   }
 }

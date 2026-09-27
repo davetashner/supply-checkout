@@ -79,7 +79,85 @@ test("removing a line keeps what someone else changed on the sheet meanwhile", a
   await expect(page.locator("#toast")).toHaveText("Removed");
   const doc = await page.evaluate(() => window.__mock.docs.get("sheets/s1"));
   expect(doc.client).toBe("Echo Studio West");
-  expect(Object.keys(doc.items)).toEqual(["SKU1"]);
+  // Removed as a null line, in one update (removeLine in src/main.js)
+  expect(Object.keys(doc.items)).toEqual(["SKU1", "nb-bins"]);
+  expect(doc.items["nb-bins"]).toBeNull();
+  await expect(lineRow(page, "Storage bins")).toHaveCount(0);
+  await expect(lineRow(page, "Paper towels")).toHaveCount(1);
+});
+
+// claude.ai's db has no conditional writes, so a read and then a write could save a sheet
+// deleted in between. Removing a line writes without reading first.
+test("removing a line from a sheet deleted as it saves doesn't make the sheet again", async ({ page }) => {
+  await openEcho(page);
+  await lineRow(page, "Storage bins").click();
+  await page.evaluate(() => window.__mock.hold("sheets/"));
+  await modal(page).getByRole("button", { name: "Remove" }).click();
+  await modal(page).getByRole("button", { name: "Tap to remove" }).click();
+  await expect.poll(() => page.evaluate(() => window.__mock.writes)).toBe(1);
+  // Deleted after the page asked to remove the line, before the write arrives
+  await elsewhere(page, (docs) => docs.delete("sheets/s1"));
+  await page.evaluate(() => window.__mock.release());
+  await stillDeleted(page);
+});
+
+test("a line removed as a null line doesn't show or count", async ({ page }) => {
+  const seed = structuredClone(usedState.seed);
+  seed["sheets/s1"].items["nb-bins"] = null;
+  await openApp(page, { ...usedState, seed });
+  await expect(page.getByRole("button", { name: /Echo Studio/ })).toContainText("1 item · 3 taken");
+  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await expect(lineRow(page, "Paper towels")).toHaveCount(1);
+  await expect(page.locator("#sheetBody tbody tr")).toHaveCount(1);
+  // Checking the item out again makes a new line
+  await page.getByRole("button", { name: "Add item without a barcode" }).click();
+  await modal(page).getByRole("button", { name: /Storage bins/ }).click();
+  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await expect(lineRow(page, "Storage bins").locator("td").nth(2)).toHaveText("1");
+  expect(await page.evaluate(() => window.__mock.docs.get("sheets/s1").items["nb-bins"])).toMatchObject({ out: 1, returned: 0 });
+});
+
+test("where the runtime refuses a null value, removing a line saves the sheet without it", async ({ page }) => {
+  await openApp(page, { ...usedState, rejectsNull: true });
+  await page.getByRole("button", { name: /Echo Studio/ }).click();
+  await lineRow(page, "Storage bins").click();
+  await modal(page).getByRole("button", { name: "Remove" }).click();
+  await modal(page).getByRole("button", { name: "Tap to remove" }).click();
+  await expect(page.locator("#toast")).toHaveText("Removed");
+  expect(Object.keys(await page.evaluate(() => window.__mock.docs.get("sheets/s1").items))).toEqual(["SKU1"]);
+  await expect(lineRow(page, "Storage bins")).toHaveCount(0);
+});
+
+test("removing a line that fails for the connection keeps it", async ({ page }) => {
+  await openEcho(page);
+  await lineRow(page, "Storage bins").click();
+  await page.evaluate(() => { window.__mock.failWrites = "unavailable"; });
+  await modal(page).getByRole("button", { name: "Remove" }).click();
+  await modal(page).getByRole("button", { name: "Tap to remove" }).click();
+  await expect(page.locator("#toast")).toHaveText("That didn't save. Check your connection and try again.");
+  expect(await page.evaluate(() => window.__mock.docs.get("sheets/s1").items["nb-bins"])).toMatchObject({ out: 2 });
+});
+
+// The artifact adds a checkout or return to the line as it's saved now, even before this page
+// hears of someone else's change (src/moves.js). The web build's commands add on the server.
+test("a checkout adds to the saved line when this page hasn't heard of a change yet", async ({ page }) => {
+  await openEcho(page);
+  await enterBarcode(page, "SKU1");
+  await page.evaluate(() => { window.__mock.docs.get("sheets/s1").items.SKU1.out = 5; });
+  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await expect(page.locator("#toast")).toHaveText("Checked out 1 × Paper towels, 6 roll");
+  expect(await page.evaluate(() => window.__mock.docs.get("sheets/s1").items.SKU1)).toMatchObject({ out: 6, returned: 1 });
+  await expect(lineRow(page, "Paper towels").locator("td").nth(2)).toHaveText("6");
+});
+
+test("a return adds to the saved line when this page hasn't heard of a change yet", async ({ page }) => {
+  await openEcho(page);
+  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await enterBarcode(page, "SKU1");
+  await page.evaluate(() => { window.__mock.docs.get("sheets/s1").items.SKU1.returned = 2; });
+  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await expect(page.locator("#toast")).toHaveText("1 returned · 3 of 3 back");
+  expect(await page.evaluate(() => [window.__mock.docs.get("sheets/s1").items.SKU1.returned, window.__mock.docs.get("products/SKU1").stock])).toEqual([3, 11]);
 });
 
 test("picking an item someone else just deleted still opens checkout", async ({ page }) => {
