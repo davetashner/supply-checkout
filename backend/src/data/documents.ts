@@ -19,11 +19,13 @@
 // API always passes one (ADR 0006); without one, a lost race is retried on
 // the fresh item (last writer wins), for callers inside the backend.
 
-import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { randomUUID } from "node:crypto";
+import { DeleteCommand, GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
 import { ConflictError, InvalidInputError, NotFoundError, TooLargeError } from "./errors.js";
 import { barcode, id as checkId, keys, prefixes, productKey, teamPartition } from "./keys.js";
-import { money } from "./money.js";
+import { money, storedMoney } from "./money.js";
+import type { Movement } from "./commands.js";
 import { type Page, queryPage } from "./query.js";
 import { GSI1, GSI1PK, PK } from "./schema.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
@@ -131,8 +133,27 @@ function checkValue(value: unknown, depth: number): void {
   throw new InvalidInputError("Documents hold JSON values only");
 }
 
-/** Validates a whole document: JSON, no server-owned fields, within the size limit. */
-function checkDocument(collection: Collection, data: unknown): DocumentData {
+const sameValue = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * A sheet line's price or cost as the write leaves it. A value the write
+ * changes (or a new line's) must follow the money rule. One the line already
+ * had is legacy money the write doesn't touch (ADR 0014: the server accepts
+ * it on read and rejects only what's written), so it doesn't block the
+ * write: it's rounded to cents, as ADR 0014 says it is "when next saved", or
+ * kept as it is if it isn't an amount at all.
+ */
+function lineMoney(value: unknown, stored: Record<string, unknown> | undefined, field: "price" | "cost"): unknown {
+  if (stored && Object.hasOwn(stored, field) && sameValue(stored[field], value)) return storedMoney(value) ?? value;
+  return money(value, field);
+}
+
+/**
+ * Validates a whole document: JSON, no server-owned fields, within the size
+ * limit. `before` is the stored document, if any, for the legacy values a
+ * write may carry over unchanged.
+ */
+function checkDocument(collection: Collection, data: unknown, before?: StoredDocument): DocumentData {
   if (!isMap(data)) throw new InvalidInputError("A document is a JSON object");
   checkValue(data, 0);
   for (const field of Object.keys(data)) {
@@ -146,12 +167,14 @@ function checkDocument(collection: Collection, data: unknown): DocumentData {
   if (collection === "sheets") {
     if ("date" in data && typeof data.date !== "string") throw new InvalidInputError("Invalid date");
     if ("items" in data && !isMap(data.items)) throw new InvalidInputError("Invalid items");
-    // Each line keeps its barcode (`code`) and its cost each (`cost`, ADR 0014), which the
-    // typed functions bound the same way
-    for (const line of Object.values((data.items ?? {}) as Record<string, unknown>)) {
+    // Each line keeps its barcode (`code`), its price each and its cost each (`price`, `cost`,
+    // ADR 0014), which the typed functions bound the same way
+    const storedLines = isMap(before?.data.items) ? before.data.items : {};
+    for (const [key, line] of Object.entries((data.items ?? {}) as Record<string, unknown>)) {
       if (!isMap(line)) continue;
+      const stored = Object.hasOwn(storedLines, key) && isMap(storedLines[key]) ? storedLines[key] : undefined;
       if ("code" in line) barcode(line.code);
-      if ("cost" in line) money(line.cost, "cost");
+      for (const field of ["price", "cost"] as const) if (Object.hasOwn(line, field)) line[field] = lineMoney(line[field], stored, field);
     }
   }
   if (Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_DOCUMENT_BYTES) {
@@ -207,6 +230,11 @@ function expectedVersion(options: WriteOptions): number | undefined {
 }
 
 const isRace = (error: unknown) => (error as { name?: string } | null)?.name === "ConditionalCheckFailedException";
+const RACE_CODES = new Set([undefined, "None", "ConditionalCheckFailed", "TransactionConflict"]);
+/** A transaction cancelled only because an item changed, or another transaction had it. */
+const isCancelledByRace = (error: unknown) =>
+  (error as { name?: string } | null)?.name === "TransactionCanceledException" &&
+  ((error as { CancellationReasons?: { Code?: string }[] }).CancellationReasons ?? []).every((r) => RACE_CODES.has(r.Code));
 const isTooLarge = (error: unknown) =>
   (error as { name?: string } | null)?.name === "ValidationException" && /size/i.test((error as Error).message);
 
@@ -229,7 +257,7 @@ async function write(
     const item = await readItem(db, collection, ctx.teamId, id);
     const before = item ? fromItem(collection, item) : undefined;
     if (expected !== undefined && (before?.version ?? 0) !== expected) throw new ConflictError("This document changed; reload and try again");
-    const data = checkDocument(collection, build(before));
+    const data = checkDocument(collection, build(before), before);
     const version = (before?.version ?? 0) + 1;
     // Unchanged since the read: same version and, for products, same stock
     // (every stock change gives a new version now; checking stock as well
@@ -343,14 +371,20 @@ export async function listDocuments(db: Db, ctx: TeamContext, collection: Collec
  * out, or repeat the stored value, and anything else is refused. A new
  * product has no stock, so creating one with `stock` is refused too: it
  * starts counting with a `count` adjustment, which records the movement.
+ *
+ * A stored stock that isn't a number (written before stock was checked) is
+ * no count at all: the commands treat the item as not tracking stock. A
+ * write drops it rather than copying it into a document checkDocument would
+ * refuse, so the item can still be edited, and stays untracked.
  */
 function keepStock(collection: Collection, current: StoredDocument | undefined, written: DocumentData, next: DocumentData): DocumentData {
   if (collection !== "products") return next;
   const stored = current?.data.stock;
-  if (Object.hasOwn(written, "stock") && written.stock !== stored) {
+  if (Object.hasOwn(written, "stock") && !sameValue(written.stock, stored)) {
     throw new InvalidInputError("Stock changes only through the stock command (POST /teams/{teamId}/products/{key}/stock)");
   }
-  if (stored !== undefined) next.stock = stored;
+  if (typeof stored === "number") next.stock = stored;
+  else delete next.stock;
   return next;
 }
 
@@ -379,12 +413,17 @@ export function updateDocument(db: Db, ctx: TeamContext, collection: Collection,
 
 /**
  * Deletes a document. Deleting one that doesn't exist succeeds, unless an
- * expected version is given.
+ * expected version is given. Deleting a product that tracks stock also
+ * records a `delete` movement taking its stock to 0, in the same
+ * transaction, so its stock history still adds up if the key is used again
+ * (a product made again under it starts untracked, and a later count starts
+ * from 0).
  */
 export async function deleteDocument(db: Db, ctx: TeamContext, collection: Collection, rawId: unknown, options: WriteOptions = {}): Promise<{ before?: StoredDocument }> {
   writable(db, ctx);
   const id = docId(collection, rawId);
   const expected = expectedVersion(options);
+  if (collection === "products") return deleteProductDocument(db, ctx, id, expected);
   const conditional = expected !== undefined;
   try {
     const { Attributes } = await connection(db).doc.send(
@@ -403,5 +442,57 @@ export async function deleteDocument(db: Db, ctx: TeamContext, collection: Colle
   } catch (error) {
     if (isRace(error)) throw new ConflictError("This document changed; reload and try again");
     throw error;
+  }
+}
+
+/**
+ * A product's delete: reads it, then deletes it on the condition that its
+ * version and stock haven't changed since, with the movement when it tracks
+ * stock. A lost race is retried on the fresh item unless a version was expected.
+ */
+async function deleteProductDocument(db: Db, ctx: TeamContext, id: string, expected: number | undefined): Promise<{ before?: StoredDocument }> {
+  const key = keys.product(ctx.teamId, id);
+  for (let attempt = 1; ; attempt++) {
+    const item = await readItem(db, "products", ctx.teamId, id);
+    const before = item ? fromItem("products", item) : undefined;
+    if (expected !== undefined && (before?.version ?? 0) !== expected) throw new ConflictError("This document changed; reload and try again");
+    if (!item) return {};
+    const names: Record<string, string> = { "#version": "version", "#stock": "stock" };
+    const values: Record<string, unknown> = {};
+    const unchanged = (field: string) => {
+      if (item[field] === undefined) return `attribute_not_exists(#${field})`;
+      values[`:${field}`] = item[field];
+      return `#${field} = :${field}`;
+    };
+    const condition = `${unchanged("version")} AND ${unchanged("stock")}`;
+    const stock = item.stock;
+    const at = new Date().toISOString();
+    const operationId = randomUUID();
+    const movement: Omit<Movement, "type"> = { productKey: id, reason: "delete", delta: typeof stock === "number" ? -stock : 0, tracked: true, count: 0, operationId, userId: ctx.userId, at };
+    try {
+      await connection(db).doc.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Delete: {
+                TableName: db.tableName,
+                Key: key,
+                ConditionExpression: condition,
+                ExpressionAttributeNames: names,
+                ...(Object.keys(values).length ? { ExpressionAttributeValues: values } : {}),
+              },
+            },
+            ...(typeof stock === "number"
+              ? [{ Put: { TableName: db.tableName, Item: { ...keys.movement(ctx.teamId, id, at, operationId), type: "movement", ...movement }, ConditionExpression: "attribute_not_exists(PK)" } }]
+              : []),
+          ],
+        }),
+      );
+      return { before };
+    } catch (error) {
+      // Cancelled because the product changed (or another transaction had it): read it again
+      if (!isCancelledByRace(error)) throw error;
+      if (expected !== undefined || attempt >= MAX_ATTEMPTS) throw new ConflictError("This document changed; reload and try again");
+    }
   }
 }

@@ -538,9 +538,18 @@ const expired = () => new ConflictError("This import expired before it finished.
 // JSON.stringify would write as "{}", so Maps are measured as the maps they are
 const expandMaps = (_key: string, value: unknown) => (value instanceof Map ? Object.fromEntries(value) : value);
 const bytesOf = (writes: TransactItem[]) => writes.reduce((sum, w) => sum + Buffer.byteLength(JSON.stringify(w, expandMaps), "utf8"), 0);
-/** DynamoDB refusing a whole transaction for its size (not a cancellation). */
+/**
+ * DynamoDB's messages refusing a whole transaction for its size (not a
+ * cancellation): the transaction over 4 MB, or an item in it over 400 KB.
+ * Any other ValidationException is a bug, and surfaces as one (500).
+ */
+export const TRANSACTION_TOO_LARGE_MESSAGES: readonly string[] = ["Transaction request cannot be larger than 4 MB", "Item size has exceeded the maximum allowed size"];
 const transactionTooLarge = (error: unknown) =>
-  (error as { name?: string } | null)?.name === "ValidationException" && /size|large|4 ?MB/i.test((error as Error).message);
+  (error as { name?: string } | null)?.name === "ValidationException" && TRANSACTION_TOO_LARGE_MESSAGES.includes(String((error as Error).message).trim());
+/** The longest DynamoDB message kept as a TooLargeError's cause, for the logs. */
+export const MAX_CAUSE_MESSAGE = 200;
+/** What the logs keep of DynamoDB's error: its name and the start of its message (DynamoDB's own words, never item data). */
+const causeOf = (error: unknown) => ({ name: String((error as Error).name), message: String((error as Error).message).slice(0, MAX_CAUSE_MESSAGE) });
 
 /**
  * Commits the job's rows from the first one not yet committed. A row too
@@ -624,7 +633,7 @@ async function commitRows(db: Db, ctx: TeamContext, id: string, first: Item, now
         break;
       } catch (error) {
         if (transactionTooLarge(error)) {
-          if (k === 1) throw new TooLargeError(`The item on line ${pending[0]?.line ?? 0} is too large to save`);
+          if (k === 1) throw new TooLargeError(`The item on line ${pending[0]?.line ?? 0} is too large to save`, { cause: causeOf(error) });
           limit = Math.ceil(k / 2);
           attempt--;
           continue;

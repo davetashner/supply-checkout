@@ -54,3 +54,4 @@ export { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
 export { audienceChangeFromStream, documentChangeFromStream, type DocumentChange } from "./changes.js";
 export { liveUpdateRecipients } from "./live-audience.js";
 export * from "./operator.js";
+export { OPERATOR_AUDIT_PREFIX } from "./schema.js";

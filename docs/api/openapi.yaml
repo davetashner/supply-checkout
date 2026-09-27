@@ -1738,7 +1738,7 @@ components:
       properties:
         type: { const: movement }
         productKey: { type: string }
-        reason: { type: string, enum: [checkout, return, receipt, count, import], description: "`import`: a CSV import set the stock (`count`)." }
+        reason: { type: string, enum: [checkout, return, receipt, count, import, delete], description: "`import`: a CSV import set the stock (`count`). `delete`: the item was deleted, taking its stock to 0." }
         delta: { type: integer, description: The change to `stock`. 0 when the item didn't track stock. }
         tracked: { type: boolean, description: Whether the item tracked stock. }
         quantity: { type: integer }

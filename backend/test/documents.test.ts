@@ -1,7 +1,10 @@
 // The document functions behind the data API, against DynamoDB Local (CI).
 // data-api.test.ts covers the same behaviour through the handler in memory.
 
+import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
+import { connection } from "../src/data/client.js";
+import { keys } from "../src/data/keys.js";
 import {
   adjustStock,
   ConflictError,
@@ -14,6 +17,7 @@ import {
   getSheet,
   InvalidInputError,
   listDocuments,
+  listMovements,
   NotFoundError,
   setDocument,
   TooLargeError,
@@ -139,6 +143,37 @@ describe.skipIf(!endpoint)("documents (DynamoDB Local)", () => {
     await expect(setDocument(db, ctx, "products", "p1", { name: "Blue gloves", stock: 6 })).rejects.toThrow(InvalidInputError);
     await expect(updateDocument(db, ctx, "products", "p1", { stock: 4 })).rejects.toThrow(InvalidInputError);
     expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#p1")).toMatchObject({ version: 4, stock: 5 });
+  });
+
+  it("saves a sheet with a legacy line cost when another line changes, rounding it to cents", async () => {
+    const ctx = await team();
+    const legacy = { code: "A", name: "Gloves", price: 2.345, cost: 1.005, out: 2, returned: 0 };
+    await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: { ...keys.sheet(ctx.teamId, "s1"), type: "sheet", id: "s1", version: 1, client: "Echo", items: { a: legacy } } }));
+    const { after } = await updateDocument(db, ctx, "sheets", "s1", { items: { b: { code: "B", name: "Rags", price: 1, out: 1, returned: 0 } } });
+    expect(after.data.items).toMatchObject({ a: { price: 2.35, cost: 1.01 }, b: { price: 1 } });
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1")).toMatchObject({ version: 2, items: { a: { price: 2.35, cost: 1.01 } } });
+    await expect(updateDocument(db, ctx, "sheets", "s1", { items: { a: { cost: 1.006 } } })).rejects.toThrow(InvalidInputError);
+    await expect(updateDocument(db, ctx, "sheets", "s1", { items: { b: { price: 1.001 } } })).rejects.toThrow(InvalidInputError);
+  });
+
+  it("edits a product whose stored stock isn't a number, dropping it", async () => {
+    const ctx = await team();
+    await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: { ...keys.product(ctx.teamId, "p1"), type: "product", key: "p1", version: 1, name: "Gloves", stock: "5" } }));
+    expect((await setDocument(db, ctx, "products", "p1", { name: "Blue gloves", stock: "5" })).after.data).toEqual({ name: "Blue gloves" });
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#p1")).not.toHaveProperty("stock");
+  });
+
+  it("records a delete movement for a product that tracks stock, in the same transaction", async () => {
+    const ctx = await team();
+    await setDocument(db, ctx, "products", "p1", { name: "Gloves" });
+    await adjustStock(db, ctx, "p1", 5);
+    expect((await deleteDocument(db, ctx, "products", "p1", { expectedVersion: 2 })).before?.data).toEqual({ name: "Gloves", stock: 5 });
+    expect(await getDocument(db, ctx, "products", "p1")).toBeUndefined();
+    expect((await listMovements(db, ctx, "p1")).items).toEqual([expect.objectContaining({ reason: "delete", delta: -5, tracked: true, count: 0, userId: ctx.userId })]);
+    // Without stock, there's nothing to record
+    await setDocument(db, ctx, "products", "p2", { name: "Rags" });
+    await deleteDocument(db, ctx, "products", "p2");
+    expect((await listMovements(db, ctx, "p2")).items).toEqual([]);
   });
 
   it("refuses viewers, reserved fields and oversized documents", async () => {
