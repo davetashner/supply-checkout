@@ -20,6 +20,11 @@
 //                                                      a role, and email it the link.
 //   DELETE /teams/{teamId}/invites/{inviteId}          Owners: revoke an invite.
 //   POST   /teams/{teamId}/invites/{inviteId}/resend   Owners: a new link and email.
+//   POST   /teams/{teamId}/close  Owners: close the team, typing its name to
+//                                 confirm. It turns read-only, its invites go,
+//                                 and the purge deletes it 30 days later.
+//   DELETE /me                    Delete the caller's account, typing DELETE
+//                                 to confirm (see "Deleting an account").
 //   POST /me/email/code             Cognito emails the caller a code for their
 //                                   unverified address.
 //   POST /me/email/verify           Checks the code; Cognito marks the address
@@ -56,6 +61,17 @@
 //    carry the `inviteLimit` tag, for the address being invited, which lets it
 //    update that address's daily invite counter and nothing else.
 //
+// Deleting an account (ADR 0007, data/accounts.ts): refused, with nothing
+// changed, while the caller is the only owner of an open team that has other
+// members (409 `last_owner`: make someone else an owner, or close the team).
+// Otherwise the account is marked as being deleted (no more joins), the
+// caller leaves every team, closing first any open team they're the only
+// member of, every invite to their verified email is deleted, their USER#
+// rows go (not the LIMIT# counters, left to their TTL), and last their Cognito user, with their own access token
+// (DeleteUser: no IAM permission to delete anyone else). Every step is
+// idempotent, so a retry after a failure part-way carries on. Each removal
+// and closure is audited in its team; the log line has only IDs and counts.
+//
 // Invite emails: the invite is written first, then sent (email/mailer.ts). If
 // SES won't take it, the invite stays, marked failed (`not_sent`), so the
 // owner sees "Couldn't deliver" and can re-send or revoke it. Addresses,
@@ -65,9 +81,13 @@ import type { APIGatewayProxyStructuredResultV2, Context } from "aws-lambda";
 import {
   acceptInvite,
   authorizeTeam,
+  cancelAccountDeletion,
+  closeTeam,
   countEmailCode,
   createInvite,
   createTeam,
+  deleteInviteForEmail,
+  deleteUserRows,
   findInviteForEmail,
   ForbiddenError,
   getInvite,
@@ -97,7 +117,9 @@ import {
   resendInvite,
   revokeInvite,
   type Role,
+  startAccountDeletion,
   type Team,
+  TeamClosedError,
   type TeamContext,
   TeamFullError,
   teamIdForRequest,
@@ -105,7 +127,7 @@ import {
 import { EmailNotSentError, type Mailer, sendInviteEmail } from "../email/mailer.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import type { DbForAccount } from "./account-db.js";
-import type { CognitoUser, EmailCodes, UserInfo } from "./cognito-user.js";
+import type { CognitoUser, DeleteUser, EmailCodes, UserInfo } from "./cognito-user.js";
 import { callerId, type DataEvent, errorFor as dataErrorFor } from "./data-handler.js";
 import { ApiError, errorResponse, header, json, jsonBody, noContent, notMember } from "./http.js";
 import { requireRole } from "./roles.js";
@@ -121,6 +143,8 @@ export interface AccountHandlerDeps {
   readonly obs: Observability;
   /** Sends invite emails (email/mailer.ts). */
   readonly mailer: Mailer;
+  /** Deletes the caller's own Cognito user, with their access token (cognito-user.ts). */
+  readonly deleteUser: DeleteUser;
   readonly now?: () => number;
 }
 
@@ -132,6 +156,7 @@ const EMAIL_CODE = /^[0-9]{6}$/;
 
 /** The data layer's errors, as the account routes answer them. */
 export function errorFor(error: unknown): ApiError {
+  if (error instanceof TeamClosedError) return new ApiError(403, "permission_denied", error.message, "team_closed");
   if (error instanceof LastOwnerError) return new ApiError(409, "aborted", error.message, "last_owner");
   if (error instanceof TeamFullError) return new ApiError(429, "quota_exceeded", error.message, "team_full");
   // Here a ForbiddenError is about membership or an invite, never view-only access
@@ -149,6 +174,9 @@ export function teamBody(team: Team, role: Role) {
     status: team.status,
     trialEndsAt: team.trialEndsAt ?? null,
     homeRegion: team.homeRegion,
+    // A closed team is read-only until deletesAt, when the purge deletes it
+    closedAt: team.closedAt ?? null,
+    deletesAt: team.closedAt ? (team.purgeAfter ?? null) : null,
   };
 }
 
@@ -178,6 +206,16 @@ const teamInviteBody = (invite: Invite, nowMs: number) => ({
 });
 
 const ROLE_ORDER = { owner: 0, contributor: 1, viewer: 2 };
+
+/** What the caller types to confirm deleting their account (any case). */
+export const DELETE_CONFIRMATION = "DELETE";
+
+/** Why an account can't be deleted yet: the teams it's the only owner of, by name (at most three). */
+function lastOwnerOf(names: string[]): string {
+  const sorted = [...names].sort((a, b) => a.localeCompare(b));
+  const shown = sorted.slice(0, 3).join(", ") + (sorted.length > 3 ? ` and ${sorted.length - 3} more` : "");
+  return `You're the only owner of ${shown}. Make someone else an owner, or close the team, before you delete your account.`;
+}
 
 /** A member as the members routes return them: never the stored item as is. */
 const memberBody = (member: Member) => ({ userId: member.userId, email: member.email ?? null, role: member.role, joinedAt: member.joinedAt ?? null });
@@ -396,6 +434,84 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     return json(201, { invite: teamInviteBody(await send(db, ctx, made.invite, made.token), now()) });
   }
 
+  /** An owner closes the team, typing its name to confirm. Closing a closed team returns it as it is. */
+  async function close(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    // Membership and role first, so anyone else gets the same 403 whatever they send
+    const { teamId, ctx } = await ownerContext(event, userId);
+    const body = jsonBody(event, ["name"]);
+    const { team, closedNow } = await closeTeam(dbFor({ userId, teamId }), ctx, { confirmName: body.name as string }, new Date(now()));
+    if (closedNow) {
+      obs.count(BusinessMetric.TeamsClosed, 1, { teamId });
+      obs.logger.info("Team closed", { teamId, purgeAfter: team.purgeAfter ?? "" });
+    }
+    return json(200, { team: teamBody(team, ctx.role) });
+  }
+
+  /** Deletes the caller's account (see "Deleting an account" at the top). */
+  async function deleteAccount(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    const body = jsonBody(event, ["confirm"]);
+    if (typeof body.confirm !== "string" || body.confirm.trim().toUpperCase() !== DELETE_CONFIRMATION) {
+      throw new ApiError(400, "bad_request", `Type ${DELETE_CONFIRMATION} to confirm`);
+    }
+    const token = accessToken(event);
+    const email = verifiedEmail(await cognitoUser(event, userId));
+    const invitee = email && hashEmail(email);
+    const own = dbFor({ userId, invitee });
+    const at = new Date(now());
+    // No joins from here on, so the teams listed next are all of them
+    await startAccountDeletion(own, userId, at);
+    const rows = await listTeamsForUser(own, userId);
+    const found = await Promise.all(
+      rows.map(async (row) => {
+        const db = dbFor({ userId, teamId: row.teamId });
+        const ctx = await authorizeTeam(db, userId, row.teamId).catch((error: unknown) => {
+          // A stale switcher row: deleteUserRows removes it
+          if (error instanceof ForbiddenError) return undefined;
+          throw error;
+        });
+        if (!ctx) return undefined;
+        const team = await getTeam(db, ctx);
+        const soleOwner = ctx.role === "owner" && !team.closedAt && team.owners <= 1;
+        // A team from before the member count: count its members
+        const members = !soleOwner ? 0 : typeof team.members === "number" ? team.members : (await listMembers(db, ctx)).length;
+        return { db, ctx, team, soleOwner, alone: soleOwner && members <= 1 };
+      }),
+    );
+    const teams = found.filter((t) => t !== undefined);
+    const blocking = teams.filter((t) => t.soleOwner && !t.alone).map((t) => t.team.name);
+    if (blocking.length) {
+      await cancelAccountDeletion(own, userId);
+      throw new ApiError(409, "aborted", lastOwnerOf(blocking), "last_owner");
+    }
+    // Each team on its own: one that fails doesn't stop the others, and a retry carries on
+    const left = await Promise.allSettled(
+      teams.map(async ({ db, ctx, team, alone }) => {
+        if (alone) {
+          // Only while they're still alone in it: someone who joined meanwhile makes it a ConflictError
+          const { closedNow } = await closeTeam(db, ctx, { confirmName: team.name, onlyMember: true }, at);
+          if (closedNow) obs.count(BusinessMetric.TeamsClosed, 1, { teamId: ctx.teamId });
+        }
+        await removeMember(db, ctx, userId, { reason: "account_deleted" }, at);
+      }),
+    );
+    const failed = left.find((r) => r.status === "rejected");
+    if (failed) {
+      // Not stuck unable to join for the mark's 30 days: a retry marks the account again
+      // before it lists the teams, so taking the mark away here loses nothing. (The
+      // teams already left stay left.)
+      await cancelAccountDeletion(own, userId);
+      throw (failed as PromiseRejectedResult).reason;
+    }
+    const invites = email ? await listInvitesForEmail(own, email, at, { includeExpired: true }) : [];
+    for (const invite of invites) await deleteInviteForEmail(dbFor({ userId, teamId: invite.teamId, invitee }), email as string, invite);
+    const rowsDeleted = await deleteUserRows(own, userId);
+    // Last: until it's gone the user can sign in and try again
+    await deps.deleteUser(token);
+    obs.count(BusinessMetric.AccountsDeleted, 1);
+    obs.logger.info("Account deleted", { userId, teamsLeft: teams.length, teamsClosed: teams.filter((t) => t.alone).length, invitesDeleted: invites.length, rowsDeleted });
+    return noContent();
+  }
+
   /**
    * Cognito emails the caller a code for their address. Only for an address
    * that doesn't count as verified yet (for a linked user, one that isn't the
@@ -467,6 +583,8 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     createInvite: invite,
     revokeInvite: revoke,
     resendInvite: resend,
+    closeTeam: close,
+    deleteAccount,
     sendEmailCode,
     verifyEmail,
   };

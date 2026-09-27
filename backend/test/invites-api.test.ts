@@ -17,7 +17,7 @@ import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
 import { hashEmail, hashInviteToken, inviteLimitKey, INVITES_PER_ADDRESS_PER_DAY, INVITES_PER_TEAM_ADDRESS_PER_DAY, INVITES_PER_TEAM_PER_DAY, MEMBERS_PER_TRIAL_TEAM } from "../src/data/index.js";
 import { INVITE_LIMIT_ATTRIBUTES } from "../src/data/schema.js";
 import type { Observability } from "../src/observability/index.js";
-import { accountPartitions, fakeMailer, unusedEmailCodes } from "./helpers.js";
+import { accountPartitions, fakeMailer, unusedDeleteUser, unusedEmailCodes } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_pool";
@@ -82,7 +82,7 @@ beforeEach(() => {
     if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
     return user;
   };
-  handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer: mails.mailer, emailCodes: unusedEmailCodes, now: () => now });
+  handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser: unusedDeleteUser, emailCodes: unusedEmailCodes, now: () => now });
 });
 
 function event(method: string, path: string, user: string, body?: unknown): DataEvent {
@@ -229,6 +229,7 @@ describe("POST /teams/{teamId}/invites", () => {
       obs: { region: "x", logger: { info: () => {}, warn: (m: string, e: unknown) => logs.push(["warn", m, e]), error: () => {} }, count: () => {}, flush: () => {} } as unknown as Observability,
       emailCodes: unusedEmailCodes,
       mailer: { send: () => Promise.reject(Object.assign(new Error("to pat@example.com"), { name: "TypeError" })) },
+      deleteUser: unusedDeleteUser,
       now: () => now,
     });
     const response = await broken(event("POST", "/teams/team-a/invites", OWNER, { email: "pat@example.com", role: "viewer" }));
@@ -243,6 +244,7 @@ describe("POST /teams/{teamId}/invites", () => {
       obs: { region: "x", logger: { info: () => {}, warn: (m: string, e: unknown) => logs.push(["warn", m, e]), error: () => {} }, count: () => {}, flush: () => {} } as unknown as Observability,
       emailCodes: unusedEmailCodes,
       mailer: { send: () => Promise.reject(null) },
+      deleteUser: unusedDeleteUser,
       now: () => now,
     });
     await nameless(event("POST", "/teams/team-a/invites", OWNER, { email: "quinn@example.com", role: "viewer" }));

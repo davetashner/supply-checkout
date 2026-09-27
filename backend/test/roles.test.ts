@@ -13,7 +13,7 @@ import { hasRole, requireRole } from "../src/api/roles.js";
 import { ACCOUNT_ROUTES, DATA_ROUTES, routeKey, TEAM_ROLES, type TeamRole } from "../src/api/routes.js";
 import { hashEmail, InvalidInputError } from "../src/data/index.js";
 import type { Observability } from "../src/observability/index.js";
-import { accountPartitions, fakeMailer, unusedEmailCodes } from "./helpers.js";
+import { accountPartitions, fakeMailer, unusedDeleteUser, unusedEmailCodes } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const mails = fakeMailer();
@@ -83,7 +83,7 @@ function seed() {
   });
   const dbFor: DbForAccount = (scope) =>
     table.scoped(accountPartitions(scope));
-  accountHandler = createAccountHandler({ dbFor, userInfo: async () => Promise.reject(new Error("not used")), issuerUrl: ISSUER, obs, mailer: mails.mailer, emailCodes: unusedEmailCodes, now: () => NOW });
+  accountHandler = createAccountHandler({ dbFor, userInfo: async () => Promise.reject(new Error("not used")), issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser: unusedDeleteUser, emailCodes: unusedEmailCodes, now: () => NOW });
 }
 
 beforeEach(seed);
@@ -153,6 +153,7 @@ const MEMBER_CASES: Record<string, Omit<Case, "minRole">> = {
   "POST /teams/{teamId}/invites": { method: "POST", path: "/teams/team-a/invites", body: { email: "new@example.com", role: "viewer" } },
   "DELETE /teams/{teamId}/invites/{inviteId}": { method: "DELETE", path: `/teams/team-a/invites/${INVITE}` },
   "POST /teams/{teamId}/invites/{inviteId}/resend": { method: "POST", path: `/teams/team-a/invites/${INVITE}/resend` },
+  "POST /teams/{teamId}/close": { method: "POST", path: "/teams/team-a/close", body: { name: "team-a" } },
 };
 const MEMBER_MIN_ROLE: Record<string, TeamRole> = {
   "GET /teams/{teamId}/members": "owner",
@@ -162,6 +163,7 @@ const MEMBER_MIN_ROLE: Record<string, TeamRole> = {
   "POST /teams/{teamId}/invites": "owner",
   "DELETE /teams/{teamId}/invites/{inviteId}": "owner",
   "POST /teams/{teamId}/invites/{inviteId}/resend": "owner",
+  "POST /teams/{teamId}/close": "owner",
 };
 
 const TEAM_ACCOUNT_ROUTES = ACCOUNT_ROUTES.filter((r) => r.path.startsWith("/teams/{teamId}"));

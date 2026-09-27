@@ -15,6 +15,10 @@ export const SK = "SK";
  *   GSI1PK `IMPORTS#COMMITTING` (COMMITTING_IMPORTS_PARTITION), GSI1SK
  *   `<createdAt>#<importId>`. An import job has them only while it's
  *   committing; the commit that finishes it removes them.
+ * - Closed teams waiting to be deleted, across every team, for the scheduled
+ *   purge: GSI1PK `TEAMS#CLOSED` (CLOSED_TEAMS_PARTITION), GSI1SK
+ *   `<purgeAfter>#<teamId>`. Only a closed team's META item has them
+ *   (closeTeam), and the purge deletes that item last.
  */
 export const GSI1 = "GSI1";
 export const GSI1PK = "GSI1PK";
@@ -31,6 +35,18 @@ export const GSI2SK = "GSI2SK";
 
 /** The GSI1 partition of every import still committing (see GSI1). */
 export const COMMITTING_IMPORTS_PARTITION = "IMPORTS#COMMITTING";
+
+/** The GSI1 partition of every closed team, in the order they're due to be deleted (see GSI1). */
+export const CLOSED_TEAMS_PARTITION = "TEAMS#CLOSED";
+
+/**
+ * The only attributes the team purge may name (ADR 0005): the table and GSI1
+ * keys (a MEMBER item's sort key names the member, whose team-switcher row it
+ * deletes), the META item's closure fields and Stripe customer, and the
+ * Stripe link's team. Its IAM policy allows exactly these (dynamodb:Attributes), so it
+ * deletes whole items without reading documents, emails or names.
+ */
+export const TEAM_PURGE_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "closedAt", "purgeAfter", "stripeCustomerId", "teamId"] as const;
 
 /**
  * The only attributes the stuck-import check may name or read (ADR 0005): the
@@ -52,10 +68,10 @@ export function tableName(envName: string): string {
 /**
  * The only attributes the live-updates stream consumer may read (ADR 0016):
  * the keys, a MEMBER item's user ID and role, and the META item's billing
- * status. Its IAM policy allows exactly these (dynamodb:Attributes), so it
+ * status and closure. Its IAM policy allows exactly these (dynamodb:Attributes), so it
  * can't read documents, emails or anything else in a team's partition.
  */
-export const LIVE_AUDIENCE_ATTRIBUTES = [PK, SK, "userId", "role", "status"] as const;
+export const LIVE_AUDIENCE_ATTRIBUTES = [PK, SK, "userId", "role", "status", "closedAt"] as const;
 
 /**
  * The only attributes a request may name in another member's `USER#`
