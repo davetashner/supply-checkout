@@ -71,6 +71,15 @@ export default tseslint.config(
     rules: { "no-restricted-imports": "off", "no-restricted-syntax": "off" },
   },
   {
+    // The owner's one-off migrations (docs/infrastructure.md, "Backfills") run
+    // src/data/backfill.ts, which index.ts doesn't export so no Lambda can.
+    // Direct DynamoDB use stays banned here.
+    files: ["scripts/backfill.ts"],
+    rules: {
+      "no-restricted-imports": ["error", { patterns: [{ regex: DYNAMODB, message: DYNAMODB_MESSAGE }, { regex: String.raw`(^|/)data/(?!(index|backfill)(\.js|\.ts)?$)`, message: DATA_INTERNALS_MESSAGE }] }],
+    },
+  },
+  {
     files: ["src/data/operator.ts"],
     rules: {
       "no-restricted-imports": ["error", { patterns: [{ regex: String.raw`(^|/)team-context(\.js|\.ts)?$`, message: OPERATOR_MESSAGE }] }],
