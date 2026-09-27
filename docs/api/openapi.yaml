@@ -559,6 +559,45 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/Invite" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+    delete:
+      tags: [account]
+      operationId: deleteAccount
+      summary: Delete the caller's account, typing DELETE to confirm.
+      description: |
+        Refused, with nothing changed, while the caller is the only owner of
+        a team that other people are still in and that isn't closed (409
+        `aborted`, `reason: "last_owner"`, and the message names the teams):
+        they make someone else an owner, or close the team, first.
+
+        Otherwise the caller leaves every team. A team they're the only
+        member of is closed first, and deleted 30 days later like any closed
+        team. Every invite to their verified email is deleted, then
+        everything the server keeps about them, and last their sign-in
+        (the Cognito user), so they can't sign in again. The team audit
+        trails keep their user ID (never their email) next to what they did.
+        While it runs they can't join or create teams (403). If it fails part-way,
+        call it again: it carries on where it stopped. Once it succeeds the
+        refresh token no longer works; sign out locally and forget the
+        tokens.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [confirm]
+              properties:
+                confirm: { type: string, description: "`DELETE`, as the user typed it (any case)." }
+      responses:
+        "204": { description: The account is deleted. }
+        "400":
+          description: "`bad_request`: `confirm` isn't `DELETE`, or the body is malformed."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409":
+          description: "`aborted` with `reason: \"last_owner\"`: the caller is the only owner of a team others are still in. Nothing changed."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /teams:
     post:
       tags: [account]
@@ -921,6 +960,50 @@ paths:
           description: "`not_found`: the invite was accepted or revoked."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429": { $ref: "#/components/responses/TooManyInvites" }
+  /teams/{teamId}/close:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    post:
+      tags: [members]
+      operationId: closeTeam
+      summary: Close the team. Owners only, typing the team's name to confirm.
+      description: |
+        The team becomes read-only at once: every member can still read it
+        (so owners can export it) and leave, but nothing else changes, and a
+        write is 403 `permission_denied` with `reason: "team_closed"`. Its
+        invites are deleted, nobody can join, and live updates stop. 30 days
+        later (`deletesAt`) all of its data is deleted: sheets, inventory,
+        stock history, members and the audit trail. `name` must be the
+        team's name (ignoring case and surrounding spaces), or it's 400 and
+        nothing changes. Closing a closed team returns it as it is. The team
+        can't be reopened.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: { type: string, description: The team's name, as the owner typed it to confirm. }
+      responses:
+        "200":
+          description: The closed team, with `closedAt` and `deletesAt`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [team]
+                properties:
+                  team: { $ref: "#/components/schemas/Team" }
+        "400":
+          description: "`bad_request`: `name` isn't the team's name, or the body is malformed."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: "`aborted`: the caller's role, or the team, changed meanwhile; reload and try again."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /teams/{teamId}/support-actions:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
     get:
@@ -1634,7 +1717,7 @@ components:
         returned: { type: integer, minimum: 0, description: How many came back. }
     Team:
       type: object
-      required: [id, name, role, plan, status, trialEndsAt, homeRegion]
+      required: [id, name, role, plan, status, trialEndsAt, homeRegion, closedAt, deletesAt]
       properties:
         id: { type: string, description: "The `teamId` for the data routes." }
         name: { type: string }
@@ -1643,6 +1726,8 @@ components:
         status: { type: string, description: "Subscription status (ADR 0009): `trialing`, `active`, `past_due`, `canceled`." }
         trialEndsAt: { type: [string, "null"], format: date-time, description: When the free trial ends. }
         homeRegion: { type: string, description: The region the team was created in (ADR 0010). }
+        closedAt: { type: [string, "null"], format: date-time, description: "When an owner closed the team (`closeTeam`), or `null`. A closed team is read-only." }
+        deletesAt: { type: [string, "null"], format: date-time, description: "When a closed team's data is deleted: 30 days after `closedAt`. `null` for a team that isn't closed." }
         comp:
           description: A live comp from Supply Checkout support (ADR 0015). While it's set, the team is active on `plan` until `until`, whatever `status` says.
           oneOf:
@@ -1702,13 +1787,14 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, code_mismatch, code_expired, already_verified, email_in_use]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, code_mismatch, code_expired, already_verified, email_in_use]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
                 `not_member`: the caller isn't in the path's team (or it
                 doesn't exist). `last_owner`: the change would leave the team
                 without an owner. `team_full`: the team is at its member cap.
+                `team_closed`: the team was closed and is read-only.
                 Verifying an email address: `code_mismatch` (the code isn't
                 right), `code_expired`, `already_verified`, and `email_in_use`
                 (another account has the address).
@@ -1864,8 +1950,9 @@ components:
         `permission_denied`, with a `reason`: `not_member` (not a member of
         this team, the same answer if the team doesn't exist), `view_only` (a
         viewer tried to write; the web runtime hands this to the app as
-        `invalid_argument`, view-only access) or `owners_only` (a contributor
-        or viewer on an owners-only route). Nothing was read or written.
+        `invalid_argument`, view-only access), `owners_only` (a contributor
+        or viewer on an owners-only route) or `team_closed` (a write to a
+        team an owner closed, which is read-only). Nothing was read or written.
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     NoSuchMember:
       description: "`not_found`: the user isn't a member of this team."

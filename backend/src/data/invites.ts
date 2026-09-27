@@ -7,7 +7,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
-import { ConflictError, InvalidInputError, LimitReachedError, NotFoundError, TeamFullError, conflictOnConditionFailure } from "./errors.js";
+import { ConflictError, InvalidInputError, LimitReachedError, NotFoundError, TeamClosedError, TeamFullError, conflictOnConditionFailure } from "./errors.js";
 import { gsi1, gsi2, id, inviteePartition, keys, prefixes, strip, teamPartition } from "./keys.js";
 import {
   type Invite,
@@ -113,6 +113,9 @@ async function writeInvite(
           countOne(db.tableName, keys.invitesSent(ctx.teamId, day), INVITES_PER_TEAM_PER_DAY, epoch),
           countOne(db.tableName, keys.invitesToAddress(limitKey, day), INVITES_PER_ADDRESS_PER_DAY, epoch),
           countOne(db.tableName, keys.invitesFromTeamToAddress(ctx.teamId, limitKey, day), INVITES_PER_TEAM_ADDRESS_PER_DAY, epoch),
+          // Still open when it commits: closeTeam deletes the invites it finds, so one
+          // written after that would outlive the closure
+          { ConditionCheck: { TableName: db.tableName, Key: keys.team(ctx.teamId), ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(closedAt)" } },
         ],
       }),
     );
@@ -122,6 +125,7 @@ async function writeInvite(
     // Either counter at its limit. One message for both, so an owner can't
     // learn how many invites another team sent the address.
     if (codes && [1, 2, 3].some((i) => codes[at + i] === "ConditionalCheckFailed")) throw new LimitReachedError(TOO_MANY_INVITES);
+    if (codes && codes[at + 4] === "ConditionalCheckFailed") throw new TeamClosedError("This team was closed. It's read-only until its data is deleted.");
     if (codes && at > 0 && codes[0] === "ConditionalCheckFailed") throw new NotFoundError("This invite was accepted or revoked just now");
     return conflictOnConditionFailure("Someone else changed this team's invites just now; try again")(error);
   }
@@ -279,7 +283,7 @@ export async function markInviteFailed(
 
 /** Owners revoke an invite: its link stops working. Revoking one that's gone (accepted, revoked or removed by TTL) is harmless. */
 export async function revokeInvite(db: Db, ctx: TeamContext, inviteId: string): Promise<void> {
-  writable(db, ctx, "owner");
+  writable(db, ctx, "owner", { whileClosed: true });
   await connection(db).doc.send(
     new DeleteCommand({
       TableName: db.tableName,
@@ -298,7 +302,7 @@ export async function revokeInvite(db: Db, ctx: TeamContext, inviteId: string): 
  * invite they hadn't used. Needs the same role as the removal.
  */
 export async function revokeInvitesForEmail(db: Db, ctx: TeamContext, email: string, minimum: "viewer" | "owner"): Promise<number> {
-  writable(db, ctx, minimum);
+  writable(db, ctx, minimum, { whileClosed: true });
   const address = normalizeEmail(email);
   const invites = (await queryAll<Invite>(db, teamPartition(ctx.teamId), prefixes.invite)).filter((i) => i.email === address);
   for (const invite of invites) {
@@ -324,7 +328,7 @@ const live = (invite: Invite | undefined, now: Date): invite is Invite =>
  * verified: the address is what entitles the caller to these invites.
  * Reads GSI2, so an invite made a moment ago may not show yet.
  */
-export async function listInvitesForEmail(db: Db, verifiedEmail: string, now = new Date()): Promise<Invite[]> {
+export async function listInvitesForEmail(db: Db, verifiedEmail: string, now = new Date(), options: { readonly includeExpired?: boolean } = {}): Promise<Invite[]> {
   const pk = inviteePartition(hashEmail(verifiedEmail));
   const out: Invite[] = [];
   let ExclusiveStartKey: Record<string, unknown> | undefined;
@@ -336,7 +340,25 @@ export async function listInvitesForEmail(db: Db, verifiedEmail: string, now = n
     ExclusiveStartKey = page.LastEvaluatedKey;
   } while (ExclusiveStartKey);
   // TTL deletion can lag by days, so check expiry here too
-  return out.filter((invite) => live(invite, now) && invite.email === normalizeEmail(verifiedEmail));
+  return out.filter((invite) => (options.includeExpired ? invite?.type === "invite" : live(invite, now)) && invite.email === normalizeEmail(verifiedEmail));
+}
+
+/**
+ * Deletes an invite addressed to the caller's verified email, from whichever
+ * team sent it: account deletion removes every invite that holds the
+ * address. Like findInviteForEmail, the verified address is what entitles
+ * the caller to it, and the delete is conditioned on the stored invite being
+ * for that address. Deleting one that's already gone is harmless.
+ */
+export async function deleteInviteForEmail(db: Db, verifiedEmail: string, invite: Pick<Invite, "teamId" | "inviteId">): Promise<void> {
+  await connection(db).doc.send(
+    new DeleteCommand({
+      TableName: db.tableName,
+      Key: keys.invite(invite.teamId, invite.inviteId),
+      ConditionExpression: "attribute_not_exists(PK) OR email = :email",
+      ExpressionAttributeValues: { ":email": normalizeEmail(verifiedEmail) },
+    }),
+  );
 }
 
 /** One live invite for a verified email address, by its ID, or undefined. */

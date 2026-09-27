@@ -186,12 +186,12 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Persona:** anyone. (Required by the App Store and promised in the privacy policy.)
 
-1. Open **Settings → Delete account**.
-2. An owner either hands ownership to another member or closes the team.
+1. Open **Account → Delete account** in the team bar (or **Delete account** on the first screen) and type DELETE.
+2. An owner of a team others are in either makes another member an owner or closes the team (**Members → Close the team**, typing its name) first; the app shows the server's message naming those teams.
 
-**Expected:** done without contacting support. Personal data is gone within the stated period. Closing a team cancels its subscription.
+**Expected:** done without contacting support. The user is out of every team, a team they were alone in is closed, invites to their address and their sign-in are gone, and a closed team's data is deleted 30 days after it closed. Closing a team will cancel its subscription once billing is built (`supply-checkout-x0l`).
 
-**Status:** planned. `supply-checkout-b1h`.
+**Status:** built (`supply-checkout-b1h`). **Tests:** `backend/test/account-deletion-api.test.ts` (closing, deleting, the purge, isolation of each session), `backend/test/closing.test.ts` (the same against DynamoDB Local, including that the data is gone after 30 days and not before), `tests/aws-account-deletion.spec.js` (the web app: leaving, closing, a closed team, deleting).
 
 ### J12. Choose a plan in the mobile app
 
@@ -379,7 +379,7 @@ Receipt reading is not critical: people can still enter items by hand.
 | --- | --- | --- | --- |
 | **Cross-team access attempts** | Authorizer denials where the signed-in user asked for a team they don't belong to | any, over 15 minutes. Could be a client bug or someone probing. | P2 |
 | **Export failing** | Export runs in the browser from the data API's list routes, so there's no export function: the API errors alarm covers it | as API errors | P2 |
-| **Deletion job failing** | Scheduled deletion job errors, or accounts past their deletion date | any | P2. The privacy policy promises a deadline. |
+| **Deletion job failing** | The hourly closed-team purge (`supply-checkout-<env>-team-purge`) throws when any team fails, which the Functions failing alarm counts. Teams past their deletion date aren't a gauge yet | any | P2. The privacy policy promises a deadline. |
 
 ### J12. Choose a plan in the mobile app
 

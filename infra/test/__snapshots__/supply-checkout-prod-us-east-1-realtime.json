@@ -776,6 +776,7 @@
                     "userId",
                     "role",
                     "status",
+                    "closedAt",
                     "compPlan",
                     "compUntil"
                   ]

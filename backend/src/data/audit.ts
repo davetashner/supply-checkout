@@ -23,19 +23,10 @@ export interface AuditEvent {
 
 export const AUDIT_RETENTION_DAYS = 365;
 
-/**
- * Records an event for the context's team. Any member's action is audited,
- * viewers included (for example, a CSV download), so this needs no write role.
- */
-export async function recordAudit(
-  db: Db,
-  ctx: TeamContext,
-  input: { readonly action: string; readonly target?: string; readonly detail?: Record<string, unknown> },
-  now = new Date(),
-): Promise<AuditEvent> {
+function auditEvent(ctx: TeamContext, input: AuditInput, now: Date): AuditEvent {
   assertContext(ctx);
   if (typeof input.action !== "string" || !/^[a-z][a-z0-9._-]{0,63}$/.test(input.action)) throw new InvalidInputError("Invalid action");
-  const event: AuditEvent = {
+  return {
     type: "audit",
     eventId: randomUUID(),
     ts: now.toISOString(),
@@ -45,8 +36,33 @@ export async function recordAudit(
     detail: input.detail,
     expiresAt: Math.floor(now.getTime() / 1000) + AUDIT_RETENTION_DAYS * 24 * 60 * 60,
   };
+}
+
+export interface AuditInput {
+  readonly action: string;
+  /** What it acted on: an ID, never a name or an email. */
+  readonly target?: string;
+  readonly detail?: Record<string, unknown>;
+}
+
+/**
+ * Records an event for the context's team. Any member's action is audited,
+ * viewers included (for example, a CSV download), so this needs no write role.
+ */
+export async function recordAudit(db: Db, ctx: TeamContext, input: AuditInput, now = new Date()): Promise<AuditEvent> {
+  const event = auditEvent(ctx, input, now);
   await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: { ...keys.audit(ctx.teamId, event.ts, event.eventId), ...event } }));
   return event;
+}
+
+/**
+ * The transaction item that records an event, for a change that must be
+ * audited in the same transaction as the change itself (closing a team,
+ * removing a member).
+ */
+export function auditPut(db: Db, ctx: TeamContext, input: AuditInput, now: Date) {
+  const event = auditEvent(ctx, input, now);
+  return { Put: { TableName: db.tableName, Item: { ...keys.audit(ctx.teamId, event.ts, event.eventId), ...event }, ConditionExpression: "attribute_not_exists(PK)" } };
 }
 
 /** Owners read the audit trail, newest first. */

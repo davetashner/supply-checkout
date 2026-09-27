@@ -101,6 +101,32 @@ meanwhile (the invite stays, and works once an owner makes room). Show the
 message and point owners at revoking an invite or removing a member. See
 [openapi.yaml](openapi.yaml) under the `invites` tag.
 
+## Leaving, closing a team and deleting an account
+
+- **Leaving.** Anyone can leave a team with `DELETE /teams/{teamId}/members/{userId}`
+  and their own user ID (`user.id` in `/me`). The web app offers it in the team
+  bar to contributors and viewers (two taps), and to owners on the members
+  screen. A team's last owner can't leave an open team (409 `last_owner`).
+- **Closing a team.** Owners: `POST /teams/{teamId}/close` with `{"name": "…"}`,
+  the team's name as the owner typed it (any case, spaces around ignored;
+  otherwise 400 and nothing changes). The team turns read-only at once: every
+  member can still read it (owners can export it) and leave, the last owner
+  included, but any write is 403 `permission_denied` with
+  `reason: "team_closed"`. Its invites go, nobody can join, and live updates
+  stop. `/me` shows it with `closedAt` and `deletesAt`; show that it's
+  closed, and when its data will be deleted, and open it read-only. 30 days
+  after closing, all of it is deleted. Closing a closed team returns it as it
+  is. It can't be reopened.
+- **Deleting an account.** `DELETE /me` with `{"confirm": "DELETE"}` (typed by
+  the user). 409 `last_owner` while they're the only owner of an open team
+  other people are in: show the message (it names the teams); they make
+  someone else an owner, or close the team, first. Otherwise they leave every
+  team (one they're alone in is closed first), invites to their verified
+  email and everything the server keeps about them are deleted, and last
+  their sign-in. 204 means it's done: forget the tokens and everything kept on
+  the device; the refresh token no longer works, so a refresh answers 401 and
+  clears the cookie. If it fails part-way, call it again: it carries on.
+
 ## Errors from `POST /teams`
 
 - `400 bad_request`: no or malformed `Idempotency-Key` (8–128 letters, digits,

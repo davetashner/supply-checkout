@@ -342,10 +342,11 @@ export class MemoryTable {
     record([pk]);
     const prefix = values[":prefix"] as string | undefined;
     const sk = values[":sk"] as string | undefined;
-    // `SK < :before`, as the stuck-import queries send it
-    const before = values[":before"] as string | undefined;
+    // `<sort key> < :before`
+    const before = /SK < :before\b/.test(String(input.KeyConditionExpression)) ? (values[":before"] as string) : undefined;
     let rows = [...this.items.values()]
-      .filter((i) => i[pkAttr] === pk && (prefix === undefined || String(i[skAttr]).startsWith(prefix)) && (sk === undefined || i[skAttr] === sk) && (before === undefined || String(i[skAttr]) < before))
+      .filter((i) => i[pkAttr] === pk && (prefix === undefined || String(i[skAttr]).startsWith(prefix)) && (sk === undefined || i[skAttr] === sk))
+      .filter((i) => before === undefined || String(i[skAttr]) < before)
       .sort((a, b) => (String(a[skAttr]) < String(b[skAttr]) ? -1 : String(a[skAttr]) > String(b[skAttr]) ? 1 : 0));
     if (input.ScanIndexForward === false) rows.reverse();
     const start = input.ExclusiveStartKey as Item | undefined;

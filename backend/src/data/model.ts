@@ -37,6 +37,17 @@ export interface Team {
    */
   readonly members?: number;
   readonly stripeCustomerId?: string;
+  /**
+   * When an owner closed the team (ISO 8601; closeTeam). A closed team is
+   * read-only: members can still read and export it, and leave, but nothing
+   * else changes. Its live updates stop, its invites are gone, and the
+   * scheduled purge deletes all of it after `purgeAfter`.
+   */
+  readonly closedAt?: string;
+  /** Who closed it (a user ID). */
+  readonly closedBy?: string;
+  /** When the purge may delete the team (ISO 8601): CLOSED_TEAM_RETENTION_DAYS after `closedAt`. */
+  readonly purgeAfter?: string;
   readonly createdAt: string;
   readonly version: number;
   /**
@@ -157,6 +168,17 @@ export const ENDED_STATUSES: readonly string[] = ["canceled", "unpaid", "incompl
 export function hasEnded(status: unknown): boolean {
   return typeof status === "string" && ENDED_STATUSES.includes(status);
 }
+
+/** True for a team an owner has closed (closeTeam), from its META item. */
+export function isClosed(team: { readonly closedAt?: unknown } | undefined): boolean {
+  return typeof team?.closedAt === "string";
+}
+
+/**
+ * How long a closed team stays, read-only, before the purge deletes it: long
+ * enough to export it (ADR 0009 gives a canceled team the same 30 days).
+ */
+export const CLOSED_TEAM_RETENTION_DAYS = 30;
 
 /** The free trial every new team starts with: 14 days, no card (ADR 0009). */
 export const TRIAL_DAYS = 14;
@@ -300,8 +322,11 @@ export function teamIdForRequest(userId: string, requestKey: string): string {
  * transaction, so both counts move in one Update.)
  *
  * - `members: 1` is conditional on the count being below `cap`, so two
- *   accepts racing for the last place can't both join.
- * - `owners: -1` is conditional on another owner remaining (ownersUpdate).
+ *   accepts racing for the last place can't both join, and on the team not
+ *   being closed.
+ * - `owners: -1` is conditional on another owner remaining (ownersUpdate),
+ *   or, with `closed`, on the team being closed instead: the last owner may
+ *   leave a closed team, which nobody can change any more.
  * - `counted`: the team has no `members` yet (a team made before the count),
  *   and this is how many MEMBER items it has now. The update sets the count
  *   to `counted + members`, on the condition that it's still absent. Every
@@ -313,9 +338,10 @@ export function teamIdForRequest(userId: string, requestKey: string): string {
 export function teamCounts(
   tableName: string,
   teamId: string,
-  change: { readonly members: 1 | -1; readonly owners?: 1 | -1; readonly cap?: number; readonly counted?: number },
+  change: { readonly members: 1 | -1; readonly owners?: 1 | -1; readonly cap?: number; readonly counted?: number; readonly closed?: boolean },
 ) {
   const conditions = ["attribute_exists(PK)"];
+  if (change.members > 0) conditions.push("attribute_not_exists(closedAt)");
   const values: Record<string, number> = {};
   const add: string[] = [];
   let set = "";
@@ -335,7 +361,8 @@ export function teamCounts(
   if (change.owners !== undefined) {
     add.push("owners :owners");
     values[":owners"] = change.owners;
-    if (change.owners < 0) {
+    if (change.owners < 0 && change.closed) conditions.push("attribute_exists(closedAt)");
+    else if (change.owners < 0) {
       conditions.push("owners > :one");
       values[":one"] = 1;
     }
