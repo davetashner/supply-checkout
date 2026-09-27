@@ -231,6 +231,7 @@ test("finishing and reopening a sheet say they're saving, and a second tap sends
   await expect(toast(page)).toHaveText("Return finished");
   await expect(page.getByRole("button", { name: "Delete sheet" })).toBeEnabled();
 
+  await hideToast(page);
   await hold(page);
   await page.getByRole("button", { name: "Reopen" }).click();
   await expect(saving).toBeDisabled();
@@ -252,6 +253,8 @@ test("deleting a sheet sends one delete, and a tap after a failed one arms it ag
   const del = page.getByRole("button", { name: "Delete sheet" });
   await expect(del).toBeEnabled();
   await failWrites(page, null);
+  // The toast would be over the button on a phone
+  await hideToast(page);
   await del.click();
   await hold(page);
   await page.getByRole("button", { name: "Tap again to delete" }).click();
@@ -295,6 +298,7 @@ test("removing a line or deleting an item keeps the form busy and writes once", 
   await expect(modal(page).getByRole("button", { name: "Delete" })).toBeEnabled();
   await expect(modal(page).getByLabel("Item name")).toBeEnabled();
   await failWrites(page, null);
+  await hideToast(page);
   await hold(page);
   await modal(page).getByRole("button", { name: "Delete" }).click();
   await modal(page).getByRole("button", { name: "Tap to delete" }).click();
