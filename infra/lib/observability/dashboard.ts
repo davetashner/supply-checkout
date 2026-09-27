@@ -120,5 +120,9 @@ export class OpsDashboard extends Construct {
       graph("J11: closed teams overdue for deletion", each((r) => business(BusinessMetric.ClosedTeamsOverdue, r, FIVE_MINUTES, "Maximum")), WIDTH / 4),
       businessGraph("J3: email codes not sent or checked (5xx)", [BusinessMetric.EmailCodeSendFailures, BusinessMetric.EmailCodeVerifyFailures]),
     );
+    this.dashboard.addWidgets(
+      // The operator audit watch (primary region): any point here is a P1
+      businessGraph("Operators: audit items changed or deleted (not by TTL)", [BusinessMetric.OperatorAuditChanged]),
+    );
   }
 }

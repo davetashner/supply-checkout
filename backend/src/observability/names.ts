@@ -90,6 +90,8 @@ export const BusinessMetric = {
   AccountsDeleted: "AccountsDeleted",
   /** Closed teams deleted by the scheduled purge once their read-only period ended. */
   TeamsPurged: "TeamsPurged",
+  /** Operator audit items (OPAUDIT#) changed or deleted other than by their TTL: the audit trail was tampered with (ADR 0015). From the operator audit watch (primary region). */
+  OperatorAuditChanged: "OperatorAuditChanged",
 } as const;
 
 export type BusinessMetricName = (typeof BusinessMetric)[keyof typeof BusinessMetric];
