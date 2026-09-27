@@ -26,3 +26,6 @@ codex-recommendations.md
 # Merge and patch leftovers (scripts/check-stray-files.mjs also blocks them)
 *.orig
 *.rej
+
+# Claude Code settings for this clone only (project settings are .claude/settings.json)
+.claude/settings.local.json

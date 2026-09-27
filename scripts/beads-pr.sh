@@ -4,7 +4,10 @@
 #   2. if the export changed, commits it (signed off), pushes, opens a
 #      "chore: refresh the beads export" PR and lands it with npm run land
 #   3. otherwise says there's nothing to do
-# The worktree is removed on every path. Run it after a batch of merges.
+# The worktree is removed on every path. npm run land runs it after a merge
+# whenever the export is stale (with LAND_SKIP_BACKLOG=1, which reaches the
+# export PR's land), and the lead can run it by hand. land-pr.sh knows the
+# export's own PR by its chore/beads-export-* branch.
 #
 # The beads database is local to the main checkout, so this can't run in CI.
 #

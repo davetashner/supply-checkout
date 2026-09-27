@@ -35,7 +35,7 @@ esac
 FAKE
 cat > "$tmp/bin/npm" <<'FAKE'
 #!/usr/bin/env bash
-echo "npm $* (in $(basename "$PWD"))" >> "$FAKE/calls"
+echo "npm $* (in $(basename "$PWD"))${LAND_SKIP_BACKLOG:+ skip=$LAND_SKIP_BACKLOG}" >> "$FAKE/calls"
 case "$*" in
   "run -s beads:export")
     [ -e "$FAKE/export" ] || { echo "bd: database not found" >&2; exit 1; }
@@ -144,6 +144,18 @@ check "exits non-zero" fails
 check "prints the error" says "bd: database not found"
 check "opens no PR" not_called "gh pr create"
 check "removes the worktree and branch" tidy
+done_case
+
+echo "run by npm run land for a stale export"
+scenario from-land
+echo '{"id":"supply-checkout-abc","status":"closed"}' > "$FAKE/export"
+rc=0
+out="$(cd "$repo" && LAND_SKIP_BACKLOG=1 bash "$script" 2>&1)" || rc=$?
+check "exits 0" exits 0
+check "passes LAND_SKIP_BACKLOG on to its land" called "npm run -s land -- 77 (in repo) skip=1"
+# land-pr.sh knows the export's own PR by this branch prefix, and doesn't
+# run beads:pr again after landing it
+check "pushes a chore/beads-export-* branch" pushed
 done_case
 
 echo "run from a worktree"
