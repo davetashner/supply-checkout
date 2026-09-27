@@ -334,6 +334,510 @@
           }
         ]
       }
+    },
+    "AlertKeyC50D0A1D": {
+      "Type": "AWS::KMS::Key",
+      "Properties": {
+        "Description": "Encrypts the Supply Checkout prod backup alerts topic",
+        "EnableKeyRotation": true,
+        "KeyPolicy": {
+          "Statement": [
+            {
+              "Action": "kms:*",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Resource": "*"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:GenerateDataKey*"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "cloudwatch.amazonaws.com",
+                  "events.amazonaws.com"
+                ]
+              },
+              "Resource": "*",
+              "Sid": "AlarmsAndRulesPublishToTheTopic"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup-vault"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
+    },
+    "AlertKeyAliasA48709FB": {
+      "Type": "AWS::KMS::Alias",
+      "Properties": {
+        "AliasName": "alias/supply-checkout-prod-backup-alerts",
+        "TargetKeyId": {
+          "Fn::GetAtt": [
+            "AlertKeyC50D0A1D",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "AlertTopic2720D535": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "DisplayName": "Supply Checkout prod backups",
+        "KmsMasterKeyId": {
+          "Fn::GetAtt": [
+            "AlertKeyC50D0A1D",
+            "Arn"
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup-vault"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "TopicName": "supply-checkout-prod-backup-alerts"
+      }
+    },
+    "AlertTopicPolicy3376BC02": {
+      "Type": "AWS::SNS::TopicPolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              },
+              "Effect": "Deny",
+              "Principal": "*",
+              "Resource": {
+                "Ref": "AlertTopic2720D535"
+              },
+              "Sid": "AllowPublishThroughSSLOnly"
+            },
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":cloudwatch:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":alarm:*"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudwatch.amazonaws.com"
+              },
+              "Resource": {
+                "Ref": "AlertTopic2720D535"
+              },
+              "Sid": "AllowCloudWatchAlarmsToPublish"
+            },
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "ArnEquals": {
+                  "aws:SourceArn": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition"
+                          },
+                          ":events:",
+                          {
+                            "Ref": "AWS::Region"
+                          },
+                          ":",
+                          {
+                            "Ref": "AWS::AccountId"
+                          },
+                          ":rule/supply-checkout-prod-backup-vault-changes"
+                        ]
+                      ]
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition"
+                          },
+                          ":events:",
+                          {
+                            "Ref": "AWS::Region"
+                          },
+                          ":",
+                          {
+                            "Ref": "AWS::AccountId"
+                          },
+                          ":rule/supply-checkout-prod-backup-vault-key-changes"
+                        ]
+                      ]
+                    }
+                  ]
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "events.amazonaws.com"
+              },
+              "Resource": {
+                "Ref": "AlertTopic2720D535"
+              },
+              "Sid": "AllowBackupChangeAlertsToPublish"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Topics": [
+          {
+            "Ref": "AlertTopic2720D535"
+          }
+        ]
+      }
+    },
+    "AlertEmail1481D66DB": {
+      "Type": "AWS::SNS::Subscription",
+      "Properties": {
+        "Endpoint": {
+          "Ref": "SsmParameterValuesupplycheckoutprodalarmsemail1C96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "Protocol": "email",
+        "TopicArn": {
+          "Ref": "AlertTopic2720D535"
+        }
+      }
+    },
+    "CopiesMissing60731A7C": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic2720D535"
+          }
+        ],
+        "AlarmDescription": "No copy of the prod app table's daily backup completed in supply-checkout-prod-backup-copies in the last 36 hours. The workload account's plan, copy rule or permissions may have been changed or deleted. Runbook: docs/backups.md, When copies stop arriving.",
+        "AlarmName": "supply-checkout-prod-backup-copies-missing",
+        "ComparisonOperator": "LessThanThreshold",
+        "DatapointsToAlarm": 3,
+        "EvaluationPeriods": 3,
+        "Metrics": [
+          {
+            "Expression": "FILL(vault, 0) + FILL(dynamodb, 0)",
+            "Id": "expr_1",
+            "Label": "Copies completed in the vault",
+            "ReturnData": true
+          },
+          {
+            "Id": "vault",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "BackupVaultName",
+                    "Value": "supply-checkout-prod-backup-copies"
+                  }
+                ],
+                "MetricName": "NumberOfRecoveryPointsCompleted",
+                "Namespace": "AWS/Backup"
+              },
+              "Period": 43200,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "dynamodb",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "BackupVaultName",
+                    "Value": "supply-checkout-prod-backup-copies"
+                  },
+                  {
+                    "Name": "ResourceType",
+                    "Value": "DynamoDB"
+                  }
+                ],
+                "MetricName": "NumberOfRecoveryPointsCompleted",
+                "Namespace": "AWS/Backup"
+              },
+              "Period": 43200,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlertTopic2720D535"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup-vault"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 1,
+        "TreatMissingData": "breaching"
+      }
+    },
+    "ChangeAlertsChanges7D967739": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Backups (backup account): a vault's access policy or lock, the plan, a selection or the region's settings changed or deleted",
+        "EventPattern": {
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "source": [
+            "aws.backup"
+          ],
+          "detail": {
+            "eventSource": [
+              "backup.amazonaws.com"
+            ],
+            "eventName": [
+              "PutBackupVaultAccessPolicy",
+              "DeleteBackupVaultAccessPolicy",
+              "PutBackupVaultLockConfiguration",
+              "DeleteBackupVaultLockConfiguration",
+              "DeleteBackupVault",
+              "UpdateBackupPlan",
+              "DeleteBackupPlan",
+              "DeleteBackupSelection",
+              "UpdateRegionSettings"
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-backup-vault-changes",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup-vault"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlertTopic2720D535"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "account": "$.account",
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod backups, backup account <account>: <detail-eventName> at <detail-eventTime> (CloudTrail event <detail-eventID> says who). Expected only during a deploy of the backup stacks. Otherwise follow \\\"When backups are tampered with\\\" in docs/backups.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "ChangeAlertsKeyChangesA5C37BB6": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Backups (backup account): the vault key was scheduled for deletion, disabled or given a new policy",
+        "EventPattern": {
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "source": [
+            "aws.kms"
+          ],
+          "detail": {
+            "eventSource": [
+              "kms.amazonaws.com"
+            ],
+            "eventName": [
+              "ScheduleKeyDeletion",
+              "DisableKey",
+              "PutKeyPolicy"
+            ],
+            "resources": {
+              "ARN": [
+                {
+                  "Fn::GetAtt": [
+                    "VaultKey6B75F33E",
+                    "Arn"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "Name": "supply-checkout-prod-backup-vault-key-changes",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup-vault"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlertTopic2720D535"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "account": "$.account",
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod backups, backup account <account>: <detail-eventName> at <detail-eventTime> (CloudTrail event <detail-eventID> says who). Expected only during a deploy of the backup stacks. Otherwise follow \\\"When backups are tampered with\\\" in docs/backups.md.\""
+            }
+          }
+        ]
+      }
     }
   },
   "Parameters": {
@@ -355,6 +859,10 @@
       "AllowedPattern": "^o-[a-z0-9]{10,32}$",
       "ConstraintDescription": "must be an organization ID like o-abcdefghij",
       "Description": "The AWS Organization ID (o-...) the source and restore accounts belong to"
+    },
+    "SsmParameterValuesupplycheckoutprodalarmsemail1C96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/alarms/email-1"
     },
     "BootstrapVersion": {
       "Type": "AWS::SSM::Parameter::Value<String>",

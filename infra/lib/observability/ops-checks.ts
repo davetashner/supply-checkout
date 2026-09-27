@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { Aws, Duration, Stack, Validations } from "aws-cdk-lib";
+import { Alarm, ComparisonOperator, TreatMissingData } from "aws-cdk-lib/aws-cloudwatch";
 import { Rule, Schedule } from "aws-cdk-lib/aws-events";
 import { LambdaFunction } from "aws-cdk-lib/aws-events-targets";
 import { PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
@@ -8,10 +9,13 @@ import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { LogGroup } from "aws-cdk-lib/aws-logs";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
-import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, GSI1, STUCK_IMPORT_ATTRIBUTES, TEAM_PURGE_ATTRIBUTES } from "../../../backend/src/data/schema.js";
-import { CHECK_EVERY_MINUTES, OPS_ENV, opsResourceNames, PURGE_BUDGET_MS, PURGE_EVERY_HOURS } from "../../../backend/src/ops/names.js";
+import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, GSI1, STUCK_IMPORT_ATTRIBUTES, TEAM_PURGE_ATTRIBUTES, TEAM_PURGE_MARK_ATTRIBUTES } from "../../../backend/src/data/schema.js";
+import { BusinessMetric } from "../../../backend/src/observability/names.js";
+import { CHECK_EVERY_MINUTES, OPS_ENV, opsResourceNames, PURGE_BUDGET_MS, PURGE_EVERY_HOURS, PURGE_SILENT_ALARM_HOURS } from "../../../backend/src/ops/names.js";
 import { bundling } from "../stacks/api-stack.js";
+import type { AlarmTopics } from "./alarm-topics.js";
 import { LOG_RETENTION } from "./defaults.js";
+import { business } from "./metrics.js";
 
 const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
 
@@ -19,6 +23,8 @@ export interface OpsChecksProps {
   readonly envName: string;
   /** The app table's name (a global table has the same name in every region). */
   readonly tableName: string;
+  /** This region's alarm topics, for the alarm on the purge itself. */
+  readonly topics: AlarmTopics;
 }
 
 /**
@@ -40,13 +46,17 @@ export interface OpsChecksProps {
  *   (EmailQuotaUsedPercent, "Near the sending limit"). ses:GetAccount only.
  * - `teamPurge` isn't a check: every PURGE_EVERY_HOURS it deletes the closed
  *   teams whose read-only period has ended (backend/src/ops/team-purge-handler.ts).
- *   It may Query only GSI1's closed-teams partition there, and on the table
- *   only GetItem, Query (SPECIFIC_ATTRIBUTES) and DeleteItem on `TEAM#`, `USER#` and `STRIPE#`
+ *   It may Query only GSI1's closed-teams partition there (listing keys, or
+ *   Select COUNT for its overdue gauge), and on the table only GetItem, Query
+ *   (SPECIFIC_ATTRIBUTES) and DeleteItem on `TEAM#`, `USER#` and `STRIPE#`
  *   partitions, naming only TEAM_PURGE_ATTRIBUTES (keys, the closure fields,
- *   the Stripe customer and link): it deletes whole items without reading
- *   documents, emails or names. The partitions are wildcards because it acts
- *   on whichever teams are due, which only the table's own index names; no
- *   request reaches it.
+ *   the Stripe customer and link), and UpdateItem on `TEAM#` partitions
+ *   naming only TEAM_PURGE_MARK_ATTRIBUTES, to mark a team `purging` before
+ *   it deletes anything: it deletes whole items without reading documents,
+ *   emails or names. The partitions are wildcards because it acts on
+ *   whichever teams are due, which only the table's own index names; no
+ *   request reaches it. `purgeNotRunning` alarms when its ClosedTeamsOverdue
+ *   gauge stops arriving ("Deletion job not running", docs/journeys.md).
  *
  * The checks run every CHECK_EVERY_MINUTES from an EventBridge rule, each with its own
  * log group and a role that writes only to it. A failed run shows in the
@@ -56,6 +66,8 @@ export class OpsChecks extends Construct {
   readonly stuckImports: NodejsFunction;
   readonly emailQuota: NodejsFunction;
   readonly teamPurge: NodejsFunction;
+  /** "Deletion job not running": no ClosedTeamsOverdue sample for PURGE_SILENT_ALARM_HOURS (J11). */
+  readonly purgeNotRunning: Alarm;
 
   constructor(scope: Construct, id: string, props: OpsChecksProps) {
     super(scope, id);
@@ -122,7 +134,8 @@ export class OpsChecks extends Construct {
             "dynamodb:LeadingKeys": [CLOSED_TEAMS_PARTITION],
             "dynamodb:Attributes": [...TEAM_PURGE_ATTRIBUTES],
           },
-          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+          // Keys for the listing, or only a count for the overdue gauge
+          StringEquals: { "dynamodb:Select": ["SPECIFIC_ATTRIBUTES", "COUNT"] },
         },
       }),
     );
@@ -156,6 +169,21 @@ export class OpsChecks extends Construct {
     );
     this.teamPurge.addToRolePolicy(
       new PolicyStatement({
+        sid: "MarkClosedTeamPurging",
+        // One update: `purging` on a team's META item, conditioned on its purgeAfter,
+        // before anything is deleted, so reopenTeam refuses it from then on. Not
+        // closedAt: this grant can't close or reopen a team
+        actions: ["dynamodb:UpdateItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...TEAM_PURGE_MARK_ATTRIBUTES] },
+          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        },
+      }),
+    );
+    this.teamPurge.addToRolePolicy(
+      new PolicyStatement({
         sid: "TableKeyThroughDynamoDb",
         // Reads and deletes only: nothing it sends is encrypted, so no Encrypt or GenerateDataKey
         actions: ["kms:Decrypt", "kms:DescribeKey"],
@@ -167,6 +195,24 @@ export class OpsChecks extends Construct {
       id: "AwsSolutions-IAM5[Resource::*]",
       reason: "The purge deletes whichever closed teams are due, named only by the table's own closed-teams index: the TEAM#, USER# and STRIPE# partition wildcards are in dynamodb:LeadingKeys, with dynamodb:Attributes limiting it to keys and closure fields",
     });
+
+    // The purge sends its gauge every run that reads the index. No sample for this long means the
+    // schedule is off or deleted, or every run fails before it can count: missing data breaches.
+    this.purgeNotRunning = new Alarm(this, "PurgeNotRunning", {
+      alarmName: `supply-checkout-${props.envName}-p2-deletion-not-running`,
+      alarmDescription: [
+        `P2 Deletion job not running (J11, ${Stack.of(this).region}).`,
+        `No ClosedTeamsOverdue sample from the hourly closed-team purge for ${PURGE_SILENT_ALARM_HOURS} hours: its schedule is disabled or deleted, or every run fails before it reads the closed-teams index. Closed teams aren't being deleted, and Deletion overdue can't see it.`,
+        "Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+      ].join(" "),
+      metric: business(BusinessMetric.ClosedTeamsOverdue, Stack.of(this).region, Duration.hours(PURGE_SILENT_ALARM_HOURS), "SampleCount"),
+      threshold: 1,
+      comparisonOperator: ComparisonOperator.LESS_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      datapointsToAlarm: 1,
+      treatMissingData: TreatMissingData.BREACHING,
+    });
+    props.topics.notify(this.purgeNotRunning, "P2");
   }
 
   /** A function from backend/src/ops/<name>.ts, run on the schedule (every CHECK_EVERY_MINUTES unless `every` says). */

@@ -4636,6 +4636,7 @@
                         "closedAt",
                         "closedBy",
                         "purgeAfter",
+                        "purging",
                         "GSI1PK",
                         "GSI1SK"
                       ]

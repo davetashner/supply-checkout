@@ -11,7 +11,7 @@ import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
 import { alarmContactParameter, alarmContactsFromContext } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
 import { journeyAlarmSpecs } from "../lib/observability/journey-alarms.js";
-import { CHECK_EVERY_MINUTES, PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS, STUCK_IMPORT_AFTER_MINUTES } from "../../backend/src/ops/names.js";
+import { CHECK_EVERY_MINUTES, PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS, PURGE_SILENT_ALARM_HOURS, STUCK_IMPORT_AFTER_MINUTES } from "../../backend/src/ops/names.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
 import { OPERATOR_POOL_ADMIN_EVENTS, OPERATOR_SELF_SERVICE_EVENTS } from "../lib/stacks/observability-stack.js";
 
@@ -58,6 +58,7 @@ const ALARM_IDS = [
   "webhook-signature-failures",
   "deletion-overdue",
   "team-closed-notices-failing",
+  "team-reopened-notices-failing",
 ];
 
 describe("alarm topics", () => {
@@ -107,7 +108,8 @@ describe("alarm topics", () => {
       ]);
       for (const { topics, allow: all } of statements) {
         // The primary region's P1 topic also takes the operator-pool alert, from that one rule only (tested below)
-        const allow = all.filter((a) => a.Sid !== "AllowOperatorPoolAlertToPublish");
+        // (and the backup stack's change alerts, by rule name)
+        const allow = all.filter((a) => a.Sid !== "AllowOperatorPoolAlertToPublish" && a.Sid !== "AllowBackupChangeAlertsToPublish");
         if (all.length !== allow.length) expect([r, topics[0]]).toEqual([EAST, expect.stringMatching(/^AlarmTopicsP1/)]);
         expect(allow).toEqual([
           {
@@ -213,7 +215,8 @@ describe("journey alarms (docs/journeys.md)", () => {
   it("creates the same alarms in every region, each notifying its severity's topic on alarm and recovery", () => {
     for (const r of config.regions) {
       const t = observability(r);
-      const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties);
+      // The purge's own alarm is with the purge, in the primary region only (scheduled checks, below)
+      const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties).filter((a) => a.AlarmName !== "supply-checkout-prod-p2-deletion-not-running");
       const specs = journeyAlarmSpecs(r, "t", "api", "prod");
       expect(alarms.map((a) => a.AlarmName).sort()).toEqual(
         specs.map((s) => `supply-checkout-prod-${s.severity.toLowerCase()}-${s.id}`).sort(),
@@ -400,6 +403,18 @@ describe("alarms added with the email code routes, the live update budget, team 
     });
   });
 
+  it("alarms on any owner not emailed that their team reopened (J11)", () => {
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-team-reopened-notices-failing",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.TeamReopenedNoticeFailures }), Stat: "Sum", Period: 900 }) })],
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      AlarmDescription: Match.stringLikeRegexp("^P2 Team reopened emails failing \\(J11"),
+    });
+  });
+
   it("alarms on any closed team overdue for deletion, over periods that always hold a purge run (J11)", () => {
     observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "supply-checkout-prod-p2-deletion-overdue",
@@ -469,13 +484,15 @@ describe("scheduled checks", () => {
       "dynamodb:Query",
       "dynamodb:Query",
       ["dynamodb:GetItem", "dynamodb:DeleteItem"],
+      "dynamodb:UpdateItem",
       ["kms:Decrypt", "kms:DescribeKey"],
     ]);
-    const attributes = ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "purgeAfter", "stripeCustomerId", "teamId"];
-    const [, index, query, items] = found as Record<string, unknown>[];
+    const attributes = ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "purgeAfter", "purging", "stripeCustomerId", "teamId"];
+    const [, index, query, items, mark] = found as Record<string, unknown>[];
     expect(index?.Condition).toEqual({
       "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAMS#CLOSED"], "dynamodb:Attributes": attributes },
-      StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      // COUNT for the overdue gauge, which returns no items
+      StringEquals: { "dynamodb:Select": ["SPECIFIC_ATTRIBUTES", "COUNT"] },
     });
     const table = {
       "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]],
@@ -492,6 +509,42 @@ describe("scheduled checks", () => {
       "ForAllValues:StringEquals": { "dynamodb:Attributes": attributes },
       StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
     });
+    // The purging mark: team partitions only, naming only the META item's key, purgeAfter and the mark: never closedAt, so it can't close or reopen a team
+    expect(mark?.Resource).toEqual(table);
+    expect(mark?.Condition).toEqual({
+      "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+      "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "purgeAfter", "purging"] },
+      StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+    });
+  });
+
+  it("alarm when the team purge stops sending its gauge for 3 hours, in the primary region only (J11)", () => {
+    const { region } = build();
+    const east = Template.fromStack(region(EAST).observability);
+    east.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-deletion-not-running",
+      Metrics: [
+        Match.objectLike({
+          MetricStat: Match.objectLike({
+            Metric: Match.objectLike({ Namespace: "SupplyCheckout", MetricName: BusinessMetric.ClosedTeamsOverdue, Dimensions: [{ Name: "Region", Value: EAST }] }),
+            Stat: "SampleCount",
+            Period: PURGE_SILENT_ALARM_HOURS * 3600,
+          }),
+        }),
+      ],
+      Threshold: 1,
+      ComparisonOperator: "LessThanThreshold",
+      EvaluationPeriods: 1,
+      TreatMissingData: "breaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      OKActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      AlarmDescription: Match.stringLikeRegexp("docs/journeys.md"),
+    });
+    // More than two missed runs, so one slow run doesn't alarm
+    expect(PURGE_SILENT_ALARM_HOURS).toBeGreaterThan(2 * PURGE_EVERY_HOURS);
+    // The other region runs no purge, so an alarm there would always be in alarm
+    const west = Object.values(Template.fromStack(region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties.AlarmName);
+    expect(west).not.toContain("supply-checkout-prod-p2-deletion-not-running");
   });
 
   it("let the SES quota check read the account's quota and nothing else", () => {
@@ -676,6 +729,8 @@ describe("operator pool alerts (ADR 0015)", () => {
     const statements = Object.values(t.findResources("AWS::SNS::TopicPolicy")).flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
     expect(statements.filter((st) => (st.Principal as { Service?: unknown } | undefined)?.Service === "events.amazonaws.com")).toEqual([
       expect.objectContaining({ Sid: "AllowOperatorPoolAlertToPublish", Condition: { ArnEquals: { "aws:SourceArn": [{ "Fn::GetAtt": [adminId, "Arn"] }, { "Fn::GetAtt": [selfId, "Arn"] }] } } }),
+      // The backup stack's two change-alert rules, by name (tested in backup.test.ts)
+      expect.objectContaining({ Sid: "AllowBackupChangeAlertsToPublish" }),
     ]);
   });
 });

@@ -42,11 +42,21 @@ export const CLOSED_TEAMS_PARTITION = "TEAMS#CLOSED";
 /**
  * The only attributes the team purge may name (ADR 0005): the table and GSI1
  * keys (a MEMBER item's sort key names the member, whose team-switcher row it
- * deletes), the META item's closure fields and Stripe customer, and the
- * Stripe link's team. Its IAM policy allows exactly these (dynamodb:Attributes), so it
+ * deletes), the META item's closure fields (with `purging`, the mark it sets
+ * before deleting anything) and Stripe customer, and the Stripe link's team. Its IAM policy allows exactly these (dynamodb:Attributes), so it
  * deletes whole items without reading documents, emails or names.
  */
-export const TEAM_PURGE_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "closedAt", "purgeAfter", "stripeCustomerId", "teamId"] as const;
+export const TEAM_PURGE_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "closedAt", "purgeAfter", "purging", "stripeCustomerId", "teamId"] as const;
+
+/**
+ * The only attributes the team purge's one update may name: the META item's
+ * key, `purgeAfter` (its condition: a team has it exactly while it's closed,
+ * since closeTeam sets it with `closedAt` and reopenTeam removes both in one
+ * transaction), and the `purging` mark it sets. Its IAM policy allows
+ * UpdateItem with exactly these, so a buggy update can't close or reopen a
+ * team: `closedAt` isn't among them.
+ */
+export const TEAM_PURGE_MARK_ATTRIBUTES = [PK, SK, "purgeAfter", "purging"] as const;
 
 /**
  * The only attributes the stuck-import check may name or read (ADR 0005): the
@@ -154,13 +164,13 @@ export const IMPORT_INDEX_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK] as const;
  * The only attributes the operator-reopen role (supply-checkout-6uw.6), which
  * the operator reopen function assumes tagged with one team, may name in
  * that team's partition, reading or updating (dynamodb:Attributes):
- * the keys, `type`, `version` and `owners` (its read and condition), and the
- * closure fields it removes. Not the operator-access role: with `closedAt`
+ * the keys, `type`, `version`, `owners` and the purge's `purging` mark (its
+ * read and condition), and the closure fields it removes. Not the operator-access role: with `closedAt`
  * and `purgeAfter` it could close a team and have the purge delete it. The
  * reopen function takes no expressions from its caller and only ever removes
  * them, so the ops function can reopen a team but never close one.
  */
-export const REOPEN_ATTRIBUTES = [PK, SK, "type", "version", "owners", "closedAt", "closedBy", "purgeAfter", GSI1PK, GSI1SK] as const;
+export const REOPEN_ATTRIBUTES = [PK, SK, "type", "version", "owners", "closedAt", "closedBy", "purgeAfter", "purging", GSI1PK, GSI1SK] as const;
 
 /**
  * What an operator audit item holds. Owners read their own team's items

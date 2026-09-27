@@ -677,9 +677,9 @@ export async function clearStuckImport(
  * An operator can reopen a closed team until this long before its
  * `purgeAfter`, past the owners' REOPEN_CUTOFF_MINUTES (supply-checkout-6uw.6:
  * restoring a disputed closure in its last hour). The purge deletes a team
- * only once `purgeAfter` has passed, re-reading the META item first, so a
- * reopen conditioned on `purgeAfter` still being ahead can't meet a purge
- * part-way; the margin covers the clocks of two Lambdas.
+ * only once `purgeAfter` has passed, and marks it `purging` first, which the
+ * reopen's condition refuses, so a reopen can't meet a purge part-way
+ * whatever the clocks say; the margin is only for clarity to operators.
  */
 export const OPS_REOPEN_CUTOFF_MINUTES = 5;
 
@@ -705,7 +705,9 @@ const TOO_LATE_FOR_OPS = "This team is about to be deleted and can't be reopened
  * would have been deleted, which its owners read in their support actions,
  * attributed to "Supply Checkout support". The update is conditioned on the
  * closure read being unchanged, on `purgeAfter` still being far enough
- * ahead, and on the team having an owner.
+ * ahead, on the team not being marked `purging` (purgeTeam's mark, set
+ * before it deletes anything: whichever write lands first wins), and on the
+ * team having an owner.
  *
  * Unlike an owner's reopen there's no daily limit (the route's throttle and
  * the audit are the operators' limits) and no email to owners yet. Invites
@@ -734,7 +736,7 @@ export async function reopenOpsTeam(
       Key: keys.team(teamId),
       ConsistentRead: true,
       // Only REOPEN_ATTRIBUTES: the role may read nothing else of the team
-      ProjectionExpression: "#type, #version, #owners, closedAt, purgeAfter",
+      ProjectionExpression: "#type, #version, #owners, closedAt, purgeAfter, purging",
       ExpressionAttributeNames: { "#type": "type", "#version": "version", "#owners": "owners" },
     }),
   );
@@ -747,7 +749,8 @@ export async function reopenOpsTeam(
   }
   if (team.version !== version) throw new ConflictError("The team changed since you read it; read it again and retry");
   const cutoff = new Date(now.getTime() + OPS_REOPEN_CUTOFF_MINUTES * 60_000).toISOString();
-  if (typeof team.purgeAfter !== "string" || team.purgeAfter <= cutoff) throw new TeamDeletingError(TOO_LATE_FOR_OPS);
+  // Too close to the purge, or the purge has started: it marks the team `purging` before deleting anything
+  if (typeof team.purgeAfter !== "string" || team.purgeAfter <= cutoff || team.purging !== undefined) throw new TeamDeletingError(TOO_LATE_FOR_OPS);
   if (typeof team.owners !== "number" || team.owners < 1) throw new ConflictError("This team has no owner left to reopen it for");
   return auditedUpdate<ReopenOutcome>(
     db,
@@ -764,7 +767,7 @@ export async function reopenOpsTeam(
         Key: keys.team(teamId),
         UpdateExpression: "REMOVE closedAt, closedBy, purgeAfter, GSI1PK, GSI1SK SET #version = #version + :one",
         // The META item, at the version and with the closure the operator saw, still ahead of the purge
-        ConditionExpression: "#type = :team AND #version = :v AND closedAt = :at AND purgeAfter = :purge AND purgeAfter > :cutoff AND #owners > :zero",
+        ConditionExpression: "#type = :team AND #version = :v AND closedAt = :at AND purgeAfter = :purge AND purgeAfter > :cutoff AND attribute_not_exists(purging) AND #owners > :zero",
         ExpressionAttributeNames: { "#type": "type", "#version": "version", "#owners": "owners" },
         ExpressionAttributeValues: { ":team": "team", ":v": version, ":at": team.closedAt, ":purge": team.purgeAfter, ":cutoff": cutoff, ":one": 1, ":zero": 0 },
       },

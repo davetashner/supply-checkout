@@ -651,6 +651,28 @@ describe("reopening a closed team (supply-checkout-6uw.6)", () => {
     expect(auditItems(teamC)).toEqual([]);
   });
 
+  it("refuses a team the purge has marked purging, whatever its purgeAfter says", async () => {
+    const closed = await closeC(24 * 60);
+    table.put({ ...teamOf(teamC), purging: new Date(now).toISOString() });
+    const res = await reopen(teamC, { reason: "Too late", expectedVersion: closed.version });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatchObject({ code: "aborted", reason: "team_deleting" });
+    expect(teamOf(teamC).closedAt).toBe(closed.closedAt);
+    expect(reopenDenied).toEqual([]);
+  });
+
+  it("loses to a purge that marks the team between the read and the write", async () => {
+    const closed = await closeC(24 * 60);
+    table.afterGet = () => {
+      table.afterGet = undefined;
+      table.put({ ...teamOf(teamC), purging: new Date(now).toISOString() });
+    };
+    const res = await reopen(teamC, { reason: "Racing the purge", expectedVersion: closed.version });
+    expect(res.status).toBe(409);
+    expect(teamOf(teamC).closedAt).toBe(closed.closedAt);
+    expect(auditItems(teamC)).toEqual([]);
+  });
+
   it("refuses a stale version, an open team, a team with no owner left, and a team that isn't there", async () => {
     const closed = await closeC(24 * 60);
     expect((await reopen(teamC, { reason: "Stale", expectedVersion: (closed.version as number) - 1 })).status).toBe(409);
