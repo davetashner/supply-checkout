@@ -96,3 +96,42 @@ test("falls back to System, and still switches, when storage throws", async ({ p
   await expectPressed(page, "System");
   expect(await background(page)).toBe(LIGHT);
 });
+
+test("theme changes in another tab update the page and pressed control without reloading", async ({ page, context }) => {
+  await open(page, { os: "dark" });
+  const other = await context.newPage();
+  try {
+    await open(other);
+    for (const [choice, value, color] of [["Light", "light", LIGHT], ["Dark", "dark", DARK], ["System", null, DARK]]) {
+      await themeButton(other, choice).click();
+      await expectPressed(page, choice);
+      expect(await attr(page)).toBe(value);
+      expect(await background(page)).toBe(color);
+    }
+    // clear() has no key; unknown stored choices have the same fallback as at startup.
+    await themeButton(other, "Light").click();
+    await expectPressed(page, "Light");
+    await other.evaluate(() => localStorage.clear());
+    await expectPressed(page, "System");
+    await themeButton(other, "Dark").click();
+    await expectPressed(page, "Dark");
+    await other.evaluate(k => localStorage.setItem(k, "purple"), KEY);
+    await expectPressed(page, "System");
+    expect(await attr(page)).toBeNull();
+  } finally {
+    await other.close();
+  }
+});
+
+test("unrelated storage events don't replace a tab's theme", async ({ page }) => {
+  await open(page);
+  await themeButton(page, "Dark").click();
+  await page.evaluate(k => {
+    // Keep the persisted value different to make an accidental re-read observable.
+    localStorage.setItem(k, "light");
+    window.dispatchEvent(new StorageEvent("storage", { key: "another.preference", storageArea: localStorage }));
+    window.dispatchEvent(new StorageEvent("storage", { key: k, storageArea: sessionStorage }));
+  }, KEY);
+  await expectPressed(page, "Dark");
+  expect(await attr(page)).toBe("dark");
+});
