@@ -40,7 +40,11 @@ function attempt(action, fn) {
   return next;
 }
 
-async function move(db, action, command, sheetId, body, local) {
+// plan(cur): what the artifact writes, from the line as it's saved now (cur, undefined if there's
+// none), so the quantity is added to the latest line even if this page hasn't heard of someone
+// else's change yet: { patch, delta } (the line's change and the storage count's), and for a
+// return what it resolves to. partial: a return, which changes part of the line.
+async function move(db, action, command, sheetId, body, partial, plan) {
   // WEB: the artifact build leaves this path out, since claude.ai's db has no commands (src/build.js)
   if (WEB && db.command) return db.command(command, sheetId, body, action);
   // As with the web build's operation IDs, a changed request (another quantity) is a new action
@@ -54,7 +58,8 @@ async function move(db, action, command, sheetId, body, local) {
     // Saved already: what's left is what that attempt left to do, its storage count
     if (!marked(cur, mark)) {
       // A return changes part of the line, so it doesn't make a line someone else removed again
-      if (!cur && local.partial) throw { code: "refused", message: "Someone else removed this item from the sheet, so the return wasn't saved." };
+      if (!cur && partial) throw { code: "refused", message: "Someone else removed this item from the sheet, so the return wasn't saved." };
+      const local = plan(cur);
       saved.set(action, local);
       await ref.update({ items: { [key]: { ...local.patch, ops: remember(cur, mark) } } });
       // Until the storage count saves too, the form can't change the request (src/main.js)
@@ -76,18 +81,20 @@ async function addStock(db, key, delta, mark) {
   await ref.update({ stock: Math.max(0, (hasStock(cur) ? cur.stock : 0) + delta), ops: remember(cur, mark) });
 }
 
-// item: the whole line as it should be now. oneOff: the name, price and code of an item that
+// item: the line as this page has it with the checkout added (its name, price and cost; the
+// artifact adds qty to the saved line's out). oneOff: the name, price and code of an item that
 // isn't in inventory, which the command needs to add its line ({} for an item in inventory).
 export const checkOut = (db, action, sheetId, key, qty, item, oneOff) =>
-  move(db, action, "checkout", sheetId, { productKey: key, quantity: qty, ...oneOff }, { patch: item, delta: -qty });
+  move(db, action, "checkout", sheetId, { productKey: key, quantity: qty, ...oneOff }, false,
+    cur => ({ patch: { ...item, out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) }, delta: -qty }));
 // r: how many the person is returning. The command adds it on the server, which refuses more
-// than are left. The artifact writes the line's new returned count, added to the latest copy
-// of the line (cur), in case someone else recorded a return meanwhile.
-export function recordReturn(db, action, sheetId, key, r, cur) {
-  const out = int(cur.out), before = Math.min(int(cur.returned), out), back = Math.min(out, before + r);
-  return move(db, action, "return", sheetId, { productKey: key, quantity: r },
-    { patch: { returned: back }, partial: true, delta: back - before, quantity: back - before, line: { out, returned: back } });
-}
+// than are left. The artifact writes the line's new returned count, added to the line as it's
+// saved now, in case someone else recorded a return meanwhile.
+export const recordReturn = (db, action, sheetId, key, r) =>
+  move(db, action, "return", sheetId, { productKey: key, quantity: r }, true, cur => {
+    const out = int(cur.out), before = Math.min(int(cur.returned), out), back = Math.min(out, before + r);
+    return { patch: { returned: back }, delta: back - before, quantity: back - before, line: { out, returned: back } };
+  });
 // A receipt's lines for a client, added to a sheet that already exists (saveReceipt in
 // src/main.js). items: { [key]: line }, each as a new line would be ({ code, name, price, cost
 // each from the receipt, out: how many were bought, returned: 0 }). A line already on the sheet keeps its name, price

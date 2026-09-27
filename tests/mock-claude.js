@@ -16,6 +16,7 @@ export function installMockClaude(opts) {
     downloadError = null, // downloads.save rejects with this code ("bare": rejects with no error object)
     sampleHang = false, // sample.json waits until its signal aborts
     instantUpdates = false, // listeners fire during a write, before it resolves (like a local-first database)
+    rejectsNull = false, // update refuses a patch with a null value in it (invalid_argument), in case claude.ai's db does
     viewOnlyNotice = undefined, // user.viewOnlyNotice() answers this (the web build's closed team); undefined: claude.ai has no such method
   } = opts || {};
   const clone = (o) => (o === undefined ? undefined : JSON.parse(JSON.stringify(o)));
@@ -77,6 +78,7 @@ export function installMockClaude(opts) {
       update: async (data) => {
         await arrive(path); guard(path);
         if (!docs.has(path)) throw { code: "invalid_argument", message: "no such document" };
+        if (rejectsNull && JSON.stringify(data).includes("null")) throw { code: "invalid_argument", message: "null values aren't allowed" };
         merge(docs.get(path), data); notify(); lost(path);
       },
       delete: async () => { await arrive(path); guard(path); docs.delete(path); notify(); },
