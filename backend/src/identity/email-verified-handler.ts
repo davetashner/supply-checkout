@@ -33,11 +33,55 @@
 // happen with them; a missing attribute (never mapped) counts as unverified.
 //
 // A native user linked to a provider (account-link-handler.ts,
-// supply-checkout-0b1) doesn't meet the second condition and is left alone:
-// its email was verified with Cognito's own code, and a Managed Login sign-in
-// for it may not have gone through the provider. The linking trigger reuses
-// providerSaysVerified(), since Cognito puts the mapped attributes in the pre
-// sign-up event too.
+// supply-checkout-0b1) doesn't meet the second condition and never has its
+// email_verified promoted here: its email was verified with Cognito's own
+// code, and a Managed Login sign-in for it may not have gone through the
+// provider. The linking trigger reuses providerSaysVerified(), since Cognito
+// puts the mapped attributes in the pre sign-up event too.
+//
+// Linked users (supply-checkout-kgw). Cognito applies the provider's attribute
+// mapping to a linked user at every provider sign-in, so a changed provider
+// email overwrites `email`, and email_verified stays "true". The invariant:
+// a linked user's email_verified is "true" only for the address recorded in
+// `custom:linked_email`, which is always one Cognito verified with a code
+// (the linking trigger records it from a user whose email_verified is "true",
+// and this trigger records a new one only after Cognito verified it; see
+// below). So, for a native user with a Google or Apple identity linked
+// (linkedUser()), whose email differs from the recorded one while
+// email_verified is "true":
+//
+// - At a Managed Login token (TokenGeneration_HostedAuth), which is the only
+//   token that follows a provider sign-in, the email may have just been
+//   rewritten from the provider: the trigger sets email_verified to "false"
+//   (outcome "linked-unverified"). It never restores the recorded address or
+//   promotes anyone: it only takes trust away. The person proves the new
+//   address with a Cognito code, as for any change of email. If the downgrade
+//   fails, the sign-in fails too ("linked-downgrade-failed", counted in
+//   EmailUnverifyFailures) and can be tried again: going ahead would issue
+//   tokens for an unproven address. A native Managed Login sign-in looks the
+//   same here, so a native change of email followed first by a Managed Login
+//   sign-in is unverified too, and needs its code again.
+// - At any other token (a refresh, an API sign-in), Cognito hasn't applied a
+//   provider mapping since the last Managed Login token, which unverified any
+//   rewritten address. So "true" for another address means Cognito verified
+//   it with a code since (a native change of email, or re-verifying after a
+//   downgrade), or an administrator set it: the trigger records it in
+//   `custom:linked_email` ("linked-recorded"), so the API trusts it and a
+//   second provider can still be linked. A failed recording is logged
+//   ("linked-record-failed", counted in EmailVerifyFailures), the sign-in goes
+//   ahead, and the next token tries again.
+//
+// Nothing is written for a linked user whose email is the recorded one, or
+// whose email_verified isn't "true". The account API applies the same rule
+// to what GetUser returns (src/api/cognito-user.ts), so a rewritten address
+// shows no invites even before this trigger has run.
+//
+// Accepted risk: if a Managed Login downgrade fails (or the trigger can't run
+// at all) after Cognito rewrote the email, and a refresh from another session
+// comes before a later sign-in succeeds, that refresh records the rewritten
+// address as verified. That needs a failed Cognito write, which the "Email
+// verification not saved" alarm reports, and the rewritten address still has
+// to be one the provider put on the person's own account.
 //
 // What it does: email_verified becomes "true" when the provider says the email
 // is verified (Google sends a boolean, Apple a boolean or the string
@@ -56,7 +100,7 @@
 import type { PreTokenGenerationTriggerEvent } from "aws-lambda";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import type { UpdateUserAttributes } from "./cognito-admin.js";
-import { FEDERATED_PROVIDERS, type FederatedProvider, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "./names.js";
+import { FEDERATED_PROVIDERS, type FederatedProvider, LINKED_EMAIL_ATTRIBUTE, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "./names.js";
 
 export interface EmailVerifiedDeps {
   readonly updateUserAttributes: UpdateUserAttributes;
@@ -99,6 +143,54 @@ export function federatedProvider(userName: unknown, identities: unknown): Feder
   return undefined;
 }
 
+/**
+ * True for a user who must sign in only through Google or Apple: a Google or
+ * Apple identity whose `<providerName>_<userId>` is the username, or a user
+ * Cognito marks EXTERNAL_PROVIDER. (The sign-in guard's rule; it's here so the
+ * guard, this trigger and the linking trigger share it.)
+ */
+export function isFederatedOnly(userName: unknown, attributes: Readonly<Record<string, string | undefined>>): boolean {
+  return federatedProvider(userName, attributes.identities) !== undefined || attributes["cognito:user_status"] === "EXTERNAL_PROVIDER";
+}
+
+/** Lowers A–Z only: no Unicode case folding, so only ASCII-identical addresses match. */
+export const asciiLower = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+/** The Google and Apple providers in `identities` (Cognito's JSON list); undefined when it can't be read. */
+export function linkedProviders(identities: string | undefined): string[] | undefined {
+  try {
+    const list: unknown = JSON.parse(identities ?? "[]");
+    if (!Array.isArray(list)) return undefined;
+    return list
+      .map((e: { providerName?: unknown } | null) => e?.providerName)
+      .filter((p): p is string => typeof p === "string" && (FEDERATED_PROVIDERS as readonly string[]).includes(p));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * True for a native user with a Google or Apple identity linked to it (or
+ * whose identities can't be read, which is treated the same, to be safe).
+ */
+export function linkedUser(userName: unknown, attributes: Readonly<Record<string, string | undefined>>): boolean {
+  if (isFederatedOnly(userName, attributes)) return false;
+  const linked = linkedProviders(attributes.identities);
+  return linked === undefined || linked.length > 0;
+}
+
+/** Whether a linked user's email is the one recorded when a provider was linked (or recorded since). */
+export function isRecordedEmail(attributes: Readonly<Record<string, string | undefined>>): boolean {
+  const recorded = attributes[LINKED_EMAIL_ATTRIBUTE]?.trim();
+  return !!recorded && asciiLower(attributes.email?.trim() ?? "") === asciiLower(recorded);
+}
+
+/** Tokens that never follow a provider sign-in, so Cognito hasn't just rewritten the email. */
+const NOT_AFTER_PROVIDER = new Set(["TokenGeneration_RefreshTokens", "TokenGeneration_Authentication", "TokenGeneration_NewPasswordChallenge", "TokenGeneration_AuthenticateDevice"]);
+
+/** What a linked user's failed downgrade shows the person: it names no account detail. */
+export const LINKED_FAILED_ERROR = "Sign-in couldn't finish. Try again.";
+
 export type Outcome =
   | "not-provider-sign-in"
   | "not-federated"
@@ -109,12 +201,47 @@ export type Outcome =
   /** Couldn't mark verified: the user stays unverified. */
   | "failed"
   /** Couldn't mark unverified: the user stays verified until a later sign-in succeeds. */
-  | "downgrade-failed";
+  | "downgrade-failed"
+  /** A linked user whose email is the recorded one, or isn't verified: nothing to do. */
+  | "linked-unchanged"
+  /** A linked user's email differed from the recorded one at a Managed Login token: unverified. */
+  | "linked-unverified"
+  /** Couldn't unverify a linked user's changed email: the sign-in fails. */
+  | "linked-downgrade-failed"
+  /** A linked user's email, verified by Cognito since the last Managed Login token, is now the recorded one. */
+  | "linked-recorded"
+  /** Couldn't record it: the API treats the email as unverified until a later token records it. */
+  | "linked-record-failed";
 
 export function createEmailVerifiedHandler(deps: EmailVerifiedDeps) {
+  const linked = async (event: PreTokenGenerationTriggerEvent, attributes: Readonly<Record<string, string | undefined>>): Promise<{ outcome: Outcome }> => {
+    if (!attributes.email) return { outcome: "no-email" };
+    if (attributes.email_verified !== "true" || isRecordedEmail(attributes)) return { outcome: "linked-unchanged" };
+    if (event.triggerSource === "TokenGeneration_HostedAuth") {
+      try {
+        await deps.updateUserAttributes(event.userPoolId, event.userName, { email_verified: "false" });
+      } catch (error) {
+        deps.obs.logger.error("Couldn't mark a linked user's changed email unverified; the sign-in fails", { outcome: "linked-downgrade-failed", error: (error as Error).message });
+        deps.obs.count(BusinessMetric.EmailUnverifyFailures);
+        throw new Error(LINKED_FAILED_ERROR, { cause: error });
+      }
+      return { outcome: "linked-unverified" };
+    }
+    if (!NOT_AFTER_PROVIDER.has(event.triggerSource)) return { outcome: "linked-unchanged" };
+    try {
+      await deps.updateUserAttributes(event.userPoolId, event.userName, { [LINKED_EMAIL_ATTRIBUTE]: asciiLower(attributes.email.trim()) });
+    } catch (error) {
+      deps.obs.logger.error("Couldn't record a linked user's verified email", { outcome: "linked-record-failed", error: (error as Error).message });
+      deps.obs.count(BusinessMetric.EmailVerifyFailures);
+      return { outcome: "linked-record-failed" };
+    }
+    return { outcome: "linked-recorded" };
+  };
+
   const handle = async (event: PreTokenGenerationTriggerEvent): Promise<{ outcome: Outcome; provider?: FederatedProvider }> => {
-    if (event.triggerSource !== "TokenGeneration_HostedAuth") return { outcome: "not-provider-sign-in" };
     const attributes = event.request?.userAttributes ?? {};
+    if (linkedUser(event.userName, attributes)) return linked(event, attributes);
+    if (event.triggerSource !== "TokenGeneration_HostedAuth") return { outcome: "not-provider-sign-in" };
     const provider = federatedProvider(event.userName, attributes.identities);
     if (!provider || attributes["cognito:user_status"] !== "EXTERNAL_PROVIDER") return { outcome: "not-federated" };
     if (!attributes.email) return { outcome: "no-email", provider };

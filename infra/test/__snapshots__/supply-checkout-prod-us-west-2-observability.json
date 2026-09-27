@@ -1046,7 +1046,7 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Email verification not saved (J3, us-west-2). Any EmailVerifyFailures or EmailUnverifyFailures over 15 minutes: the sign-in trigger couldn't copy a Google or Apple user's email_verified, so they stay unverified (and can't accept invites) or, for a downgrade, stay verified. The sign-in goes ahead and the next one retries, so the Lambda Errors alarm doesn't see it. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmDescription": "P2 Email verification not saved (J3, us-west-2). Any EmailVerifyFailures or EmailUnverifyFailures over 15 minutes: the sign-in trigger couldn't copy a Google or Apple user's email_verified, so they stay unverified (and can't accept invites) or, for a downgrade, stay verified; or couldn't unverify or record a linked user's changed email. The sign-in goes ahead (a linked user's failed downgrade fails it) and the next one retries, so the Lambda Errors alarm doesn't see it. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-email-verification-not-saved",
         "ComparisonOperator": "GreaterThanThreshold",
         "EvaluationPeriods": 1,
