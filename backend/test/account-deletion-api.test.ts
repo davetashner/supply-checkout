@@ -11,7 +11,7 @@ import type { CognitoUser } from "../src/api/cognito-user.js";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, DATA_ROUTES, routeKey } from "../src/api/routes.js";
-import { authorizeTeam, CLOSED_TEAM_RETENTION_DAYS, createInvite, hashEmail, liveUpdateRecipients, purgeTeam, recordReceiptRead, startAccountDeletion, TeamClosedError, updateTeam } from "../src/data/index.js";
+import { authorizeTeam, CLOSED_TEAM_RETENTION_DAYS, createInvite, hashEmail, listTeamsToPurge, liveUpdateRecipients, purgeTeam, recordReceiptRead, startAccountDeletion, TeamClosedError, updateTeam } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { PURGE_BUDGET_MS } from "../src/ops/names.js";
 import { createTeamPurgeHandler } from "../src/ops/team-purge-handler.js";
@@ -138,7 +138,7 @@ beforeEach(() => {
   // Invite emails go to the shared fake; closure notices are recorded here, one per recipient
   const mailer: Mailer = {
     async send(to, input, tags = {}) {
-      if (input.kind !== "teamClosed") return mails.mailer.send(to, input, tags);
+      if (input.kind !== "teamClosed" && input.kind !== "teamReopened") return mails.mailer.send(to, input, tags);
       if (refuse.has(to)) throw new EmailNotSentError("MessageRejected");
       notices.push({ to, input, teamId: tags.teamId });
       return { messageId: `notice-${notices.length}` };
@@ -186,6 +186,7 @@ async function data(method: string, path: string, user = OWNER, body?: unknown, 
 }
 
 const close = (teamId = "team-a", name: unknown = `Team ${teamId}`, user = OWNER) => call("POST", `/teams/${teamId}/close`, user, { name });
+const reopen = (teamId = "team-a", name: unknown = `Team ${teamId}`, user = OWNER) => call("POST", `/teams/${teamId}/reopen`, user, { name });
 const deleteAccount = (user: string, confirm: unknown = "DELETE") => call("DELETE", "/me", user, { confirm });
 const meta = (teamId = "team-a") => table.get(`TEAM#${teamId}`, "META");
 const partition = (pk: string) => [...table.items.values()].filter((i) => i.PK === pk);
@@ -348,6 +349,125 @@ describe("closing a team", () => {
     };
     expect(await close()).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
     expect(meta()?.closedAt).toBeUndefined();
+  });
+});
+
+describe("reopening a team", () => {
+  const CLOSURE = ["closedAt", "closedBy", "purgeAfter", "GSI1PK", "GSI1SK"];
+
+  it("makes it writable again, takes it out of the purge index, audits it and restores live updates", async () => {
+    await close();
+    const closedAt = new Date(NOW).toISOString();
+    // While it was closed: Sam's invite went, and the viewer was removed
+    expect((await call("DELETE", `/teams/team-a/members/${VIEWER}`)).status).toBe(204);
+    now += 3 * DAY;
+    const { status, body } = await reopen("team-a", " team TEAM-A  ");
+    expect(status).toBe(200);
+    expect(body.team).toMatchObject({ id: "team-a", role: "owner", closedAt: null, deletesAt: null });
+    const item = meta() as Record<string, unknown>;
+    for (const name of CLOSURE) expect(item[name]).toBeUndefined();
+    expect(item).toMatchObject({ version: 3, members: 2, owners: 1 });
+    expect(audits("team-a").find((a) => a.action === "team.reopened")).toMatchObject({ userId: OWNER, detail: { closedAt, closedBy: OWNER } });
+    expect(counts[BusinessMetric.TeamsReopened]).toBe(1);
+    expect(logs).toContainEqual(["info", "Team reopened", { teamId: "team-a" }]);
+    // Writable again for its members, and /me says it's open
+    expect((await data("PATCH", "/teams/team-a/products/0123", PAT, { data: { name: "Gloves" }, expectedVersion: 3 })).status).toBe(200);
+    expect((await call("POST", "/teams/team-a/invites", OWNER, { email: "back@example.com", role: "viewer" })).status).toBe(201);
+    const me = await call("GET", "/me", PAT);
+    expect(me.body.teams.find((t: { id: string }) => t.id === "team-a")).toMatchObject({ closedAt: null, deletesAt: null });
+    // What the closure undid stays undone: the old invite and the removed viewer
+    expect(table.get("TEAM#team-a", "INVITE#inv-a1")).toBeUndefined();
+    expect(table.get("TEAM#team-a", `MEMBER#${VIEWER}`)).toBeUndefined();
+    expect((await liveUpdateRecipients(table.db("team-a"), "team-a")).sort()).toEqual([OWNER, PAT]);
+    // The purge doesn't list it, and skips it if it's asked to
+    const late = new Date(NOW + (CLOSED_TEAM_RETENTION_DAYS + 1) * DAY);
+    expect((await listTeamsToPurge(table.db(undefined), late)).map((t) => t.teamId)).not.toContain("team-a");
+    expect(await purgeTeam(table.db("team-a"), "team-a", late)).toEqual({ deleted: 0, skipped: true });
+  });
+
+  it("emails every owner, and nobody else, once; reopening an open team changes nothing", async () => {
+    await close("team-b");
+    notices = [];
+    expect((await reopen("team-b")).status).toBe(200);
+    expect(notices.map((n) => n.to).sort()).toEqual(["co@example.com", "owner@example.com"]);
+    for (const n of notices) expect(n).toMatchObject({ input: { kind: "teamReopened", teamName: "Team team-b" }, teamId: "team-b" });
+    expect(counts[BusinessMetric.TeamReopenedNotices]).toBe(2);
+    expect(counts[BusinessMetric.TeamReopenedNoticeFailures]).toBeUndefined();
+    // Again, and a team that was never closed: nothing changes, nothing is sent
+    const again = await reopen("team-b", "anything");
+    expect(again).toMatchObject({ status: 200, body: { team: { id: "team-b", closedAt: null } } });
+    expect((await reopen("team-a", "anything")).status).toBe(200);
+    expect(notices).toHaveLength(2);
+    expect(counts[BusinessMetric.TeamsReopened]).toBe(1);
+    expect(audits("team-b").map((a) => a.action).sort()).toEqual(["team.closed", "team.reopened"]);
+    expect(audits("team-a")).toEqual([]);
+    expect(meta("team-a")?.version).toBe(1);
+    expect(JSON.stringify(logs)).not.toMatch(/@example\.com|Team team-b/);
+  });
+
+  it("reopens the team even when owners can't be emailed, and counts each owner who wasn't", async () => {
+    await close("team-b");
+    refuse.add("co@example.com");
+    expect((await reopen("team-b")).status).toBe(200);
+    expect(meta("team-b")?.closedAt).toBeUndefined();
+    expect(counts[BusinessMetric.TeamReopenedNotices]).toBe(1);
+    expect(counts[BusinessMetric.TeamReopenedNoticeFailures]).toBe(1);
+    expect(logs).toContainEqual(["warn", "Team reopened emails not sent", { teamId: "team-b", failed: 1, owners: 2, codes: "MessageRejected" }]);
+
+    await close("team-a");
+    memberListFails = true;
+    expect((await reopen("team-a")).status).toBe(200);
+    expect(meta("team-a")?.closedAt).toBeUndefined();
+    expect(counts[BusinessMetric.TeamReopenedNoticeFailures]).toBe(2);
+    expect(logs).toContainEqual(["warn", "Team reopened emails not sent", { teamId: "team-a", code: "ThrottlingException" }]);
+    expect(JSON.stringify(logs)).not.toMatch(/@example\.com/);
+  });
+
+  it("needs the team's name, an owner who's still in the team, and a body with only the name", async () => {
+    await close("team-b");
+    const closedMeta = structuredClone(meta("team-b"));
+    expect(await reopen("team-b", "Team A")).toMatchObject({ status: 400, body: { error: { code: "bad_request", message: "Type the team's name to reopen it" } } });
+    expect(await reopen("team-b", 7)).toMatchObject({ status: 400 });
+    expect((await call("POST", "/teams/team-b/reopen", OWNER, { name: "Team team-b", extra: 1 })).status).toBe(400);
+    expect((await reopen("team-b", "Team team-b", PAT)).body.error.reason).toBe("owners_only");
+    expect((await reopen("team-b", "Team team-b", VIEWER)).body.error.reason).toBe("not_member");
+    // An owner who left the closed team can't reopen it
+    expect((await call("DELETE", `/teams/team-b/members/${CO_OWNER}`, CO_OWNER)).status).toBe(204);
+    expect((await reopen("team-b", "Team team-b", CO_OWNER)).body.error.reason).toBe("not_member");
+    expect(meta("team-b")).toMatchObject({ closedAt: closedMeta?.closedAt, GSI1PK: "TEAMS#CLOSED", version: closedMeta?.version });
+    expect(audits("team-b").map((a) => a.action)).not.toContain("team.reopened");
+    expect(notices.filter((n) => n.input.kind === "teamReopened")).toEqual([]);
+  });
+
+  it("refuses once the purge is less than an hour away, or due", async () => {
+    await close();
+    const purgeAfter = NOW + CLOSED_TEAM_RETENTION_DAYS * DAY;
+    now = purgeAfter - 59 * 60_000;
+    expect(await reopen()).toMatchObject({ status: 409, body: { error: { code: "aborted", reason: "team_deleting" } } });
+    now = purgeAfter + 1000;
+    expect((await reopen()).body.error.reason).toBe("team_deleting");
+    expect(meta()?.closedAt).toBeDefined();
+    // Just over an hour before: it can
+    now = purgeAfter - 61 * 60_000;
+    expect((await reopen()).status).toBe(200);
+  });
+
+  it("refuses an owner demoted after their check, or a closure that changed meanwhile, and changes nothing", async () => {
+    await close();
+    table.beforeTransactWrite = () => {
+      table.put({ ...table.get("TEAM#team-a", `MEMBER#${OWNER}`), role: "viewer" });
+      table.beforeTransactWrite = undefined;
+    };
+    expect(await reopen()).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
+    expect(meta()?.closedAt).toBeDefined();
+    table.put({ ...table.get("TEAM#team-a", `MEMBER#${OWNER}`), role: "owner" });
+    // Reopened and closed again by someone else between the read and the write
+    table.beforeTransactWrite = () => {
+      table.put({ ...(meta() as Record<string, unknown>), closedAt: new Date(NOW + 1000).toISOString() });
+      table.beforeTransactWrite = undefined;
+    };
+    expect((await reopen()).status).toBe(409);
+    expect(audits("team-a").map((a) => a.action)).toEqual(["team.closed"]);
   });
 });
 

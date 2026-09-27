@@ -148,6 +148,13 @@ export function isClosed(team: { readonly closedAt?: unknown } | undefined): boo
  */
 export const CLOSED_TEAM_RETENTION_DAYS = 30;
 
+/**
+ * A closed team can be reopened (reopenTeam) until this long before its
+ * `purgeAfter`. The purge runs hourly and stops starting teams after 4
+ * minutes, so a team it may already be deleting can never be reopened.
+ */
+export const REOPEN_CUTOFF_MINUTES = 60;
+
 /** The free trial every new team starts with: 14 days, no card (ADR 0009). */
 export const TRIAL_DAYS = 14;
 

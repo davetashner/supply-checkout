@@ -191,7 +191,7 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Expected:** done without contacting support. The user is out of every team, a team they were alone in is closed, invites to their address and their sign-in are gone, and a closed team's data is deleted 30 days after it closed. Closing a team will cancel its subscription once billing is built (`supply-checkout-x0l`).
 
-**Status:** built (`supply-checkout-b1h`). **Tests:** `backend/test/account-deletion-api.test.ts` (closing, deleting, the purge, isolation of each session), `backend/test/closing.test.ts` (the same against DynamoDB Local, including that the data is gone after 30 days and not before), `tests/aws-account-deletion.spec.js` (the web app: leaving, closing, a closed team, deleting).
+**Status:** built (`supply-checkout-b1h`). **Tests:** `backend/test/account-deletion-api.test.ts` (closing, deleting, the purge, isolation of each session), `backend/test/closing.test.ts` (the same against DynamoDB Local, including that the data is gone after 30 days and not before), `tests/aws-account-deletion.spec.js` (the web app: leaving, closing, a closed team, reopening it, deleting). An owner who is still in a closed team can reopen it until an hour before the purge (`supply-checkout-d9su`).
 
 ### J12. Choose a plan in the mobile app
 

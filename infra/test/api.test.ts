@@ -97,6 +97,7 @@ describe("HTTP API routes", () => {
       "DELETE /teams/{teamId}/invites/{inviteId}": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
       "POST /teams/{teamId}/invites/{inviteId}/resend": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /teams/{teamId}/close": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "POST /teams/{teamId}/reopen": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "DELETE /me": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "POST /me/email/code": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /me/email/verify": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },

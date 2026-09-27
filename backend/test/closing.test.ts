@@ -1,4 +1,4 @@
-// Closing a team, deleting an account's rows and purging closed teams,
+// Closing and reopening a team, deleting an account's rows and purging closed teams,
 // against DynamoDB Local (skipped without DYNAMODB_ENDPOINT; `npm run
 // test:ddb` runs it locally). The handlers' side is in
 // account-deletion-api.test.ts; this checks the expressions, conditions and
@@ -30,11 +30,15 @@ import {
   liveUpdateRecipients,
   NotFoundError,
   purgeTeam,
+  REOPEN_CUTOFF_MINUTES,
   removeMember,
+  reopenTeam,
   setDocument,
   setMemberRole,
   startAccountDeletion,
   TeamClosedError,
+  teamContextForEmailEvent,
+  TeamDeletingError,
 } from "../src/data/index.js";
 import { connection } from "../src/data/client.js";
 import { endpoint, newUser, rawItem, useTable } from "./helpers.js";
@@ -196,5 +200,65 @@ describe.skipIf(!endpoint)("closing teams and deleting accounts (DynamoDB Local)
     expect(await purgeTeam(table.db, teamId, after)).toEqual({ deleted: 0, skipped: true });
     expect((await partition(`TEAM#${other.teamId}`)).length).toBeGreaterThan(5);
     expect(await listTeamsForUser(table.db, other.ownerId)).toHaveLength(1);
+  });
+
+  it("reopens a closed team: writable, out of the purge index, live updates back, audited, and idempotent", async () => {
+    const now = new Date("2026-09-01T00:00:00.000Z");
+    const { teamId, owner, ownerId, crew, crewId } = await team(now);
+    await closeTeam(table.db, owner, { confirmName: "Echo Cleaning" }, now);
+    const closed = await authorizeTeam(table.db, ownerId, teamId);
+    const closedCrew = await authorizeTeam(table.db, crewId, teamId);
+    await expect(reopenTeam(table.db, closedCrew, { confirmName: "Echo Cleaning" }, now)).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(reopenTeam(table.db, closed, { confirmName: "Bravo" }, now)).rejects.toBeInstanceOf(InvalidInputError);
+    const later = new Date(now.getTime() + 5 * DAY);
+    const { team: reopened, reopenedNow } = await reopenTeam(table.db, closed, { confirmName: " ECHO cleaning" }, later);
+    expect(reopenedNow).toBe(true);
+    expect(reopened).toMatchObject({ version: 3 });
+    const meta = await rawItem(table.db, `TEAM#${teamId}`, "META");
+    for (const name of ["closedAt", "closedBy", "purgeAfter", "GSI1PK", "GSI1SK"]) expect(meta?.[name]).toBeUndefined();
+    const due = new Date(now.getTime() + (CLOSED_TEAM_RETENTION_DAYS + 1) * DAY);
+    expect((await listTeamsToPurge(table.db, due)).map((t) => t.teamId)).not.toContain(teamId);
+    expect(await purgeTeam(table.db, teamId, due)).toEqual({ deleted: 0, skipped: true });
+    expect((await liveUpdateRecipients(table.db, teamId)).sort()).toEqual([crewId, ownerId].sort());
+    // Writable again for a fresh context; the crew's old (closed) context stays read-only
+    const fresh = await authorizeTeam(table.db, crewId, teamId);
+    expect(fresh.closed).toBe(false);
+    await setDocument(table.db, fresh, "products", "0999", { code: "", name: "New", price: 1 }, { expectedVersion: 0 });
+    await expect(setDocument(table.db, closedCrew, "products", "0998", { code: "", name: "Old", price: 1 }, { expectedVersion: 0 })).rejects.toBeInstanceOf(TeamClosedError);
+    expect(crew.closed).toBe(false);
+    const audit = (await partition(`TEAM#${teamId}`)).filter((i) => i.action === "team.reopened");
+    expect(audit).toEqual([expect.objectContaining({ userId: ownerId, detail: { closedAt: now.toISOString(), closedBy: ownerId } })]);
+    // Again: nothing changes
+    expect(await reopenTeam(table.db, closed, { confirmName: "anything" }, later)).toEqual({ team: reopened, reopenedNow: false });
+    // And it can be closed again, with a new purge date
+    await closeTeam(table.db, await authorizeTeam(table.db, ownerId, teamId), { confirmName: "Echo Cleaning" }, later);
+    expect((await listTeamsToPurge(table.db, new Date(later.getTime() + (CLOSED_TEAM_RETENTION_DAYS + 1) * DAY))).map((t) => t.teamId)).toContain(teamId);
+  });
+
+  it("refuses to reopen near the purge, for an owner demoted meanwhile, or a closure that changed; a system context can", async () => {
+    const now = new Date("2026-09-01T00:00:00.000Z");
+    const { teamId, owner, ownerId, crewId } = await team(now);
+    await setMemberRole(table.db, owner, crewId, "owner");
+    await closeTeam(table.db, owner, { confirmName: "Echo Cleaning" }, now);
+    const purgeAfter = now.getTime() + CLOSED_TEAM_RETENTION_DAYS * DAY;
+    const closed = await authorizeTeam(table.db, ownerId, teamId);
+    await expect(reopenTeam(table.db, closed, { confirmName: "Echo Cleaning" }, new Date(purgeAfter - (REOPEN_CUTOFF_MINUTES - 1) * 60_000))).rejects.toBeInstanceOf(TeamDeletingError);
+    // Demoted by the other owner (who can't do that while it's closed, so as it was before the close)
+    const crewOwner = await authorizeTeam(table.db, crewId, teamId);
+    await removeMember(table.db, crewOwner, ownerId, {}, now);
+    await expect(reopenTeam(table.db, closed, { confirmName: "Echo Cleaning" }, now)).rejects.toBeInstanceOf(ConflictError);
+    expect((await rawItem(table.db, `TEAM#${teamId}`, "META"))?.closedAt).toBe(now.toISOString());
+    // A context issued before a reopen and a new closure still works: the closure is read afresh
+    const stale = await authorizeTeam(table.db, crewId, teamId);
+    await reopenTeam(table.db, crewOwner, { confirmName: "Echo Cleaning" }, now);
+    const later = new Date(now.getTime() + DAY);
+    await closeTeam(table.db, await authorizeTeam(table.db, crewId, teamId), { confirmName: "Echo Cleaning" }, later);
+    expect((await reopenTeam(table.db, stale, { confirmName: "Echo Cleaning" }, later)).reopenedNow).toBe(true);
+    // Operator support (6uw.6) reopens with a system context; the audit names it
+    await closeTeam(table.db, await authorizeTeam(table.db, crewId, teamId), { confirmName: "Echo Cleaning" }, later);
+    const system = await teamContextForEmailEvent(table.db, teamId);
+    if (!system) throw new Error("no team");
+    expect((await reopenTeam(table.db, system, { confirmName: "Echo Cleaning" }, later)).reopenedNow).toBe(true);
+    expect((await partition(`TEAM#${teamId}`)).filter((i) => i.action === "team.reopened").map((i) => i.userId).sort()).toEqual([crewId, crewId, "system:email"].sort());
   });
 });

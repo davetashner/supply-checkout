@@ -115,6 +115,7 @@ export class OpsDashboard extends Construct {
     this.dashboard.addWidgets(
       businessGraph("Accounts: teams closed, accounts deleted, teams purged", [BusinessMetric.TeamsClosed, BusinessMetric.AccountsDeleted, BusinessMetric.TeamsPurged]),
       businessGraph("Accounts: owners emailed that their team closed, and not", [BusinessMetric.TeamClosedNotices, BusinessMetric.TeamClosedNoticeFailures]),
+      businessGraph("Accounts: teams reopened, owners emailed about it, and not", [BusinessMetric.TeamsReopened, BusinessMetric.TeamReopenedNotices, BusinessMetric.TeamReopenedNoticeFailures]),
     );
   }
 }

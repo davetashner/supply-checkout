@@ -116,9 +116,19 @@ message and point owners at revoking an invite or removing a member. See
   stop. `/me` shows it with `closedAt` and `deletesAt`; show that it's
   closed, and when its data will be deleted, and open it read-only. 30 days
   after closing, all of it is deleted. Closing a closed team returns it as it
-  is. It can't be reopened. Every owner is emailed that the team closed and
-  the day it will be deleted, so an owner who didn't close it finds out. The
-  email is best effort: the team is closed even if some owners weren't emailed.
+  is. Every owner is emailed that the team closed and the day it will be
+  deleted, so an owner who didn't close it finds out. The email is best
+  effort: the team is closed even if some owners weren't emailed.
+- **Reopening a team.** An owner who is still in a closed team:
+  `POST /teams/{teamId}/reopen` with `{"name": "…"}`, typed as for closing.
+  The team is writable again straight away, won't be deleted, and live updates
+  start again; `closedAt` and `deletesAt` go back to `null`. Invites deleted
+  at closing stay deleted, and people who left or were removed while it was
+  closed stay out: owners invite them again. Every owner is emailed (best
+  effort). Within an hour of `deletesAt` it's refused with 409 `aborted`,
+  `reason: "team_deleting"`: the purge may already be deleting it. Reopening
+  an open team returns it as it is. The web app offers it to owners in the
+  closed team's notice, with the team's name typed to confirm.
 - **Deleting an account.** `DELETE /me` with `{"confirm": "DELETE"}` (typed by
   the user). 409 `last_owner` while they're the only owner of an open team
   other people are in: show the message (it names the teams); they make

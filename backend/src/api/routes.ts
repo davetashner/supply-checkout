@@ -90,6 +90,7 @@ export interface AccountRoute {
     | "revokeInvite"
     | "resendInvite"
     | "closeTeam"
+    | "reopenTeam"
     | "deleteAccount"
     | "sendEmailCode"
     | "verifyEmail";
@@ -107,7 +108,7 @@ export interface AccountRoute {
  * And a team's members: owners list them, change their roles and remove them,
  * and any member can leave. And a team's invites: owners invite people by
  * email, see each invite as pending, failed or expired, revoke it and re-send
- * it. Owners close a team, and anyone deletes their own account (the
+ * it. Owners close a team (and reopen it before it's deleted), and anyone deletes their own account (the
  * account handler's "Closing a team" and "Deleting an account"). And
  * verifying the user's email address with a code Cognito emails them.
  * Each needs a Cognito access token (the JWT
@@ -131,6 +132,8 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
   // Rare, and each does a lot: closing deletes the team's invites, and deleting an
   // account visits every team the user is in and deletes the Cognito user
   { method: "POST", path: "/teams/{teamId}/close", action: "closeTeam", throttle: { rate: 2, burst: 5 } },
+  // Rare, and it emails every owner
+  { method: "POST", path: "/teams/{teamId}/reopen", action: "reopenTeam", throttle: { rate: 2, burst: 5 } },
   { method: "DELETE", path: "/me", action: "deleteAccount", throttle: { rate: 2, burst: 5 } },
   // Cognito emails the code and limits codes and tries per user; these keep the total down too
   { method: "POST", path: "/me/email/code", action: "sendEmailCode", throttle: { rate: 5, burst: 10 } },

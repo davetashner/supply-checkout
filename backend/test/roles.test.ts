@@ -154,6 +154,7 @@ const MEMBER_CASES: Record<string, Omit<Case, "minRole">> = {
   "DELETE /teams/{teamId}/invites/{inviteId}": { method: "DELETE", path: `/teams/team-a/invites/${INVITE}` },
   "POST /teams/{teamId}/invites/{inviteId}/resend": { method: "POST", path: `/teams/team-a/invites/${INVITE}/resend` },
   "POST /teams/{teamId}/close": { method: "POST", path: "/teams/team-a/close", body: { name: "team-a" } },
+  "POST /teams/{teamId}/reopen": { method: "POST", path: "/teams/team-a/reopen", body: { name: "team-a" } },
 };
 const MEMBER_MIN_ROLE: Record<string, TeamRole> = {
   "GET /teams/{teamId}/members": "owner",
@@ -164,6 +165,7 @@ const MEMBER_MIN_ROLE: Record<string, TeamRole> = {
   "DELETE /teams/{teamId}/invites/{inviteId}": "owner",
   "POST /teams/{teamId}/invites/{inviteId}/resend": "owner",
   "POST /teams/{teamId}/close": "owner",
+  "POST /teams/{teamId}/reopen": "owner",
 };
 
 const TEAM_ACCOUNT_ROUTES = ACCOUNT_ROUTES.filter((r) => r.path.startsWith("/teams/{teamId}"));

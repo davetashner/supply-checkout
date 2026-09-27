@@ -1,5 +1,5 @@
 // The web build's runtime (src/aws/): leaving a team from the team bar, an owner closing a
-// team, a closed team's read-only notice, and deleting your account (src/aws/account.js,
+// team, a closed team's read-only notice, reopening it, and deleting your account (src/aws/account.js,
 // members.js, delete-account.js), against the fake backend in tests/fake-aws.js. The
 // server's side is in backend/test/account-deletion-api.test.ts and closing.test.ts.
 import AxeBuilder from "@axe-core/playwright";
@@ -127,10 +127,60 @@ test.describe("a closed team", () => {
     expect(backend.requests("DELETE", `/teams/t1/members/${USER.id}`)).toHaveLength(1);
   });
 
-  test("tells a contributor when it'll be deleted, without the export hint", async ({ page }) => {
+  test("tells a contributor when it'll be deleted, without the export hint or a way to reopen it", async ({ page }) => {
     await open(page, new FakeBackend({ teams: [{ ...TEAM, ...CLOSED, role: "contributor" }] }));
     await expect(bar(page).locator(".closed-note")).toHaveText("This team was closed on September 26, 2026. It's read-only, and everything in it will be deleted on October 26, 2026.");
     await expect(bar(page).getByRole("button", { name: "Leave team" })).toBeVisible();
+    await expect(bar(page).getByRole("button", { name: "Reopen team" })).toHaveCount(0);
+  });
+
+  test("an owner types the team's name to reopen it, and starts again with it open", async ({ page }) => {
+    const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...CLOSED }], members: { t1: [ME, SAM] } }));
+    await bar(page).getByRole("button", { name: "Reopen team" }).click();
+    await expect(dialog(page).getByRole("heading", { name: `Reopen ${TEAM.name}` })).toBeVisible();
+    await expect(dialog(page)).toContainText("Invites that were cancelled when it closed stay cancelled");
+    const name = dialog(page).getByLabel(`Type the team's name, ${TEAM.name}, to reopen it`);
+    const go = dialog(page).getByRole("button", { name: "Reopen team" });
+    await expect(name).toBeFocused();
+    await expect(go).toBeDisabled();
+    await name.fill("Echo");
+    await expect(go).toBeDisabled();
+    await name.fill(" ECHO cleaning ");
+    await expect(go).toBeEnabled();
+    await expectAccessible(page, "#modal");
+    await go.click();
+    await expect(page.getByRole("heading", { name: "Your access changed" })).toBeVisible();
+    await expect(account(page)).toContainText(`You reopened ${TEAM.name}. Its members can change it again, and it won't be deleted.`);
+    expect(backend.requests("POST", "/teams/t1/reopen").map((c) => c.body)).toEqual([{ name: " ECHO cleaning " }]);
+    await expect(page.locator("#overlay")).toBeHidden();
+    expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.team"))).toBe("t1");
+    // Continue loads the page again, and /me then has the team open
+    expect(backend.teams[0]).toMatchObject({ id: "t1", closedAt: null, deletesAt: null });
+    await page.getByRole("button", { name: "Continue" }).click();
+    await expect.poll(() => backend.pageLoads).toBe(2);
+  });
+
+  test("says why reopening was refused, lets the owner try again, and Cancel closes it", async ({ page }) => {
+    const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...CLOSED }], members: { t1: [ME] } }));
+    await bar(page).getByRole("button", { name: "Reopen team" }).click();
+    await dialog(page).getByLabel(/to reopen it/).fill(TEAM.name);
+    const go = dialog(page).getByRole("button", { name: "Reopen team" });
+    const fail = dialog(page).locator("#reopenFail");
+    for (const [answer, text] of [
+      [error(409, "aborted", { reason: "team_deleting" }), "This team is about to be deleted, so it can't be reopened any more."],
+      [error(400, "bad_request"), "Type the team's name as it's shown."],
+      [error(409, "aborted"), "Someone else changed the team just now. Try again."],
+      [error(403, "permission_denied", { reason: "not_member" }), "Only the team's owners can reopen it."],
+      [{ abort: true }, "Couldn't reopen the team. Check your connection and try again."],
+    ]) {
+      backend.on("POST", "/teams/t1/reopen", answer);
+      await go.click();
+      await expect(fail).toHaveText(text);
+      await expect(go).toBeEnabled();
+    }
+    await dialog(page).getByRole("button", { name: "Cancel" }).click();
+    await expect(page.locator("#overlay")).toBeHidden();
+    await expect(bar(page).locator(".closed-note")).toBeVisible();
   });
 
   test("closed by another owner meanwhile: a refused write switches the app to view-only", async ({ page }) => {
