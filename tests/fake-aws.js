@@ -185,6 +185,9 @@ export class FakeBackend {
     m = path.match(/^\/teams\/([^/]+)\/sheets\/([^/]+)\/(checkout|return)$/);
     if (m && method === "POST") return this.command(decodeURIComponent(m[1]), decodeURIComponent(m[2]), m[3], call.body);
 
+    m = path.match(/^\/teams\/([^/]+)\/sheets\/([^/]+)\/lines$/);
+    if (m && method === "POST") return this.addLines(decodeURIComponent(m[1]), decodeURIComponent(m[2]), call.body);
+
     m = path.match(/^\/teams\/([^/]+)\/products\/([^/]+)\/stock$/);
     if (m && method === "POST") return this.adjustStock(decodeURIComponent(m[1]), decodeURIComponent(m[2]), call.body);
 
@@ -320,6 +323,44 @@ export class FakeBackend {
     const tracked = !!product && typeof product.data.stock === "number";
     if (tracked) { product.data.stock += delta; product.version++; }
     const result = { operationId, command: name, reason: name, productKey: key, sheetId, quantity: qty, stockDelta: tracked ? delta : 0, userId: this.user.id, at: new Date().toISOString() };
+    this.operations.set(`${team}/${operationId}`, { request, result });
+    return answer(result, false);
+  }
+
+  // A receipt's lines for a client as the API adds them (addLines in backend/src/data/commands.ts):
+  // all or none, a new line with the request's copy, an existing one adding to its out, no stock
+  // moved, and the sheet a new version. Replays and reused IDs as for checkout.
+  addLines(team, sheetId, body) {
+    const err = (status, code, message = code, reason) => [status, { error: { code, message, ...(reason ? { reason } : {}) } }];
+    const member = this.teams.find((t) => t.id === team);
+    if (!member) return err(403, "permission_denied", "permission_denied", "not_member");
+    if (member.role === "viewer") return err(403, "permission_denied", "permission_denied", "view_only");
+    const { operationId, lines, ...rest } = body;
+    const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
+    const valid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId) && !Object.keys(rest).length && Array.isArray(lines) && lines.length >= 1 && lines.length <= 40
+      && new Set(lines.map((l) => l.productKey)).size === lines.length
+      && lines.every((l) => typeof l.productKey === "string" && Number.isInteger(l.quantity) && l.quantity >= 1 && typeof l.name === "string" && l.name.trim() && cents(l.price) && (l.cost === undefined || cents(l.cost)));
+    if (!valid) return err(400, "bad_request");
+    const sheetKey = `${team}/sheets/${sheetId}`;
+    const answer = (result, replayed) => {
+      const d = this.docs.get(sheetKey);
+      return [200, { operationId, replayed, result, sheet: d ? { id: sheetId, version: d.version, data: d.data } : null }];
+    };
+    const request = JSON.stringify(["addLines", sheetId, lines]);
+    const prior = this.operations.get(`${team}/${operationId}`);
+    if (prior) return prior.request === request ? answer(prior.result, true) : err(400, "bad_request");
+    const sheet = this.docs.get(sheetKey);
+    if (!sheet) return err(404, "not_found", "No such sheet");
+    if (sheet.data.status === "closed") return err(409, "aborted", "This sheet is closed. Reopen it to add to it.");
+    const items = (sheet.data.items ||= {});
+    const done = lines.map(({ productKey: key, quantity, code = "", name, price, cost }) => {
+      const line = Object.hasOwn(items, key) ? items[key] : undefined;
+      if (line) line.out += quantity;
+      else items[key] = { code, name: name.trim(), price, ...(cost === undefined ? {} : { cost }), out: quantity, returned: 0 };
+      return { productKey: key, quantity, lineCreated: !line };
+    });
+    sheet.version++;
+    const result = { operationId, command: "addLines", sheetId, lines: done, userId: this.user.id, at: new Date().toISOString() };
     this.operations.set(`${team}/${operationId}`, { request, result });
     return answer(result, false);
   }

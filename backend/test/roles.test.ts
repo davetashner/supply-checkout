@@ -137,6 +137,7 @@ const DATA_CASES: Record<string, Omit<Case, "minRole">> = {
   "PATCH /teams/{teamId}/sheets/{sheetId}": { method: "PATCH", path: "/teams/team-a/sheets/s1", body: { data: { client: "Echo 2" }, expectedVersion: 1 } },
   "DELETE /teams/{teamId}/sheets/{sheetId}": { method: "DELETE", path: "/teams/team-a/sheets/s1", query: { expectedVersion: "1" } },
   "POST /teams/{teamId}/sheets/{sheetId}/checkout": { method: "POST", path: "/teams/team-a/sheets/s1/checkout", body: { operationId: randomUUID(), productKey: "0123", quantity: 1 } },
+  "POST /teams/{teamId}/sheets/{sheetId}/lines": { method: "POST", path: "/teams/team-a/sheets/s1/lines", body: { operationId: randomUUID(), lines: [{ productKey: "k-1", quantity: 1, name: "Rags", price: 1.5 }] } },
   "POST /teams/{teamId}/sheets/{sheetId}/return": { method: "POST", path: "/teams/team-a/sheets/s1/return", body: { operationId: randomUUID(), productKey: "0123", quantity: 1 } },
   "POST /teams/{teamId}/products/{key}/stock": { method: "POST", path: "/teams/team-a/products/0123/stock", body: { operationId: randomUUID(), reason: "count", count: 4 } },
   "GET /teams/{teamId}/products/{key}/movements": { method: "GET", path: "/teams/team-a/products/0123/movements" },

@@ -237,15 +237,18 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
   //
   // `action` stands for one action the person confirmed. It keeps one operation ID for as long
   // as the request stays the same, so every attempt at it (a retry, or a second tap while the
-  // first is still on its way) is applied once, and a changed request is a new operation.
-  const operations = new WeakMap();
+  // first is still on its way) is applied once, and a changed request is a new operation. The ID
+  // is kept on the action itself (`operation`), so an action saved with a receipt draft keeps
+  // it after a reload.
   function operationId(action, request) {
-    const key = JSON.stringify(request), held = operations.get(action);
+    const key = JSON.stringify(request), held = action.operation;
     if (held && held.key === key) return held.id;
-    const id = crypto.randomUUID();
-    operations.set(action, { key, id });
-    return id;
+    action.operation = { key, id: crypto.randomUUID() };
+    return action.operation.id;
   }
+  // A command refused for what the sheet holds now: the server's message says why, with the
+  // latest now showing. `refused` is a code only this adapter uses, for the app to show.
+  const refused = (e) => ({ code: "refused", message: `${String(e.message).replace(/\.$/, "")}. The latest is showing.`, status: e.status });
   async function command(name, sheetId, body, action) {
     const operation = operationId(action, [name, sheetId, body]);
     try {
@@ -258,9 +261,24 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
     } catch (e) {
       const bad = e.code === "bad_request" || e.code === "not_found";
       if (bad || e.code === "aborted") await Promise.all([fetchDoc("sheets", sheetId), fetchDoc("products", body.productKey)]);
-      // Refused for what the sheet holds now (only so many left to return, the line or the
-      // sheet gone): the server's message says why, with the latest now showing
-      if (bad) throw { code: "refused", message: `${String(e.message).replace(/\.$/, "")}. The latest is showing.`, status: e.status };
+      // Refused for what the sheet holds now (only so many left to return, the line or the sheet gone)
+      if (bad) throw refused(e);
+      throw denied(e);
+    }
+  }
+
+  // A receipt's lines for a client, added to an existing sheet (docs/api/commands.md): one POST
+  // that adds them all or none, without moving stock. lines: [{ productKey, quantity, code,
+  // name, price, cost }], at most 40. Idempotent by operation ID, as command() is. A sheet
+  // someone deleted rejects as not_found, for the app to say so; a 400 as `refused`.
+  async function addLines(sheetId, lines, action) {
+    const operation = operationId(action, ["lines", sheetId, lines]);
+    try {
+      put("sheets", sheetId, (await api("POST", `${docPath("sheets", sheetId)}/lines`, { operationId: operation, lines })).sheet);
+    } catch (e) {
+      const bad = e.code === "bad_request";
+      if (bad || e.code === "not_found" || e.code === "aborted") await fetchDoc("sheets", sheetId);
+      if (bad) throw refused(e);
       throw denied(e);
     }
   }
@@ -321,6 +339,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
     },
     doc: docRef,
     command,
+    addLines,
     saveItem,
     // A new access token: reconnect live updates with it
     reconnect: () => live.reconnect(),
