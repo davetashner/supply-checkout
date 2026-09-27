@@ -5,7 +5,7 @@
 // for teams a person has to look at, team IDs: never emails, names, user IDs
 // or item contents.
 //
-//   npm run restore -- deletions --table supply-checkout-prod-app-restore-<date> --region <region> --profile <profile> [--apply]
+//   npm run restore -- deletions --table supply-checkout-prod-app-restore-<date> --region <region> --profile <profile> [--records-profile <backup account profile>] [--apply]
 //   npm run restore -- copy-back --from supply-checkout-prod-app-restore-<date> --to supply-checkout-prod-app --region <region> --profile <profile> [--apply]
 //   npm run restore -- check     --table supply-checkout-prod-app --region <region> --profile <profile>
 //
@@ -19,7 +19,7 @@ import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { createDb, type Db, type DbOptions } from "../src/data/index.js";
 import { applyDeletions, checkTableSettings, copyTable, type CopyReport, type DeletionReport, planDeletions } from "../src/data/restore.js";
-import { deletionsBucketName } from "../src/deletions/names.js";
+import { deletionsBucketName, deletionsReplicaBucketName } from "../src/deletions/names.js";
 import { cognitoRequest } from "../src/identity/cognito-admin.js";
 import { readDeletionRecords, type S3Like } from "../src/deletions/records.js";
 
@@ -31,8 +31,11 @@ Modes, in the order the runbook uses them (docs/backups.md):
                                          user pool (read from /supply-checkout/<env>/identity/user-pool-id)
                                          are left alone.
                                          --bucket names the records' bucket (by default this environment's,
-                                         in the profile's account). --live allows the live table instead,
-                                         which the runbook never needs
+                                         in the profile's account). --records-profile <profile> reads the
+                                         records with another profile: the backup account's, where they're
+                                         replicated (by default its copy, supply-checkout-<env>-deletions-copy-
+                                         <region>-<backup account>), for a restore after losing the workload
+                                         account. --live allows the live table instead, which the runbook never needs
   copy-back  --from <restored table> --to <live table>
                                          make the live table's items the same as the restored table's
   check      --table <live table>       check the table has TTL, the stream, PITR, deletion protection,
@@ -154,6 +157,7 @@ export async function main(
         from: { type: "string" },
         to: { type: "string" },
         bucket: { type: "string" },
+        "records-profile": { type: "string" },
         live: { type: "boolean", default: false },
         region: { type: "string" },
         profile: { type: "string" },
@@ -202,12 +206,16 @@ export async function main(
     }
     envName = match?.[1];
   }
+  const recordsProfile = values["records-profile"];
   if (values.bucket !== undefined && mode !== "deletions") return bad("--bucket is only for deletions");
+  if (recordsProfile !== undefined && mode !== "deletions") return bad("--records-profile is only for deletions");
+  if (recordsProfile !== undefined && local) return bad("--records-profile is for AWS, not --endpoint");
   if (values.live && mode !== "deletions") return bad("--live is only for deletions");
   if (mode === "deletions" && local && !values.bucket) return bad("--bucket is required with --endpoint");
   if (mode === "check" && values.apply) return bad("check doesn't write: leave out --apply");
 
   const credentials = values.profile && !local ? defaultProvider({ profile: values.profile }) : undefined;
+  const recordsCredentials = recordsProfile ? defaultProvider({ profile: recordsProfile }) : credentials;
   let where = `at ${values.endpoint}`;
   let account: string | undefined;
   if (credentials) {
@@ -242,10 +250,17 @@ export async function main(
       out(wrong ? `${wrong} settings are wrong: see "Put a restored table back into service" in docs/backups.md.` : "Every setting is right.");
       return wrong ? 1 : 0;
     }
-    const bucket = values.bucket ?? deletionsBucketName(envName as string, values.region, account as string);
-    out(`deletions on ${table} in ${values.region} ${where}, from ${bucket}${suffix}`);
+    let bucket = values.bucket ?? deletionsBucketName(envName as string, values.region, account as string);
+    let from = bucket;
+    if (recordsProfile) {
+      // The backup account's replica (or --bucket), read with that account's profile
+      const recordsAccount = await deps.callerAccount(values.region, recordsCredentials as Credentials);
+      bucket = values.bucket ?? deletionsReplicaBucketName(envName as string, values.region, recordsAccount);
+      from = `${bucket} in account ${recordsAccount} (profile ${recordsProfile})`;
+    }
+    out(`deletions on ${table} in ${values.region} ${where}, from ${from}${suffix}`);
     if (values.live) out("WARNING: this is the live table. Deleting there skips the check a restored table gets before it's copied back.");
-    const { records, invalid } = await readDeletionRecords(deps.s3(values.region, credentials), bucket);
+    const { records, invalid } = await readDeletionRecords(deps.s3(values.region, recordsCredentials), bucket);
     const userIds = records.filter((r) => r.kind === "user").map((r) => r.id);
     let inPool: Set<string> | undefined;
     if (credentials) {

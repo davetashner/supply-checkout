@@ -4,6 +4,7 @@ import { Alarm, ComparisonOperator, MathExpression, Metric, TreatMissingData } f
 import { SnsAction } from "aws-cdk-lib/aws-cloudwatch-actions";
 import { AnyPrincipal, Effect, PolicyDocument, PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { Key } from "aws-cdk-lib/aws-kms";
+import { BlockPublicAccess, Bucket, BucketEncryption, ObjectLockRetention, ObjectOwnership } from "aws-cdk-lib/aws-s3";
 import { Subscription, SubscriptionProtocol, Topic } from "aws-cdk-lib/aws-sns";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
@@ -14,6 +15,13 @@ import type { DeploymentConfig } from "../config.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
 import { COPY_KEY_USE } from "./backup-stack.js";
+import { DELETION_RECORD_RETENTION_DAYS, deletionsReplicaBucketName } from "../../../backend/src/deletions/names.js";
+import { deletionsReplicationRoleName } from "../deletions.js";
+
+/** S3 access logs for the replica bucket, in the backup account. */
+export function backupLogsBucketName(envName: string, region: string, account: string = Aws.ACCOUNT_ID): string {
+  return `supply-checkout-${envName}-backup-logs-${region}-${account}`;
+}
 
 /**
  * The copies-missing alarm fires when this many hours in a row pass with no
@@ -56,6 +64,12 @@ export const ORGANIZATION_ID_PATTERN = "^o-[a-z0-9]{10,32}$";
  *   - EventBridge rules (backup-alerts.ts) when a vault's access policy or
  *     lock is changed or removed, a plan or selection is changed or deleted,
  *     or the vault key is disabled, scheduled for deletion or re-policied.
+ * - The deletion records' replica (supply-checkout-72d.10): S3 replication
+ *   from each source account's deletion records bucket writes here, as the
+ *   role named deletionsReplicationRoleName and nothing else. Each record is
+ *   kept under a compliance-mode Object Lock for DELETION_RECORD_RETENTION_DAYS,
+ *   as in the source, and owned by this account. The restore script reads it
+ *   with this account's profile (`--records-profile`).
  */
 export class BackupAccountStack extends SupplyCheckoutStack {
   readonly vault: BackupVault;
@@ -64,6 +78,9 @@ export class BackupAccountStack extends SupplyCheckoutStack {
   readonly alertTopic: Topic;
   readonly copiesMissing: Alarm;
   readonly changeAlerts: BackupChangeAlerts;
+  /** The replica of the workload accounts' deletion records (supply-checkout-72d.10). */
+  readonly deletionsReplica: Bucket;
+  readonly logsBucket: Bucket;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "backup-vault", layer: "stateful" });
@@ -275,6 +292,67 @@ export class BackupAccountStack extends SupplyCheckoutStack {
       topic: this.alertTopic,
     });
 
+    // The deletion records' replica. Its access logs go to a logs bucket here,
+    // set up like the data stack's (log delivery may use an ACL grant)
+    this.logsBucket = new Bucket(this, "LogsBucket", {
+      bucketName: backupLogsBucketName(config.envName, Aws.REGION),
+      encryption: BucketEncryption.S3_MANAGED,
+      blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
+      objectOwnership: ObjectOwnership.BUCKET_OWNER_PREFERRED,
+      enforceSSL: true,
+      versioned: true,
+      lifecycleRules: [{ expiration: Duration.days(365), noncurrentVersionExpiration: Duration.days(30) }],
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    Validations.of(this.logsBucket).acknowledge({
+      id: "AwsSolutions-S1",
+      reason: "This is the access-log bucket; logging it to itself would loop.",
+    });
+    const retention = Duration.days(DELETION_RECORD_RETENTION_DAYS);
+    this.deletionsReplica = new Bucket(this, "DeletionsReplica", {
+      bucketName: deletionsReplicaBucketName(config.envName, Aws.REGION, Aws.ACCOUNT_ID),
+      encryption: BucketEncryption.S3_MANAGED,
+      blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
+      // ACLs off: every replica belongs to this account, whatever the writer asks
+      objectOwnership: ObjectOwnership.BUCKET_OWNER_ENFORCED,
+      enforceSSL: true,
+      versioned: true,
+      objectLockEnabled: true,
+      // A replica keeps its source record's retain-until date; this covers any that has none
+      objectLockDefaultRetention: ObjectLockRetention.compliance(retention),
+      lifecycleRules: [{ expiration: retention.plus(Duration.days(1)), noncurrentVersionExpiration: Duration.days(1) }],
+      serverAccessLogsBucket: this.logsBucket,
+      serverAccessLogsPrefix: "s3/deletions-copy/",
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    // Only the source accounts' replication role, in the organization, may write replicas, and nothing else
+    const replicationRole = {
+      StringEquals: { ...inSourceAccounts.StringEquals },
+      ArnLike: { "aws:PrincipalArn": `arn:${Aws.PARTITION}:iam::*:role/${deletionsReplicationRoleName(config.envName)}` },
+    };
+    this.deletionsReplica.addToResourcePolicy(
+      new PolicyStatement({
+        sid: "SourceAccountsReplicateRecords",
+        principals: [new AnyPrincipal()],
+        actions: ["s3:ReplicateObject", "s3:ObjectOwnerOverrideToBucketOwner"],
+        resources: [this.deletionsReplica.arnForObjects("*")],
+        conditions: replicationRole,
+      }),
+    );
+    this.deletionsReplica.addToResourcePolicy(
+      new PolicyStatement({
+        sid: "SourceAccountsCheckTheBucket",
+        principals: [new AnyPrincipal()],
+        actions: ["s3:GetBucketVersioning", "s3:GetBucketObjectLockConfiguration"],
+        resources: [this.deletionsReplica.bucketArn],
+        conditions: replicationRole,
+      }),
+    );
+
+    new CfnOutput(this, "DeletionsReplicaBucket", {
+      value: this.deletionsReplica.bucketName,
+      description: "The deletion records' replica; the restore script reads it with --records-profile",
+    });
     new CfnOutput(this, "CopyVaultArn", {
       value: this.vault.backupVaultArn,
       description: `Put this in /supply-checkout/${config.envName}/backup/copy-vault-arn in each source account`,

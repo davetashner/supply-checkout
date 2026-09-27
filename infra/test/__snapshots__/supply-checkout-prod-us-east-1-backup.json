@@ -900,6 +900,97 @@
         "TreatMissingData": "breaching"
       }
     },
+    "deletionsreplicationfailedC7859E7C": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp2arnC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+        ],
+        "AlarmDescription": "P2 Deletion records not replicated. S3 couldn't replicate a deletion record to the backup account's copy in the last hour. Runbook: docs/backups.md, When deletion records stop replicating.",
+        "AlarmName": "supply-checkout-prod-p2-deletions-replication-failed",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Dimensions": [
+          {
+            "Name": "DestinationBucket",
+            "Value": {
+              "Fn::Join": [
+                "",
+                [
+                  "supply-checkout-prod-deletions-copy-us-east-1-",
+                  {
+                    "Fn::Select": [
+                      4,
+                      {
+                        "Fn::Split": [
+                          ":",
+                          {
+                            "Ref": "SsmParameterValuesupplycheckoutprodbackupcopyvaultarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              ]
+            }
+          },
+          {
+            "Name": "RuleId",
+            "Value": "deletion-records-to-backup-account"
+          },
+          {
+            "Name": "SourceBucket",
+            "Value": {
+              "Fn::Join": [
+                "",
+                [
+                  "supply-checkout-prod-deletions-us-east-1-",
+                  {
+                    "Ref": "AWS::AccountId"
+                  }
+                ]
+              ]
+            }
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "OperationsFailedReplication",
+        "Namespace": "AWS/S3",
+        "OKActions": [
+          {
+            "Ref": "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp2arnC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+        ],
+        "Period": 3600,
+        "Statistic": "Sum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "ChangeAlertsChanges7D967739": {
       "Type": "AWS::Events::Rule",
       "Properties": {

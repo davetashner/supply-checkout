@@ -1,4 +1,4 @@
-import { Aws, Duration, Fn, RemovalPolicy, TimeZone, Validations } from "aws-cdk-lib";
+import { Aws, Duration, RemovalPolicy, TimeZone, Validations } from "aws-cdk-lib";
 import { BackupPlan, BackupPlanRule, BackupResource, BackupVault } from "aws-cdk-lib/aws-backup";
 import { Alarm, ComparisonOperator, MathExpression, Metric, TreatMissingData } from "aws-cdk-lib/aws-cloudwatch";
 import { SnsAction } from "aws-cdk-lib/aws-cloudwatch-actions";
@@ -19,6 +19,8 @@ import {
   restoreTablePrefix,
 } from "../backup.js";
 import { BackupChangeAlerts } from "../backup-alerts.js";
+import { DELETIONS_REPLICATION_RULE_ID, backupAccountFromCopyVaultArn } from "../deletions.js";
+import { deletionsBucketName, deletionsReplicaBucketName } from "../../../backend/src/deletions/names.js";
 import type { DeploymentConfig } from "../config.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
@@ -44,8 +46,9 @@ export const COPY_KEY_USE = ["kms:Decrypt", "kms:DescribeKey", "kms:GenerateData
  * - Least-privilege roles: one AWS Backup uses to back up the table and copy
  *   it, and one for restore jobs, which may only create tables named
  *   `<table>-restore-*`.
- * - Two P2 alarms (the observability stack's P2 topic, from SSM): a backup or
- *   copy job failed, or no backup finished in the last day.
+ * - P2 alarms (the observability stack's P2 topic, from SSM): a backup or
+ *   copy job failed, no backup finished in the last day, or (with the copy)
+ *   a deletion record failed to replicate to the backup account.
  * - P1 alerts (the observability stack's P1 topic, which lets only these
  *   rules' names publish) when a vault's access policy or lock is changed or
  *   removed, the plan or a selection is changed or deleted, or the vault key
@@ -85,7 +88,7 @@ export class BackupStack extends SupplyCheckoutStack {
     // The backup account only reaches this key through AWS Backup in this region
     const viaBackup = { StringEquals: { "kms:ViaService": `backup.${Aws.REGION}.amazonaws.com` } };
     // arn:<partition>:backup:<region>:<account>:backup-vault:<name>
-    const backupAccount = copyVaultArn ? new AccountPrincipal(Fn.select(4, Fn.split(":", copyVaultArn))) : undefined;
+    const backupAccount = copyVaultArn ? new AccountPrincipal(backupAccountFromCopyVaultArn(copyVaultArn)) : undefined;
 
     this.vaultKey = new Key(this, "VaultKey", {
       alias: `alias/supply-checkout-${config.envName}-backups`,
@@ -347,6 +350,31 @@ export class BackupStack extends SupplyCheckoutStack {
         treatMissingData: TreatMissingData.BREACHING,
       }),
     ];
+    if (copyVaultArn) {
+      // The data stack replicates the deletion records to the backup account
+      // (deletions.ts); replication metrics are on for its one rule
+      this.alarms.push(
+        alarm("deletions-replication-failed", {
+          alarmDescription:
+            "P2 Deletion records not replicated. S3 couldn't replicate a deletion record to the backup account's copy in the last hour. " +
+            "Runbook: docs/backups.md, When deletion records stop replicating.",
+          metric: new Metric({
+            namespace: "AWS/S3",
+            metricName: "OperationsFailedReplication",
+            dimensionsMap: {
+              SourceBucket: deletionsBucketName(config.envName, region, Aws.ACCOUNT_ID),
+              DestinationBucket: deletionsReplicaBucketName(config.envName, region, backupAccountFromCopyVaultArn(copyVaultArn)),
+              RuleId: DELETIONS_REPLICATION_RULE_ID,
+            },
+            statistic: "Sum",
+            period: Duration.hours(1),
+          }),
+          threshold: 0,
+          comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+          treatMissingData: TreatMissingData.NOT_BREACHING,
+        }),
+      );
+    }
 
     this.changeAlerts = new BackupChangeAlerts(this, "ChangeAlerts", {
       envName: config.envName,

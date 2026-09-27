@@ -19,6 +19,17 @@ export function deletionsBucketName(envName: string, region: string, account: st
   return `supply-checkout-${envName}-deletions-${region}-${account}`;
 }
 
+/**
+ * The backup account's copy of the records (infra/lib/stacks/backup-account-stack.ts),
+ * which S3 replication fills from deletionsBucketName in each workload account,
+ * so a restore into a new account can still re-apply deletions. `account` is
+ * the backup account's. At most 61 characters for staging in the approved regions, inside
+ * S3's 63.
+ */
+export function deletionsReplicaBucketName(envName: string, region: string, account: string): string {
+  return `supply-checkout-${envName}-deletions-copy-${region}-${account}`;
+}
+
 /** Where each kind of record goes: `users/<userId>.json` and `teams/<teamId>.json`. */
 export const DELETION_PREFIXES = { user: "users/", team: "teams/" } as const;
 

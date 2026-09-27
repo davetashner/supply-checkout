@@ -15,6 +15,8 @@ import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
 import { BACKUP_CHANGE_EVENTS, BACKUP_KEY_EVENTS, backupAlertRuleNames } from "../lib/backup-alerts.js";
 import { ACCOUNT_ID_PATTERN, COPIES_MISSING_AFTER_HOURS, OPTIONAL_ACCOUNT_ID_PATTERN, ORGANIZATION_ID_PATTERN } from "../lib/stacks/backup-account-stack.js";
 import { addBackupAccount, addSupplyCheckout } from "../lib/supply-checkout.js";
+import { DELETIONS_REPLICATION_RULE_ID, deletionsReplicationRoleName } from "../lib/deletions.js";
+import { DELETION_RECORD_RETENTION_DAYS, deletionsReplicaBucketName } from "../../backend/src/deletions/names.js";
 
 // Region names live only in lib/config.ts (ADR 0010); tests use its constants.
 const [EAST, WEST] = APPROVED_REGIONS;
@@ -303,7 +305,7 @@ describe("backup stack (workload account)", () => {
   it("alarms to the P2 topic when a backup or copy fails, or no backup finished in a day", () => {
     const { template } = workload();
     const topic = ssmParameter(template, "/supply-checkout/prod/observability/alarm-topic-p2-arn");
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 2);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 3);
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "supply-checkout-prod-p2-backup-failed",
       ComparisonOperator: "GreaterThanThreshold",
@@ -331,6 +333,31 @@ describe("backup stack (workload account)", () => {
       TreatMissingData: "breaching",
       AlarmActions: [{ Ref: topic }],
     });
+  });
+
+  it("alarms to the P2 topic when a deletion record fails to replicate to the backup account, and not without the copy", () => {
+    const { template } = workload();
+    const topic = ssmParameter(template, "/supply-checkout/prod/observability/alarm-topic-p2-arn");
+    const vault = ssmParameter(template, "/supply-checkout/prod/backup/copy-vault-arn");
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-deletions-replication-failed",
+      Namespace: "AWS/S3",
+      MetricName: "OperationsFailedReplication",
+      Dimensions: [
+        {
+          Name: "DestinationBucket",
+          Value: { "Fn::Join": ["", [`supply-checkout-prod-deletions-copy-${EAST}-`, { "Fn::Select": [4, { "Fn::Split": [":", { Ref: vault }] }] }]] },
+        },
+        { Name: "RuleId", Value: DELETIONS_REPLICATION_RULE_ID },
+        { Name: "SourceBucket", Value: { "Fn::Join": ["", [`supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }]] } },
+      ],
+      ComparisonOperator: "GreaterThanThreshold",
+      Threshold: 0,
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: topic }],
+      OKActions: [{ Ref: topic }],
+    });
+    workload({ backupCopy: "false" }).template.resourceCountIs("AWS::CloudWatch::Alarm", 2);
   });
 
   it("tells P1 when a vault policy or lock, the plan, a selection or the vault key changes, and P1 lets only those rules publish", () => {
@@ -547,6 +574,46 @@ describe("backup account vault stack", () => {
     });
     // Still no address or account ID in the template
     expect(JSON.stringify(template.toJSON())).not.toMatch(/@|\d{12}/);
+  });
+
+  it("keeps the deletion records' replica under a compliance-mode lock as long as the source, owned by this account, and retained", () => {
+    const { template } = backupAccount();
+    template.hasResource("AWS::S3::Bucket", {
+      DeletionPolicy: "Retain",
+      Properties: {
+        BucketName: { "Fn::Join": ["", [`supply-checkout-prod-deletions-copy-`, { Ref: "AWS::Region" }, "-", { Ref: "AWS::AccountId" }]] },
+        VersioningConfiguration: { Status: "Enabled" },
+        ObjectLockEnabled: true,
+        ObjectLockConfiguration: { ObjectLockEnabled: "Enabled", Rule: { DefaultRetention: { Mode: "COMPLIANCE", Days: DELETION_RECORD_RETENTION_DAYS } } },
+        LifecycleConfiguration: { Rules: [{ ExpirationInDays: DELETION_RECORD_RETENTION_DAYS + 1, NoncurrentVersionExpiration: { NoncurrentDays: 1 }, Status: "Enabled" }] },
+        OwnershipControls: { Rules: [{ ObjectOwnership: "BucketOwnerEnforced" }] },
+        PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true },
+        LoggingConfiguration: { LogFilePrefix: "s3/deletions-copy/", DestinationBucketName: Match.anyValue() },
+      },
+    });
+    expect(DELETION_RECORD_RETENTION_DAYS).toBeGreaterThanOrEqual(400);
+    template.hasOutput("DeletionsReplicaBucket", { Value: { Ref: Match.stringLikeRegexp("^DeletionsReplica") } });
+    // S3 bucket names are at most 63 characters, even for the longest environment name
+    for (const region of APPROVED_REGIONS) expect(deletionsReplicaBucketName("staging", region, "0".repeat(12)).length).toBeLessThanOrEqual(63);
+  });
+
+  it("lets only the source accounts' replication role, in the organization, replicate into the replica, and nothing more", () => {
+    const { template } = backupAccount();
+    const policies = Object.values(template.findResources("AWS::S3::BucketPolicy")).filter((p) => JSON.stringify(p.Properties.Bucket).includes("DeletionsReplica"));
+    expect(policies).toHaveLength(1);
+    const statements = policies[0]?.Properties.PolicyDocument.Statement as Statement[];
+    const allows = statements.filter((st) => st.Effect === "Allow");
+    expect(allows.map((st) => st.Sid).sort()).toEqual(["SourceAccountsCheckTheBucket", "SourceAccountsReplicateRecords"]);
+    const role = {
+      StringEquals: { "aws:PrincipalAccount": { Ref: "SourceAccountIds" }, "aws:PrincipalOrgID": { Ref: "OrganizationId" } },
+      ArnLike: { "aws:PrincipalArn": { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:iam::*:role/${deletionsReplicationRoleName("prod")}`]] } },
+    };
+    for (const st of allows) expect(st.Condition).toEqual(role);
+    expect(allows.find((st) => st.Sid === "SourceAccountsReplicateRecords")?.Action).toEqual(["s3:ReplicateObject", "s3:ObjectOwnerOverrideToBucketOwner"]);
+    expect(allows.find((st) => st.Sid === "SourceAccountsCheckTheBucket")?.Action).toEqual(["s3:GetBucketVersioning", "s3:GetBucketObjectLockConfiguration"]);
+    for (const st of allows) expect(actions(st).some((a) => /Delete|Put|\*/.test(a))).toBe(false);
+    // Every other statement refuses anything but TLS
+    for (const st of statements.filter((st) => st.Effect !== "Allow")) expect(st.Condition).toEqual({ Bool: { "aws:SecureTransport": "false" } });
   });
 
   it("is cdk-nag clean in every approved region", () => {
