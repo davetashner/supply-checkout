@@ -36,7 +36,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `scripts/check-links.mjs` | Checks that every relative link in `README.md`, `CLAUDE.md` and `docs/` reaches an existing file and heading (`npm run lint`). |
 | `scripts/dev-server.mjs` | Local dev server with the mock runtime (`npm run dev`). |
 | `scripts/render-icons.mjs` | Renders the favicon's PNG fallbacks from `src/icons/favicon.svg` with Playwright's Chromium (`npm run icons`). Run it after changing the SVG, and commit the PNGs. |
-| `scripts/land-pr.sh` | Waits for CI, squash-merges a PR (or adds it to the merge queue and waits for the queue to merge it), cleans up its worktree and branch, and closes its beads (`npm run land -- <pr>`). Exits non-zero if the PR isn't merged, and explains a PR that main's ruleset blocks. |
+| `scripts/land-pr.sh` | Waits for CI, squash-merges a PR (or adds it to the merge queue and waits for the queue to merge it), cleans up its worktree and branch, and closes its beads (`npm run land -- <pr>`). Exits non-zero if the PR isn't merged, and explains a PR that main's ruleset blocks. One land runs at a time across every worktree and session: a second one waits for the first. |
 | `scripts/land-pr.test.sh` | Tests for `land-pr.sh` against a fake `gh` in a throwaway repo (`npm run test:scripts`, which also runs shellcheck). |
 | `scripts/ops.mjs` | The operator CLI (`npm run ops`, ADR 0015): list and search teams, comp a team, read the operator audit, signed in to the operator pool with TOTP. Tests: `scripts/ops.test.mjs` (`npm run test:scripts`). See [Operators](docs/infrastructure.md#operators). |
 | `scripts/check-public-safety.mjs` | Blocks AWS identifiers, email addresses and credentials from this public repo (pre-commit hook and CI). |
@@ -106,7 +106,9 @@ The suites, running them on a laptop without running out of memory, coverage, an
 
 `main` is protected. Every change goes through a pull request that is **squash-merged**, and the PR title becomes the commit message. Merging requires the **CI passed** check, and the branch must be up to date with `main`. Force pushes and branch deletion are blocked, and history stays linear.
 
-When the ruleset has a merge queue, pull requests merge through it: `npm run land -- <pr>` (or `gh pr merge <pr> --squash`) adds a PR whose CI passed to the queue, and the queue runs the full CI on the PR on top of `main`, and on top of any PRs ahead of it, before squash-merging it. A PR whose merge group fails CI leaves the queue unmerged. The queue keeps branches current, so they don't need updating by hand.
+Without a merge queue, `npm run land -- <pr>` updates a branch that's behind, waits for CI and squash-merges it, one land at a time across every worktree and session: a lock in the shared `.git` directory makes a second land wait (printing `Waiting for the land of #N (pid P, started T)`), and a lock left by a land that's no longer running is taken over. Otherwise two lands at once keep pushing each other's PRs behind `main`.
+
+GitHub's merge queue needs a repository owned by an organization; this one is on a personal account, so it has none yet. When the ruleset has a merge queue, pull requests merge through it: `npm run land -- <pr>` (or `gh pr merge <pr> --squash`) adds a PR whose CI passed to the queue, and the queue runs the full CI on the PR on top of `main`, and on top of any PRs ahead of it, before squash-merging it. A PR whose merge group fails CI leaves the queue unmerged. The queue keeps branches current, so they don't need updating by hand.
 
 Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) style. CI rejects titles that don't match.
 
