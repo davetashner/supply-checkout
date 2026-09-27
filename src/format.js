@@ -20,6 +20,8 @@ export const hasCost = p => typeof p.cost === "number" && Number.isFinite(p.cost
 export const unitValue = p => hasCost(p) ? p.cost : Number(p.price) || 0;
 export const newKey = () => "nb-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 export const uid = () => Math.random().toString(36).slice(2, 9);
+// The largest price or cost the API takes, in dollars (ADR 0014; MAX_MONEY in backend/src/data/money.ts)
+export const MAX_MONEY = 1000000;
 // Rounds to cents, halves up (ADR 0014). toPrecision first, so 1.005 (really 1.00499…) is 1.01
 export const round2 = n => Math.round(Number(((Number(n) || 0) * 100).toPrecision(12))) / 100;
 export const numOrNull = n => (n === null || n === undefined || n === "" || isNaN(Number(n))) ? null : round2(n);

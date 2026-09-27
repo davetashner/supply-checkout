@@ -37,6 +37,15 @@ export const PURGE_OVERDUE_AFTER_HOURS = 24;
  */
 export const PURGE_SILENT_ALARM_HOURS = 3;
 
+/**
+ * How often the schedule rewrites the operator audit watch's heartbeat item
+ * (OPERATOR_AUDIT_HEARTBEAT in data/schema.ts), and how long without one the
+ * watch reads before "Operator audit watch silent" fires: two missed
+ * heartbeats, so one late write doesn't page anyone.
+ */
+export const HEARTBEAT_EVERY_MINUTES = 10;
+export const HEARTBEAT_SILENT_ALARM_MINUTES = 30;
+
 /** Functions the observability stack names. */
 export const opsResourceNames = (envName: string) => ({
   stuckImportsFunction: `supply-checkout-${envName}-stuck-imports`,

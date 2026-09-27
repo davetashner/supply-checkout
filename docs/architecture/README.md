@@ -20,7 +20,8 @@ The design below is partly built. This table says which parts are on `main` toda
 | Runtime adapter: the web app on the AWS API (bead `a2b`) | Planned | |
 | Atomic checkout, return and stock-adjust commands, stock history (bead `1dg.1`, [section 4](#4-checking-out-and-returning)) | Built | PR #49; the app switches to them with the adapter (`a2b`) |
 | Sending invites, member removal | Planned | |
-| Billing: Stripe Checkout, webhook, SQS worker, access rules (beads `x0l`, `2kl`, `qdx`) | Planned | |
+| Billing: Stripe products and prices by script, Checkout Sessions (beads `8jc.10`, `x0l`) | Built, in the Stripe sandbox | [Billing](../infrastructure.md#billing) |
+| Billing: webhook, SQS worker, access rules (beads `2kl`, `qdx`) | Planned | |
 | Receipt reading with Bedrock | Planned | |
 | Synthetics canaries, automated deploys to staging and prod | Planned | |
 | Faster cut-off of live updates for removed members and canceled teams: a channel per member (bead `4zn`, [ADR 0016](../adr/0016-per-member-live-update-channels.md)) | Built | |
@@ -277,7 +278,7 @@ sequenceDiagram
 
 ## 6. Billing and access (planned)
 
-How Stripe events turn into access rules ([ADR 0009](../adr/0009-billing-stripe.md)). **Not built yet** (beads `x0l`, `2kl`, `qdx`); only the data layer's Stripe-link and webhook-idempotency helpers exist.
+How Stripe events turn into access rules ([ADR 0009](../adr/0009-billing-stripe.md)). Starting a checkout is built (bead `x0l`, [Billing](../infrastructure.md#billing)); the webhook, the queue and worker and the access rules aren't yet (beads `2kl`, `qdx`).
 
 ```mermaid
 sequenceDiagram

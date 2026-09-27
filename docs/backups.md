@@ -179,7 +179,7 @@ A compromised workload administrator can delete the plan and its alarms in the s
 | Workload | `supply-checkout-<env>-p2-deletion-record-rewritten` (observability stack) | A deletion record was written over, deleted or hidden behind a delete marker, or something that isn't a record was written to the bucket | P2 topic |
 | Workload | `supply-checkout-<env>-p2-deletion-records-watch-failing` (observability stack) | The function that checks for those threw, Lambda dropped an event after its retries (`AsyncEventsDropped`), or EventBridge couldn't invoke it (`FailedInvocations`) | P2 topic |
 | Workload | Rule `DeletionRecordsWatchBucketChanges` (observability stack) | The deletion records bucket's lifecycle, notifications, policy, replication, ownership controls, public access block, Object Lock configuration or versioning was changed (`DELETIONS_BUCKET_CHANGE_EVENTS`), CloudFormation's calls included | P1 topic |
-| Workload | Rule `OperatorRuleTampering` (observability stack) | Also: either deletion records rule deleted, disabled or its target removed, or rewritten outside a deploy | P1 topic |
+| Workload | Rule `supply-checkout-<env>-deletions-rule-tampering` (observability stack) | Either deletion records rule deleted, disabled or its target removed, or rewritten outside a deploy. The operator tampering rules watch this rule in turn | P1 topic |
 | Workload | Rule `supply-checkout-<env>-backup-changes` | A vault's access policy or lock was put or deleted, a vault deleted, the plan updated or deleted, a selection deleted, or the region's opt-in settings changed (`BACKUP_CHANGE_EVENTS`) | P1 topic |
 | Workload | Rule `supply-checkout-<env>-backup-key-changes` | The vault key was scheduled for deletion, disabled or given a new key policy (`BACKUP_KEY_EVENTS`) | P1 topic |
 | Backup | `supply-checkout-<env>-backup-copies-missing` | No copy completed in the copy vault for 36 hours (three 12-hour periods; no data counts as none) | `supply-checkout-<env>-backup-alerts` |
@@ -228,7 +228,7 @@ The `DeletionRecordsWatchBucketChanges` rule (P1) fired: someone changed the del
 3. Records under the compliance lock can't be deleted, so a lifecycle rule only hides them behind delete markers; a restore reading every version still finds them. Check with `list-object-versions`.
 4. If nobody expected it, treat the account as compromised (see [When backups are tampered with](#when-backups-are-tampered-with)).
 
-`OperatorRuleTampering` firing on one of the watch's rules means the watch or this rule was deleted, disabled or retargeted: redeploy the observability stack, and treat it the same way.
+`deletions-rule-tampering` firing (or an operator tampering rule, on it) means the watch or this rule was deleted, disabled or retargeted: redeploy the observability stack, and treat it the same way.
 
 ### When backups are tampered with
 
@@ -365,7 +365,15 @@ Restored tables have no deletion protection. The drill's copy in the target vaul
 
 ## Deletion records
 
-Deleted data lives on in the backups: up to 35 days in PITR and the workload vault, and 90 days in the backup account's copies. The purge also deletes a team's audit trail, and an account's deletion mark expires after 30 days, so a restored table has nothing that says what was deleted after its recovery point. Without help, a restore would bring deleted accounts and teams back.
+### How long deleted data stays in backups
+
+Deleted data lives on in the backups: up to 35 days in PITR and the workload vault (`LOCAL_RETENTION`), and up to 90 days in the backup account's copies (`COPY_RETENTION`, both in `infra/lib/backup.ts`). The clock starts when the data is deleted: when an account is deleted, or when the purge deletes a team 30 days after it was closed. So deleted data is gone from every backup within 90 days of its deletion, once AWS removes the expired recovery points. A restore re-applies the recorded account and team deletions ([step 4](#4-re-apply-deletions-on-the-restored-table)), so restoring doesn't bring them back. Smaller deletions (a sheet or an item) aren't recorded: like every other change after the recovery point, they're undone by a restore.
+
+The [terms of service](legal/terms-of-service.md) (section 8) and the privacy policy must say the same. Change them with `LOCAL_RETENTION`, `COPY_RETENTION` or PITR's window.
+
+### Why deletion records
+
+The purge also deletes a team's audit trail, and an account's deletion mark expires after 30 days, so a restored table has nothing that says what was deleted after its recovery point. Without help, a restore would bring deleted accounts and teams back.
 
 So every deletion also writes a record to the deletion records bucket, `supply-checkout-<env>-deletions-<region>-<account>` in the primary region (its name is in `/supply-checkout/<env>/data/deletions-bucket-name`). The code is `backend/src/deletions/`.
 
@@ -404,7 +412,7 @@ Bead `supply-checkout-72d.10`. The data stack sets up S3 replication on the dele
 **Deploy checks for the deletion records alerts** (beads `supply-checkout-72d.13`, `72d.16`, `72d.17`), once, after the first deploy of the data, observability and vault stacks:
 
 1. **CloudTrail management events reach EventBridge in each account.** The change rules (both accounts) read `AWS API Call via CloudTrail` events on the default bus. Check that they arrive without a trail of your own: in the workload account, re-apply a setting the template already has, `aws s3api put-bucket-versioning --bucket <deletions bucket> --versioning-configuration Status=Enabled --profile supply-prod`, and in the backup account the same on the copy bucket. Each should bring a P1 (workload) or backup-alerts (backup account) message within a few minutes. If none comes, the account needs a trail logging management events (the organization's trail counts), and every CloudTrail-based rule here depends on it.
-2. **The watch rule's tampering alert.** `aws events disable-rule --name <the DeletionRecordsWatchRule's name>` then `enable-rule`: `OperatorRuleTampering` should send P1 for the disable.
+2. **The watch rule's tampering alert.** `aws events disable-rule --name <the DeletionRecordsWatchRule's name>` then `enable-rule`: `supply-checkout-<env>-deletions-rule-tampering` should send P1 for the disable. Then the same on `deletions-rule-tampering` itself: `OperatorRuleTampering` should send P1.
 3. **S3's events.** Write a test object, `aws s3api put-object --bucket <deletions bucket> --key check/deploy-check.txt --body /dev/null --profile supply-prod` (it's under the compliance lock for 400 days, so keep it tiny). "Deletion record rewritten" should fire as `unexpected-key`. In the watch's log, check the event had `reason` (`PutObject`), and whether its key came through as written or URL-encoded (record keys only use letters, digits, `_`, `-`, `/` and `.json`, so either works, but note it here). The first lifecycle expiry, 401 days on, should show `reason: Lifecycle Expiration` and not alarm.
 4. Record the results in the [Drill log](#drill-log).
 

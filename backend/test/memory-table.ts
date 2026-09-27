@@ -37,6 +37,8 @@ export class MemoryTable {
   afterGet?: (item: Item | undefined) => void;
   /** Runs before each TransactWriteCommand is applied: a concurrent writer. */
   beforeTransactWrite?: () => void;
+  /** Runs before each PutCommand is applied, after its condition passes: DynamoDB refusing it, say. */
+  beforePut?: (item: Item) => void;
 
   private static id = (k: Item) => `${String(k.PK)}\u0000${String(k.SK)}`;
 
@@ -177,6 +179,7 @@ export class MemoryTable {
         const item = input.Item as Item;
         record([String(item.PK)]);
         this.check(input, this.items.get(MemoryTable.id(item)));
+        this.beforePut?.(item);
         if (MemoryTable.tooBig(item)) throw Object.assign(new Error("Item size has exceeded the maximum allowed size"), { name: "ValidationException" });
         this.items.set(MemoryTable.id(item), structuredClone(item));
         return {};
@@ -228,8 +231,35 @@ export class MemoryTable {
       }
       throw new Error(`MemoryTable can't evaluate ${c}`);
     };
-    const ok = input.ConditionExpression.split(" OR ").some((any) => any.split(" AND ").every(clause));
+    const ok = MemoryTable.evaluate(input.ConditionExpression, clause);
     if (!ok) throw Object.assign(new Error("The conditional request failed"), { name: "ConditionalCheckFailedException" });
+  }
+
+  /** Splits `text` at `separator` where it isn't inside parentheses. */
+  private static splitTop(text: string, separator: string): string[] {
+    const parts: string[] = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === "(") depth++;
+      else if (text[i] === ")") depth--;
+      else if (depth === 0 && text.startsWith(separator, i)) {
+        parts.push(text.slice(start, i));
+        start = i + separator.length;
+      }
+    }
+    return [...parts, text.slice(start)];
+  }
+
+  /** A condition with OR, AND and parenthesized groups, AND binding tighter, as DynamoDB reads it. */
+  private static evaluate(expression: string, clause: (c: string) => boolean): boolean {
+    const text = expression.trim();
+    const any = MemoryTable.splitTop(text, " OR ");
+    if (any.length > 1) return any.some((e) => MemoryTable.evaluate(e, clause));
+    const all = MemoryTable.splitTop(text, " AND ");
+    if (all.length > 1) return all.every((e) => MemoryTable.evaluate(e, clause));
+    if (text.startsWith("(") && text.endsWith(")")) return MemoryTable.evaluate(text.slice(1, -1), clause);
+    return clause(text);
   }
 
   /** `#a.#b` with its names resolved: ["items", "gloves"]. */

@@ -37,7 +37,7 @@
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
 import { MAX_DOCUMENT_BYTES } from "./documents.js";
-import { ConflictError, InvalidInputError, NotFoundError, TooLargeError } from "./errors.js";
+import { ConflictError, InvalidInputError, NotFoundError, TooLargeError, isCancelledAsTooLarge } from "./errors.js";
 import { barcode, id as checkId, keys, movementPrefix, productKey, strip, teamPartition } from "./keys.js";
 import { count as checkCount, money, quantity as checkQuantity, storedMoney } from "./money.js";
 import { type Page, queryPage } from "./query.js";
@@ -189,12 +189,6 @@ function cancellationCodes(error: unknown): (string | undefined)[] | undefined {
 
 const RETRYABLE = new Set([undefined, "None", "ConditionalCheckFailed", "TransactionConflict"]);
 
-/** True when DynamoDB cancelled the transaction because an item would pass its 400 KB limit. */
-function itemTooLarge(error: unknown): boolean {
-  const reasons = (error as { CancellationReasons?: { Code?: string; Message?: string }[] }).CancellationReasons ?? [];
-  return reasons.some((r) => r.Code === "ValidationError" && /size/i.test(r.Message ?? ""));
-}
-
 /** A sheet's line for `key`, only if the sheet has one: never a built-in like `constructor` from the map's prototype. */
 function lineOf(items: Item | undefined, key: string): unknown {
   return items !== undefined && Object.hasOwn(items, key) ? items[key] : undefined;
@@ -251,8 +245,8 @@ async function execute<R = CommandResult>(
       );
       return { result, replayed: false };
     } catch (error) {
+      if (isCancelledAsTooLarge(error)) throw new TooLargeError("This sheet is too large to add to; start another sheet");
       const codes = cancellationCodes(error);
-      if (codes && itemTooLarge(error)) throw new TooLargeError("This sheet is too large to add to; start another sheet");
       // Anything but a failed condition or a race (a malformed item, say) won't get better by retrying
       if (!codes || !codes.every((c) => RETRYABLE.has(c))) throw error;
       // The same operation got in first, from a concurrent retry

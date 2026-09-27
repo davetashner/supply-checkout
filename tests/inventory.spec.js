@@ -131,6 +131,27 @@ test("shows cost each, and values storage at cost where it's known", async ({ pa
   await expect(page.locator("#main tfoot td").nth(4)).toHaveText("$64.52");
 });
 
+// The API takes money from 0 to 1,000,000 (ADR 0014): a form says so rather than failing to save
+test("an item's price and cost over the limit say so, and the item isn't saved until they're fixed", async ({ page }) => {
+  await openInventory(page);
+  await inventoryRow(page, "Storage bins").click();
+  const price = modal(page).getByLabel("Price each ($)"), cost = modal(page).getByLabel("Cost each ($)");
+  const message = (field) => field.evaluate((el) => el.validationMessage);
+  const before = await page.evaluate(() => window.__mock.docs.get("products/nb-bins"));
+  for (const field of [price, cost]) {
+    await field.fill("1000000.01");
+    expect(await message(field)).toBe("Prices and costs go up to $1,000,000.00.");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(modal(page).getByRole("heading", { name: "Edit item" })).toBeVisible();
+    expect(await page.evaluate(() => window.__mock.docs.get("products/nb-bins"))).toEqual(before);
+    await field.fill("1000000");
+    expect(await message(field)).toBe("");
+  }
+  await modal(page).getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("#overlay")).toBeHidden();
+  expect(await page.evaluate(() => window.__mock.docs.get("products/nb-bins"))).toMatchObject({ price: 1000000, cost: 1000000 });
+});
+
 test("editing an item keeps its cost, pack size and any other fields", async ({ page }) => {
   await openInventory(page, costed);
   await inventoryRow(page, "Paper towels").click();

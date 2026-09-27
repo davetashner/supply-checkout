@@ -36,7 +36,10 @@ export interface Team {
    * on the condition that it's still absent (teamCounts).
    */
   readonly members?: number;
+  /** The team's Stripe customer (linkStripeCustomer), made the first time an owner starts a checkout. */
   readonly stripeCustomerId?: string;
+  /** The team's Stripe subscription, which the billing webhook records (ADR 0009). */
+  readonly stripeSubscriptionId?: string;
   /**
    * When an owner closed the team (ISO 8601; closeTeam). A closed team is
    * read-only: members can still read and export it, and leave, but nothing
@@ -222,6 +225,14 @@ export const INVITES_PER_TEAM_ADDRESS_PER_DAY = 3;
  * too, so invites mustn't be a way to flood someone's mailbox.
  */
 export const INVITES_PER_ADDRESS_PER_DAY = 15;
+
+/**
+ * Invites (new or re-sent) one user may send one address per UTC day, from
+ * every team they own together. The same as one team's, so an account that
+ * owns many teams can't use up the address's allowance by spreading invites
+ * over them.
+ */
+export const INVITES_PER_USER_ADDRESS_PER_DAY = 3;
 
 /**
  * Members a team may have while it isn't paying (trialing, or its

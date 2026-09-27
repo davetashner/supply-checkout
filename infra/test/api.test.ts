@@ -1,14 +1,16 @@
 import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { ACCOUNT_ROUTES, AUTH_ROUTES, DATA_ROUTES, OPS_ROUTES, routeKey } from "../../backend/src/api/routes.js";
+import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, routeKey } from "../../backend/src/api/routes.js";
 import {
   COMP_ATTRIBUTES,
+  CUSTOMER_LINK_TEAM_ATTRIBUTES,
   IMPORT_INDEX_ATTRIBUTES,
   INVITE_LIMIT_ATTRIBUTES,
   MEMBER_ROW_ATTRIBUTES,
   OWNER_OPERATOR_AUDIT_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
+  STRIPE_LINK_ATTRIBUTES,
   STUCK_IMPORT_ATTRIBUTES,
 } from "../../backend/src/data/schema.js";
 import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
@@ -32,12 +34,12 @@ type Resource = { Properties: Record<string, unknown>; [k: string]: unknown };
 const resources = (t: Template, type: string) => Object.entries(t.findResources(type)) as [string, Resource][];
 
 describe("HTTP API routes", () => {
-  it("serves every data, account, auth and ops route in the primary region, the ops routes nowhere else, and no others", () => {
+  it("serves every data, account, billing, auth and ops route in the primary region, the ops routes nowhere else, and no others", () => {
     const { template } = api();
     const keys = resources(template, "AWS::ApiGatewayV2::Route").map(([, r]) => r.Properties.RouteKey).sort();
-    expect(keys).toEqual([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...AUTH_ROUTES, ...OPS_ROUTES].map(routeKey).sort());
+    expect(keys).toEqual([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...AUTH_ROUTES, ...OPS_ROUTES].map(routeKey).sort());
     const west = resources(api(WEST).template, "AWS::ApiGatewayV2::Route").map(([, r]) => r.Properties.RouteKey).sort();
-    expect(west).toEqual([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...AUTH_ROUTES].map(routeKey).sort());
+    expect(west).toEqual([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...AUTH_ROUTES].map(routeKey).sort());
     // The inventory commands and the stock history, next to the document routes
     expect(keys).toEqual(
       expect.arrayContaining([
@@ -49,7 +51,7 @@ describe("HTTP API routes", () => {
     );
   });
 
-  it("puts the customer pool's JWT authorizer on every data and account route, the operator pool's on every ops route, and none on the auth routes", () => {
+  it("puts the customer pool's JWT authorizer on every data, account and billing route, the operator pool's on every ops route, and none on the auth routes", () => {
     const { template } = api();
     const authorizers = resources(template, "AWS::ApiGatewayV2::Authorizer");
     expect(authorizers).toHaveLength(2);
@@ -65,7 +67,7 @@ describe("HTTP API routes", () => {
     expect(jwt(opsAuthorizer)).not.toMatch(/webclientid|identityissuerurl/i);
     for (const [, route] of resources(template, "AWS::ApiGatewayV2::Route")) {
       const key = route.Properties.RouteKey as string;
-      if ([...DATA_ROUTES, ...ACCOUNT_ROUTES].some((r) => routeKey(r) === key)) {
+      if ([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES].some((r) => routeKey(r) === key)) {
         expect(route.Properties, key).toMatchObject({ AuthorizationType: "JWT", AuthorizerId: { Ref: authorizerId } });
       } else if (OPS_ROUTES.some((r) => routeKey(r) === key)) {
         expect(route.Properties, key).toMatchObject({ AuthorizationType: "JWT", AuthorizerId: { Ref: opsAuthorizerId } });
@@ -75,12 +77,12 @@ describe("HTTP API routes", () => {
     }
   });
 
-  it("routes data, account, auth and ops requests to their functions' live aliases", () => {
+  it("routes data, account, billing, auth and ops requests to their functions' live aliases", () => {
     const { template } = api();
     const integrations = resources(template, "AWS::ApiGatewayV2::Integration").map(([, r]) => JSON.stringify(r.Properties.IntegrationUri));
-    expect(integrations).toHaveLength(4);
-    for (const fn of ["DataFunctionLive", "AccountFunctionLive", "AuthFunctionLive", "OpsFunctionLive"]) expect(integrations.some((i) => i.includes(fn)), fn).toBe(true);
-    template.resourcePropertiesCountIs("AWS::Lambda::Alias", { Name: "live" }, 4);
+    expect(integrations).toHaveLength(5);
+    for (const fn of ["DataFunctionLive", "AccountFunctionLive", "BillingFunctionLive", "AuthFunctionLive", "OpsFunctionLive"]) expect(integrations.some((i) => i.includes(fn)), fn).toBe(true);
+    template.resourcePropertiesCountIs("AWS::Lambda::Alias", { Name: "live" }, 5);
   });
 
   it("allows only the app's origin (and localhost outside prod), with credentials for the cookie", () => {
@@ -101,7 +103,7 @@ describe("HTTP API routes", () => {
     });
   });
 
-  it("throttles each account route and the CSV import below the stage, /me included", () => {
+  it("throttles each account and billing route and the CSV import below the stage, /me included", () => {
     const { template } = api();
     const [[, stage]] = resources(template, "AWS::ApiGatewayV2::Stage") as [[string, Resource]];
     expect(stage.Properties.RouteSettings).toEqual({
@@ -121,6 +123,7 @@ describe("HTTP API routes", () => {
       "DELETE /me": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "POST /me/email/code": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /me/email/verify": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
+      "POST /teams/{teamId}/billing/checkout": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "GET /ops/teams": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "GET /ops/teams/{teamId}": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "PUT /ops/teams/{teamId}/comp": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
@@ -160,7 +163,7 @@ describe("functions", () => {
   it("run Node.js 24 on arm64, with the data function at 1 GB, and the ops and reopen functions in the primary region only", () => {
     const { template } = api();
     const fns = resources(template, "AWS::Lambda::Function").map(([id, r]) => [id, r.Properties] as const);
-    expect(fns).toHaveLength(5);
+    expect(fns).toHaveLength(6);
     expect(fns.some(([id]) => id.startsWith("OpsFunction"))).toBe(true);
     expect(fns.some(([id]) => id.startsWith("OpsReopenFunction"))).toBe(true);
     expect(resources(api(WEST).template, "AWS::Lambda::Function").some(([id]) => id.startsWith("Ops"))).toBe(false);
@@ -374,6 +377,119 @@ describe("account-access role (LeadingKeys)", () => {
     );
     expect(assumes.filter(([, r]) => /AccountAccessRole/.test(r as string)).map(([id]) => id)).toEqual([expect.stringMatching(/^AccountFunctionRole/)]);
     expect(assumes.filter(([, r]) => /DataAccessRole/.test(r as string)).map(([id]) => id)).toEqual([expect.stringMatching(/^DataFunctionRole/)]);
+  });
+});
+
+describe("billing function and billing-access role (ADR 0009)", () => {
+  const role = (template = api().template) => {
+    const [[, r]] = resources(template, "AWS::IAM::Role").filter(([id]) => id.startsWith("BillingAccessRole")) as [[string, Resource]];
+    return r.Properties as { AssumeRolePolicyDocument: { Statement: Record<string, unknown>[] }; Policies: { PolicyDocument: { Statement: Record<string, unknown>[] } }[]; MaxSessionDuration: number };
+  };
+  const env = (template: Template) =>
+    (resources(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("BillingFunction"))?.[1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+
+  it("runs in every region, with the table, issuer, app URL, and the test-mode Stripe secret by name", () => {
+    for (const region of [EAST, WEST]) {
+      expect(env(api(region).template)).toMatchObject({
+        TABLE_NAME: "supply-checkout-prod-app",
+        ISSUER_URL: { Ref: expect.stringMatching(/issuerurl/i) },
+        APP_URL: "https://app.supplycheckout.com",
+        STRIPE_SECRET_ID: "supply-checkout/prod/stripe/test-secret-key",
+        STRIPE_MODE: "test",
+        BILLING_ROLE_ARN: { "Fn::GetAtt": [expect.stringMatching(/^BillingAccessRole/), "Arn"] },
+      });
+    }
+    expect(env(api(EAST, {}, { stripeMode: "live" }).template)).toMatchObject({ STRIPE_SECRET_ID: "supply-checkout/prod/stripe/live-secret-key", STRIPE_MODE: "live" });
+  });
+
+  it("lets only the billing function read the Stripe secret key, and only that one secret in its own region", () => {
+    for (const region of [EAST, WEST]) {
+      const { template } = api(region);
+      const reads = resources(template, "AWS::IAM::Policy").flatMap(([id, p]) =>
+        (p.Properties.PolicyDocument as { Statement: { Action: unknown }[] }).Statement.filter((s) => JSON.stringify(s.Action).includes("secretsmanager:")).map((s) => [id, s]),
+      );
+      expect(reads).toEqual([
+        [
+          expect.stringMatching(/^BillingFunctionRole/),
+          {
+            Sid: "ReadStripeSecretKey",
+            Effect: "Allow",
+            Action: "secretsmanager:GetSecretValue",
+            // Secrets Manager's six random characters, and nothing else: no account ID written down
+            Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:secretsmanager:${region}:`, { Ref: "AWS::AccountId" }, ":secret:supply-checkout/prod/stripe/test-secret-key-??????"]] },
+          },
+        ],
+      ]);
+      // No role reaches any secret
+      expect(resources(template, "AWS::IAM::Role").filter(([, r]) => JSON.stringify(r.Properties).includes("secretsmanager:"))).toEqual([]);
+    }
+  });
+
+  it("can be assumed only by the billing function's role, with the team and customer tags and no others", () => {
+    const r = role();
+    expect(r.MaxSessionDuration).toBe(3600);
+    const [trust, ...rest] = r.AssumeRolePolicyDocument.Statement;
+    expect(rest).toEqual([]);
+    expect(trust).toMatchObject({
+      Effect: "Allow",
+      Action: ["sts:AssumeRole", "sts:TagSession"],
+      Principal: { AWS: { "Fn::GetAtt": [expect.stringMatching(/^BillingFunctionRole/), "Arn"] } },
+      Condition: {
+        StringLike: { "aws:RequestTag/teamId": "?*", "aws:RequestTag/stripeCustomer": "?*" },
+        "ForAllValues:StringEquals": { "aws:TagKeys": ["teamId", "stripeCustomer"] },
+      },
+    });
+  });
+
+  it("reads only the tagged team, updates only its Stripe customer, and puts only the tagged customer's link", () => {
+    const [policy, ...others] = role().Policies;
+    expect(others).toEqual([]);
+    const [read, update, link, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    expect(rest).toEqual([]);
+    expect(read).toEqual({
+      Sid: "TeamReadOnly",
+      Effect: "Allow",
+      Action: "dynamodb:GetItem",
+      Resource: expect.anything(),
+      Condition: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"] } },
+    });
+    expect(update).toEqual({
+      Sid: "TeamStripeCustomerOnly",
+      Effect: "Allow",
+      Action: "dynamodb:UpdateItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": ["PK", "SK", "stripeCustomerId"] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+      },
+    });
+    expect(link).toEqual({
+      Sid: "StripeLinkOnly",
+      Effect: "Allow",
+      Action: "dynamodb:PutItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["STRIPE#${aws:PrincipalTag/stripeCustomer}"], "dynamodb:Attributes": ["PK", "SK", "type", "customerId", "teamId"] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+      },
+    });
+    // The same lists the handler's requests are tested against (backend/test/billing-policy.ts)
+    expect([...CUSTOMER_LINK_TEAM_ATTRIBUTES]).toEqual(["PK", "SK", "stripeCustomerId"]);
+    expect([...STRIPE_LINK_ATTRIBUTES]).toEqual(["PK", "SK", "type", "customerId", "teamId"]);
+    for (const s of [read, update, link]) {
+      expect(JSON.stringify(s?.Resource)).toContain(":table/supply-checkout-prod-app");
+      expect(JSON.stringify(s?.Resource)).not.toMatch(/index|\*/);
+    }
+    expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } });
+  });
+
+  it("is the only thing the billing function may assume, and no other function may assume it", () => {
+    const { template } = api();
+    const assumes = resources(template, "AWS::IAM::Policy").flatMap(([id, p]) =>
+      (p.Properties.PolicyDocument as { Statement: { Action: unknown; Resource: unknown }[] }).Statement.filter((s) => JSON.stringify(s.Action).includes("sts:AssumeRole")).map((s) => [id, JSON.stringify(s.Resource)]),
+    );
+    expect(assumes.filter(([, r]) => /BillingAccessRole/.test(r as string)).map(([id]) => id)).toEqual([expect.stringMatching(/^BillingFunctionRole/)]);
+    expect(assumes.filter(([id]) => /^BillingFunctionRole/.test(id as string)).map(([, r]) => r)).toEqual([expect.stringMatching(/BillingAccessRole/)]);
   });
 });
 

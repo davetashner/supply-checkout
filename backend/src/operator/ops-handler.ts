@@ -1,7 +1,8 @@
 // The ops API: what platform operators do (ADR 0015, docs/api/openapi.yaml).
 //
-//   GET    /ops/teams?q=&cursor=        Teams, newest first, or those matching q
-//                                       (name or ID), with their owners' emails
+//   GET    /ops/teams?q=&cursor=        Teams in team ID order, or those matching q
+//                                       (name or ID), with their owners' emails;
+//                                       each request reads a bounded number of them
 //   GET    /ops/teams/{teamId}          One team's account record and owners (audited)
 //   PUT    /ops/teams/{teamId}/comp     Comp a team or change or extend its comp
 //   DELETE /ops/teams/{teamId}/comp     End a comp early
@@ -41,7 +42,7 @@ import {
   InvalidInputError,
   liveComp,
   listOperatorAudit,
-  listOpsOwners,
+  listOpsOwnersOf,
   listOpsTeams,
   listStuckImportsForOps,
   NotFoundError,
@@ -191,7 +192,8 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
       const db = deps.dbFor(op.sub);
       const at = new Date(now());
       const page = await listOpsTeams(db, op, { q: q.q, cursor: q.cursor, limit: limitFrom(q.limit) }, at);
-      const teams = await Promise.all(page.teams.map(async (team) => opsTeamBody(team, at, await listOpsOwners(db, op, team.teamId))));
+      const owners = await listOpsOwnersOf(db, op, page.teams.map((t) => t.teamId));
+      const teams = page.teams.map((team) => opsTeamBody(team, at, owners.get(team.teamId) ?? []));
       return { response: json(200, { teams, ...(page.cursor ? { cursor: page.cursor } : {}) }) };
     },
     async getTeam(event, op) {

@@ -533,6 +533,14 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await expect(acceptInvite(db, { userId: newUser(), verifiedEmail: "new@example.com" }, found, token)).rejects.toThrow(NotFoundError);
     });
 
+    it("makes one invite when creates for the same address race (supply-checkout-trrt)", async () => {
+      const { owner } = await team();
+      const results = await Promise.allSettled(Array.from({ length: 4 }, () => createInvite(db, owner, { email: "racer@example.com", role: "viewer" })));
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      for (const r of results) if (r.status === "rejected") expect(r.reason).toBeInstanceOf(ConflictError);
+      expect((await listInvites(db, owner)).filter((i) => i.email === "racer@example.com")).toHaveLength(1);
+    });
+
     it("is listed and found by the invitee's verified email, across teams", async () => {
       const { owner: a } = await team("Alpha Co");
       const { owner: b } = await team("Bravo Co");

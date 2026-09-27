@@ -3,7 +3,7 @@
 // commands-api.test.ts covers the handler in memory.
 
 import { randomUUID } from "node:crypto";
-import { PutCommand } from "@aws-sdk/lib-dynamodb";
+import { PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import {
   acceptInvite,
@@ -28,6 +28,7 @@ import {
   updateDocument,
 } from "../src/data/index.js";
 import { connection } from "../src/data/client.js";
+import { ITEM_TOO_LARGE_MESSAGES } from "../src/data/errors.js";
 import { keys } from "../src/data/keys.js";
 import { endpoint, newUser, rawItem, useTable } from "./helpers.js";
 
@@ -276,6 +277,21 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
       }
     }
     await put(fits);
+    // DynamoDB's own words for an Update that takes the sheet past its limit,
+    // which isCancelledAsTooLarge matches: a reworded message fails here first
+    const refusal = await connection(db)
+      .doc.send(
+        new TransactWriteCommand({
+          TransactItems: [{ Update: { TableName: db.tableName, Key, UpdateExpression: "SET #items.#k.#r = :one", ExpressionAttributeNames: { "#items": "items", "#k": "0123", "#r": "returned" }, ExpressionAttributeValues: { ":one": 1 } } }],
+        }),
+      )
+      .then(
+        () => undefined,
+        (error: unknown) => error as { name?: string; CancellationReasons?: { Code?: string; Message?: string }[] },
+      );
+    expect(refusal?.name).toBe("TransactionCanceledException");
+    expect(refusal?.CancellationReasons).toEqual([{ Code: "ValidationError", Message: expect.stringMatching(/^Item size to update has exceeded the maximum allowed size/) }]);
+    expect(ITEM_TOO_LARGE_MESSAGES).toContain("Item size to update has exceeded the maximum allowed size");
     const before = await rawItem(db, `TEAM#${ctx.teamId}`, "SHEET#s1");
     await expect(returnItems(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 1 })).rejects.toThrow(TooLargeError);
     // A new line is refused before the transaction

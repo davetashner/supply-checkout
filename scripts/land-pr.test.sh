@@ -20,6 +20,9 @@
 #                    `gh api graphql` read (the merge queue status); the last
 #                    one then sticks
 #   export_stale     if present, `node scripts/export-beads.mjs --check` fails
+#   hold             while present, `gh pr checks --watch` blocks (it touches
+#                    `holding` first), to keep a land running
+#   real_sleep       if present, `sleep` really waits a moment
 #   calls            every gh, bd and sleep call, appended by the fakes
 set -euo pipefail
 
@@ -63,6 +66,10 @@ case "$1 $2" in
     advance "$fields"
     jq -r "$expr" "$pr_json" ;;
   "pr checks")
+    if [[ " $* " == *" --watch "* ]] && [ -e "$FAKE/hold" ]; then
+      touch "$FAKE/holding"
+      while [ -e "$FAKE/hold" ]; do /bin/sleep 0.1; done
+    fi
     if [[ " $* " == *" --watch "* ]]; then exit "$(cat "$FAKE/checks_rc" 2>/dev/null || echo 0)"; fi
     if [ "$(cat "$FAKE/checks_rc" 2>/dev/null || echo 0)" = 0 ]; then
       printf 'CI passed\tpass\t1m\thttps://example.invalid\n'
@@ -104,6 +111,7 @@ EOF
 cat > "$tmp/bin/sleep" <<'EOF'
 #!/usr/bin/env bash
 echo "sleep $*" >> "$FAKE/calls"
+[ ! -e "$FAKE/real_sleep" ] || /bin/sleep 0.1
 EOF
 cat > "$tmp/bin/node" <<'EOF'
 #!/usr/bin/env bash
@@ -148,6 +156,14 @@ land() {
   rc=0
   out="$(cd "$repo" && bash "$script" 42 2>&1)" || rc=$?
 }
+lock_file() { printf '%s\n' "$repo/.git/land-pr.lock"; }
+unlocked() { [ ! -e "$(lock_file)" ]; }
+# Waits up to 20s for a command to succeed
+wait_until() {
+  local _
+  for _ in $(seq 200); do "$@" && return 0; /bin/sleep 0.1; done
+  return 1
+}
 check() { # description, then a command that must succeed
   local desc="$1"; shift
   if "$@"; then echo "  ok   $desc"; else
@@ -158,6 +174,8 @@ says() { grep -qF -- "$1" <<< "$out"; }
 not_says() { ! says "$1"; }
 called() { grep -qF -- "$1" "$FAKE/calls"; }
 not_called() { ! called "$1"; }
+called_in() { grep -qF -- "$2" "$1/calls"; }
+not_called_in() { ! called_in "$@"; }
 count() { grep -cF -- "$1" "$FAKE/calls" || true; }
 exits() { [ "$rc" -eq "$1" ]; }
 fails() { [ "$rc" -ne 0 ]; }
@@ -178,6 +196,74 @@ check "reports the merge commit" says "Merged as abcdef1"
 check "removes the worktree and branch" cleaned_up
 check "closes the Closes bead" called "bd close supply-checkout-abc --reason Completed in PR #42"
 check "says nothing about an up-to-date export" not_says "beads export"
+check "releases the lock" unlocked
+check "doesn't wait for a lock" not_says "Waiting for the land"
+done_case
+
+echo "two lands at once run one after the other"
+scenario concurrent
+fake_a="$FAKE" fake_b="$tmp/concurrent/fake-b"
+mkdir -p "$fake_b"
+git -C "$repo" worktree add -q .claude/worktrees/feat/y -b feat/y
+jq '.headRefName = "feat/y" | .body = "Closes supply-checkout-def\n"' "$fake_a/pr.json" > "$fake_b/pr.json"
+touch "$fake_b/merge_ok" "$fake_b/calls" "$fake_b/real_sleep" "$fake_a/hold"
+(cd "$repo/.claude/worktrees/feat/x" && FAKE="$fake_a" bash "$script" 42 > "$fake_a/out" 2>&1 && echo 0 > "$fake_a/rc" || echo $? > "$fake_a/rc") &
+check "the first land takes the lock and runs" wait_until test -e "$fake_a/holding"
+check "the lock names the PR" grep -qx "pr=42" "$(lock_file)"
+check "the lock has the PID" grep -qE "^pid=[0-9]+$" "$(lock_file)"
+check "the lock has the start time" grep -qE "^started=[0-9]{4}-[0-9]{2}-[0-9]{2} " "$(lock_file)"
+(cd "$repo/.claude/worktrees/feat/y" && FAKE="$fake_b" bash "$script" 43 > "$fake_b/out" 2>&1 && echo 0 > "$fake_b/rc" || echo $? > "$fake_b/rc") &
+check "the second land waits" wait_until grep -qE "Waiting for the land of #42 \(pid [0-9]+, started [0-9-]+ [0-9:]+\)" "$fake_b/out"
+/bin/sleep 0.5
+check "the second land doesn't start while the first runs" not_called_in "$fake_b" "gh pr checks"
+check "the first land hasn't merged yet" not_called_in "$fake_a" "gh pr merge"
+rm "$fake_a/hold"
+wait
+check "the first land exits 0" [ "$(cat "$fake_a/rc")" = 0 ]
+check "the second land exits 0" [ "$(cat "$fake_b/rc")" = 0 ]
+check "the second land takes the lock after" grep -qF "Took the lock for #43" "$fake_b/out"
+check "the second land merges" called_in "$fake_b" "gh pr merge 43 --squash --delete-branch"
+check "says it's waiting once" [ "$(grep -c "Waiting for the land" "$fake_b/out")" -eq 1 ]
+check "releases the lock" unlocked
+out="$(cat "$fake_a/out" "$fake_b/out")" rc=0
+done_case
+
+echo "a crashed land's lock"
+scenario stale-lock
+bash -c 'exit 0' & dead=$!; wait "$dead"
+printf 'pid=%s\npr=41\nstarted=2026-01-01 00:00:00\n' "$dead" > "$(lock_file)"
+land
+check "exits 0" exits 0
+check "takes the lock over" says "Taking over the lock from the land of #41 (pid $dead), which is no longer running."
+check "doesn't wait" not_says "Waiting for the land"
+check "merges" called "gh pr merge 42"
+check "releases the lock" unlocked
+done_case
+
+echo "a lock whose PID now belongs to something else"
+scenario reused-pid
+/bin/sleep 30 & other=$!
+printf 'pid=%s\npr=41\nstarted=2026-01-01 00:00:00\n' "$other" > "$(lock_file)"
+land
+kill "$other" 2>/dev/null || true; wait "$other" 2>/dev/null || true
+check "exits 0" exits 0
+check "takes the lock over" says "Taking over the lock from the land of #41 (pid $other)"
+check "releases the lock" unlocked
+done_case
+
+echo "killed while holding the lock"
+scenario killed
+touch "$FAKE/hold"
+(cd "$repo" && bash "$script" 42 > "$FAKE/out" 2>&1 && echo 0 > "$FAKE/rc" || echo $? > "$FAKE/rc") &
+check "takes the lock" wait_until test -e "$FAKE/holding"
+kill -TERM "$(sed -n 's/^pid=//p' "$(lock_file)")"
+# bash runs its trap once the command it's waiting on returns
+rm "$FAKE/hold"
+wait
+out="$(cat "$FAKE/out")" rc="$(cat "$FAKE/rc")"
+check "exits non-zero" fails
+check "says it wasn't merged" says "PR #42 was not merged."
+check "releases the lock" unlocked
 done_case
 
 echo "beads export is stale"
@@ -263,6 +349,22 @@ check "removes the worktree and branch" cleaned_up
 check "closes the Closes bead" called "bd close supply-checkout-abc"
 done_case
 
+echo "already merged while another land holds the lock"
+scenario merged-while-locked
+pr '.state = "MERGED" | .mergeStateStatus = "UNKNOWN"'
+touch "$FAKE/real_sleep"
+# This test script's own PID passes for a running land
+printf 'pid=%s\npr=41\nstarted=2026-01-01 00:00:00\n' "$$" > "$(lock_file)"
+(cd "$repo" && bash "$script" 42 > "$FAKE/out" 2>&1 && echo 0 > "$FAKE/rc" || echo $? > "$FAKE/rc") &
+land_pid=$!
+check "finishes without waiting for the lock" wait_until test -e "$FAKE/rc"
+kill "$land_pid" 2>/dev/null || true; wait "$land_pid" 2>/dev/null || true
+out="$(cat "$FAKE/out")" rc="$(cat "$FAKE/rc" 2>/dev/null || echo 1)"
+check "exits 0" exits 0
+check "cleans up" cleaned_up
+check "leaves the other land's lock" grep -qx "pr=41" "$(lock_file)"
+done_case
+
 echo "merged by someone else while land waits"
 scenario merged-meanwhile
 seq_of state OPEN OPEN MERGED
@@ -290,8 +392,9 @@ scenario always-behind
 pr '.mergeStateStatus = "BEHIND"'
 land
 check "exits non-zero" fails
-check "updates three times" [ "$(count "gh pr update-branch")" -eq 3 ]
-check "says it's still behind" says "still behind main after 3 updates"
+check "updates ten times" [ "$(count "gh pr update-branch")" -eq 10 ]
+check "says it's still behind" says "still behind main after 10 updates"
+check "releases the lock" unlocked
 done_case
 
 echo "conflicts"
@@ -300,6 +403,7 @@ pr '.mergeStateStatus = "DIRTY"'
 land
 check "exits non-zero" fails
 check "says to rebase" says "has conflicts with main"
+check "releases the lock" unlocked
 done_case
 
 echo "CI fails"
@@ -320,6 +424,7 @@ check "exits non-zero" fails
 check "prints gh's error" says "base branch policy prohibits the merge"
 check "says the merge failed" says "Merge failed."
 check "leaves the worktree and branch" untouched
+check "releases the lock" unlocked
 done_case
 
 echo "closed PR"

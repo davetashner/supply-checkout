@@ -10,7 +10,7 @@
 // acceptInvite (the new member), teamContextForStripeCustomer (webhooks) and
 // teamContextForEmailEvent (bounces and complaints).
 
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { GetCommand, QueryCommand, TransactGetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { ConflictError, ForbiddenError, LimitReachedError, NotFoundError, TeamClosedError, TeamFullError, conflictOnConditionFailure } from "./errors.js";
@@ -290,6 +290,23 @@ export async function findInvite(db: Db, token: string, now = new Date()): Promi
   return invite && invite.expiresAt > now.getTime() / 1000 ? invite : undefined;
 }
 
+const INVITE_GONE = "This invite has expired or was already used";
+
+/**
+ * Whether `token` is the stored invite's: its SHA-256 compared with the hash
+ * on the item, read strongly consistent, in constant time. False when the
+ * invite is gone. The transaction checks it again as it writes.
+ */
+async function tokenMatches(db: Db, invite: Invite, token: string): Promise<boolean> {
+  const { Item } = await connection(db).doc.send(
+    new GetCommand({ TableName: db.tableName, Key: keys.invite(invite.teamId, invite.inviteId), ConsistentRead: true, ProjectionExpression: "GSI1PK, #type", ExpressionAttributeNames: { "#type": "type" } }),
+  );
+  if (Item?.type !== "invite" || typeof Item.GSI1PK !== "string") return false;
+  const stored = Buffer.from(Item.GSI1PK, "utf8");
+  const given = Buffer.from(gsi1.inviteToken(hashInviteToken(token)).GSI1PK, "utf8");
+  return stored.length === given.length && timingSafeEqual(stored, given);
+}
+
 /**
  * Accepts an invite for the verified user and returns the new member's
  * context. Two proofs, both re-checked against the stored invite inside the
@@ -301,14 +318,17 @@ export async function findInvite(db: Db, token: string, now = new Date()): Promi
  *   user: it must be the invite's address.
  *
  * So an invite works once, before it expires, for its own address and link
- * only. Deleting the invite and adding the membership happen together. A user
+ * only. The token is checked (in constant time) before anything else, so
+ * without the link every refusal is NotFoundError: nothing says whether the
+ * team is full or closed. Deleting the invite and adding the membership happen together. A user
  * already in MAX_TEAMS_PER_USER teams gets LimitReachedError.
  *
  * The team's member count moves in the same transaction, on the condition
  * that it's below memberCap, so a team never goes over its cap, even when two
  * people accept for its last place at once: one joins, the other gets
  * TeamFullError (and keeps the invite, for when a place frees up). A closed
- * team takes nobody (NotFoundError, as for an expired invite), and a user
+ * or deleted team takes nobody (NotFoundError, as for an expired invite, even
+ * when it closed between the checks and the write), and a user
  * whose account is being deleted can't join (ForbiddenError).
  */
 export async function acceptInvite(
@@ -321,13 +341,16 @@ export async function acceptInvite(
   const userId = id(user.userId, "user ID");
   const email = normalizeEmail(user.verifiedEmail);
   if (invite.email !== email) throw new ForbiddenError("This invite is for another email address");
-  if (typeof token !== "string" || token.length < 16 || token.length > 512) throw new NotFoundError("This invite has expired or was already used");
+  if (typeof token !== "string" || token.length < 16 || token.length > 512) throw new NotFoundError(INVITE_GONE);
+  // The token first, before anything that says something about the team (its
+  // cap, whether it's closed): without the link, every answer is NotFound
+  if (!(await tokenMatches(db, invite, token))) throw new NotFoundError(INVITE_GONE);
   const mine = await teamsOf(db, userId);
   if (mine.has(invite.teamId)) throw new ConflictError("You're already a member of this team");
   if (mine.size >= MAX_TEAMS_PER_USER) throw new LimitReachedError(TOO_MANY_TEAMS);
   const count = await memberCount(db, invite.teamId, now);
   // A closed team takes nobody new; its invites were deleted when it closed
-  if (!count || count.closed) throw new NotFoundError("This invite has expired or was already used");
+  if (!count || count.closed) throw new NotFoundError(INVITE_GONE);
   if (count.members >= count.cap) throw new TeamFullError(teamFull(count.cap));
   const member: Member = { type: "member", teamId: invite.teamId, userId, role: invite.role, email, joinedAt: now.toISOString() };
   const userTeam: UserTeam = { type: "userTeam", userId, teamId: invite.teamId, teamName: invite.teamName, role: invite.role };
@@ -367,11 +390,17 @@ export async function acceptInvite(
   } catch (error) {
     const codes = cancellationCodes(error);
     if (codes?.[4] === "ConditionalCheckFailed") throw new ForbiddenError(BEING_DELETED);
-    if (codes?.[0] === "ConditionalCheckFailed") throw new NotFoundError("This invite has expired or was already used");
+    if (codes?.[0] === "ConditionalCheckFailed") throw new NotFoundError(INVITE_GONE);
     if (codes?.[1] === "ConditionalCheckFailed") throw new ConflictError("You're already a member of this team");
-    // The count's condition: the team filled up meanwhile. (Not when this
-    // wrote the count for the first time: then someone changed the members.)
-    if (codes?.[3] === "ConditionalCheckFailed" && count.counted === undefined) throw new TeamFullError(teamFull(count.cap));
+    if (codes?.[3] === "ConditionalCheckFailed") {
+      // The count's condition also fails for a team that was closed or deleted
+      // meanwhile: that's an invite that no longer works, not a full team
+      const after = await memberCount(db, invite.teamId, now);
+      if (!after || after.closed) throw new NotFoundError(INVITE_GONE);
+      // The team filled up meanwhile. (Not when this wrote the count for the
+      // first time: then someone changed the members.)
+      if (count.counted === undefined) throw new TeamFullError(teamFull(count.cap));
+    }
     return conflictOnConditionFailure("Someone else changed this team; try again")(error);
   }
   return authorizeTeam(db, userId, invite.teamId);
