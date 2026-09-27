@@ -1003,9 +1003,9 @@ test.describe("stock commands", () => {
   });
 
   const draftLine = (o) => ({ name: "", raw: "", qty: 1, price: 0, dest: "stock", code: "", match: "", suggested: false, useName: "inv", usePrice: "receipt", ...o });
-  const openDraft = (page, backend, lines) => open(page, backend, {
+  const openDraft = (page, backend, lines, draft) => open(page, backend, {
     // Pat's draft for this team (src/aws/session.js)
-    storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.receiptDraft.t1": JSON.stringify({ store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines }) } },
+    storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.receiptDraft.t1": JSON.stringify({ store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines, ...draft }) } },
   });
 
   test("a receipt's general-inventory lines are receipt commands, one per line", async ({ page }) => {
@@ -1065,7 +1065,7 @@ test.describe("stock commands", () => {
     // doesn't meet the version that line gave it: the same two operations go, and the first is
     // answered from the server's record
     await hideToast(page);
-    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await page.getByRole("button", { name: "Try again" }).click();
     await expect(toast(page)).toHaveText("5 added to storage");
     expect(backend.requests("PUT", "/teams/t1/products/SKU1")).toHaveLength(1);
     const [lost, again1, again2] = backend.requests("POST", STOCK).map((r) => r.body);
@@ -1073,5 +1073,65 @@ test.describe("stock commands", () => {
     expect(again2.operationId).not.toBe(lost.operationId);
     expect(backend.operations.size).toBe(2);
     expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(15);
+  });
+
+  // A receipt's lines for a client on a sheet that exists: the addLines command (src/moves.js)
+  const LINES = "/teams/t1/sheets/s1/lines";
+  const toEcho = (page, backend, lines) => openDraft(page, backend, lines, { savePrices: false, dests: [{ id: "d1", sheetId: "s1", client: "" }] });
+  const saveReceipt = async (page) => {
+    await page.getByRole("button", { name: "Continue review" }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+  };
+
+  test("a receipt's lines for an existing sheet are one command, whose retry after a lost answer adds nothing twice", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded() });
+    await toEcho(page, backend, [draftLine({ id: "l1", name: "Paper towels", qty: 2, price: 8, match: "SKU1", dest: "d1" }), draftLine({ id: "l2", name: "Mop heads", qty: 1, price: 4.5, dest: "d1" })]);
+    backend.on("POST", LINES, { lost: true });
+    await saveReceipt(page);
+    await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+    expect(backend.doc("t1", "sheets", "s1").data.items.SKU1.out).toBe(5);
+    await hideToast(page);
+    await page.getByRole("button", { name: "Try again" }).click();
+    await expect(toast(page)).toHaveText("Saved to 1 sheet");
+    await expect(lineRow(page, "Paper towels").locator("td").nth(2)).toHaveText("5");
+    const [lost, again] = backend.requests("POST", LINES).map((r) => r.body);
+    expect(again).toEqual(lost);
+    expect(lost.lines).toEqual([
+      { productKey: "SKU1", quantity: 2, code: "SKU1", name: "Paper towels, 6 roll", price: 8, cost: 8 },
+      { productKey: expect.stringMatching(/^nb-/), quantity: 1, code: "", name: "Mop heads", price: 4.5, cost: 4.5 },
+    ]);
+    // The existing line keeps its copy; no stock moves, and no document write
+    expect(backend.doc("t1", "sheets", "s1").data.items.SKU1).toEqual({ code: "SKU1", name: "Paper towels, 6 roll", price: 8.5, out: 5, returned: 1 });
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(10);
+    expect(backend.requests("PATCH", /^\/teams\/t1\//)).toEqual([]);
+    expect(backend.operations.size).toBe(1);
+  });
+
+  test("a receipt with more than 40 lines for a sheet goes as one command per 40", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded() });
+    await toEcho(page, backend, Array.from({ length: 41 }, (_, i) => draftLine({ id: `l${i}`, name: `Item ${i}`, qty: 1, price: 1, dest: "d1" })));
+    await saveReceipt(page);
+    await expect(toast(page)).toHaveText("Saved to 1 sheet");
+    expect(backend.requests("POST", LINES).map((r) => r.body.lines.length)).toEqual([40, 1]);
+    expect(Object.keys(backend.doc("t1", "sheets", "s1").data.items)).toHaveLength(43);
+  });
+
+  test("a receipt's lines refused, or for a sheet that's gone or closed, show why and the latest", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded() });
+    await toEcho(page, backend, [draftLine({ id: "l1", name: "Mop heads", qty: 1, price: 4.5, dest: "d1" })]);
+    backend.on("POST", LINES, { status: 400, body: { error: { code: "bad_request", message: "Each line must be an object." } } });
+    await saveReceipt(page);
+    await expect(toast(page)).toHaveText("Each line must be an object. The latest is showing.");
+    await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+    backend.write("t1", "sheets", "s1", { ...usedState.seed["sheets/s1"], status: "closed" });
+    await hideToast(page);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(toast(page)).toContainText("Someone else changed this just now");
+    backend.docs.delete("t1/sheets/s1");
+    await hideToast(page);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(toast(page)).toHaveText("Someone else deleted this sheet, so your change wasn't saved.");
+    // Each fetched the sheet again
+    expect(backend.requests("GET", "/teams/t1/sheets/s1")).toHaveLength(3);
   });
 });
