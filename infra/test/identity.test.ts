@@ -81,13 +81,13 @@ describe("user pool (ADR 0007)", () => {
     });
   });
 
-  it("waits for its certificate, its SES identity, and the web stack's apex record", () => {
+  it("waits for its certificate, its SES identity, the web stack's apex record and the primary region's table", () => {
     const deps = (overrides: Partial<DeploymentConfig>) =>
       build(overrides).stacks.identity.dependencies.map((d) => d.stackName).sort();
     const web = `supply-checkout-prod-${GLOBAL_SERVICES_REGION}-web`;
-    expect(deps({})).toEqual([`supply-checkout-prod-${EAST}-domain`, web].sort());
+    expect(deps({})).toEqual([`supply-checkout-prod-${EAST}-domain`, `supply-checkout-prod-${EAST}-data`, web].sort());
     expect(deps({ regions: [WEST], primaryRegion: WEST })).toEqual(
-      [`supply-checkout-prod-${GLOBAL_SERVICES_REGION}-domain`, `supply-checkout-prod-${WEST}-domain`, web].sort(),
+      [`supply-checkout-prod-${GLOBAL_SERVICES_REGION}-domain`, `supply-checkout-prod-${WEST}-domain`, `supply-checkout-prod-${WEST}-data`, web].sort(),
     );
   });
 });
@@ -355,14 +355,32 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
     }
   });
 
-  it("give the guard no AWS permissions, the email_verified trigger only AdminUpdateUserAttributes and the linking trigger only ListUsers, AdminUpdateUserAttributes and AdminLinkProviderForUser, on this pool", () => {
+  it("give the guard no AWS permissions, the email_verified trigger only AdminUpdateUserAttributes and the proven email's hash, and the linking trigger only ListUsers, AdminUpdateUserAttributes and AdminLinkProviderForUser, on this pool", () => {
     const { template } = withProviders();
     const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0];
     const xray = { Effect: "Allow", Action: ["xray:PutTraceSegments", "xray:PutTelemetryRecords"], Resource: "*" };
     const logs = (id: string) => ({ Effect: "Allow", Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: { "Fn::GetAtt": [Object.keys(template.findResources("AWS::Logs::LogGroup")).find((k) => k.startsWith(`${id}Logs`)), "Arn"] } });
     sameStatements(statementsOf(template, roleOf(template, "SignInGuard")), [logs("SignInGuard"), xray]);
     const setVerified = { Sid: "SetEmailVerified", Effect: "Allow", Action: "cognito-idp:AdminUpdateUserAttributes", Resource: { "Fn::GetAtt": [poolId, "Arn"] } };
-    sameStatements(statementsOf(template, roleOf(template, "EmailVerified")), [logs("EmailVerified"), xray, setVerified]);
+    const provenEmail = {
+      Sid: "ReadProvenEmailHash",
+      Effect: "Allow",
+      Action: "dynamodb:GetItem",
+      Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-staging-app"]] },
+      Condition: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+        "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "verifiedEmailHash", "verifiedAt"] },
+        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
+    };
+    const tableKey = {
+      Sid: "TableKeyThroughDynamoDb",
+      Effect: "Allow",
+      Action: "kms:Decrypt",
+      Resource: { Ref: expect.stringMatching(/tablekeyarn/) },
+      Condition: { StringEquals: { "kms:ViaService": { "Fn::Join": ["", ["dynamodb.", { Ref: "AWS::Region" }, ".amazonaws.com"]] } } },
+    };
+    sameStatements(statementsOf(template, roleOf(template, "EmailVerified")), [logs("EmailVerified"), xray, setVerified, provenEmail, tableKey]);
     const link = { Sid: "LinkToExistingAccount", Effect: "Allow", Action: ["cognito-idp:ListUsers", "cognito-idp:AdminUpdateUserAttributes", "cognito-idp:AdminLinkProviderForUser"], Resource: { "Fn::GetAtt": [poolId, "Arn"] } };
     sameStatements(statementsOf(template, roleOf(template, "AccountLink")), [logs("AccountLink"), xray, link]);
     for (const role of Object.values(template.findResources("AWS::IAM::Role"))) expect(role.Properties.ManagedPolicyArns).toBeUndefined();
@@ -383,10 +401,24 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
     build().template.resourceCountIs("AWS::SecretsManager::Secret", 0);
   });
 
+  // supply-checkout-ytr2
+  it("give the email_verified trigger the table's name, and the identity stack waits for the data stack whose key it reads", () => {
+    const { stacks, template } = withProviders();
+    const env = (id: string) => (template.toJSON().Resources[fnId(template, id)].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    expect(env("EmailVerified").TABLE_NAME).toBe("supply-checkout-staging-app");
+    expect(env("SignInGuard").TABLE_NAME).toBeUndefined();
+    expect(env("AccountLink").TABLE_NAME).toBeUndefined();
+    template.hasParameter("*", ssmParameter("/supply-checkout/staging/data/table-key-arn"));
+    const primary = stacks.regions[stacks.identity.region];
+    expect(stacks.identity.dependencies).toContain(primary?.data);
+    // Only the email_verified trigger touches DynamoDB or KMS
+    for (const id of ["SignInGuard", "AccountLink"]) expect(JSON.stringify(statementsOf(template, roleOf(template, id))), id).not.toMatch(/dynamodb|kms/);
+  });
+
   it("get their grant after the pool exists, so the pool can name the functions (no dependency cycle)", () => {
     const { template } = withProviders();
     const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0] as string;
-    const grantIds = ["EmailVerifiedUpdateUser", "AccountLinkUsers"].map(
+    const grantIds = ["EmailVerifiedUpdateUser", "EmailVerifiedProvenEmail", "AccountLinkUsers"].map(
       (name) => Object.keys(template.findResources("AWS::IAM::Policy", { Properties: { PolicyName: Match.stringLikeRegexp(name) } }))[0],
     );
     for (const grantId of grantIds) expect(grantId).toBeDefined();

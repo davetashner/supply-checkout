@@ -28,9 +28,12 @@
 //   POST /me/email/code             Cognito emails the caller a code for their
 //                                   unverified address.
 //   POST /me/email/verify           Checks the code; Cognito marks the address
-//                                   verified. The app then refreshes its tokens,
-//                                   so the pre token generation trigger records
-//                                   a linked user's new address, and reloads /me.
+//                                   verified, and this records it as the address
+//                                   the caller proved (a VERIFIED_EMAIL item in
+//                                   their own partition). The app then refreshes
+//                                   its tokens, so the pre token generation
+//                                   trigger records a linked user's new address,
+//                                   and reloads /me.
 //
 // The team's last owner can't be removed, demoted or leave: the team item's
 // owner count moves in the same transaction as the membership, conditioned
@@ -106,6 +109,11 @@ import {
   mailAddress,
   markInviteNotSent,
   normalizeEmail,
+  clearCodeSent,
+  codeSentHash,
+  recordCodeSent,
+  recordVerifiedEmail,
+  verifiedEmailHash,
   resendInvite,
   revokeInvite,
   type Role,
@@ -211,6 +219,11 @@ function lastOwnerOf(names: string[]): string {
 
 /** A member as the members routes return them: never the stored item as is. */
 const memberBody = (member: Member) => ({ userId: member.userId, email: member.email ?? null, role: member.role, joinedAt: member.joinedAt ?? null });
+
+/** Two addresses the same but for ASCII case and surrounding space, and neither empty. */
+const sameAddress = (a?: string, b?: string) => !!a?.trim() && !!b?.trim() && verifiedEmailHash(a) === verifiedEmailHash(b);
+
+const emailChanged = () => new ApiError(409, "aborted", "Your email address changed while it was being verified; send a new code", "email_changed");
 
 /** The verified email, normalized, or undefined if Cognito hasn't verified one. */
 function verifiedEmail(user: CognitoUser): string | undefined {
@@ -502,7 +515,11 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
   /**
    * Cognito emails the caller a code for their address. Only for an address
    * that doesn't count as verified yet (for a linked user, one that isn't the
-   * recorded one), so it can't be used to send mail for nothing.
+   * recorded one), so it can't be used to send mail for nothing. Once it's
+   * sent, records the address the code went to (EMAIL_CODE_SENT,
+   * data/verified-email.ts), if GetUser shows the same address before and
+   * after the send; otherwise 409 `email_changed` and nothing is recorded, so
+   * that code can't prove anything (supply-checkout-cjw7).
    */
   async function sendEmailCode(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
     if (event.body) jsonBody(event, []);
@@ -511,16 +528,47 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     if (verifiedEmail(user)) throw new ApiError(409, "aborted", "Your email address is already verified", "already_verified");
     await countEmailCode(dbFor({ userId }), userId, new Date(now()));
     await deps.emailCodes.send(accessToken(event));
+    const after = await cognitoUser(event, userId);
+    if (!sameAddress(user.email, after.email)) {
+      obs.logger.warn("Email code's address not recorded", { outcome: "email-changed" });
+      throw emailChanged();
+    }
+    await recordCodeSent(dbFor({ userId }), userId, user.email, new Date(now()));
     return noContent();
   }
 
-  /** Checks the code from the email. Cognito's answer says whether it was right; the code is never logged. */
+  /**
+   * Checks the code from the email. Cognito's answer says whether it was
+   * right; the code is never logged. Then records the address as the one the
+   * caller proved (data/verified-email.ts), which is what lets the pre token
+   * generation trigger record a linked user's address (supply-checkout-ytr2).
+   * Only for the address the code was sent to through the API, less than a
+   * day ago: GetUser must show that address before the code goes to Cognito
+   * (or Cognito isn't asked at all) and after it, verified. So neither a
+   * provider's rewrite between sending and checking the code, nor one while
+   * it's checked, gets another address recorded, even if Cognito accepted
+   * the code for it (supply-checkout-cjw7). Otherwise 409 `email_changed`:
+   * send a new code. A used code's record is deleted either way.
+   */
   async function verifyEmail(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
     const code = jsonBody(event, ["code"]).code;
     if (typeof code !== "string" || !EMAIL_CODE.test(code)) throw new ApiError(400, "bad_request", "Enter the 6-digit code from the email", "code_mismatch");
-    const user = await cognitoUser(event, userId);
-    if (verifiedEmail(user)) throw new ApiError(409, "aborted", "Your email address is already verified", "already_verified");
+    const before = await cognitoUser(event, userId);
+    if (verifiedEmail(before)) throw new ApiError(409, "aborted", "Your email address is already verified", "already_verified");
+    const own = dbFor({ userId });
+    const sent = await codeSentHash(own, userId, new Date(now()));
+    if (!sent || !before.email?.trim() || verifiedEmailHash(before.email) !== sent) {
+      obs.logger.warn("Verified email not recorded", { outcome: sent ? "not-sent-address" : "no-code-sent" });
+      throw emailChanged();
+    }
     await deps.emailCodes.verify(accessToken(event), code);
+    const after = await cognitoUser(event, userId);
+    const recorded = after.emailVerifiedInCognito && sameAddress(before.email, after.email) && (await recordVerifiedEmail(own, userId, before.email, new Date(now())));
+    if (!recorded) {
+      await clearCodeSent(own, userId);
+      obs.logger.warn("Verified email not recorded", { outcome: after.emailVerifiedInCognito ? "email-changed" : "not-verified" });
+      throw emailChanged();
+    }
     return noContent();
   }
 
