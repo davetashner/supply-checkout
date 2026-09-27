@@ -15,7 +15,8 @@ import {
   writeRegionFor,
 } from "../src/data/index.js";
 import { connection } from "../src/data/client.js";
-import { conflictOnConditionFailure } from "../src/data/errors.js";
+import { conflictOnConditionFailure, isCancelledAsTooLarge, isItemTooLarge, startsWithAny } from "../src/data/errors.js";
+import { retryDelay } from "../src/data/documents.js";
 import { gsi1, keys, strip } from "../src/data/keys.js";
 import { MEMBERS_PER_TEAM, MEMBERS_PER_TRIAL_TEAM, memberCap, teamCounts } from "../src/data/model.js";
 import { tableName } from "../src/data/schema.js";
@@ -212,6 +213,51 @@ describe("conflictOnConditionFailure", () => {
     const other = { name: "TransactionCanceledException", CancellationReasons: [{ Code: "ThrottlingError" }] };
     expect(() => map(other)).toThrow(expect.objectContaining({ name: "TransactionCanceledException" }));
     expect(() => map(null)).toThrow();
+  });
+});
+
+describe("DynamoDB's item-size refusal (supply-checkout-j1mu)", () => {
+  const validation = (message: unknown) => ({ name: "ValidationException", message });
+  const cancelled = (...reasons: { Code?: string; Message?: string }[]) => ({ name: "TransactionCanceledException", message: "Transaction cancelled", CancellationReasons: reasons });
+
+  it("matches DynamoDB's messages from the start only", () => {
+    expect(startsWithAny("  Item size has exceeded the maximum allowed size (x)", ["Item size has exceeded the maximum allowed size"])).toBe(true);
+    expect(startsWithAny("Not: Item size has exceeded the maximum allowed size", ["Item size has exceeded the maximum allowed size"])).toBe(false);
+    expect(startsWithAny(undefined, ["Item size"])).toBe(false);
+  });
+
+  it("is a ValidationException with a size message, or a transaction cancelled with one as a ValidationError", () => {
+    expect(isItemTooLarge(validation("Item size has exceeded the maximum allowed size"))).toBe(true);
+    expect(isItemTooLarge(validation("Item size to update has exceeded the maximum allowed size"))).toBe(true);
+    expect(isItemTooLarge(cancelled({ Code: "None" }, { Code: "ValidationError", Message: "Item size to update has exceeded the maximum allowed size" }))).toBe(true);
+    expect(isCancelledAsTooLarge(cancelled({ Code: "ValidationError", Message: "Item size has exceeded the maximum allowed size" }))).toBe(true);
+    // Anything else isn't
+    for (const error of [
+      validation("One or more parameter values were invalid: Size of hashkey has exceeded the maximum size limit of 2048 bytes"),
+      validation(42),
+      { name: "SomethingElse", message: "Item size has exceeded the maximum allowed size" },
+      cancelled({ Code: "ValidationError", Message: "Invalid size" }),
+      cancelled({ Code: "ConditionalCheckFailed", Message: "Item size has exceeded the maximum allowed size" }),
+      cancelled(),
+      { name: "TransactionCanceledException" },
+      null,
+      undefined,
+    ]) {
+      expect(isItemTooLarge(error), JSON.stringify(error)).toBe(false);
+    }
+    expect(isCancelledAsTooLarge(validation("Item size has exceeded the maximum allowed size"))).toBe(false);
+  });
+
+  it("backs off a lost race with full jitter, up to a cap", () => {
+    expect(retryDelay(1, () => 0)).toBe(0);
+    expect(retryDelay(1, () => 0.999)).toBe(19);
+    expect(retryDelay(3, () => 0.5)).toBe(40);
+    expect(retryDelay(10, () => 0.999)).toBe(199);
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const ms = retryDelay(attempt);
+      expect(ms).toBeGreaterThanOrEqual(0);
+      expect(ms).toBeLessThan(200);
+    }
   });
 });
 
