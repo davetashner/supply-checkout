@@ -141,6 +141,27 @@ for (const [what, team] of [
   });
 }
 
+test("it hides when a write is refused because another owner closed the team meanwhile", async ({ page }) => {
+  const backend = new FakeBackend();
+  await openAws(page, backend, { storage: { local: { [KEY]: "{}" } } });
+  await connected(page);
+  await expect(checklist(page).getByRole("button", { name: "Invite people" })).toBeVisible();
+  const before = backend.requests("GET", "/me").length;
+  backend.teams[0] = { ...backend.teams[0], closedAt: "2026-09-26T12:00:00.000Z", deletesAt: "2026-10-26T12:00:00.000Z" };
+  backend.on("PUT", /^\/teams\/t1\/sheets\//, { status: 403, body: { error: { code: "permission_denied", message: "permission_denied", reason: "team_closed" } } });
+  await page.getByRole("button", { name: "+ New sheet" }).click();
+  await page.getByLabel("Client", { exact: true }).fill("Delta");
+  await page.getByRole("button", { name: "Create sheet" }).click();
+  await expect(page.locator("#notice")).toHaveText("This team is closed, so nothing in it can be changed.");
+  await expect.poll(() => backend.requests("GET", "/me").length).toBe(before + 1);
+  await expect(page.locator(".teambar .closed-note")).toBeVisible();
+  await expect(checklist(page)).toBeHidden();
+  await expect(page.getByRole("button", { name: "Invite people" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Import a CSV file" })).toHaveCount(0);
+  // Its state is kept, so it's back if the team is reopened
+  expect(await stored(page, "t1")).toEqual({});
+});
+
 test("an owner's existing team with none started doesn't get one", async ({ page }) => {
   await openAws(page, new FakeBackend());
   await connected(page);
