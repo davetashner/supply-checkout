@@ -23,6 +23,8 @@
 //   POST   /teams/{teamId}/close  Owners: close the team, typing its name to
 //                                 confirm. It turns read-only, its invites go,
 //                                 and the purge deletes it 30 days later.
+//                                 Every owner is emailed the purge date
+//                                 (best effort: see noticeClosed).
 //   DELETE /me                    Delete the caller's account, typing DELETE
 //                                 to confirm (see "Deleting an account").
 //   POST /me/email/code             Cognito emails the caller a code for their
@@ -124,7 +126,7 @@ import {
   TeamFullError,
   teamIdForRequest,
 } from "../data/index.js";
-import { EmailNotSentError, type Mailer, sendInviteEmail } from "../email/mailer.js";
+import { EmailNotSentError, type Mailer, sendInviteEmail, sendTeamNotice } from "../email/mailer.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import type { DbForAccount } from "./account-db.js";
 import type { CognitoUser, DeleteUser, EmailCodes, UserInfo } from "./cognito-user.js";
@@ -439,12 +441,44 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     // Membership and role first, so anyone else gets the same 403 whatever they send
     const { teamId, ctx } = await ownerContext(event, userId);
     const body = jsonBody(event, ["name"]);
-    const { team, closedNow } = await closeTeam(dbFor({ userId, teamId }), ctx, { confirmName: body.name as string }, new Date(now()));
+    const db = dbFor({ userId, teamId });
+    const { team, closedNow } = await closeTeam(db, ctx, { confirmName: body.name as string }, new Date(now()));
     if (closedNow) {
       obs.count(BusinessMetric.TeamsClosed, 1, { teamId });
       obs.logger.info("Team closed", { teamId, purgeAfter: team.purgeAfter ?? "" });
+      await noticeClosed(db, ctx, team);
     }
     return json(200, { team: teamBody(team, ctx.role) });
+  }
+
+  /**
+   * Emails every owner of a team that just closed, with the day the purge deletes it,
+   * so a closure one owner didn't make (or a compromised account made) doesn't go
+   * unnoticed. Best effort: the team is closed either way, and each owner who wasn't
+   * emailed (SES refused it, no address on file, or the owners couldn't be listed) is
+   * counted in TeamClosedNoticeFailures. Only IDs, counts and SES error names are logged.
+   */
+  async function noticeClosed(db: ReturnType<DbForAccount>, ctx: TeamContext, team: Team): Promise<void> {
+    const { teamId } = ctx;
+    let owners: Member[];
+    try {
+      owners = (await listMembers(db, ctx)).filter((m) => m.role === "owner");
+    } catch (error) {
+      obs.logger.warn("Team closure emails not sent", { teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      obs.count(BusinessMetric.TeamClosedNoticeFailures, 1, { teamId, reason: "not_listed" });
+      return;
+    }
+    const input = { kind: "teamClosed" as const, teamName: team.name, purgeAfter: team.purgeAfter as string };
+    const results = await Promise.allSettled(
+      owners.map((owner) => (owner.email ? sendTeamNotice(deps.mailer, owner.email, teamId, input) : Promise.reject(new EmailNotSentError("NoAddress")))),
+    );
+    const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (results.length > failed.length) obs.count(BusinessMetric.TeamClosedNotices, results.length - failed.length, { teamId });
+    if (failed.length) {
+      const codes = [...new Set(failed.map((r) => (r.reason instanceof EmailNotSentError ? r.reason.code : ((r.reason as { name?: string } | null)?.name ?? "Unknown"))))];
+      obs.logger.warn("Team closure emails not sent", { teamId, failed: failed.length, owners: owners.length, codes: codes.join(",") });
+      obs.count(BusinessMetric.TeamClosedNoticeFailures, failed.length, { teamId, reason: "not_sent" });
+    }
   }
 
   /** Deletes the caller's account (see "Deleting an account" at the top). */
