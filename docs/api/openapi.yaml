@@ -523,7 +523,10 @@ paths:
         it, leaving out teams the caller is already in. The user is always the
         token's `sub`: there is no way to ask about anyone else. Needs the
         `aws.cognito.signin.user.admin` scope in the access token (the server
-        reads the email with Cognito's GetUser).
+        reads the email with Cognito's GetUser). When the verified email
+        differs from the one on the caller's membership in a team (it changed
+        since they joined), the membership is updated to it, so owners' member
+        lists and notices use the current address.
       responses:
         "200":
           description: The caller's account.
@@ -721,7 +724,9 @@ paths:
         with Google or Apple linked, the refresh is when the address is
         recorded and starts to count (docs/infrastructure.md, Sign-in).
         After that, `GET /me` shows `emailVerified: true` and the invites
-        sent to the address. Cognito limits wrong tries (429).
+        sent to the address. Cognito limits wrong tries (429). Once the
+        address counts as verified, the caller's membership in each of their
+        teams is updated to it.
       requestBody:
         required: true
         content:
@@ -818,7 +823,11 @@ paths:
       description: |
         The member loses access on their next request, and their live updates
         stop. The team's last owner can't be removed or leave (409 with
-        `reason: "last_owner"`), enforced in the same transaction.
+        `reason: "last_owner"`), enforced in the same transaction. Their
+        pending invites to the team go too: to the address on their
+        membership and, when they leave, to the address they have verified
+        now. Leaving needs the `aws.cognito.signin.user.admin` scope, like
+        `GET /me`.
       responses:
         "204": { description: Removed. }
         "400": { $ref: "#/components/responses/BadRequest" }

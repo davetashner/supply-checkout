@@ -595,11 +595,35 @@ describe("removing a member", () => {
     expect(stored("sam-second")).toBeUndefined();
   });
 
-  it("leaves invites alone for a member without an address", async () => {
+  it("leaves invites alone for a member without an address, and never uses the remover's own", async () => {
     table.put({ PK: "TEAM#team-a", SK: "MEMBER#user-anon", type: "member", teamId: "team-a", userId: "user-anon", role: "viewer", joinedAt: "2026-09-01T00:00:00.000Z" });
     staleInvite("pat@example.com", "pat-1");
+    staleInvite("owner@example.com", "owner-1");
     expect((await call("DELETE", "/teams/team-a/members/user-anon")).status).toBe(204);
     expect(stored("pat-1")).toBeDefined();
+    expect(stored("owner-1")).toBeDefined();
+  });
+
+  // supply-checkout-u0vv
+  it("revokes invites to a leaving member's verified address when their member item has none", async () => {
+    const { email: _email, ...noEmail } = table.get("TEAM#team-a", `MEMBER#${SAM}`) as Record<string, unknown>;
+    void _email;
+    table.put(noEmail);
+    staleInvite("sam@example.com", "sam-second");
+    staleInvite("pat@example.com", "pat-1");
+    expect((await call("DELETE", `/teams/team-a/members/${SAM}`, SAM)).status).toBe(204);
+    expect(stored("sam-second")).toBeUndefined();
+    expect(stored("pat-1")).toBeDefined();
+  });
+
+  it("revokes invites to both the stored and the verified address when they differ", async () => {
+    table.put({ ...(table.get("TEAM#team-a", `MEMBER#${SAM}`) as Record<string, unknown>), email: "sam-old@example.com" });
+    staleInvite("sam-old@example.com", "sam-old");
+    staleInvite("sam@example.com", "sam-new");
+    expect((await call("DELETE", `/teams/team-a/members/${SAM}`, SAM)).status).toBe(204);
+    expect(stored("sam-old")).toBeUndefined();
+    expect(stored("sam-new")).toBeUndefined();
+    expect(JSON.stringify(logs)).not.toMatch(/sam@|sam-old@/);
   });
 });
 

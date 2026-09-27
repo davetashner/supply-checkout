@@ -62,7 +62,10 @@ import {
   resendInvite,
   revokeInvite,
   setMemberRole,
+  setOwnMemberEmail,
   setSheetLine,
+  closeTeam,
+  TeamClosedError,
   teamContextForEmailEvent,
   teamContextForStripeCustomer,
   TeamFullError,
@@ -258,6 +261,48 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await expect(removeMember(db, contributor, owner.userId)).rejects.toThrow(ForbiddenError);
       await removeMember(db, contributor, contributor.userId);
       expect((await listMembers(db, owner)).map((m) => m.userId)).toEqual([owner.userId]);
+    });
+  });
+
+  describe("a member's email", () => {
+    /** A member item as if created without a verified email. */
+    const withoutEmail = async (teamId: string, userId: string) => {
+      const { email: _email, ...item } = (await rawItem(db, `TEAM#${teamId}`, `MEMBER#${userId}`)) as Record<string, unknown>;
+      void _email;
+      await connectionPut(db, item);
+    };
+
+    // supply-checkout-xv3k
+    it("follows the address the member verified, on their own item only, and not in a closed team", async () => {
+      const { owner, contributor, viewer } = await team();
+      expect(await setOwnMemberEmail(db, viewer, " Viewer.New@Example.com ")).toBe(true);
+      expect(await getMember(db, owner, viewer.userId)).toMatchObject({ email: "viewer.new@example.com", role: "viewer", userId: viewer.userId });
+      // Already current: no write
+      expect(await setOwnMemberEmail(db, viewer, "viewer.new@example.com")).toBe(false);
+      // A member item with no email gets one
+      await withoutEmail(owner.teamId, contributor.userId);
+      expect(await setOwnMemberEmail(db, contributor, "contributor.new@example.com")).toBe(true);
+      expect((await getMember(db, owner, contributor.userId))?.email).toBe("contributor.new@example.com");
+      expect((await getMember(db, owner, owner.userId))?.email).toBe("owner@example.com");
+      await expect(setOwnMemberEmail(db, viewer, "not an address")).rejects.toThrow(InvalidInputError);
+      // Gone meanwhile (left the team): nothing is recreated
+      await removeMember(db, viewer, viewer.userId);
+      expect(await setOwnMemberEmail(db, viewer, "viewer.newer@example.com")).toBe(false);
+      expect(await rawItem(db, `TEAM#${owner.teamId}`, `MEMBER#${viewer.userId}`)).toBeUndefined();
+      await closeTeam(db, owner, { confirmName: "Echo Cleaning" });
+      const closed = await authorizeTeam(db, contributor.userId, owner.teamId);
+      await expect(setOwnMemberEmail(db, closed, "contributor.newer@example.com")).rejects.toThrow(TeamClosedError);
+    });
+
+    // supply-checkout-u0vv
+    it("revokes invites to a leaving member's verified address when their item has none", async () => {
+      const { owner, contributor } = await team();
+      await withoutEmail(owner.teamId, contributor.userId);
+      const { invite: spare } = await createInvite(db, owner, { email: "contributor.now@example.com", role: "owner" });
+      const keep = await createInvite(db, owner, { email: "keep@example.com", role: "viewer" });
+      await removeMember(db, contributor, contributor.userId, { verifiedEmail: "Contributor.Now@example.com" });
+      expect(await getInvite(db, owner, spare.inviteId)).toBeUndefined();
+      expect(await getInvite(db, owner, keep.invite.inviteId)).toBeDefined();
     });
   });
 
