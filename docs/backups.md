@@ -2,7 +2,7 @@
 
 How the `app` table and the S3 buckets are protected, how to set up the copy to a separate backup account, what to do when a backup fails, the restore drill (bead `supply-checkout-8x1`), the deletion records, and putting a restored table back into service (beads `supply-checkout-72d.4` and `supply-checkout-0ic7`).
 
-The CDK is in `infra/lib/stacks/backup-stack.ts` (workload account), `infra/lib/stacks/backup-account-stack.ts` (backup account), `infra/lib/backup.ts` (names and retention) and `infra/lib/backup-alerts.ts` (the alerts on changes, in both accounts). The tests in `infra/test/backup.test.ts` check the plan, the retention, the copy rule, both vault locks, the IAM roles and the alerts.
+The CDK is in `infra/lib/stacks/backup-stack.ts` (workload account), `infra/lib/stacks/backup-account-stack.ts` (backup account), `infra/lib/backup.ts` (names and retention), `infra/lib/backup-alerts.ts` (the alerts on changes, in both accounts) and `infra/lib/deletions.ts` (the deletion records' grants and their replication to the backup account). The tests in `infra/test/backup.test.ts` check the plan, the retention, the copy rule, both vault locks, the IAM roles, the alerts and the deletion records' replica; `infra/test/web.test.ts` checks the deletion records bucket and its replication.
 
 ## What protects what
 
@@ -13,6 +13,7 @@ The CDK is in `infra/lib/stacks/backup-stack.ts` (workload account), `infra/lib/
 | Daily copy | `supply-checkout-<env>-backup-copies` vault, **backup account** | The same backup, in an account the workload account can't touch | 90 days | **Compliance-mode** vault lock (30-day minimum), deny on `DeleteRecoveryPoint` |
 | S3 versioning | Web and logs buckets (data stack) | Overwritten or deleted objects | 30 days after replacement | Bucket `RETAIN` policy |
 | Deletion records | `supply-checkout-<env>-deletions-<region>-<account>` bucket (data stack) | Which accounts and teams were deleted, by ID, so a restore can delete them again | 400 days | **Compliance-mode** Object Lock on every record |
+| Deletion records' copy | `supply-checkout-<env>-deletions-copy-<region>-<backup account>` bucket, **backup account** | The same records, replicated by S3 as they're written, so they survive losing the workload account | 400 days | **Compliance-mode** Object Lock on every replica |
 
 - **Recovery point objectives.** PITR can restore to about 5 minutes before now. If the workload account itself is lost or compromised, the copy in the backup account is up to 24 hours old.
 - **Recovery time.** Unknown until the first drill. Record it in the [drill log](#drill-log).
@@ -36,7 +37,7 @@ Any account in the same AWS Organization other than the workload accounts. [ADR 
 
 The owner does this once. Agents can't create accounts or deploy. The profile names below are examples: `supply-backup` is whatever profile reaches the backup account.
 
-> **`cdk deploy --all` fails until step 4 is done.** The backup stack reads `/supply-checkout/<env>/backup/copy-vault-arn` and `/supply-checkout/<env>/backup/organization-id` at deploy time, and CloudFormation fails when a parameter doesn't exist. Until the backup account's vault is in place, deploy with `-c backupCopy=false` (no copy, and no parameters needed), or leave the backup stack out.
+> **`cdk deploy --all` fails until step 4 is done.** The backup stack and the data stack (for the deletion records' replication) read `/supply-checkout/<env>/backup/copy-vault-arn` and `/supply-checkout/<env>/backup/organization-id` at deploy time, and CloudFormation fails when a parameter doesn't exist. Until the backup account's vault stack is in place, deploy with `-c backupCopy=false` (no copy, no replication, and no parameters needed). The order is: the vault stack in the backup account (step 3), the parameters (step 4), then the data stack and the backup stack (step 5).
 >
 > **Check the vault stack's settings before its first deploy.** Its lock can't be changed after 72 hours (see [the lock's limits](#why-governance-mode-here-and-compliance-mode-there)).
 >
@@ -72,7 +73,7 @@ The owner does this once. Agents can't create accounts or deploy. The profile na
      --parameters SourceAccountIds=<prod account ID> --parameters OrganizationId=<o-...>
    ```
 
-   The stack is `supply-checkout-<env>-<region>-backup-vault`, and `-c envName=staging` deploys staging's vault. Confirm the subscription from the email AWS sends. The `copies-missing` alarm fires until the first copy lands (step 6), which also shows its email arrives. The `CopyVaultArn` output is the vault's ARN. `RestoreAccountIds` (default empty) lists the accounts a copy may be sent to for a restore; leave it empty until a drill or a real restore needs it. CloudFormation rejects anything but 12-digit account IDs and an `o-` organization ID. Every account must also be in the organization: the vault and key policies check `aws:PrincipalOrgID`.
+   The stack is `supply-checkout-<env>-<region>-backup-vault`, and `-c envName=staging` deploys staging's vault. It also creates the deletion records' copy, `supply-checkout-<env>-deletions-copy-<region>-<backup account>` (the `DeletionsReplicaBucket` output), and a bucket for its access logs. **The copy's Object Lock is in compliance mode from the start:** every record replicated into it stays 400 days, with no grace period, so there's nothing to undo in it. The bucket policy lets only the role `supply-checkout-<env>-deletions-replication` in a `SourceAccountIds` account in the organization replicate into it. Confirm the subscription from the email AWS sends. The `copies-missing` alarm fires until the first copy lands (step 6), which also shows its email arrives. The `CopyVaultArn` output is the vault's ARN. `RestoreAccountIds` (default empty) lists the accounts a copy may be sent to for a restore; leave it empty until a drill or a real restore needs it. CloudFormation rejects anything but 12-digit account IDs and an `o-` organization ID. Every account must also be in the organization: the vault and key policies check `aws:PrincipalOrgID`.
 
 4. **Tell the workload account where the copies go.** In the workload account, in the primary region. The organization ID lets the backup role copy only to a vault inside the organization (`aws:ResourceOrgID`), even if the vault ARN is wrong.
 
@@ -83,13 +84,13 @@ The owner does this once. Agents can't create accounts or deploy. The profile na
      --name /supply-checkout/prod/backup/organization-id --value <o-...>
    ```
 
-5. **Deploy the backup stack** (`supply-checkout-<env>-<region>-backup`). It deploys after the data and observability stacks, and `cdk deploy --all` includes it:
+5. **Deploy the data stack, then the backup stack** (`supply-checkout-<env>-<region>-data` and `-backup`). The data stack turns on replication of the deletion records into the backup account's copy, which has to exist first (step 3). The backup stack deploys after the data and observability stacks, and `cdk deploy --all` includes both:
 
    ```bash
-   npx cdk deploy supply-checkout-prod-us-east-1-backup --profile supply-prod
+   npx cdk deploy supply-checkout-prod-us-east-1-data supply-checkout-prod-us-east-1-backup --profile supply-prod
    ```
 
-   An environment with no vault in the backup account (a dev account) deploys with `-c backupCopy=false`. It still gets the local vault and the daily backup, with no copy.
+   An environment with no vault in the backup account (a dev account) deploys with `-c backupCopy=false`. It still gets the local vault and the daily backup, with no copy, and its deletion records aren't replicated.
 
 6. **Prove the copy path now, with an on-demand backup and copy.** Use the backup role, the same one the plan uses, so this tests the same permissions:
 
@@ -114,6 +115,8 @@ The owner does this once. Agents can't create accounts or deploy. The profile na
    ```
 
    A copy retention of 90 days must be inside the vault lock's 30 to 365. If a job fails, `StatusMessage` and CloudTrail show which call was refused. See [Key sharing](#key-sharing-and-what-the-first-drill-should-confirm) for the conditions to loosen first.
+
+   Then check the deletion records replicate ([Deletion records' copy](#deletion-records-copy-in-the-backup-account)): copy any records written before replication was turned on, and check the next record lands in the copy.
 
 7. **If no copy has landed about 48 hours after the vault stack deployed, decide before the 72 hours are up.** After 72 hours the lock is permanent, whether or not a copy has ever worked.
    - **Remove the lock and try again later.** In the backup account:
@@ -151,6 +154,7 @@ The owner does this once. Agents can't create accounts or deploy. The profile na
 | `supply-checkout-<env>-backup` | Workload | Back up the `app` table, manage its backups, use the table key and vault key, copy from this account's recovery points, and copy into the one vault named by `copy-vault-arn`, if it's in the organization. No AWS managed policy. |
 | `supply-checkout-<env>-restore` | Workload | Restore into, and write items to, tables named `supply-checkout-<env>-app-restore-*` only. It can't touch the live table. Its ARN is in `/supply-checkout/<env>/backup/restore-role-arn`. |
 | `supply-checkout-<env>-backup-copy-out` | Backup | Copy a recovery point out of this vault into a `supply-checkout-*` vault in one of the `RestoreAccountIds` accounts, if it's in the organization. |
+| `supply-checkout-<env>-deletions-replication` | Workload | Assumed only by S3, for this account's deletion records bucket (`aws:SourceAccount`, `aws:SourceArn`). Read that bucket's replication configuration and its records' versions, retention and legal hold, and write replicas (`s3:ReplicateObject`, `s3:ObjectOwnerOverrideToBucketOwner`) into the one copy bucket named from the backup account, if it's in the organization (`aws:ResourceAccount`, `aws:ResourceOrgID`). No `ReplicateDelete`, no tags, nothing else in either account. |
 
 The role trust policies trust `backup.amazonaws.com` with no `aws:SourceAccount` condition. AWS Backup's confused-deputy guidance only covers resource policies (KMS keys, SNS topics), not role trust, and doesn't say AWS Backup sets that key when it assumes a role. A condition it doesn't set would break every job.
 
@@ -170,6 +174,7 @@ A compromised workload administrator can delete the plan and its alarms in the s
 | --- | --- | --- | --- |
 | Workload | `supply-checkout-<env>-p2-backup-failed` | A backup or copy job failed, aborted or expired in the last hour | P2 topic |
 | Workload | `supply-checkout-<env>-p2-no-recent-backup` | No backup completed in 24 hours | P2 topic |
+| Workload | `supply-checkout-<env>-p2-deletions-replication-failed` | S3 failed to replicate a deletion record to the backup account's copy in the last hour (not with `-c backupCopy=false`) | P2 topic |
 | Workload | Rule `supply-checkout-<env>-backup-changes` | A vault's access policy or lock was put or deleted, a vault deleted, the plan updated or deleted, a selection deleted, or the region's opt-in settings changed (`BACKUP_CHANGE_EVENTS`) | P1 topic |
 | Workload | Rule `supply-checkout-<env>-backup-key-changes` | The vault key was scheduled for deletion, disabled or given a new key policy (`BACKUP_KEY_EVENTS`) | P1 topic |
 | Backup | `supply-checkout-<env>-backup-copies-missing` | No copy completed in the copy vault for 36 hours (three 12-hour periods; no data counts as none) | `supply-checkout-<env>-backup-alerts` |
@@ -187,6 +192,14 @@ A compromised workload administrator can delete the plan and its alarms in the s
 2. If there's no copy job at all, check the plan still exists and still has its copy rule (`aws backup list-backup-plans`, `get-backup-plan`), and look in CloudTrail for `DeleteBackupPlan`, `UpdateBackupPlan` or `DeleteBackupSelection`. If someone removed them, treat it as the workload account being compromised: follow the incident response process, and keep the backup account's copies (which nobody can delete within 30 days) out of reach of the workload account.
 3. If copy jobs completed but no copy is in the vault, check the vault access policy in the backup account (`get-backup-vault-access-policy`) and CloudTrail there for `PutBackupVaultAccessPolicy`.
 4. Redeploying the backup stack puts the plan and selection back. Then start an on-demand backup and copy ([step 6](#setting-it-up)) and watch the alarm go back to `OK`.
+
+### When deletion records stop replicating
+
+`supply-checkout-<env>-p2-deletions-replication-failed` fired: S3 couldn't write a record into the backup account's copy. The record itself is safe in the workload bucket; only the copy is behind.
+
+1. Find the record: `aws s3api list-object-versions --bucket supply-checkout-prod-deletions-us-east-1-<prod account> --profile supply-prod --region us-east-1`, then `head-object` on the newest ones. `ReplicationStatus: FAILED` marks the ones that didn't go.
+2. The usual causes: the copy bucket's policy changed, `SourceAccountIds` or `OrganizationId` on the vault stack no longer include this account, the copy bucket isn't there (the vault stack not yet deployed in that region), or `copy-vault-arn` names another account. CloudTrail in the backup account shows the refused `PutObject` (replication writes appear as it).
+3. After the fix, re-replicate the failed records with S3 Batch Replication ([Deletion records' copy](#deletion-records-copy-in-the-backup-account), with `ReplicationStatus` `FAILED` in the manifest filter).
 
 ### When backups are tampered with
 
@@ -335,7 +348,26 @@ So every deletion also writes a record to the deletion records bucket, `supply-c
 - **Kept for 400 days** (`DELETION_RECORD_RETENTION_DAYS` in `backend/src/deletions/names.ts`), longer than the vault locks' 365-day maximum, so a record outlives every backup that could hold the data. Object Lock in **compliance mode** means nobody, the root user included, can delete a record or shorten its retention: a stolen administrator session can't erase what a restore has to delete again. After 401 days the lifecycle rule expires it.
 - **Written once.** A retry finds the record there (`If-None-Match`) and keeps the first.
 - **Least privilege.** The account function may only `s3:PutObject` under `users/`, and the team purge only under `teams/`. Neither can read, list or delete a record. Only the owner, with SSO, reads them.
-- **Not yet copied to the backup account.** If the workload account itself is lost, its records go with it, while the copies in the backup account survive. Until the bucket is replicated there, a restore from the backup account into a new account can't re-apply deletions from the records; see the note in [step 4](#4-re-apply-deletions-on-the-restored-table).
+- **Copied to the backup account.** S3 replicates each record, as it's written, to the backup account's copy (below), so a restore into a new account after losing the workload account can still re-apply deletions.
+
+### Deletion records' copy in the backup account
+
+Bead `supply-checkout-72d.10`. The data stack sets up S3 replication on the deletion records bucket (`infra/lib/deletions.ts`); the vault stack in the backup account has the destination (`infra/lib/stacks/backup-account-stack.ts`).
+
+- **Where.** `supply-checkout-<env>-deletions-copy-<region>-<backup account>`, in the backup account and the primary region. The workload account finds the backup account from the account in `/supply-checkout/<env>/backup/copy-vault-arn`, so there's no other parameter to set, and no account ID is in this repository.
+- **Locked the same way.** Versioned, Object Lock in compliance mode with the same 400-day default retention, and each replica keeps its source record's retain-until date. Nobody in either account can delete a replica or shorten its retention. After 401 days the lifecycle rule expires it.
+- **Owned by the backup account.** The rule translates ownership to the destination (`AccessControlTranslation`), and the bucket has ACLs off (`BucketOwnerEnforced`).
+- **Only the replication role writes to it.** Its bucket policy allows `s3:ReplicateObject` and `s3:ObjectOwnerOverrideToBucketOwner` on its objects, and `s3:GetBucketVersioning` and `s3:GetBucketObjectLockConfiguration` on the bucket, only to a role named `supply-checkout-<env>-deletions-replication` in a `SourceAccountIds` account in the organization. Delete markers aren't replicated, and the role has no `ReplicateDelete`.
+- **Metrics on.** Replication metrics are on for the rule, which the `p2-deletions-replication-failed` alarm watches.
+- **Only new records replicate.** S3 replication copies objects written after it's turned on. Records written before (if the data stack was deployed with `-c backupCopy=false`, or before this change) need a one-off S3 Batch Replication job.
+- **Not yet tested against real AWS.** Object Lock replication across accounts with ownership translation hasn't been run yet. The first real record is the test: check it below.
+
+**After step 5 of [Setting it up](#setting-it-up)**, in the workload account:
+
+1. If the bucket already has records, replicate them with a Batch Replication job. S3 generates the manifest from the bucket's replication configuration and can create its own role for the job; use the console (bucket, Management, Replication rules, "Create Batch Operations job" is offered when you save or change the rule), or `aws s3control create-job` with `--operation '{"S3ReplicateObject":{}}'` and a `--manifest-generator` for the bucket with `"EligibleForReplication": true` and `"ObjectReplicationStatuses": ["NONE","FAILED"]`. The job's completion report lists anything that failed.
+2. Check the next record written lands: `aws s3api head-object --bucket <deletions bucket> --key <key> --profile supply-prod` shows `ReplicationStatus: COMPLETED`, and in the backup account `aws s3api list-objects-v2 --bucket supply-checkout-prod-deletions-copy-us-east-1-<backup account> --profile supply-backup` lists it, with `get-object-retention` showing `COMPLIANCE` and the same retain-until date. If it says `FAILED`, see [When deletion records stop replicating](#when-deletion-records-stop-replicating); the permissions most likely to need loosening are the role's `aws:ResourceOrgID` condition and the bucket-level reads.
+
+**A new workload account** (after losing the old one) replicates into the same copy once it's in `SourceAccountIds` (redeploy the vault stack with it added) and its data stack is deployed. The copy then holds both accounts' records, which is what a restore wants.
 
 ## Put a restored table back into service
 
@@ -444,7 +476,15 @@ Pending invites to a deleted account's address from teams it wasn't in can't be 
 
 It exits 1 while a team is left for a person. Records can't be changed or deleted (Object Lock), so this check against the table and the user pool is what keeps a wrong or stale record from deleting someone's data. Every step is idempotent, so a run that stops (a throttle, an expired session) is finished by running it again.
 
-> **Restoring from the backup account into a new account.** The records are in the old workload account's bucket. If that account is still reachable, pass its bucket with `--bucket` (and a profile that can read it). If it's gone, the records are gone with it: the deletions since the recovery point can't be re-applied, and every account and team deleted in the last 90 days may come back. Tell the owner, and delete them by hand as their owners ask again.
+> **Restoring from the backup account into a new account.** The old workload account's records are in the backup account's copy. Read them from there with that account's profile, `--records-profile`; the table, the user pool and `SUPPLY_CHECKOUT_EXPECTED_ACCOUNT` are still the new account's (`--profile`):
+>
+> ```bash
+> aws sso login --profile supply-backup
+> npm run restore -- deletions --table $RESTORED $P --records-profile supply-backup          # dry run
+> npm run restore -- deletions --table $RESTORED $P --records-profile supply-backup --apply
+> ```
+>
+> The first line names the copy bucket and the backup account. It's `supply-checkout-<env>-deletions-copy-<region>-<backup account>` unless `--bucket` names another (the old account's own bucket, if that account is still reachable, with a profile that can read it). A record written in the old account's last minutes may not have replicated before it was lost (replication usually takes seconds to minutes); nothing can recover those. If the copy is missing altogether (replication was never set up), the deletions since the recovery point can't be re-applied, and every account and team deleted in the last 90 days may come back: tell the owner, and delete them by hand as their owners ask again.
 
 ##### A team left for a person
 

@@ -7,14 +7,16 @@ import {
   TableEncryptionV2,
   TableV2,
 } from "aws-cdk-lib/aws-dynamodb";
-import { Effect, PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
+import { Effect, PolicyStatement, type Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { Key } from "aws-cdk-lib/aws-kms";
 import { BlockPublicAccess, Bucket, BucketEncryption, ObjectLockRetention, ObjectOwnership } from "aws-cdk-lib/aws-s3";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import { GSI1, GSI1PK, GSI1SK, GSI2, GSI2PK, GSI2SK, GSI3, GSI3PK, GSI3SK, OPS_INDEX_ATTRIBUTES, PK, SK, TTL_ATTRIBUTE, tableName } from "../../../backend/src/data/schema.js";
 import { DELETION_RECORD_RETENTION_DAYS, deletionsBucketName } from "../../../backend/src/deletions/names.js";
+import { backupCopyFromContext, backupParameters } from "../backup.js";
 import type { DeploymentConfig } from "../config.js";
+import { backupAccountFromCopyVaultArn, replicateDeletionRecords } from "../deletions.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
 /**
@@ -49,6 +51,9 @@ export function logsBucketName(envName: string, region: string, account: string 
  *   account or team, IDs only, kept under Object Lock in compliance mode for
  *   DELETION_RECORD_RETENTION_DAYS, longer than any backup of the table, so a
  *   restore can delete them again (supply-checkout-0ic7, docs/backups.md).
+ *   It replicates to the backup account (deletions.ts), so the stack reads
+ *   /supply-checkout/<env>/backup/copy-vault-arn and organization-id at
+ *   deploy time; `-c backupCopy=false` leaves the replication out.
  * - Everything added here must use RemovalPolicy.RETAIN.
  */
 export class DataStack extends SupplyCheckoutStack {
@@ -62,6 +67,8 @@ export class DataStack extends SupplyCheckoutStack {
   readonly logsBucket?: Bucket;
   /** Deletion records (backend/src/deletions). Primary region only. */
   readonly deletionsBucket?: Bucket;
+  /** Replicates the deletion records to the backup account. Primary region only, and not with `-c backupCopy=false`. */
+  readonly deletionsReplicationRole?: Role;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "data", layer: "stateful" });
@@ -199,5 +206,19 @@ export class DataStack extends SupplyCheckoutStack {
       removalPolicy: RemovalPolicy.RETAIN,
     });
     publish("DeletionsBucketParam", "deletions-bucket-name", this.deletionsBucket.bucketName, "Deletion records bucket (primary region)");
+
+    // ...and replicated to the backup account (supply-checkout-72d.10), which
+    // the copy vault's ARN names, so the records survive losing this account.
+    // `-c backupCopy=false` (no backup account) leaves it out, as it does the copies.
+    if (backupCopyFromContext(this.node)) {
+      const params = backupParameters(config.envName);
+      const ssm = (name: string) => StringParameter.valueForStringParameter(this, name);
+      this.deletionsReplicationRole = replicateDeletionRecords(this, this.deletionsBucket, {
+        envName: config.envName,
+        region,
+        backupAccount: backupAccountFromCopyVaultArn(ssm(params.copyVaultArn)),
+        organizationId: ssm(params.organizationId),
+      });
+    }
   }
 }

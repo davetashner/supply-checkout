@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
-import { App } from "aws-cdk-lib";
+import { App, type Stack } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { domainOutputParameters, hostNames } from "../lib/domain.js";
 import { DELETION_RECORD_RETENTION_DAYS } from "../../backend/src/deletions/names.js";
 import { webBucketName } from "../lib/stacks/data-stack.js";
+import { DELETIONS_REPLICATION_RULE_ID, deletionsReplicationRoleName } from "../lib/deletions.js";
 import { MANAGED_RULE_GROUPS, RATE_LIMIT_PER_5_MINUTES, RELEASE_CHANNELS, webOutputParameters } from "../lib/stacks/web-stack.js";
 import { contentSecurityPolicy, cspDirectives } from "../lib/web/content-security-policy.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
@@ -107,6 +108,109 @@ describe("deletion records bucket (data stack, supply-checkout-0ic7)", () => {
     expect(policies).toHaveLength(1);
     const statements = policies[0]?.Properties.PolicyDocument.Statement as { Effect: string }[];
     expect(statements.map((st) => st.Effect)).toEqual(["Deny"]);
+  });
+
+  describe("replication to the backup account (supply-checkout-72d.10)", () => {
+    const deletionsBucket = (template: Template) =>
+      Object.entries(template.findResources("AWS::S3::Bucket")).find(([id]) => id.startsWith("DeletionsBucket")) as [string, { Properties: Record<string, unknown>; DependsOn?: string[] }];
+    const vaultParam = (template: Template) =>
+      Object.entries(template.toJSON().Parameters as Record<string, { Default?: string }>).find(([, p]) => p.Default === "/supply-checkout/prod/backup/copy-vault-arn")?.[0] as string;
+    const orgParam = (template: Template) =>
+      Object.entries(template.toJSON().Parameters as Record<string, { Default?: string }>).find(([, p]) => p.Default === "/supply-checkout/prod/backup/organization-id")?.[0] as string;
+    const backupAccount = (template: Template) => ({ "Fn::Select": [4, { "Fn::Split": [":", { Ref: vaultParam(template) }] }] });
+    const replicaArn = (template: Template) => ({
+      "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:s3:::supply-checkout-prod-deletions-copy-${EAST}-`, backupAccount(template)]],
+    });
+    const sourceArn = { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:s3:::supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }]] };
+    type Statement = { Sid: string; Action: string | string[]; Resource: unknown; Condition?: unknown };
+
+    it("replicates every new record to the backup account's replica, owned there, with no delete markers and with metrics", () => {
+      const template = build().data(EAST);
+      expect(vaultParam(template)).toBeDefined();
+      const [, bucket] = deletionsBucket(template);
+      expect(bucket.Properties.ReplicationConfiguration).toEqual({
+        Role: { "Fn::GetAtt": [expect.stringMatching(/^DeletionsReplicationRole/), "Arn"] },
+        Rules: [
+          {
+            Id: DELETIONS_REPLICATION_RULE_ID,
+            Priority: 1,
+            Status: "Enabled",
+            Filter: { Prefix: "" },
+            DeleteMarkerReplication: { Status: "Disabled" },
+            Destination: {
+              Bucket: replicaArn(template),
+              Account: backupAccount(template),
+              AccessControlTranslation: { Owner: "Destination" },
+              Metrics: { Status: "Enabled" },
+            },
+          },
+        ],
+      });
+      // The role's permissions exist before S3 is told to use it
+      expect(bucket.DependsOn?.some((d) => d.startsWith("DeletionsReplicationRoleDefaultPolicy"))).toBe(true);
+    });
+
+    it("uses a role only S3, for this bucket in this account, may assume, that reads this bucket and writes only into the replica in the organization", () => {
+      const template = build().data(EAST);
+      template.hasResourceProperties("AWS::IAM::Role", {
+        RoleName: deletionsReplicationRoleName("prod"),
+        AssumeRolePolicyDocument: {
+          Statement: [
+            {
+              Effect: "Allow",
+              Action: "sts:AssumeRole",
+              Principal: { Service: "s3.amazonaws.com" },
+              Condition: { StringEquals: { "aws:SourceAccount": { Ref: "AWS::AccountId" } }, ArnLike: { "aws:SourceArn": sourceArn } },
+            },
+          ],
+        },
+      });
+      const [policy] = Object.values(template.findResources("AWS::IAM::Policy")).filter((p) => JSON.stringify(p.Properties.Roles).includes("DeletionsReplicationRole"));
+      const statements = policy?.Properties.PolicyDocument.Statement as Statement[];
+      const inOrg = { StringEquals: { "aws:ResourceAccount": backupAccount(template), "aws:ResourceOrgID": { Ref: orgParam(template) } } };
+      const objects = (arn: unknown) => ({ "Fn::Join": ["", [...(arn as { "Fn::Join": [string, unknown[]] })["Fn::Join"][1], "/*"]] });
+      expect(statements).toEqual([
+        { Sid: "ReadTheReplicationConfiguration", Effect: "Allow", Action: ["s3:GetReplicationConfiguration", "s3:ListBucket"], Resource: sourceArn },
+        {
+          Sid: "ReadRecordVersions",
+          Effect: "Allow",
+          Action: ["s3:GetObjectVersionForReplication", "s3:GetObjectVersionAcl", "s3:GetObjectRetention", "s3:GetObjectLegalHold"],
+          Resource: objects(sourceArn),
+        },
+        {
+          Sid: "WriteReplicasToTheBackupAccount",
+          Effect: "Allow",
+          Action: ["s3:ReplicateObject", "s3:ObjectOwnerOverrideToBucketOwner"],
+          Resource: objects(replicaArn(template)),
+          Condition: inOrg,
+        },
+        {
+          Sid: "CheckTheReplicaBucket",
+          Effect: "Allow",
+          Action: ["s3:GetBucketVersioning", "s3:GetBucketObjectLockConfiguration"],
+          Resource: replicaArn(template),
+          Condition: inOrg,
+        },
+      ]);
+      // Nothing that could remove or overwrite a replica
+      expect(statements.flatMap((st) => [st.Action].flat()).filter((a) => /Delete|Put|\*/.test(a))).toEqual([]);
+    });
+
+    it("is left out, with no backup parameters read, with backupCopy=false", () => {
+      const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [], backupCopy: "false" } });
+      const stacks = addSupplyCheckout(app, config);
+      const template = Template.fromStack(stacks.regions[EAST]?.data as Stack);
+      expect(deletionsBucket(template)[1].Properties.ReplicationConfiguration).toBeUndefined();
+      template.resourceCountIs("AWS::IAM::Role", 0);
+      expect(vaultParam(template)).toBeUndefined();
+      expect(stacks.regions[EAST]?.data.deletionsReplicationRole).toBeUndefined();
+    });
+
+    it("is only in the primary region", () => {
+      const template = build().data(WEST);
+      template.resourceCountIs("AWS::S3::Bucket", 0);
+      template.resourceCountIs("AWS::IAM::Role", 0);
+    });
   });
 });
 
