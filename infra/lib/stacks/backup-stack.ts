@@ -18,6 +18,7 @@ import {
   backupVaultName,
   restoreTablePrefix,
 } from "../backup.js";
+import { BackupChangeAlerts } from "../backup-alerts.js";
 import type { DeploymentConfig } from "../config.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
@@ -45,6 +46,12 @@ export const COPY_KEY_USE = ["kms:Decrypt", "kms:DescribeKey", "kms:GenerateData
  *   `<table>-restore-*`.
  * - Two P2 alarms (the observability stack's P2 topic, from SSM): a backup or
  *   copy job failed, or no backup finished in the last day.
+ * - P1 alerts (the observability stack's P1 topic, which lets only these
+ *   rules' names publish) when a vault's access policy or lock is changed or
+ *   removed, the plan or a selection is changed or deleted, or the vault key
+ *   is disabled, scheduled for deletion or given a new policy
+ *   (backup-alerts.ts). Someone holding this account can delete these too, so
+ *   the backup account has the same alerts and an alarm on missing copies.
  *
  * Point-in-time recovery is on the table itself (data stack). DynamoDB's
  * advanced backup features must be turned on in the account for cross-account
@@ -58,6 +65,8 @@ export class BackupStack extends SupplyCheckoutStack {
   readonly backupRole: Role;
   readonly restoreRole: Role;
   readonly alarms: Alarm[];
+  /** P1 alerts on changes to the vault's policy or lock, the plan, a selection or the vault key. */
+  readonly changeAlerts: BackupChangeAlerts;
   /** Whether the daily backup is copied to the backup account. */
   readonly copiesToBackupAccount: boolean;
 
@@ -338,6 +347,13 @@ export class BackupStack extends SupplyCheckoutStack {
         treatMissingData: TreatMissingData.BREACHING,
       }),
     ];
+
+    this.changeAlerts = new BackupChangeAlerts(this, "ChangeAlerts", {
+      envName: config.envName,
+      side: "workload",
+      vaultKeyArn: this.vaultKey.keyArn,
+      topic: Topic.fromTopicArn(this, "P1Topic", ssm(`/supply-checkout/${config.envName}/observability/alarm-topic-p1-arn`)),
+    });
 
     const publish = (id: string, name: string, value: string, description: string) =>
       new StringParameter(this, id, { parameterName: name, stringValue: value, description });

@@ -40,6 +40,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `scripts/land-pr.test.sh` | Tests for `land-pr.sh` against a fake `gh` in a throwaway repo (`npm run test:scripts`, which also runs shellcheck). |
 | `scripts/ops.mjs` | The operator CLI (`npm run ops`, ADR 0015): list and search teams, comp a team, read the operator audit, signed in to the operator pool with TOTP. Tests: `scripts/ops.test.mjs` (`npm run test:scripts`). See [Operators](docs/infrastructure.md#operators). |
 | `scripts/check-public-safety.mjs` | Blocks AWS identifiers, email addresses and credentials from this public repo (pre-commit hook and CI). |
+| `scripts/check-stray-files.mjs` | Blocks merge and patch leftovers (`*.orig`, `*.rej`) from being committed (pre-commit hook and CI). Tests: `scripts/check-stray-files.test.mjs` (`npm run test:scripts`). |
 | `scripts/check-region-strings.mjs` | Blocks AWS region names in `infra/`, `backend/` and `src/` outside `infra/lib/config.ts` (ADR 0010; pre-commit hook and CI). |
 | `scripts/export-beads.mjs` | Writes the beads backlog export without owner emails (`npm run beads:export`). |
 | `scripts/beads-pr.sh` | Refreshes the committed beads export through a `chore:` PR and lands it (`npm run beads:pr`); does nothing if the export is current. |
@@ -81,7 +82,7 @@ The demo's own code lives in `demo/`, outside `src/`, so the artifact and web bu
 
 `npm run lint` runs ESLint on `src/`, `demo/`, the scripts and the tests, checks the Markdown links, then builds all three and validates their HTML. `npm run check` also runs the public-safety check below and every test suite against both builds.
 
-Run `npm run hooks:install` once per clone. It installs a pre-commit hook (`scripts/git-hooks/pre-commit`) that blocks commits containing AWS account or SSO identifiers, personal email addresses, or credentials, because this repository is public, and commits that name an AWS region outside `infra/lib/config.ts`.
+Run `npm run hooks:install` once per clone. It installs a pre-commit hook (`scripts/git-hooks/pre-commit`) that blocks commits containing AWS account or SSO identifiers, personal email addresses, or credentials, because this repository is public, commits that add merge or patch leftovers (`*.orig`, `*.rej`), and commits that name an AWS region outside `infra/lib/config.ts`.
 
 ## AWS
 
@@ -124,8 +125,8 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | Lint and validate HTML | ESLint on `src/`, `demo/`, scripts and tests; builds all three and runs html-validate on each |
 | Lint GitHub workflows | actionlint |
 | No region names outside the config module | `scripts/check-region-strings.mjs`: fails on any AWS region name in `infra/`, `backend/` or `src/` outside `infra/lib/config.ts` (ADR 0010) |
-| Shell scripts | shellcheck on `scripts/*.sh`, and the `land-pr.sh` and `beads-pr.sh` tests against a fake `gh` |
-| Secret scan | gitleaks on every commit in the history, and `scripts/check-public-safety.mjs` on every file (AWS account and SSO identifiers, email addresses, AWS and Stripe keys, private keys) |
+| Shell scripts | shellcheck on `scripts/*.sh`, the `land-pr.sh` and `beads-pr.sh` tests against a fake `gh`, and the Node tests for `publish-web.mjs`, `ops.mjs` and `check-stray-files.mjs` (`npm run test:scripts`) |
+| Secret scan | gitleaks on commits: on a pull request, only the PR's own commits (base..head), so a flagged string on another branch doesn't fail every PR; on the merge queue, pushes to `main`, the nightly run and manual runs, every commit on every branch. Also `scripts/check-public-safety.mjs` on every file (AWS account and SSO identifiers, email addresses, AWS and Stripe keys, private keys), and `scripts/check-stray-files.mjs`, which fails on any tracked `*.orig` or `*.rej` file |
 | Dependency audit | `npm audit` fails on high-severity advisories; dependency review fails a PR that adds a moderate-or-worse vulnerable package |
 | CodeQL (javascript-typescript), CodeQL (actions) | CodeQL `security-extended` queries on the app, scripts, tests and workflows (`.github/workflows/codeql.yml`, which also runs weekly). Results go to the repository's code scanning alerts |
 | Backend | Only when `backend/`, `docs/api/` or the CI workflow changes in the pull request or merge queue group (always on `main`, nightly and manual runs): `npm audit`, type-check and ESLint (with the DynamoDB ban), the handler and OpenAPI tests, and the data-access tests against DynamoDB Local, which runs as a service container |
