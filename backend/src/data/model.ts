@@ -40,6 +40,14 @@ export interface Team {
   readonly stripeCustomerId?: string;
   /** The team's Stripe subscription, which the billing webhook records (ADR 0009). */
   readonly stripeSubscriptionId?: string;
+  /** How often the subscription bills: `month` or `year` (the billing worker, from its price). */
+  readonly billingInterval?: string;
+  /** When the subscription's current period ends (ISO 8601): its next renewal, or when a trial ends. */
+  readonly currentPeriodEnd?: string;
+  /** The subscription ends at `currentPeriodEnd` rather than renewing (canceled in the Customer Portal, or the team closed). */
+  readonly cancelAtPeriodEnd?: boolean;
+  /** When the billing worker last applied the subscription from Stripe (ISO 8601). */
+  readonly stripeSyncedAt?: string;
   /**
    * When an owner closed the team (ISO 8601; closeTeam). A closed team is
    * read-only: members can still read and export it, and leave, but nothing
@@ -176,6 +184,16 @@ export const ENDED_STATUSES: readonly string[] = ["canceled", "unpaid", "incompl
 /** True when a team's subscription status means it has ended. */
 export function hasEnded(status: unknown): boolean {
   return typeof status === "string" && ENDED_STATUSES.includes(status);
+}
+
+/**
+ * True when the team is read-only because its subscription ended
+ * (ENDED_STATUSES: after a trial ended without a card, Stripe cancels it) and
+ * no live comp keeps it going (ADR 0009, ADR 0015). Its members can still read
+ * and export it, and leave; an owner can subscribe again.
+ */
+export function isReadOnlyForBilling(team: { readonly status?: unknown; readonly compPlan?: unknown; readonly compUntil?: unknown }, now = new Date()): boolean {
+  return hasEnded(team.status) && liveComp(team, now) === undefined;
 }
 
 /** True for a team an owner has closed (closeTeam), from its META item. */

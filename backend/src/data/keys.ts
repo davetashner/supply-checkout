@@ -137,6 +137,8 @@ export const keys = {
     SK: `LIMIT#INVITES#${date(day)}#${inviteLimitPartition(emailHash).slice(INVITE_LIMIT_PREFIX.length)}`,
   }),
   webhook: (eventId: string) => ({ PK: `WEBHOOK#${id(eventId, "webhook event ID")}`, SK: "DONE" }),
+  /** That an owner was emailed about a Stripe event (claimBillingNotice), so a retry doesn't email them again. */
+  webhookNotice: (eventId: string, userId: string) => ({ PK: `WEBHOOK#${id(eventId, "webhook event ID")}`, SK: `NOTICE#${id(userId, "user ID")}` }),
   /** A checkout, return or stock command's record, for replaying a retry (commands.ts). */
   operation: (teamId: string, operationId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `OP#${id(operationId, "operation ID")}` }),
   /** A CSV inventory import's job record: its request, plan size and progress (imports.ts). */

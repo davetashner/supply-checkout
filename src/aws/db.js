@@ -39,11 +39,12 @@ function querySnap(docs, order) {
   return { docs: out, size: out.length, empty: !out.length, docChanges: () => [], metadata: META };
 }
 
-// onClosed: a write was refused because an owner closed the team meanwhile. onResync: both
+// onClosed: a write was refused because an owner closed the team meanwhile; onEnded: because
+// its subscription ended meanwhile (read-only until an owner subscribes). onResync: both
 // collections are being re-listed (live.js), a moment to check anything else that may have
 // changed unannounced (account.js: the team switcher); it's told "poll" when the re-list is
 // the polling fallback's (live.js), which runs every 15 seconds.
-export function createDb({ api, config, teamId, userId, token, onRemoved, onClosed, onResync }) {
+export function createDb({ api, config, teamId, userId, token, onRemoved, onClosed, onEnded, onResync }) {
   const base = `/teams/${encodeURIComponent(teamId)}`;
   const colls = {};
   const inflight = new Map();
@@ -65,7 +66,8 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
   function denied(e) {
     if (e.code !== "permission_denied") return e;
     if (e.reason === "team_closed") onClosed();
-    if (e.reason === "view_only" || e.reason === "team_closed") return { ...e, code: "invalid_argument" };
+    if (e.reason === "subscription_ended") onEnded();
+    if (e.reason === "view_only" || e.reason === "team_closed" || e.reason === "subscription_ended") return { ...e, code: "invalid_argument" };
     lost();
     return e;
   }

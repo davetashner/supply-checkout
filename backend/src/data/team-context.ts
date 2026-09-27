@@ -13,7 +13,7 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { GetCommand, QueryCommand, TransactGetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
-import { ConflictError, ForbiddenError, LimitReachedError, NotFoundError, TeamClosedError, TeamFullError, conflictOnConditionFailure } from "./errors.js";
+import { ConflictError, ForbiddenError, LimitReachedError, NotFoundError, SubscriptionEndedError, TeamClosedError, TeamFullError, conflictOnConditionFailure } from "./errors.js";
 import { gsi1, gsi3, id, keys, prefixes, strip } from "./keys.js";
 import {
   type Invite,
@@ -27,6 +27,7 @@ import {
   hashInviteToken,
   isClosed,
   isMemberRole,
+  isReadOnlyForBilling,
   normalizeEmail,
   teamCounts,
   teamIdForRequest,
@@ -57,22 +58,30 @@ export class TeamContext {
    * contexts, which writable doesn't hold to it.
    */
   readonly closed: boolean;
+  /**
+   * The team's subscription had ended, with no live comp, when the context
+   * was issued (isReadOnlyForBilling): read-only like a closed team, except
+   * for what `whileEnded` also allows (writable). Always false for system
+   * contexts.
+   */
+  readonly subscriptionEnded: boolean;
 
-  constructor(token: symbol, teamId: string, userId: string, role: Role, homeRegion: string, closed = false) {
+  constructor(token: symbol, teamId: string, userId: string, role: Role, homeRegion: string, closed = false, subscriptionEnded = false) {
     if (token !== ISSUE) throw new ForbiddenError("TeamContext can only be issued by the data layer");
     this.teamId = teamId;
     this.userId = userId;
     this.role = role;
     this.homeRegion = homeRegion;
     this.closed = closed;
+    this.subscriptionEnded = subscriptionEnded;
     Object.freeze(this);
     issued.add(this);
   }
 }
 
 // Not exported: only the issuers below can call it.
-function issue(teamId: string, userId: string, role: Role, homeRegion: string, closed = false): TeamContext {
-  return new TeamContext(ISSUE, teamId, userId, role, homeRegion, closed);
+function issue(teamId: string, userId: string, role: Role, homeRegion: string, closed = false, subscriptionEnded = false): TeamContext {
+  return new TeamContext(ISSUE, teamId, userId, role, homeRegion, closed, subscriptionEnded);
 }
 
 /** Throws unless `ctx` was issued by this file. */
@@ -95,21 +104,26 @@ export function readable(ctx: TeamContext): TeamContext {
  *
  * A closed team is read-only (TeamClosedError), except for what `whileClosed`
  * allows: leaving or removing a member, revoking invites, closing it again and
- * reopening it (reopenTeam).
- * System processes (billing, email events) aren't held to it.
+ * reopening it (reopenTeam). A team whose subscription ended is read-only too
+ * (SubscriptionEndedError), except for what `whileClosed` allows and what
+ * `whileEnded` also does: a member keeping their own email current, and an
+ * owner linking the Stripe customer to subscribe again.
+ * System processes (billing, email events) aren't held to either.
  */
-export function writable(db: Db, ctx: TeamContext, minimum: Role = "contributor", options: { readonly whileClosed?: boolean } = {}): TeamContext {
+export function writable(db: Db, ctx: TeamContext, minimum: Role = "contributor", options: { readonly whileClosed?: boolean; readonly whileEnded?: boolean } = {}): TeamContext {
   assertContext(ctx);
   // Fails closed: a role without a rank (which authorizeTeam never issues) can't write
   const rank = RANK[ctx.role] as number | undefined;
   if (rank === undefined || rank < RANK[minimum]) throw new ForbiddenError(`Needs the ${minimum} role`);
   if (ctx.closed && ctx.role !== "system" && !options.whileClosed) throw new TeamClosedError(TEAM_CLOSED);
+  if (ctx.subscriptionEnded && ctx.role !== "system" && !options.whileClosed && !options.whileEnded) throw new SubscriptionEndedError(SUBSCRIPTION_ENDED);
   const target = writeRegionFor(ctx, db.region);
   if (target !== db.region) throw new Error(`Writes for this team go to ${target}; forwarding is phase 2`);
   return ctx;
 }
 
 const TEAM_CLOSED = "This team was closed. It's read-only until its data is deleted.";
+const SUBSCRIPTION_ENDED = "This team's subscription ended, so it's read-only. An owner can subscribe again to make changes.";
 
 /**
  * Builds the context for a verified user acting on a team. Call it from the
@@ -123,7 +137,14 @@ export async function authorizeTeam(db: Db, userId: string, teamId: string): Pro
   const result = await connection(db).doc.send(
     new TransactGetCommand({
       TransactItems: [
-        { Get: { TableName: db.tableName, Key: keys.team(teamId), ProjectionExpression: "homeRegion, closedAt" } },
+        {
+          Get: {
+            TableName: db.tableName,
+            Key: keys.team(teamId),
+            ProjectionExpression: "homeRegion, closedAt, #status, compPlan, compUntil",
+            ExpressionAttributeNames: { "#status": "status" },
+          },
+        },
         {
           Get: {
             TableName: db.tableName,
@@ -139,7 +160,7 @@ export async function authorizeTeam(db: Db, userId: string, teamId: string): Pro
   if (!meta || !membership) throw new ForbiddenError("Not a member of this team");
   // A MEMBER item with a missing or unknown role is treated as no membership
   if (!isMemberRole(membership.role)) throw new ForbiddenError("Not a member of this team");
-  return issue(teamId, userId, membership.role, meta.homeRegion as string, isClosed(meta));
+  return issue(teamId, userId, membership.role, meta.homeRegion as string, isClosed(meta), isReadOnlyForBilling(meta));
 }
 
 /** The per-item reasons DynamoDB gave for cancelling a transaction, if it did. */
@@ -413,7 +434,8 @@ export async function acceptInvite(
  */
 export async function teamContextForStripeCustomer(db: Db, customerId: string): Promise<TeamContext | undefined> {
   const { doc } = connection(db);
-  const { Item: link } = await doc.send(new GetCommand({ TableName: db.tableName, Key: keys.stripe(customerId), ConsistentRead: true }));
+  // Only the team: the billing worker's role may read nothing else of the link
+  const { Item: link } = await doc.send(new GetCommand({ TableName: db.tableName, Key: keys.stripe(customerId), ConsistentRead: true, ProjectionExpression: "teamId" }));
   if (!link) return undefined;
   const teamId = id(link.teamId, "team ID");
   const { Item: team } = await doc.send(

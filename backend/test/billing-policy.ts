@@ -1,8 +1,8 @@
 // The billing-access role's policy (infra/lib/stacks/api-stack.ts), as a check
 // the in-memory table runs before each call. The infra tests check the real
-// policy; this keeps the billing handler's requests inside it.
+// policy; this keeps the billing handler's and worker's requests inside them.
 
-import { CUSTOMER_LINK_TEAM_ATTRIBUTES, STRIPE_LINK_ATTRIBUTES } from "../src/data/schema.js";
+import { BILLING_READ_ATTRIBUTES, BILLING_UPDATE_ATTRIBUTES, CUSTOMER_LINK_TEAM_ATTRIBUTES, STRIPE_LINK_ATTRIBUTES, STRIPE_LINK_READ_ATTRIBUTES, WEBHOOK_RECORD_ATTRIBUTES } from "../src/data/schema.js";
 import type { BillingScope } from "../src/api/billing-db.js";
 import { namedAttributes } from "./helpers.js";
 
@@ -35,6 +35,42 @@ export function billingPolicy(scope: BillingScope, denied: { command: string; in
           return (input.TransactItems as Record<string, Input>[]).every((op) => (op.Put ? put(op.Put) : op.Update ? update(op.Update) : false));
         default:
           // No Query, Scan, DeleteItem or batch calls
+          return false;
+      }
+    })();
+    if (!ok) denied.push({ command, input });
+    return ok;
+  };
+}
+
+/**
+ * The calls the billing-worker role allows for a session with these tags
+ * (infra/lib/stacks/api-stack.ts): its event's records, its customer's link
+ * (the team only), and in its team's partition reads of BILLING_READ_ATTRIBUTES
+ * and updates of BILLING_UPDATE_ATTRIBUTES only.
+ */
+export function workerPolicy(scope: { eventId: string; stripeCustomer: string; teamId?: string }, denied: { command: string; input: Input }[] = []) {
+  const records = `WEBHOOK#${scope.eventId}`;
+  const link = `STRIPE#${scope.stripeCustomer}`;
+  const team = `TEAM#${scope.teamId ?? "."}`;
+  const projected = (input: Input) => typeof input.ProjectionExpression === "string" && (input.Select === undefined || input.Select === "SPECIFIC_ATTRIBUTES");
+  const queryPartition = (input: Input) => (input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"];
+  return (command: string, input: Input): boolean => {
+    const ok = (() => {
+      switch (command) {
+        case "GetCommand": {
+          const pk = partitionKey(input);
+          if (pk === records) return only(input, WEBHOOK_RECORD_ATTRIBUTES) && projected(input);
+          if (pk === link) return only(input, STRIPE_LINK_READ_ATTRIBUTES) && projected(input);
+          return pk === team && only(input, BILLING_READ_ATTRIBUTES) && projected(input);
+        }
+        case "QueryCommand":
+          return input.IndexName === undefined && queryPartition(input) === team && only(input, BILLING_READ_ATTRIBUTES) && projected(input);
+        case "PutCommand":
+          return partitionKey(input) === records && only(input, WEBHOOK_RECORD_ATTRIBUTES) && returnsNothing(input);
+        case "UpdateCommand":
+          return partitionKey(input) === team && only(input, BILLING_UPDATE_ATTRIBUTES) && returnsNothing(input);
+        default:
           return false;
       }
     })();

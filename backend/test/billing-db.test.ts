@@ -49,7 +49,7 @@ describe("billingScopedDbs", () => {
     const { sts } = fakeSts();
     const dbFor = billingScopedDbs({ roleArn: ROLE, env, sts, maxScopes: 2 });
     for (const bad of ["", "TEAM#x", "x".repeat(129), 7 as unknown as string]) expect(() => dbFor({ teamId: bad })).toThrow(/Invalid team ID/);
-    for (const bad of ["", "cus/1", "STRIPE#cus", 7 as unknown as string]) expect(() => dbFor({ teamId: "team-a", stripeCustomer: bad })).toThrow(/Invalid Stripe customer ID/);
+    for (const bad of ["", ".", "cus/1", "STRIPE#cus", 7 as unknown as string]) expect(() => dbFor({ teamId: "team-a", stripeCustomer: bad })).toThrow(/Invalid Stripe customer ID/);
     expect(sts.send).not.toHaveBeenCalled();
   });
 

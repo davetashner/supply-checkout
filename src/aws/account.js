@@ -3,7 +3,9 @@
 // place until a team is open; then a bar under the header shows the team (a switcher when
 // there are several), Members and Import CSV for owners, Leave team for everyone else,
 // Account (deleting it) and Sign out. A team an owner closed is read-only, with a notice
-// saying when its data will be deleted, and for its owners a way to reopen it.
+// saying when its data will be deleted, and for its owners a way to reopen it. So is a team
+// whose subscription ended (its trial ended without a card, or payments stopped), with a
+// notice, and for its owners a way to subscribe again on Stripe Checkout.
 import { esc } from "../format.js";
 import { armButton, toast } from "../dom.js";
 import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, firstRunKey, forgetLocal, local, tab } from "./session.js";
@@ -27,6 +29,9 @@ const ME_EVERY = 60e3, ME_EVERY_POLLING = 600e3;
 const CLOSED_NOTICE = "This team is closed, so nothing in it can be changed.";
 // When /me can't say when it will be deleted (it didn't load, or doesn't list it closed yet)
 const CLOSED_MEANWHILE = "An owner closed this team, so nothing in it can be changed now. Reload the page to see when it will be deleted.";
+// Why it's read-only when its subscription ended, as the team opened or after a refused write
+const ENDED_NOTICE = "This team's subscription ended, so nothing in it can be changed until an owner subscribes.";
+const ENDED_MEANWHILE = "This team's subscription ended, so nothing in it can be changed now. An owner can subscribe again from the team bar.";
 
 // A plain circle for the signed-in user's avatar; the API has no pictures yet
 const AVATAR = "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><circle cx="1" cy="1" r="1" fill="#0E6B58"/></svg>');
@@ -304,8 +309,10 @@ export async function start(config) {
     bar.className = "teambar";
     const owner = team.role === "owner";
     const reopenBy = owner && team.reopenBy ? `<span id="reopenBy"> Reopen by ${esc(moment(team.reopenBy))} to keep it.</span>` : "";
-    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${team.closedAt ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}<button type="button" class="btn ghost" id="accountOpen">Account</button><button type="button" class="btn ghost" id="signOut">Sign out</button>`
-      + (team.closedAt ? `<p class="closed-note" role="status">This team was closed on ${esc(day(team.closedAt))}. It's read-only, and everything in it will be deleted on ${esc(day(team.deletesAt))}.${owner ? " Use Export data to keep a copy." : ""}${reopenBy}</p>${owner ? `<button type="button" class="btn" id="reopenTeam">Reopen team</button>` : ""}` : "");
+    const ended = !team.closedAt && team.subscriptionEnded;
+    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}<button type="button" class="btn ghost" id="accountOpen">Account</button><button type="button" class="btn ghost" id="signOut">Sign out</button>`
+      + (team.closedAt ? `<p class="closed-note" role="status">This team was closed on ${esc(day(team.closedAt))}. It's read-only, and everything in it will be deleted on ${esc(day(team.deletesAt))}.${owner ? " Use Export data to keep a copy." : ""}${reopenBy}</p>${owner ? `<button type="button" class="btn" id="reopenTeam">Reopen team</button>` : ""}` : "")
+      + (ended ? `<p class="closed-note" role="status">This team's subscription has ended, so it's read-only. Nothing has been deleted: everyone can still see it${owner ? ", and you can export it. Subscribe to make changes again." : ". Ask an owner to subscribe to make changes again."}</p>${owner ? `<button type="button" class="btn" id="subscribe">Subscribe</button>` : ""}` : "");
     box.after(bar);
     drawSwitcher(bar.querySelector(".team-pick"), me.teams, team);
     bar.querySelector("#signOut").addEventListener("click", signOut);
@@ -316,7 +323,8 @@ export async function start(config) {
     if (verify) verify.addEventListener("click", () => openVerifyEmail(session, me.user.email, (fresh) => { me.user = fresh.user; verify.remove(); }));
     if (owner) {
       bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed, invited(fr)));
-      if (!team.closedAt) bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id, download));
+      if (ended) bar.querySelector("#subscribe").addEventListener("click", (e) => subscribe(team, e.currentTarget));
+      else if (!team.closedAt) bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id, download));
       else {
         bar.querySelector("#reopenTeam").addEventListener("click", () => openReopen(session.api, team, changed));
         if (team.reopenBy) reopenWindow(bar, team);
@@ -328,12 +336,34 @@ export async function start(config) {
     return bar;
   }
 
+  // An owner subscribes a team whose subscription ended: Stripe Checkout for the Starter plan,
+  // monthly, with a seat for each member. The server makes the page; a link to it replaces
+  // the button, so the owner goes to Stripe with one more tap (and a retry gets the same page).
+  let checkoutKey = null;
+  async function subscribe(team, button) {
+    checkoutKey ||= crypto.randomUUID();
+    button.disabled = true;
+    try {
+      const { checkout } = await session.api("POST", `/teams/${encodeURIComponent(team.id)}/billing/checkout`, { plan: "starter", interval: "month", seats: Math.max(team.members || 1, 1) }, { "Idempotency-Key": checkoutKey });
+      const link = document.createElement("a");
+      link.className = "btn primary";
+      link.id = "checkoutLink";
+      link.href = checkout.url;
+      link.textContent = "Continue to checkout";
+      button.replaceWith(link);
+      link.focus();
+    } catch (e) {
+      button.disabled = false;
+      toast(e.reason === "already_subscribed" ? "This team already has a subscription. Reload the page to see it." : "Couldn't start checkout. Check your connection and try again.", 5000);
+    }
+  }
+
   // The first-run checklist (src/first-run.js) for an owner's open team: for a team they just
   // created, or one whose checklist this device started and they haven't finished or
   // dismissed. Its state is kept per team (firstRunKey); if storage can't be read, a team
   // created now still gets it until the page is closed.
   function firstRun(me, team) {
-    if (team.role !== "owner" || team.closedAt) return null;
+    if (team.role !== "owner" || team.closedAt || team.subscriptionEnded) return null;
     const key = firstRunKey(team.id);
     const state = local.json(key) || (created === team.id ? {} : null);
     if (!state || state.done) return null;
@@ -358,7 +388,7 @@ export async function start(config) {
     let bar = teamBar(me, team, fr);
     // /me was just loaded
     meAt = Date.now();
-    let viewOnly = team.closedAt ? CLOSED_NOTICE : null;
+    let viewOnly = team.closedAt ? CLOSED_NOTICE : team.subscriptionEnded ? ENDED_NOTICE : null;
     // A write was refused because another owner closed the team meanwhile: ask /me when it will
     // be deleted, and draw the team bar again as a closed team's (its notice, no Import CSV).
     // The view-only notice waits for it, and says to reload if /me couldn't say.
@@ -385,6 +415,8 @@ export async function start(config) {
       onRemoved: () => removed(team),
       // A write refused because another owner closed the team meanwhile
       onClosed: closedMeanwhile,
+      // One refused because the team's subscription ended meanwhile
+      onEnded: () => { viewOnly = ENDED_MEANWHILE; },
       onResync: (why) => refreshTeams(me, team, bar.querySelector(".team-pick"), why),
     });
     return {
@@ -392,7 +424,7 @@ export async function start(config) {
       user: {
         id: async () => me.user.id,
         // Viewers read; so does everyone once an owner has closed the team
-        can: async (what) => what === "data.write" && team.role !== "viewer" && !team.closedAt,
+        can: async (what) => what === "data.write" && team.role !== "viewer" && !team.closedAt && !team.subscriptionEnded,
         // Team owners can export all the team's data (the app's "Export data")
         isOwner: async () => team.role === "owner",
         // Why it's read-only, when that's because the team is closed; null: the role says why

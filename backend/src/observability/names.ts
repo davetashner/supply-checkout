@@ -58,6 +58,12 @@ export const BusinessMetric = {
   CheckoutSessionErrors: "CheckoutSessionErrors",
   /** Stripe webhooks rejected for a bad signature (J7). */
   WebhookSignatureFailures: "WebhookSignatureFailures",
+  /** Stripe events the billing worker applied to a team's plan, seats and status (J7, J8). */
+  BillingEventsApplied: "BillingEventsApplied",
+  /** Owners emailed about their billing: a trial ending, a failed payment, or the team turning read-only (J7, J8). */
+  BillingNotices: "BillingNotices",
+  /** Owners who should have had a billing email and didn't (SES refused it, or no address on file) (J7, J8). */
+  BillingNoticeFailures: "BillingNoticeFailures",
   /** Sign-outs whose refresh token Cognito didn't revoke: it stays valid until it expires (J0). */
   SignOutRevokeFailures: "SignOutRevokeFailures",
   /** Federated sign-ins whose provider-verified email couldn't be marked verified: the user stays unverified (J3). */

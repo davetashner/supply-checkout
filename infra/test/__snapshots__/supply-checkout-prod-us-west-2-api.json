@@ -1509,7 +1509,8 @@
                       "dynamodb:Attributes": [
                         "PK",
                         "SK",
-                        "stripeCustomerId"
+                        "stripeCustomerId",
+                        "closedAt"
                       ]
                     },
                     "StringEqualsIfExists": {
@@ -1606,6 +1607,1002 @@
               "Version": "2012-10-17"
             },
             "PolicyName": "TeamAndCustomerLinkOnly"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "BillingEventsDeadLetterQueue273F02A9": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "FifoQueue": true,
+        "MessageRetentionPeriod": 1209600,
+        "QueueName": "supply-checkout-prod-billing-events-dlq.fifo",
+        "SqsManagedSseEnabled": true,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
+    },
+    "BillingEventsDeadLetterQueuePolicy450FF35B": {
+      "Type": "AWS::SQS::QueuePolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sqs:*",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              },
+              "Effect": "Deny",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Resource": {
+                "Fn::GetAtt": [
+                  "BillingEventsDeadLetterQueue273F02A9",
+                  "Arn"
+                ]
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Queues": [
+          {
+            "Ref": "BillingEventsDeadLetterQueue273F02A9"
+          }
+        ]
+      }
+    },
+    "BillingEventsQueueFF17F8F8": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "FifoQueue": true,
+        "MessageRetentionPeriod": 345600,
+        "QueueName": "supply-checkout-prod-billing-events.fifo",
+        "RedrivePolicy": {
+          "deadLetterTargetArn": {
+            "Fn::GetAtt": [
+              "BillingEventsDeadLetterQueue273F02A9",
+              "Arn"
+            ]
+          },
+          "maxReceiveCount": 5
+        },
+        "SqsManagedSseEnabled": true,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "VisibilityTimeout": 180
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
+    },
+    "BillingEventsQueuePolicyA54053E6": {
+      "Type": "AWS::SQS::QueuePolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sqs:*",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              },
+              "Effect": "Deny",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Resource": {
+                "Fn::GetAtt": [
+                  "BillingEventsQueueFF17F8F8",
+                  "Arn"
+                ]
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Queues": [
+          {
+            "Ref": "BillingEventsQueueFF17F8F8"
+          }
+        ]
+      }
+    },
+    "BillingWebhookFunctionLogsC65A3767": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "BillingWebhookFunctionRole323C5ADD": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the webhook function",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "BillingWebhookFunctionRoleDefaultPolicyE82348E9": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "BillingWebhookFunctionLogsC65A3767",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "secretsmanager:GetSecretValue",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":secretsmanager:us-west-2:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":secret:supply-checkout/prod/stripe/test-webhook-secret-??????"
+                  ]
+                ]
+              },
+              "Sid": "ReadStripeWebhookSecret"
+            },
+            {
+              "Action": "sqs:SendMessage",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "BillingEventsQueueFF17F8F8",
+                  "Arn"
+                ]
+              },
+              "Sid": "QueueBillingEvents"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "BillingWebhookFunctionRoleDefaultPolicyE82348E9",
+        "Roles": [
+          {
+            "Ref": "BillingWebhookFunctionRole323C5ADD"
+          }
+        ]
+      }
+    },
+    "BillingWebhookFunction8643BAE8": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-west-2"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "Stripe's webhook: verifies each event's signature and queues it (ADR 0009)",
+        "Environment": {
+          "Variables": {
+            "BILLING_QUEUE_URL": {
+              "Ref": "BillingEventsQueueFF17F8F8"
+            },
+            "NODE_OPTIONS": "--enable-source-maps",
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "STRIPE_MODE": "test",
+            "STRIPE_WEBHOOK_SECRET_ID": "supply-checkout/prod/stripe/test-webhook-secret",
+            "SUPPLY_CHECKOUT_ENV": "prod"
+          }
+        },
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "BillingWebhookFunctionLogsC65A3767"
+          }
+        },
+        "MemorySize": 256,
+        "Role": {
+          "Fn::GetAtt": [
+            "BillingWebhookFunctionRole323C5ADD",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 10,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "BillingWebhookFunctionRoleDefaultPolicyE82348E9",
+        "BillingWebhookFunctionRole323C5ADD"
+      ]
+    },
+    "BillingWebhookFunctionCurrentVersion86E3184E<code hash>": {
+      "Type": "AWS::Lambda::Version",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "BillingWebhookFunction8643BAE8"
+        }
+      },
+      "Metadata": {
+        "aws:cdk:do-not-refactor": true
+      }
+    },
+    "BillingWebhookFunctionXRayWrite82A6926C": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTraceSegments",
+                "xray:PutTelemetryRecords"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "BillingWebhookFunctionXRayWrite82A6926C",
+        "Roles": [
+          {
+            "Ref": "BillingWebhookFunctionRole323C5ADD"
+          }
+        ]
+      }
+    },
+    "BillingWorkerFunctionLogs9FD7B54B": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "BillingWorkerFunctionRoleAD2FB3C5": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the worker-entry function",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "BillingWorkerFunctionRoleDefaultPolicy1E3C6921": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "BillingWorkerFunctionLogs9FD7B54B",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": [
+                "sqs:ReceiveMessage",
+                "sqs:ChangeMessageVisibility",
+                "sqs:GetQueueUrl",
+                "sqs:DeleteMessage",
+                "sqs:GetQueueAttributes"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "BillingEventsQueueFF17F8F8",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "secretsmanager:GetSecretValue",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":secretsmanager:us-west-2:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":secret:supply-checkout/prod/stripe/test-secret-key-??????"
+                  ]
+                ]
+              },
+              "Sid": "ReadStripeSecretKey"
+            },
+            {
+              "Action": "ses:SendEmail",
+              "Condition": {
+                "StringEquals": {
+                  "ses:FromAddress": "noreply@supplycheckout.com"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":ses:us-east-1:",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":identity/supplycheckout.com"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":ses:us-east-1:",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":configuration-set/supply-checkout-prod-transactional"
+                    ]
+                  ]
+                }
+              ],
+              "Sid": "SendAppEmail"
+            },
+            {
+              "Action": [
+                "sts:AssumeRole",
+                "sts:TagSession"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "BillingWorkerRoleC804F3A2",
+                  "Arn"
+                ]
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "BillingWorkerFunctionRoleDefaultPolicy1E3C6921",
+        "Roles": [
+          {
+            "Ref": "BillingWorkerFunctionRoleAD2FB3C5"
+          }
+        ]
+      }
+    },
+    "BillingWorkerFunction5E1B818E": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-west-2"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "Applies queued Stripe events to teams' plans, seats and status, and emails owners (ADR 0009)",
+        "Environment": {
+          "Variables": {
+            "NODE_OPTIONS": "--enable-source-maps",
+            "TABLE_NAME": "supply-checkout-prod-app",
+            "STRIPE_SECRET_ID": "supply-checkout/prod/stripe/test-secret-key",
+            "STRIPE_MODE": "test",
+            "EMAIL_FROM_ADDRESS": "noreply@supplycheckout.com",
+            "EMAIL_CONFIGURATION_SET": "supply-checkout-prod-transactional",
+            "EMAIL_REGION": "us-east-1",
+            "EMAIL_APP_URL": "https://app.supplycheckout.com",
+            "BILLING_WORKER_ROLE_ARN": {
+              "Fn::GetAtt": [
+                "BillingWorkerRoleC804F3A2",
+                "Arn"
+              ]
+            },
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "SUPPLY_CHECKOUT_ENV": "prod"
+          }
+        },
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "BillingWorkerFunctionLogs9FD7B54B"
+          }
+        },
+        "MemorySize": 512,
+        "Role": {
+          "Fn::GetAtt": [
+            "BillingWorkerFunctionRoleAD2FB3C5",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 30,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "BillingWorkerFunctionRoleDefaultPolicy1E3C6921",
+        "BillingWorkerFunctionRoleAD2FB3C5"
+      ]
+    },
+    "BillingWorkerFunctionSqsEventSourcesupplycheckoutproduswest2apiBillingEventsQueue7A10487305476CA3": {
+      "Type": "AWS::Lambda::EventSourceMapping",
+      "Properties": {
+        "BatchSize": 1,
+        "EventSourceArn": {
+          "Fn::GetAtt": [
+            "BillingEventsQueueFF17F8F8",
+            "Arn"
+          ]
+        },
+        "FunctionName": {
+          "Ref": "BillingWorkerFunction5E1B818E"
+        },
+        "FunctionResponseTypes": [
+          "ReportBatchItemFailures"
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "BillingWorkerFunctionXRayWriteA25650ED": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTraceSegments",
+                "xray:PutTelemetryRecords"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "BillingWorkerFunctionXRayWriteA25650ED",
+        "Roles": [
+          {
+            "Ref": "BillingWorkerFunctionRoleAD2FB3C5"
+          }
+        ]
+      }
+    },
+    "BillingWorkerRoleC804F3A2": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "sts:AssumeRole",
+                "sts:TagSession"
+              ],
+              "Condition": {
+                "StringLike": {
+                  "aws:RequestTag/eventId": "?*",
+                  "aws:RequestTag/stripeCustomer": "?*",
+                  "aws:RequestTag/teamId": "?*"
+                },
+                "ForAllValues:StringEquals": {
+                  "aws:TagKeys": [
+                    "eventId",
+                    "stripeCustomer",
+                    "teamId"
+                  ]
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "BillingWorkerFunctionRoleAD2FB3C5",
+                    "Arn"
+                  ]
+                }
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Assumed by the billing worker per event, tagged with the event, its Stripe customer and the customer's team: the event's records, the link, and the team's billing attributes",
+        "MaxSessionDuration": 3600,
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "dynamodb:GetItem",
+                    "dynamodb:PutItem"
+                  ],
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "WEBHOOK#${aws:PrincipalTag/eventId}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "type",
+                        "eventId",
+                        "processedAt",
+                        "sentAt",
+                        "expiresAt"
+                      ]
+                    },
+                    "StringEqualsIfExists": {
+                      "dynamodb:Select": "SPECIFIC_ATTRIBUTES",
+                      "dynamodb:ReturnValues": "NONE"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-west-2:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "EventRecordsOnly"
+                },
+                {
+                  "Action": "dynamodb:GetItem",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "STRIPE#${aws:PrincipalTag/stripeCustomer}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "teamId"
+                      ]
+                    },
+                    "StringEqualsIfExists": {
+                      "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-west-2:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "StripeLinkTeamOnly"
+                },
+                {
+                  "Action": [
+                    "dynamodb:GetItem",
+                    "dynamodb:Query"
+                  ],
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "TEAM#${aws:PrincipalTag/teamId}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "homeRegion",
+                        "name",
+                        "status",
+                        "plan",
+                        "seats",
+                        "closedAt",
+                        "purging",
+                        "stripeCustomerId",
+                        "stripeSubscriptionId",
+                        "compPlan",
+                        "compUntil",
+                        "role",
+                        "email",
+                        "userId"
+                      ]
+                    },
+                    "StringEqualsIfExists": {
+                      "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-west-2:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "TeamBillingReadOnly"
+                },
+                {
+                  "Action": "dynamodb:UpdateItem",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "TEAM#${aws:PrincipalTag/teamId}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "plan",
+                        "seats",
+                        "status",
+                        "billingInterval",
+                        "currentPeriodEnd",
+                        "cancelAtPeriodEnd",
+                        "stripeSyncedAt",
+                        "stripeSubscriptionId",
+                        "stripeCustomerId",
+                        "version",
+                        "closedAt",
+                        "purging"
+                      ]
+                    },
+                    "StringEqualsIfExists": {
+                      "dynamodb:ReturnValues": "NONE"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-west-2:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "TeamBillingUpdateOnly"
+                },
+                {
+                  "Action": [
+                    "kms:Decrypt",
+                    "kms:DescribeKey",
+                    "kms:Encrypt",
+                    "kms:GenerateDataKey"
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "kms:ViaService": {
+                        "Fn::Join": [
+                          "",
+                          [
+                            "dynamodb.",
+                            {
+                              "Ref": "AWS::Region"
+                            },
+                            ".amazonaws.com"
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                  },
+                  "Sid": "TableKeyThroughDynamoDb"
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "BillingEventScope"
           }
         ],
         "Tags": [
@@ -3511,6 +4508,70 @@
         }
       }
     },
+    "HttpApiPOSTbillingwebhookWebhookIntegrationD22CECA0": {
+      "Type": "AWS::ApiGatewayV2::Integration",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "IntegrationType": "AWS_PROXY",
+        "IntegrationUri": {
+          "Ref": "BillingWebhookFunctionLive1E47A3A3"
+        },
+        "PayloadFormatVersion": "2.0"
+      }
+    },
+    "HttpApiPOSTbillingwebhookWebhookIntegrationPermission4C2CCE6A": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "BillingWebhookFunctionLive1E47A3A3"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/billing/webhook"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTbillingwebhookCCC3C5D6": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "NONE",
+        "RouteKey": "POST /billing/webhook",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiPOSTbillingwebhookWebhookIntegrationD22CECA0"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiPOSTauthsessionAuthIntegration113028DA": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -3795,6 +4856,10 @@
           "POST /teams/{teamId}/billing/checkout": {
             "ThrottlingRateLimit": 2,
             "ThrottlingBurstLimit": 5
+          },
+          "POST /billing/webhook": {
+            "ThrottlingRateLimit": 20,
+            "ThrottlingBurstLimit": 50
           }
         },
         "StageName": "$default",
@@ -3822,6 +4887,9 @@
         "HttpApiGETteamsteamIdmembersC3ACF5A2",
         "HttpApiPATCHteamsteamIdmembersuserIdAccountIntegrationPermission15C68DE8",
         "HttpApiPATCHteamsteamIdmembersuserIdEF500EC2",
+        "HttpApiPOSTbillingwebhookCCC3C5D6",
+        "HttpApiPOSTbillingwebhookWebhookIntegrationPermission4C2CCE6A",
+        "HttpApiPOSTbillingwebhookWebhookIntegrationD22CECA0",
         "HttpApiPOSTinvitesinviteIdacceptAccountIntegrationPermission862E8450",
         "HttpApiPOSTinvitesinviteIdacceptD95AE303",
         "HttpApiPOSTmeemailcodeAccountIntegrationPermission93EBB796",
@@ -3884,6 +4952,21 @@
         "FunctionVersion": {
           "Fn::GetAtt": [
             "BillingFunctionCurrentVersionC46B523A<code hash>",
+            "Version"
+          ]
+        },
+        "Name": "live"
+      }
+    },
+    "BillingWebhookFunctionLive1E47A3A3": {
+      "Type": "AWS::Lambda::Alias",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "BillingWebhookFunction8643BAE8"
+        },
+        "FunctionVersion": {
+          "Fn::GetAtt": [
+            "BillingWebhookFunctionCurrentVersion86E3184E<code hash>",
             "Version"
           ]
         },

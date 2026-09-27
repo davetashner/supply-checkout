@@ -289,9 +289,11 @@ describe("npm run stripe-catalog", () => {
   });
 
   it("says when the secret can't be read", async () => {
-    const r = run(BASE, Object.assign(new Error("Secrets Manager can't find the specified secret."), { name: "ResourceNotFoundException" }));
+    const r = run(BASE, Object.assign(new Error("User: arn:aws:sts::ACCOUNT:assumed-role/x is not authorized on arn:aws:secretsmanager:r:ACCOUNT:secret:y"), { name: "AccessDeniedException" }));
     expect(await r.done).toBe(1);
-    expect(r.err[0]).toContain("Refused: supply-checkout/prod/stripe/test-secret-key: Secrets Manager can't find");
+    // The error's name only: AWS's message holds ARNs with the account ID
+    expect(r.err).toEqual(["Refused: supply-checkout/prod/stripe/test-secret-key: couldn't read it (AccessDeniedException). Nothing was read from or written to Stripe."]);
+    expect(r.err.join("")).not.toContain("ACCOUNT");
   });
 
   it("reports Stripe's error fields, not its message", async () => {

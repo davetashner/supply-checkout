@@ -267,10 +267,72 @@ export const STRIPE_LINK_PREFIX = "STRIPE#";
 /** The only attributes the billing function may put in a Stripe link item: its keys, type, customer and team. */
 export const STRIPE_LINK_ATTRIBUTES = [PK, SK, "type", "customerId", "teamId"] as const;
 
+/** The partition prefix of a Stripe event's records: `WEBHOOK#<eventId>`, sort key `DONE` (processed) or `NOTICE#<userId>` (an owner emailed about it). */
+export const WEBHOOK_RECORD_PREFIX = "WEBHOOK#";
+
+/** The only attributes the billing worker may name in an event's records (markWebhookProcessed, claimBillingNotice). */
+export const WEBHOOK_RECORD_ATTRIBUTES = [PK, SK, "type", "eventId", "processedAt", "sentAt", "expiresAt"] as const;
+
+/** The only attributes the billing worker may read from a Stripe link: the keys and the team. */
+export const STRIPE_LINK_READ_ATTRIBUTES = [PK, SK, "teamId"] as const;
+
+/**
+ * The only attributes the billing worker may read in its team's partition
+ * (dynamodb:Attributes, with Select SPECIFIC_ATTRIBUTES): what the META item
+ * says about billing, closure and comps, and an owner's role and email for
+ * the notices. Never documents, sheets or anything else.
+ */
+export const BILLING_READ_ATTRIBUTES = [
+  PK,
+  SK,
+  "homeRegion",
+  "name",
+  "status",
+  "plan",
+  "seats",
+  "closedAt",
+  "purging",
+  "stripeCustomerId",
+  "stripeSubscriptionId",
+  "compPlan",
+  "compUntil",
+  "role",
+  "email",
+  "userId",
+] as const;
+
+/**
+ * The only attributes the billing worker may name when it updates the META
+ * item (dynamodb:Attributes): what it sets from the subscription, the version
+ * it moves, and what its condition checks (the customer, the subscription,
+ * and that the team isn't closed or being purged). Not `purgeAfter` or the
+ * GSI1 keys, so it can never put a team in the purge's index.
+ */
+export const BILLING_UPDATE_ATTRIBUTES = [
+  PK,
+  SK,
+  "plan",
+  "seats",
+  "status",
+  "billingInterval",
+  "currentPeriodEnd",
+  "cancelAtPeriodEnd",
+  "stripeSyncedAt",
+  "stripeSubscriptionId",
+  "stripeCustomerId",
+  "version",
+  "closedAt",
+  "purging",
+] as const;
+
 /**
  * The only attributes the billing function may name when it updates an item
- * in its team's partition (dynamodb:Attributes): the META item's keys and the
- * team's Stripe customer (linkStripeCustomer). So a checkout can't change the
- * team's plan, status, closure or anything else.
+ * in its team's partition (dynamodb:Attributes): the META item's keys, the
+ * team's Stripe customer (linkStripeCustomer), and `closedAt`, which its
+ * condition checks is absent. So a checkout can't change the team's plan,
+ * status or anything else. IAM can't tell a condition's name from one the
+ * update sets, so a buggy update could set `closedAt`, but never `purgeAfter`
+ * or the purge index's keys: a team it marked closed would be read-only, not
+ * deleted.
  */
-export const CUSTOMER_LINK_TEAM_ATTRIBUTES = [PK, SK, "stripeCustomerId"] as const;
+export const CUSTOMER_LINK_TEAM_ATTRIBUTES = [PK, SK, "stripeCustomerId", "closedAt"] as const;

@@ -82,7 +82,8 @@ export async function getMember(db: Db, ctx: TeamContext, userId: string): Promi
  * this address or is gone (the caller left meanwhile: nothing is recreated).
  */
 export async function setOwnMemberEmail(db: Db, ctx: TeamContext, verifiedEmail: string): Promise<boolean> {
-  writable(db, ctx, "viewer");
+  // Also while the subscription has ended: billing notices go to this address
+  writable(db, ctx, "viewer", { whileEnded: true });
   const email = normalizeEmail(verifiedEmail);
   try {
     await connection(db).doc.send(

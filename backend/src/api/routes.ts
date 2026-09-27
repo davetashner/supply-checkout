@@ -163,6 +163,20 @@ export const BILLING_ROUTES: readonly BillingRoute[] = [
   { method: "POST", path: "/teams/{teamId}/billing/checkout", action: "createCheckout", minRole: "owner", throttle: { rate: 2, burst: 5 } },
 ];
 
+export interface WebhookRoute {
+  readonly method: "POST";
+  readonly path: string;
+  readonly throttle: { readonly rate: number; readonly burst: number };
+}
+
+/**
+ * Stripe's webhook (ADR 0009): no Cognito token and no authorizer. The
+ * Stripe-Signature header, checked against the endpoint's signing secret, is
+ * the proof. Served by the `billing-webhook` function, which verifies,
+ * queues and answers, and has no table access.
+ */
+export const WEBHOOK_ROUTES: readonly WebhookRoute[] = [{ method: "POST", path: "/billing/webhook", throttle: { rate: 20, burst: 50 } }];
+
 /**
  * Session tags the billing function puts on its role session. The
  * billing-access role may read items in `TEAM#<teamId>` (the membership check

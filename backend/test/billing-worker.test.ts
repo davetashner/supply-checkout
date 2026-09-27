@@ -1,0 +1,445 @@
+// The billing worker (src/billing/worker.ts) against the in-memory table, with
+// each event's handles passing only what the billing-worker role allows
+// (test/billing-policy.ts), and a fake Stripe. test/billing-ddb.test.ts runs
+// the data functions' conditions against DynamoDB Local.
+
+import type { AssumeRoleCommand } from "@aws-sdk/client-sts";
+import type { SQSEvent } from "aws-lambda";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { BillingMessage } from "../src/billing/webhook-handler.js";
+import { createBillingWorker, noticeFor, parseMessage, type SubscriptionLike, subscriptionState, type WorkerStripe } from "../src/billing/worker.js";
+import { workerScopedDbs, type WorkerScope } from "../src/billing/worker-db.js";
+import { createWorkerHandler } from "../src/billing/worker-handler.js";
+import { teamBody } from "../src/api/account-handler.js";
+import { errorFor } from "../src/api/data-handler.js";
+import { connection } from "../src/data/client.js";
+import { authorizeTeam, createInvite, createProduct, linkStripeCustomer, setOwnMemberEmail, SubscriptionEndedError } from "../src/data/index.js";
+import { BusinessMetric, type Observability } from "../src/observability/index.js";
+import { workerPolicy } from "./billing-policy.js";
+import { fakeMailer, REGION } from "./helpers.js";
+import { MemoryTable } from "./memory-table.js";
+
+const NOW = Date.parse("2026-09-27T12:00:00Z");
+const DAY_S = 86400;
+const TEAM = "team-a";
+const CUSTOMER = "cus_test_1";
+const OWNER = "user-owner";
+const OWNER2 = "user-owner-2";
+const CREW = "user-crew";
+
+let table: MemoryTable;
+let subs: Map<string, SubscriptionLike>;
+let retrieves: string[];
+let cancels: { id: string; key: string }[];
+let stripeDown: boolean;
+let denied: { command: string; input: Record<string, unknown> }[];
+let scopes: WorkerScope[];
+let counts: Record<string, number>;
+let logs: unknown[][];
+let mails: ReturnType<typeof fakeMailer>;
+let worker: ReturnType<typeof createBillingWorker>;
+
+function obs(): Observability {
+  return {
+    region: REGION,
+    logger: { info: (...a: unknown[]) => logs.push(a), warn: (...a: unknown[]) => logs.push(a), error: (...a: unknown[]) => logs.push(a), addContext: () => {} } as unknown as Observability["logger"],
+    count: (m, v = 1) => {
+      counts[m] = (counts[m] ?? 0) + v;
+    },
+    gauge: () => {},
+    flush: () => {},
+  };
+}
+
+function subscription(fields: Partial<SubscriptionLike> & { quantity?: number; lookupKey?: string | null; interval?: string } = {}): SubscriptionLike {
+  const { quantity = 3, lookupKey = "supply_checkout_starter_monthly", interval = "month", ...rest } = fields;
+  return {
+    id: "sub_test_1",
+    customer: CUSTOMER,
+    status: "trialing",
+    cancel_at_period_end: false,
+    trial_end: NOW / 1000 + 13 * DAY_S,
+    default_payment_method: null,
+    items: { data: [{ quantity, current_period_end: NOW / 1000 + 13 * DAY_S, price: { lookup_key: lookupKey, recurring: { interval } } }] },
+    ...rest,
+  };
+}
+
+beforeEach(() => {
+  table = new MemoryTable();
+  table.seedTeam(TEAM, { [OWNER]: "owner", [OWNER2]: "owner", [CREW]: "contributor" });
+  for (const [userId, email] of [[OWNER, "owner@example.com"], [OWNER2, "second@example.com"], [CREW, "crew@example.com"]]) {
+    table.put({ ...(table.get(`TEAM#${TEAM}`, `MEMBER#${userId}`) as Record<string, unknown>), email });
+  }
+  patchTeam({ name: "Echo Plumbing", plan: "trial", seats: 1, status: "trialing", stripeCustomerId: CUSTOMER });
+  table.put({ PK: `STRIPE#${CUSTOMER}`, SK: "TEAM", type: "stripeLink", customerId: CUSTOMER, teamId: TEAM });
+  subs = new Map([["sub_test_1", subscription()]]);
+  retrieves = [];
+  cancels = [];
+  stripeDown = false;
+  denied = [];
+  scopes = [];
+  counts = {};
+  logs = [];
+  mails = fakeMailer();
+  build();
+});
+
+function build() {
+  const stripe: WorkerStripe = {
+    subscriptions: {
+      async retrieve(id) {
+        retrieves.push(id);
+        if (stripeDown) throw Object.assign(new Error("Stripe is down"), { name: "StripeConnectionError" });
+        const found = subs.get(id);
+        if (!found) throw new Error(`No such subscription ${id}`);
+        return found;
+      },
+      async cancel(id, _params, options) {
+        cancels.push({ id, key: options.idempotencyKey });
+        subs.set(id, { ...(subs.get(id) as SubscriptionLike), status: "canceled" });
+      },
+    },
+  };
+  worker = createBillingWorker({
+    dbFor: (scope) => {
+      scopes.push(scope);
+      return table.guarded(workerPolicy(scope, denied));
+    },
+    stripe: async () => stripe,
+    mailer: mails.mailer,
+    obs: obs(),
+    now: () => NOW,
+  });
+}
+
+function patchTeam(fields: Record<string, unknown>) {
+  const meta = table.get(`TEAM#${TEAM}`, "META") as Record<string, unknown>;
+  table.put(Object.fromEntries(Object.entries({ ...meta, ...fields }).filter(([, v]) => v !== undefined)));
+}
+
+const meta = () => table.get(`TEAM#${TEAM}`, "META") as Record<string, unknown>;
+const message = (type: BillingMessage["type"], fields: Partial<BillingMessage> = {}): BillingMessage => ({ eventId: "evt_test_1", type, created: NOW / 1000, customer: CUSTOMER, subscription: "sub_test_1", ...fields });
+const processed = (eventId = "evt_test_1") => table.get(`WEBHOOK#${eventId}`, "DONE");
+
+describe("applying a subscription", () => {
+  it("makes the team subscribed after a checkout: plan, seats, status, interval and period end, then records the event", async () => {
+    expect(await worker(message("checkout.session.completed"))).toBe("applied");
+    expect(meta()).toMatchObject({
+      plan: "starter",
+      seats: 3,
+      status: "trialing",
+      stripeSubscriptionId: "sub_test_1",
+      billingInterval: "month",
+      currentPeriodEnd: new Date(NOW + 13 * DAY_S * 1000).toISOString(),
+      cancelAtPeriodEnd: false,
+      stripeSyncedAt: new Date(NOW).toISOString(),
+      version: 2,
+    });
+    expect(processed()).toMatchObject({ type: "webhook", eventId: "evt_test_1" });
+    expect(counts[BusinessMetric.BillingEventsApplied]).toBe(1);
+    expect(mails.sent).toEqual([]);
+    expect(denied).toEqual([]);
+    // The team comes from our link, then every team call is on a session tagged with it
+    expect(scopes).toEqual([{ eventId: "evt_test_1", stripeCustomer: CUSTOMER }, { eventId: "evt_test_1", stripeCustomer: CUSTOMER, teamId: TEAM }]);
+  });
+
+  it("makes the team active when the purchase is paid (no trial)", async () => {
+    subs.set("sub_test_1", subscription({ status: "active", trial_end: null, quantity: 5, lookupKey: "supply_checkout_starter_annual", interval: "year" }));
+    await worker(message("invoice.paid"));
+    expect(meta()).toMatchObject({ status: "active", plan: "starter", seats: 5, billingInterval: "year" });
+    // /me and the member cap now treat it as paying
+    const ctx = await authorizeTeam(table.db(TEAM), OWNER, TEAM);
+    expect(ctx.subscriptionEnded).toBe(false);
+  });
+
+  it("changes nothing when the same event is replayed", async () => {
+    await worker(message("customer.subscription.updated"));
+    const before = structuredClone(meta());
+    const calls = retrieves.length;
+    expect(await worker(message("customer.subscription.updated"))).toBe("duplicate");
+    expect(meta()).toEqual(before);
+    expect(retrieves).toHaveLength(calls);
+  });
+
+  it("applies the latest subscription whatever the order: an older event after a newer one leaves the newer state", async () => {
+    subs.set("sub_test_1", subscription({ status: "active", quantity: 4 }));
+    await worker(message("customer.subscription.updated", { eventId: "evt_new", created: NOW / 1000 }));
+    await worker(message("customer.subscription.created", { eventId: "evt_old", created: NOW / 1000 - 60 }));
+    expect(meta()).toMatchObject({ status: "active", seats: 4 });
+  });
+
+  it("keeps the plan for a price we don't sell, and takes the seats from every item", async () => {
+    const sub = subscription({ lookupKey: null });
+    subs.set("sub_test_1", { ...sub, items: { data: [...sub.items.data, { quantity: 2, current_period_end: 0, price: { lookup_key: null, recurring: null } }] } });
+    await worker(message("customer.subscription.updated"));
+    expect(meta()).toMatchObject({ plan: "trial", seats: 5 });
+    expect(meta().billingInterval).toBeUndefined();
+  });
+
+  it("records, and changes nothing for, an unknown customer", async () => {
+    expect(await worker(message("customer.subscription.updated", { customer: "cus_test_stranger" }))).toBe("unknown_customer");
+    expect(processed()).toBeDefined();
+    expect(retrieves).toEqual([]);
+  });
+
+  it("ignores a closed team, and a team being purged, without calling Stripe", async () => {
+    patchTeam({ closedAt: new Date(NOW - DAY_S * 1000).toISOString() });
+    expect(await worker(message("customer.subscription.updated"))).toBe("team_closed");
+    expect(meta()).toMatchObject({ status: "trialing", plan: "trial" });
+    patchTeam({ closedAt: undefined, purging: new Date(NOW).toISOString() });
+    expect(await worker(message("customer.subscription.updated", { eventId: "evt_test_2" }))).toBe("team_closed");
+    expect(meta().stripeSubscriptionId).toBeUndefined();
+    expect(retrieves).toEqual([]);
+  });
+
+  it("never recreates a purged team", async () => {
+    table.items.delete(`TEAM#${TEAM}\u0000META`);
+    expect(await worker(message("customer.subscription.updated"))).toBe("team_gone");
+    expect(table.get(`TEAM#${TEAM}`, "META")).toBeUndefined();
+  });
+
+  it("ignores a team closed between its read and the write", async () => {
+    let gets = 0;
+    table.afterGet = () => {
+      // The link, the team's home, then the billing read: close it right after that
+      if (++gets === 4) patchTeam({ closedAt: new Date(NOW).toISOString() });
+    };
+    expect(await worker(message("customer.subscription.updated"))).toBe("team_closed");
+    expect(meta().stripeSubscriptionId).toBeUndefined();
+  });
+
+  it("ignores a subscription that belongs to another customer", async () => {
+    subs.set("sub_test_1", subscription({ customer: { id: "cus_test_other" } }));
+    expect(await worker(message("customer.subscription.updated"))).toBe("ignored");
+    expect(meta().stripeSubscriptionId).toBeUndefined();
+  });
+
+  it("records an event with no subscription without calling Stripe", async () => {
+    expect(await worker(message("invoice.paid", { subscription: undefined }))).toBe("ignored");
+    expect(retrieves).toEqual([]);
+  });
+
+  it("cancels a second live subscription (two checkouts finished), and takes a new one once the team's has ended", async () => {
+    await worker(message("checkout.session.completed"));
+    subs.set("sub_test_2", subscription({ id: "sub_test_2", status: "trialing" }));
+    expect(await worker(message("checkout.session.completed", { eventId: "evt_test_2", subscription: "sub_test_2" }))).toBe("second_subscription_canceled");
+    expect(meta()).toMatchObject({ stripeSubscriptionId: "sub_test_1", status: "trialing" });
+    // Idempotent per subscription: the key names the subscription it cancels
+    expect(cancels).toEqual([{ id: "sub_test_2", key: `cancel-second-${"sub_test_2"}` }]);
+    expect(logs.find((l) => l[0] === "Second subscription canceled")?.[1]).toMatchObject({ teamId: TEAM, subscriptionId: "sub_test_2", kept: "sub_test_1" });
+    // Its own deletion event: already ended, so nothing more to cancel, no email, and the team keeps the first
+    expect(await worker(message("customer.subscription.deleted", { eventId: "evt_test_2b", subscription: "sub_test_2", status: "canceled" }))).toBe("second_subscription_canceled");
+    expect(cancels).toHaveLength(1);
+    expect(mails.sent).toEqual([]);
+    expect(meta().status).toBe("trialing");
+    subs.set("sub_test_2", subscription({ id: "sub_test_2", status: "active" }));
+    // Stripe says the first one ended, though the team hasn't heard yet
+    subs.set("sub_test_1", subscription({ status: "canceled" }));
+    expect(await worker(message("checkout.session.completed", { eventId: "evt_test_3", subscription: "sub_test_2" }))).toBe("applied");
+    expect(meta()).toMatchObject({ stripeSubscriptionId: "sub_test_2", status: "active" });
+    // And once the team knows its subscription ended, without asking Stripe about it
+    subs.set("sub_test_3", subscription({ id: "sub_test_3", status: "active" }));
+    patchTeam({ status: "canceled" });
+    retrieves = [];
+    expect(await worker(message("checkout.session.completed", { eventId: "evt_test_4", subscription: "sub_test_3" }))).toBe("applied");
+    expect(retrieves).toEqual(["sub_test_3"]);
+  });
+
+  it("throws, recording nothing, when Stripe can't be reached, so the event is retried", async () => {
+    stripeDown = true;
+    await expect(worker(message("customer.subscription.updated"))).rejects.toThrow("Stripe is down");
+    expect(processed()).toBeUndefined();
+    stripeDown = false;
+    expect(await worker(message("customer.subscription.updated"))).toBe("applied");
+  });
+
+  it("retries an event applied but not yet recorded, harmlessly", async () => {
+    const markFails = { on: true };
+    const inner = table.guarded.bind(table);
+    table.guarded = (check) =>
+      inner((command, input) => {
+        if (command === "PutCommand" && String((input.Item as Record<string, unknown>).SK) === "DONE" && markFails.on) {
+          markFails.on = false;
+          return false;
+        }
+        return check(command, input);
+      });
+    build();
+    await expect(worker(message("customer.subscription.updated"))).rejects.toThrow();
+    expect(meta()).toMatchObject({ status: "trialing", stripeSubscriptionId: "sub_test_1", version: 2 });
+    expect(await worker(message("customer.subscription.updated"))).toBe("applied");
+    expect(meta()).toMatchObject({ status: "trialing", stripeSubscriptionId: "sub_test_1", version: 3 });
+    expect(processed()).toBeDefined();
+  });
+});
+
+describe("owner notices", () => {
+  it("emails each owner once when a trial is ending without a card, and never again on a retry", async () => {
+    await worker(message("customer.subscription.trial_will_end", { trialEnd: NOW / 1000 + 3 * DAY_S }));
+    expect(mails.sent.map((m) => [m.to, m.input.kind, m.tags])).toEqual([
+      ["owner@example.com", "trialEnding", { teamId: TEAM }],
+      ["second@example.com", "trialEnding", { teamId: TEAM }],
+    ]);
+    expect(mails.sent[0]?.input).toMatchObject({ teamName: "Echo Plumbing", trialEndsAt: new Date(NOW + 3 * DAY_S * 1000).toISOString() });
+    expect(counts[BusinessMetric.BillingNotices]).toBe(2);
+    // Stripe sends it again before it's recorded: the claims stand
+    table.items.delete("WEBHOOK#evt_test_1\u0000DONE");
+    await worker(message("customer.subscription.trial_will_end", { trialEnd: NOW / 1000 + 3 * DAY_S }));
+    expect(mails.sent).toHaveLength(2);
+    expect(JSON.stringify(logs)).not.toContain("example.com");
+  });
+
+  it("sends no trial email when there's a card", async () => {
+    subs.set("sub_test_1", subscription({ default_payment_method: "pm_test_1" }));
+    await worker(message("customer.subscription.trial_will_end"));
+    expect(mails.sent).toEqual([]);
+  });
+
+  it("emails owners when a payment fails, with the next try", async () => {
+    subs.set("sub_test_1", subscription({ status: "past_due" }));
+    await worker(message("invoice.payment_failed", { nextAttempt: NOW / 1000 + 3 * DAY_S }));
+    expect(mails.sent.map((m) => m.input)).toEqual([
+      { kind: "paymentFailed", teamName: "Echo Plumbing", nextAttemptAt: new Date(NOW + 3 * DAY_S * 1000).toISOString() },
+      { kind: "paymentFailed", teamName: "Echo Plumbing", nextAttemptAt: new Date(NOW + 3 * DAY_S * 1000).toISOString() },
+    ]);
+    expect(meta().status).toBe("past_due");
+  });
+
+  it("makes the team read-only when a trial ends without a card, and tells its owners", async () => {
+    await worker(message("checkout.session.completed", { eventId: "evt_checkout" }));
+    subs.set("sub_test_1", subscription({ status: "canceled" }));
+    await worker(message("customer.subscription.deleted", { status: "canceled" }));
+    expect(meta().status).toBe("canceled");
+    expect(mails.sent.map((m) => [m.to, m.input.kind])).toEqual([
+      ["owner@example.com", "readOnly"],
+      ["second@example.com", "readOnly"],
+    ]);
+    // Members can read, but nobody can change anything
+    const ctx = await authorizeTeam(table.db(TEAM), CREW, TEAM);
+    expect(ctx.subscriptionEnded).toBe(true);
+    await expect(createProduct(table.db(TEAM), ctx, "gloves", { name: "Gloves", code: "", price: 1 })).rejects.toBeInstanceOf(SubscriptionEndedError);
+  });
+
+  it("doesn't call a comped team read-only", async () => {
+    patchTeam({ compPlan: "starter", compUntil: new Date(NOW + 30 * DAY_S * 1000).toISOString() });
+    subs.set("sub_test_1", subscription({ status: "canceled" }));
+    await worker(message("customer.subscription.deleted", { status: "canceled" }));
+    expect(meta().status).toBe("canceled");
+    expect(mails.sent).toEqual([]);
+    expect((await authorizeTeam(table.db(TEAM), CREW, TEAM)).subscriptionEnded).toBe(false);
+  });
+
+  it("tells owners when retries run out and the subscription goes unpaid, and not for other changes", async () => {
+    subs.set("sub_test_1", subscription({ status: "unpaid" }));
+    await worker(message("customer.subscription.updated", { status: "unpaid", previousStatus: "past_due" }));
+    expect(mails.sent.map((m) => m.input.kind)).toEqual(["readOnly", "readOnly"]);
+    subs.set("sub_test_1", subscription({ status: "active" }));
+    await worker(message("customer.subscription.updated", { eventId: "evt_test_2", status: "active", previousStatus: "unpaid" }));
+    expect(mails.sent).toHaveLength(2);
+  });
+
+  it("counts an owner it couldn't email, and doesn't try again on a retry", async () => {
+    patchTeam({});
+    table.put({ ...(table.get(`TEAM#${TEAM}`, `MEMBER#${OWNER2}`) as Record<string, unknown>), email: undefined });
+    table.put(Object.fromEntries(Object.entries(table.get(`TEAM#${TEAM}`, `MEMBER#${OWNER2}`) as Record<string, unknown>).filter(([, v]) => v !== undefined)));
+    mails.state.fail = "MessageRejected";
+    subs.set("sub_test_1", subscription({ status: "past_due" }));
+    await worker(message("invoice.payment_failed"));
+    expect(counts[BusinessMetric.BillingNoticeFailures]).toBe(2);
+    expect(logs.find((l) => l[0] === "Billing emails not sent")?.[1]).toMatchObject({ teamId: TEAM, failed: 2, codes: "MessageRejected,NoAddress" });
+    mails.state.fail = undefined;
+    table.items.delete("WEBHOOK#evt_test_1\u0000DONE");
+    await worker(message("invoice.payment_failed"));
+    expect(mails.sent).toEqual([]);
+  });
+
+  it("decides from the event alone", () => {
+    const sub = subscription();
+    expect(noticeFor(message("customer.subscription.trial_will_end"), sub, "T")).toMatchObject({ kind: "trialEnding" });
+    expect(noticeFor(message("customer.subscription.trial_will_end"), { ...sub, trial_end: null }, "T")).toBeUndefined();
+    expect(noticeFor(message("customer.subscription.trial_will_end"), { ...sub, status: "active" }, "T")).toBeUndefined();
+    expect(noticeFor(message("invoice.payment_failed"), undefined, "T")).toEqual({ kind: "paymentFailed", teamName: "T" });
+    expect(noticeFor(message("customer.subscription.updated", { status: "paused", previousStatus: "trialing" }), sub, "T")).toEqual({ kind: "readOnly", teamName: "T" });
+    expect(noticeFor(message("customer.subscription.updated", { status: "canceled", previousStatus: "unpaid" }), sub, "T")).toBeUndefined();
+    expect(noticeFor(message("customer.subscription.updated", { status: "canceled" }), sub, "T")).toBeUndefined();
+    expect(noticeFor(message("invoice.paid"), sub, "T")).toBeUndefined();
+  });
+});
+
+describe("what the API says about an ended subscription", () => {
+  it("shows it on /me, unless a comp keeps the team going, and refuses writes with its own reason", async () => {
+    const team = { ...(table.get(`TEAM#${TEAM}`, "META") as Record<string, unknown>), status: "canceled", createdAt: "2026-09-01T00:00:00.000Z" } as never;
+    expect(teamBody(team, "owner", new Date(NOW)).subscriptionEnded).toBe(true);
+    expect(teamBody({ ...(team as object), compPlan: "starter", compUntil: new Date(NOW + DAY_S * 1000).toISOString() } as never, "owner", new Date(NOW)).subscriptionEnded).toBe(false);
+    expect(teamBody({ ...(team as object), status: "past_due" } as never, "owner", new Date(NOW)).subscriptionEnded).toBe(false);
+    expect(errorFor(new SubscriptionEndedError("x"))).toMatchObject({ status: 403, code: "permission_denied", reason: "subscription_ended" });
+  });
+});
+
+describe("a team whose subscription ended", () => {
+  it("still lets a member keep their email current and an owner link the customer to subscribe again, and nothing else", async () => {
+    patchTeam({ status: "canceled" });
+    const owner = await authorizeTeam(table.db(TEAM), OWNER, TEAM);
+    expect(owner.subscriptionEnded).toBe(true);
+    expect(await setOwnMemberEmail(table.db(TEAM), owner, "new@example.com")).toBe(true);
+    await expect(linkStripeCustomer(table.guarded(() => true), owner, CUSTOMER)).resolves.toBeUndefined();
+    await expect(createInvite(table.db(TEAM), owner, { email: "x@example.com", role: "viewer" })).rejects.toBeInstanceOf(SubscriptionEndedError);
+  });
+});
+
+describe("messages and state", () => {
+  it("parses only well-formed billing messages", () => {
+    const good = message("invoice.paid");
+    expect(parseMessage(JSON.stringify(good))).toEqual(good);
+    for (const bad of [{ ...good, eventId: "evt#1" }, { ...good, customer: 7 }, { ...good, type: "customer.created" }, { ...good, created: "now" }, { ...good, subscription: "sub/1" }, null]) {
+      expect(() => parseMessage(JSON.stringify(bad))).toThrow("Not a billing message");
+    }
+    expect(() => parseMessage("not json")).toThrow();
+  });
+
+  it("reads a subscription with no items as no seats and no period end", () => {
+    expect(subscriptionState({ ...subscription(), items: { data: [] } }, CUSTOMER)).toEqual({ customerId: CUSTOMER, subscriptionId: "sub_test_1", seats: 0, status: "trialing", cancelAtPeriodEnd: false });
+  });
+});
+
+describe("the SQS handler", () => {
+  const record = (id: string, group: string, body: string) => ({ messageId: id, body, attributes: { MessageGroupId: group } }) as unknown as SQSEvent["Records"][number];
+
+  it("reports a failed message and every later one in its group, and carries on with other groups", async () => {
+    const seen: string[] = [];
+    const handler = createWorkerHandler(async (m) => {
+      seen.push(m.eventId);
+      if (m.eventId === "evt_2") throw new Error("boom");
+    }, obs());
+    const body = (eventId: string, customer: string) => JSON.stringify(message("invoice.paid", { eventId, customer }));
+    const result = await handler({ Records: [record("m1", "cus_a", body("evt_1", "cus_a")), record("m2", "cus_b", body("evt_2", "cus_b")), record("m3", "cus_b", body("evt_3", "cus_b")), record("m4", "cus_a", body("evt_4", "cus_a")), record("m5", "cus_c", "junk")] });
+    expect(seen).toEqual(["evt_1", "evt_2", "evt_4"]);
+    expect(result.batchItemFailures).toEqual([{ itemIdentifier: "m2" }, { itemIdentifier: "m3" }, { itemIdentifier: "m5" }]);
+    expect(logs.filter((l) => l[0] === "Billing event failed").map((l) => l[1])).toEqual([{ messageId: "m2", code: "Error" }, { messageId: "m5", code: "SyntaxError" }]);
+  });
+});
+
+describe("workerScopedDbs", () => {
+  it("tags each session with the event, the customer and the team (or the unused marker)", async () => {
+    const calls: AssumeRoleCommand["input"][] = [];
+    const sts = {
+      send: vi.fn(async (command: AssumeRoleCommand) => {
+        calls.push(command.input);
+        return { Credentials: { AccessKeyId: "AK", SecretAccessKey: "s", SessionToken: "t", Expiration: new Date(Date.now() + 3600_000) } };
+      }),
+    };
+    const dbFor = workerScopedDbs({ roleArn: "role", env: { AWS_REGION: REGION, TABLE_NAME: "app" }, sts });
+    const creds = (db: ReturnType<typeof dbFor>) => (connection(db).client.config.credentials as () => Promise<unknown>)();
+    await creds(dbFor({ eventId: "evt_1", stripeCustomer: CUSTOMER }));
+    await creds(dbFor({ eventId: "evt_1", stripeCustomer: CUSTOMER, teamId: TEAM }));
+    expect(calls.map((c) => c.Tags)).toEqual([
+      [{ Key: "eventId", Value: "evt_1" }, { Key: "stripeCustomer", Value: CUSTOMER }, { Key: "teamId", Value: "." }],
+      [{ Key: "eventId", Value: "evt_1" }, { Key: "stripeCustomer", Value: CUSTOMER }, { Key: "teamId", Value: TEAM }],
+    ]);
+    expect(() => dbFor({ eventId: "evt#1", stripeCustomer: CUSTOMER })).toThrow("Invalid event ID");
+    expect(() => dbFor({ eventId: "evt_1", stripeCustomer: "" })).toThrow("Invalid Stripe customer ID");
+    expect(() => dbFor({ eventId: "evt_1", stripeCustomer: CUSTOMER, teamId: "TEAM#x" })).toThrow("Invalid team ID");
+    expect(workerScopedDbs({ roleArn: "role", env: { AWS_REGION: REGION, TABLE_NAME: "app" } })({ eventId: "e", stripeCustomer: "c" }).tableName).toBe("app");
+  });
+});

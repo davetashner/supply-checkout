@@ -21,7 +21,8 @@ The design below is partly built. This table says which parts are on `main` toda
 | Atomic checkout, return and stock-adjust commands, stock history (bead `1dg.1`, [section 4](#4-checking-out-and-returning)) | Built | PR #49; the app switches to them with the adapter (`a2b`) |
 | Sending invites, member removal | Planned | |
 | Billing: Stripe products and prices by script, Checkout Sessions (beads `8jc.10`, `x0l`) | Built, in the Stripe sandbox | [Billing](../infrastructure.md#billing) |
-| Billing: webhook, SQS worker, access rules (beads `2kl`, `qdx`) | Planned | |
+| Billing: webhook, SQS FIFO queue and worker, read-only when a subscription ends (bead `2kl`) | Built, in the Stripe sandbox | [Billing](../infrastructure.md#billing) |
+| Billing: grace period for past-due teams, deleting canceled teams (bead `qdx`) | Planned | |
 | Receipt reading with Bedrock | Planned | |
 | Synthetics canaries, automated deploys to staging and prod | Planned | |
 | Faster cut-off of live updates for removed members and canceled teams: a channel per member (bead `4zn`, [ADR 0016](../adr/0016-per-member-live-update-channels.md)) | Built | |
@@ -278,7 +279,7 @@ sequenceDiagram
 
 ## 6. Billing and access (planned)
 
-How Stripe events turn into access rules ([ADR 0009](../adr/0009-billing-stripe.md)). Starting a checkout is built (bead `x0l`, [Billing](../infrastructure.md#billing)); the webhook, the queue and worker and the access rules aren't yet (beads `2kl`, `qdx`).
+How Stripe events turn into access rules ([ADR 0009](../adr/0009-billing-stripe.md)). Checkout, the webhook, the queue and worker, and read-only for an ended subscription are built (beads `x0l`, `2kl`, [Billing](../infrastructure.md#billing)); the past-due grace period and deleting canceled teams aren't yet (bead `qdx`).
 
 ```mermaid
 sequenceDiagram
@@ -314,13 +315,13 @@ sequenceDiagram
 ```
 
 - **Order matters.** The webhook only verifies, enqueues and answers; it records nothing. The worker records the event ID only after the team is updated. Recording first could lose an event if the queue write or the worker then failed. If the worker fails after the update but before recording, the retry applies the same update again, which is harmless because the worker always applies the latest subscription it fetched from Stripe.
-- **One subscription at a time.** Updates for one subscription are serialized, by an SQS FIFO message group per subscription or a conditional write on the event's creation time (bead `2kl` decides), so an older event can't overwrite a newer one.
+- **One subscription at a time.** Updates for one customer (one team, one customer) are serialized by an SQS FIFO message group per Stripe customer, so an older event can't overwrite a newer one; and the worker always applies the subscription's latest state from Stripe, whatever the event.
 - **Failures.** A message that keeps failing goes to a dead-letter queue, which alarms. A nightly job reconciles every team's entitlements with Stripe (bead `8jc.9`).
 - Live updates carry products and sheets only, so the app sees a new plan or status on its next `GET /me`.
 
 ### 6a. Subscription and access states
 
-From [ADR 0009](../adr/0009-billing-stripe.md) and bead `qdx`. Stripe's subscription status is stored on the team; the grace period and read-only mode are worked out from it and from how long the team has been in that status. New teams start as `trialing` today (PR #40); nothing enforces access by status yet.
+From [ADR 0009](../adr/0009-billing-stripe.md) and bead `qdx`. Stripe's subscription status is stored on the team; the grace period and read-only mode are worked out from it and from how long the team has been in that status. New teams start as `trialing` (PR #40). A team whose status has ended (`canceled`, `unpaid`, `incomplete_expired`) and that has no live comp is read-only (`isReadOnlyForBilling`, bead `2kl`); the 7-day past-due grace period and deleting canceled teams after 30 days are bead `qdx`.
 
 ```mermaid
 stateDiagram-v2
@@ -350,7 +351,7 @@ stateDiagram-v2
 | Read-only | `past_due` after 7 days; `canceled` for 30 days, with export |
 | None, data deleted | 30 days after `canceled`, as the privacy policy describes |
 
-What happens when a trial ends without a card, and when Stripe stops retrying a failed payment, are Stripe settings chosen in beads `x0l` and `qdx`; the diagram shows the cancel option for both.
+A trial that ends without a card cancels the subscription (Checkout sets `trial_settings.end_behavior.missing_payment_method: cancel`, bead `x0l`). What happens when Stripe stops retrying a failed payment is a Stripe setting chosen in bead `qdx`; the diagram shows the cancel option.
 
 ### 6b. Choosing a plan in the mobile app (phase 2)
 

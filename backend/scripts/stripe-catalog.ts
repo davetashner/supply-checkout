@@ -241,10 +241,18 @@ export async function main(argv: string[], out: (line: string) => void = console
   }
   const mode: StripeMode = values.live ? "live" : "test";
   const secretId = stripeSecretName(values.env, mode);
+  let secret: string | undefined;
+  try {
+    secret = await deps.reader(values.region, values.profile)(secretId);
+  } catch (e) {
+    // The error's name only: AWS's messages name the secret's ARN, with the account ID
+    err(`Refused: ${secretId}: couldn't read it (${(e as Error).name}). Nothing was read from or written to Stripe.`);
+    return 1;
+  }
   let stripe: CatalogStripe;
   try {
-    // Never printed: only whether it's a key of the right mode
-    const key = requireMode(keyFromSecret(await deps.reader(values.region, values.profile)(secretId)), mode);
+    // Never printed: only whether it's a key of the right mode (these messages never hold it)
+    const key = requireMode(keyFromSecret(secret), mode);
     stripe = deps.stripe(key);
   } catch (e) {
     err(`Refused: ${secretId}: ${(e as Error).message}. Nothing was read from or written to Stripe.`);

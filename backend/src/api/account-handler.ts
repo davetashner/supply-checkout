@@ -120,6 +120,7 @@ import {
   listInvites,
   listInvitesForEmail,
   listTeamsForUser,
+  isReadOnlyForBilling,
   liveComp,
   mailAddress,
   memberCap,
@@ -200,7 +201,8 @@ export function errorFor(error: unknown): ApiError {
  * `members` and `memberCap` are for the members screen's seat count
  * (`members` is null on a team from before the count), and `reopenBy` is when
  * a closed team stops being reopenable (REOPEN_CUTOFF_MINUTES before it's
- * deleted).
+ * deleted). `subscriptionEnded` says the team is read-only because its
+ * subscription ended (isReadOnlyForBilling).
  */
 export function teamBody(team: Team, role: Role, now = new Date()) {
   const comp = liveComp(team, now);
@@ -220,6 +222,8 @@ export function teamBody(team: Team, role: Role, now = new Date()) {
     deletesAt,
     reopenBy: Number.isFinite(purgeMs) ? new Date(purgeMs - REOPEN_CUTOFF_MINUTES * 60_000).toISOString() : null,
     comp: comp ? { plan: comp.plan, until: comp.until } : null,
+    // Read-only because the subscription ended (and no comp keeps it going): an owner subscribes again
+    subscriptionEnded: isReadOnlyForBilling(team, now),
     members: typeof team.members === "number" ? team.members : null,
     memberCap: memberCap(team, now),
   };

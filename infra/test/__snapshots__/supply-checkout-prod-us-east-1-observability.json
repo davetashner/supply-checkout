@@ -2242,6 +2242,114 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmsbillingeventsstuck9FA234DE": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "AlarmDescription": "P1 Billing events stuck (J7, J8, us-east-1). Any message in the billing events dead-letter queue: a Stripe event the billing worker couldn't apply after 5 tries, so a team's plan, seats or status may be out of date. The message holds the event's IDs, to replay it. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p1-billing-events-stuck",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "Dimensions": [
+          {
+            "Name": "QueueName",
+            "Value": "supply-checkout-prod-billing-events-dlq.fifo"
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Namespace": "AWS/SQS",
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Period": 300,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsbillingeventslateE45F9C67": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Billing events late (J7, J8, us-east-1). The oldest message in the billing events queue is more than 5 minutes old: the worker is failing or behind, so a payment takes longer to show. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-billing-events-late",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "Dimensions": [
+          {
+            "Name": "QueueName",
+            "Value": "supply-checkout-prod-billing-events.fifo"
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "ApproximateAgeOfOldestMessage",
+        "Namespace": "AWS/SQS",
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Period": 300,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 300,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmsdeletionoverdueB544DD17": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -6049,6 +6157,20 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
+                  "JourneyAlarmsbillingeventsstuck9FA234DE",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmsbillingeventslateE45F9C67",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
                   "JourneyAlarmsdeletionoverdueB544DD17",
                   "Arn"
                 ]
@@ -6162,51 +6284,55 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"CheckoutSessionErrors\",\"Region\",\"us-east-1\",{\"label\":\"CheckoutSessionErrors (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WebhookSignatureFailures\",\"Region\",\"us-east-1\",{\"label\":\"WebhookSignatureFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"CheckoutSessionErrors\",\"Region\",\"us-west-2\",{\"label\":\"CheckoutSessionErrors (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WebhookSignatureFailures\",\"Region\",\"us-west-2\",{\"label\":\"WebhookSignatureFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":31,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J4: live updates, failed and deferred\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"CheckoutSessionErrors\",\"Region\",\"us-east-1\",{\"label\":\"CheckoutSessionErrors (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WebhookSignatureFailures\",\"Region\",\"us-east-1\",{\"label\":\"WebhookSignatureFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"CheckoutSessionErrors\",\"Region\",\"us-west-2\",{\"label\":\"CheckoutSessionErrors (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WebhookSignatureFailures\",\"Region\",\"us-west-2\",{\"label\":\"WebhookSignatureFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":31,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8: billing events and owner emails\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdates (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdateFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdatesDeferred\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdatesDeferred (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdates (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdateFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdatesDeferred\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdatesDeferred (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":37,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email bounces and complaints\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"BillingEventsApplied\",\"Region\",\"us-east-1\",{\"label\":\"BillingEventsApplied (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingNotices\",\"Region\",\"us-east-1\",{\"label\":\"BillingNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"BillingNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingEventsApplied\",\"Region\",\"us-west-2\",{\"label\":\"BillingEventsApplied (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingNotices\",\"Region\",\"us-west-2\",{\"label\":\"BillingNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"BillingNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":37,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J4: live updates, failed and deferred\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailBounces\",\"Region\",\"us-east-1\",{\"label\":\"EmailBounces (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailComplaints\",\"Region\",\"us-east-1\",{\"label\":\"EmailComplaints (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailBounces\",\"Region\",\"us-west-2\",{\"label\":\"EmailBounces (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailComplaints\",\"Region\",\"us-west-2\",{\"label\":\"EmailComplaints (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":37,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email verification not saved\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdates (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdateFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdatesDeferred\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdatesDeferred (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdates (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdateFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdatesDeferred\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdatesDeferred (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":43,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email bounces and complaints\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailVerifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailVerifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailUnverifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailUnverifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailVerifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailVerifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailUnverifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailUnverifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":37,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J0: sign-outs not revoked\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailBounces\",\"Region\",\"us-east-1\",{\"label\":\"EmailBounces (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailComplaints\",\"Region\",\"us-east-1\",{\"label\":\"EmailComplaints (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailBounces\",\"Region\",\"us-west-2\",{\"label\":\"EmailBounces (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailComplaints\",\"Region\",\"us-west-2\",{\"label\":\"EmailComplaints (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":43,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email verification not saved\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"SignOutRevokeFailures\",\"Region\",\"us-east-1\",{\"label\":\"SignOutRevokeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SignOutRevokeFailures\",\"Region\",\"us-west-2\",{\"label\":\"SignOutRevokeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":37,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J2: stuck imports; J3: SES quota used %\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailVerifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailVerifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailUnverifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailUnverifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailVerifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailVerifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailUnverifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailUnverifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":43,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J0: sign-outs not revoked\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"StuckImports\",\"Region\",\"us-east-1\",{\"label\":\"StuckImports (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"EmailQuotaUsedPercent\",\"Region\",\"us-east-1\",{\"label\":\"EmailQuotaUsedPercent (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"StuckImports\",\"Region\",\"us-west-2\",{\"label\":\"StuckImports (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"EmailQuotaUsedPercent\",\"Region\",\"us-west-2\",{\"label\":\"EmailQuotaUsedPercent (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":43,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Accounts: teams closed, accounts deleted, teams purged\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"SignOutRevokeFailures\",\"Region\",\"us-east-1\",{\"label\":\"SignOutRevokeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SignOutRevokeFailures\",\"Region\",\"us-west-2\",{\"label\":\"SignOutRevokeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":43,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J2: stuck imports; J3: SES quota used %\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamsClosed\",\"Region\",\"us-east-1\",{\"label\":\"TeamsClosed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"AccountsDeleted\",\"Region\",\"us-east-1\",{\"label\":\"AccountsDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsPurged\",\"Region\",\"us-east-1\",{\"label\":\"TeamsPurged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsClosed\",\"Region\",\"us-west-2\",{\"label\":\"TeamsClosed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"AccountsDeleted\",\"Region\",\"us-west-2\",{\"label\":\"AccountsDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsPurged\",\"Region\",\"us-west-2\",{\"label\":\"TeamsPurged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":43,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Accounts: owners emailed that their team closed, and not\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"StuckImports\",\"Region\",\"us-east-1\",{\"label\":\"StuckImports (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"EmailQuotaUsedPercent\",\"Region\",\"us-east-1\",{\"label\":\"EmailQuotaUsedPercent (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"StuckImports\",\"Region\",\"us-west-2\",{\"label\":\"StuckImports (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"EmailQuotaUsedPercent\",\"Region\",\"us-west-2\",{\"label\":\"EmailQuotaUsedPercent (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Accounts: teams closed, accounts deleted, teams purged\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamClosedNotices\",\"Region\",\"us-east-1\",{\"label\":\"TeamClosedNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamClosedNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"TeamClosedNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamClosedNotices\",\"Region\",\"us-west-2\",{\"label\":\"TeamClosedNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamClosedNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"TeamClosedNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":43,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Accounts: teams reopened, owners emailed about it, and not\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamsClosed\",\"Region\",\"us-east-1\",{\"label\":\"TeamsClosed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"AccountsDeleted\",\"Region\",\"us-east-1\",{\"label\":\"AccountsDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsPurged\",\"Region\",\"us-east-1\",{\"label\":\"TeamsPurged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsClosed\",\"Region\",\"us-west-2\",{\"label\":\"TeamsClosed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"AccountsDeleted\",\"Region\",\"us-west-2\",{\"label\":\"AccountsDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsPurged\",\"Region\",\"us-west-2\",{\"label\":\"TeamsPurged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Accounts: owners emailed that their team closed, and not\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamsReopened\",\"Region\",\"us-east-1\",{\"label\":\"TeamsReopened (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNotices\",\"Region\",\"us-east-1\",{\"label\":\"TeamReopenedNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"TeamReopenedNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsReopened\",\"Region\",\"us-west-2\",{\"label\":\"TeamsReopened (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNotices\",\"Region\",\"us-west-2\",{\"label\":\"TeamReopenedNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"TeamReopenedNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":43,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J11: closed teams overdue for deletion\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamClosedNotices\",\"Region\",\"us-east-1\",{\"label\":\"TeamClosedNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamClosedNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"TeamClosedNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamClosedNotices\",\"Region\",\"us-west-2\",{\"label\":\"TeamClosedNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamClosedNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"TeamClosedNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Accounts: teams reopened, owners emailed about it, and not\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"ClosedTeamsOverdue\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamsOverdue (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"ClosedTeamsOverdue\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamsOverdue (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email codes not sent or checked (5xx)\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamsReopened\",\"Region\",\"us-east-1\",{\"label\":\"TeamsReopened (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNotices\",\"Region\",\"us-east-1\",{\"label\":\"TeamReopenedNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"TeamReopenedNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsReopened\",\"Region\",\"us-west-2\",{\"label\":\"TeamsReopened (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNotices\",\"Region\",\"us-west-2\",{\"label\":\"TeamReopenedNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"TeamReopenedNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J11: closed teams overdue for deletion\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailCodeSendFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailCodeSendFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeVerifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailCodeVerifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeSendFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailCodeSendFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeVerifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailCodeVerifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":55,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: audit items changed or deleted (not by TTL)\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"ClosedTeamsOverdue\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamsOverdue (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"ClosedTeamsOverdue\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamsOverdue (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":55,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email codes not sent or checked (5xx)\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorAuditChanged\",\"Region\",\"us-east-1\",{\"label\":\"OperatorAuditChanged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorAuditChanged\",\"Region\",\"us-west-2\",{\"label\":\"OperatorAuditChanged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":55,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: audit watch heartbeats\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailCodeSendFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailCodeSendFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeVerifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailCodeVerifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeSendFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailCodeSendFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeVerifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailCodeVerifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":61,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: audit items changed or deleted (not by TTL)\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorAuditChanged\",\"Region\",\"us-east-1\",{\"label\":\"OperatorAuditChanged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorAuditChanged\",\"Region\",\"us-west-2\",{\"label\":\"OperatorAuditChanged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":61,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: audit watch heartbeats\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
