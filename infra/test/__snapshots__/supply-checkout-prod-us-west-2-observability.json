@@ -348,6 +348,7 @@
         "AlarmDescription": "P1 Functions failing (Every journey, us-west-2). Lambda Errors above 1% of invocations for 5 minutes, across every function in the region, once there are at least 20 invocations. Per-function alarms come with the functions. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p1-functions-failing",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
@@ -425,6 +426,7 @@
         "AlarmDescription": "P2 Functions throttled (Every journey, us-west-2). Any Lambda throttles for 5 minutes, across every function in the region. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-functions-throttled",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
@@ -483,6 +485,7 @@
         "AlarmDescription": "P1 API errors (Every journey, us-west-2). API Gateway 5xx above 2% of requests for 5 minutes, once there are at least 20 requests. Across all of the API's routes: per-route metrics need detailed metrics, billed per route; the access logs have the route. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p1-api-errors",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
@@ -574,6 +577,7 @@
         "AlarmDescription": "P2 API slow (Every journey, us-west-2). API Gateway Latency p95 above 2 seconds over 10 minutes. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-api-slow",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "Dimensions": [
           {
             "Name": "ApiId",
@@ -629,6 +633,7 @@
         "AlarmDescription": "P1 Database errors (Every journey, us-west-2). Any DynamoDB SystemErrors on the app table for 5 minutes. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p1-database-errors",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
@@ -834,6 +839,7 @@
         "AlarmDescription": "P2 Database throttled (Every journey, us-west-2). Any read or write throttle events on the app table for 5 minutes. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-database-throttled",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
@@ -921,6 +927,7 @@
         "AlarmDescription": "P2 Sign-out not revoking (J0, us-west-2). SignOutRevokeFailures at least 3 in 15 minutes: Cognito didn't revoke the refresh tokens of people who signed out, so they stay valid until they expire (30 days). Sign-out still clears the cookie. Usually Cognito unreachable or erroring. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-sign-out-not-revoking",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
@@ -985,6 +992,7 @@
         "AlarmDescription": "P2 Imports stuck (J2, us-west-2). StuckImports above 0 at its maximum over 15 minutes: an inventory import has been committing for over an hour and is half applied until it's finished. The stuck-import check runs in the primary region every 10 minutes and logs each one's team and import IDs. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-imports-stuck",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
@@ -1049,6 +1057,7 @@
         "AlarmDescription": "P2 Email verification not saved (J3, us-west-2). Any EmailVerifyFailures or EmailUnverifyFailures over 15 minutes: the sign-in trigger couldn't copy a Google or Apple user's email_verified, so they stay unverified (and can't accept invites) or, for a downgrade, stay verified; or couldn't unverify or record a linked user's changed email. The sign-in goes ahead (a linked user's failed downgrade fails it) and the next one retries, so the Lambda Errors alarm doesn't see it. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-email-verification-not-saved",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
@@ -1127,6 +1136,96 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmsemailcodesfailing52C84946": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Email codes failing (J3, us-west-2). EmailCodeSendFailures + EmailCodeVerifyFailures at least 3 in 15 minutes: POST /me/email/code or /me/email/verify answered 5xx (Cognito erroring or unreachable, or couldn't deliver the code), so people can't verify their address, and can't accept invites. Refusals (a wrong or expired code, too many attempts) aren't counted. Too few requests for the API errors alarm's 2% to notice. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-email-codes-failing",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Expression": "FILL(s, 0) + FILL(c, 0)",
+            "Id": "expr_1",
+            "Label": "Email code failures (us-west-2)",
+            "ReturnData": true
+          },
+          {
+            "Id": "s",
+            "Label": "EmailCodeSendFailures (us-west-2)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-west-2"
+                  }
+                ],
+                "MetricName": "EmailCodeSendFailures",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 900,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "c",
+            "Label": "EmailCodeVerifyFailures (us-west-2)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-west-2"
+                  }
+                ],
+                "MetricName": "EmailCodeVerifyFailures",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 900,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 2,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmsnearsendinglimit2CFDD5DF": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -1138,6 +1237,7 @@
         "AlarmDescription": "P2 Near the sending limit (J3, us-west-2). EmailQuotaUsedPercent above 80 at its maximum over 15 minutes: SES has sent over 80% of its rolling 24-hour quota, and stops sending (invites, sign-in codes) at 100%. The SES quota check runs in the primary region every 10 minutes. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-near-sending-limit",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
@@ -1202,6 +1302,7 @@
         "AlarmDescription": "P1 Email bouncing (J3, us-west-2). SES Reputation.BounceRate above 4%. AWS reviews accounts at 5% and can pause sending at 10%. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p1-email-bouncing",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "MetricName": "Reputation.BounceRate",
         "Namespace": "AWS/SES",
@@ -1249,6 +1350,7 @@
         "AlarmDescription": "P1 Email complaints (J3, us-west-2). SES Reputation.ComplaintRate above 0.08%. AWS reviews at 0.1%. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p1-email-complaints",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "MetricName": "Reputation.ComplaintRate",
         "Namespace": "AWS/SES",
@@ -1296,6 +1398,7 @@
         "AlarmDescription": "P2 Email events dropped (J3, us-west-2). Any message in the email-events dead-letter queue: a bounce or complaint the handler couldn't record after retries, so an invite that bounced may still show as pending. SES has already suppressed the address; the message has the event to replay. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-email-events-dropped",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "Dimensions": [
           {
             "Name": "QueueName",
@@ -1349,6 +1452,7 @@
         "AlarmDescription": "P2 Writes rejected (J4, us-west-2). ConditionalWriteConflicts above 5% of Writes over 15 minutes, once there are at least 20 writes. A spike means a sync bug. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-writes-rejected",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
@@ -1438,6 +1542,7 @@
         "AlarmDescription": "P2 Live updates failing (J4, us-west-2). LiveUpdateFailures above 1% of LiveUpdates over 10 minutes, once there are at least 20 events: the stream consumer can't publish to AppSync Events. Failed batches are retried; see Live updates dropped. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-live-updates-failing",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
@@ -1527,6 +1632,7 @@
         "AlarmDescription": "P2 Live updates delayed (J4, us-west-2). The stream consumer's IteratorAge above 30 seconds at its maximum for 5 minutes: changes reach other devices late (the goal is 2 seconds). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-live-updates-delayed",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "Dimensions": [
           {
             "Name": "FunctionName",
@@ -1569,6 +1675,71 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmsliveupdatesdeferred4F7785C9": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Live updates deferred (J4, us-west-2). Any LiveUpdatesDeferred in each of 3 consecutive 5-minute periods: the stream consumer keeps running out of its per-invocation publish budget (AppSync slow, or big teams busier than a batch's budget fits), so changes reach other devices late. Every invocation still sends the batch's first chunk, so it can't stall; see Live updates delayed and dropped. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-live-updates-deferred",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 3,
+        "EvaluationPeriods": 3,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "LiveUpdatesDeferred (us-west-2)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-west-2"
+                  }
+                ],
+                "MetricName": "LiveUpdatesDeferred",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmsliveupdatesdroppedD01A2248": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -1580,6 +1751,7 @@
         "AlarmDescription": "P2 Live updates dropped (J4, us-west-2). Any message in the stream consumer's dead-letter queue: a batch of changes was never published. Clients catch up when they reconnect or resync; the message says which stream records to look at. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-live-updates-dropped",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "Dimensions": [
           {
             "Name": "QueueName",
@@ -1633,6 +1805,7 @@
         "AlarmDescription": "P2 Receipt reading failing (J5, us-west-2). ReceiptReadFailures above 10% of ReceiptReads over 15 minutes, once there are at least 5 reads. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-receipt-reading-failing",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
@@ -1722,6 +1895,7 @@
         "AlarmDescription": "P1 Checkout broken (J7, us-west-2). Any CheckoutSessionErrors for 5 minutes. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p1-checkout-broken",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
@@ -1786,6 +1960,7 @@
         "AlarmDescription": "P1 Webhook signature failures (J7, us-west-2). Any WebhookSignatureFailures. Usually a rotated or wrong signing secret. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p1-webhook-signature-failures",
         "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
@@ -1811,6 +1986,136 @@
         "OKActions": [
           {
             "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsdeletionoverdueB544DD17": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Deletion overdue (J11, us-west-2). ClosedTeamsOverdue above 0 at its maximum over 2 hours: a closed team is still there more than 24 hours after the day it was due to be deleted, which the privacy policy promises. The hourly closed-team purge (primary region) sends the gauge every run and logs each failed team's ID. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-deletion-overdue",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "ClosedTeamsOverdue (us-west-2)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-west-2"
+                  }
+                ],
+                "MetricName": "ClosedTeamsOverdue",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 7200,
+              "Stat": "Maximum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsteamclosednoticesfailingA94DEEDE": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Team closure emails failing (J11, us-west-2). Any TeamClosedNoticeFailures over 15 minutes: an owner of a team that just closed wasn't emailed the day it will be deleted (SES refused the message, no address on file, or the owners couldn't be listed). The team closed anyway. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-team-closed-notices-failing",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "TeamClosedNoticeFailures (us-west-2)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-west-2"
+                  }
+                ],
+                "MetricName": "TeamClosedNoticeFailures",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 900,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
           }
         ],
         "Tags": [

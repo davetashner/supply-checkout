@@ -9,6 +9,9 @@
 // item last. It starts no new team after PURGE_BUDGET_MS, and a team it
 // didn't finish (the timeout) is still listed, so the next run carries on.
 // One team's failure is logged and counted, and the others still go.
+// Every run, even one that fails, sends the ClosedTeamsOverdue gauge: the
+// teams it found that are still there PURGE_OVERDUE_AFTER_HOURS after their
+// deletion date, so the privacy deadline has its own alarm.
 //
 // Logs have team IDs and counts, never names or emails. The function's role
 // may delete whole items and name only TEAM_PURGE_ATTRIBUTES
@@ -16,7 +19,7 @@
 
 import { type Db, listTeamsToPurge, purgeTeam } from "../data/index.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
-import { PURGE_BUDGET_MS } from "./names.js";
+import { PURGE_BUDGET_MS, PURGE_OVERDUE_AFTER_HOURS } from "./names.js";
 
 export interface TeamPurgeDeps {
   readonly db: Db;
@@ -27,15 +30,18 @@ export interface TeamPurgeDeps {
 export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
   const { db, obs } = deps;
   const now = deps.now ?? Date.now;
-  return async (): Promise<{ purged: number; failed: number; due: number }> => {
+  return async (): Promise<{ purged: number; failed: number; due: number; overdue: number }> => {
     const started = now();
     const due = await listTeamsToPurge(db, new Date(started));
     let purged = 0;
     let failed = 0;
+    // Teams this run deleted, or found weren't due after all
+    const done = new Set<string>();
     for (const team of due) {
       if (now() - started > PURGE_BUDGET_MS) break;
       try {
         const result = await purgeTeam(db, team.teamId, new Date(now()));
+        done.add(team.teamId);
         if (result.skipped) continue;
         purged++;
         obs.logger.info("Team purged", { teamId: team.teamId, purgeAfter: team.purgeAfter, items: result.deleted });
@@ -45,9 +51,13 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
       }
     }
     if (purged) obs.count(BusinessMetric.TeamsPurged, purged);
-    obs.logger.info("Purged closed teams", { due: due.length, purged, failed });
+    // ISO timestamps compare as strings; the listing is at most its limit, which is enough to alarm on
+    const overdueBefore = new Date(started - PURGE_OVERDUE_AFTER_HOURS * 3_600_000).toISOString();
+    const overdue = due.filter((t) => t.purgeAfter <= overdueBefore && !done.has(t.teamId)).length;
+    obs.gauge(BusinessMetric.ClosedTeamsOverdue, overdue);
+    obs.logger.info("Purged closed teams", { due: due.length, purged, failed, overdue });
     // A run that failed anywhere fails, so the Lambda errors alarm sees it
     if (failed) throw new Error(`${failed} of ${due.length} closed teams weren't purged`);
-    return { purged, failed, due: due.length };
+    return { purged, failed, due: due.length, overdue };
   };
 }

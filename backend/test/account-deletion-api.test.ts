@@ -44,6 +44,7 @@ let table: MemoryTable;
 let now: number;
 let scopes: AccountScope[];
 let counts: Record<string, number>;
+let gauges: Record<string, number>;
 let logs: [string, string, unknown][];
 let deleted: string[];
 let deleteFails: boolean;
@@ -63,7 +64,9 @@ function observability(): Observability {
     count: (metric, value = 1) => {
       counts[metric] = (counts[metric] ?? 0) + value;
     },
-    gauge: () => {},
+    gauge: (metric, value) => {
+      gauges[metric] = value;
+    },
     flush: () => {},
   };
 }
@@ -104,6 +107,7 @@ beforeEach(() => {
   scopes = [];
   counts = {};
   logs = [];
+  gauges = {};
   deleted = [];
   deleteFails = false;
   notices = [];
@@ -673,17 +677,19 @@ describe("purging closed teams", () => {
     await close();
     const others = [...table.items.values()].filter((i) => i.PK !== "TEAM#team-a" && !(String(i.PK).startsWith("USER#") && i.SK === "TEAM#team-a") && i.PK !== "STRIPE#cus_123");
     // Not yet
-    expect(await purge(NOW + (CLOSED_TEAM_RETENTION_DAYS - 1) * DAY)).toEqual({ purged: 0, failed: 0, due: 0 });
+    expect(await purge(NOW + (CLOSED_TEAM_RETENTION_DAYS - 1) * DAY)).toEqual({ purged: 0, failed: 0, due: 0, overdue: 0 });
     expect(partition("TEAM#team-a").length).toBeGreaterThan(5);
     // Due: gone
-    expect(await purge(NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 1000)).toEqual({ purged: 1, failed: 0, due: 1 });
+    expect(await purge(NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 1000)).toEqual({ purged: 1, failed: 0, due: 1, overdue: 0 });
     expect(partition("TEAM#team-a")).toEqual([]);
     expect(table.get("STRIPE#cus_123", "TEAM")).toBeUndefined();
     for (const user of [OWNER, PAT, VIEWER]) expect(table.get(`USER#${user}`, "TEAM#team-a")).toBeUndefined();
     expect([...table.items.values()]).toEqual(others);
     expect(counts[BusinessMetric.TeamsPurged]).toBe(1);
+    // Purged on time: nothing overdue, and the gauge says so (zero, not missing)
+    expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(0);
     // A second run finds nothing
-    expect(await purge(NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 2000)).toEqual({ purged: 0, failed: 0, due: 0 });
+    expect(await purge(NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 2000)).toEqual({ purged: 0, failed: 0, due: 0, overdue: 0 });
   });
 
   it("names only the attributes its IAM policy allows, reads only projected keys, and never asks for old values back", async () => {
@@ -708,7 +714,7 @@ describe("purging closed teams", () => {
   it("skips a team listed in the index that isn't closed or isn't due, and leaves another team's Stripe link", async () => {
     table.put({ ...(meta("team-b") as Record<string, unknown>), GSI1PK: "TEAMS#CLOSED", GSI1SK: "2026-01-01T00:00:00.000Z#team-b" });
     table.put({ ...(meta("team-a") as Record<string, unknown>), closedAt: "2026-09-01T00:00:00.000Z", purgeAfter: "2027-01-01T00:00:00.000Z", GSI1PK: "TEAMS#CLOSED", GSI1SK: "2026-01-02T00:00:00.000Z#team-a" });
-    expect(await purge(NOW)).toEqual({ purged: 0, failed: 0, due: 2 });
+    expect(await purge(NOW)).toEqual({ purged: 0, failed: 0, due: 2, overdue: 0 });
     expect(meta("team-a")).toBeDefined();
     expect(meta("team-b")).toBeDefined();
     expect(await purgeTeam(table.db(undefined), "team-missing", new Date(NOW))).toEqual({ deleted: 0, skipped: true });
@@ -716,6 +722,26 @@ describe("purging closed teams", () => {
     table.put({ PK: "STRIPE#cus_9", SK: "TEAM", type: "stripeLink", customerId: "cus_9", teamId: "team-other" });
     await expect(purge(NOW)).rejects.toThrow("1 of 2 closed teams weren't purged");
     expect(table.get("STRIPE#cus_9", "TEAM")).toBeDefined();
+    // A failed run still sends the gauge: the team that failed is months past its date, the skipped one isn't counted
+    expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(1);
+  });
+
+  it("counts a team as overdue only once it's more than a day past its deletion date and this run didn't delete it", async () => {
+    await close("team-a");
+    const due = NOW + CLOSED_TEAM_RETENTION_DAYS * DAY;
+    // The purge couldn't reach it (a run that ran out of time before it): not overdue until a day has passed
+    // Each read of the clock moves it past the budget, so the run starts at the time set here and stops before the team
+    const step = PURGE_BUDGET_MS + 1;
+    let clock = due + DAY - 1000 - step;
+    const stuck = () => createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), now: () => (clock += step) })();
+    expect((await stuck()).overdue).toBe(0);
+    clock = due + DAY + 1000 - step;
+    expect((await stuck()).overdue).toBe(1);
+    expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(1);
+    expect(logs).toContainEqual(["info", "Purged closed teams", { due: 1, purged: 0, failed: 0, overdue: 1 }]);
+    // Once a run deletes it, the gauge goes back to zero
+    expect(await purge(due + DAY + 2000)).toEqual({ purged: 1, failed: 0, due: 1, overdue: 0 });
+    expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(0);
   });
 
   it("ignores index entries it didn't write, and stops starting teams after its time budget", async () => {
@@ -726,7 +752,9 @@ describe("purging closed teams", () => {
     await close("team-b");
     let clock = NOW + 40 * DAY;
     const run = createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), now: () => (clock += PURGE_BUDGET_MS + 1) })();
-    expect(await run).toEqual({ purged: 0, failed: 0, due: 2 });
+    // Ten days past their deletion date and not reached: overdue
+    expect(await run).toEqual({ purged: 0, failed: 0, due: 2, overdue: 2 });
+    expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(2);
     expect(meta("team-a")).toBeDefined();
   });
 });

@@ -17,6 +17,7 @@ import {
   REOPENS_PER_TEAM_PER_DAY,
   isClosed,
   memberRole,
+  normalizeEmail,
   ownersUpdate,
   teamCounts,
   teamName,
@@ -67,6 +68,38 @@ export async function getMember(db: Db, ctx: TeamContext, userId: string): Promi
   readable(ctx);
   const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: keys.member(ctx.teamId, userId), ConsistentRead: true }));
   return strip<Member>(Item);
+}
+
+/**
+ * Sets the email on the caller's own MEMBER item to `verifiedEmail`, when it
+ * differs (or there's none), so the members list and owner notices use the
+ * address the caller has verified now, not the one they had when they joined
+ * (supply-checkout-xv3k). Pass only an address the identity provider has
+ * verified for this user. Always the context's own user: a context names one
+ * member, and nothing here takes another's ID. Any member may, whatever their
+ * role; a closed team is left as it is (TeamClosedError), since nothing about
+ * it changes any more. True when it wrote, false when the item already had
+ * this address or is gone (the caller left meanwhile: nothing is recreated).
+ */
+export async function setOwnMemberEmail(db: Db, ctx: TeamContext, verifiedEmail: string): Promise<boolean> {
+  writable(db, ctx, "viewer");
+  const email = normalizeEmail(verifiedEmail);
+  try {
+    await connection(db).doc.send(
+      new UpdateCommand({
+        TableName: db.tableName,
+        Key: keys.member(ctx.teamId, ctx.userId),
+        UpdateExpression: "SET email = :email",
+        // AND binds tighter than OR: the item exists, and has no email or another one
+        ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(email) OR attribute_exists(PK) AND email <> :email",
+        ExpressionAttributeValues: { ":email": email },
+      }),
+    );
+    return true;
+  } catch (error) {
+    if ((error as { name?: string } | null)?.name === "ConditionalCheckFailedException") return false;
+    throw error;
+  }
 }
 
 /**
@@ -181,7 +214,9 @@ export async function setMemberRole(db: Db, ctx: TeamContext, userId: string, ro
  * Owners remove members; any member can remove themselves (leave). The team's
  * member count goes down in the same transaction, and removing an owner also
  * decrements the owner count, conditioned on another owner remaining
- * (LastOwnerError). Their pending invites to the team are revoked first. The
+ * (LastOwnerError). Their pending invites to the team are revoked first: for
+ * the address on their member item and, when they leave, for `verifiedEmail`,
+ * the address their identity provider has verified for them now. The
  * removal is audited in the same transaction (`member.left` or
  * `member.removed`, with `reason` when given).
  *
@@ -189,7 +224,13 @@ export async function setMemberRole(db: Db, ctx: TeamContext, userId: string, ro
  * owner may leave too: nothing about a closed team can change any more, and
  * the purge deletes it.
  */
-export async function removeMember(db: Db, ctx: TeamContext, userId: string, options: { readonly reason?: "account_deleted" } = {}, now = new Date()): Promise<void> {
+export async function removeMember(
+  db: Db,
+  ctx: TeamContext,
+  userId: string,
+  options: { readonly reason?: "account_deleted"; readonly verifiedEmail?: string } = {},
+  now = new Date(),
+): Promise<void> {
   const minimum = userId === ctx.userId ? "viewer" : "owner";
   writable(db, ctx, minimum, { whileClosed: true });
   const [{ role: from, email }, count] = await Promise.all([currentMember(db, ctx, userId), memberCount(db, ctx.teamId)]);
@@ -202,7 +243,12 @@ export async function removeMember(db: Db, ctx: TeamContext, userId: string, opt
   // Any other invite to this team for their address goes first, so someone
   // removed can't rejoin with an invite they hadn't used. If the removal then
   // fails (the last owner), only their own unused invites are gone.
-  if (typeof email === "string" && email) await revokeInvitesForEmail(db, ctx, email, minimum);
+  // Leaving, the caller's current verified address too (`verifiedEmail`), in
+  // case the member item has none or an older one (supply-checkout-u0vv)
+  const addresses = new Set<string>();
+  if (typeof email === "string" && email) addresses.add(normalizeEmail(email));
+  if (userId === ctx.userId && options.verifiedEmail) addresses.add(normalizeEmail(options.verifiedEmail));
+  for (const address of addresses) await revokeInvitesForEmail(db, ctx, address, minimum);
   const audit = auditPut(db, ctx, { action: userId === ctx.userId ? "member.left" : "member.removed", target: userId, ...(options.reason ? { detail: { reason: options.reason } } : {}) }, now);
   await connection(db)
     .doc.send(

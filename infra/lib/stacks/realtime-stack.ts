@@ -19,6 +19,7 @@ import {
   REALTIME_ENV,
   realtimeResourceNames,
   STREAM_BATCH_SIZE,
+  STREAM_RETRY_ATTEMPTS,
   USERS_NAMESPACE,
 } from "../../../backend/src/realtime/channels.js";
 import { type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../config.js";
@@ -240,7 +241,8 @@ export class RealtimeStack extends SupplyCheckoutStack {
       parallelizationFactor: 1,
       reportBatchItemFailures: true,
       bisectBatchOnError: true,
-      retryAttempts: 10,
+      // Budget stops count as retries; see STREAM_RETRY_ATTEMPTS
+      retryAttempts: STREAM_RETRY_ATTEMPTS,
       // Clients resync on reconnect, so an event an hour old is worth less than moving on
       maxRecordAge: Duration.hours(1),
       onFailure: new SqsDlq(dlq),

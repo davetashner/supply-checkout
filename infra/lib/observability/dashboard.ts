@@ -103,7 +103,7 @@ export class OpsDashboard extends Construct {
       businessGraph("J1: sign-ups", [BusinessMetric.SignUps]),
       businessGraph("J3: invites", [BusinessMetric.InvitesSent, BusinessMetric.InvitesAccepted, BusinessMetric.InvitesFailed]),
       businessGraph("J7: billing errors", [BusinessMetric.CheckoutSessionErrors, BusinessMetric.WebhookSignatureFailures]),
-      businessGraph("J4: live updates", [BusinessMetric.LiveUpdates, BusinessMetric.LiveUpdateFailures]),
+      businessGraph("J4: live updates, failed and deferred", [BusinessMetric.LiveUpdates, BusinessMetric.LiveUpdateFailures, BusinessMetric.LiveUpdatesDeferred]),
     );
     this.dashboard.addWidgets(
       businessGraph("J3: email bounces and complaints", [BusinessMetric.EmailBounces, BusinessMetric.EmailComplaints]),
@@ -116,6 +116,9 @@ export class OpsDashboard extends Construct {
       businessGraph("Accounts: teams closed, accounts deleted, teams purged", [BusinessMetric.TeamsClosed, BusinessMetric.AccountsDeleted, BusinessMetric.TeamsPurged]),
       businessGraph("Accounts: owners emailed that their team closed, and not", [BusinessMetric.TeamClosedNotices, BusinessMetric.TeamClosedNoticeFailures]),
       businessGraph("Accounts: teams reopened, owners emailed about it, and not", [BusinessMetric.TeamsReopened, BusinessMetric.TeamReopenedNotices, BusinessMetric.TeamReopenedNoticeFailures]),
+      // The purge's gauge (primary region), at its maximum
+      graph("J11: closed teams overdue for deletion", each((r) => business(BusinessMetric.ClosedTeamsOverdue, r, FIVE_MINUTES, "Maximum")), WIDTH / 4),
+      businessGraph("J3: email codes not sent or checked (5xx)", [BusinessMetric.EmailCodeSendFailures, BusinessMetric.EmailCodeVerifyFailures]),
     );
   }
 }

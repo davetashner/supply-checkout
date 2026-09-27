@@ -32,6 +32,8 @@ export const BusinessMetric = {
   LiveUpdates: "LiveUpdates",
   /** Change events that didn't go out on the first try; the batch is retried (J4). */
   LiveUpdateFailures: "LiveUpdateFailures",
+  /** Change events the stream consumer's publish budget stopped short of; sent by a later invocation, not failures (J4). */
+  LiveUpdatesDeferred: "LiveUpdatesDeferred",
   /** Receipt reads attempted, not counting cancels, limit hits and unreadable photos (J5). */
   ReceiptReads: "ReceiptReads",
   /** Receipt reads that failed on our side or Bedrock's (J5). */
@@ -62,10 +64,16 @@ export const BusinessMetric = {
   EmailVerifyFailures: "EmailVerifyFailures",
   /** Federated sign-ins whose email the provider no longer verifies but couldn't be marked unverified: it stays verified (J3). */
   EmailUnverifyFailures: "EmailUnverifyFailures",
+  /** POST /me/email/code requests that failed on our side or Cognito's (5xx): the caller got no code (J3). */
+  EmailCodeSendFailures: "EmailCodeSendFailures",
+  /** POST /me/email/verify requests that failed on our side or Cognito's (5xx): the address wasn't verified (J3). */
+  EmailCodeVerifyFailures: "EmailCodeVerifyFailures",
   /** Gauge: inventory imports still committing an hour after they started, half applied (J2). */
   StuckImports: "StuckImports",
   /** Gauge: SES sends in the last 24 hours as a percentage of the daily sending quota (J3). */
   EmailQuotaUsedPercent: "EmailQuotaUsedPercent",
+  /** Gauge: closed teams still not deleted more than a day after their deletion date, from the hourly purge (J11). */
+  ClosedTeamsOverdue: "ClosedTeamsOverdue",
   /** Teams an owner closed (or that closed with their only member's account). */
   TeamsClosed: "TeamsClosed",
   /** Owners emailed that their team closed, with the day it'll be deleted. */
