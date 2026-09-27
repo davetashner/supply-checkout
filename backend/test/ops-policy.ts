@@ -77,7 +77,8 @@ export function reopenPolicy(team: string, denied: { command: string; input: Inp
     const ok = (() => {
       switch (command) {
         case "GetCommand":
-          return teamItem(input) && typeof input.ProjectionExpression === "string";
+          // dynamodb:Select SPECIFIC_ATTRIBUTES: only a projected read passes
+          return teamItem(input) && typeof input.ProjectionExpression === "string" && (input.Select === undefined || input.Select === "SPECIFIC_ATTRIBUTES");
         case "QueryCommand":
           return input.IndexName === undefined && audit((input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"]);
         case "PutCommand":

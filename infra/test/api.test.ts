@@ -512,7 +512,8 @@ describe("operator reopen function and role (supply-checkout-6uw.6)", () => {
       Resource: expect.anything(),
       Condition: {
         "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": [...REOPEN_ATTRIBUTES] },
-        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        // A GetItem without a projection would name no attributes and return the whole item
+        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES", "dynamodb:ReturnValues": "NONE" },
       },
     });
     // Nothing about the team's name, plan, status, members or data

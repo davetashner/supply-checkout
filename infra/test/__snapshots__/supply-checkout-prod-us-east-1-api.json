@@ -4642,6 +4642,7 @@
                       ]
                     },
                     "StringEqualsIfExists": {
+                      "dynamodb:Select": "SPECIFIC_ATTRIBUTES",
                       "dynamodb:ReturnValues": "NONE"
                     }
                   },

@@ -607,7 +607,9 @@ export class ApiStack extends SupplyCheckoutStack {
                   "dynamodb:LeadingKeys": [`TEAM#${tag}`],
                   "dynamodb:Attributes": [...REOPEN_ATTRIBUTES],
                 },
-                StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+                // A GetItem without a projection names no attributes and would return the whole
+                // item: Select must be SPECIFIC_ATTRIBUTES (a ProjectionExpression implies it)
+                StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES", "dynamodb:ReturnValues": "NONE" },
               },
             }),
             new PolicyStatement({
