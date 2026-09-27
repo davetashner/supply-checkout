@@ -8,8 +8,9 @@
 //   (deletions/records.ts) name them; planDeletions finds what of them the
 //   restored table holds and applyDeletions deletes it again, the way the
 //   app did the first time:
-//     - a recorded team, or a team a deleted user's deletion closed, is
-//       purged (team-purge.ts), after its META item is marked closed and due;
+//     - a recorded team, or a team a deleted user's deletion closed (when the
+//       table bears that out, see planDeletions), is purged (team-purge.ts),
+//       after its META item is marked closed and due;
 //     - a team whose only members are deleted users is purged too: that's
 //       what the account deletion did (it closed the team, and the purge
 //       followed);
@@ -18,7 +19,9 @@
 //       goes (deleteUserRows);
 //     - a deleted user who is the last owner of an open team with other
 //       members (the restore is from before an ownership change) is left for
-//       a person to decide: the plan names the team.
+//       a person to decide: the plan names the team;
+//     - a recorded user who outlived their record (a deletion that failed
+//       after writing it) is left alone.
 //   Every step is idempotent and conditioned the same way the app's are, so
 //   running it again finishes what a stopped run started.
 // - Copying back. The live table keeps its name, keys, indexes, TTL, stream,
@@ -74,6 +77,10 @@ export interface DeletionPlan {
   readonly blockedTeams: readonly string[];
   /** The deleted users in those teams. Their USER# rows stay until a person has decided (the team-switcher row goes with the membership). */
   readonly blockedUsers: readonly string[];
+  /** Teams a user record says its deletion closed that the table doesn't bear out (other members, or not the user's): for a person. */
+  readonly unconfirmedTeams: readonly string[];
+  /** Recorded users who outlived their record (in Cognito, or joined or created a team after it): left alone. Counted, never named. */
+  readonly survivors: number;
 }
 
 export interface DeletionReport {
@@ -84,6 +91,10 @@ export interface DeletionReport {
   readonly userRowsDeleted: number;
   /** Teams left for a person: in the plan, or refused at write time (the last owner). */
   readonly blockedTeams: readonly string[];
+  /** Teams a user record names as closed by its deletion that the table doesn't bear out. */
+  readonly unconfirmedTeams: readonly string[];
+  /** Recorded users left alone because they outlived their record. */
+  readonly survivors: number;
 }
 
 type Item = Record<string, unknown>;
@@ -97,18 +108,35 @@ async function* scan(db: Db, input: { FilterExpression: string; ProjectionExpres
   } while (ExclusiveStartKey);
 }
 
-/** What of the recorded deletions the table still holds, and what re-applying them will do. Reads only. */
-export async function planDeletions(db: Db, records: readonly DeletionRecord[]): Promise<DeletionPlan> {
-  const deletedUsers = new Set(records.filter((r) => r.kind === "user").map((r) => r.id));
-  const recordedTeams = new Set(records.flatMap((r) => (r.kind === "team" ? [r.id] : (r.teamsClosed ?? []))));
+/**
+ * What of the recorded deletions the table still holds, and what re-applying
+ * them will do. Reads only.
+ *
+ * A record is permanent (Object Lock), so the plan trusts it only as far as the
+ * table agrees with it:
+ * - A user who shows signs of having outlived their record is a survivor and
+ *   is left alone entirely: named in `stillExists` (the owner's Cognito check),
+ *   a member since after their deletion time (`joinedAt`), or a member of a
+ *   team created after it. That happens when a deletion wrote its record and
+ *   then failed, and the user never retried.
+ * - A team a user record says its deletion closed is purged only if every
+ *   member it has is a deleted user and either the recording user is one of
+ *   them or the team is closed. Anything else is left for a person
+ *   (`unconfirmedTeams`), with the deleted users in it held back.
+ * Team records are trusted as they are: the purge writes one only after it has
+ * marked a closed, due team `purging`.
+ */
+export async function planDeletions(db: Db, records: readonly DeletionRecord[], options: { readonly stillExists?: ReadonlySet<string> } = {}): Promise<DeletionPlan> {
+  const userRecords = new Map(records.filter((r) => r.kind === "user").map((r) => [r.id, r]));
+  const recordedTeams = new Set(records.filter((r) => r.kind === "team").map((r) => r.id));
 
   // One scan for the three kinds of item this needs: team META items, every MEMBER item, and deleted users' rows
-  const teams = new Map<string, { closed: boolean }>();
-  const members = new Map<string, Map<string, string>>();
+  const teams = new Map<string, { closed: boolean; createdAt?: string }>();
+  const members = new Map<string, Map<string, { role: string; joinedAt?: string }>>();
   const userRows = new Set<string>();
   for await (const item of scan(db, {
     FilterExpression: "SK = :meta OR begins_with(SK, :member) OR begins_with(PK, :user)",
-    ProjectionExpression: "PK, SK, #role, closedAt",
+    ProjectionExpression: "PK, SK, #role, closedAt, createdAt, joinedAt",
     ExpressionAttributeNames: { "#role": "role" },
     ExpressionAttributeValues: { ":meta": META, ":member": prefixes.member, ":user": USER },
   })) {
@@ -116,37 +144,65 @@ export async function planDeletions(db: Db, records: readonly DeletionRecord[]):
     const sk = String(item.SK);
     if (pk.startsWith(USER)) {
       const userId = pk.slice(USER.length);
-      if (deletedUsers.has(userId) && !KEPT_USER_ROWS(sk)) userRows.add(userId);
+      if (userRecords.has(userId) && !KEPT_USER_ROWS(sk)) userRows.add(userId);
       continue;
     }
     if (!pk.startsWith(TEAM)) continue;
     const teamId = pk.slice(TEAM.length);
     if (!ID.test(teamId)) continue;
-    if (sk === META) teams.set(teamId, { closed: typeof item.closedAt === "string" });
+    const text = (v: unknown) => (typeof v === "string" ? v : undefined);
+    if (sk === META) teams.set(teamId, { closed: typeof item.closedAt === "string", createdAt: text(item.createdAt) });
     else if (sk.startsWith(prefixes.member)) {
       const userId = sk.slice(prefixes.member.length);
       if (!members.has(teamId)) members.set(teamId, new Map());
-      members.get(teamId)?.set(userId, String(item.role));
+      members.get(teamId)?.set(userId, { role: String(item.role), joinedAt: text(item.joinedAt) });
     }
   }
 
+  // Survivors: records the table (or Cognito) contradicts
+  const survivors = new Set([...userRecords.keys()].filter((u) => options.stillExists?.has(u)));
+  for (const [teamId, roster] of members) {
+    for (const [userId, m] of roster) {
+      const deletedAt = userRecords.get(userId)?.deletedAt;
+      if (!deletedAt) continue;
+      const created = teams.get(teamId)?.createdAt;
+      if ((m.joinedAt && m.joinedAt > deletedAt) || (created && created > deletedAt)) survivors.add(userId);
+    }
+  }
+  const deleted = new Set([...userRecords.keys()].filter((u) => !survivors.has(u)));
+
   const purge = new Set([...recordedTeams].filter((t) => teams.has(t)));
+  const unconfirmed = new Set<string>();
+  for (const userId of deleted) {
+    for (const teamId of userRecords.get(userId)?.teamsClosed ?? []) {
+      const team = teams.get(teamId);
+      if (!team || purge.has(teamId)) continue;
+      const roster = members.get(teamId) ?? new Map();
+      const onlyDeleted = [...roster.keys()].every((u) => deleted.has(u));
+      if (onlyDeleted && (roster.has(userId) || team.closed)) purge.add(teamId);
+      else unconfirmed.add(teamId);
+    }
+  }
   const memberships: { userId: string; teamId: string }[] = [];
   const blocked = new Set<string>();
   const blockedUsers = new Set<string>();
   for (const [teamId, roster] of members) {
     const team = teams.get(teamId);
     if (!team || purge.has(teamId)) continue;
-    const gone = [...roster.keys()].filter((u) => deletedUsers.has(u));
+    const gone = [...roster.keys()].filter((u) => deleted.has(u));
     if (!gone.length) continue;
-    const staying = [...roster].filter(([u]) => !deletedUsers.has(u));
+    if (unconfirmed.has(teamId)) {
+      for (const u of gone) blockedUsers.add(u);
+      continue;
+    }
+    const staying = [...roster].filter(([u]) => !deleted.has(u));
     if (!staying.length) {
       purge.add(teamId);
       continue;
     }
     // An open team can't lose its last owner (removeMember); a closed one can
-    const ownerStays = staying.some(([, role]) => role === "owner");
-    if (!team.closed && !ownerStays && gone.some((u) => roster.get(u) === "owner")) {
+    const ownerStays = staying.some(([, m]) => m.role === "owner");
+    if (!team.closed && !ownerStays && gone.some((u) => roster.get(u)?.role === "owner")) {
       blocked.add(teamId);
       for (const u of gone) blockedUsers.add(u);
       continue;
@@ -154,12 +210,14 @@ export async function planDeletions(db: Db, records: readonly DeletionRecord[]):
     for (const userId of gone) memberships.push({ userId, teamId });
   }
   return {
-    records: { users: deletedUsers.size, teams: records.filter((r) => r.kind === "team").length },
+    records: { users: userRecords.size, teams: recordedTeams.size },
     teamsToPurge: [...purge].sort(),
     memberships: memberships.sort((a, b) => a.teamId.localeCompare(b.teamId) || a.userId.localeCompare(b.userId)),
-    usersWithRows: [...userRows].filter((u) => !blockedUsers.has(u)).sort(),
+    usersWithRows: [...userRows].filter((u) => deleted.has(u) && !blockedUsers.has(u)).sort(),
     blockedTeams: [...blocked].sort(),
     blockedUsers: [...blockedUsers].sort(),
+    unconfirmedTeams: [...unconfirmed].sort(),
+    survivors: survivors.size,
   };
 }
 
@@ -194,7 +252,7 @@ async function markDue(db: Db, teamId: string, now: Date): Promise<boolean> {
 export async function applyDeletions(db: Db, plan: DeletionPlan, options: { readonly apply: boolean; readonly now?: Date }): Promise<DeletionReport> {
   const blocked = new Set(plan.blockedTeams);
   if (!options.apply) {
-    return { apply: false, teamsPurged: plan.teamsToPurge.length, itemsPurged: 0, membershipsRemoved: plan.memberships.length, userRowsDeleted: plan.usersWithRows.length, blockedTeams: [...blocked] };
+    return { apply: false, teamsPurged: plan.teamsToPurge.length, itemsPurged: 0, membershipsRemoved: plan.memberships.length, userRowsDeleted: plan.usersWithRows.length, blockedTeams: [...blocked], unconfirmedTeams: plan.unconfirmedTeams, survivors: plan.survivors };
   }
   const now = options.now ?? new Date();
   let teamsPurged = 0;
@@ -227,7 +285,7 @@ export async function applyDeletions(db: Db, plan: DeletionPlan, options: { read
   }
   let userRowsDeleted = 0;
   for (const userId of plan.usersWithRows) if (!heldBack.has(userId)) userRowsDeleted += await deleteUserRows(db, userId);
-  return { apply: true, teamsPurged, itemsPurged, membershipsRemoved, userRowsDeleted, blockedTeams: [...blocked].sort() };
+  return { apply: true, teamsPurged, itemsPurged, membershipsRemoved, userRowsDeleted, blockedTeams: [...blocked].sort(), unconfirmedTeams: plan.unconfirmedTeams, survivors: plan.survivors };
 }
 
 export interface CopyReport {

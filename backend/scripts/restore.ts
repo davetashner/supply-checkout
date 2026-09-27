@@ -5,7 +5,7 @@
 // for teams a person has to look at, team IDs: never emails, names, user IDs
 // or item contents.
 //
-//   npm run restore -- deletions --table supply-checkout-prod-app-restore-<date> --region <region> --profile <profile> [--apply]
+//   npm run restore -- deletions --table supply-checkout-prod-app-restore-<date> --user-pool-id <pool> --region <region> --profile <profile> [--apply]
 //   npm run restore -- copy-back --from supply-checkout-prod-app-restore-<date> --to supply-checkout-prod-app --region <region> --profile <profile> [--apply]
 //   npm run restore -- check     --table supply-checkout-prod-app --region <region> --profile <profile>
 //
@@ -19,14 +19,19 @@ import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { createDb, type Db, type DbOptions } from "../src/data/index.js";
 import { applyDeletions, checkTableSettings, copyTable, type CopyReport, type DeletionReport, planDeletions } from "../src/data/restore.js";
 import { deletionsBucketName } from "../src/deletions/names.js";
+import { cognitoRequest } from "../src/identity/cognito-admin.js";
 import { readDeletionRecords, type S3Like } from "../src/deletions/records.js";
 
 export const USAGE = `Usage: npm run restore -- <mode> [options] --region <region> --profile <profile> [--apply]
 
 Modes, in the order the runbook uses them (docs/backups.md):
-  deletions  --table <restored table>   delete again, from the restored table, every account and team
-                                         the deletion records name (--bucket to name the records' bucket;
-                                         by default it's this environment's, in the profile's account)
+  deletions  --table <restored table> --user-pool-id <pool>
+                                         delete again, from the restored table, every account and team
+                                         the deletion records name. Recorded users still in the user pool
+                                         (/supply-checkout/<env>/identity/user-pool-id) are left alone.
+                                         --bucket names the records' bucket (by default this environment's,
+                                         in the profile's account). --live allows the live table instead,
+                                         which the runbook never needs
   copy-back  --from <restored table> --to <live table>
                                          make the live table's items the same as the restored table's
   check      --table <live table>       check the table has TTL, the stream, PITR, deletion protection,
@@ -35,7 +40,8 @@ Modes, in the order the runbook uses them (docs/backups.md):
 Tables: the live table is supply-checkout-<env>-app, a restored one supply-checkout-<env>-app-restore-<suffix>,
 and copy-back only goes from an environment's restored table to its own live table.
 Without --apply, deletions and copy-back are dry runs: they read and write nothing.
-It prints the AWS account the profile signs in to before it reads or writes.
+It prints the AWS account the profile signs in to before it reads or writes, and refuses to go on
+if SUPPLY_CHECKOUT_EXPECTED_ACCOUNT is set (in your shell, never committed) to another account.
 --endpoint <url> uses DynamoDB Local instead of AWS (then --profile isn't needed and any table name goes).`;
 
 /** The live table (tableName in src/data/schema.ts) and a restored one (the restore role's pattern, docs/backups.md). */
@@ -54,11 +60,25 @@ export interface Deps {
   readonly connect: (options: DbOptions) => Db;
   /** An S3 client for the deletion records. */
   readonly s3: (region: string, credentials: Credentials | undefined) => S3Like;
+  /** Which of `userIds` the user pool still has (Cognito ListUsers by `sub`). */
+  readonly stillInPool: (region: string, credentials: Credentials, userPoolId: string, userIds: readonly string[]) => Promise<Set<string>>;
+}
+
+/** ListUsers with `sub = "<id>"`, one ID at a time. IDs are checked first, so none can break out of the filter. */
+export async function usersInPool(call: (action: string, body: Record<string, unknown>) => Promise<unknown>, userPoolId: string, userIds: readonly string[]): Promise<Set<string>> {
+  const found = new Set<string>();
+  for (const userId of userIds) {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(userId)) throw new Error("Invalid user ID in a deletion record");
+    const answer = (await call("ListUsers", { UserPoolId: userPoolId, Filter: `sub = "${userId}"`, Limit: 1, AttributesToGet: ["sub"] })) as { Users?: unknown[] };
+    if (Array.isArray(answer.Users) && answer.Users.length) found.add(userId);
+  }
+  return found;
 }
 
 const defaultDeps: Deps = {
   connect: createDb,
   s3: (region, credentials) => new S3Client({ region, ...(credentials ? { credentials } : {}) }),
+  stillInPool: (region, credentials, userPoolId, userIds) => usersInPool(cognitoRequest({ region, credentials, timeoutMs: 10_000 }), userPoolId, userIds),
   async callerAccount(region, credentials) {
     const sts = new STSClient({ region, credentials });
     try {
@@ -77,12 +97,17 @@ const closing = (apply: boolean) => (apply ? "Done." : "Dry run: nothing was wri
 export function formatDeletions(records: { users: number; teams: number; invalid: number }, report: DeletionReport): string[] {
   const lines = [`Deletion records: ${records.users} accounts, ${records.teams} teams`];
   if (records.invalid) lines.push(`  records that aren't valid, skipped (look at them in the bucket): ${records.invalid}`);
+  if (report.survivors) lines.push(`  accounts that outlived their record (still in the user pool, or joined or created a team after it), left alone: ${report.survivors}`);
   lines.push(`  teams purged: ${report.teamsPurged}${dryRun(report.apply)}${report.apply ? ` (${report.itemsPurged} items)` : ""}`);
   lines.push(`  memberships removed: ${report.membershipsRemoved}${dryRun(report.apply)}`);
   lines.push(`  ${report.apply ? "user rows deleted" : "accounts with rows to delete"}: ${report.userRowsDeleted}${dryRun(report.apply)}`);
   if (report.blockedTeams.length) {
     lines.push(`  teams where a deleted account is the last owner and others are still members, left for a person: ${report.blockedTeams.length}`);
     for (const teamId of report.blockedTeams) lines.push(`    ${teamId}`);
+  }
+  if (report.unconfirmedTeams.length) {
+    lines.push(`  teams a record says its deletion closed that the table doesn't bear out, left for a person: ${report.unconfirmedTeams.length}`);
+    for (const teamId of report.unconfirmedTeams) lines.push(`    ${teamId}`);
   }
   lines.push(closing(report.apply));
   return lines;
@@ -104,6 +129,7 @@ export async function main(
   out: (line: string) => void = console.log,
   err: (line: string) => void = console.error,
   deps: Deps = defaultDeps,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
   let parsed;
   try {
@@ -115,6 +141,8 @@ export async function main(
         from: { type: "string" },
         to: { type: "string" },
         bucket: { type: "string" },
+        "user-pool-id": { type: "string" },
+        live: { type: "boolean", default: false },
         region: { type: "string" },
         profile: { type: "string" },
         endpoint: { type: "string" },
@@ -155,11 +183,17 @@ export async function main(
     }
   } else {
     if (!values.table || values.from || values.to) return bad(`${mode} takes --table`);
-    const match = mode === "check" ? LIVE_TABLE.exec(values.table) : (RESTORED_TABLE.exec(values.table) ?? LIVE_TABLE.exec(values.table));
-    if (!local && !match) return bad(mode === "check" ? `--table must be a live table, supply-checkout-<env>-app: ${values.table}` : `--table must be an app table, restored or live: ${values.table}`);
+    const match = mode === "check" ? LIVE_TABLE.exec(values.table) : (RESTORED_TABLE.exec(values.table) ?? (values.live ? LIVE_TABLE.exec(values.table) : null));
+    if (!local && !match) {
+      if (mode === "check") return bad(`--table must be a live table, supply-checkout-<env>-app: ${values.table}`);
+      return bad(LIVE_TABLE.test(values.table) ? `--table is the live table: deletions runs on the restored table before it's copied back (--live to run it on the live table anyway)` : `--table must be a restored table, supply-checkout-<env>-app-restore-<suffix>: ${values.table}`);
+    }
     envName = match?.[1];
   }
   if (values.bucket !== undefined && mode !== "deletions") return bad("--bucket is only for deletions");
+  if ((values.live || values["user-pool-id"] !== undefined) && mode !== "deletions") return bad("--live and --user-pool-id are only for deletions");
+  if (mode === "deletions" && !local && !values["user-pool-id"]) return bad("--user-pool-id is required: recorded users still in the pool are left alone");
+  if (values["user-pool-id"] !== undefined && !/^[\w-]+_[0-9a-zA-Z]+$/.test(values["user-pool-id"])) return bad(`--user-pool-id isn't a user pool ID: ${values["user-pool-id"]}`);
   if (mode === "deletions" && local && !values.bucket) return bad("--bucket is required with --endpoint");
   if (mode === "check" && values.apply) return bad("check doesn't write: leave out --apply");
 
@@ -173,6 +207,11 @@ export async function main(
       where = `in account ${account} (profile ${values.profile})`;
     } catch (e) {
       err(`Failed to identify the profile's account: ${(e as Error).name}: ${(e as Error).message}`);
+      return 1;
+    }
+    const expected = env.SUPPLY_CHECKOUT_EXPECTED_ACCOUNT;
+    if (expected && expected !== account) {
+      err(`The profile signs in to account ${account}, not SUPPLY_CHECKOUT_EXPECTED_ACCOUNT (${expected}). Nothing was read or written.`);
       return 1;
     }
   }
@@ -195,12 +234,15 @@ export async function main(
     }
     const bucket = values.bucket ?? deletionsBucketName(envName as string, values.region, account as string);
     out(`deletions on ${table} in ${values.region} ${where}, from ${bucket}${suffix}`);
+    if (values.live) out("WARNING: this is the live table. Deleting there skips the check a restored table gets before it's copied back.");
     const { records, invalid } = await readDeletionRecords(deps.s3(values.region, credentials), bucket);
+    const userIds = records.filter((r) => r.kind === "user").map((r) => r.id);
+    const stillExists = credentials && values["user-pool-id"] ? await deps.stillInPool(values.region, credentials, values["user-pool-id"], userIds) : new Set<string>();
     const db = connect(table);
-    const plan = await planDeletions(db, records);
+    const plan = await planDeletions(db, records, { stillExists });
     const report = await applyDeletions(db, plan, { apply: values.apply });
     for (const line of formatDeletions({ ...plan.records, invalid: invalid.length }, report)) out(line);
-    return report.blockedTeams.length ? 1 : 0;
+    return report.blockedTeams.length || report.unconfirmedTeams.length ? 1 : 0;
   } catch (e) {
     // The SDK's error name and message: no item contents
     err(`Failed: ${(e as Error).name}: ${(e as Error).message}`);

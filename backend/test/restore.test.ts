@@ -14,8 +14,8 @@ import { connection, dbFromConnection } from "../src/data/client.js";
 import { applyDeletions, checkTableSettings, copyTable, planDeletions } from "../src/data/restore.js";
 import { DELETION_RECORD_RETENTION_DAYS, deletionsBucketName } from "../src/deletions/names.js";
 import { type DeletionRecord, deletionKey, deletionLogFromEnv, readDeletionRecords, s3DeletionLog, type S3Like, validRecord } from "../src/deletions/records.js";
-import { formatCopy, formatDeletions, main, USAGE, type Deps } from "../scripts/restore.js";
-import { endpoint, newUser, rawItem, REGION, useTable } from "./helpers.js";
+import { formatCopy, formatDeletions, main, USAGE, usersInPool, type Deps } from "../scripts/restore.js";
+import { endpoint, fakeDb, newUser, rawItem, REGION, useTable } from "./helpers.js";
 
 const NOW = new Date("2026-09-27T12:00:00.000Z");
 const newTeamId = () => `team-${randomUUID()}`;
@@ -233,11 +233,12 @@ describe("the restore CLI's arguments", () => {
     s3: () => {
       throw new Error("must not use S3");
     },
+    stillInPool: () => Promise.reject(new Error("must not ask Cognito")),
   };
-  const run = async (args: string[], deps: Deps = unused) => {
+  const run = async (args: string[], deps: Deps = unused, env: NodeJS.ProcessEnv = {}) => {
     const out: string[] = [];
     const err: string[] = [];
-    const code = await main(args, (l) => out.push(l), (l) => err.push(l), deps);
+    const code = await main(args, (l) => out.push(l), (l) => err.push(l), deps, env);
     return { code, out: out.join("\n"), err: err.join("\n") };
   };
   const live = "supply-checkout-prod-app";
@@ -264,7 +265,12 @@ describe("the restore CLI's arguments", () => {
     [["check", ...aws], /check takes --table/],
     [["deletions", "--from", restored, ...aws], /deletions takes --table/],
     [["check", "--table", restored, ...aws], /--table must be a live table/],
-    [["deletions", "--table", "other-table", ...aws], /--table must be an app table, restored or live/],
+    [["deletions", "--table", "other-table", ...aws], /--table must be a restored table/],
+    [["deletions", "--table", live, "--user-pool-id", "r_pool", ...aws], /--table is the live table: deletions runs on the restored table/],
+    [["deletions", "--table", restored, ...aws], /--user-pool-id is required/],
+    [["deletions", "--table", restored, "--user-pool-id", "not a pool", ...aws], /--user-pool-id isn't a user pool ID/],
+    [["check", "--table", live, "--live", ...aws], /--live and --user-pool-id are only for deletions/],
+    [["copy-back", "--from", restored, "--to", live, "--user-pool-id", "r_pool", ...aws], /--live and --user-pool-id are only for deletions/],
     [["check", "--table", live, "--bucket", "b", ...aws], /--bucket is only for deletions/],
     [["deletions", "--table", "t", "--region", "r", "--endpoint", "http://127.0.0.1:9"], /--bucket is required with --endpoint/],
     [["check", "--table", live, "--apply", ...aws], /check doesn't write/],
@@ -315,24 +321,83 @@ describe("the restore CLI's arguments", () => {
         },
       }),
     };
-    const result = await run(["deletions", "--table", restored, ...aws], deps);
+    const result = await run(["deletions", "--table", restored, "--user-pool-id", "r_pool", ...aws], deps);
     expect(buckets).toEqual(["supply-checkout-prod-deletions-r-acct"]);
     expect(result).toMatchObject({ code: 1, err: "Failed: AccessDenied: Access Denied" });
     expect(result.out).toBe(`deletions on ${restored} in r in account acct (profile p), from supply-checkout-prod-deletions-r-acct (dry run)`);
   });
 
+  it("refuses to go on in an account other than SUPPLY_CHECKOUT_EXPECTED_ACCOUNT, before reading anything", async () => {
+    const deps: Deps = { ...unused, callerAccount: async () => "acct" };
+    expect(await run(["copy-back", "--from", restored, "--to", live, ...aws, "--apply"], deps, { SUPPLY_CHECKOUT_EXPECTED_ACCOUNT: "other" })).toEqual({
+      code: 1,
+      out: "",
+      err: "The profile signs in to account acct, not SUPPLY_CHECKOUT_EXPECTED_ACCOUNT (other). Nothing was read or written.",
+    });
+  });
+
+  it("runs on the live table only with --live, warning first, and leaves users still in the pool alone", async () => {
+    const bucket = fakeS3();
+    const log = s3DeletionLog({ bucket: "b", s3: bucket.s3 });
+    await log.record({ kind: "user", id: "u-gone", deletedAt: NOW.toISOString() });
+    await log.record({ kind: "user", id: "u-back", deletedAt: NOW.toISOString() });
+    const asked: string[][] = [];
+    const scans: unknown[] = [];
+    const deps: Deps = {
+      callerAccount: async () => "acct",
+      s3: () => bucket.s3,
+      stillInPool: async (_region, _credentials, pool, ids) => {
+        asked.push([pool, ...ids]);
+        return new Set(["u-back"]);
+      },
+      connect: () =>
+        fakeDb(async (command) => {
+          scans.push(command.input);
+          return { Items: [{ PK: "USER#u-gone", SK: "TEAM#t1" }, { PK: "USER#u-back", SK: "TEAM#t1" }] };
+        }),
+    };
+    const result = await run(["deletions", "--table", live, "--live", "--user-pool-id", "r_pool", ...aws], deps, { SUPPLY_CHECKOUT_EXPECTED_ACCOUNT: "acct" });
+    expect(asked).toEqual([["r_pool", "u-back", "u-gone"]]);
+    expect(scans).toHaveLength(1);
+    expect(result.out.split("\n").slice(0, 2)).toEqual([
+      `deletions on ${live} in r in account acct (profile p), from supply-checkout-prod-deletions-r-acct (dry run)`,
+      "WARNING: this is the live table. Deleting there skips the check a restored table gets before it's copied back.",
+    ]);
+    expect(result.out).toContain("  accounts that outlived their record (still in the user pool, or joined or created a team after it), left alone: 1");
+    expect(result.out).toContain("  accounts with rows to delete: 1 (dry run: would be)");
+    expect(result.code).toBe(0);
+  });
+
+  it("asks Cognito for each recorded user by sub, and refuses an ID that could break the filter", async () => {
+    const calls: unknown[] = [];
+    const call = async (action: string, body: Record<string, unknown>) => {
+      calls.push([action, body]);
+      return { Users: body.Filter === 'sub = "u1"' ? [{ Username: "x" }] : [] };
+    };
+    expect(await usersInPool(call, "r_pool", ["u1", "u2"])).toEqual(new Set(["u1"]));
+    expect(calls).toEqual([
+      ["ListUsers", { UserPoolId: "r_pool", Filter: 'sub = "u1"', Limit: 1, AttributesToGet: ["sub"] }],
+      ["ListUsers", { UserPoolId: "r_pool", Filter: 'sub = "u2"', Limit: 1, AttributesToGet: ["sub"] }],
+    ]);
+    expect(await usersInPool(async () => ({}), "r_pool", ["u3"])).toEqual(new Set());
+    await expect(usersInPool(call, "r_pool", ['u" or sub = "x'])).rejects.toThrow("Invalid user ID");
+  });
+
   it("formats its reports", () => {
-    expect(formatDeletions({ users: 2, teams: 1, invalid: 1 }, { apply: true, teamsPurged: 2, itemsPurged: 9, membershipsRemoved: 1, userRowsDeleted: 3, blockedTeams: ["t9"] })).toEqual([
+    expect(formatDeletions({ users: 2, teams: 1, invalid: 1 }, { apply: true, teamsPurged: 2, itemsPurged: 9, membershipsRemoved: 1, userRowsDeleted: 3, blockedTeams: ["t9"], unconfirmedTeams: ["t8"], survivors: 1 })).toEqual([
       "Deletion records: 2 accounts, 1 teams",
       "  records that aren't valid, skipped (look at them in the bucket): 1",
+      "  accounts that outlived their record (still in the user pool, or joined or created a team after it), left alone: 1",
       "  teams purged: 2 (9 items)",
       "  memberships removed: 1",
       "  user rows deleted: 3",
       "  teams where a deleted account is the last owner and others are still members, left for a person: 1",
       "    t9",
+      "  teams a record says its deletion closed that the table doesn't bear out, left for a person: 1",
+      "    t8",
       "Done.",
     ]);
-    expect(formatDeletions({ users: 0, teams: 0, invalid: 0 }, { apply: false, teamsPurged: 0, itemsPurged: 0, membershipsRemoved: 0, userRowsDeleted: 0, blockedTeams: [] })).toEqual([
+    expect(formatDeletions({ users: 0, teams: 0, invalid: 0 }, { apply: false, teamsPurged: 0, itemsPurged: 0, membershipsRemoved: 0, userRowsDeleted: 0, blockedTeams: [], unconfirmedTeams: [], survivors: 0 })).toEqual([
       "Deletion records: 0 accounts, 0 teams",
       "  teams purged: 0 (dry run: would be)",
       "  memberships removed: 0 (dry run: would be)",
@@ -424,10 +489,12 @@ describe.skipIf(!endpoint)("re-applying deletions on DynamoDB Local", () => {
       usersWithRows: [deleted, deleted3].sort(),
       blockedTeams: [e.teamId],
       blockedUsers: [deleted2],
+      unconfirmedTeams: [],
+      survivors: 0,
     });
 
     const before = await everything(db);
-    expect(await applyDeletions(db, plan, { apply: false })).toEqual({ apply: false, teamsPurged: 3, itemsPurged: 0, membershipsRemoved: 2, userRowsDeleted: 2, blockedTeams: [e.teamId] });
+    expect(await applyDeletions(db, plan, { apply: false })).toEqual({ apply: false, teamsPurged: 3, itemsPurged: 0, membershipsRemoved: 2, userRowsDeleted: 2, blockedTeams: [e.teamId], unconfirmedTeams: [], survivors: 0 });
     expect(await everything(db)).toEqual(before);
 
     const later = new Date(NOW.getTime() + 60_000);
@@ -453,8 +520,60 @@ describe.skipIf(!endpoint)("re-applying deletions on DynamoDB Local", () => {
 
     // Again: only the team for a person is left
     const again = await planDeletions(db, records);
-    expect(again).toEqual({ records: { users: 4, teams: 2 }, teamsToPurge: [], memberships: [], usersWithRows: [], blockedTeams: [e.teamId], blockedUsers: [deleted2] });
+    expect(again).toEqual({ records: { users: 4, teams: 2 }, teamsToPurge: [], memberships: [], usersWithRows: [], blockedTeams: [e.teamId], blockedUsers: [deleted2], unconfirmedTeams: [], survivors: 0 });
     expect(await rawItem(db, `USER#${deleted2}`, `TEAM#${e.teamId}`)).toBeDefined();
+  });
+
+  it("purges a team a record says its deletion closed only when the table bears it out, and reports the rest", async () => {
+    const db = table.db;
+    const [deleted, other, stranger] = [newUser(), newUser(), newUser()];
+    // The user's own team, alone: purged
+    const own = await team(db, deleted, [], "Own");
+    // Closed, nobody left in it (the deletion had already left it): purged
+    const emptied = await team(db, other, [], "Emptied");
+    await closeTeam(db, emptied.context, { confirmName: "Emptied" }, NOW);
+    const { removeMember } = await import("../src/data/index.js");
+    await removeMember(db, await authorizeTeam(db, other, emptied.teamId), other, {}, NOW);
+    // Someone else's open team, which the user isn't in: for a person, untouched
+    const foreign = await team(db, stranger, [], "Foreign");
+    // The user's team with a member who isn't deleted: for a person, and the user is held back
+    const shared = await team(db, deleted, [[other, "viewer"]], "Shared");
+    const records: DeletionRecord[] = [{ kind: "user", id: deleted, deletedAt: NOW.toISOString(), teamsClosed: [own.teamId, emptied.teamId, foreign.teamId, shared.teamId] }];
+    const plan = await planDeletions(db, records);
+    expect(plan).toMatchObject({
+      teamsToPurge: [own.teamId, emptied.teamId].sort(),
+      memberships: [],
+      unconfirmedTeams: [foreign.teamId, shared.teamId].sort(),
+      blockedUsers: [deleted],
+      usersWithRows: [],
+    });
+    const report = await applyDeletions(db, plan, { apply: true, now: NOW });
+    expect(report).toMatchObject({ teamsPurged: 2, unconfirmedTeams: [foreign.teamId, shared.teamId].sort() });
+    expect(await rawItem(db, `TEAM#${foreign.teamId}`, "META")).toMatchObject({ name: "Foreign" });
+    expect(await rawItem(db, `TEAM#${shared.teamId}`, `MEMBER#${deleted}`)).toBeDefined();
+    expect(await rawItem(db, `USER#${deleted}`, `TEAM#${shared.teamId}`)).toBeDefined();
+  });
+
+  it("leaves alone a recorded user who outlived their record: still in Cognito, or joined or created a team after it", async () => {
+    const db = table.db;
+    const [owner, joinedLater, createdLater, inPool] = [newUser(), newUser(), newUser(), newUser()];
+    const earlier = new Date(NOW.getTime() - 86400_000).toISOString();
+    // Joined after the record's time (the team was made at NOW, the record says a day before)
+    const t = await team(db, owner, [[joinedLater, "contributor"], [inPool, "viewer"]]);
+    // Created a team after it
+    const created = await team(db, createdLater, [], "Later");
+    const records: DeletionRecord[] = [
+      { kind: "user", id: joinedLater, deletedAt: earlier },
+      { kind: "user", id: createdLater, deletedAt: earlier, teamsClosed: [created.teamId] },
+      { kind: "user", id: inPool, deletedAt: NOW.toISOString() },
+    ];
+    const plan = await planDeletions(db, records, { stillExists: new Set([inPool]) });
+    expect(plan).toMatchObject({ teamsToPurge: [], memberships: [], usersWithRows: [], unconfirmedTeams: [], survivors: 3 });
+    // Without the Cognito check, the one with no later activity would be deleted
+    expect((await planDeletions(db, records)).memberships).toEqual([{ userId: inPool, teamId: t.teamId }]);
+    await applyDeletions(db, plan, { apply: true, now: NOW });
+    for (const u of [joinedLater, inPool]) expect(await rawItem(db, `TEAM#${t.teamId}`, `MEMBER#${u}`)).toBeDefined();
+    expect(await rawItem(db, `TEAM#${created.teamId}`, "META")).toBeDefined();
   });
 
   it("treats a membership already gone, or an owner who left meanwhile, the way the app would", async () => {
@@ -482,7 +601,7 @@ describe.skipIf(!endpoint)("re-applying deletions on DynamoDB Local", () => {
     const db = table.db;
     const deleted = newUser();
     const t = await team(db, deleted, [], "Vanishing");
-    const plan = { records: { users: 1, teams: 0 }, teamsToPurge: [t.teamId, newTeamId()], memberships: [], usersWithRows: [], blockedTeams: [], blockedUsers: [] };
+    const plan = { records: { users: 1, teams: 0 }, teamsToPurge: [t.teamId, newTeamId()], memberships: [], usersWithRows: [], blockedTeams: [], blockedUsers: [], unconfirmedTeams: [], survivors: 0 };
     await closeTeam(db, t.context, { confirmName: "Vanishing" }, NOW);
     // A closed team is purged too, keeping its first closure time
     expect(await applyDeletions(db, plan, { apply: true, now: new Date(NOW.getTime() + 1000) })).toMatchObject({ teamsPurged: 1 });
@@ -499,6 +618,7 @@ describe.skipIf(!endpoint)("re-applying deletions on DynamoDB Local", () => {
       callerAccount: () => Promise.reject(new Error("must not identify")),
       connect: (options) => (options.tableName === db.tableName ? db : (undefined as never)),
       s3: () => bucket.s3,
+      stillInPool: () => Promise.reject(new Error("must not ask Cognito")),
     };
     const out: string[] = [];
     const args = ["deletions", "--table", db.tableName, "--region", REGION, "--endpoint", endpoint as string, "--bucket", "records"];
@@ -548,6 +668,7 @@ describe.skipIf(!endpoint)("copying back on DynamoDB Local", () => {
       s3: () => {
         throw new Error("must not use S3");
       },
+      stillInPool: () => Promise.reject(new Error("must not ask Cognito")),
     };
     const code = await main(["copy-back", "--from", source.db.tableName, "--to", target.db.tableName, "--region", REGION, "--endpoint", endpoint as string], (l) => out.push(l), () => {}, deps);
     expect(code).toBe(0);

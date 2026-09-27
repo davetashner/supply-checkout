@@ -480,6 +480,7 @@ describe("scheduled checks", () => {
       Effect: "Allow",
       Action: "s3:PutObject",
       Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:s3:::supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }, "/teams/*"]] },
+      Condition: { Null: { "s3:if-none-match": "false" } },
     });
     const [fn] = functions(observability()).filter((f) => f.FunctionName === "supply-checkout-prod-team-purge");
     expect((fn.Environment as { Variables: Record<string, unknown> }).Variables).toMatchObject({

@@ -342,6 +342,7 @@ describe("account-access role (LeadingKeys)", () => {
             Effect: "Allow",
             Action: "s3:PutObject",
             Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:s3:::supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }, "/users/*"]] },
+            Condition: { Null: { "s3:if-none-match": "false" } },
           },
         ],
       ]);

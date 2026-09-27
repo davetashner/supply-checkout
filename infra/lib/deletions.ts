@@ -13,7 +13,7 @@ import type { DeploymentConfig } from "./config.js";
  * Lets `fn` write one kind of deletion record: s3:PutObject under that kind's
  * prefix only. No reads, lists, deletes, retention or legal-hold changes, and
  * no other prefix, so the account function can't write a team's record or the
- * purge a user's. The object key names the ID, which only the function's own
+ * purge a user's. Only with If-None-Match, so no record can be overwritten. The object key names the ID, which only the function's own
  * checks choose (the caller's token `sub`, or a team the closed-teams index
  * lists), so IAM can't narrow it further than the prefix.
  */
@@ -24,6 +24,9 @@ export function grantPutDeletionRecords(fn: LambdaFunction, config: Pick<Deploym
       sid: kind === "user" ? "PutAccountDeletionRecords" : "PutTeamDeletionRecords",
       actions: ["s3:PutObject"],
       resources: [`arn:${Aws.PARTITION}:s3:::${bucket}/${DELETION_PREFIXES[kind]}*`],
+      // Only a conditional write (If-None-Match: *, as records.ts sends it): a record,
+      // once written, can't get a newer version on top of it
+      conditions: { Null: { "s3:if-none-match": "false" } },
     }),
   );
   Validations.of(fn.role as Role).acknowledge({

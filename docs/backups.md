@@ -331,6 +331,8 @@ cd backend && npm ci
 P="--region us-east-1 --profile supply-prod"
 LIVE=supply-checkout-prod-app
 RESTORED=supply-checkout-prod-app-restore-<yyyymmdd>
+POOL=$(aws ssm get-parameter --name /supply-checkout/prod/identity/user-pool-id --query Parameter.Value --output text $P)
+export SUPPLY_CHECKOUT_EXPECTED_ACCOUNT=<prod account ID>   # in your shell only: the script refuses any other account
 ```
 
 #### 1. Restore, and verify the restored table
@@ -340,7 +342,7 @@ Use [drill A or B](#restore-drill) with the target account the live table is in,
 #### 2. Preview
 
 ```bash
-npm run restore -- deletions --table $RESTORED $P      # what would be deleted again
+npm run restore -- deletions --table $RESTORED --user-pool-id $POOL $P      # what would be deleted again
 npm run restore -- copy-back --from $RESTORED --to $LIVE $P   # how many items would be put and deleted
 ```
 
@@ -355,6 +357,17 @@ FNS=$(aws lambda list-functions $P --query "Functions[?Environment.Variables.TAB
   | tr '\t' '\n' | grep -v -- '-live-updates$')
 echo "$FNS"   # the data, account and ops API functions, the email events handler, the scheduled checks and purge, and the sign-in triggers
 for f in $FNS; do aws lambda put-function-concurrency $P --function-name "$f" --reserved-concurrent-executions 0; done
+date -u +%FT%TZ   # throttled
+```
+
+Throttling stops new invocations, not ones already running. Wait until none are: the longest timeout is the purge's, 5 minutes. Check each function's `ConcurrentExecutions` is 0 for the last minute before going on:
+
+```bash
+for f in $FNS; do
+  echo "$f $(aws cloudwatch get-metric-statistics $P --namespace AWS/Lambda --metric-name ConcurrentExecutions \
+    --dimensions Name=FunctionName,Value=$f --statistics Maximum --period 60 \
+    --start-time $(date -u -v-2M +%FT%TZ) --end-time $(date -u +%FT%TZ) --query 'max(Datapoints[].Maximum)')"
+done   # every one None or 0; if not, wait a minute and check again
 date -u +%FT%TZ   # writes stopped
 ```
 
@@ -364,11 +377,11 @@ Note the time: the live table's own PITR can take it back to this moment if the 
 
 #### 4. Re-apply deletions on the restored table
 
-Now no more deletions can happen, so the records are complete:
+Now no more deletions can happen, so the records are complete. It runs only on a restored table (`--live` would allow the live table, with a warning; the runbook never needs it):
 
 ```bash
-npm run restore -- deletions --table $RESTORED $P --apply
-npm run restore -- deletions --table $RESTORED $P      # again: purges 0, removes 0
+npm run restore -- deletions --table $RESTORED --user-pool-id $POOL $P --apply
+npm run restore -- deletions --table $RESTORED --user-pool-id $POOL $P      # again: purges 0, removes 0
 ```
 
 For each record it finds in the restored table:
@@ -377,13 +390,15 @@ For each record it finds in the restored table:
 | --- | --- |
 | A deleted team, or a team a deleted account's deletion closed | Marks it closed and due, and purges it the way the scheduled purge does: every item, its members' team-switcher rows, its Stripe link |
 | A team whose only members are deleted accounts | Purges it too (the account deletion closed it, and the purge followed) |
+| A team a deleted account's record says its deletion closed, but that has members who aren't deleted, or that the account isn't in and isn't closed | Nothing: left for a person (the record and the table disagree) |
+| A recorded account that outlived its record: still in the user pool, a member since after the record's time, or in a team created after it | Nothing at all. A deletion that wrote its record and then failed, where the user never retried, leaves one; they're counted, not named |
 | A deleted account's membership of any other team | Removes it the way leaving does: the counts move, invites to their address in that team go, and the team's audit trail gets `member.left` with `account_deleted` |
 | A deleted account's own `USER#` rows | Deletes them, except the daily limit counters, which expire |
 | A deleted account that's the last owner of an open team with other members | Nothing: [left for a person](#a-team-left-for-a-person) |
 
 Pending invites to a deleted account's address from teams it wasn't in can't be found (the record has no address). They expire within 7 days, by TTL.
 
-It exits 1 while a team is left for a person. Every step is idempotent, so a run that stops (a throttle, an expired session) is finished by running it again.
+It exits 1 while a team is left for a person. Records can't be changed or deleted (Object Lock), so this check against the table and the user pool is what keeps a wrong or stale record from deleting someone's data. Every step is idempotent, so a run that stops (a throttle, an expired session) is finished by running it again.
 
 > **Restoring from the backup account into a new account.** The records are in the old workload account's bucket. If that account is still reachable, pass its bucket with `--bucket` (and a profile that can read it). If it's gone, the records are gone with it: the deletions since the recovery point can't be re-applied, and every account and team deleted in the last 90 days may come back. Tell the owner, and delete them by hand as their owners ask again.
 
