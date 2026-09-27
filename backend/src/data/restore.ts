@@ -79,7 +79,7 @@ export interface DeletionPlan {
   readonly blockedUsers: readonly string[];
   /** Teams a user record says its deletion closed that the table doesn't bear out (other members, or not the user's): for a person. */
   readonly unconfirmedTeams: readonly string[];
-  /** Recorded users who outlived their record (in Cognito, or joined or created a team after it): left alone. Counted, never named. */
+  /** Recorded users who outlived their record (still in the user pool; without that check, joined or created a team after it): left alone. Counted, never named. */
   readonly survivors: number;
 }
 
@@ -114,11 +114,15 @@ async function* scan(db: Db, input: { FilterExpression: string; ProjectionExpres
  *
  * A record is permanent (Object Lock), so the plan trusts it only as far as the
  * table agrees with it:
- * - A user who shows signs of having outlived their record is a survivor and
- *   is left alone entirely: named in `stillExists` (the owner's Cognito check),
- *   a member since after their deletion time (`joinedAt`), or a member of a
- *   team created after it. That happens when a deletion wrote its record and
- *   then failed, and the user never retried.
+ * - A user who outlived their record is a survivor and is left alone
+ *   entirely. That happens when a deletion wrote its record and then failed,
+ *   and the user never retried. With the owner's Cognito check (`inPool`, the
+ *   recorded users the user pool still has), that alone decides: a user the
+ *   pool no longer has is deleted, whatever their timestamps say, since a
+ *   user whose first deletion failed may have come back and been deleted for
+ *   real later (the record keeps the first time). Without it (local runs),
+ *   the table decides: a member since after the record's time (`joinedAt`),
+ *   or a member of a team created after it.
  * - A team a user record says its deletion closed is purged only if every
  *   member it has is a deleted user and either the recording user is one of
  *   them or the team is closed. Anything else is left for a person
@@ -126,7 +130,7 @@ async function* scan(db: Db, input: { FilterExpression: string; ProjectionExpres
  * Team records are trusted as they are: the purge writes one only after it has
  * marked a closed, due team `purging`.
  */
-export async function planDeletions(db: Db, records: readonly DeletionRecord[], options: { readonly stillExists?: ReadonlySet<string> } = {}): Promise<DeletionPlan> {
+export async function planDeletions(db: Db, records: readonly DeletionRecord[], options: { readonly inPool?: ReadonlySet<string> } = {}): Promise<DeletionPlan> {
   const userRecords = new Map(records.filter((r) => r.kind === "user").map((r) => [r.id, r]));
   const recordedTeams = new Set(records.filter((r) => r.kind === "team").map((r) => r.id));
 
@@ -160,8 +164,8 @@ export async function planDeletions(db: Db, records: readonly DeletionRecord[], 
   }
 
   // Survivors: records the table (or Cognito) contradicts
-  const survivors = new Set([...userRecords.keys()].filter((u) => options.stillExists?.has(u)));
-  for (const [teamId, roster] of members) {
+  const survivors = new Set([...userRecords.keys()].filter((u) => options.inPool?.has(u)));
+  for (const [teamId, roster] of options.inPool ? [] : members) {
     for (const [userId, m] of roster) {
       const deletedAt = userRecords.get(userId)?.deletedAt;
       if (!deletedAt) continue;

@@ -376,7 +376,6 @@ cd backend && npm ci
 P="--region us-east-1 --profile supply-prod"
 LIVE=supply-checkout-prod-app
 RESTORED=supply-checkout-prod-app-restore-<yyyymmdd>
-POOL=$(aws ssm get-parameter --name /supply-checkout/prod/identity/user-pool-id --query Parameter.Value --output text $P)
 export SUPPLY_CHECKOUT_EXPECTED_ACCOUNT=<prod account ID>   # in your shell only: the script refuses any other account
 ```
 
@@ -387,7 +386,7 @@ Use [drill A or B](#restore-drill) with the target account the live table is in,
 #### 2. Preview
 
 ```bash
-npm run restore -- deletions --table $RESTORED --user-pool-id $POOL $P      # what would be deleted again
+npm run restore -- deletions --table $RESTORED $P      # what would be deleted again
 npm run restore -- copy-back --from $RESTORED --to $LIVE $P   # how many items would be put and deleted
 ```
 
@@ -405,7 +404,7 @@ for f in $FNS; do aws lambda put-function-concurrency $P --function-name "$f" --
 date -u +%FT%TZ   # throttled
 ```
 
-Throttling stops new invocations, not ones already running. Wait until none are: the longest timeout is the purge's, 5 minutes. Check each function's `ConcurrentExecutions` is 0 for the last minute before going on:
+Throttling stops new invocations, not ones already running. Wait until none are: the longest timeout is the purge's, 5 minutes. Check each function's `ConcurrentExecutions` is 0 for the last minute before going on (`date -u -v-2M` is BSD/macOS syntax; on Linux use `date -u -d '-2 minutes' +%FT%TZ`):
 
 ```bash
 for f in $FNS; do
@@ -425,8 +424,8 @@ Note the time: the live table's own PITR can take it back to this moment if the 
 Now no more deletions can happen, so the records are complete. It runs only on a restored table (`--live` would allow the live table, with a warning; the runbook never needs it):
 
 ```bash
-npm run restore -- deletions --table $RESTORED --user-pool-id $POOL $P --apply
-npm run restore -- deletions --table $RESTORED --user-pool-id $POOL $P      # again: purges 0, removes 0
+npm run restore -- deletions --table $RESTORED $P --apply
+npm run restore -- deletions --table $RESTORED $P      # again: purges 0, removes 0
 ```
 
 For each record it finds in the restored table:
@@ -436,7 +435,7 @@ For each record it finds in the restored table:
 | A deleted team, or a team a deleted account's deletion closed | Marks it closed and due, and purges it the way the scheduled purge does: every item, its members' team-switcher rows, its Stripe link |
 | A team whose only members are deleted accounts | Purges it too (the account deletion closed it, and the purge followed) |
 | A team a deleted account's record says its deletion closed, but that has members who aren't deleted, or that the account isn't in and isn't closed | Nothing: left for a person (the record and the table disagree) |
-| A recorded account that outlived its record: still in the user pool, a member since after the record's time, or in a team created after it | Nothing at all. A deletion that wrote its record and then failed, where the user never retried, leaves one; they're counted, not named |
+| A recorded account that outlived its record: still in the environment's user pool | Nothing at all. A deletion that wrote its record and then failed, where the user never retried, leaves one; they're counted, not named. The pool is read from `/supply-checkout/<env>/identity/user-pool-id`, never given on the command line, and it alone decides: an account the pool no longer has is deleted even if it joined or made teams after its record's time (a first deletion that failed, a return, then a real deletion). Only without AWS (`--endpoint`) do the timestamps decide instead |
 | A deleted account's membership of any other team | Removes it the way leaving does: the counts move, invites to their address in that team go, and the team's audit trail gets `member.left` with `account_deleted` |
 | A deleted account's own `USER#` rows | Deletes them, except the daily limit counters, which expire |
 | A deleted account that's the last owner of an open team with other members | Nothing: [left for a person](#a-team-left-for-a-person) |

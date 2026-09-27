@@ -233,6 +233,7 @@ describe("the restore CLI's arguments", () => {
     s3: () => {
       throw new Error("must not use S3");
     },
+    userPoolId: () => Promise.reject(new Error("must not read SSM")),
     stillInPool: () => Promise.reject(new Error("must not ask Cognito")),
   };
   const run = async (args: string[], deps: Deps = unused, env: NodeJS.ProcessEnv = {}) => {
@@ -266,11 +267,9 @@ describe("the restore CLI's arguments", () => {
     [["deletions", "--from", restored, ...aws], /deletions takes --table/],
     [["check", "--table", restored, ...aws], /--table must be a live table/],
     [["deletions", "--table", "other-table", ...aws], /--table must be a restored table/],
-    [["deletions", "--table", live, "--user-pool-id", "r_pool", ...aws], /--table is the live table: deletions runs on the restored table/],
-    [["deletions", "--table", restored, ...aws], /--user-pool-id is required/],
-    [["deletions", "--table", restored, "--user-pool-id", "not a pool", ...aws], /--user-pool-id isn't a user pool ID/],
-    [["check", "--table", live, "--live", ...aws], /--live and --user-pool-id are only for deletions/],
-    [["copy-back", "--from", restored, "--to", live, "--user-pool-id", "r_pool", ...aws], /--live and --user-pool-id are only for deletions/],
+    [["deletions", "--table", live, ...aws], /--table is the live table: deletions runs on the restored table/],
+    [["deletions", "--table", restored, "--user-pool-id", "r_pool", ...aws], /Unknown option '--user-pool-id'/],
+    [["check", "--table", live, "--live", ...aws], /--live is only for deletions/],
     [["check", "--table", live, "--bucket", "b", ...aws], /--bucket is only for deletions/],
     [["deletions", "--table", "t", "--region", "r", "--endpoint", "http://127.0.0.1:9"], /--bucket is required with --endpoint/],
     [["check", "--table", live, "--apply", ...aws], /check doesn't write/],
@@ -321,7 +320,7 @@ describe("the restore CLI's arguments", () => {
         },
       }),
     };
-    const result = await run(["deletions", "--table", restored, "--user-pool-id", "r_pool", ...aws], deps);
+    const result = await run(["deletions", "--table", restored, ...aws], deps);
     expect(buckets).toEqual(["supply-checkout-prod-deletions-r-acct"]);
     expect(result).toMatchObject({ code: 1, err: "Failed: AccessDenied: Access Denied" });
     expect(result.out).toBe(`deletions on ${restored} in r in account acct (profile p), from supply-checkout-prod-deletions-r-acct (dry run)`);
@@ -346,6 +345,7 @@ describe("the restore CLI's arguments", () => {
     const deps: Deps = {
       callerAccount: async () => "acct",
       s3: () => bucket.s3,
+      userPoolId: async (_region, _credentials, envName) => `r_${envName}pool`,
       stillInPool: async (_region, _credentials, pool, ids) => {
         asked.push([pool, ...ids]);
         return new Set(["u-back"]);
@@ -356,16 +356,24 @@ describe("the restore CLI's arguments", () => {
           return { Items: [{ PK: "USER#u-gone", SK: "TEAM#t1" }, { PK: "USER#u-back", SK: "TEAM#t1" }] };
         }),
     };
-    const result = await run(["deletions", "--table", live, "--live", "--user-pool-id", "r_pool", ...aws], deps, { SUPPLY_CHECKOUT_EXPECTED_ACCOUNT: "acct" });
-    expect(asked).toEqual([["r_pool", "u-back", "u-gone"]]);
+    const result = await run(["deletions", "--table", live, "--live", ...aws], deps, { SUPPLY_CHECKOUT_EXPECTED_ACCOUNT: "acct" });
+    // The environment's own pool, from SSM
+    expect(asked).toEqual([["r_prodpool", "u-back", "u-gone"]]);
     expect(scans).toHaveLength(1);
-    expect(result.out.split("\n").slice(0, 2)).toEqual([
+    expect(result.out.split("\n").slice(0, 3)).toEqual([
       `deletions on ${live} in r in account acct (profile p), from supply-checkout-prod-deletions-r-acct (dry run)`,
       "WARNING: this is the live table. Deleting there skips the check a restored table gets before it's copied back.",
+      "Checking recorded accounts against user pool r_prodpool",
     ]);
     expect(result.out).toContain("  accounts that outlived their record (still in the user pool, or joined or created a team after it), left alone: 1");
     expect(result.out).toContain("  accounts with rows to delete: 1 (dry run: would be)");
     expect(result.code).toBe(0);
+  });
+
+  it("refuses a user pool parameter that isn't a pool ID, before asking Cognito", async () => {
+    const bucket = fakeS3();
+    const deps: Deps = { ...unused, callerAccount: async () => "acct", s3: () => bucket.s3, userPoolId: async () => "not a pool" };
+    expect(await run(["deletions", "--table", restored, ...aws], deps)).toMatchObject({ code: 1, err: "Failed: Error: /supply-checkout/prod/identity/user-pool-id isn't a user pool ID" });
   });
 
   it("asks Cognito for each recorded user by sub, and refuses an ID that could break the filter", async () => {
@@ -567,13 +575,32 @@ describe.skipIf(!endpoint)("re-applying deletions on DynamoDB Local", () => {
       { kind: "user", id: createdLater, deletedAt: earlier, teamsClosed: [created.teamId] },
       { kind: "user", id: inPool, deletedAt: NOW.toISOString() },
     ];
-    const plan = await planDeletions(db, records, { stillExists: new Set([inPool]) });
+    // Without the Cognito check (local runs), the timestamps decide: the first two survived, the third is deleted
+    expect(await planDeletions(db, records)).toMatchObject({ teamsToPurge: [], memberships: [{ userId: inPool, teamId: t.teamId }], survivors: 2 });
+    // With it, the pool alone decides
+    const plan = await planDeletions(db, records, { inPool: new Set([joinedLater, createdLater, inPool]) });
     expect(plan).toMatchObject({ teamsToPurge: [], memberships: [], usersWithRows: [], unconfirmedTeams: [], survivors: 3 });
-    // Without the Cognito check, the one with no later activity would be deleted
-    expect((await planDeletions(db, records)).memberships).toEqual([{ userId: inPool, teamId: t.teamId }]);
     await applyDeletions(db, plan, { apply: true, now: NOW });
     for (const u of [joinedLater, inPool]) expect(await rawItem(db, `TEAM#${t.teamId}`, `MEMBER#${u}`)).toBeDefined();
     expect(await rawItem(db, `TEAM#${created.teamId}`, "META")).toBeDefined();
+  });
+
+  it("with the Cognito check, deletes a user the pool no longer has even if they came back after a first, failed deletion", async () => {
+    const db = table.db;
+    const [owner, returned] = [newUser(), newUser()];
+    // The first deletion wrote its record a day ago and failed; the user came back, joined a team and
+    // made one, then was deleted for real (If-None-Match kept the first record's time)
+    const earlier = new Date(NOW.getTime() - 86400_000).toISOString();
+    const joined = await team(db, owner, [[returned, "contributor"]], "Joined");
+    const made = await team(db, returned, [], "Made");
+    const records: DeletionRecord[] = [{ kind: "user", id: returned, deletedAt: earlier }];
+    expect((await planDeletions(db, records)).survivors).toBe(1);
+    const plan = await planDeletions(db, records, { inPool: new Set() });
+    expect(plan).toMatchObject({ survivors: 0, teamsToPurge: [made.teamId], memberships: [{ userId: returned, teamId: joined.teamId }], usersWithRows: [returned] });
+    await applyDeletions(db, plan, { apply: true, now: NOW });
+    expect(await partition(db, `TEAM#${made.teamId}`)).toEqual([]);
+    expect(await rawItem(db, `TEAM#${joined.teamId}`, `MEMBER#${returned}`)).toBeUndefined();
+    expect((await partition(db, `USER#${returned}`)).filter((i) => !String(i.SK).startsWith("LIMIT#"))).toEqual([]);
   });
 
   it("treats a membership already gone, or an owner who left meanwhile, the way the app would", async () => {
@@ -618,6 +645,7 @@ describe.skipIf(!endpoint)("re-applying deletions on DynamoDB Local", () => {
       callerAccount: () => Promise.reject(new Error("must not identify")),
       connect: (options) => (options.tableName === db.tableName ? db : (undefined as never)),
       s3: () => bucket.s3,
+      userPoolId: () => Promise.reject(new Error("must not read SSM")),
       stillInPool: () => Promise.reject(new Error("must not ask Cognito")),
     };
     const out: string[] = [];
@@ -668,6 +696,7 @@ describe.skipIf(!endpoint)("copying back on DynamoDB Local", () => {
       s3: () => {
         throw new Error("must not use S3");
       },
+      userPoolId: () => Promise.reject(new Error("must not read SSM")),
       stillInPool: () => Promise.reject(new Error("must not ask Cognito")),
     };
     const code = await main(["copy-back", "--from", source.db.tableName, "--to", target.db.tableName, "--region", REGION, "--endpoint", endpoint as string], (l) => out.push(l), () => {}, deps);

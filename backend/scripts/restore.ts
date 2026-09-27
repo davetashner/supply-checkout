@@ -5,7 +5,7 @@
 // for teams a person has to look at, team IDs: never emails, names, user IDs
 // or item contents.
 //
-//   npm run restore -- deletions --table supply-checkout-prod-app-restore-<date> --user-pool-id <pool> --region <region> --profile <profile> [--apply]
+//   npm run restore -- deletions --table supply-checkout-prod-app-restore-<date> --region <region> --profile <profile> [--apply]
 //   npm run restore -- copy-back --from supply-checkout-prod-app-restore-<date> --to supply-checkout-prod-app --region <region> --profile <profile> [--apply]
 //   npm run restore -- check     --table supply-checkout-prod-app --region <region> --profile <profile>
 //
@@ -14,6 +14,7 @@
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { S3Client } from "@aws-sdk/client-s3";
+import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { createDb, type Db, type DbOptions } from "../src/data/index.js";
@@ -25,10 +26,10 @@ import { readDeletionRecords, type S3Like } from "../src/deletions/records.js";
 export const USAGE = `Usage: npm run restore -- <mode> [options] --region <region> --profile <profile> [--apply]
 
 Modes, in the order the runbook uses them (docs/backups.md):
-  deletions  --table <restored table> --user-pool-id <pool>
-                                         delete again, from the restored table, every account and team
-                                         the deletion records name. Recorded users still in the user pool
-                                         (/supply-checkout/<env>/identity/user-pool-id) are left alone.
+  deletions  --table <restored table>   delete again, from the restored table, every account and team
+                                         the deletion records name. Recorded users still in the environment's
+                                         user pool (read from /supply-checkout/<env>/identity/user-pool-id)
+                                         are left alone.
                                          --bucket names the records' bucket (by default this environment's,
                                          in the profile's account). --live allows the live table instead,
                                          which the runbook never needs
@@ -60,6 +61,8 @@ export interface Deps {
   readonly connect: (options: DbOptions) => Db;
   /** An S3 client for the deletion records. */
   readonly s3: (region: string, credentials: Credentials | undefined) => S3Like;
+  /** The environment's user pool ID, from its SSM parameter (identity stack). */
+  readonly userPoolId: (region: string, credentials: Credentials, envName: string) => Promise<string>;
   /** Which of `userIds` the user pool still has (Cognito ListUsers by `sub`). */
   readonly stillInPool: (region: string, credentials: Credentials, userPoolId: string, userIds: readonly string[]) => Promise<Set<string>>;
 }
@@ -78,6 +81,16 @@ export async function usersInPool(call: (action: string, body: Record<string, un
 const defaultDeps: Deps = {
   connect: createDb,
   s3: (region, credentials) => new S3Client({ region, ...(credentials ? { credentials } : {}) }),
+  async userPoolId(region, credentials, envName) {
+    const ssm = new SSMClient({ region, credentials });
+    try {
+      const { Parameter } = await ssm.send(new GetParameterCommand({ Name: `/supply-checkout/${envName}/identity/user-pool-id` }));
+      if (!Parameter?.Value) throw new Error("The user pool ID parameter is empty");
+      return Parameter.Value;
+    } finally {
+      ssm.destroy();
+    }
+  },
   stillInPool: (region, credentials, userPoolId, userIds) => usersInPool(cognitoRequest({ region, credentials, timeoutMs: 10_000 }), userPoolId, userIds),
   async callerAccount(region, credentials) {
     const sts = new STSClient({ region, credentials });
@@ -141,7 +154,6 @@ export async function main(
         from: { type: "string" },
         to: { type: "string" },
         bucket: { type: "string" },
-        "user-pool-id": { type: "string" },
         live: { type: "boolean", default: false },
         region: { type: "string" },
         profile: { type: "string" },
@@ -191,9 +203,7 @@ export async function main(
     envName = match?.[1];
   }
   if (values.bucket !== undefined && mode !== "deletions") return bad("--bucket is only for deletions");
-  if ((values.live || values["user-pool-id"] !== undefined) && mode !== "deletions") return bad("--live and --user-pool-id are only for deletions");
-  if (mode === "deletions" && !local && !values["user-pool-id"]) return bad("--user-pool-id is required: recorded users still in the pool are left alone");
-  if (values["user-pool-id"] !== undefined && !/^[\w-]+_[0-9a-zA-Z]+$/.test(values["user-pool-id"])) return bad(`--user-pool-id isn't a user pool ID: ${values["user-pool-id"]}`);
+  if (values.live && mode !== "deletions") return bad("--live is only for deletions");
   if (mode === "deletions" && local && !values.bucket) return bad("--bucket is required with --endpoint");
   if (mode === "check" && values.apply) return bad("check doesn't write: leave out --apply");
 
@@ -237,9 +247,16 @@ export async function main(
     if (values.live) out("WARNING: this is the live table. Deleting there skips the check a restored table gets before it's copied back.");
     const { records, invalid } = await readDeletionRecords(deps.s3(values.region, credentials), bucket);
     const userIds = records.filter((r) => r.kind === "user").map((r) => r.id);
-    const stillExists = credentials && values["user-pool-id"] ? await deps.stillInPool(values.region, credentials, values["user-pool-id"], userIds) : new Set<string>();
+    let inPool: Set<string> | undefined;
+    if (credentials) {
+      // The environment's own pool, never one given on the command line: a wrong pool would pass everyone
+      const pool = await deps.userPoolId(values.region, credentials, envName as string);
+      if (!/^[\w-]+_[0-9a-zA-Z]+$/.test(pool)) throw new Error(`/supply-checkout/${envName}/identity/user-pool-id isn't a user pool ID`);
+      out(`Checking recorded accounts against user pool ${pool}`);
+      inPool = await deps.stillInPool(values.region, credentials, pool, userIds);
+    } else out("No user pool check (--endpoint): accounts that outlived their record are found from the table's timestamps");
     const db = connect(table);
-    const plan = await planDeletions(db, records, { stillExists });
+    const plan = await planDeletions(db, records, { inPool });
     const report = await applyDeletions(db, plan, { apply: values.apply });
     for (const line of formatDeletions({ ...plan.records, invalid: invalid.length }, report)) out(line);
     return report.blockedTeams.length || report.unconfirmedTeams.length ? 1 : 0;
