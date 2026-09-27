@@ -7,14 +7,23 @@ import type { PreTokenGenerationTriggerEvent } from "aws-lambda";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { DbForAccount } from "../src/api/account-db.js";
 import { createAccountHandler } from "../src/api/account-handler.js";
-import type { CognitoUser } from "../src/api/cognito-user.js";
+import { type CognitoUser, emailVerifiedFrom } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
 import { authorizeTeam, createInvite } from "../src/data/index.js";
 import { cognitoAdmin, type UpdateUserAttributes } from "../src/identity/cognito-admin.js";
-import { createEmailVerifiedHandler, federatedProvider, providerSaysVerified } from "../src/identity/email-verified-handler.js";
-import { FEDERATED_PROVIDERS, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "../src/identity/names.js";
+import {
+  CALL_TIMEOUT_MS,
+  createEmailVerifiedHandler,
+  federatedProvider,
+  LINKED_FAILED_ERROR,
+  logCorrelation,
+  providerSaysVerified,
+  RETRY_PAUSE_MS,
+  WRITE_BUDGET_MS,
+} from "../src/identity/email-verified-handler.js";
+import { DOWNGRADE_PENDING_ATTRIBUTE, FEDERATED_PROVIDERS, LINKED_EMAIL_ATTRIBUTE, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "../src/identity/names.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { REGION, accountPartitions, fakeMailer } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -79,10 +88,11 @@ function triggerEvent(options: {
   } as unknown as PreTokenGenerationTriggerEvent;
 }
 
-function trigger(update?: UpdateUserAttributes) {
+function trigger(update?: UpdateUserAttributes, options: { correlate?: (sub: string) => string; now?: () => number } = {}) {
   const calls: { pool: string; user: string; attributes: Record<string, string> }[] = [];
   const logs: Logged[] = [];
   const counted: string[] = [];
+  const pauses: number[] = [];
   const handler = createEmailVerifiedHandler({
     obs: fakeObservability(logs, counted),
     updateUserAttributes:
@@ -90,8 +100,12 @@ function trigger(update?: UpdateUserAttributes) {
       (async (pool, user, attributes) => {
         calls.push({ pool, user, attributes: { ...attributes } });
       }),
+    sleep: async (ms) => {
+      pauses.push(ms);
+    },
+    ...options,
   });
-  return { handler, calls, logs, counted };
+  return { handler, calls, logs, counted, pauses };
 }
 
 describe("providerSaysVerified", () => {
@@ -276,6 +290,245 @@ describe("pre token generation trigger", () => {
   });
 });
 
+// supply-checkout-kgw: a native user with Google or Apple linked. Cognito
+// rewrites its email from the provider at each provider sign-in and leaves
+// email_verified "true"; the trigger keeps email_verified to the recorded address.
+describe("pre token generation trigger for a linked user", () => {
+  const NATIVE = "8f0e5b1c-0000-4000-8000-000000000001";
+  const RECORDED = "pat@example.com";
+  const linkedEvent = (options: { email?: string | null; emailVerified?: string; recorded?: string | null; triggerSource?: string; identities?: string; pending?: string } = {}) => {
+    const event = triggerEvent({
+      userName: NATIVE,
+      status: "CONFIRMED",
+      claim: "true",
+      identities: options.identities ?? identities("Google", GOOGLE_ID),
+      email: options.email === undefined ? RECORDED : options.email,
+      emailVerified: options.emailVerified ?? "true",
+      triggerSource: options.triggerSource,
+    });
+    if (options.recorded !== null) event.request.userAttributes[LINKED_EMAIL_ATTRIBUTE] = options.recorded ?? RECORDED;
+    if (options.pending !== undefined) event.request.userAttributes[DOWNGRADE_PENDING_ATTRIBUTE] = options.pending;
+    return event;
+  };
+  const FLAG = { pool: POOL, user: NATIVE, attributes: { [DOWNGRADE_PENDING_ATTRIBUTE]: "1" } };
+  const DOWNGRADE = { pool: POOL, user: NATIVE, attributes: { email_verified: "false", [DOWNGRADE_PENDING_ATTRIBUTE]: "" } };
+  const FLAG_THEN_DOWNGRADE = [FLAG, DOWNGRADE];
+  /** An update that fails for the calls whose attributes `fails` picks, recording every call. */
+  const failing = (fails: (attributes: Readonly<Record<string, string>>, n: number) => boolean) => {
+    const tried: Record<string, string>[] = [];
+    const update: UpdateUserAttributes = async (_pool, _user, attributes) => {
+      tried.push({ ...attributes });
+      if (fails(attributes, tried.length)) throw new Error("AdminUpdateUserAttributes failed: 400 TooManyRequestsException");
+    };
+    return { update, tried };
+  };
+  const isDowngrade = (attributes: Readonly<Record<string, string>>) => attributes.email_verified === "false";
+
+  it("leaves a linked user alone while its email is the recorded one, whatever the provider claims, at any token", async () => {
+    for (const triggerSource of ["TokenGeneration_HostedAuth", "TokenGeneration_RefreshTokens", "TokenGeneration_Authentication"]) {
+      for (const email of [RECORDED, "Pat@Example.COM", ` ${RECORDED} `]) {
+        const { handler, calls, logs } = trigger();
+        const event = linkedEvent({ email, triggerSource });
+        event.request.userAttributes[PROVIDER_EMAIL_VERIFIED_ATTRIBUTE] = "false";
+        await handler(event);
+        expect(calls, `${triggerSource} ${email}`).toEqual([]);
+        expect(logs).toEqual([{ level: "info", message: "Federated email", data: { triggerSource, outcome: "linked-unchanged" } }]);
+      }
+    }
+  });
+
+  it("unverifies a changed email at a Managed Login sign-in, whether or not the provider says it's verified", async () => {
+    for (const claim of ["true", "false", undefined]) {
+      const { handler, calls, logs, counted } = trigger();
+      const event = linkedEvent({ email: "victim@example.org" });
+      const attributes = Object.entries(event.request.userAttributes).filter(([name]) => name !== PROVIDER_EMAIL_VERIFIED_ATTRIBUTE);
+      if (claim !== undefined) attributes.push([PROVIDER_EMAIL_VERIFIED_ATTRIBUTE, claim]);
+      event.request.userAttributes = Object.fromEntries(attributes);
+      const before = JSON.stringify(event);
+      const answer = await handler(event);
+      // The flag first, then the downgrade, which clears it in the same write
+      expect(calls, String(claim)).toEqual(FLAG_THEN_DOWNGRADE);
+      expect(JSON.stringify(answer)).toBe(before);
+      expect(logs).toEqual([{ level: "info", message: "Federated email", data: { triggerSource: "TokenGeneration_HostedAuth", outcome: "linked-unverified" } }]);
+      expect(counted).toEqual([]);
+    }
+  });
+
+  it("treats a missing recorded email, or unreadable identities, as a changed email", async () => {
+    for (const event of [linkedEvent({ recorded: null }), linkedEvent({ recorded: "" }), linkedEvent({ identities: "not json", email: "victim@example.org" }), linkedEvent({ identities: "{}", email: "victim@example.org" })]) {
+      const { handler, calls } = trigger();
+      await handler(event);
+      expect(calls).toEqual(FLAG_THEN_DOWNGRADE);
+    }
+  });
+
+  it("writes nothing for a changed email that's already unverified, or no email", async () => {
+    for (const triggerSource of ["TokenGeneration_HostedAuth", "TokenGeneration_RefreshTokens"]) {
+      const { handler, calls, logs } = trigger();
+      await handler(linkedEvent({ email: "victim@example.org", emailVerified: "false", triggerSource }));
+      await handler(linkedEvent({ email: null, triggerSource }));
+      expect(calls).toEqual([]);
+      expect(logs.map((l) => l.data.outcome)).toEqual(["linked-unchanged", "no-email"]);
+    }
+  });
+
+  it("fails the sign-in when the flag and both tries of the downgrade fail, logging a handle but no email or username", async () => {
+    const { update, tried } = failing(() => true);
+    const { handler, logs, counted, pauses } = trigger(update, { correlate: logCorrelation("test-key") });
+    await expect(handler(linkedEvent({ email: "victim@example.org" }))).rejects.toThrow(LINKED_FAILED_ERROR);
+    expect(tried).toEqual([FLAG.attributes, DOWNGRADE.attributes, DOWNGRADE.attributes]);
+    expect(pauses).toEqual([RETRY_PAUSE_MS]);
+    expect(logs).toEqual([
+      {
+        level: "warn",
+        message: "Couldn't flag a linked user's downgrade as pending; trying the downgrade anyway",
+        data: { outcome: "linked-flag-failed", error: "AdminUpdateUserAttributes failed: 400 TooManyRequestsException" },
+      },
+      {
+        level: "error",
+        message: "Couldn't mark a linked user's changed email unverified; the sign-in fails",
+        data: { outcome: "linked-downgrade-failed", flagged: false, user: logCorrelation("test-key")(NATIVE), error: "AdminUpdateUserAttributes failed: 400 TooManyRequestsException" },
+      },
+    ]);
+    expect(counted).toEqual([BusinessMetric.EmailUnverifyFailures]);
+    const text = JSON.stringify(logs);
+    for (const secret of ["victim@example.org", RECORDED, NATIVE, GOOGLE_ID]) expect(text).not.toContain(secret);
+  });
+
+  it("tries a failed downgrade once more after a pause, and clears the flag when it works", async () => {
+    const { update, tried } = failing((attributes, n) => isDowngrade(attributes) && n === 2);
+    const { handler, logs, counted, pauses } = trigger(update);
+    await handler(linkedEvent({ email: "victim@example.org" }));
+    expect(tried).toEqual([FLAG.attributes, DOWNGRADE.attributes, DOWNGRADE.attributes]);
+    expect(pauses).toEqual([RETRY_PAUSE_MS]);
+    expect(logs).toEqual([{ level: "info", message: "Federated email", data: { triggerSource: "TokenGeneration_HostedAuth", outcome: "linked-unverified" } }]);
+    expect(counted).toEqual([]);
+  });
+
+  it("doesn't try again when there's no time left in Cognito's 5 seconds", async () => {
+    let clock = 0;
+    const { update, tried } = failing((attributes) => {
+      // Each call takes a whole timeout
+      clock += CALL_TIMEOUT_MS * 2;
+      return isDowngrade(attributes);
+    });
+    const { handler, pauses, logs } = trigger(update, { now: () => clock });
+    await expect(handler(linkedEvent({ email: "victim@example.org" }))).rejects.toThrow(LINKED_FAILED_ERROR);
+    expect(tried).toEqual([FLAG.attributes, DOWNGRADE.attributes]);
+    expect(pauses).toEqual([]);
+    expect(logs[0]?.data).toMatchObject({ outcome: "linked-downgrade-failed", flagged: true, user: "unavailable" });
+    // The worst case with a retry fits: flag, downgrade, pause, downgrade
+    expect(3 * CALL_TIMEOUT_MS + RETRY_PAUSE_MS).toBeLessThanOrEqual(WRITE_BUDGET_MS);
+    expect(WRITE_BUDGET_MS).toBeLessThan(5_000);
+  });
+
+  it("still downgrades when the flag can't be written", async () => {
+    const { update, tried } = failing((attributes) => !isDowngrade(attributes));
+    const { handler, logs } = trigger(update);
+    await handler(linkedEvent({ email: "victim@example.org" }));
+    expect(tried).toEqual([FLAG.attributes, DOWNGRADE.attributes]);
+    expect(logs.map((l) => [l.level, l.data.outcome])).toEqual([
+      ["warn", "linked-flag-failed"],
+      ["info", "linked-unverified"],
+    ]);
+  });
+
+  it("never records the address after a failed downgrade left the flag set, at any token", async () => {
+    // The flag went through, both tries of the downgrade didn't: Cognito's user now has the flag
+    const { update, tried } = failing(isDowngrade);
+    const { handler: signIn } = trigger(update);
+    await expect(signIn(linkedEvent({ email: "victim@example.org" }))).rejects.toThrow(LINKED_FAILED_ERROR);
+    expect(tried).toEqual([FLAG.attributes, DOWNGRADE.attributes, DOWNGRADE.attributes]);
+    for (const triggerSource of ["TokenGeneration_RefreshTokens", "TokenGeneration_Authentication", "TokenGeneration_NewPasswordChallenge", "TokenGeneration_AuthenticateDevice"]) {
+      const { handler, calls, logs } = trigger();
+      await handler(linkedEvent({ email: "victim@example.org", pending: "1", triggerSource }));
+      expect(calls, triggerSource).toEqual([]);
+      expect(logs[0]?.data).toEqual({ triggerSource, outcome: "linked-downgrade-pending" });
+    }
+    // Nor the API
+    const attributes = linkedEvent({ email: "victim@example.org", pending: "1" }).request.userAttributes;
+    expect(emailVerifiedFrom(NATIVE, attributes)).toBe(false);
+    expect(emailVerifiedFrom(NATIVE, { ...attributes, [LINKED_EMAIL_ATTRIBUTE]: "victim@example.org" })).toBe(false);
+    expect(emailVerifiedFrom(NATIVE, { ...attributes, [DOWNGRADE_PENDING_ATTRIBUTE]: "" })).toBe(false);
+    expect(emailVerifiedFrom(NATIVE, { ...attributes, [LINKED_EMAIL_ATTRIBUTE]: "victim@example.org", [DOWNGRADE_PENDING_ATTRIBUTE]: " " })).toBe(true);
+  });
+
+  it("downgrades a pending user at the next Managed Login token, even if the email is the recorded one, without flagging again", async () => {
+    for (const email of ["victim@example.org", RECORDED]) {
+      const { handler, calls, logs } = trigger();
+      await handler(linkedEvent({ email, pending: "1" }));
+      expect(calls, email).toEqual([DOWNGRADE]);
+      expect(logs[0]?.data.outcome).toBe("linked-unverified");
+    }
+  });
+
+  it("clears the flag of a user already unverified, at any token, and leaves it set when that fails", async () => {
+    for (const triggerSource of ["TokenGeneration_HostedAuth", "TokenGeneration_RefreshTokens"]) {
+      const { handler, calls, logs } = trigger();
+      await handler(linkedEvent({ email: "victim@example.org", emailVerified: "false", pending: "1", triggerSource }));
+      expect(calls, triggerSource).toEqual([{ pool: POOL, user: NATIVE, attributes: { [DOWNGRADE_PENDING_ATTRIBUTE]: "" } }]);
+      expect(logs[0]?.data).toEqual({ triggerSource, outcome: "linked-cleared" });
+    }
+    const { update } = failing(() => true);
+    const { handler, logs, counted } = trigger(update);
+    const event = linkedEvent({ email: "victim@example.org", emailVerified: "false", pending: "1", triggerSource: "TokenGeneration_RefreshTokens" });
+    expect(await handler(event)).toBe(event);
+    expect(logs.map((l) => [l.level, l.data.outcome])).toEqual([
+      ["error", "linked-clear-failed"],
+      ["info", "linked-clear-failed"],
+    ]);
+    expect(counted).toEqual([BusinessMetric.EmailVerifyFailures]);
+  });
+
+  it("makes a correlation handle that names no user and depends on the key", () => {
+    const handle = logCorrelation("key-a")(NATIVE);
+    expect(handle).toMatch(/^[0-9a-f]{16}$/);
+    expect(logCorrelation("key-a")(NATIVE)).toBe(handle);
+    expect(logCorrelation("key-b")(NATIVE)).not.toBe(handle);
+    expect(logCorrelation("key-a")(`${NATIVE}x`)).not.toBe(handle);
+    expect(NATIVE).not.toContain(handle);
+  });
+
+  it("logs the handle as unavailable for an event without a sub", async () => {
+    const { update } = failing(() => true);
+    const { handler, logs } = trigger(update, { correlate: logCorrelation("test-key") });
+    const event = linkedEvent({ email: "victim@example.org" });
+    delete event.request.userAttributes.sub;
+    await expect(handler(event)).rejects.toThrow(LINKED_FAILED_ERROR);
+    expect(logs[1]?.data.user).toBe("unavailable");
+  });
+
+  it("records a verified new email at a token that can't follow a provider sign-in, in lower case", async () => {
+    for (const triggerSource of ["TokenGeneration_RefreshTokens", "TokenGeneration_Authentication", "TokenGeneration_NewPasswordChallenge", "TokenGeneration_AuthenticateDevice"]) {
+      const { handler, calls, logs } = trigger();
+      await handler(linkedEvent({ email: " Pat.New@Example.com ", triggerSource }));
+      expect(calls, triggerSource).toEqual([{ pool: POOL, user: NATIVE, attributes: { [LINKED_EMAIL_ATTRIBUTE]: "pat.new@example.com" } }]);
+      expect(logs[0]?.data).toEqual({ triggerSource, outcome: "linked-recorded" });
+    }
+  });
+
+  it("does nothing at a token source it doesn't know", async () => {
+    const { handler, calls, logs } = trigger();
+    await handler(linkedEvent({ email: "pat.new@example.com", triggerSource: "TokenGeneration_Future" }));
+    expect(calls).toEqual([]);
+    expect(logs[0]?.data.outcome).toBe("linked-unchanged");
+  });
+
+  it("lets the token go ahead when recording fails, and the API keeps treating the email as unverified", async () => {
+    const { handler, logs, counted } = trigger(async () => {
+      throw new Error("AdminUpdateUserAttributes failed: 500 InternalErrorException");
+    });
+    const event = linkedEvent({ email: "pat.new@example.com", triggerSource: "TokenGeneration_RefreshTokens" });
+    expect(await handler(event)).toBe(event);
+    expect(logs.map((l) => [l.level, l.data.outcome])).toEqual([
+      ["error", "linked-record-failed"],
+      ["info", "linked-record-failed"],
+    ]);
+    expect(counted).toEqual([BusinessMetric.EmailVerifyFailures]);
+    expect(JSON.stringify(logs)).not.toContain("pat.new@example.com");
+  });
+});
+
 describe("cognitoAdmin", () => {
   const credentials = { accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret", sessionToken: "session" };
   const client = (respond: () => Response) => {
@@ -343,7 +596,7 @@ describe("invites for Google and Apple users", () => {
     const userInfo = async (token: string): Promise<CognitoUser> => {
       const user = users.get(token.replace(/^token-/, ""));
       if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
-      return { sub: user.sub, email: user.attributes.email, emailVerified: user.attributes.email_verified === "true" };
+      return { sub: user.sub, email: user.attributes.email, emailVerified: emailVerifiedFrom(token.replace(/^token-/, ""), user.attributes) };
     };
     handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, now: () => now });
   });
@@ -416,4 +669,23 @@ describe("invites for Google and Apple users", () => {
       expect(table.get("TEAM#team-a", `MEMBER#${sub}`)).toBeUndefined();
     });
   }
+
+  it("doesn't show a linked user the invites of the address its provider email was rewritten to (supply-checkout-kgw)", async () => {
+    const { inviteId, token } = await invite();
+    const linked = "8f0e5b1c-0000-4000-8000-00000000000b";
+    // A native user with Google linked; Cognito rewrote its email to the invitee's at a Google sign-in, email_verified still "true"
+    const attributes = { sub: linked, email: "pat@example.com", email_verified: "true", identities: identities("Google", GOOGLE_ID), [LINKED_EMAIL_ATTRIBUTE]: "someone@example.net" };
+    users.set(linked, { sub: linked, attributes });
+    // Even before the trigger has run (or if its write failed), the API doesn't trust it
+    expect((await call("GET", "/me", linked, linked)).body).toMatchObject({ user: { emailVerified: false }, invites: [] });
+    // The trigger unverifies it at the sign-in
+    const { handler: onToken } = trigger(async (_pool, username, update) => {
+      Object.assign((users.get(username) as { attributes: Record<string, string> }).attributes, update);
+    });
+    const event = triggerEvent({ userName: linked, status: "CONFIRMED", identities: attributes.identities, email: attributes.email, emailVerified: "true", claim: "true" });
+    event.request.userAttributes[LINKED_EMAIL_ATTRIBUTE] = attributes[LINKED_EMAIL_ATTRIBUTE];
+    await onToken(event);
+    expect(users.get(linked)?.attributes.email_verified).toBe("false");
+    expect((await call("POST", `/invites/${inviteId}/accept`, linked, linked, { token })).status).toBe(403);
+  });
 });

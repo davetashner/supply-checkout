@@ -25,7 +25,9 @@
 
 import type { PreAuthenticationTriggerEvent } from "aws-lambda";
 import type { Observability } from "../observability/index.js";
-import { federatedProvider } from "./email-verified-handler.js";
+import { isFederatedOnly } from "./email-verified-handler.js";
+
+export { isFederatedOnly };
 
 export interface SignInGuardDeps {
   readonly obs: Observability;
@@ -33,15 +35,6 @@ export interface SignInGuardDeps {
 
 /** What Cognito shows the person; it names no provider and no account detail. */
 export const NATIVE_SIGN_IN_REFUSED = "Sign in with the provider you signed up with";
-
-/**
- * True for a user who must sign in only through Google or Apple: a Google or
- * Apple identity whose `<providerName>_<userId>` is the username, or a user
- * Cognito marks EXTERNAL_PROVIDER.
- */
-export function isFederatedOnly(userName: unknown, attributes: Readonly<Record<string, string | undefined>>): boolean {
-  return federatedProvider(userName, attributes.identities) !== undefined || attributes["cognito:user_status"] === "EXTERNAL_PROVIDER";
-}
 
 export function createSignInGuardHandler(deps: SignInGuardDeps) {
   return async (event: PreAuthenticationTriggerEvent): Promise<PreAuthenticationTriggerEvent> => {

@@ -94,6 +94,22 @@ describe("cognitoUserInfo", () => {
     expect(await cognitoUserInfo(ISSUER, reply(200, {}))("t")).toEqual({ sub: "", email: undefined, emailVerified: false });
   });
 
+  it("counts a linked user's email as verified only while it's the recorded one (supply-checkout-kgw)", async () => {
+    const google = JSON.stringify([{ userId: "1076", providerName: "Google", providerType: "Google", issuer: null, primary: false, dateCreated: 1 }]);
+    const user = (username: string, attributes: Record<string, string>) =>
+      cognitoUserInfo(ISSUER, reply(200, { Username: username, UserAttributes: [{ Name: "sub", Value: "u" }, { Name: "email_verified", Value: "true" }, ...Object.entries(attributes).map(([Name, Value]) => ({ Name, Value })), { Name: 7 }] }))("t");
+    // Linked, email still the recorded one (in any ASCII case)
+    expect(await user("u", { email: "Pat@Example.com", identities: google, "custom:linked_email": "pat@example.com" })).toMatchObject({ emailVerified: true });
+    // Linked, email rewritten from the provider while email_verified stayed "true": no invites for that address
+    expect(await user("u", { email: "victim@example.com", identities: google, "custom:linked_email": "pat@example.com" })).toMatchObject({ emailVerified: false });
+    expect(await user("u", { email: "pat@example.com", identities: google })).toMatchObject({ emailVerified: false });
+    expect(await user("u", { email: "pat@example.com", identities: "not json", "custom:linked_email": "other@example.com" })).toMatchObject({ emailVerified: false });
+    // Native and federated-only users are as before; a federated-only user has no recorded email
+    expect(await user("u", { email: "pat@example.com" })).toMatchObject({ emailVerified: true });
+    expect(await user("u", { email: "pat@example.com", identities: "[]", "custom:linked_email": "other@example.com" })).toMatchObject({ emailVerified: true });
+    expect(await user("google_1076", { email: "pat@example.com", identities: google })).toMatchObject({ emailVerified: true });
+  });
+
   it("answers 401 to a revoked token and fails on anything else", async () => {
     await expect(cognitoUserInfo(ISSUER, reply(400, { __type: "NotAuthorizedException" }))("t")).rejects.toThrow(ApiError);
     await expect(cognitoUserInfo(ISSUER, reply(400, { __type: "InvalidParameterException" }))("t")).rejects.toThrow(/GetUser failed: 400/);

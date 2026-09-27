@@ -7,14 +7,40 @@
 // authorized by the token itself: no IAM permission, no AWS signature. The
 // endpoint is the user pool's regional endpoint, taken from the configured
 // issuer URL, so no region name appears here (ADR 0010).
+//
+// A native user with a Google or Apple identity linked (supply-checkout-0b1)
+// counts as verified only while its email is the one recorded in
+// `custom:linked_email` (supply-checkout-kgw). Cognito rewrites a linked
+// user's email from the provider at each provider sign-in and leaves
+// email_verified "true"; the pre token generation trigger unverifies such an
+// address at that sign-in, and this is the same rule, so a rewritten address
+// never lists another person's invites, even if the trigger's write failed.
+// After the person verifies a new address with a Cognito code, the trigger
+// records it at their next token refresh, and from then it counts.
+//
+// A user whose downgrade is pending (`custom:downgrade_pending` set: the
+// trigger's downgrade failed after it flagged it, supply-checkout-0qr8)
+// doesn't count as verified either, whatever its email, until a Managed Login
+// sign-in downgrades it or an administrator clears it.
 
+import { isDowngradePending, isRecordedEmail, linkedUser } from "../identity/email-verified-handler.js";
 import { ApiError } from "./http.js";
 
 export interface CognitoUser {
   readonly sub: string;
   readonly email?: string;
-  /** True only when Cognito says `email_verified` is "true". */
+  /** True only when Cognito says `email_verified` is "true" with no downgrade pending (and, for a linked user, the email is the recorded one). */
   readonly emailVerified: boolean;
+}
+
+/**
+ * Whether GetUser's attributes (or a trigger's) say the email is verified:
+ * email_verified is "true", no downgrade is pending, and, for a native user
+ * with a Google or Apple identity linked, the email is the recorded one.
+ */
+export function emailVerifiedFrom(username: unknown, attributes: Readonly<Record<string, string | undefined>>): boolean {
+  if (attributes.email_verified !== "true" || isDowngradePending(attributes)) return false;
+  return !linkedUser(username, attributes) || isRecordedEmail(attributes);
 }
 
 export type UserInfo = (accessToken: string) => Promise<CognitoUser>;
@@ -33,17 +59,19 @@ export function cognitoUserInfo(issuerUrl: string, doFetch: typeof fetch = fetch
       body: JSON.stringify({ AccessToken: accessToken }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    const body = (await response.json().catch(() => ({}))) as { __type?: string; UserAttributes?: { Name?: string; Value?: string }[] };
+    const body = (await response.json().catch(() => ({}))) as { __type?: string; Username?: string; UserAttributes?: { Name?: string; Value?: string }[] };
     if (!response.ok) {
       // A revoked token (signed out elsewhere), or one without the admin scope
       if (response.status === 400 && /NotAuthorized/.test(body.__type ?? "")) throw new ApiError(401, "unauthenticated", "Sign in again");
       throw new Error(`GetUser failed: ${response.status} ${body.__type ?? ""}`);
     }
-    const attributes = new Map((body.UserAttributes ?? []).map((a) => [a.Name, a.Value]));
+    const attributes: Record<string, string | undefined> = Object.fromEntries(
+      (body.UserAttributes ?? []).filter((a) => typeof a.Name === "string" && typeof a.Value === "string").map((a) => [a.Name, a.Value]),
+    );
     return {
-      sub: attributes.get("sub") ?? "",
-      email: attributes.get("email"),
-      emailVerified: attributes.get("email_verified") === "true",
+      sub: attributes.sub ?? "",
+      email: attributes.email,
+      emailVerified: emailVerifiedFrom(body.Username, attributes),
     };
   };
 }

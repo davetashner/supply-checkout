@@ -54,16 +54,22 @@ export function inventoryCsv(products) {
   ]);
 }
 
-// Everything, for a backup or another tool: each document as stored, plus each sheet's
-// totals and who prepared it, as the app shows them
+// A document without the artifact build's marks of recent saves (`ops` on lines and items,
+// src/moves.js; `savedReceipts` on sheets from before them), which only guard retries
+const unmarked = doc => { const copy = { ...doc }; delete copy.ops; delete copy.savedReceipts; return copy; };
+const unmarkedItems = items => Object.fromEntries(Object.entries(items).map(([k, it]) => [k, unmarked(it)]));
+
+// Everything, for a backup or another tool: each document as stored (without those marks),
+// plus each sheet's totals and who prepared it, as the app shows them
 export function allJson(products, sheets, preparedBy, now = new Date()) {
   return JSON.stringify({
     app: "Supply Checkout",
     exportedAt: now.toISOString(),
     sheets: sheets.map(s => {
-      const t = totals(s);
-      return { ...s, preparedBy: preparedBy(s), totals: { taken: t.out, returned: t.ret, used: t.used, charge: Number(fixed(t.charge)) } };
+      const t = totals(s), doc = unmarked(s);
+      if (s.items) doc.items = unmarkedItems(s.items);
+      return { ...doc, preparedBy: preparedBy(s), totals: { taken: t.out, returned: t.ret, used: t.used, charge: Number(fixed(t.charge)) } };
     }),
-    inventory: byName(products),
+    inventory: byName(products).map(unmarked),
   }, null, 2);
 }

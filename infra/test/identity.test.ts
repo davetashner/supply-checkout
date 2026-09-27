@@ -175,6 +175,15 @@ describe("web app client", () => {
     for (const context of [{ googleSignIn: true }, { appleSignIn: true }, { appleSignIn: true, googleSignIn: true }]) {
       expect(writable(context)).toEqual(["custom:idp_email_verified", "custom:idp_hd", "email", "family_name", "given_name"]);
       expect(writable(context)).not.toContain("custom:linked_email");
+      expect(writable(context)).not.toContain("custom:downgrade_pending");
+    }
+  });
+
+  it("lets the web client read every attribute, so GetUser returns a linked user's recorded email and identities", () => {
+    // The account API counts a linked user's email as verified only while it's custom:linked_email
+    // (backend/src/api/cognito-user.ts); GetUser returns only attributes the token's client can read
+    for (const context of [{}, { appleSignIn: true, googleSignIn: true }]) {
+      expect(only(build({ envName: "staging" }, context).template, "AWS::Cognito::UserPoolClient").Properties.ReadAttributes).toBeUndefined();
     }
   });
 
@@ -242,22 +251,24 @@ describe("Apple and Google sign-in", () => {
     }
   });
 
-  it("keep mutable custom attributes for the providers' claims and the linked email, even with both off", () => {
+  it("keep mutable custom attributes for the providers' claims, the linked email and a pending downgrade, even with both off", () => {
     for (const context of [{}, { googleSignIn: true }]) {
       build({}, context).template.hasResourceProperties("AWS::Cognito::UserPool", {
         Schema: Match.arrayWith([
           { Name: "idp_email_verified", AttributeDataType: "String", Mutable: true },
           { Name: "idp_hd", AttributeDataType: "String", Mutable: true },
           { Name: "linked_email", AttributeDataType: "String", Mutable: true },
+          { Name: "downgrade_pending", AttributeDataType: "String", Mutable: true },
         ]),
       });
     }
   });
 
-  it("map custom:linked_email from no provider, so only the linking trigger sets it", () => {
+  it("map custom:linked_email and custom:downgrade_pending from no provider, so only the triggers set them", () => {
     const { template } = build({}, { appleSignIn: true, googleSignIn: true });
     for (const provider of Object.values(template.findResources("AWS::Cognito::UserPoolIdentityProvider"))) {
       expect(Object.keys(provider.Properties.AttributeMapping as Record<string, string>)).not.toContain("custom:linked_email");
+      expect(Object.keys(provider.Properties.AttributeMapping as Record<string, string>)).not.toContain("custom:downgrade_pending");
     }
   });
 
@@ -355,6 +366,21 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
     const link = { Sid: "LinkToExistingAccount", Effect: "Allow", Action: ["cognito-idp:ListUsers", "cognito-idp:AdminUpdateUserAttributes", "cognito-idp:AdminLinkProviderForUser"], Resource: { "Fn::GetAtt": [poolId, "Arn"] } };
     sameStatements(statementsOf(template, roleOf(template, "AccountLink")), [logs("AccountLink"), xray, link]);
     for (const role of Object.values(template.findResources("AWS::IAM::Role"))) expect(role.Properties.ManagedPolicyArns).toBeUndefined();
+  });
+
+  it("give only the email_verified trigger a log correlation key, generated in Secrets Manager and resolved at deploy time", () => {
+    const { template } = withProviders();
+    const secretId = Object.keys(template.findResources("AWS::SecretsManager::Secret"))[0] as string;
+    expect(secretId).toMatch(/^LogCorrelationKey/);
+    template.hasResourceProperties("AWS::SecretsManager::Secret", { GenerateSecretString: { PasswordLength: 48, ExcludePunctuation: true } });
+    const env = (id: string) => (template.toJSON().Resources[fnId(template, id)].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    expect(env("EmailVerified").LOG_CORRELATION_KEY).toEqual({ "Fn::Join": ["", ["{{resolve:secretsmanager:", { Ref: secretId }, ":SecretString:::}}"]] });
+    expect(env("SignInGuard").LOG_CORRELATION_KEY).toBeUndefined();
+    expect(env("AccountLink").LOG_CORRELATION_KEY).toBeUndefined();
+    // No role reads the secret: the value comes in with the deploy
+    expect(JSON.stringify(template.findResources("AWS::IAM::Policy"))).not.toContain("secretsmanager");
+    // And it's there only with a provider on
+    build().template.resourceCountIs("AWS::SecretsManager::Secret", 0);
   });
 
   it("get their grant after the pool exists, so the pool can name the functions (no dependency cycle)", () => {

@@ -65,6 +65,22 @@ test("owners export every sheet and the inventory as CSV, and everything as JSON
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
+// The artifact build's marks of recent saves only guard retries (src/moves.js): they aren't data
+test("the JSON export leaves out the marks of recent saves", async ({ page }) => {
+  await openOwner(page, { seed: {
+    "products/a": { name: "A", price: 1, stock: 3, ops: ["m1"] },
+    "sheets/s": { client: "One", date: "2026-09-01", status: "open", savedReceipts: { m0: true }, items: { a: { code: "", name: "A", price: 1, out: 2, returned: 0, ops: ["m1", "m2"] } } },
+    "sheets/bare": { client: "Two", date: "2026-09-02", status: "open" },
+  } });
+  await page.getByRole("button", { name: "Export data" }).click();
+  await modal(page).getByRole("button", { name: "Everything (JSON)" }).click();
+  await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
+  const json = JSON.parse((await saved(page, 0)).data);
+  expect(json.sheets.find((s) => s.id === "s")).toEqual({ id: "s", client: "One", date: "2026-09-01", status: "open", items: { a: { code: "", name: "A", price: 1, out: 2, returned: 0 } }, preparedBy: "Unknown", totals: { taken: 2, returned: 0, used: 2, charge: 2 } });
+  expect(json.sheets.find((s) => s.id === "bare")).not.toHaveProperty("items");
+  expect(json.inventory).toEqual([{ key: "a", name: "A", price: 1, stock: 3 }]);
+});
+
 test("a single sheet's CSV guards formula-like text too", async ({ page }) => {
   await openOwner(page, { seed: { "sheets/f": { client: "@Risky", date: "2026-09-01", status: "open", items: { a: { code: "-1", name: "+Plus", price: 1, out: 1, returned: 0 } } } } });
   await page.getByRole("button", { name: /Risky/ }).click();

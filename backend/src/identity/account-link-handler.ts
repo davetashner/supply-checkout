@@ -54,8 +54,15 @@
 //   (`custom:linked_email`). Cognito rewrites a linked user's `email` from the
 //   provider at every provider sign-in and leaves email_verified "true", so an
 //   account whose linked provider email changed to someone else's address
-//   mustn't capture that person's first sign-in. The rest of keeping a linked
-//   user's email_verified right is supply-checkout-kgw.
+//   mustn't capture that person's first sign-in. The email_verified trigger
+//   also unverifies such an address at that sign-in (supply-checkout-kgw), so
+//   it fails the check above too. When the person verifies a new address with
+//   a Cognito code, that trigger records it here, and another provider can be
+//   linked for it.
+// - That user has no downgrade pending (`custom:downgrade_pending`): the
+//   email_verified trigger flagged a downgrade it couldn't finish, so its
+//   email may be a provider's rewrite even if it matches the record
+//   (supply-checkout-0qr8).
 //
 // Linking records the email in `custom:linked_email` (which no IdP maps and no
 // client can write) first, then calls AdminLinkProviderForUser. If recording
@@ -79,8 +86,10 @@
 //
 // Linked users afterwards: the username is still the native one, and Cognito
 // keeps the user CONFIRMED, so the pre authentication guard lets them sign in
-// natively too (email code, password, passkey), and the email_verified trigger
-// leaves their email_verified alone (it was verified by Cognito).
+// natively too (email code, password, passkey). The email_verified trigger
+// never promotes them; it unverifies an email that no longer matches
+// `custom:linked_email` and records one Cognito verified since
+// (supply-checkout-kgw, see email-verified-handler.ts).
 //
 // Logs carry the provider and the outcome, never the email, a username or the
 // provider's user ID.
@@ -88,7 +97,7 @@
 import type { PreSignUpTriggerEvent } from "aws-lambda";
 import type { Observability } from "../observability/index.js";
 import type { LinkProviderForUser, ListUsersByEmail, PoolUser, UpdateUserAttributes } from "./cognito-admin.js";
-import { providerSaysVerified } from "./email-verified-handler.js";
+import { asciiLower, isDowngradePending, isFederatedOnly, linkedProviders, providerSaysVerified } from "./email-verified-handler.js";
 import {
   FEDERATED_PROVIDERS,
   type FederatedProvider,
@@ -96,7 +105,6 @@ import {
   PROVIDER_EMAIL_VERIFIED_ATTRIBUTE,
   PROVIDER_HOSTED_DOMAIN_ATTRIBUTE,
 } from "./names.js";
-import { isFederatedOnly } from "./sign-in-guard-handler.js";
 
 export interface AccountLinkDeps {
   readonly listUsersByEmail: ListUsersByEmail;
@@ -123,8 +131,7 @@ const ADDRESS_CHAR = "[\\x21\\x23-\\x3f\\x41-\\x5b\\x5d-\\x7e]";
 const EMAIL = new RegExp(`^${ADDRESS_CHAR}+@${ADDRESS_CHAR}+\\.${ADDRESS_CHAR}+$`);
 const PROVIDER_USER_ID = /^[A-Za-z0-9._-]{1,255}$/;
 
-/** Lowers A–Z only: no Unicode case folding, so only ASCII-identical addresses match. */
-export const asciiLower = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+export { asciiLower };
 
 export type Outcome =
   | "not-provider-sign-up"
@@ -164,22 +171,9 @@ export function authoritative(provider: FederatedProvider, email: string, hosted
   return provider === "Google" && hostedDomain !== undefined && asciiLower(hostedDomain.trim()) === domain;
 }
 
-/** The Google and Apple providers in `identities` (Cognito's JSON list); undefined when it can't be read. */
-function linkedProviders(identities: string | undefined): string[] | undefined {
-  try {
-    const list: unknown = JSON.parse(identities ?? "[]");
-    if (!Array.isArray(list)) return undefined;
-    return list
-      .map((e: { providerName?: unknown } | null) => e?.providerName)
-      .filter((p): p is string => typeof p === "string" && (FEDERATED_PROVIDERS as readonly string[]).includes(p));
-  } catch {
-    return undefined;
-  }
-}
-
 /** Why `user` can't have `provider` linked to it, if it can't. */
 function refusal(user: PoolUser, provider: FederatedProvider, email: string): Outcome | undefined {
-  if (user.status !== "CONFIRMED" || !user.enabled || user.attributes.email_verified !== "true") return "not-eligible";
+  if (user.status !== "CONFIRMED" || !user.enabled || user.attributes.email_verified !== "true" || isDowngradePending(user.attributes)) return "not-eligible";
   const linked = linkedProviders(user.attributes.identities);
   // Unreadable: don't guess that linking would succeed
   if (!linked || linked.includes(provider)) return "already-linked";

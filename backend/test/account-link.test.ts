@@ -1,7 +1,8 @@
 // The pre sign-up trigger that links a first Google or Apple sign-in to an
 // existing account with the same email (supply-checkout-0b1), its Cognito
 // calls, and the journey: the retried sign-in lands in the same user, which
-// the guard and the email_verified trigger then treat as a native user.
+// the guard treats as a native user, and whose email_verified the
+// email_verified trigger keeps to the recorded address (supply-checkout-kgw).
 
 import type { PreAuthenticationTriggerEvent, PreSignUpTriggerEvent, PreTokenGenerationTriggerEvent } from "aws-lambda";
 import { describe, expect, it } from "vitest";
@@ -17,8 +18,9 @@ import {
   providerIdentity,
 } from "../src/identity/account-link-handler.js";
 import { cognitoLinking, type LinkProviderForUser, type ListUsersByEmail, type PoolUser, type UpdateUserAttributes } from "../src/identity/cognito-admin.js";
-import { createEmailVerifiedHandler } from "../src/identity/email-verified-handler.js";
-import { LINKED_EMAIL_ATTRIBUTE, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE, PROVIDER_HOSTED_DOMAIN_ATTRIBUTE } from "../src/identity/names.js";
+import { emailVerifiedFrom } from "../src/api/cognito-user.js";
+import { createEmailVerifiedHandler, LINKED_FAILED_ERROR } from "../src/identity/email-verified-handler.js";
+import { DOWNGRADE_PENDING_ATTRIBUTE, LINKED_EMAIL_ATTRIBUTE, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE, PROVIDER_HOSTED_DOMAIN_ATTRIBUTE } from "../src/identity/names.js";
 import { createSignInGuardHandler } from "../src/identity/sign-in-guard-handler.js";
 import type { Observability } from "../src/observability/index.js";
 import { REGION } from "./helpers.js";
@@ -504,8 +506,11 @@ describe("signing in with Google or Apple to an existing account", () => {
 
   function fakePool(initial: User[]) {
     const users = new Map(initial.map((u) => [u.username, u]));
+    /** Set to make the next AdminUpdateUserAttributes calls fail (all, or those `writes` picks), as a throttled Cognito would. */
+    const broken: { writes: boolean | ((attributes: Readonly<Record<string, string>>) => boolean) } = { writes: false };
     const listUsersByEmail: ListUsersByEmail = async (_pool, email) => ({ users: [...users.values()].filter((u) => u.attributes.email === email), more: false });
     const updateUserAttributes: UpdateUserAttributes = async (_pool, username, attributes) => {
+      if (typeof broken.writes === "function" ? broken.writes(attributes) : broken.writes) throw new Error("AdminUpdateUserAttributes failed: 400 TooManyRequestsException");
       const user = users.get(username);
       if (!user) throw new Error("AdminUpdateUserAttributes failed: 400 UserNotFoundException");
       Object.assign(user.attributes, attributes);
@@ -519,14 +524,28 @@ describe("signing in with Google or Apple to an existing account", () => {
     const linkedTo = (provider: string, id: string) =>
       [...users.values()].find((u) => (JSON.parse(u.attributes.identities ?? "[]") as { providerName: string; userId: string }[]).some((i) => i.providerName === provider && i.userId === id));
 
+    /** The pre token generation trigger, as Cognito runs it before issuing tokens: its outcome, or the error that fails the sign-in. */
+    async function token(user: User, triggerSource: string): Promise<{ outcome?: unknown; error?: string }> {
+      const logs: Logged[] = [];
+      const emailVerified = createEmailVerifiedHandler({ updateUserAttributes, obs: fakeObservability(logs), sleep: async () => {} });
+      const event = { triggerSource, userPoolId: POOL, userName: user.username, request: { userAttributes: { ...user.attributes, "cognito:user_status": user.status } }, response: {} };
+      try {
+        await emailVerified(event as unknown as PreTokenGenerationTriggerEvent);
+      } catch (error) {
+        return { error: (error as Error).message };
+      }
+      return { outcome: logs.find((l) => l.message === "Federated email")?.data.outcome };
+    }
+
     /** A provider sign-in as Cognito runs it: an identity it knows signs in as its user; a new one goes through pre sign-up first. */
     async function providerSignIn(provider: string, id: string, email: string, claim: string, hd: string | null = provider === "Google" ? HD : null): Promise<{ user?: User; error?: string; outcome?: unknown }> {
       const existing = linkedTo(provider, id);
       if (existing) {
-        // Cognito applies the attribute mapping at every provider sign-in, email included
+        // Cognito applies the attribute mapping at every provider sign-in, email included, then runs pre token generation
         existing.attributes[PROVIDER_EMAIL_VERIFIED_ATTRIBUTE] = claim;
         existing.attributes.email = email;
-        return { user: existing };
+        const { outcome, error } = await token(existing, "TokenGeneration_HostedAuth");
+        return error ? { error } : { user: existing, outcome };
       }
       const logs: Logged[] = [];
       const handler = createAccountLinkHandler({ listUsersByEmail, updateUserAttributes, linkProviderForUser, obs: fakeObservability(logs) });
@@ -540,10 +559,18 @@ describe("signing in with Google or Apple to an existing account", () => {
       users.set(user.username, user);
       return { user, outcome };
     }
-    return { users, providerSignIn };
+
+    /** UpdateUserAttributes then VerifyUserAttribute with the emailed code: Cognito keeps the old address until the code, then marks the new one verified. */
+    function verifyWithCode(user: User, email: string) {
+      user.attributes.email = email;
+      user.attributes.email_verified = "true";
+    }
+    return { users, broken, token, providerSignIn, verifyWithCode };
   }
 
   const existing = (email = EMAIL, username = NATIVE): User => ({ username, status: "CONFIRMED", enabled: true, attributes: { sub: username, email, email_verified: "true" } });
+  /** What the account API makes of GetUser's answer for this user. */
+  const apiVerified = (user: User) => emailVerifiedFrom(user.username, user.attributes);
 
   for (const [provider, id] of PROVIDERS) {
     const email = emailFor(provider);
@@ -554,10 +581,14 @@ describe("signing in with Google or Apple to an existing account", () => {
       expect(pool.users.size).toBe(1);
       expect(pool.users.get(NATIVE)?.attributes[LINKED_EMAIL_ATTRIBUTE]).toBe(email);
 
-      const { user } = await pool.providerSignIn(provider, id, email, "true");
+      const { user, outcome } = await pool.providerSignIn(provider, id, email, "true");
       if (!user) throw new Error("The retry didn't sign in");
       expect(user.username).toBe(NATIVE);
       expect(user.attributes.sub).toBe(NATIVE);
+      // The email_verified trigger leaves its Cognito-verified, unchanged email alone
+      expect(outcome).toBe("linked-unchanged");
+      expect(user.attributes.email_verified).toBe("true");
+      expect(apiVerified(user)).toBe(true);
 
       // Still a native user: native sign-ins (email code, password, passkey) are let through
       const guardLogs: Logged[] = [];
@@ -566,14 +597,10 @@ describe("signing in with Google or Apple to an existing account", () => {
       await expect(guard(signIn as unknown as PreAuthenticationTriggerEvent)).resolves.toBeDefined();
       expect(guardLogs[0]?.data.outcome).toBe("allowed");
 
-      // And the email_verified trigger leaves its Cognito-verified email alone, whatever the provider says
-      const updates: unknown[] = [];
-      const verifiedLogs: Logged[] = [];
-      const emailVerified = createEmailVerifiedHandler({ updateUserAttributes: async (...args) => { updates.push(args); }, obs: fakeObservability(verifiedLogs) });
-      const token = { triggerSource: "TokenGeneration_HostedAuth", userPoolId: POOL, userName: NATIVE, request: { userAttributes: { ...user.attributes, [PROVIDER_EMAIL_VERIFIED_ATTRIBUTE]: "false", "cognito:user_status": "CONFIRMED" } }, response: {} };
-      await emailVerified(token as unknown as PreTokenGenerationTriggerEvent);
-      expect(updates).toEqual([]);
-      expect(verifiedLogs[0]?.data.outcome).toBe("not-federated");
+      // A provider claim of "unverified" for the same address doesn't unverify it: Cognito verified it
+      const again = await pool.providerSignIn(provider, id, email, "false");
+      expect(again.outcome).toBe("linked-unchanged");
+      expect(user.attributes.email_verified).toBe("true");
     });
 
     it(`gives a ${provider} sign-in with an unverified email its own account, never the existing one`, async () => {
@@ -582,7 +609,106 @@ describe("signing in with Google or Apple to an existing account", () => {
       expect(result.user?.username).toBe(`${provider}_${id}`.toLowerCase());
       expect(pool.users.get(NATIVE)?.attributes.identities).toBeUndefined();
     });
+
+    // supply-checkout-kgw: a changed provider email, verified or not by the provider
+    for (const claim of ["true", "false"]) {
+      it(`unverifies a linked user whose ${provider} email changed (provider says ${claim === "true" ? "verified" : "unverified"}), until Cognito verifies it`, async () => {
+        const pool = fakePool([existing(email)]);
+        await pool.providerSignIn(provider, id, email, "true");
+        const changed = provider === "Google" ? "pat.new@example.com" : RELAY;
+        const { user, outcome } = await pool.providerSignIn(provider, id, changed, claim);
+        if (!user) throw new Error("The sign-in failed");
+        expect(outcome).toBe("linked-unverified");
+        expect(user.attributes).toMatchObject({ email: changed, email_verified: "false", [LINKED_EMAIL_ATTRIBUTE]: email });
+        expect(apiVerified(user)).toBe(false);
+        // A refresh doesn't bring it back
+        expect(await pool.token(user, "TokenGeneration_RefreshTokens")).toEqual({ outcome: "linked-unchanged" });
+        expect(user.attributes.email_verified).toBe("false");
+
+        // The person proves the new address with a Cognito code; the next refresh records it
+        pool.verifyWithCode(user, changed);
+        expect(apiVerified(user)).toBe(false);
+        expect(await pool.token(user, "TokenGeneration_RefreshTokens")).toEqual({ outcome: "linked-recorded" });
+        expect(user.attributes).toMatchObject({ email: changed, email_verified: "true", [LINKED_EMAIL_ATTRIBUTE]: changed });
+        expect(apiVerified(user)).toBe(true);
+        // And later provider sign-ins with that address leave it verified
+        expect((await pool.providerSignIn(provider, id, changed, claim)).outcome).toBe("linked-unchanged");
+        expect(user.attributes.email_verified).toBe("true");
+      });
+    }
   }
+
+  it("fails a linked user's sign-in when the changed email can't be unverified, and never links someone else into it", async () => {
+    const attacker = "8f0e5b1c-0000-4000-8000-00000000000a";
+    const pool = fakePool([existing(ICLOUD, attacker)]);
+    await pool.providerSignIn("SignInWithApple", APPLE_ID, ICLOUD, "true");
+    pool.broken.writes = true;
+    const failed = await pool.providerSignIn("SignInWithApple", APPLE_ID, GMAIL, "true");
+    expect(failed.error).toBe(LINKED_FAILED_ERROR);
+    const user = pool.users.get(attacker) as User;
+    // Cognito kept the rewrite; the API still doesn't trust it
+    expect(user.attributes).toMatchObject({ email: GMAIL, email_verified: "true", [LINKED_EMAIL_ATTRIBUTE]: ICLOUD });
+    expect(apiVerified(user)).toBe(false);
+    // The victim's first Google sign-in isn't linked into it: the email isn't the recorded one
+    pool.broken.writes = false;
+    const victim = await pool.providerSignIn("Google", GOOGLE_ID, GMAIL, "true", null);
+    expect(victim.outcome).toBe("email-changed");
+    expect(victim.user?.username).toBe(`google_${GOOGLE_ID}`);
+    // The next provider sign-in unverifies it
+    expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, GMAIL, "true")).outcome).toBe("linked-unverified");
+    expect(user.attributes.email_verified).toBe("false");
+  });
+
+  // supply-checkout-0qr8: the flag went through, the downgrade didn't (twice)
+  it("never records a rewritten address after a failed downgrade, and links no one into it, until a sign-in downgrades it", async () => {
+    const attacker = "8f0e5b1c-0000-4000-8000-00000000000a";
+    const pool = fakePool([existing(ICLOUD, attacker)]);
+    await pool.providerSignIn("SignInWithApple", APPLE_ID, ICLOUD, "true");
+    const user = pool.users.get(attacker) as User;
+    pool.broken.writes = (attributes) => attributes.email_verified === "false";
+    expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, GMAIL, "true")).error).toBe(LINKED_FAILED_ERROR);
+    expect(user.attributes).toMatchObject({ email: GMAIL, email_verified: "true", [LINKED_EMAIL_ATTRIBUTE]: ICLOUD, [DOWNGRADE_PENDING_ATTRIBUTE]: "1" });
+    // Refreshes and API sign-ins from the person's other sessions record nothing, even with Cognito working again
+    pool.broken.writes = false;
+    for (const source of ["TokenGeneration_RefreshTokens", "TokenGeneration_Authentication"]) {
+      expect(await pool.token(user, source)).toEqual({ outcome: "linked-downgrade-pending" });
+    }
+    expect(user.attributes[LINKED_EMAIL_ATTRIBUTE]).toBe(ICLOUD);
+    expect(apiVerified(user)).toBe(false);
+    // Even if the address had been recorded (say, by a refresh in the moment before the flag), the flag keeps it untrusted and unlinkable
+    user.attributes[LINKED_EMAIL_ATTRIBUTE] = GMAIL;
+    expect(apiVerified(user)).toBe(false);
+    const victim = await pool.providerSignIn("Google", GOOGLE_ID, GMAIL, "true", null);
+    expect(victim.outcome).toBe("not-eligible");
+    expect(victim.user?.username).toBe(`google_${GOOGLE_ID}`);
+    expect(JSON.parse(user.attributes.identities ?? "[]")).toHaveLength(1);
+    // The next Managed Login sign-in downgrades it and clears the flag
+    expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, GMAIL, "true")).outcome).toBe("linked-unverified");
+    expect(user.attributes).toMatchObject({ email_verified: "false", [DOWNGRADE_PENDING_ATTRIBUTE]: "" });
+    // Proven with a code, the address is recorded at the next refresh
+    pool.verifyWithCode(user, GMAIL);
+    user.attributes[LINKED_EMAIL_ATTRIBUTE] = ICLOUD;
+    expect(await pool.token(user, "TokenGeneration_RefreshTokens")).toEqual({ outcome: "linked-recorded" });
+    expect(apiVerified(user)).toBe(true);
+  });
+
+  it("lets an operator's fix (email_verified false, linked email cleared) end a pending downgrade", async () => {
+    const pool = fakePool([existing(ICLOUD)]);
+    await pool.providerSignIn("SignInWithApple", APPLE_ID, ICLOUD, "true");
+    const user = pool.users.get(NATIVE) as User;
+    pool.broken.writes = (attributes) => attributes.email_verified === "false";
+    expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, GMAIL, "true")).error).toBe(LINKED_FAILED_ERROR);
+    pool.broken.writes = false;
+    // The runbook
+    user.attributes.email_verified = "false";
+    user.attributes = Object.fromEntries(Object.entries(user.attributes).filter(([name]) => name !== LINKED_EMAIL_ATTRIBUTE));
+    expect(await pool.token(user, "TokenGeneration_RefreshTokens")).toEqual({ outcome: "linked-cleared" });
+    expect(user.attributes[DOWNGRADE_PENDING_ATTRIBUTE]).toBe("");
+    expect(apiVerified(user)).toBe(false);
+    pool.verifyWithCode(user, GMAIL);
+    expect(await pool.token(user, "TokenGeneration_RefreshTokens")).toEqual({ outcome: "linked-recorded" });
+    expect(apiVerified(user)).toBe(true);
+  });
 
   it("gives an old Google account still carrying a work address its own account, not the address's current owner's", async () => {
     // A former employee's personal Google account, no Workspace hd, still "verified" for the address
@@ -599,12 +725,47 @@ describe("signing in with Google or Apple to an existing account", () => {
     // The attacker links their Apple ID, whose email then changes to the victim's Gmail address
     expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, ICLOUD, "true")).error).toContain("ACCOUNT_LINKED");
     expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, GMAIL, "true")).user?.username).toBe(attacker);
-    expect(pool.users.get(attacker)?.attributes).toMatchObject({ email: GMAIL, email_verified: "true", [LINKED_EMAIL_ATTRIBUTE]: ICLOUD });
+    // The sign-in unverified the rewritten address
+    expect(pool.users.get(attacker)?.attributes).toMatchObject({ email: GMAIL, email_verified: "false", [LINKED_EMAIL_ATTRIBUTE]: ICLOUD });
+    // A refresh or an API sign-in doesn't record an address Cognito never verified
+    expect(await pool.token(pool.users.get(attacker) as User, "TokenGeneration_RefreshTokens")).toEqual({ outcome: "linked-unchanged" });
+    expect(pool.users.get(attacker)?.attributes[LINKED_EMAIL_ATTRIBUTE]).toBe(ICLOUD);
     // The victim's first Google sign-in isn't linked into the attacker's account
     const victim = await pool.providerSignIn("Google", GOOGLE_ID, GMAIL, "true", null);
     expect(victim.error).toBeUndefined();
-    expect(victim.outcome).toBe("email-changed");
+    expect(victim.outcome).toBe("not-eligible");
     expect(victim.user?.username).toBe(`google_${GOOGLE_ID}`);
+    expect(JSON.parse(pool.users.get(attacker)?.attributes.identities ?? "[]")).toHaveLength(1);
+  });
+
+  it("lets a linked user who changed email natively, with a code, link a second provider for the new address", async () => {
+    const pool = fakePool([existing(EMAIL)]);
+    await pool.providerSignIn("Google", GOOGLE_ID, EMAIL, "true");
+    const user = pool.users.get(NATIVE) as User;
+    pool.verifyWithCode(user, ICLOUD);
+    // Before a refresh, the API doesn't count it yet, and it isn't a link target
+    expect(apiVerified(user)).toBe(false);
+    expect((await pool.providerSignIn("SignInWithApple", "000999.ffff.0001", ICLOUD, "true")).outcome).toBe("email-changed");
+    // The app's next refresh records it (an API sign-in would too)
+    expect(await pool.token(user, "TokenGeneration_Authentication")).toEqual({ outcome: "linked-recorded" });
+    expect(user.attributes[LINKED_EMAIL_ATTRIBUTE]).toBe(ICLOUD);
+    expect(apiVerified(user)).toBe(true);
+    // Recorded in lower case; the comparison ignores ASCII case
+    user.attributes.email = "PAT.LEE.TEST@icloud.com"; // public-safety: allow (made-up address)
+    expect(await pool.token(user, "TokenGeneration_RefreshTokens")).toEqual({ outcome: "linked-unchanged" });
+    user.attributes.email = ICLOUD;
+    // Now Apple, authoritative for the iCloud address, links to it
+    expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, ICLOUD, "true")).error).toBe("PreSignUp failed with error ACCOUNT_LINKED:SignInWithApple.");
+    expect(JSON.parse(user.attributes.identities ?? "[]")).toHaveLength(2);
+  });
+
+  it("unverifies a native change first seen at a Managed Login sign-in, which could be a provider rewrite", async () => {
+    const pool = fakePool([existing(EMAIL)]);
+    await pool.providerSignIn("Google", GOOGLE_ID, EMAIL, "true");
+    const user = pool.users.get(NATIVE) as User;
+    pool.verifyWithCode(user, ICLOUD);
+    expect(await pool.token(user, "TokenGeneration_HostedAuth")).toEqual({ outcome: "linked-unverified" });
+    expect(user.attributes).toMatchObject({ email: ICLOUD, email_verified: "false", [LINKED_EMAIL_ATTRIBUTE]: EMAIL });
   });
 
   it("doesn't let an unconfirmed sign-up with someone's address capture their Google sign-in", async () => {
