@@ -84,8 +84,12 @@ const CONCURRENCY = 10;
  * movements, audit trail, counters), each member's team-switcher row, and the
  * Stripe link. Returns how many items it deleted. Safe to run again after it
  * stopped part-way, and a no-op for a team that isn't closed or isn't due.
+ *
+ * `beforeDelete` runs once the team is found due and before anything is
+ * deleted (the purge writes the team's deletion record there); if it fails,
+ * nothing is deleted and the next run tries again.
  */
-export async function purgeTeam(db: Db, teamId: string, now: Date): Promise<PurgeResult> {
+export async function purgeTeam(db: Db, teamId: string, now: Date, options: { readonly beforeDelete?: () => Promise<void> } = {}): Promise<PurgeResult> {
   const { doc } = connection(db);
   const pk = teamPartition(id(teamId, "team ID"));
   const { Item: meta } = await doc.send(
@@ -93,6 +97,7 @@ export async function purgeTeam(db: Db, teamId: string, now: Date): Promise<Purg
   );
   // Only a closed team, and only once it's due: the index is a hint, the META item decides
   if (!meta || typeof meta.closedAt !== "string" || typeof meta.purgeAfter !== "string" || meta.purgeAfter > now.toISOString()) return { deleted: 0, skipped: true };
+  await options.beforeDelete?.();
 
   const items: { PK: string; SK: string }[] = [];
   let ExclusiveStartKey: Record<string, unknown> | undefined;

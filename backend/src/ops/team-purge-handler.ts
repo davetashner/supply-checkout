@@ -13,17 +13,24 @@
 // teams it found that are still there PURGE_OVERDUE_AFTER_HOURS after their
 // deletion date, so the privacy deadline has its own alarm.
 //
+// Before deleting a team, it writes the team's deletion record (the team ID and
+// the time, deletions/records.ts), so a restore from an older backup can delete
+// it again; a team whose record can't be written isn't deleted this run.
+//
 // Logs have team IDs and counts, never names or emails. The function's role
 // may delete whole items and name only TEAM_PURGE_ATTRIBUTES
 // (infra/lib/observability/ops-checks.ts).
 
 import { type Db, listTeamsToPurge, purgeTeam } from "../data/index.js";
+import type { DeletionLog } from "../deletions/records.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import { PURGE_BUDGET_MS, PURGE_OVERDUE_AFTER_HOURS } from "./names.js";
 
 export interface TeamPurgeDeps {
   readonly db: Db;
   readonly obs: Observability;
+  /** Where each team's deletion record goes, before anything of it is deleted (deletions/records.ts). */
+  readonly deletions: DeletionLog;
   readonly now?: () => number;
 }
 
@@ -40,7 +47,8 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
     for (const team of due) {
       if (now() - started > PURGE_BUDGET_MS) break;
       try {
-        const result = await purgeTeam(db, team.teamId, new Date(now()));
+        const at = new Date(now());
+        const result = await purgeTeam(db, team.teamId, at, { beforeDelete: () => deps.deletions.record({ kind: "team", id: team.teamId, deletedAt: at.toISOString() }) });
         done.add(team.teamId);
         if (result.skipped) continue;
         purged++;

@@ -16,7 +16,7 @@ import { BusinessMetric, type Observability } from "../src/observability/index.j
 import { PURGE_BUDGET_MS } from "../src/ops/names.js";
 import { createTeamPurgeHandler } from "../src/ops/team-purge-handler.js";
 import { TEAM_PURGE_ATTRIBUTES } from "../src/data/schema.js";
-import { REGION, accountPartitions, fakeDb, fakeMailer, unusedEmailCodes } from "./helpers.js";
+import { REGION, accountPartitions, fakeDb, fakeMailer, memoryDeletionLog, unusedEmailCodes } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 import { connection } from "../src/data/client.js";
 import { EmailNotSentError, type Mailer } from "../src/email/mailer.js";
@@ -48,6 +48,7 @@ let gauges: Record<string, number>;
 let logs: [string, string, unknown][];
 let deleted: string[];
 let deleteFails: boolean;
+let deletions: ReturnType<typeof memoryDeletionLog>;
 // Closure emails, per recipient: SES refuses the addresses in `refuse`
 let notices: { to: string; input: EmailInput; teamId?: string }[];
 let refuse: Set<string>;
@@ -110,6 +111,7 @@ beforeEach(() => {
   gauges = {};
   deleted = [];
   deleteFails = false;
+  deletions = memoryDeletionLog();
   notices = [];
   refuse = new Set();
   memberListFails = false;
@@ -148,7 +150,7 @@ beforeEach(() => {
       return { messageId: `notice-${notices.length}` };
     },
   };
-  accountHandler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer, emailCodes: unusedEmailCodes, deleteUser, now: () => now });
+  accountHandler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer, emailCodes: unusedEmailCodes, deleteUser, deletions: deletions.log, now: () => now });
   dataHandler = createDataHandler({ dbForTeam: (teamId) => table.db(teamId), obs, now: () => now });
 });
 
@@ -525,6 +527,8 @@ describe("deleting an account", () => {
     expect(partition(`USER#${PAT}`).map((i) => i.SK).sort()).toEqual(["DELETING", "LIMIT#EMAILCODES#2026-09-26", "LIMIT#TEAMS#2026-09-26"]);
     expect(table.get(`USER#${PAT}`, "DELETING")).toMatchObject({ type: "accountDeletion", expiresAt: NOW / 1000 + 30 * 86400 });
     expect(counts).toMatchObject({ [BusinessMetric.AccountsDeleted]: 1, [BusinessMetric.TeamsClosed]: 1 });
+    // The deletion record: Pat's ID, when, and the team the deletion closed. No address or name
+    expect(deletions.records).toEqual([{ kind: "user", id: PAT, deletedAt: new Date(NOW).toISOString(), teamsClosed: ["team-solo"] }]);
     expect(logs).toContainEqual(["info", "Account deleted", { userId: PAT, teamsLeft: 3, teamsClosed: 1, invitesDeleted: 2, rowsDeleted: 3 }]);
     // No addresses or team names in any log line
     expect(JSON.stringify(logs)).not.toMatch(/@|Team /);
@@ -547,6 +551,7 @@ describe("deleting an account", () => {
     expect(body.error).toEqual({ code: "aborted", reason: "last_owner", message: "You're the only owner of Alpha, Beta, Team team-a and 1 more. Make someone else an owner, or close the team, before you delete your account." });
     expect([...table.items.entries()]).toEqual(before);
     expect(deleted).toEqual([]);
+    expect(deletions.records).toEqual([]);
     // Once the team is closed, deleting the account works
     for (const t of ["team-a", "team-x", "team-y", "team-z"]) {
       const name = String(meta(t)?.name);
@@ -631,6 +636,20 @@ describe("deleting an account", () => {
     expect(deleted).toEqual([PAT]);
   });
 
+  it("fails, keeping the Cognito user and the USER# rows, when the deletion record can't be written, and a retry writes it", async () => {
+    team("team-solo", { [PAT]: "owner" });
+    deletions.state.fail = true;
+    expect((await deleteAccount(PAT)).status).toBe(500);
+    expect(deleted).toEqual([]);
+    expect(table.get(`USER#${PAT}`, "TEAM#team-solo")).toBeUndefined();
+    expect(table.get(`USER#${PAT}`, "DELETING")).toBeDefined();
+    deletions.state.fail = false;
+    expect((await deleteAccount(PAT)).status).toBe(204);
+    expect(deleted).toEqual([PAT]);
+    // The retry had no team left to close, so the record doesn't name team-solo; the purge records it later
+    expect(deletions.records).toEqual([{ kind: "user", id: PAT, deletedAt: new Date(NOW).toISOString() }]);
+  });
+
   it("keeps going with the other teams when one fails, and fails the request", async () => {
     let first = true;
     table.beforeTransactWrite = () => {
@@ -668,7 +687,7 @@ describe("deleting an account", () => {
 });
 
 describe("purging closed teams", () => {
-  const purge = (at: number) => createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), now: () => at })();
+  const purge = (at: number) => createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), deletions: deletions.log, now: () => at })();
 
   it("deletes a closed team, its members' switcher rows and its Stripe link once 30 days have passed, and nothing else", async () => {
     table.put({ ...(meta("team-a") as Record<string, unknown>), stripeCustomerId: "cus_123" });
@@ -686,10 +705,25 @@ describe("purging closed teams", () => {
     for (const user of [OWNER, PAT, VIEWER]) expect(table.get(`USER#${user}`, "TEAM#team-a")).toBeUndefined();
     expect([...table.items.values()]).toEqual(others);
     expect(counts[BusinessMetric.TeamsPurged]).toBe(1);
+    // Its deletion record, written before anything was deleted: the team ID and when
+    expect(deletions.records).toEqual([{ kind: "team", id: "team-a", deletedAt: new Date(NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 1000).toISOString() }]);
     // Purged on time: nothing overdue, and the gauge says so (zero, not missing)
     expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(0);
     // A second run finds nothing
     expect(await purge(NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 2000)).toEqual({ purged: 0, failed: 0, due: 0, overdue: 0 });
+  });
+
+  it("deletes nothing of a team whose deletion record can't be written, fails the run, and deletes it at the next", async () => {
+    await close();
+    const before = partition("TEAM#team-a").length;
+    deletions.state.fail = true;
+    await expect(purge(NOW + 31 * DAY)).rejects.toThrow("1 of 1 closed teams weren't purged");
+    expect(partition("TEAM#team-a")).toHaveLength(before);
+    expect(logs).toContainEqual(["error", "Team purge failed", { teamId: "team-a", error: "AccessDenied" }]);
+    deletions.state.fail = false;
+    expect(await purge(NOW + 31 * DAY)).toMatchObject({ purged: 1, failed: 0 });
+    expect(partition("TEAM#team-a")).toEqual([]);
+    expect(deletions.records.map((r) => r.id)).toEqual(["team-a"]);
   });
 
   it("names only the attributes its IAM policy allows, reads only projected keys, and never asks for old values back", async () => {
@@ -733,7 +767,7 @@ describe("purging closed teams", () => {
     // Each read of the clock moves it past the budget, so the run starts at the time set here and stops before the team
     const step = PURGE_BUDGET_MS + 1;
     let clock = due + DAY - 1000 - step;
-    const stuck = () => createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), now: () => (clock += step) })();
+    const stuck = () => createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), deletions: deletions.log, now: () => (clock += step) })();
     expect((await stuck()).overdue).toBe(0);
     clock = due + DAY + 1000 - step;
     expect((await stuck()).overdue).toBe(1);
@@ -751,7 +785,7 @@ describe("purging closed teams", () => {
     await close("team-a");
     await close("team-b");
     let clock = NOW + 40 * DAY;
-    const run = createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), now: () => (clock += PURGE_BUDGET_MS + 1) })();
+    const run = createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), deletions: deletions.log, now: () => (clock += PURGE_BUDGET_MS + 1) })();
     // Ten days past their deletion date and not reached: overdue
     expect(await run).toEqual({ purged: 0, failed: 0, due: 2, overdue: 2 });
     expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(2);

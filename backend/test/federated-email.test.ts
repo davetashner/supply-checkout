@@ -25,7 +25,7 @@ import {
 } from "../src/identity/email-verified-handler.js";
 import { DOWNGRADE_PENDING_ATTRIBUTE, FEDERATED_PROVIDERS, LINKED_EMAIL_ATTRIBUTE, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "../src/identity/names.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
-import { REGION, accountPartitions, fakeMailer, unusedDeleteUser, unusedEmailCodes } from "./helpers.js";
+import { REGION, accountPartitions, fakeMailer, unusedDeleteUser, unusedDeletionLog, unusedEmailCodes } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const mails = fakeMailer();
@@ -694,7 +694,7 @@ describe("invites for Google and Apple users", () => {
       issuerUrl: ISSUER,
       obs: fakeObservability(),
       mailer: mails.mailer,
-      deleteUser: unusedDeleteUser,
+      deleteUser: unusedDeleteUser, deletions: unusedDeletionLog,
       emailCodes: { send: (t) => handlerCodes.send(t), verify: (t, c) => handlerCodes.verify(t, c) },
       now: () => now,
     });

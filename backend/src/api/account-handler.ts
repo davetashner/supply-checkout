@@ -75,7 +75,9 @@
 // members (409 `last_owner`: make someone else an owner, or close the team).
 // Otherwise the account is marked as being deleted (no more joins), the
 // caller leaves every team, closing first any open team they're the only
-// member of, every invite to their verified email is deleted, their USER#
+// member of, a deletion record is written (their user ID, the time and the
+// teams it closed, deletions/records.ts: a restore from an older backup deletes
+// them again), every invite to their verified email is deleted, their USER#
 // rows go (not the LIMIT# counters, left to their TTL), and last their Cognito user, with their own access token
 // (DeleteUser: no IAM permission to delete anyone else). Every step is
 // idempotent, so a retry after a failure part-way carries on. Each removal
@@ -139,6 +141,7 @@ import {
 } from "../data/index.js";
 import { EmailNotSentError, type Mailer, sendInviteEmail, sendTeamNotice } from "../email/mailer.js";
 import type { EmailInput } from "../email/templates.js";
+import type { DeletionLog } from "../deletions/records.js";
 import { BusinessMetric, type BusinessMetricName, type Observability } from "../observability/index.js";
 import type { DbForAccount } from "./account-db.js";
 import type { CognitoUser, DeleteUser, EmailCodes, UserInfo } from "./cognito-user.js";
@@ -159,6 +162,8 @@ export interface AccountHandlerDeps {
   readonly mailer: Mailer;
   /** Deletes the caller's own Cognito user, with their access token (cognito-user.ts). */
   readonly deleteUser: DeleteUser;
+  /** Where a deleted account's record goes (deletions/records.ts). */
+  readonly deletions: DeletionLog;
   readonly now?: () => number;
 }
 
@@ -639,6 +644,9 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
       await cancelAccountDeletion(own, userId);
       throw (failed as PromiseRejectedResult).reason;
     }
+    // Once nothing can refuse the deletion, and before their rows and Cognito user go.
+    // A retry keeps the first record (and the teams it closed)
+    await deps.deletions.record({ kind: "user", id: userId, deletedAt: at.toISOString(), teamsClosed: teams.filter((t) => t.alone).map((t) => t.ctx.teamId) });
     const invites = email ? await listInvitesForEmail(own, email, at, { includeExpired: true }) : [];
     for (const invite of invites) await deleteInviteForEmail(dbFor({ userId, teamId: invite.teamId, invitee }), email as string, invite);
     const rowsDeleted = await deleteUserRows(own, userId);

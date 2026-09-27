@@ -9,10 +9,11 @@ import {
 } from "aws-cdk-lib/aws-dynamodb";
 import { Effect, PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { Key } from "aws-cdk-lib/aws-kms";
-import { BlockPublicAccess, Bucket, BucketEncryption, ObjectOwnership } from "aws-cdk-lib/aws-s3";
+import { BlockPublicAccess, Bucket, BucketEncryption, ObjectLockRetention, ObjectOwnership } from "aws-cdk-lib/aws-s3";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import { GSI1, GSI1PK, GSI1SK, GSI2, GSI2PK, GSI2SK, GSI3, GSI3PK, GSI3SK, OPS_INDEX_ATTRIBUTES, PK, SK, TTL_ATTRIBUTE, tableName } from "../../../backend/src/data/schema.js";
+import { DELETION_RECORD_RETENTION_DAYS, deletionsBucketName } from "../../../backend/src/deletions/names.js";
 import type { DeploymentConfig } from "../config.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
@@ -44,6 +45,10 @@ export function logsBucketName(envName: string, region: string, account: string 
  * - The web bucket (releases of the web app and demo, served only through
  *   CloudFront) and a logs bucket, in the primary region. The second region's
  *   bucket, replication and the origin group are phase 2 (supply-checkout-d79).
+ * - The deletion records bucket, in the primary region: one object per deleted
+ *   account or team, IDs only, kept under Object Lock in compliance mode for
+ *   DELETION_RECORD_RETENTION_DAYS, longer than any backup of the table, so a
+ *   restore can delete them again (supply-checkout-0ic7, docs/backups.md).
  * - Everything added here must use RemovalPolicy.RETAIN.
  */
 export class DataStack extends SupplyCheckoutStack {
@@ -55,6 +60,8 @@ export class DataStack extends SupplyCheckoutStack {
   readonly webBucket?: Bucket;
   /** S3 server access logs and CloudFront standard logs. */
   readonly logsBucket?: Bucket;
+  /** Deletion records (backend/src/deletions). Primary region only. */
+  readonly deletionsBucket?: Bucket;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "data", layer: "stateful" });
@@ -168,5 +175,29 @@ export class DataStack extends SupplyCheckoutStack {
       }),
     );
     publish("WebBucketParam", "web-bucket-name", this.webBucket.bucketName, "Web releases bucket in this region");
+
+    // Deletion records: `users/<userId>.json` and `teams/<teamId>.json`, IDs and
+    // times only. The account function may put only users/*, the team purge only
+    // teams/* (api-stack.ts, observability/ops-checks.ts), and nothing reads them
+    // but the owner's restore script. Compliance mode: nobody, the root user
+    // included, can delete or shorten a record's retention, so a stolen
+    // administrator session can't erase what a restore must delete again. Once
+    // the lock lapses, the lifecycle rule expires the record and its version.
+    const retention = Duration.days(DELETION_RECORD_RETENTION_DAYS);
+    this.deletionsBucket = new Bucket(this, "DeletionsBucket", {
+      bucketName: deletionsBucketName(config.envName, region, Aws.ACCOUNT_ID),
+      encryption: BucketEncryption.S3_MANAGED,
+      blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
+      objectOwnership: ObjectOwnership.BUCKET_OWNER_ENFORCED,
+      enforceSSL: true,
+      versioned: true,
+      objectLockEnabled: true,
+      objectLockDefaultRetention: ObjectLockRetention.compliance(retention),
+      lifecycleRules: [{ expiration: retention.plus(Duration.days(1)), noncurrentVersionExpiration: Duration.days(1) }],
+      serverAccessLogsBucket: this.logsBucket,
+      serverAccessLogsPrefix: "s3/deletions/",
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    publish("DeletionsBucketParam", "deletions-bucket-name", this.deletionsBucket.bucketName, "Deletion records bucket (primary region)");
   }
 }

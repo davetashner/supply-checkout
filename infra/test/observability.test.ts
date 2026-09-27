@@ -470,7 +470,20 @@ describe("scheduled checks", () => {
       "dynamodb:Query",
       ["dynamodb:GetItem", "dynamodb:DeleteItem"],
       ["kms:Decrypt", "kms:DescribeKey"],
+      "s3:PutObject",
     ]);
+    // Team deletion records only: no reads, deletes or retention changes, and not users/
+    expect(found.at(-1)).toEqual({
+      Sid: "PutTeamDeletionRecords",
+      Effect: "Allow",
+      Action: "s3:PutObject",
+      Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:s3:::supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }, "/teams/*"]] },
+    });
+    const [fn] = functions(observability()).filter((f) => f.FunctionName === "supply-checkout-prod-team-purge");
+    expect((fn.Environment as { Variables: Record<string, unknown> }).Variables).toMatchObject({
+      DELETIONS_BUCKET: { "Fn::Join": ["", [`supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }]] },
+      DELETIONS_REGION: EAST,
+    });
     const attributes = ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "purgeAfter", "stripeCustomerId", "teamId"];
     const [, index, query, items] = found as Record<string, unknown>[];
     expect(index?.Condition).toEqual({
