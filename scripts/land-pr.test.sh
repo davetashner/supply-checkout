@@ -293,6 +293,42 @@ check "suggests npm run beads:pr in one line" [ "$(grep -c "beads" <<< "$out")" 
 check "names the command" says "refresh it with: npm run beads:pr"
 done_case
 
+backlog_reminder="The backlog page is out of date; rebuild it with npm run backlog:page and republish it"
+echo "backlog page is missing"
+scenario page-missing
+pr '.mergedAt = "2026-09-20T12:00:00Z"'
+land
+check "exits 0" exits 0
+check "says to rebuild and republish it, in one line" [ "$(grep -c "backlog page" <<< "$out")" -eq 1 ]
+check "names the command" says "$backlog_reminder"
+done_case
+
+echo "backlog page is older than the merge"
+scenario page-old
+pr '.mergedAt = "2026-09-20T12:00:00Z"'
+mkdir -p "$repo/dist/backlog" && touch -t 202609191200 "$repo/dist/backlog/index.html"
+land
+check "exits 0" exits 0
+check "says to rebuild and republish it" says "$backlog_reminder"
+done_case
+
+echo "backlog page is newer than the merge"
+scenario page-fresh
+pr '.mergedAt = "2026-09-20T12:00:00Z"'
+mkdir -p "$repo/dist/backlog" && touch -t 202609211200 "$repo/dist/backlog/index.html"
+land
+check "exits 0" exits 0
+check "says nothing about the backlog page" not_says "backlog page"
+done_case
+
+echo "backlog page, and GitHub gives no merge time"
+scenario page-no-time
+mkdir -p "$repo/dist/backlog" && touch -t 202609211200 "$repo/dist/backlog/index.html"
+land
+check "exits 0" exits 0
+check "treats the page as older than the merge" says "$backlog_reminder"
+done_case
+
 echo "blocked with green CI and no approval (release-please)"
 scenario blocked
 pr '.mergeStateStatus = "BLOCKED" | .commits = [{"authors": [{"login": "github-actions[bot]"}]}]'
