@@ -20,8 +20,10 @@ export {
   type Role,
 } from "./team-context.js";
 export {
+  type Comp,
   ENDED_STATUSES,
   hasEnded,
+  liveComp,
   MAX_TEAMS_PER_USER,
   MEMBERS_PER_TEAM,
   MEMBERS_PER_TRIAL_TEAM,
@@ -51,3 +53,4 @@ export * from "./verified-email.js";
 export { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
 export { audienceChangeFromStream, documentChangeFromStream, type DocumentChange } from "./changes.js";
 export { liveUpdateRecipients } from "./live-audience.js";
+export * from "./operator.js";

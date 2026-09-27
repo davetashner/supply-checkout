@@ -21,6 +21,16 @@ export const DATA_INTERNALS_MESSAGE =
 // esquery regex literals end at the first "/", so write slashes as \x2F
 const esquery = (pattern) => `/${pattern.replaceAll("/", "\\x2F")}/`;
 
+// The ops code (ADR 0015) never gets a TeamContext: operators aren't members
+// of any team. Outside src/data it may not import the functions that issue
+// one, and inside, the operator module may not import team-context.ts.
+export const TEAM_CONTEXT_ISSUERS = ["authorizeTeam", "createTeam", "acceptInvite", "teamContextForStripeCustomer", "teamContextForEmailEvent", "TeamContext"];
+export const OPERATOR_MESSAGE = "Operator code never gets a TeamContext (ADR 0015): operators reach teams only through data/operator.ts and the operator-access role.";
+const restrictedPatterns = [
+  { regex: DYNAMODB, message: DYNAMODB_MESSAGE },
+  { regex: DATA_INTERNALS, message: DATA_INTERNALS_MESSAGE },
+];
+
 export default tseslint.config(
   { ignores: ["node_modules/", "coverage/"] },
   js.configs.recommended,
@@ -30,10 +40,7 @@ export default tseslint.config(
       "no-restricted-imports": [
         "error",
         {
-          patterns: [
-            { regex: DYNAMODB, message: DYNAMODB_MESSAGE },
-            { regex: DATA_INTERNALS, message: DATA_INTERNALS_MESSAGE },
-          ],
+          patterns: restrictedPatterns,
         },
       ],
       "no-restricted-syntax": [
@@ -49,7 +56,29 @@ export default tseslint.config(
     },
   },
   {
+    files: ["src/operator/**"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [...restrictedPatterns, { regex: String.raw`(^|/)data/index(\.js|\.ts)?$`, importNames: TEAM_CONTEXT_ISSUERS, message: OPERATOR_MESSAGE }],
+        },
+      ],
+    },
+  },
+  {
     files: ["src/data/**", "test/**"],
     rules: { "no-restricted-imports": "off", "no-restricted-syntax": "off" },
+  },
+  {
+    files: ["src/data/operator.ts"],
+    rules: {
+      "no-restricted-imports": ["error", { patterns: [{ regex: String.raw`(^|/)team-context(\.js|\.ts)?$`, message: OPERATOR_MESSAGE }] }],
+      "no-restricted-syntax": [
+        "error",
+        { selector: `ImportExpression[source.value=/team-context/]`, message: OPERATOR_MESSAGE },
+        { selector: `CallExpression[callee.name='require'][arguments.0.value=/team-context/]`, message: OPERATOR_MESSAGE },
+      ],
+    },
   },
 );

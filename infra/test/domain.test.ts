@@ -40,6 +40,7 @@ describe("host names", () => {
       api: "api.supplycheckout.com",
       realtime: "realtime.supplycheckout.com",
       auth: "auth.supplycheckout.com",
+      opsAuth: "ops-auth.supplycheckout.com",
       mailFrom: "mail.supplycheckout.com",
     });
     expect(hostNames({ envName: "dev", domainName: "example.com" }).app).toBe("app.dev.example.com");
@@ -77,6 +78,7 @@ describe("certificates", () => {
       "api.supplycheckout.com",
       "app.supplycheckout.com supplycheckout.com www.supplycheckout.com",
       "auth.supplycheckout.com",
+      "ops-auth.supplycheckout.com",
       "realtime.supplycheckout.com",
     ]);
     expect(certificateNames(domain(WEST))).toEqual(["api.supplycheckout.com"]);
@@ -98,7 +100,7 @@ describe("certificates", () => {
   it("publishes each certificate ARN to SSM in its region", () => {
     const { domain } = build();
     const out = domainOutputParameters("prod");
-    for (const name of [out.apiCertificateArn, out.webCertificateArn, out.authCertificateArn, out.realtimeCertificateArn]) {
+    for (const name of [out.apiCertificateArn, out.webCertificateArn, out.authCertificateArn, out.opsAuthCertificateArn, out.realtimeCertificateArn]) {
       domain(EAST).hasResourceProperties("AWS::SSM::Parameter", { Name: name, Value: { Ref: Match.anyValue() } });
     }
     domain(WEST).hasResourceProperties("AWS::SSM::Parameter", { Name: out.apiCertificateArn });
@@ -110,6 +112,7 @@ describe("certificates", () => {
     expect(certificateNames(domain(GLOBAL_SERVICES_REGION))).toEqual([
       "app.supplycheckout.com supplycheckout.com www.supplycheckout.com",
       "auth.supplycheckout.com",
+      "ops-auth.supplycheckout.com",
       "realtime.supplycheckout.com",
     ]);
     domain(GLOBAL_SERVICES_REGION).resourceCountIs("AWS::SES::EmailIdentity", 0);

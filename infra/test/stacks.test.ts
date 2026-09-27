@@ -8,6 +8,7 @@ import { AwsSolutionsChecks } from "cdk-nag";
 import { describe, expect, it } from "vitest";
 import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { addBackupAccount, addSupplyCheckout, type SupplyCheckoutStacks } from "../lib/supply-checkout.js";
+import { OPS_INDEX_ATTRIBUTES } from "../../backend/src/data/schema.js";
 
 // No account: tests synth account-agnostic templates, exactly as CI does, so
 // snapshots never contain an account ID.
@@ -190,7 +191,7 @@ describe("app table (ADR 0005, ADR 0010)", () => {
     expect(table.Properties.TableName).toBe("supply-checkout-staging-app");
   });
 
-  it("is on-demand, streamed, keyed PK/SK with GSI1 and GSI2, TTL on expiresAt, and retained", () => {
+  it("is on-demand, streamed, keyed PK/SK with GSI1, GSI2 and the operators' GSI3, TTL on expiresAt, and retained", () => {
     const { stacks } = build();
     const template = Template.fromStack(inRegion(stacks, EAST).data);
     template.hasResource("AWS::DynamoDB::GlobalTable", {
@@ -220,6 +221,15 @@ describe("app table (ADR 0005, ADR 0010)", () => {
               { AttributeName: "GSI2SK", KeyType: "RANGE" },
             ],
             Projection: { ProjectionType: "ALL" },
+          },
+          // ADR 0015: only the account record, owners' emails and the audit summary, never a team's data
+          {
+            IndexName: "GSI3",
+            KeySchema: [
+              { AttributeName: "GSI3PK", KeyType: "HASH" },
+              { AttributeName: "GSI3SK", KeyType: "RANGE" },
+            ],
+            Projection: { ProjectionType: "INCLUDE", NonKeyAttributes: [...OPS_INDEX_ATTRIBUTES] },
           },
         ],
         // No local secondary indexes: they can never be removed, and they cap

@@ -32,8 +32,9 @@
     "dev": "node scripts/dev-server.mjs",
     "icons": "node scripts/render-icons.mjs",
     "land": "bash scripts/land-pr.sh",
-    "test:scripts": "shellcheck scripts/*.sh && bash scripts/land-pr.test.sh && bash scripts/beads-pr.test.sh && node --test scripts/publish-web.test.mjs",
+    "test:scripts": "shellcheck scripts/*.sh && bash scripts/land-pr.test.sh && bash scripts/beads-pr.test.sh && node --test scripts/publish-web.test.mjs scripts/ops.test.mjs",
     "publish:web": "node scripts/publish-web.mjs",
+    "ops": "node scripts/ops.mjs",
     "publish:demo": "npm run build:demo && node scripts/publish-web.mjs publish --channel demo --dir dist/demo"
   },
   "devDependencies": {
