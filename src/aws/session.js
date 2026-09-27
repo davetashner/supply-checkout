@@ -133,7 +133,11 @@ export function createSession(config, { onSignedOut, onRefreshed }) {
     claims: () => claimsOf(tokens.idToken),
 
     // An API call with the access token. A 401 refreshes the token and tries once more.
+    // Once the session has ended (signed out, or a refresh found it over) there's no token:
+    // a call then, such as a save while the Managed Login sign-out page loads, is refused
+    // as unauthenticated without reaching the API.
     async api(method, path, body, headers) {
+      if (!tokens) throw { code: "unauthenticated", message: "Signed out" };
       const send = () => {
         const init = body ? json(method, body, headers) : { method, headers: { ...headers } };
         init.headers.authorization = "Bearer " + tokens.accessToken;

@@ -343,5 +343,8 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
     saveItem,
     // A new access token: reconnect live updates with it
     reconnect: () => live.reconnect(),
+    // The session ended (signed out, or it expired): no more live updates or re-lists,
+    // which would need a token there no longer is
+    stop: () => { removed = true; live.stop(); },
   };
 }
