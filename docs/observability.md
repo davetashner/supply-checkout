@@ -8,6 +8,8 @@
 
 **Alarms on failures nothing throws for.** Some failures are answered or logged without failing a function, so the Functions failing and API errors alarms don't see them, and each has a business metric and an alarm of its own ([journeys.md](journeys.md) has each one's threshold and what to do): sign-outs not revoked, email verification not saved, **Email codes failing** (`EmailCodeSendFailures` + `EmailCodeVerifyFailures`, the 5xx answers of `POST /me/email/code` and `POST /me/email/verify`, too few for the API's 2% to notice; 3 or more in 15 minutes), **Live updates deferred** (`LiveUpdatesDeferred`, events the stream consumer's publish budget left for its next invocation; any in each of 3 consecutive 5-minute periods, so a single burst doesn't alarm), Team closure emails failing and Deletion overdue. A spec in `journey-alarms.ts` sets `periods` for a rule that must hold for several periods in a row (evaluation periods and datapoints to alarm both).
 
+**Operator pool changes** ([ADR 0015](adr/0015-platform-operator-role.md)). The primary region's `observability` stack also has two EventBridge rules on CloudTrail's management events that send the P1 topic a message naming the CloudTrail event (not the person): user, group, password, MFA and pool or client settings changes on the operator pool that CloudFormation didn't make, and what an operator's own token can change (TOTP, MFA preference, attributes, deleting the user). Only those rules may publish to the topic. See [Operators](infrastructure.md#operators).
+
 Logging and business metrics in the Lambda code are in [Backend](backend.md).
 
 ## Alarm recipients

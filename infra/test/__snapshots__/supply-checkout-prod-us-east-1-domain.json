@@ -189,6 +189,47 @@
         "ValidationMethod": "DNS"
       }
     },
+    "OpsAuthCertificateDCDD6C72": {
+      "Type": "AWS::CertificateManager::Certificate",
+      "Properties": {
+        "DomainName": "ops-auth.supplycheckout.com",
+        "DomainValidationOptions": [
+          {
+            "DomainName": "ops-auth.supplycheckout.com",
+            "HostedZoneId": {
+              "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter"
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "domain"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          },
+          {
+            "Key": "Name",
+            "Value": "supply-checkout-prod-us-east-1-domain/OpsAuthCertificate"
+          }
+        ],
+        "ValidationMethod": "DNS"
+      }
+    },
     "RealtimeCertificateD74CA95D": {
       "Type": "AWS::CertificateManager::Certificate",
       "Properties": {
@@ -263,6 +304,24 @@
         "Type": "String",
         "Value": {
           "Ref": "AuthCertificateC5D33BF2"
+        }
+      }
+    },
+    "OpsAuthCertificateParam85582845": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Operator pool's Cognito custom domain certificate: ops-auth.",
+        "Name": "/supply-checkout/prod/domain/ops-auth-certificate-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "domain",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "OpsAuthCertificateDCDD6C72"
         }
       }
     },

@@ -108,6 +108,7 @@ import {
   listInvites,
   listInvitesForEmail,
   listTeamsForUser,
+  liveComp,
   mailAddress,
   markInviteNotSent,
   normalizeEmail,
@@ -172,8 +173,13 @@ export function errorFor(error: unknown): ApiError {
   return dataErrorFor(error);
 }
 
-/** A team as /me and the create and accept routes return it. */
-export function teamBody(team: Team, role: Role) {
+/**
+ * A team as /me and the create and accept routes return it. `comp` is a live
+ * comp from support (ADR 0015): while it's there, the team is active on its
+ * plan whatever `status` says. Who granted it and why aren't shown here.
+ */
+export function teamBody(team: Team, role: Role, now = new Date()) {
+  const comp = liveComp(team, now);
   return {
     id: team.teamId,
     name: team.name,
@@ -185,6 +191,7 @@ export function teamBody(team: Team, role: Role) {
     // A closed team is read-only until deletesAt, when the purge deletes it
     closedAt: team.closedAt ?? null,
     deletesAt: team.closedAt ? (team.purgeAfter ?? null) : null,
+    comp: comp ? { plan: comp.plan, until: comp.until } : null,
   };
 }
 
@@ -278,7 +285,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
             if (error instanceof ForbiddenError) return undefined;
             throw error;
           });
-          return ctx && teamBody(await getTeam(db, ctx), ctx.role);
+          return ctx && teamBody(await getTeam(db, ctx), ctx.role, new Date(now()));
         }),
       )
     )

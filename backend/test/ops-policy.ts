@@ -1,0 +1,46 @@
+// The operator-access role's policy (infra/lib/stacks/api-stack.ts, ADR
+// 0015), as a check the in-memory table runs before each call. The infra
+// tests check the real policy; this keeps the ops handler's requests inside it.
+
+import { COMP_ATTRIBUTES, GSI3, OPERATOR_AUDIT_PREFIX, OPS_AUDIT_INDEX_PREFIX, OPS_OWNERS_PREFIX, OPS_TEAMS_PARTITION } from "../src/data/schema.js";
+import { namedAttributes } from "./helpers.js";
+
+type Input = Record<string, unknown>;
+
+const indexPartition = (pk: unknown) => typeof pk === "string" && (pk === OPS_TEAMS_PARTITION || pk.startsWith(OPS_OWNERS_PREFIX) || pk.startsWith(OPS_AUDIT_INDEX_PREFIX));
+const auditPartition = (pk: unknown) => typeof pk === "string" && pk.startsWith(OPERATOR_AUDIT_PREFIX);
+const partitionKey = (input: Input) => ((input.Item ?? input.Key) as Record<string, unknown> | undefined)?.PK;
+
+function update(input: Input, team: string): boolean {
+  if (partitionKey(input) !== `TEAM#${team}`) return false;
+  if (input.ReturnValues !== undefined && !["NONE", "UPDATED_OLD", "UPDATED_NEW"].includes(input.ReturnValues as string)) return false;
+  return [...namedAttributes(input)].every((a) => (COMP_ATTRIBUTES as readonly string[]).includes(a));
+}
+
+/** The calls the operator-access role allows, for a session tagged with `team` ("." for none). */
+export function opsPolicy(team: string, denied: { command: string; input: Input }[] = []) {
+  return (command: string, input: Input): boolean => {
+    const ok = (() => {
+      switch (command) {
+        case "QueryCommand": {
+          const pk = (input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"];
+          if (input.IndexName === GSI3) return indexPartition(pk) && ["ALL_PROJECTED_ATTRIBUTES", "SPECIFIC_ATTRIBUTES"].includes(input.Select as string);
+          return input.IndexName === undefined && auditPartition(pk);
+        }
+        case "PutCommand":
+          return auditPartition(partitionKey(input));
+        case "UpdateCommand":
+          return update(input, team);
+        case "TransactWriteCommand":
+          return (input.TransactItems as Record<string, Input>[]).every((op) =>
+            op.Put ? auditPartition(partitionKey(op.Put)) : op.Update ? update(op.Update, team) : false,
+          );
+        default:
+          // No GetItem, Scan, DeleteItem or batch calls anywhere
+          return false;
+      }
+    })();
+    if (!ok) denied.push({ command, input });
+    return ok;
+  };
+}

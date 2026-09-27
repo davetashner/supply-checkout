@@ -421,6 +421,25 @@ describe("documents (the app's db contract)", () => {
     expect(table.get("TEAM#team-a", "SHEET#s1")).toMatchObject({ GSI1PK: "TEAM#team-a#SHEETS", GSI1SK: "2026-09-01#s1" });
   });
 
+  it("never lets a document put itself in the operators' index (GSI3) or any other index, by PUT or PATCH", async () => {
+    await call("PUT", "/teams/team-a/sheets/s1", { body: { data: sheet("2026-09-01"), expectedVersion: 0 } });
+    const forged = [
+      { GSI3PK: "OPS#TEAMS", GSI3SK: "9999-12-31T00:00:00.000Z#forged", name: "Forged team", plan: "enterprise" },
+      { GSI3PK: "OPS#AUDIT#2026-09" },
+      { GSI3SK: "x" },
+      { GSI9PK: "OPS#TEAMS" },
+      { GSI12SK: "x" },
+    ];
+    for (const extra of forged) {
+      expect((await call("PUT", "/teams/team-a/sheets/s2", { body: { data: { ...sheet("2026-09-02"), ...extra }, expectedVersion: 0 } })).status, JSON.stringify(extra)).toBe(400);
+      expect((await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: extra, expectedVersion: 1 } })).status, JSON.stringify(extra)).toBe(400);
+      expect((await call("PUT", "/teams/team-a/products/p1", { body: { data: { code: "p1", name: "P", price: 1, ...extra }, expectedVersion: 0 } })).status, JSON.stringify(extra)).toBe(400);
+    }
+    expect([...table.items.values()].filter((i) => Object.keys(i).some((k) => /^GSI([3-9]|\d{2,})/.test(k)))).toEqual([]);
+    // Names that merely start like one are still document fields
+    expect((await call("PATCH", "/teams/team-a/sheets/s1", { body: { data: { GSI3PKnote: "fine", gsi3pk: "fine" }, expectedVersion: 1 } })).status).toBe(200);
+  });
+
   it("refuses documents over the size limit with quota_exceeded, the app's \"storage is full\"", async () => {
     const big = { client: "x".repeat(MAX_DOCUMENT_BYTES) };
     expect(await call("PUT", "/teams/team-a/sheets/s1", { body: { data: big } })).toMatchObject({ status: 413, body: { error: { code: "quota_exceeded" } } });

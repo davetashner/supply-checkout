@@ -7,7 +7,11 @@
 
 import { convertToAttr, convertToNative } from "@aws-sdk/util-dynamodb";
 import type { Db } from "../src/data/index.js";
+import { GSI3, OPS_INDEX_ATTRIBUTES } from "../src/data/schema.js";
 import { fakeDb, REGION } from "./helpers.js";
+
+/** Indexes that don't project every attribute, and what they do project besides the keys (data-stack.ts). */
+const PROJECTIONS: Record<string, readonly string[]> = { [GSI3]: OPS_INDEX_ATTRIBUTES };
 
 type Item = Record<string, unknown>;
 type Input = Record<string, unknown> & {
@@ -85,14 +89,34 @@ export class MemoryTable {
     for (const [userId, role] of Object.entries(members)) this.put({ PK: `TEAM#${teamId}`, SK: `MEMBER#${userId}`, type: "member", teamId, userId, role });
   }
 
-  /** A Db on this table. With `team`, calls outside that team's partitions are refused. */
+  /**
+   * A Db on this table. With `team`, calls outside that team's partitions are
+   * refused, as the data-access role refuses them (its operator audit,
+   * `OPAUDIT#<team>`, is read-only there; tests check that separately).
+   */
   db(team?: string): Db {
-    return this.scoped(team === undefined ? undefined : [`TEAM#${team}`, `TEAM#${team}#SHEETS`]);
+    return this.scoped(team === undefined ? undefined : [`TEAM#${team}`, `TEAM#${team}#SHEETS`, `OPAUDIT#${team}`]);
   }
 
   /** A Db allowed only the given partitions (PK, or the index partition for a query), like a LeadingKeys policy. */
   scoped(partitions: string[] | undefined): Db {
     return fakeDb(async (command) => this.send(command as { constructor: { name: string }; input: Input }, partitions && new Set(partitions)));
+  }
+
+  /**
+   * A Db whose every call must first pass `check`, which sees the command's
+   * name and its input as DynamoDB gets it: a stand-in for an IAM policy's
+   * conditions (dynamodb:Attributes, dynamodb:Select, LeadingKeys patterns).
+   * A refused call fails with AccessDeniedException and changes nothing.
+   */
+  guarded(check: (command: string, input: Record<string, unknown>) => boolean): Db {
+    return fakeDb(async (command) => {
+      const c = command as { constructor: { name: string }; input: Input };
+      if (!check(c.constructor.name, MemoryTable.onWire(c.input))) {
+        throw Object.assign(new Error(`not authorized to perform ${c.constructor.name} (policy)`), { name: "AccessDeniedException" });
+      }
+      return this.send(c, undefined);
+    });
   }
 
   private allowed(ok: Set<string> | undefined, partitions: string[]): void {
@@ -335,6 +359,9 @@ export class MemoryTable {
     const page = limit ? rows.slice(0, limit) : rows;
     const last = limit && rows.length > limit ? page[page.length - 1] : undefined;
     const lastKey = last && (index ? { PK: last.PK, SK: last.SK, [pkAttr]: last[pkAttr], [skAttr]: last[skAttr] } : { PK: last.PK, SK: last.SK });
-    return { Items: page.map((i) => structuredClone(i)), LastEvaluatedKey: lastKey };
+    const projected = index ? PROJECTIONS[index] : undefined;
+    const project = (i: Item): Item =>
+      projected ? Object.fromEntries(Object.entries(i).filter(([k]) => ["PK", "SK", pkAttr, skAttr, ...projected].includes(k))) : i;
+    return { Items: page.map((i) => structuredClone(project(i))), LastEvaluatedKey: lastKey };
   }
 }

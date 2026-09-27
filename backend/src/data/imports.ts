@@ -54,7 +54,7 @@ import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@
 import { type Db, connection, storable } from "./client.js";
 import { type Movement, OPERATION_TTL_DAYS } from "./commands.js";
 import { parseCsv } from "./csv.js";
-import { MAX_DOCUMENT_BYTES, RESERVED_FIELDS } from "./documents.js";
+import { MAX_DOCUMENT_BYTES, isReservedField } from "./documents.js";
 import { ConflictError, InvalidInputError, TooLargeError } from "./errors.js";
 import { MAX_CODE_LENGTH, gsi1, keys, prefixes, teamPartition } from "./keys.js";
 import { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
@@ -91,7 +91,6 @@ const MAX_ATTEMPTS = 6;
 const IMPORT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // eslint-disable-next-line no-control-regex -- rejecting control characters is the point
 const CONTROL = /[\u0000-\u001f\u007f]/;
-const RESERVED = new Set(RESERVED_FIELDS);
 
 type Field = "name" | "barcode" | "price" | "cost" | "stock" | "packSize";
 
@@ -357,7 +356,7 @@ function applyRow(current: Item | undefined, row: ImportRow): { data: Item; chan
 /** A stored item's document data: everything but the key attributes and server-owned fields. */
 function documentData(item: Item): Item {
   const data: Item = {};
-  for (const [k, v] of Object.entries(item)) if (!RESERVED.has(k)) data[k] = v;
+  for (const [k, v] of Object.entries(item)) if (!isReservedField(k)) data[k] = v;
   return data;
 }
 

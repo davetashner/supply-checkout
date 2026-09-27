@@ -42,6 +42,14 @@ export const LINKED_EMAIL = "linked_email";
 export const LINKED_EMAIL_ATTRIBUTE = `custom:${LINKED_EMAIL}`;
 
 /**
+ * The group in the operator user pool whose members may call the /ops routes
+ * (ADR 0015). It's granted only with `aws cognito-idp admin-add-user-to-group`
+ * and an SSO role; no app client or Lambda role can change groups. Being in
+ * the pool isn't enough: the ops function checks this group on every request.
+ */
+export const OPERATORS_GROUP = "operators";
+
+/**
  * Set ("1") on a linked user by the email_verified trigger before it
  * downgrades a changed email at a Managed Login token, and cleared (written
  * empty) in the same AdminUpdateUserAttributes call that sets email_verified

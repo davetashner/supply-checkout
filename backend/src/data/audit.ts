@@ -5,9 +5,9 @@ import { randomUUID } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { ForbiddenError, InvalidInputError } from "./errors.js";
-import { keys, prefixes, teamPartition } from "./keys.js";
+import { keys, operatorAuditPartition, prefixes, teamPartition } from "./keys.js";
 import { type Page, queryPage } from "./query.js";
-import { PK } from "./schema.js";
+import { OWNER_OPERATOR_AUDIT_ATTRIBUTES, PK } from "./schema.js";
 import { type TeamContext, assertContext, readable } from "./team-context.js";
 
 export interface AuditEvent {
@@ -85,4 +85,61 @@ export async function listAudit(
     { attribute: PK, value: pk },
     options.cursor,
   );
+}
+
+/** How the team sees who took an operator action (ADR 0015): never the operator's identity. */
+export const SUPPORT_ACTOR = "Supply Checkout support";
+
+/** An operator action on the team, as its owners see it. */
+export interface SupportAction {
+  readonly eventId: string;
+  readonly ts: string;
+  readonly actor: typeof SUPPORT_ACTOR;
+  readonly action: string;
+  readonly reason?: string;
+  readonly before?: Record<string, unknown> | null;
+  readonly after?: Record<string, unknown> | null;
+}
+
+/**
+ * Owners read what operators did to their team (ADR 0015), newest first:
+ * comps, and reads of the team's account record. Only the attributes in
+ * OWNER_OPERATOR_AUDIT_ATTRIBUTES are asked for, which is all the data-access
+ * role may read there, so the operator's identity never leaves the table.
+ */
+export async function listSupportActions(
+  db: Db,
+  ctx: TeamContext,
+  options: { readonly limit?: number; readonly cursor?: string } = {},
+): Promise<Page<SupportAction>> {
+  readable(ctx);
+  if (ctx.role !== "owner") throw new ForbiddenError("Only owners can read support actions");
+  const pk = operatorAuditPartition(ctx.teamId);
+  const page = await queryPage<Record<string, unknown>>(
+    db,
+    {
+      KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
+      // The data-access role requires both (dynamodb:Select, dynamodb:Attributes)
+      Select: "SPECIFIC_ATTRIBUTES",
+      ProjectionExpression: OWNER_OPERATOR_AUDIT_ATTRIBUTES.map((_, i) => `#a${i}`).join(", "),
+      ExpressionAttributeNames: Object.fromEntries(OWNER_OPERATOR_AUDIT_ATTRIBUTES.map((name, i) => [`#a${i}`, name])),
+      ExpressionAttributeValues: { ":pk": pk, ":prefix": "AUDIT#" },
+      ScanIndexForward: false,
+      Limit: options.limit,
+    },
+    { attribute: PK, value: pk },
+    options.cursor,
+  );
+  return {
+    items: page.items.map((item) => ({
+      eventId: String(item.eventId),
+      ts: String(item.ts),
+      actor: SUPPORT_ACTOR,
+      action: String(item.action),
+      ...(typeof item.reason === "string" ? { reason: item.reason } : {}),
+      ...("before" in item ? { before: item.before as Record<string, unknown> | null } : {}),
+      ...("after" in item ? { after: item.after as Record<string, unknown> | null } : {}),
+    })),
+    ...(page.cursor ? { cursor: page.cursor } : {}),
+  };
 }

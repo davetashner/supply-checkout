@@ -27,6 +27,8 @@ export interface HostNames {
   readonly realtime: string;
   /** Cognito Managed Login (ADR 0007). */
   readonly auth: string;
+  /** The operator pool's Managed Login (ADR 0015): a separate sign-in host for operators. */
+  readonly opsAuth: string;
   /** SES custom MAIL FROM domain, so SPF aligns with the From address for DMARC. */
   readonly mailFrom: string;
 }
@@ -40,6 +42,7 @@ export function hostNames(config: Pick<DeploymentConfig, "envName" | "domainName
     api: `api.${apex}`,
     realtime: `realtime.${apex}`,
     auth: `auth.${apex}`,
+    opsAuth: `ops-auth.${apex}`,
     mailFrom: `mail.${apex}`,
   };
 }
@@ -71,6 +74,8 @@ export const domainOutputParameters = (envName: string) => {
     webCertificateArn: `${prefix}/web-certificate-arn`,
     /** GLOBAL_SERVICES_REGION only: auth. for the Cognito custom domain. */
     authCertificateArn: `${prefix}/auth-certificate-arn`,
+    /** GLOBAL_SERVICES_REGION only: ops-auth. for the operator pool's Cognito custom domain. */
+    opsAuthCertificateArn: `${prefix}/ops-auth-certificate-arn`,
     /** GLOBAL_SERVICES_REGION only: realtime. for the AppSync Events custom domain. */
     realtimeCertificateArn: `${prefix}/realtime-certificate-arn`,
     /** Every region: api. for the regional API Gateway custom domain. */

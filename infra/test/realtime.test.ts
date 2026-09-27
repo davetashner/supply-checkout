@@ -133,11 +133,12 @@ describe("the stream consumer", () => {
       Action: ["dynamodb:GetItem", "dynamodb:Query"],
       Condition: {
         "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
-        "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "userId", "role", "status", "closedAt"] },
+        "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "userId", "role", "status", "closedAt", "compPlan", "compUntil"] },
         StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
       },
     });
-    expect([...LIVE_AUDIENCE_ATTRIBUTES]).toEqual(["PK", "SK", "userId", "role", "status", "closedAt"]);
+    // Closure ends notices; a live comp (ADR 0015) keeps an ended (but not closed) team's going
+    expect([...LIVE_AUDIENCE_ATTRIBUTES]).toEqual(["PK", "SK", "userId", "role", "status", "closedAt", "compPlan", "compUntil"]);
     expect(JSON.stringify(reads[0]?.Resource)).toMatch(/table\/supply-checkout-prod-app"\]\]\}$/);
   });
 
