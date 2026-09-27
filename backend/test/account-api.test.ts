@@ -11,7 +11,7 @@ import type { CognitoUser } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
-import { authorizeTeam, createInvite, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS, verifiedEmailHash } from "../src/data/index.js";
+import { authorizeTeam, createInvite, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, MEMBERS_PER_TRIAL_TEAM, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS, verifiedEmailHash } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { connection } from "../src/data/client.js";
 import { REGION, accountPartitions, fakeDb, fakeMailer, unusedDeleteUser, unusedDeletionLog } from "./helpers.js";
@@ -173,7 +173,10 @@ describe("POST /teams", () => {
       homeRegion: REGION,
       closedAt: null,
       deletesAt: null,
+      reopenBy: null,
       comp: null,
+      members: 1,
+      memberCap: MEMBERS_PER_TRIAL_TEAM,
     });
     const id = body.team.id as string;
     expect(table.get(`TEAM#${id}`, "META")).toMatchObject({ owners: 1, homeRegion: REGION, createdAt: new Date(now).toISOString() });
@@ -235,7 +238,7 @@ describe("GET /me", () => {
     expect(body.user).toEqual({ id: PAT, email: "Pat@Example.com", emailVerified: true });
     expect(body.teams).toEqual([
       created,
-      { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION, closedAt: null, deletesAt: null, comp: null },
+      { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION, closedAt: null, deletesAt: null, reopenBy: null, comp: null, members: 2, memberCap: MEMBERS_PER_TRIAL_TEAM },
     ].map((t) => JSON.parse(JSON.stringify(t))));
     expect(body.invites).toEqual([]);
   });

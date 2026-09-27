@@ -15,6 +15,11 @@
 //
 // Reopening a closed team (POST /teams/{teamId}/reopen, openReopen) is offered to its owners
 // in the team bar's closed-team notice, typing the team's name the same way.
+//
+// The screen also shows how many of the team's seats are used ("7 of 10 members", the cap
+// from /me's memberCap), turning Send invite off once members and invites waiting fill it,
+// as the server would refuse (team_full); and what Supply Checkout support did to the team
+// (GET /teams/{teamId}/support-actions, ADR 0015).
 import { esc } from "../format.js";
 import { armButton, openModal, closeModal, toast } from "../dom.js";
 
@@ -31,6 +36,15 @@ const WHY = {
   not_sent: "The email couldn't be sent. Try Resend.",
 };
 const day = (iso) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+const when = (iso) => new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+// What support did, in words (the actions in listSupportActions, backend/src/data/audit.ts)
+const SUPPORT = {
+  "ops.team.read": () => "Looked at the team's account",
+  "ops.comp.set": (a) => "Gave the team a free plan" + (a.after && a.after.until ? ` until ${day(a.after.until)}` : ""),
+  "ops.comp.end": () => "Ended the team's free plan",
+  "ops.import.clear": () => "Cleared an import that didn't finish",
+};
+const SUPPORT_PAGE = 20;
 
 // What went wrong, in words: the server's own for the last owner, which says what to do
 const failure = (e, what) =>
@@ -93,6 +107,7 @@ function openParts(team) {
       <button type="submit" class="btn primary" id="inviteSend">Send invite</button>
     </form>
     <p class="hint">They get an email with a link that works once and expires in 7 days. They sign in or sign up with that address to join.</p>
+    <p class="hint" id="teamFull" hidden>The team is full, counting invites waiting. Remove someone or revoke an invite to invite someone else.</p>
     <p class="error" role="alert" id="invitesFail" hidden></p>
     <div id="invitesList" aria-live="polite"><p class="muted" role="status">Loading invites…</p></div>
     <h3>Close the team</h3>
@@ -104,16 +119,20 @@ function openParts(team) {
     </form>`;
 }
 
-// The invites half of the screen, while the team is open. Returns a way to drop the invites
-// for an address, which the server revoked when that member was removed.
-function wireInvites(api, team, m, invited) {
+// The invites half of the screen, while the team is open. `invited` runs when an invite is
+// sent or re-sent; `changed` gets the invites each time they change. Returns a way to drop the
+// invites for an address, which the server revoked when that member was removed, and one to
+// turn Send invite off while the team is full.
+function wireInvites(api, team, m, invited, changed) {
   const invitesPath = `/teams/${encodeURIComponent(team.id)}/invites`;
   const inviteList = m.querySelector("#invitesList"), inviteFail = m.querySelector("#invitesFail");
   const form = m.querySelector("#inviteForm"), email = m.querySelector("#inviteEmail"), role = m.querySelector("#inviteRole"), send = m.querySelector("#inviteSend");
   const sayInvite = (text) => { inviteFail.textContent = text; inviteFail.hidden = !text; };
-  let invites = [];
+  let invites = [], busy = false, full = false;
+  const gate = () => { send.disabled = busy || full; };
 
   function drawInvites() {
+    changed(invites);
     inviteList.innerHTML = invites.length ? `<ul class="members invites">${invites.map(inviteHTML).join("")}</ul>` : `<p class="muted">No invites waiting.</p>`;
     inviteList.querySelectorAll(".invite-row").forEach((row) => {
       const invite = invites.find((x) => x.id === row.dataset.invite);
@@ -136,7 +155,8 @@ function wireInvites(api, team, m, invited) {
     const address = email.value.trim();
     sayInvite("");
     if (!/^[^\s@]+@[^\s@]+$/.test(address)) { sayInvite("Enter an email address, like name@example.com."); email.focus(); return; }
-    send.disabled = true;
+    busy = true;
+    gate();
     try {
       const res = await api("POST", invitesPath, { email: address, role: role.value });
       email.value = "";
@@ -144,7 +164,8 @@ function wireInvites(api, team, m, invited) {
     } catch (err) {
       sayInvite(inviteFailure(err, "send the invite"));
     }
-    send.disabled = false;
+    busy = false;
+    gate();
   });
 
   async function resendInvite(invite, button) {
@@ -182,7 +203,10 @@ function wireInvites(api, team, m, invited) {
       sayInvite(inviteFailure(e, "load the invites"));
     }
   })();
-  return { dropFor(address) { invites = invites.filter((x) => x.email !== address); drawInvites(); } };
+  return {
+    dropFor(address) { invites = invites.filter((x) => x.email !== address); drawInvites(); },
+    setFull(value) { full = value; m.querySelector("#teamFull").hidden = !full; gate(); },
+  };
 }
 
 // Closing the team, while it's open: the button stays off until the typed name matches
@@ -246,26 +270,79 @@ export function openReopen(api, team, done) {
   });
 }
 
+function supportHTML(a) {
+  const what = (SUPPORT[a.action] || (() => "Changed the team's account"))(a);
+  return `<li class="support-action"><span class="muted">${esc(when(a.ts))}</span> ${esc(what)}${a.reason ? `<br><span class="muted">Reason: ${esc(a.reason)}</span>` : ""}</li>`;
+}
+
+// What Supply Checkout support did to the team, newest first, a page at a time
+function wireSupport(api, team, m) {
+  const path = `/teams/${encodeURIComponent(team.id)}/support-actions?limit=${SUPPORT_PAGE}`;
+  const list = m.querySelector("#supportList"), more = m.querySelector("#supportMore"), fail = m.querySelector("#supportFail");
+  let cursor = null, shown = 0;
+  async function load() {
+    more.disabled = true;
+    fail.hidden = true;
+    try {
+      const page = await api("GET", cursor ? `${path}&cursor=${encodeURIComponent(cursor)}` : path);
+      if (!shown) list.innerHTML = page.actions.length ? `<ul class="support-actions"></ul>` : `<p class="muted">Supply Checkout support hasn't done anything to this team.</p>`;
+      shown += page.actions.length;
+      if (shown) list.querySelector("ul").insertAdjacentHTML("beforeend", page.actions.map(supportHTML).join(""));
+      cursor = page.cursor || null;
+    } catch {
+      if (!shown) list.innerHTML = "";
+      fail.textContent = "Couldn't load what support did. Check your connection and try again.";
+      fail.hidden = false;
+    }
+    more.hidden = !cursor;
+    more.disabled = false;
+  }
+  more.addEventListener("click", load);
+  load();
+}
+
 // `leave` runs when the owner changes their own role, leaves or closes the team: their access
 // changed, so the page starts again (account.js). `invited` runs when an invite is sent or
 // re-sent (the first-run checklist's step).
 export function openMembers(api, team, me, leave, invited) {
   const path = `/teams/${encodeURIComponent(team.id)}/members`;
   const closed = !!team.closedAt;
-  let members = [];
+  // From /me; an API from before it has none, and the screen then shows no count
+  const cap = team.memberCap;
+  let members = [], waiting = 0;
   openModal(`<h2>Members</h2>
     <p class="hint">${ROLES.map(([, name, what]) => `<strong>${name}</strong>: ${what}.`).join(" ")}</p>
+    <p class="seats" id="seats" hidden></p>
     <p class="error" role="alert" id="membersFail" hidden></p>
     <div id="membersList" aria-live="polite"><p class="muted" role="status">Loading members…</p></div>
     ${closed ? `<p class="hint">This team is closed: you can remove people or leave it, but not invite anyone or change roles.</p>` : openParts(team)}
+    <h3>Support activity</h3>
+    <p class="hint">What Supply Checkout support did to this team, newest first.</p>
+    <p class="error" role="alert" id="supportFail" hidden></p>
+    <div id="supportList" aria-live="polite"><p class="muted" role="status">Loading…</p></div>
+    <button type="button" class="btn" id="supportMore" hidden>Show more</button>
     <div class="modal-actions"><button type="button" class="btn" id="membersClose">Close</button></div>`, (m) => {
     const list = m.querySelector("#membersList"), fail = m.querySelector("#membersFail");
     const say = (text) => { fail.textContent = text; fail.hidden = !text; };
     m.querySelector("#membersClose").addEventListener("click", closeModal);
-    const invites = closed ? null : wireInvites(api, team, m, invited);
+    // Invites that haven't expired count against the cap, failed ones too, as the server counts them
+    const invites = closed ? null : wireInvites(api, team, m, invited, (list) => { waiting = list.filter((i) => Date.parse(i.expiresAt) > Date.now()).length; gate(); });
     if (!closed) wireClose(api, team, m, leave);
+    wireSupport(api, team, m);
+
+    // Send invite is off once members and invites waiting fill the team (before the members
+    // load, it counts none, so only the server can refuse)
+    function gate() {
+      if (invites) invites.setFull(!!cap && members.length + waiting >= cap);
+    }
 
     function draw() {
+      if (cap) {
+        const seats = m.querySelector("#seats");
+        seats.textContent = `${members.length} of ${cap} members`;
+        seats.hidden = false;
+      }
+      gate();
       const owners = members.filter((x) => x.role === "owner").length;
       list.innerHTML = `<ul class="members">${members.map((x) => rowHTML(x, me, owners, closed)).join("")}</ul>`
         + (owners === 1 && !closed ? `<p class="hint">A team needs at least one owner. To step down, make someone else an owner first.</p>` : "");
