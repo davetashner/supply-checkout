@@ -8,12 +8,15 @@ import { $, toast, openModal, closeModal, arm, armButton, stepperHTML, setText, 
 import { scanFromInput } from "./barcode.js";
 import { RECEIPT_PROMPT, sampleErr } from "./receipt-prompt.js";
 import { sheetCsv, sheetsCsv, inventoryCsv, allJson } from "./export.js";
+import { createFirstRun } from "./first-run.js";
 
 let db = null, userNs = null, dl = null, myId = null, canWrite = true, connected = false, isOwner = false;
 // Keyed by product key, which can be any barcode's: no prototype, so a key like
 // "constructor" finds nothing until there's a product with that key
 let products = Object.create(null), sheets = [], people = {};
 const ui = { tab: "sheets", sheetId: null, mode: "out", filter: "open", receipt: false };
+// The web build's first-run checklist for an owner's new team (src/first-run.js), or null
+let firstRun = null;
 
 // sheetId: the sheet this write changes, if any, so a write to a sheet someone else deleted
 // says so. claude.ai's db refuses an update to a missing document as invalid_argument, the
@@ -147,7 +150,12 @@ window.addEventListener("online", () => {
   const f = $("#saveFailed"); if (f) f.textContent = "Not saved yet. You're back online: tap Try again.";
 });
 
+// The view, then the first-run checklist above the sheet list or inventory (web build)
 function draw() {
+  drawView();
+  if (WEB && firstRun) firstRun.draw(connected && !$("#main").hidden, Object.keys(products).length, sheets.length);
+}
+function drawView() {
   $("#tab-sheets").setAttribute("aria-pressed", ui.tab === "sheets");
   $("#tab-prices").setAttribute("aria-pressed", ui.tab === "prices");
   paintNotice();
@@ -971,7 +979,11 @@ draw();
 
 (async () => {
   [db, userNs, dl, sampleFn] = await Promise.all([use("db"), use("user"), use("downloads"), use("sample")]);
-  if (WEB) { const drafts = await use("drafts"); if (drafts) DKEY = drafts.key; loadDraft(); }
+  if (WEB) {
+    const drafts = await use("drafts"); if (drafts) DKEY = drafts.key; loadDraft();
+    const fr = await use("firstRun");
+    if (fr) firstRun = createFirstRun(fr, { addItem: () => { ui.tab = "prices"; draw(); productModal(null); }, newSheet: () => { ui.tab = "sheets"; draw(); newSheetModal(); }, redraw: draw });
+  }
   if (sampleFn) { try { const lim = await sampleFn.limits(); receiptOK = !!(lim && lim.images); } catch {} }
   if (userNs) {
     try { myId = await userNs.id(); } catch {}
