@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import { acceptInvite, authorizeTeam, closeTeam, createInvite, createTeam, type Db, type MemberRole, setDocument } from "../src/data/index.js";
 import { connection, dbFromConnection } from "../src/data/client.js";
 import { applyDeletions, checkTableSettings, copyTable, planDeletions } from "../src/data/restore.js";
-import { DELETION_RECORD_RETENTION_DAYS, deletionsBucketName } from "../src/deletions/names.js";
+import { DELETION_RECORD_RETENTION_DAYS, deletionsBucketName, deletionsReplicaBucketName } from "../src/deletions/names.js";
 import { type DeletionRecord, deletionKey, deletionLogFromEnv, readDeletionRecords, s3DeletionLog, type S3Like, validRecord } from "../src/deletions/records.js";
 import { formatCopy, formatDeletions, main, USAGE, usersInPool, type Deps } from "../scripts/restore.js";
 import { endpoint, fakeDb, newUser, rawItem, REGION, useTable } from "./helpers.js";
@@ -54,6 +54,7 @@ describe("deletion records", () => {
     // The vault locks' maximum retention is 365 days (infra/lib/backup.ts)
     expect(DELETION_RECORD_RETENTION_DAYS).toBeGreaterThan(365);
     expect(deletionsBucketName("prod", "test-local-1", "acct")).toBe("supply-checkout-prod-deletions-test-local-1-acct");
+    expect(deletionsReplicaBucketName("prod", "test-local-1", "backup")).toBe("supply-checkout-prod-deletions-copy-test-local-1-backup");
   });
 
   it("names objects by kind and ID, and refuses anything that isn't an ID", () => {
@@ -271,6 +272,8 @@ describe("the restore CLI's arguments", () => {
     [["deletions", "--table", restored, "--user-pool-id", "r_pool", ...aws], /Unknown option '--user-pool-id'/],
     [["check", "--table", live, "--live", ...aws], /--live is only for deletions/],
     [["check", "--table", live, "--bucket", "b", ...aws], /--bucket is only for deletions/],
+    [["check", "--table", live, "--records-profile", "backup", ...aws], /--records-profile is only for deletions/],
+    [["deletions", "--table", "t", "--region", "r", "--endpoint", "http://127.0.0.1:9", "--bucket", "b", "--records-profile", "backup"], /--records-profile is for AWS, not --endpoint/],
     [["deletions", "--table", "t", "--region", "r", "--endpoint", "http://127.0.0.1:9"], /--bucket is required with --endpoint/],
     [["check", "--table", live, "--apply", ...aws], /check doesn't write/],
   ])("refuses %j", async (args, message) => {
@@ -324,6 +327,56 @@ describe("the restore CLI's arguments", () => {
     expect(buckets).toEqual(["supply-checkout-prod-deletions-r-acct"]);
     expect(result).toMatchObject({ code: 1, err: "Failed: AccessDenied: Access Denied" });
     expect(result.out).toBe(`deletions on ${restored} in r in account acct (profile p), from supply-checkout-prod-deletions-r-acct (dry run)`);
+  });
+
+  it("with --records-profile, reads the backup account's replica with that profile, naming its account", async () => {
+    const identified: unknown[] = [];
+    const read: { bucket: string; credentials: unknown }[] = [];
+    const deps = (): Deps => ({
+      ...unused,
+      callerAccount: async (_region, credentials) => {
+        identified.push(credentials);
+        return identified.length === 1 ? "acct" : "backup";
+      },
+      s3: (_region, credentials) => ({
+        send: async (command) => {
+          read.push({ bucket: String((command as ListObjectsV2Command).input.Bucket), credentials });
+          throw Object.assign(new Error("Access Denied"), { name: "AccessDenied" });
+        },
+      }),
+    });
+    const result = await run(["deletions", "--table", restored, ...aws, "--records-profile", "backup-profile"], deps(), { SUPPLY_CHECKOUT_EXPECTED_ACCOUNT: "acct" });
+    expect(result).toMatchObject({ code: 1, err: "Failed: AccessDenied: Access Denied" });
+    expect(result.out).toBe(
+      `deletions on ${restored} in r in account acct (profile p), from supply-checkout-prod-deletions-copy-r-backup in account backup (profile backup-profile) (dry run)`,
+    );
+    // The main profile's account first (and it alone is checked against SUPPLY_CHECKOUT_EXPECTED_ACCOUNT), then the records profile's
+    expect(identified).toHaveLength(2);
+    expect(identified[1]).not.toBe(identified[0]);
+    expect(read).toEqual([{ bucket: "supply-checkout-prod-deletions-copy-r-backup", credentials: identified[1] }]);
+
+    // --bucket still wins, read with the records profile
+    identified.length = 0;
+    read.length = 0;
+    const named = await run(["deletions", "--table", restored, ...aws, "--records-profile", "backup-profile", "--bucket", "other-bucket"], deps());
+    expect(named.out).toBe(`deletions on ${restored} in r in account acct (profile p), from other-bucket in account backup (profile backup-profile) (dry run)`);
+    expect(read).toEqual([{ bucket: "other-bucket", credentials: identified[1] }]);
+  });
+
+  it("stops before reading when the records profile's account can't be identified", async () => {
+    let calls = 0;
+    const deps: Deps = {
+      ...unused,
+      callerAccount: async () => {
+        if (++calls === 2) throw Object.assign(new Error("The SSO session has expired"), { name: "CredentialsProviderError" });
+        return "acct";
+      },
+    };
+    expect(await run(["deletions", "--table", restored, ...aws, "--records-profile", "backup-profile"], deps)).toEqual({
+      code: 1,
+      out: "",
+      err: "Failed: CredentialsProviderError: The SSO session has expired",
+    });
   });
 
   it("refuses to go on in an account other than SUPPLY_CHECKOUT_EXPECTED_ACCOUNT, before reading anything", async () => {
