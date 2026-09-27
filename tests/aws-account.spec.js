@@ -546,10 +546,11 @@ test.describe("first sign-in and teams", () => {
     await expect(account(page).getByRole("heading", { name: "Name your team" })).toBeVisible();
   });
 
-  test("joining explains an unverified email, too many teams, and a lost connection", async ({ page }) => {
+  test("joining explains an unverified email, too many teams, a full team, and a lost connection", async ({ page }) => {
     const backend = new FakeBackend({ teams: [], invites: [invited] });
     backend.on("POST", "/invites/i1/accept", { status: 403, body: { error: { code: "permission_denied", message: "verify" } } });
     backend.on("POST", "/invites/i1/accept", { status: 429, body: { error: { code: "quota_exceeded", message: "20 teams" } } });
+    backend.on("POST", "/invites/i1/accept", { status: 429, body: { error: { code: "quota_exceeded", reason: "team_full", message: "full" } } });
     backend.on("POST", "/invites/i1/accept", { abort: true });
     await openAws(page, backend, { storage: inviteLink() });
     const join = page.getByRole("button", { name: "Join" });
@@ -557,6 +558,8 @@ test.describe("first sign-in and teams", () => {
     await expect(alert(page)).toContainText("Your email address isn't verified yet.");
     await join.click();
     await expect(alert(page)).toContainText("You're already in as many teams as you can be.");
+    await join.click();
+    await expect(alert(page)).toHaveText("This team is full. Ask the person who invited you to make room, then try again.");
     await join.click();
     await expect(alert(page)).toHaveText("Couldn't join the team. Check your connection and try again.");
     await join.click();

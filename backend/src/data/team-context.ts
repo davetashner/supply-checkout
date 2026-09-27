@@ -13,7 +13,7 @@
 import { randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactGetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
-import { ConflictError, ForbiddenError, LimitReachedError, NotFoundError, conflictOnConditionFailure } from "./errors.js";
+import { ConflictError, ForbiddenError, LimitReachedError, NotFoundError, TeamFullError, conflictOnConditionFailure } from "./errors.js";
 import { gsi1, id, keys, prefixes, strip } from "./keys.js";
 import {
   type Invite,
@@ -27,10 +27,11 @@ import {
   hashInviteToken,
   isMemberRole,
   normalizeEmail,
-  ownersUpdate,
+  teamCounts,
   teamIdForRequest,
   teamName,
 } from "./model.js";
+import { memberCount } from "./member-count.js";
 import { queryAll } from "./query.js";
 import { writeRegionFor } from "./region.js";
 import { GSI1 } from "./schema.js";
@@ -138,6 +139,8 @@ async function teamsOf(db: Db, userId: string): Promise<Set<string>> {
   return new Set((await queryAll<UserTeam>(db, keys.userTeam(userId, "x").PK, prefixes.userTeam)).map((row) => row.teamId));
 }
 
+const teamFull = (cap: number) => `This team is full: it can have ${cap} members. Ask an owner to make room.`;
+
 const TOO_MANY_TEAMS = `An account can be in at most ${MAX_TEAMS_PER_USER} teams; leave one first`;
 
 /**
@@ -175,6 +178,7 @@ export async function createTeam(
     homeRegion: db.region,
     trialEndsAt: new Date(now.getTime() + TRIAL_DAYS * DAY_SECONDS * 1000).toISOString(),
     owners: 1,
+    members: 1,
     createdAt,
     version: 1,
   };
@@ -269,6 +273,11 @@ export async function findInvite(db: Db, token: string, now = new Date()): Promi
  * So an invite works once, before it expires, for its own address and link
  * only. Deleting the invite and adding the membership happen together. A user
  * already in MAX_TEAMS_PER_USER teams gets LimitReachedError.
+ *
+ * The team's member count moves in the same transaction, on the condition
+ * that it's below memberCap, so a team never goes over its cap, even when two
+ * people accept for its last place at once: one joins, the other gets
+ * TeamFullError (and keeps the invite, for when a place frees up).
  */
 export async function acceptInvite(
   db: Db,
@@ -284,6 +293,9 @@ export async function acceptInvite(
   const mine = await teamsOf(db, userId);
   if (mine.has(invite.teamId)) throw new ConflictError("You're already a member of this team");
   if (mine.size >= MAX_TEAMS_PER_USER) throw new LimitReachedError(TOO_MANY_TEAMS);
+  const count = await memberCount(db, invite.teamId);
+  if (!count) throw new NotFoundError("This invite has expired or was already used");
+  if (count.members >= count.cap) throw new TeamFullError(teamFull(count.cap));
   const member: Member = { type: "member", teamId: invite.teamId, userId, role: invite.role, email, joinedAt: now.toISOString() };
   const userTeam: UserTeam = { type: "userTeam", userId, teamId: invite.teamId, teamName: invite.teamName, role: invite.role };
   try {
@@ -307,7 +319,7 @@ export async function acceptInvite(
           },
           { Put: { TableName: db.tableName, Item: { ...keys.member(invite.teamId, userId), ...member }, ConditionExpression: "attribute_not_exists(PK)" } },
           { Put: { TableName: db.tableName, Item: { ...keys.userTeam(userId, invite.teamId), ...userTeam } } },
-          ...(invite.role === "owner" ? [ownersUpdate(db.tableName, invite.teamId, 1)] : []),
+          teamCounts(db.tableName, invite.teamId, { members: 1, cap: count.cap, counted: count.counted, ...(invite.role === "owner" ? { owners: 1 as const } : {}) }),
         ],
       }),
     );
@@ -315,6 +327,9 @@ export async function acceptInvite(
     const codes = cancellationCodes(error);
     if (codes?.[0] === "ConditionalCheckFailed") throw new NotFoundError("This invite has expired or was already used");
     if (codes?.[1] === "ConditionalCheckFailed") throw new ConflictError("You're already a member of this team");
+    // The count's condition: the team filled up meanwhile. (Not when this
+    // wrote the count for the first time: then someone changed the members.)
+    if (codes?.[3] === "ConditionalCheckFailed" && count.counted === undefined) throw new TeamFullError(teamFull(count.cap));
     return conflictOnConditionFailure("Someone else changed this team; try again")(error);
   }
   return authorizeTeam(db, userId, invite.teamId);

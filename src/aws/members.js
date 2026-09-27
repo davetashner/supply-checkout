@@ -46,9 +46,10 @@ function rowHTML(m, me, owners) {
   </li>`;
 }
 
-// What went wrong with an invite, in words: the server's own where it says what to do
+// What went wrong with an invite, in words: the server's own where it says what to do (a full team says how many)
 const inviteFailure = (e, what) =>
-  e.code === "quota_exceeded" ? "You've sent as many invites as you can for now. Try again tomorrow."
+  e.reason === "team_full" ? e.message
+    : e.code === "quota_exceeded" ? "You've sent as many invites as you can for now. Try again tomorrow."
     : e.code === "aborted" ? e.message
     : e.code === "bad_request" ? "Enter an email address, like name@example.com."
     : e.code === "not_found" ? "That invite was accepted or revoked just now."

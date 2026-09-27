@@ -131,6 +131,8 @@ test("says why an invite was refused, and keeps what was typed", async ({ page }
   await expect(email).toHaveValue("lee@example.com");
   for (const [answer, text] of [
     [error(429, "quota_exceeded", { message: "limit" }), "You've sent as many invites as you can for now. Try again tomorrow."],
+    // A full team: the server's words, which say how many members it can have
+    [error(429, "quota_exceeded", { reason: "team_full", message: "This team can have 10 members, counting pending invites." }), "This team can have 10 members, counting pending invites."],
     [error(400, "bad_request"), "Enter an email address, like name@example.com."],
     [error(403, "permission_denied", { reason: "owners_only" }), "Only the team's owners can manage invites."],
     [{ abort: true }, "Couldn't send the invite. Check your connection and try again."],

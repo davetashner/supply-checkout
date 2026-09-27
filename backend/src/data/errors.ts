@@ -17,7 +17,12 @@ export class LastOwnerError extends ConflictError {
 
 /** The team has used its monthly allowance. (429) */
 export class LimitReachedError extends Error {
-  override readonly name = "LimitReachedError";
+  override readonly name: string = "LimitReachedError";
+}
+
+/** The team has as many members as it may (memberCap), counting pending invites when inviting. (429, reason `team_full`) */
+export class TeamFullError extends LimitReachedError {
+  override readonly name = "TeamFullError";
 }
 
 /** The document doesn't exist, for an operation that needs it to. (404) */

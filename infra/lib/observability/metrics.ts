@@ -12,13 +12,17 @@ import {
 
 export const FIVE_MINUTES = Duration.minutes(5);
 
-/** A business metric the backend sends (backend/src/observability). */
-export function business(name: BusinessMetricName, region: string, period = FIVE_MINUTES): Metric {
+/**
+ * A business metric the backend sends (backend/src/observability). Counts
+ * add up (Sum); a gauge, such as a scheduled check's finding, is read at its
+ * Maximum.
+ */
+export function business(name: BusinessMetricName, region: string, period = FIVE_MINUTES, statistic: "Sum" | "Maximum" = "Sum"): Metric {
   return new Metric({
     namespace: METRICS_NAMESPACE,
     metricName: name,
     dimensionsMap: { [REGION_DIMENSION]: region },
-    statistic: "Sum",
+    statistic,
     period,
     region,
     label: `${name} (${region})`,

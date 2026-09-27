@@ -12,7 +12,15 @@ import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import { LIVE_AUDIENCE_ATTRIBUTES, tableName } from "../../../backend/src/data/schema.js";
-import { AUDIENCE_SK, DOCUMENT_SK_PREFIXES, REALTIME_ENV, realtimeResourceNames, USERS_NAMESPACE } from "../../../backend/src/realtime/channels.js";
+import {
+  AUDIENCE_SK,
+  CONSUMER_TIMEOUT_SECONDS,
+  DOCUMENT_SK_PREFIXES,
+  REALTIME_ENV,
+  realtimeResourceNames,
+  STREAM_BATCH_SIZE,
+  USERS_NAMESPACE,
+} from "../../../backend/src/realtime/channels.js";
 import { type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import { LOG_RETENTION } from "../observability/defaults.js";
@@ -179,6 +187,8 @@ export class RealtimeStack extends SupplyCheckoutStack {
     const { decrypt } = data;
     const fn = this.handler("Publisher", "publisher", {
       functionName,
+      // The publisher stops starting requests well before this (PUBLISH_BUDGET_MS in channels.ts)
+      timeout: Duration.seconds(CONSUMER_TIMEOUT_SECONDS),
       description: "Publishes product and sheet changes from the table's stream to each team member's AppSync Events channel",
       environment: { [REALTIME_ENV.httpHost]: this.api.httpDns, [REALTIME_ENV.tableName]: data.table },
     });
@@ -222,7 +232,9 @@ export class RealtimeStack extends SupplyCheckoutStack {
       eventSourceArn: streamArn,
       // Live updates are about now: a new mapping doesn't replay the last 24 hours
       startingPosition: StartingPosition.LATEST,
-      batchSize: 100,
+      // Small enough that a full batch for teams at the member cap fits the
+      // consumer's per-invocation publish budget (channels.ts)
+      batchSize: STREAM_BATCH_SIZE,
       // No batching window: publish as soon as records arrive (the 2-second goal)
       maxBatchingWindow: Duration.seconds(0),
       parallelizationFactor: 1,
@@ -241,7 +253,7 @@ export class RealtimeStack extends SupplyCheckoutStack {
   }
 
   /** A function from backend/src/realtime/<name>.ts, with its own log group and a role that can write only to it. */
-  private handler(id: string, name: string, props: { description: string; environment: Record<string, string>; functionName?: string }): NodejsFunction {
+  private handler(id: string, name: string, props: { description: string; environment: Record<string, string>; functionName?: string; timeout?: Duration }): NodejsFunction {
     const logGroup = new LogGroup(this, `${id}Logs`, { retention: LOG_RETENTION });
     const role = new Role(this, `${id}Role`, {
       assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
@@ -258,7 +270,7 @@ export class RealtimeStack extends SupplyCheckoutStack {
       runtime: Runtime.NODEJS_24_X,
       architecture: Architecture.ARM_64,
       memorySize: 512,
-      timeout: Duration.seconds(10),
+      timeout: props.timeout ?? Duration.seconds(10),
       description: props.description,
       environment: { NODE_OPTIONS: "--enable-source-maps", ...props.environment },
       bundling,

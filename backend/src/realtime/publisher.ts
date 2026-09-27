@@ -4,7 +4,7 @@
 import { createDb } from "../data/index.js";
 import { createObservability, withObservability } from "../observability/index.js";
 import { createAudience } from "./audience.js";
-import { REALTIME_ENV } from "./channels.js";
+import { PUBLISH_TIMEOUT_MS, REALTIME_ENV } from "./channels.js";
 import { createEventsClient } from "./events-client.js";
 import { createPublisherHandler } from "./publisher-handler.js";
 
@@ -16,6 +16,6 @@ function required(name: string): string {
 
 const host = required(REALTIME_ENV.httpHost);
 const obs = createObservability({ service: "live-updates" });
-const publish = createEventsClient({ host, region: obs.region });
+const publish = createEventsClient({ host, region: obs.region, timeoutMs: PUBLISH_TIMEOUT_MS });
 const audience = createAudience({ db: createDb({ tableName: required(REALTIME_ENV.tableName) }) });
 export const handler = withObservability(obs, createPublisherHandler({ publish, audience, obs }));

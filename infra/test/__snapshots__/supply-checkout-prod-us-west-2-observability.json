@@ -910,6 +910,287 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmssignoutnotrevoking30BBFF71": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Sign-out not revoking (J0, us-west-2). SignOutRevokeFailures at least 3 in 15 minutes: Cognito didn't revoke the refresh tokens of people who signed out, so they stay valid until they expire (30 days). Sign-out still clears the cookie. Usually Cognito unreachable or erroring. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-sign-out-not-revoking",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "SignOutRevokeFailures (us-west-2)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-west-2"
+                  }
+                ],
+                "MetricName": "SignOutRevokeFailures",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 900,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 2,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsimportsstuck68033DBE": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Imports stuck (J2, us-west-2). StuckImports above 0 at its maximum over 15 minutes: an inventory import has been committing for over an hour and is half applied until it's finished. The stuck-import check runs in the primary region every 10 minutes and logs each one's team and import IDs. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-imports-stuck",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "StuckImports (us-west-2)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-west-2"
+                  }
+                ],
+                "MetricName": "StuckImports",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 900,
+              "Stat": "Maximum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsemailverificationnotsaved4250C833": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Email verification not saved (J3, us-west-2). Any EmailVerifyFailures or EmailUnverifyFailures over 15 minutes: the sign-in trigger couldn't copy a Google or Apple user's email_verified, so they stay unverified (and can't accept invites) or, for a downgrade, stay verified. The sign-in goes ahead and the next one retries, so the Lambda Errors alarm doesn't see it. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-email-verification-not-saved",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Expression": "FILL(v, 0) + FILL(u, 0)",
+            "Id": "expr_1",
+            "Label": "Email verification failures (us-west-2)",
+            "ReturnData": true
+          },
+          {
+            "Id": "v",
+            "Label": "EmailVerifyFailures (us-west-2)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-west-2"
+                  }
+                ],
+                "MetricName": "EmailVerifyFailures",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 900,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "u",
+            "Label": "EmailUnverifyFailures (us-west-2)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-west-2"
+                  }
+                ],
+                "MetricName": "EmailUnverifyFailures",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 900,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsnearsendinglimit2CFDD5DF": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Near the sending limit (J3, us-west-2). EmailQuotaUsedPercent above 80 at its maximum over 15 minutes: SES has sent over 80% of its rolling 24-hour quota, and stops sending (invites, sign-in codes) at 100%. The SES quota check runs in the primary region every 10 minutes. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-near-sending-limit",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "EmailQuotaUsedPercent (us-west-2)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-west-2"
+                  }
+                ],
+                "MetricName": "EmailQuotaUsedPercent",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 900,
+              "Stat": "Maximum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 80,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmsemailbouncing4BE2ED7E": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
