@@ -42,6 +42,7 @@ export const opsResourceNames = (envName: string) => ({
   stuckImportsFunction: `supply-checkout-${envName}-stuck-imports`,
   emailQuotaFunction: `supply-checkout-${envName}-email-quota`,
   teamPurgeFunction: `supply-checkout-${envName}-team-purge`,
+  operatorAuditWatchFunction: `supply-checkout-${envName}-operator-audit-watch`,
 });
 
 /** Environment variables the checks read. */

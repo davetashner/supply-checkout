@@ -26,10 +26,34 @@ const esquery = (pattern) => `/${pattern.replaceAll("/", "\\x2F")}/`;
 // one, and inside, the operator module may not import team-context.ts.
 export const TEAM_CONTEXT_ISSUERS = ["authorizeTeam", "createTeam", "acceptInvite", "teamContextForStripeCustomer", "teamContextForEmailEvent", "TeamContext"];
 export const OPERATOR_MESSAGE = "Operator code never gets a TeamContext (ADR 0015): operators reach teams only through data/operator.ts and the operator-access role.";
+// Operator code may never ask DynamoDB for an item's old or whole values
+// (supply-checkout-6uw.5): ReturnValuesOnConditionCheckFailure isn't covered
+// by any IAM condition, so ALL_OLD on a failed comp update would hand back
+// the whole META item, and ALL_OLD on an audit PutItem would return an item it
+// replaced. The property is banned outright, and so are the ALL_OLD and
+// ALL_NEW values anywhere in that code.
+export const RETURN_VALUES_MESSAGE =
+  "Operator code never asks for old or whole items (supply-checkout-6uw.5): no ReturnValuesOnConditionCheckFailure, ALL_OLD or ALL_NEW. The operator-access role must not read beyond what it writes.";
+const operatorReturnValues = [
+  { selector: "Property[key.name='ReturnValuesOnConditionCheckFailure']", message: RETURN_VALUES_MESSAGE },
+  { selector: "Property[key.value='ReturnValuesOnConditionCheckFailure']", message: RETURN_VALUES_MESSAGE },
+  { selector: "MemberExpression[property.name='ReturnValuesOnConditionCheckFailure']", message: RETURN_VALUES_MESSAGE },
+  { selector: "Literal[value='ReturnValuesOnConditionCheckFailure']", message: RETURN_VALUES_MESSAGE },
+  { selector: "Literal[value=/^ALL_(OLD|NEW)$/]", message: RETURN_VALUES_MESSAGE },
+  { selector: "TemplateElement[value.raw=/ALL_(OLD|NEW)|ReturnValuesOnConditionCheckFailure/]", message: RETURN_VALUES_MESSAGE },
+];
 const restrictedPatterns = [
   { regex: DYNAMODB, message: DYNAMODB_MESSAGE },
   { regex: DATA_INTERNALS, message: DATA_INTERNALS_MESSAGE },
 ];
+
+const restrictedSyntax = [
+  [DYNAMODB, DYNAMODB_MESSAGE],
+  [DATA_INTERNALS, DATA_INTERNALS_MESSAGE],
+].flatMap(([pattern, message]) => [
+  { selector: `ImportExpression[source.value=${esquery(pattern)}]`, message },
+  { selector: `CallExpression[callee.name='require'][arguments.0.value=${esquery(pattern)}]`, message },
+]);
 
 export default tseslint.config(
   { ignores: ["node_modules/", "coverage/"] },
@@ -43,16 +67,7 @@ export default tseslint.config(
           patterns: restrictedPatterns,
         },
       ],
-      "no-restricted-syntax": [
-        "error",
-        ...[
-          [DYNAMODB, DYNAMODB_MESSAGE],
-          [DATA_INTERNALS, DATA_INTERNALS_MESSAGE],
-        ].flatMap(([pattern, message]) => [
-          { selector: `ImportExpression[source.value=${esquery(pattern)}]`, message },
-          { selector: `CallExpression[callee.name='require'][arguments.0.value=${esquery(pattern)}]`, message },
-        ]),
-      ],
+      "no-restricted-syntax": ["error", ...restrictedSyntax],
     },
   },
   {
@@ -64,6 +79,7 @@ export default tseslint.config(
           patterns: [...restrictedPatterns, { regex: String.raw`(^|/)data/index(\.js|\.ts)?$`, importNames: TEAM_CONTEXT_ISSUERS, message: OPERATOR_MESSAGE }],
         },
       ],
+      "no-restricted-syntax": ["error", ...restrictedSyntax, ...operatorReturnValues],
     },
   },
   {
@@ -88,6 +104,7 @@ export default tseslint.config(
         "error",
         { selector: `ImportExpression[source.value=/team-context/]`, message: OPERATOR_MESSAGE },
         { selector: `CallExpression[callee.name='require'][arguments.0.value=/team-context/]`, message: OPERATOR_MESSAGE },
+        ...operatorReturnValues,
       ],
     },
   },

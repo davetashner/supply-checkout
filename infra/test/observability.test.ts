@@ -13,7 +13,14 @@ import { LOG_RETENTION } from "../lib/observability/defaults.js";
 import { journeyAlarmSpecs } from "../lib/observability/journey-alarms.js";
 import { CHECK_EVERY_MINUTES, PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS, PURGE_SILENT_ALARM_HOURS, STUCK_IMPORT_AFTER_MINUTES } from "../../backend/src/ops/names.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
-import { OPERATOR_POOL_ADMIN_EVENTS, OPERATOR_SELF_SERVICE_EVENTS } from "../lib/stacks/observability-stack.js";
+import {
+  OPERATOR_POOL_ADMIN_EVENTS,
+  OPERATOR_POOL_CONFIG_EVENTS,
+  OPERATOR_RULE_CHANGE_EVENTS,
+  OPERATOR_RULE_SILENCING_EVENTS,
+  OPERATOR_SELF_SERVICE_EVENTS,
+  OPERATOR_USER_EVENTS,
+} from "../lib/stacks/observability-stack.js";
 
 // Region names live only in lib/config.ts (ADR 0010); tests use its constants.
 const [EAST, WEST] = APPROVED_REGIONS;
@@ -215,8 +222,10 @@ describe("journey alarms (docs/journeys.md)", () => {
   it("creates the same alarms in every region, each notifying its severity's topic on alarm and recovery", () => {
     for (const r of config.regions) {
       const t = observability(r);
-      // The purge's own alarm is with the purge, in the primary region only (scheduled checks, below)
-      const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties).filter((a) => a.AlarmName !== "supply-checkout-prod-p2-deletion-not-running");
+      // The purge's own alarm is with the purge, and the operator audit watch's two are with the watch, in the primary region only (tested below)
+      const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm"))
+        .map((a) => a.Properties)
+        .filter((a) => a.AlarmName !== "supply-checkout-prod-p2-deletion-not-running" && !String(a.AlarmName).includes("operator-audit"));
       const specs = journeyAlarmSpecs(r, "t", "api", "prod");
       expect(alarms.map((a) => a.AlarmName).sort()).toEqual(
         specs.map((s) => `supply-checkout-prod-${s.severity.toLowerCase()}-${s.id}`).sort(),
@@ -435,7 +444,12 @@ describe("scheduled checks", () => {
     west.resourceCountIs("AWS::Lambda::Function", 0);
     west.resourceCountIs("AWS::Events::Rule", 0);
     const t = observability();
-    expect(functions(t).map((f) => f.FunctionName).sort()).toEqual(["supply-checkout-prod-email-quota", "supply-checkout-prod-stuck-imports", "supply-checkout-prod-team-purge"]);
+    expect(functions(t).map((f) => f.FunctionName).sort()).toEqual([
+      "supply-checkout-prod-email-quota",
+      "supply-checkout-prod-operator-audit-watch",
+      "supply-checkout-prod-stuck-imports",
+      "supply-checkout-prod-team-purge",
+    ]);
     const rules = Object.values(t.findResources("AWS::Events::Rule")).map((r) => r.Properties).filter((r) => r.ScheduleExpression !== undefined);
     expect(rules).toHaveLength(3);
     expect(rules.map((r) => r.ScheduleExpression).sort()).toEqual(["rate(1 hour)", `rate(${CHECK_EVERY_MINUTES} minutes)`, `rate(${CHECK_EVERY_MINUTES} minutes)`]);
@@ -703,29 +717,39 @@ describe("defaults for every function and log group", () => {
 });
 
 describe("operator pool alerts (ADR 0015)", () => {
-  it("tell P1 about user, group, password, MFA and pool changes (not CloudFormation's), and what an operator's own token changes, in the primary region only", () => {
+  const NOT_CLOUDFORMATION = { invokedBy: [{ exists: false }, { "anything-but": "cloudformation.amazonaws.com" }] };
+
+  function operatorRules() {
+    const t = observability();
+    const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([, r]) => r.Properties.EventPattern);
+    expect(rules).toHaveLength(3);
+    const byId = (prefix: string) => {
+      const found = rules.find(([id]) => id.startsWith(prefix));
+      if (!found) throw new Error(`No rule ${prefix}`);
+      return { id: found[0], props: found[1].Properties as Record<string, unknown> };
+    };
+    return { t, admin: byId("OperatorPoolChanges"), self: byId("OperatorSelfServiceChanges"), tampering: byId("OperatorRuleTampering") };
+  }
+
+  it("tell P1 about user, group, password, MFA and pool changes, and what an operator's own token changes, in the primary region only", () => {
     const { region } = build();
     const west = Template.fromStack(region(WEST).observability);
     expect(Object.values(west.findResources("AWS::Events::Rule")).filter((r) => r.Properties.EventPattern)).toEqual([]);
-    const t = observability();
-    const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([, r]) => r.Properties.EventPattern);
-    expect(rules).toHaveLength(2);
-    const [[adminId, admin], [selfId, self]] = rules.sort(([a], [b]) => a.localeCompare(b)) as [[string, { Properties: Record<string, unknown> }], [string, { Properties: Record<string, unknown> }]];
+    const { t, admin, self, tampering } = operatorRules();
     const poolId = { Ref: expect.stringMatching(/identityopsuserpoolid/i) };
-    expect(admin.Properties.EventPattern).toEqual({
+    expect(admin.props.EventPattern).toEqual({
       source: ["aws.cognito-idp"],
       "detail-type": ["AWS API Call via CloudTrail"],
       detail: {
         eventSource: ["cognito-idp.amazonaws.com"],
-        eventName: [...OPERATOR_POOL_ADMIN_EVENTS],
         requestParameters: { userPoolId: [poolId] },
-        userIdentity: { invokedBy: [{ exists: false }, { "anything-but": "cloudformation.amazonaws.com" }] },
+        $or: [{ eventName: [...OPERATOR_USER_EVENTS] }, { eventName: [...OPERATOR_POOL_CONFIG_EVENTS], userIdentity: NOT_CLOUDFORMATION }],
       },
     });
     for (const name of ["AdminCreateUser", "AdminAddUserToGroup", "AdminRemoveUserFromGroup", "UpdateUserPool", "SetUserPoolMfaConfig", "CreateUserPoolClient", "UpdateUserPoolClient", "AdminSetUserPassword", "AdminResetUserPassword", "AdminEnableUser", "AdminSetUserMFAPreference", "AdminUpdateUserAttributes", "CreateGroup", "UpdateGroup", "DeleteGroup", "CreateIdentityProvider", "AdminLinkProviderForUser"]) {
       expect(OPERATOR_POOL_ADMIN_EVENTS, name).toContain(name);
     }
-    expect(self.Properties.EventPattern).toEqual({
+    expect(self.props.EventPattern).toEqual({
       source: ["aws.cognito-idp"],
       "detail-type": ["AWS API Call via CloudTrail"],
       detail: {
@@ -735,16 +759,139 @@ describe("operator pool alerts (ADR 0015)", () => {
       },
     });
     expect([...OPERATOR_SELF_SERVICE_EVENTS]).toHaveLength(5);
-    for (const rule of [admin, self]) {
-      expect(rule.Properties.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP1/) } })]);
-      expect(JSON.stringify(rule.Properties.Targets)).not.toContain("userIdentity");
+    for (const rule of [admin, self, tampering]) {
+      expect(rule.props.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP1/) } })]);
+      expect(JSON.stringify(rule.props.Targets)).not.toContain("userIdentity");
     }
     // Only these rules may publish
     const statements = Object.values(t.findResources("AWS::SNS::TopicPolicy")).flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
     expect(statements.filter((st) => (st.Principal as { Service?: unknown } | undefined)?.Service === "events.amazonaws.com")).toEqual([
-      expect.objectContaining({ Sid: "AllowOperatorPoolAlertToPublish", Condition: { ArnEquals: { "aws:SourceArn": [{ "Fn::GetAtt": [adminId, "Arn"] }, { "Fn::GetAtt": [selfId, "Arn"] }] } } }),
+      expect.objectContaining({
+        Sid: "AllowOperatorPoolAlertToPublish",
+        Condition: { ArnEquals: { "aws:SourceArn": [{ "Fn::GetAtt": [admin.id, "Arn"] }, { "Fn::GetAtt": [self.id, "Arn"] }, { "Fn::GetAtt": [tampering.id, "Arn"] }] } },
+      }),
       // The backup stack's two change-alert rules, by name (tested in backup.test.ts)
       expect.objectContaining({ Sid: "AllowBackupChangeAlertsToPublish" }),
     ]);
+  });
+
+  it("never exempt CloudFormation from user, membership, password or MFA calls, only from pool, client and group configuration (supply-checkout-6uw.7)", () => {
+    // The two lists split the calls, with nothing in both
+    expect([...OPERATOR_POOL_ADMIN_EVENTS].sort()).toEqual([...OPERATOR_USER_EVENTS, ...OPERATOR_POOL_CONFIG_EVENTS].sort());
+    expect(OPERATOR_USER_EVENTS.filter((e) => (OPERATOR_POOL_CONFIG_EVENTS as readonly string[]).includes(e))).toEqual([]);
+    for (const name of ["AdminCreateUser", "AdminAddUserToGroup", "AdminRemoveUserFromGroup", "AdminSetUserPassword", "AdminResetUserPassword", "AdminEnableUser", "AdminSetUserMFAPreference", "AdminUpdateUserAttributes", "AdminLinkProviderForUser"]) {
+      expect(OPERATOR_USER_EVENTS, name).toContain(name);
+    }
+    // Every exempt call configures the pool, a client, a group or a provider: none names a user
+    for (const name of OPERATOR_POOL_CONFIG_EVENTS) {
+      expect(name).toMatch(/^(Create|Update|Delete|Set)(Group|UserPool|UserPoolMfaConfig|UserPoolClient|IdentityProvider)$/);
+      expect(name).not.toMatch(/User(?!Pool)|Password|MFAPreference|Admin/);
+    }
+    const { admin } = operatorRules();
+    const pattern = admin.props.EventPattern as { detail: Record<string, unknown> };
+    // No exemption at the top of the pattern: only on the configuration branch
+    expect(pattern.detail).not.toHaveProperty("userIdentity");
+    const branches = pattern.detail.$or as { eventName: string[]; userIdentity?: unknown }[];
+    const always = branches.filter((b) => b.userIdentity === undefined).flatMap((b) => b.eventName);
+    expect(always).toEqual([...OPERATOR_USER_EVENTS]);
+  });
+
+  it("tell P1 when an operator alert rule is deleted, disabled or loses its target, whoever does it, or is rewritten outside a deploy", () => {
+    const { admin, self, tampering } = operatorRules();
+    const watched = [{ Ref: admin.id }, { Ref: self.id }];
+    expect([...OPERATOR_RULE_SILENCING_EVENTS]).toEqual(["DeleteRule", "DisableRule", "RemoveTargets"]);
+    expect([...OPERATOR_RULE_CHANGE_EVENTS]).toEqual(["PutRule", "PutTargets"]);
+    expect(tampering.props.EventPattern).toEqual({
+      source: ["aws.events"],
+      "detail-type": ["AWS API Call via CloudTrail"],
+      detail: {
+        eventSource: ["events.amazonaws.com"],
+        $or: [
+          { eventName: ["DeleteRule", "DisableRule"], requestParameters: { name: watched } },
+          { eventName: ["RemoveTargets"], requestParameters: { rule: watched } },
+          { eventName: ["PutRule"], requestParameters: { name: watched }, userIdentity: NOT_CLOUDFORMATION },
+          { eventName: ["PutTargets"], requestParameters: { rule: watched }, userIdentity: NOT_CLOUDFORMATION },
+        ],
+      },
+    });
+    expect(JSON.stringify(tampering.props.Targets)).toContain("an operator alert rule");
+  });
+});
+
+describe("operator audit watch (supply-checkout-6uw.5)", () => {
+  function watchFunction(t: Template) {
+    const [entry] = Object.entries(t.findResources("AWS::Lambda::Function")).filter(([, f]) => f.Properties.FunctionName === "supply-checkout-prod-operator-audit-watch");
+    if (!entry) throw new Error("No watch function");
+    return { id: entry[0], props: entry[1].Properties as Record<string, unknown> };
+  }
+
+  it("reads only MODIFY and REMOVE records of OPAUDIT# partitions from the table's stream, in the primary region only", () => {
+    const west = Template.fromStack(build().region(WEST).observability);
+    west.resourceCountIs("AWS::Lambda::EventSourceMapping", 0);
+    const t = observability();
+    const fn = watchFunction(t);
+    const mappings = Object.values(t.findResources("AWS::Lambda::EventSourceMapping")).map((m) => m.Properties);
+    expect(mappings).toHaveLength(1);
+    const [mapping] = mappings;
+    expect(mapping).toMatchObject({
+      FunctionName: { Ref: fn.id },
+      EventSourceArn: { Ref: expect.stringMatching(/datatablestreamarn/i) },
+      StartingPosition: "LATEST",
+      BisectBatchOnFunctionError: true,
+      MaximumRetryAttempts: 5,
+    });
+    expect(mapping.FilterCriteria).toEqual({
+      Filters: [{ Pattern: JSON.stringify({ eventName: ["MODIFY", "REMOVE"], dynamodb: { Keys: { PK: { S: [{ prefix: "OPAUDIT#" }] } } } }) }],
+    });
+  });
+
+  it("gives the watch no table access: only the stream, and the table key through DynamoDB", () => {
+    const t = observability();
+    const fn = watchFunction(t);
+    const role = (fn.props.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0];
+    const found = Object.values(t.findResources("AWS::IAM::Policy"))
+      .filter((p) => (p.Properties.Roles as { Ref: string }[]).some((r) => r.Ref === role) && !String(p.Properties.PolicyName).includes("XRayWrite"))
+      .flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
+    expect(found.map((s) => s.Action)).toEqual(
+      expect.arrayContaining([["logs:CreateLogStream", "logs:PutLogEvents"], ["dynamodb:DescribeStream", "dynamodb:GetRecords", "dynamodb:GetShardIterator"], ["kms:Decrypt", "kms:DescribeKey"], "dynamodb:ListStreams"]),
+    );
+    expect(found).toHaveLength(4);
+    const actions = found.flatMap((s) => [s.Action].flat() as string[]);
+    for (const a of actions) expect(a).not.toMatch(/^dynamodb:(GetItem|Query|Scan|PutItem|UpdateItem|DeleteItem|BatchGetItem|BatchWriteItem)$/);
+    const stream = found.find((s) => JSON.stringify(s.Action).includes("GetRecords"));
+    expect(stream?.Resource).toEqual({ Ref: expect.stringMatching(/datatablestreamarn/i) });
+    const kms = found.find((s) => JSON.stringify(s.Action).includes("kms:Decrypt"));
+    expect(kms?.Condition).toEqual({ StringEquals: { "kms:ViaService": { "Fn::Join": ["", ["dynamodb.", { Ref: "AWS::Region" }, ".amazonaws.com"]] } } });
+  });
+
+  it("alarms P1 on any OperatorAuditChanged, and P2 when the watch fails, both on the dashboard", () => {
+    const t = observability();
+    const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties);
+    const changed = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p1-operator-audit-changed");
+    expect(changed).toMatchObject({
+      Metrics: [
+        expect.objectContaining({
+          MetricStat: expect.objectContaining({
+            Metric: { Namespace: "SupplyCheckout", MetricName: BusinessMetric.OperatorAuditChanged, Dimensions: [{ Name: "Region", Value: EAST }] },
+            Period: 300,
+            Stat: "Sum",
+          }),
+        }),
+      ],
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+    });
+    expect(changed?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP1/);
+    expect(changed?.OKActions).toEqual(changed?.AlarmActions);
+    const failing = alarms.find((a) => a.AlarmName === "supply-checkout-prod-p2-operator-audit-watch-failing");
+    expect(failing).toMatchObject({ MetricName: "Errors", Namespace: "AWS/Lambda", Threshold: 0, TreatMissingData: "notBreaching" });
+    expect(failing?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
+    const dashboard = JSON.stringify(Object.values(t.findResources("AWS::CloudWatch::Dashboard"))[0]);
+    expect(dashboard).toMatch(/"OperatorAuditWatchChanged[0-9A-F]+","Arn"/);
+    expect(dashboard).toMatch(/"OperatorAuditWatchFailing[0-9A-F]+","Arn"/);
+    // Neither exists in the second region
+    const west = Object.values(Template.fromStack(build().region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => String(a.Properties.AlarmName));
+    expect(west.filter((n) => n.includes("operator-audit"))).toEqual([]);
   });
 });
