@@ -1,13 +1,27 @@
 import { Aws, CfnOutput, CfnParameter, Duration, RemovalPolicy, Validations } from "aws-cdk-lib";
 import { BackupVault } from "aws-cdk-lib/aws-backup";
+import { Alarm, ComparisonOperator, MathExpression, Metric, TreatMissingData } from "aws-cdk-lib/aws-cloudwatch";
+import { SnsAction } from "aws-cdk-lib/aws-cloudwatch-actions";
 import { AnyPrincipal, Effect, PolicyDocument, PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { Key } from "aws-cdk-lib/aws-kms";
+import { Subscription, SubscriptionProtocol, Topic } from "aws-cdk-lib/aws-sns";
+import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
+import { BackupChangeAlerts, backupAlertRuleArns } from "../backup-alerts.js";
 import { COMPLIANCE_GRACE_DAYS, COPY_LOCK, copyVaultName } from "../backup.js";
+import { alarmContactParameter, alarmContactsFromContext } from "../observability/alarm-topics.js";
 import type { DeploymentConfig } from "../config.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
 import { COPY_KEY_USE } from "./backup-stack.js";
+
+/**
+ * The copies-missing alarm fires when this many hours in a row pass with no
+ * copy completed in the vault. The plan runs daily, so this allows one
+ * copy's worth of lateness before alarming, not a whole missed day and more.
+ */
+export const COPIES_MISSING_AFTER_HOURS = 36;
+const COPIES_MISSING_PERIOD_HOURS = 12;
 
 /** One 12-digit account ID per list item (CloudFormation applies AllowedPattern to each). */
 export const ACCOUNT_ID_PATTERN = "^\\d{12}$";
@@ -32,11 +46,24 @@ export const ORGANIZATION_ID_PATTERN = "^o-[a-z0-9]{10,32}$";
  *     restore or a drill. They may use the vault key, and the copy-out role
  *     may copy into their `supply-checkout-*` vaults.
  *   - `OrganizationId`: every other account must also be in this organization.
+ * - Alerts, on its own encrypted SNS topic (`supply-checkout-<env>-backup-alerts`),
+ *   emailed to the addresses in this account's SSM parameters
+ *   `/supply-checkout/<env>/alarms/email-<n>` (as in the observability stack,
+ *   so none is in this repository; `-c alarmContacts` sets how many):
+ *   - `supply-checkout-<env>-backup-copies-missing`: no copy completed in the
+ *     vault for COPIES_MISSING_AFTER_HOURS. This is what notices a workload
+ *     account whose plan, copy rule or alarms were deleted by someone holding it.
+ *   - EventBridge rules (backup-alerts.ts) when a vault's access policy or
+ *     lock is changed or removed, a plan or selection is changed or deleted,
+ *     or the vault key is disabled, scheduled for deletion or re-policied.
  */
 export class BackupAccountStack extends SupplyCheckoutStack {
   readonly vault: BackupVault;
   readonly vaultKey: Key;
   readonly copyOutRole: Role;
+  readonly alertTopic: Topic;
+  readonly copiesMissing: Alarm;
+  readonly changeAlerts: BackupChangeAlerts;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "backup-vault", layer: "stateful" });
@@ -151,6 +178,101 @@ export class BackupAccountStack extends SupplyCheckoutStack {
       reason:
         "Restore accounts are a deploy-time parameter, so the vault ARN can't name them; aws:ResourceAccount limits the " +
         "wildcard to those accounts' supply-checkout-* vaults.",
+    });
+
+    // Alerts: an encrypted topic only this account's alarms and the two change rules may publish to
+    const alertKey = new Key(this, "AlertKey", {
+      alias: `alias/supply-checkout-${config.envName}-backup-alerts`,
+      description: `Encrypts the Supply Checkout ${config.envName} backup alerts topic`,
+      enableKeyRotation: true,
+      // Nothing is kept under this key: a message is gone once it's delivered
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+    alertKey.addToResourcePolicy(
+      new PolicyStatement({
+        sid: "AlarmsAndRulesPublishToTheTopic",
+        principals: [new ServicePrincipal("cloudwatch.amazonaws.com"), new ServicePrincipal("events.amazonaws.com")],
+        actions: ["kms:Decrypt", "kms:GenerateDataKey*"],
+        resources: ["*"],
+        conditions: { StringEquals: { "aws:SourceAccount": Aws.ACCOUNT_ID } },
+      }),
+    );
+    this.alertTopic = new Topic(this, "AlertTopic", {
+      topicName: `supply-checkout-${config.envName}-backup-alerts`,
+      displayName: `Supply Checkout ${config.envName} backups`,
+      masterKey: alertKey,
+      enforceSSL: true,
+    });
+    this.alertTopic.addToResourcePolicy(
+      new PolicyStatement({
+        sid: "AllowCloudWatchAlarmsToPublish",
+        principals: [new ServicePrincipal("cloudwatch.amazonaws.com")],
+        actions: ["sns:Publish"],
+        resources: [this.alertTopic.topicArn],
+        conditions: {
+          StringEquals: { "aws:SourceAccount": Aws.ACCOUNT_ID },
+          ArnLike: { "aws:SourceArn": `arn:${Aws.PARTITION}:cloudwatch:${Aws.REGION}:${Aws.ACCOUNT_ID}:alarm:*` },
+        },
+      }),
+    );
+    this.alertTopic.addToResourcePolicy(
+      new PolicyStatement({
+        sid: "AllowBackupChangeAlertsToPublish",
+        principals: [new ServicePrincipal("events.amazonaws.com")],
+        actions: ["sns:Publish"],
+        resources: [this.alertTopic.topicArn],
+        conditions: { ArnEquals: { "aws:SourceArn": backupAlertRuleArns(config.envName, "backup-account") } },
+      }),
+    );
+    for (let n = 1; n <= alarmContactsFromContext(this.node).email; n++) {
+      new Subscription(this, `AlertEmail${n}`, {
+        topic: this.alertTopic,
+        protocol: SubscriptionProtocol.EMAIL,
+        // Resolved at deploy time from this account's SSM parameter, so the address is never in the template
+        endpoint: StringParameter.valueForStringParameter(this, alarmContactParameter(config.envName, "email", n)),
+      });
+    }
+
+    // Recovery point metrics are only sent when non-zero, and it isn't
+    // documented which dimensions a copy's recovery point carries in the
+    // destination account, so this adds the vault's metric with and without
+    // ResourceType. If neither exists the sum is 0 and the alarm fires, so a
+    // wrong guess is loud, not silent (docs/backups.md says how to check).
+    const period = Duration.hours(COPIES_MISSING_PERIOD_HOURS);
+    const completed = (dimensionsMap: Record<string, string>) =>
+      new Metric({ namespace: "AWS/Backup", metricName: "NumberOfRecoveryPointsCompleted", dimensionsMap, statistic: "Sum", period });
+    const periods = COPIES_MISSING_AFTER_HOURS / COPIES_MISSING_PERIOD_HOURS;
+    this.copiesMissing = new Alarm(this, "CopiesMissing", {
+      alarmName: `supply-checkout-${config.envName}-backup-copies-missing`,
+      alarmDescription:
+        `No copy of the ${config.envName} app table's daily backup completed in ${copyVaultName(config.envName)} in the last ` +
+        `${COPIES_MISSING_AFTER_HOURS} hours. The workload account's plan, copy rule or permissions may have been changed or deleted. ` +
+        "Runbook: docs/backups.md, When copies stop arriving.",
+      metric: new MathExpression({
+        expression: "FILL(vault, 0) + FILL(dynamodb, 0)",
+        usingMetrics: {
+          vault: completed({ BackupVaultName: copyVaultName(config.envName) }),
+          dynamodb: completed({ BackupVaultName: copyVaultName(config.envName), ResourceType: "DynamoDB" }),
+        },
+        period,
+        label: "Copies completed in the vault",
+      }),
+      threshold: 1,
+      comparisonOperator: ComparisonOperator.LESS_THAN_THRESHOLD,
+      evaluationPeriods: periods,
+      datapointsToAlarm: periods,
+      // No data at all means no copy arrived
+      treatMissingData: TreatMissingData.BREACHING,
+    });
+    const notify = new SnsAction(this.alertTopic);
+    this.copiesMissing.addAlarmAction(notify);
+    this.copiesMissing.addOkAction(notify);
+
+    this.changeAlerts = new BackupChangeAlerts(this, "ChangeAlerts", {
+      envName: config.envName,
+      side: "backup-account",
+      vaultKeyArn: this.vaultKey.keyArn,
+      topic: this.alertTopic,
     });
 
     new CfnOutput(this, "CopyVaultArn", {

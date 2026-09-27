@@ -343,6 +343,15 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       metric: business(BusinessMetric.TeamClosedNoticeFailures, region, FIFTEEN_MINUTES),
       threshold: 0,
     },
+    {
+      id: "team-reopened-notices-failing",
+      title: "Team reopened emails failing",
+      journeys: "J11",
+      severity: "P2",
+      rule: "Any TeamReopenedNoticeFailures over 15 minutes: an owner of a team that was just reopened wasn't told it will no longer be deleted (SES refused the message, no address on file, or the owners couldn't be listed). The team reopened anyway.",
+      metric: business(BusinessMetric.TeamReopenedNoticeFailures, region, FIFTEEN_MINUTES),
+      threshold: 0,
+    },
   ];
 }
 
