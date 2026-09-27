@@ -1029,9 +1029,9 @@ paths:
         emailed that it was reopened (best effort). `name` must be the
         team's name (ignoring case and surrounding spaces), or it's 400 and
         nothing changes. Reopening a team that isn't closed returns it as
-        it is. Refused within an hour of `deletesAt` (409, reason
-        `team_deleting`), when the scheduled purge may already be deleting
-        it. An owner who left the closed team isn't a member any more
+        it is. Refused within an hour of `deletesAt`, or once the
+        scheduled purge has started deleting it (409, reason
+        `team_deleting`). An owner who left the closed team isn't a member any more
         (403 `not_member`). A team can be reopened 3 times a UTC day (429
         `quota_exceeded` after that), which bounds the owner emails that
         closing and reopening send.
@@ -1061,7 +1061,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
-          description: "`aborted`: the caller's role, or the team's closure, changed meanwhile (reload and try again); or, with `reason: \"team_deleting\"`, the team is less than an hour from being deleted and can't be reopened."
+          description: "`aborted`: the caller's role, or the team's closure, changed meanwhile (reload and try again); or, with `reason: \"team_deleting\"`, the team is less than an hour from being deleted, or being deleted, and can't be reopened."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429":
           description: "`quota_exceeded`: the team was already reopened 3 times today (UTC); try again tomorrow."

@@ -51,7 +51,8 @@ export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySo
  *   here too, with `topics.notify(alarm, severity)`.
  * - `dashboard`: primary region only, drawing every region's metrics.
  * - `checks`: primary region only, the scheduled checks that send the
- *   StuckImports and EmailQuotaUsedPercent gauges (ops-checks.ts).
+ *   StuckImports and EmailQuotaUsedPercent gauges, and the closed-team purge
+ *   with its "Deletion job not running" alarm (ops-checks.ts).
  * - `operatorChanges`: primary region only, P1 alerts on changes to the
  *   operator pool's users, groups, passwords, MFA and settings, and on what
  *   an operator's own token can change (ADR 0015), from CloudTrail through
@@ -89,7 +90,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     }
 
     if (this.isPrimaryRegion) {
-      this.checks = new OpsChecks(this, "OpsChecks", { envName: config.envName, tableName: table });
+      this.checks = new OpsChecks(this, "OpsChecks", { envName: config.envName, tableName: table, topics: this.topics });
       this.operatorChanges = this.alertOnOperatorChanges(config.envName);
       // The backup stack (primary region, deployed after this one) alerts P1
       // when its vault, plan or key is changed (backup-alerts.ts): only its
@@ -107,7 +108,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         envName: config.envName,
         regions: config.regions,
         tableName: table,
-        alarms: this.alarms.alarms,
+        alarms: [...this.alarms.alarms, this.checks.purgeNotRunning],
       });
     }
   }
