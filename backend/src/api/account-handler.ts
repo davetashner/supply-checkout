@@ -128,7 +128,7 @@ import {
   teamIdForRequest,
 } from "../data/index.js";
 import { EmailNotSentError, type Mailer, sendInviteEmail, sendTeamNotice } from "../email/mailer.js";
-import { BusinessMetric, type Observability } from "../observability/index.js";
+import { BusinessMetric, type BusinessMetricName, type Observability } from "../observability/index.js";
 import type { DbForAccount } from "./account-db.js";
 import type { CognitoUser, DeleteUser, EmailCodes, UserInfo } from "./cognito-user.js";
 import { callerId, type DataEvent, errorFor as dataErrorFor } from "./data-handler.js";
@@ -152,6 +152,12 @@ export interface AccountHandlerDeps {
 }
 
 const ROUTES = new Map(ACCOUNT_ROUTES.map((r) => [routeKey(r), r.action]));
+
+/** The email code routes count their 5xx answers, for the "Email codes failing" alarm (docs/journeys.md). */
+const EMAIL_CODE_FAILURES: Partial<Record<AccountRoute["action"], BusinessMetricName>> = {
+  sendEmailCode: BusinessMetric.EmailCodeSendFailures,
+  verifyEmail: BusinessMetric.EmailCodeVerifyFailures,
+};
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const REQUEST_KEY = /^[A-Za-z0-9_-]{8,128}$/;
 /** Cognito's verification codes are 6 digits. */
@@ -645,7 +651,12 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     } catch (error) {
       const apiError = errorFor(error);
       status = apiError.status;
-      if (apiError.status >= 500) obs.logger.error("Request failed", error as Error);
+      if (apiError.status >= 500) {
+        obs.logger.error("Request failed", error as Error);
+        // The email code routes' own alarm: they're too quiet for the API errors alarm's 2% to see
+        const codeFailure = EMAIL_CODE_FAILURES[action as AccountRoute["action"]];
+        if (codeFailure) obs.count(codeFailure);
+      }
       return errorResponse(apiError);
     } finally {
       obs.logger.info("Request", { route: event.routeKey, status, ms: now() - started });

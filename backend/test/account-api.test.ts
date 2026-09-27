@@ -12,7 +12,7 @@ import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
 import { authorizeTeam, createInvite, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS, verifiedEmailHash } from "../src/data/index.js";
-import type { Observability } from "../src/observability/index.js";
+import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { REGION, accountPartitions, fakeMailer, unusedDeleteUser } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
@@ -439,6 +439,13 @@ describe("verifying the caller's email address", () => {
     expect(await call("POST", "/me/email/verify", { user: UNVERIFIED, body: { code: "123456" } })).toMatchObject({ status: 500, body: { error: { code: "internal" } } });
     cognitoDown = true;
     expect((await call("POST", "/me/email/code", { user: UNVERIFIED })).status).toBe(500);
+    // Each 5xx is counted for the Email codes failing alarm; a refusal (4xx) isn't
+    expect(counts[BusinessMetric.EmailCodeVerifyFailures]).toBe(1);
+    expect(counts[BusinessMetric.EmailCodeSendFailures]).toBe(1);
+    // Another route's 5xx isn't an email code failure
+    expect((await call("GET", "/me", { user: UNVERIFIED })).status).toBe(500);
+    expect(counts[BusinessMetric.EmailCodeSendFailures]).toBe(1);
+    expect(counts[BusinessMetric.EmailCodeVerifyFailures]).toBe(1);
   });
 
   it("limits how many codes a user asks for a day, in their own partition", async () => {
