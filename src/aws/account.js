@@ -5,7 +5,7 @@
 // Account (deleting it) and Sign out. A team an owner closed is read-only, with a notice
 // saying when its data will be deleted, and for its owners a way to reopen it.
 import { esc } from "../format.js";
-import { armButton, toast } from "../dom.js";
+import { armButton, closeModal, toast } from "../dom.js";
 import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, firstRunKey, forgetLocal, local, tab } from "./session.js";
 import { createDb } from "./db.js";
 import { openImport } from "./import.js";
@@ -45,7 +45,8 @@ function show(html, mount) {
 }
 const until = (fn) => new Promise(fn);
 const errorText = (m) => `<p class="error" role="alert" id="accountError"${m ? "" : " hidden"}>${esc(m)}</p>`;
-const setError = (m) => { const e = box.querySelector("#accountError"); e.textContent = m; e.hidden = false; };
+// Not once another screen has taken over (the session ended while a request was on its way)
+const setError = (m) => { const e = box.querySelector("#accountError"); if (e) { e.textContent = m; e.hidden = false; } };
 
 // The invite in the link (?invite=<id>&token=<token>), kept across sign-in
 function takeInvite() {
@@ -58,14 +59,28 @@ function takeInvite() {
 }
 const dropInvite = () => tab.remove(INVITE_KEY);
 
+// The saved invite, if it's for this user. It's marked with the first user it's offered to,
+// so after that user's session ends without Sign out, the next person to sign in in this tab
+// isn't offered it, unless it's one of their own invites (/me lists those).
+function inviteFor(me) {
+  const invite = takeInvite();
+  if (!invite) return null;
+  if (invite.user && invite.user !== me.user.id && !me.invites.some((i) => i.id === invite.id)) { dropInvite(); return null; }
+  tab.set(INVITE_KEY, JSON.stringify({ ...invite, user: me.user.id }));
+  return invite;
+}
+
 // The saved team and receipt drafts are someone else's (or from before they were marked
 // with their user): forget them before anything reads them. Checked at every sign-in rather
 // than cleared when a session ends, because a session can end with nothing running (it
 // expires while the app is closed), and so the same user coming back keeps their drafts.
+// The last user's mark goes first, so another tab open as them sees the change even if
+// nothing else can be written; the new user's is set only once nothing of the last user's is
+// left, so if something couldn't be removed the next sign-in tries again.
 function claim(userId) {
   if (local.get(OWNER_KEY) === userId) return;
-  forgetLocal();
-  local.set(OWNER_KEY, userId);
+  local.remove(OWNER_KEY);
+  if (forgetLocal()) local.set(OWNER_KEY, userId);
 }
 
 export async function start(config) {
@@ -74,10 +89,13 @@ export async function start(config) {
   box.className = "account";
   box.setAttribute("aria-live", "polite");
   document.querySelector(".top").after(box);
-  let db = null, created = null;
+  // owner: the signed-in user, once the device's owner mark says it's them (see watchOwner)
+  let db = null, created = null, owner = null, switched = false;
   const session = createSession(config, {
     onSignedOut: () => { if (db) db.stop(); signIn(); },
     onRefreshed: () => { if (db) db.reconnect(); },
+    // A refresh answered with another user's tokens: the refresh cookie is someone else's now
+    onUserChanged: () => accountChanged(),
   });
 
   // Signed out: a link to Managed Login. Following it leaves the page.
@@ -103,16 +121,22 @@ export async function start(config) {
 
   // Leaves the page once the session is revoked; otherwise stays signed in and says so.
   // The button is off while it runs, so it can't be pressed again meanwhile.
+  // The owner mark isn't watched meanwhile: signing out removes it, and the reload that would
+  // set off (the tab hidden before Managed Login's page loads) would replace the sign-out there
   async function signOut(e) {
-    const button = e.currentTarget;
+    const button = e.currentTarget, was = owner;
     button.disabled = true;
+    owner = null;
     if (await session.signOut()) { if (db) db.stop(); }
-    else { button.disabled = false; toast("Couldn't sign out. Try again.", 5000); }
+    else { owner = was; button.disabled = false; toast("Couldn't sign out. Try again.", 5000); }
   }
 
   // The account is gone: forget everything here, stop live updates, and say so. Done signs
   // out of Managed Login too.
+  // The owner mark isn't watched any more: forgetting the user removes it, and a reload would
+  // replace this screen and its sign-out link
   async function deleted() {
+    owner = null;
     if (db) db.stop();
     const out = await session.forgetDeleted();
     show(`<h2>Your account is deleted</h2>
@@ -221,9 +245,33 @@ export async function start(config) {
     });
   });
 
+  // Someone else signed in, or this user signed out, in another tab: what this tab shows, and
+  // anything it has yet to save, is the last user's. Stop before anything else is sent or saved
+  // (no refresh, no live updates, API calls refused, drafts no longer kept, the app hidden),
+  // then load the page again, which opens as whoever is signed in now. Once: a sign-in
+  // elsewhere changes several keys.
+  function accountChanged() {
+    if (switched) return;
+    switched = true;
+    session.end();
+    if (db) db.stop();
+    closeModal();
+    show(`<h2>Your account changed</h2>
+      <p>Someone signed in or out in another tab. Loading Supply Checkout again…</p>`);
+    location.reload();
+  }
+  // The owner mark (OWNER_KEY in session.js) changed from this user's: when another tab writes
+  // storage, and when this tab is shown again (it may have missed the change, asleep or in the
+  // back-forward cache). Not before the mark is this user's: if it couldn't be written, there's
+  // nothing to watch.
+  const checkOwner = () => { if (owner && local.get(OWNER_KEY) !== owner) accountChanged(); };
+  addEventListener("storage", checkOwner);
+  addEventListener("pageshow", checkOwner);
+  document.addEventListener("visibilitychange", checkOwner);
+
   // A team to open, or { [AGAIN]: me } after the user verified their email
   async function chooseTeam(me) {
-    const invite = takeInvite();
+    const invite = inviteFor(me);
     const joined = invite && await joinInvite(me, invite);
     if (joined) return joined;
     if (!me.teams.length) return newTeam(me);
@@ -351,6 +399,10 @@ export async function start(config) {
   const invited = (fr) => () => { if (fr) { fr.state.invited = true; fr.save(); fr.onChange(); } };
 
   function open(me, team) {
+    // The session ended while the team was being chosen (a refresh found it over, or another
+    // tab changed who's signed in): the sign-in screen, or a reload, has taken over
+    const claims = session.claims();
+    if (!claims) return until(() => {});
     local.set(TEAM_KEY, team.id);
     document.body.classList.remove("account-open");
     box.innerHTML = "";
@@ -377,7 +429,6 @@ export async function start(config) {
       old.remove();
       viewOnly = CLOSED_NOTICE;
     })(); };
-    const claims = session.claims();
     const name = [claims.given_name, claims.family_name].filter(Boolean).join(" ") || claims.email;
     const profile = { id: me.user.id, name, avatarUrl: AVATAR, isMe: true };
     db = createDb({
@@ -402,7 +453,11 @@ export async function start(config) {
       },
       downloads: { save: download },
       // Where src/main.js keeps this team's receipt draft
-      drafts: { key: draftKey(team.id) },
+      // Read on every load and save: null once the session has ended (signed out, it expired,
+      // or someone else signed in), so a save failing then can't write this user's draft back;
+      // and once the owner mark isn't this user's, even before this tab has heard, so a save
+      // finishing just before the storage event can't either
+      drafts: { get key() { return session.token() && (!owner || local.get(OWNER_KEY) === owner) ? draftKey(team.id) : null; } },
       firstRun: fr,
     };
   }
@@ -415,6 +470,7 @@ export async function start(config) {
       if (!await session.start()) return signIn();
       let me = await session.api("GET", "/me");
       claim(me.user.id);
+      owner = local.get(OWNER_KEY) === me.user.id ? me.user.id : null;
       for (;;) {
         const team = await chooseTeam(me);
         if (!team[AGAIN]) return open(me, team);

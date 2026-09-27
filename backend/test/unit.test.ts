@@ -182,6 +182,27 @@ describe("createDb", () => {
     expect(() => connection({ tableName: "tbl", region: "somewhere-1" } as typeof db)).toThrow(/createDb/);
   });
 
+  it("ends a request that takes longer than requestTimeoutMs, so it's retried and fails instead of hanging", async () => {
+    const { createServer } = await import("node:http");
+    // @smithy/node-http-handler only logs a warning on requestTimeout unless throwOnRequestTimeout is set
+    // (createDb passes both in the requestHandler options, which NodeHttpHandler.create takes as its config);
+    // without it this request hangs until the test times out.
+    // Accepts requests and never answers them
+    const server = createServer(() => {});
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+    try {
+      const db = createDb({ tableName: "tbl", region: "somewhere-1", endpoint: `http://127.0.0.1:${port}`, requestTimeoutMs: 50, env: {} });
+      const { GetCommand } = await import("@aws-sdk/lib-dynamodb");
+      const started = Date.now();
+      await expect(connection(db).doc.send(new GetCommand({ TableName: "tbl", Key: { PK: "a", SK: "b" } }))).rejects.toThrow();
+      expect(Date.now() - started).toBeLessThan(5_000);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
   it("requires a table name", () => {
     expect(() => createDb({ env: { AWS_REGION: "somewhere-1" } })).toThrow(/TABLE_NAME/);
   });

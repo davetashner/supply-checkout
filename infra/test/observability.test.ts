@@ -89,6 +89,9 @@ const ALARM_IDS = [
   "team-reopened-notices-failing",
 ];
 
+/** Alarms on gauges that only the primary region's scheduled checks and purge send (ops-checks.ts). */
+const PRIMARY_ONLY_ALARM_IDS = ["imports-stuck", "near-sending-limit", "deletion-overdue"];
+
 describe("alarm topics", () => {
   it("has a P1 and a P2 topic, encrypted with a rotating key that CloudWatch may use, refusing plain HTTP", () => {
     const t = observability();
@@ -242,18 +245,19 @@ describe("alarm topics", () => {
 });
 
 describe("journey alarms (docs/journeys.md)", () => {
-  it("creates the same alarms in every region, each notifying its severity's topic on alarm and recovery", () => {
+  it("creates the alarms in every region, the primary-only ones in the primary region alone, each notifying its severity's topic on alarm and recovery", () => {
     for (const r of config.regions) {
       const t = observability(r);
       // The purge's own alarm is with the purge, and the operator audit watch's two are with the watch, in the primary region only (tested below)
       const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm"))
         .map((a) => a.Properties)
         .filter((a) => a.AlarmName !== "supply-checkout-prod-p2-deletion-not-running" && !/operator-audit|deletion-record/.test(String(a.AlarmName)));
-      const specs = journeyAlarmSpecs(r, "t", "api", "prod");
+      const specs = journeyAlarmSpecs(r, "t", "api", "prod").filter((s) => r === config.primaryRegion || !s.primaryOnly);
       expect(alarms.map((a) => a.AlarmName).sort()).toEqual(
         specs.map((s) => `supply-checkout-prod-${s.severity.toLowerCase()}-${s.id}`).sort(),
       );
-      expect(specs.map((s) => s.id).sort()).toEqual([...ALARM_IDS].sort());
+      const expected = r === config.primaryRegion ? ALARM_IDS : ALARM_IDS.filter((id) => !PRIMARY_ONLY_ALARM_IDS.includes(id));
+      expect(specs.map((s) => s.id).sort()).toEqual([...expected].sort());
       for (const a of alarms) {
         const topic = a.AlarmName.includes("-p1-") ? /^AlarmTopicsP1/ : /^AlarmTopicsP2/;
         expect(a.AlarmActions[0].Ref).toMatch(topic);
@@ -263,6 +267,23 @@ describe("journey alarms (docs/journeys.md)", () => {
         expect(a.AlarmDescription).toContain("docs/journeys.md");
       }
     }
+  });
+
+  it("creates the alarms on the scheduled checks' and the purge's gauges in the primary region only, where they run", () => {
+    expect(journeyAlarmSpecs(EAST, "t", "api", "prod").filter((s) => s.primaryOnly).map((s) => s.id).sort()).toEqual([...PRIMARY_ONLY_ALARM_IDS].sort());
+    const names = (r: string) => Object.values(observability(r).findResources("AWS::CloudWatch::Alarm")).map((a) => String(a.Properties.AlarmName));
+    const east = names(EAST);
+    const west = names(WEST);
+    for (const id of PRIMARY_ONLY_ALARM_IDS) {
+      expect(east.filter((n) => n.endsWith(`-${id}`))).toHaveLength(1);
+      expect(west.filter((n) => n.endsWith(`-${id}`))).toEqual([]);
+    }
+    // The other region still gets every other journey alarm
+    expect(west).toContain("supply-checkout-prod-p1-functions-failing");
+    // A single-region deployment in the other region makes it the primary, with every alarm
+    const solo = Object.values(Template.fromStack(build({}, { regions: [WEST], primaryRegion: WEST }).region(WEST).observability).findResources("AWS::CloudWatch::Alarm"))
+      .map((a) => String(a.Properties.AlarmName));
+    for (const id of PRIMARY_ONLY_ALARM_IDS) expect(solo.filter((n) => n.endsWith(`-${id}`))).toHaveLength(1);
   });
 
   it("reads business metrics from the SupplyCheckout namespace with the region as their only dimension", () => {

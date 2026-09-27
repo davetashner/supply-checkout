@@ -56,6 +56,9 @@ async function write(fn, okMsg, sheetId) {
     // checkout and return commands, src/aws/db.js): the message says why. The latest is showing.
     // `refused` is that adapter's own code, so no other write shows a raw message.
     else if (e && e.code === "refused") { closeModal(); toast(e.message); }
+    // The web build's session ended (signed out, here or in another tab, or it expired): the
+    // connection isn't the problem, and trying again won't help until they sign in
+    else if (WEB && e && e.code === "unauthenticated") toast("You're signed out, so that wasn't saved. Sign in, then make your change again.");
     else { retryable = true; toast("That didn't save. Check your connection and try again."); }
     return false;
   }
@@ -110,12 +113,21 @@ async function saving(form, fn) {
 // A checkout or return whose sheet line saved but whose storage count didn't (the artifact's
 // two writes, src/moves.js): the quantity can't change, so Try again finishes the same action,
 // and the note says the sheet has it.
+//
+// Until it's finished, Escape and tapping outside don't close the form (src/dom.js), and Cancel
+// asks for a second tap first, since closing it leaves the storage count unchanged.
 function owing(m, action) {
   if (!action.due) return;
   m.querySelectorAll(".stepper input, .stepper button").forEach(c => { c.disabled = true; });
+  m.querySelector("#f").dataset.owing = "";
   const note = m.querySelector("#saveFailed");
-  if (note) note.textContent = "Saved on the sheet, but the storage count didn't save. Tap Try again to finish; nothing is counted twice.";
+  if (note) note.textContent = "Saved on the sheet, but the storage count didn't save. Tap Try again to finish; nothing is counted twice. Cancel leaves storage as it is.";
 }
+// Cancel, which warns first while a storage count is owed (owing above)
+const cancelling = (m, action) => {
+  const b = m.querySelector("#cancel");
+  b.addEventListener("click", () => (action.due ? arm(b, "Tap again to leave storage as it is", closeModal) : closeModal()));
+};
 
 const currentSheet = () => sheets.find(s => s.id === ui.sheetId);
 async function sheetGone(id) {
@@ -159,10 +171,12 @@ window.addEventListener("online", () => {
   const f = $("#saveFailed"); if (f) f.textContent = "Not saved yet. You're back online: tap Try again.";
 });
 
-// The view, then the first-run checklist above the sheet list or inventory (web build)
+// The view, then the first-run checklist above the sheet list or inventory (web build). Only
+// an owner of an open team gets one; if a write is refused because the team was closed
+// meanwhile, the page is read-only (canWrite) and it hides, as for a team that opens closed.
 function draw() {
   drawView();
-  if (WEB && firstRun) firstRun.draw(connected && !$("#main").hidden, Object.keys(products).length, sheets.length);
+  if (WEB && firstRun) firstRun.draw(connected && canWrite && !$("#main").hidden, Object.keys(products).length, sheets.length);
 }
 function drawView() {
   $("#tab-sheets").setAttribute("aria-pressed", ui.tab === "sheets");
@@ -375,7 +389,7 @@ function checkoutModal(s, code, key = keyOf(code)) {
     </form>`, m => {
     const getQty = wireStepper(m, "fQty", v => setText(m.querySelector("#go"), `Add ${v} to sheet`));
     m.querySelector("#go").textContent = "Add 1 to sheet";
-    m.querySelector("#cancel").addEventListener("click", closeModal);
+    cancelling(m, action);
     const form = m.querySelector("#f");
     onSubmit(form, () => {
       const qty = getQty(); if (!qty) { toast("Choose at least 1."); return; }
@@ -477,14 +491,13 @@ function returnModal(s, code, key = keyOf(code)) {
       setHTML(m.querySelector("#sum"), `<span>Returned <b>${back}</b> of ${o}</span><span>Used <b>${o - back}</b></span><span>Charge <b>${money((o - back) * price)}</b></span>`);
     };
     const getR = wireStepper(m, "fRet", paint); paint(1);
-    m.querySelector("#cancel").addEventListener("click", closeModal);
+    cancelling(m, action);
     const form = m.querySelector("#f");
     onSubmit(form, () => {
       const r = getR(); if (!r) { toast("Choose at least 1."); return; }
       saving(form, async () => {
-        const cur = own((currentSheet() || s).items || {}, key) || line;
         return closing(write(async () => {
-          const done = await recordReturn(db, action, s.id, key, r, cur);
+          const done = await recordReturn(db, action, s.id, key, r);
           toast(`${done.quantity} returned · ${int(done.line.returned)} of ${int(done.line.out)} back`);
         }, undefined, s.id));
       }).then(() => owing(m, action));
@@ -508,15 +521,7 @@ function lineModal(s, key) {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     const form = m.querySelector("#f");
     // The form is busy until it's removed, so it's removed once
-    armButton(m.querySelector("#remove"), "Tap to remove", () => busy(form, () => closing(write(async () => {
-      // Saved as the whole sheet without the line, so only if the sheet is still there:
-      // a set would make a sheet someone else deleted again
-      const ref = db.doc("sheets/" + s.id);
-      const got = await ref.get();
-      if (!got.exists) throw { code: "not_found" };
-      const body = got.data(); body.items = { ...(body.items || {}) }; delete body.items[key];
-      await ref.set(body);
-    }, "Removed", s.id))));
+    armButton(m.querySelector("#remove"), "Tap to remove", () => busy(form, () => closing(write(() => removeLine(s.id, key), "Removed", s.id))));
     onSubmit(form, () => {
       const out = int(m.querySelector("#fOut").value), returned = Math.min(int(m.querySelector("#fRet").value), out);
       // Typed prices are kept in whole cents (ADR 0014)
@@ -524,6 +529,35 @@ function lineModal(s, key) {
       saving(form, () => closing(write(() => db.doc("sheets/" + s.id).update({ items: { [key]: { out, returned, price } } }), "Saved", s.id)));
     });
   });
+}
+
+// Removes a line without making a sheet someone else deleted again. The web build's db saves the
+// sheet without it, on the version it read, so a sheet deleted since is refused (ADR 0006).
+// claude.ai's db has no conditional writes, but its update refuses a document that's gone, so
+// the artifact build sets the line to null in one update: nothing is read first, so there's no
+// moment in which the sheet could be deleted and then saved again. A null line is a removed one
+// (sheets are read without them, liveSheet below). If the runtime refuses a null value, the
+// sheet is read and saved whole without the line, as long as it's still there: that leaves the
+// moment between the read and the write, as before.
+async function removeLine(id, key) {
+  const ref = db.doc("sheets/" + id);
+  // WEB: the artifact build keeps only the update, since claude.ai's db has no commands (src/build.js)
+  if (!(WEB && db.command)) {
+    try { await ref.update({ items: { [key]: null } }); return; }
+    // Refused: the sheet is gone (not_found below), the runtime doesn't take a null value, or
+    // this user is a viewer (the set below is refused too)
+    catch (e) { if (e.code !== "invalid_argument") throw e; }
+  }
+  const got = await ref.get();
+  if (!got.exists) throw { code: "not_found" };
+  const body = got.data(); body.items = { ...(body.items || {}) }; delete body.items[key];
+  await ref.set(body);
+}
+// A sheet as the app shows it: without lines the artifact build removed (removeLine above)
+function liveSheet(d) {
+  const s = { id: d.id, ...d.data() };
+  for (const [k, it] of Object.entries(Object(s.items))) if (it === null) delete s.items[k];
+  return s;
 }
 
 // An item's storage value in whole cents (ADR 0014): its count times its cost each, or
@@ -636,13 +670,18 @@ $("#home").addEventListener("click", e => {
 /* ---------- receipts ---------- */
 // The artifact keeps one draft. The web build's runtime names a key per team (use("drafts"),
 // src/aws/account.js), so it's read once the team is known; its drafts are forgotten on
-// sign-out and when someone else signs in (src/aws/session.js).
-let DKEY = "supplyCheckout.receiptDraft";
+// sign-out and when someone else signs in (src/aws/session.js). The web build's key is read on
+// every load and save: it's null once the session has ended, and then nothing is read or kept,
+// so a save that fails as the session ends (someone else signed in in another tab, whose
+// sign-in forgot this user's drafts) can't write this user's draft back.
+const DKEY = "supplyCheckout.receiptDraft";
+let draftKeyNow = () => DKEY;
 // rSaving: a receipt is being saved (saveReceipt)
 let sampleFn = null, receiptOK = false, draft = null, rSaving = false;
-const loadDraft = () => { try { draft = JSON.parse(localStorage.getItem(DKEY) || "null"); } catch {} };
+const stored = fn => { const k = draftKeyNow(); if (WEB && !k) return; try { fn(k); } catch {} };
+const loadDraft = () => stored(k => { draft = JSON.parse(localStorage.getItem(k) || "null"); });
 if (!WEB) loadDraft();
-const saveDraft = () => { try { draft ? localStorage.setItem(DKEY, JSON.stringify(draft)) : localStorage.removeItem(DKEY); } catch {} };
+const saveDraft = () => stored(k => { draft ? localStorage.setItem(k, JSON.stringify(draft)) : localStorage.removeItem(k); });
 
 function receiptPrompt() {
   const inv = Object.entries(products).slice(0, 500);
@@ -1000,7 +1039,7 @@ draw();
 (async () => {
   [db, userNs, dl, sampleFn] = await Promise.all([use("db"), use("user"), use("downloads"), use("sample")]);
   if (WEB) {
-    const drafts = await use("drafts"); if (drafts) DKEY = drafts.key; loadDraft();
+    const drafts = await use("drafts"); if (drafts) draftKeyNow = () => drafts.key; loadDraft();
     const fr = await use("firstRun");
     if (fr) firstRun = createFirstRun(fr, { addItem: () => { ui.tab = "prices"; draw(); productModal(null); }, newSheet: () => { ui.tab = "sheets"; draw(); newSheetModal(); }, redraw: draw });
   }
@@ -1022,7 +1061,7 @@ draw();
     if (pFirst) { pFirst = false; ready(); } else render();
   }, onErr);
   db.collection("sheets").orderBy("date", "desc").onSnapshot(snap => {
-    sheets = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    sheets = snap.docs.map(liveSheet);
     if (sFirst) { sFirst = false; ready(); } else render();
   }, onErr);
 })();

@@ -53,6 +53,12 @@ export interface DbOptions {
    * API passes a role session scoped to one team (ADR 0005's LeadingKeys layer).
    */
   readonly credentials?: DynamoDBClientConfig["credentials"];
+  /**
+   * Ends a request that takes longer than this, in milliseconds, so the SDK
+   * retries it (the stream consumer's CONSUMER_DB_REQUEST_TIMEOUT_MS).
+   * Defaults to the SDK's, which is no timeout.
+   */
+  readonly requestTimeoutMs?: number;
 }
 
 /** Creates the one DynamoDB client. Create it once per Lambda container, outside the handler. */
@@ -68,6 +74,7 @@ export function createDb(options: DbOptions = {}): Db {
     // DynamoDB Local accepts any credentials; real AWS uses the Lambda role.
     ...(endpoint ? { credentials: { accessKeyId: "local", secretAccessKey: "local" } } : {}),
     ...(options.credentials ? { credentials: options.credentials } : {}),
+    ...(options.requestTimeoutMs ? { requestHandler: { requestTimeout: options.requestTimeoutMs, connectionTimeout: options.requestTimeoutMs, throwOnRequestTimeout: true } } : {}),
   });
   const doc = DynamoDBDocumentClient.from(client, {
     marshallOptions: { removeUndefinedValues: true, convertClassInstanceToMap: false },
