@@ -9,7 +9,7 @@
 //   npm run operators -- disable <username>
 //   npm run operators -- enable <username>
 //   npm run operators -- remove <username> [--yes]
-//   npm run operators -- reset <username> [--send-email] [--keep-disabled]
+//   npm run operators -- reset <username> [--send-email] [--enable]
 //
 // Options: --env prod (default), --profile <aws profile> (default $AWS_PROFILE, else
 // supply-prod), --region <the identity stack's primary region> (default below),
@@ -41,10 +41,12 @@ export const USERNAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 export const EMAIL = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
 const ENV = /^[a-z][a-z0-9-]{0,20}$/;
 const POOL_ID = /^[a-z]+(?:-[a-z]+)+-\d+_[A-Za-z0-9]{1,64}$/;
-const PROFILE = /^[A-Za-z0-9._-]{1,64}$/;
+const PROFILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const REGION = /^[a-z]+(?:-[a-z]+)+-\d+$/;
 /** Temporary passwords last this long (tempPasswordValidity of the ops pool in infra/lib/stacks/identity-stack.ts). */
 export const TEMP_PASSWORD_DAYS = 1;
+/** The operator pool's name (userPoolName in infra/lib/stacks/identity-stack.ts). */
+export const opsPoolName = (envName) => `supply-checkout-${envName}-ops`;
 export const REDACTED = "<redacted>";
 const STDIN = "file:///dev/stdin";
 
@@ -74,23 +76,23 @@ export const USAGE = `Usage: npm run operators -- <command> [options]
   disable <username>         Disable (signs them out; their tokens stop working at once)
   enable <username>          Enable again
   remove <username> [--yes]  Take out of the group, sign out everywhere and disable; delete only with --yes
-  reset <username> [--send-email] [--keep-disabled]
+  reset <username> [--send-email] [--enable]
                              A stolen password or token: sign out everywhere, disable, turn TOTP off,
-                             set a new temporary password, enable again (unless --keep-disabled)
+                             set a new temporary password; they stay disabled unless --enable
 
 Options: --env <env> (default prod), --profile <aws profile> (default $AWS_PROFILE, else supply-prod),
          --region <region> (default ${DEFAULT_REGION}), --pool-id <ops pool ID> (default: from SSM),
          --dry-run (print the AWS CLI calls and run nothing), --print-password (print it even when stdout isn't a terminal)`;
 
 const VALUE_FLAGS = new Set(["env", "profile", "region", "pool-id", "email"]);
-const BOOLEAN_FLAGS = new Set(["send-email", "dry-run", "yes", "emails", "keep-disabled", "print-password", "help"]);
+const BOOLEAN_FLAGS = new Set(["send-email", "dry-run", "yes", "emails", "enable", "print-password", "help"]);
 const COMMANDS = {
   add: { flags: ["email", "send-email", "print-password"] },
   list: { flags: ["emails"], noUser: true },
   disable: { flags: [] },
   enable: { flags: [] },
   remove: { flags: ["yes"] },
-  reset: { flags: ["send-email", "keep-disabled", "print-password"] },
+  reset: { flags: ["send-email", "enable", "print-password"] },
 };
 const COMMON_FLAGS = ["env", "profile", "region", "pool-id", "dry-run", "help"];
 
@@ -137,7 +139,7 @@ export function validate({ command, args, flags }, env = {}) {
   if (flags.email !== undefined && (flags.email.length > 254 || !EMAIL.test(flags.email))) throw new UsageError(`Invalid email address "${flags.email}"`);
   if (command === "add" && flags["send-email"] && !flags.email) throw new UsageError("--send-email needs --email: Cognito emails the temporary password to that address");
   if (flags["send-email"] && flags["print-password"]) throw new UsageError("--send-email and --print-password don't go together: with --send-email nothing is printed");
-  if (flags["send-email"] && flags["keep-disabled"]) throw new UsageError("--send-email and --keep-disabled don't go together: the invitation email is sent to an enabled user");
+  if (command === "reset" && flags["send-email"] && !flags.enable) throw new UsageError("reset --send-email needs --enable: the invitation email goes to an enabled user, so only send it once they've a clean device");
   const envName = flags.env ?? "prod";
   if (!ENV.test(envName)) throw new UsageError(`Invalid --env ${envName}`);
   const profile = flags.profile ?? (env.AWS_PROFILE || "supply-prod");
@@ -195,17 +197,40 @@ class Aws {
     return this.pool ?? "<ops pool ID>";
   }
 
-  /** The operator pool's ID, from --pool-id or SSM (the one read a dry run doesn't make either). */
+  /**
+   * The operator pool's ID, from --pool-id or SSM, checked before anything else touches it:
+   * the pool must be named supply-checkout-<env>-ops and have the operators group, so a
+   * wrong ID (the customers' pool, say) stops here, before any read or change of its users.
+   * A dry run shows these calls and makes none.
+   */
   resolvePool() {
-    if (this.pool) return;
-    const args = ["ssm", "get-parameter", "--name", `/supply-checkout/${this.settings.envName}/identity/ops-user-pool-id`, "--query", "Parameter.Value", "--output", "text", "--profile", this.settings.profile, "--region", this.settings.region];
-    if (this.settings.dryRun) {
-      this.show(args);
+    const { envName, profile, region, dryRun } = this.settings;
+    const where = ["--profile", profile, "--region", region];
+    if (!this.pool) {
+      const args = ["ssm", "get-parameter", "--name", `/supply-checkout/${envName}/identity/ops-user-pool-id`, "--query", "Parameter.Value", "--output", "text", ...where];
+      if (dryRun) this.show(args);
+      else {
+        const id = String(this.deps.run("aws", args)).trim();
+        if (!POOL_ID.test(id)) throw new Error(`Couldn't read the operator pool ID from SSM (${args[3]}); pass --pool-id`);
+        this.pool = id;
+      }
+    }
+    const expected = opsPoolName(envName);
+    const describe = ["cognito-idp", "describe-user-pool", "--user-pool-id", this.poolId(), "--query", "UserPool.Name", "--output", "text", ...where];
+    const group = ["cognito-idp", "get-group", "--user-pool-id", this.poolId(), "--group-name", OPERATORS_GROUP, "--query", "Group.GroupName", "--output", "text", ...where];
+    if (dryRun) {
+      this.show(describe);
+      this.deps.log(`    (stops unless the pool is named ${expected})`);
+      this.show(group);
       return;
     }
-    const id = String(this.deps.run("aws", args)).trim();
-    if (!POOL_ID.test(id)) throw new Error(`Couldn't read the operator pool ID from SSM (${args[3]}); pass --pool-id`);
-    this.pool = id;
+    const name = String(this.deps.run("aws", describe)).trim();
+    if (name !== expected) throw new Error(`Refusing: user pool ${this.pool} is named "${name}", not ${expected}. Only the operator pool is managed here; check --pool-id and --env.`);
+    let groupName = "";
+    try {
+      groupName = String(this.deps.run("aws", group)).trim();
+    } catch {}
+    if (groupName !== OPERATORS_GROUP) throw new Error(`Refusing: user pool ${this.pool} has no ${OPERATORS_GROUP} group, so it isn't the operator pool.`);
   }
 
   show(args, input) {
@@ -416,7 +441,7 @@ function remove(aws, settings, deps) {
 function reset(aws, settings, deps) {
   const { username, flags } = settings;
   const sendEmail = Boolean(flags["send-email"]);
-  const keepDisabled = Boolean(flags["keep-disabled"]);
+  const keepDisabled = !flags.enable;
   checkPasswordOutput(settings, deps);
   aws.refuseCliHistory();
   aws.resolvePool();
@@ -452,16 +477,16 @@ function reset(aws, settings, deps) {
   deps.log(`Reset ${username}: signed out everywhere, TOTP off, new temporary password${keepDisabled ? ", still disabled" : ", enabled again"}.`);
   if (sendEmail) deps.log(`Cognito emailed the temporary password to the address on ${username}'s account; it expires in ${TEMP_PASSWORD_DAYS} day.`);
   else deps.out(passwordBlock(username, password, settings));
-  deps.log(
-    [
-      "",
-      "Next:",
-      `  1. ${username} signs in with the temporary password, chooses a new one and sets up TOTP again. They delete the old entry from their authenticator app first.`,
-      ...(keepDisabled ? [`  0. Before that, once they've a clean device: npm run operators -- enable ${username}`] : []),
-      "  2. Read what the account did: npm run ops -- audit (and --team PLATFORM for team lists), the ops function's logs, and CloudTrail for the pool.",
-      "  3. End comps it shouldn't have made: npm run ops -- uncomp <teamId> --reason \"...\"",
-    ].join("\n"),
-  );
+  const next = [
+    `Check it took: npm run operators -- list should show ${username} with no TOTP${keepDisabled ? " and disabled" : ""}.`,
+    ...(keepDisabled
+      ? [`Once they've a clean device: npm run operators -- enable ${username} (the temporary password expires in ${TEMP_PASSWORD_DAYS} day; after that, reset again).`]
+      : []),
+    `${username} deletes the old entry from their authenticator app, signs in with the temporary password, chooses a new one and sets up TOTP again.`,
+    "Read what the account did: npm run ops -- audit (and --team PLATFORM for team lists), the ops function's logs, and CloudTrail for the pool.",
+    'End comps it shouldn\'t have made: npm run ops -- uncomp <teamId> --reason "..."',
+  ];
+  deps.log(["", "Next:", ...next.map((line, i) => `  ${i + 1}. ${line}`)].join("\n"));
 }
 
 const OPS_BY_COMMAND = {
@@ -486,7 +511,7 @@ export function main(argv, deps) {
   ({ add, list, disable: simple, enable: simple, remove, reset })[settings.command](aws, settings, deps);
   let ops = OPS_BY_COMMAND[settings.command];
   if (settings.command === "remove" && settings.flags.yes) ops = [...ops, "admin-delete-user"];
-  if (settings.command === "reset" && settings.flags["keep-disabled"]) ops = ops.filter((op) => op !== "admin-enable-user");
+  if (settings.command === "reset" && !settings.flags.enable) ops = ops.filter((op) => op !== "admin-enable-user");
   if (settings.command === "reset" && settings.flags["send-email"]) ops = [...ops, "admin-create-user"];
   deps.log(alertNote(ops));
   return 0;

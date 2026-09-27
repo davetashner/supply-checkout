@@ -19,7 +19,7 @@ const LIST = {
 };
 
 /** Fakes for main(): an AWS CLI that records each call and its stdin, and fails `fail` ops. */
-function harness({ fail = [], history = "", tty = true, env = {} } = {}) {
+function harness({ fail = [], history = "", tty = true, env = {}, poolName = "supply-checkout-prod-ops", group = true } = {}) {
   const calls = [];
   const logs = [];
   const outs = [];
@@ -32,6 +32,11 @@ function harness({ fail = [], history = "", tty = true, env = {} } = {}) {
       return `${history}\n`;
     }
     if (service === "ssm") return `${POOL}\n`;
+    if (op === "describe-user-pool") return `${poolName}\n`;
+    if (op === "get-group") {
+      if (!group) throw new Error("Command failed: aws get-group\nAn error occurred (ResourceNotFoundException)");
+      return "operators\n";
+    }
     if (fail.includes(op)) throw new Error(`Command failed: aws ${op}\nAn error occurred (TestException)`);
     if (op === "list-users") return JSON.stringify(LIST);
     if (op === "list-users-in-group") return JSON.stringify({ Users: [{ Username: "alex" }, { Username: "gone" }] });
@@ -42,7 +47,8 @@ function harness({ fail = [], history = "", tty = true, env = {} } = {}) {
     return "";
   };
   const deps = { env, isTTY: tty, run, log: (m) => logs.push(m), out: (m) => outs.push(m) };
-  const ops = () => calls.filter((c) => c.args[0] === "cognito-idp").map((c) => c.args[1]);
+  const CHECKS = ["describe-user-pool", "get-group"];
+  const ops = () => calls.filter((c) => c.args[0] === "cognito-idp" && !CHECKS.includes(c.args[1])).map((c) => c.args[1]);
   return { deps, calls, logs, outs, ops, text: () => [...logs, ...outs].join("\n") };
 }
 
@@ -69,7 +75,9 @@ test("accepts only strict usernames and plain email addresses", () => {
     ["add", "alex", "--email", "nope"],
     ["add", "alex", "--send-email"],
     ["add", "alex", "--email", "alex@example.com", "--send-email", "--print-password"],
-    ["reset", "alex", "--send-email", "--keep-disabled"],
+    ["reset", "alex", "--send-email"],
+    ["reset", "alex", "--keep-disabled"],
+    ["add", "alex", "--profile", "-x"],
     ["disable", "alex", "--yes"],
     ["list", "--email", "alex@example.com"],
     ["frobnicate", "alex"],
@@ -120,7 +128,8 @@ test("add creates the user with the password on stdin, adds them to the group, a
   assert.deepEqual(h.calls[1].args.slice(0, 4), ["ssm", "get-parameter", "--name", PARAM]);
   assert.ok(h.calls[1].args.includes("us-east-1"), "the primary region by default"); // public-safety: allow
   assert.deepEqual(h.ops(), ["admin-create-user", "admin-add-user-to-group"]);
-  const create = h.calls[2];
+  assert.deepEqual(h.calls.slice(2, 4).map((c) => c.args[1]), ["describe-user-pool", "get-group"], "the pool is checked first");
+  const create = h.calls[4];
   assert.deepEqual(create.args.slice(0, 4), ["cognito-idp", "admin-create-user", "--cli-input-json", "file:///dev/stdin"]);
   const { TemporaryPassword: password, ...rest } = create.input;
   assert.deepEqual(rest, {
@@ -131,7 +140,7 @@ test("add creates the user with the password on stdin, adds them to the group, a
   });
   assert.equal(password.length, 24);
   for (const c of h.calls) assert.ok(!c.args.join(" ").includes(password), "never in argv");
-  assert.deepEqual(h.calls[3].args.slice(0, 8), ["cognito-idp", "admin-add-user-to-group", "--user-pool-id", POOL, "--username", "alex", "--group-name", "operators"]);
+  assert.deepEqual(h.calls[5].args.slice(0, 8), ["cognito-idp", "admin-add-user-to-group", "--user-pool-id", POOL, "--username", "alex", "--group-name", "operators"]);
   assert.equal(h.outs.length, 1);
   assert.equal(h.outs[0].split(password).length, 2, "printed exactly once");
   assert.match(h.outs[0], /in person/);
@@ -282,7 +291,7 @@ test("remove takes them out of the group, signs out and disables; deletes only w
 test("reset runs the stolen-credential runbook and prints the next steps", () => {
   const h = harness();
   main(["reset", "alex"], h.deps);
-  assert.deepEqual(h.ops(), ["admin-user-global-sign-out", "admin-disable-user", "admin-set-user-mfa-preference", "admin-set-user-password", "admin-enable-user"]);
+  assert.deepEqual(h.ops(), ["admin-user-global-sign-out", "admin-disable-user", "admin-set-user-mfa-preference", "admin-set-user-password"], "stays disabled by default");
   const mfa = h.calls.find((c) => c.args[1] === "admin-set-user-mfa-preference").args;
   assert.equal(mfa[mfa.indexOf("--software-token-mfa-settings") + 1], "Enabled=false,PreferredMfa=false");
   const set = h.calls.find((c) => c.args[1] === "admin-set-user-password");
@@ -292,18 +301,19 @@ test("reset runs the stolen-credential runbook and prints the next steps", () =>
   assert.equal(h.outs.length, 1);
   assert.ok(h.outs[0].includes(set.input.Password));
   assert.ok(!h.logs.join("\n").includes(set.input.Password));
-  assert.match(h.text(), /Next:[\s\S]*TOTP again[\s\S]*npm run ops -- audit/);
-  assert.match(h.text(), /AdminSetUserMFAPreference, AdminSetUserPassword, AdminEnableUser/);
+  assert.match(h.text(), /Next:[\s\S]*operators -- list should show alex with no TOTP and disabled[\s\S]*npm run operators -- enable alex[\s\S]*TOTP again[\s\S]*npm run ops -- audit/);
+  assert.match(h.logs.at(-1), /AdminSetUserMFAPreference, AdminSetUserPassword on/);
 });
 
-test("reset --keep-disabled leaves them disabled; --send-email has Cognito resend the invitation", () => {
+test("reset --enable enables them at the end; --send-email (with --enable) has Cognito resend the invitation", () => {
   const k = harness();
-  main(["reset", "alex", "--keep-disabled"], k.deps);
-  assert.ok(!k.ops().includes("admin-enable-user"));
-  assert.match(k.text(), /npm run operators -- enable alex/);
-  assert.doesNotMatch(k.logs.at(-1), /AdminEnableUser/);
+  main(["reset", "alex", "--enable"], k.deps);
+  assert.equal(k.ops().at(-1), "admin-enable-user");
+  assert.doesNotMatch(k.text(), /npm run operators -- enable alex/);
+  assert.match(k.logs.at(-1), /AdminEnableUser/);
+  assert.throws(() => main(["reset", "alex", "--send-email"], harness().deps), /reset --send-email needs --enable/);
   const s = harness({ tty: false });
-  main(["reset", "alex", "--send-email"], s.deps);
+  main(["reset", "alex", "--send-email", "--enable"], s.deps);
   assert.deepEqual(s.ops().slice(-2), ["admin-enable-user", "admin-create-user"]);
   const resend = s.calls.at(-1).input;
   assert.equal(resend.MessageAction, "RESEND");
@@ -316,13 +326,13 @@ test("reset --keep-disabled leaves them disabled; --send-email has Cognito resen
 test("reset says the operator is cut off when a later step fails", () => {
   const h = harness({ fail: ["admin-set-user-password"] });
   assert.throws(
-    () => main(["reset", "alex"], h.deps),
-    (e) => /cut off: signed out and disabled/.test(e.message) && /Not done: set a new temporary password for alex; enable alex/.test(e.message),
+    () => main(["reset", "alex", "--enable"], h.deps),
+    (e) => /cut off: signed out and disabled/.test(e.message) && /Not done: set a new temporary password for alex; enable alex\./.test(e.message),
   );
   assert.ok(!h.ops().includes("admin-enable-user"));
   assert.deepEqual(h.outs, []);
   const s = harness({ fail: ["admin-create-user"], tty: false });
-  assert.throws(() => main(["reset", "alex", "--send-email"], s.deps), /run it without --send-email/);
+  assert.throws(() => main(["reset", "alex", "--send-email", "--enable"], s.deps), /run it without --send-email/);
   const early = harness({ fail: ["admin-user-global-sign-out"] });
   assert.throws(() => main(["reset", "alex"], early.deps), (e) => /Nothing was changed/.test(e.message) && !/cut off/.test(e.message));
 });
@@ -336,7 +346,7 @@ test("--dry-run prints every call, redacts the password and runs nothing", () =>
     ["enable", "alex"],
     ["remove", "alex", "--yes"],
     ["reset", "alex"],
-    ["reset", "alex", "--send-email"],
+    ["reset", "alex", "--send-email", "--enable"],
   ]) {
     const h = harness({ tty: false });
     assert.equal(main([...argv, "--dry-run"], h.deps), 0);
@@ -381,6 +391,8 @@ if (args.includes("file:///dev/stdin")) {
 appendFileSync(process.env.FAKE_AWS_LOG, JSON.stringify({ args, stdin }) + "\\n");
 if (args[0] === "configure") process.exit(1);
 if (args[0] === "ssm") { process.stdout.write("${POOL}\\n"); process.exit(0); }
+if (args[1] === "describe-user-pool") { process.stdout.write("supply-checkout-prod-ops\\n"); process.exit(0); }
+if (args[1] === "get-group") { process.stdout.write("operators\\n"); process.exit(0); }
 if (args[1] === process.env.FAKE_AWS_FAIL) { process.stderr.write("An error occurred (TestException)\\n"); process.exit(254); }
 process.stdout.write("{}\\n");
 `;
@@ -422,7 +434,7 @@ test("the real script hands the password to the AWS CLI on stdin only, and leave
   const create = calls.find((c) => c.args[1] === "admin-create-user");
   assert.equal(create.stdin.TemporaryPassword, `base64:${Buffer.from(password).toString("base64")}`, "the CLI got it on stdin");
   for (const c of calls) assert.ok(!c.args.some((a) => a.includes(password)), "never in the CLI's argv");
-  assert.deepEqual(calls.map((c) => c.args[1]), ["get", "get-parameter", "admin-create-user", "admin-add-user-to-group"]);
+  assert.deepEqual(calls.map((c) => c.args[1]), ["get", "get-parameter", "describe-user-pool", "get-group", "admin-create-user", "admin-add-user-to-group"]);
   for (const content of filesUnder(root)) assert.ok(!content.includes(password), "not in any file: HOME, TMPDIR or elsewhere");
   assert.ok(!result.stderr.includes(password));
 });
@@ -437,4 +449,39 @@ test("the real script refuses to print a password into a pipe, and exits non-zer
   assert.match(partial.result.stderr, /Already done: create alex in the operator pool/);
   assert.match(partial.result.stderr, /undo: +aws cognito-idp admin-delete-user/);
   assert.doesNotMatch(partial.result.stdout, /Temporary password/);
+});
+
+test("refuses any pool but the environment's operator pool, before reading or changing a user", () => {
+  for (const argv of [["add", "alex"], ["list"], ["disable", "alex"], ["enable", "alex"], ["remove", "alex", "--yes"], ["reset", "alex"], ["list", "--pool-id", POOL]]) {
+    const wrong = harness({ poolName: "supply-checkout-prod" });
+    assert.throws(() => main(argv, wrong.deps), /Refusing: user pool test-local-1_Pool1 is named "supply-checkout-prod", not supply-checkout-prod-ops/, argv.join(" "));
+    assert.deepEqual(wrong.ops(), [], `${argv.join(" ")}: no user read or change`);
+    assert.deepEqual(wrong.outs, []);
+    const noGroup = harness({ group: false });
+    assert.throws(() => main(argv, noGroup.deps), /has no operators group/, argv.join(" "));
+    assert.deepEqual(noGroup.ops(), []);
+  }
+  const staging = harness({ poolName: "supply-checkout-prod-ops" });
+  assert.throws(() => main(["disable", "alex", "--env", "staging"], staging.deps), /not supply-checkout-staging-ops/);
+  const ok = harness({ poolName: "supply-checkout-staging-ops" });
+  main(["disable", "alex", "--env", "staging"], ok.deps);
+  assert.deepEqual(ok.ops(), ["admin-disable-user"]);
+  const checks = ok.calls.filter((c) => ["describe-user-pool", "get-group"].includes(c.args[1]));
+  assert.deepEqual(checks.map((c) => c.args.slice(0, 4)), [["cognito-idp", "describe-user-pool", "--user-pool-id", POOL], ["cognito-idp", "get-group", "--user-pool-id", POOL]]);
+});
+
+test("the dry run shows the pool check", () => {
+  const h = harness();
+  main(["reset", "alex", "--dry-run", "--pool-id", POOL], h.deps);
+  assert.deepEqual(h.calls, []);
+  assert.match(h.text(), new RegExp(`aws cognito-idp describe-user-pool --user-pool-id ${POOL} --query UserPool.Name`));
+  assert.match(h.text(), /stops unless the pool is named supply-checkout-prod-ops/);
+  assert.match(h.text(), /aws cognito-idp get-group .*--group-name operators/);
+});
+
+test("profiles can't start with a hyphen", () => {
+  for (const bad of ["-x", "--x", "-", "a b", "a".repeat(65)]) assert.throws(() => main(["list", `--profile=${bad}`], harness().deps), /Invalid --profile/, bad);
+  const h = harness();
+  main(["list", "--profile", "supply-prod.admin_1"], h.deps);
+  assert.ok(h.calls.length > 0);
 });

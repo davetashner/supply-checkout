@@ -457,15 +457,15 @@ A line such as `changed by something else first, left alone: 1` is a race the co
 
 The role's IAM conditions (`dynamodb:Attributes`, `dynamodb:Select`, `dynamodb:LeadingKeys` patterns) aren't enforced by DynamoDB Local, so after the first deploy, and after any change to the role or to `backend/src/data/operator.ts`, list teams, read a test team, comp it and end the comp, and confirm `/aws/lambda/<ops function>` logs no `AccessDeniedException`.
 
-**Managing operators** (`supply-checkout-6uw.15`). `npm run operators` (`scripts/operators.mjs`) adds, lists, disables, removes and resets operators with the AWS CLI v2, under an SSO administrator role (`--profile`, default `$AWS_PROFILE`, else `supply-prod`; `--env`, default `prod`; the pool ID from SSM, `/supply-checkout/<env>/identity/ops-user-pool-id`, or `--pool-id`). In Claude Code, the `operators` skill (`.claude/skills/operators/SKILL.md`) hands the owner the command to run; Claude doesn't run these itself.
+**Managing operators** (`supply-checkout-6uw.15`). `npm run operators` (`scripts/operators.mjs`) adds, lists, disables, removes and resets operators with the AWS CLI v2, under an SSO administrator role (`--profile`, default `$AWS_PROFILE`, else `supply-prod`; `--env`, default `prod`; the pool ID from SSM, `/supply-checkout/<env>/identity/ops-user-pool-id`, or `--pool-id`). Before it reads or changes any user, it checks the pool is named `supply-checkout-<env>-ops` and has the `operators` group (`describe-user-pool`, `get-group`), and stops otherwise, so a wrong `--pool-id`, the customers' pool say, can't be touched. In Claude Code, the `operators` skill (`.claude/skills/operators/SKILL.md`) hands the owner the command to run; Claude doesn't run these itself.
 
 ```bash
 npm run operators -- add alex                                   # prints a temporary password once
 npm run operators -- add alex --email alex@example.com --send-email   # Cognito emails it instead
-npm run operators -- list                                       # status, enabled, TOTP, group, created (--emails to show addresses)
+npm run operators -- list                                       # status, enabled, TOTP, group, created (--emails to show addresses: not under Claude Code's !)
 npm run operators -- disable alex                               # and enable alex
 npm run operators -- remove alex                                # out of the group, signed out, disabled; --yes also deletes
-npm run operators -- reset alex                                 # a stolen password or token (below)
+npm run operators -- reset alex                                 # a stolen password or token (below); stays disabled unless --enable
 npm run operators -- remove alex --yes --dry-run                # any command: print the AWS CLI calls, run nothing
 ```
 
@@ -491,7 +491,7 @@ aws cognito-idp admin-add-user-to-group $P --user-pool-id "$POOL" --username ale
 
 **A stolen operator token or password.** A stolen access token lasts at most 15 minutes, but with the `aws.cognito.signin.user.admin` scope (which the ops function's `GetUser` check needs) it can also replace the operator's TOTP, change their MFA preference or attributes, or delete the user: each of those alerts P1 (below). So:
 
-1. `npm run operators -- reset alex` cuts them off and resets them in one go: global sign-out and disable (both take effect on the next request), TOTP off (the pool, which requires MFA, then asks for a new TOTP setup at the next sign-in), a new temporary password (printed once to hand over in person, or `--send-email` to have Cognito resend the invitation to the address on the account), then enabled again. With `--keep-disabled` they stay disabled until `npm run operators -- enable alex`, once they've a clean device. It prints what the operator does next. By hand:
+1. `npm run operators -- reset alex` cuts them off and resets them in one go: global sign-out and disable (both take effect on the next request), TOTP off (the pool, which requires MFA, then asks for a new TOTP setup at the next sign-in), a new temporary password (printed once to hand over in person). They stay disabled until `npm run operators -- enable alex`, once they've a clean device and within the temporary password's day; `--enable` enables them at the end instead. `--send-email` (with `--enable`) has Cognito resend the invitation, with the new password, to the address on the account; that relies on `RESEND` working for a user just given a temporary password, so confirm the email arrives and works the first time it's used. It prints what the operator does next. Then run `npm run operators -- list` and check it shows them with `no TOTP`. By hand:
    ```bash
    aws cognito-idp admin-user-global-sign-out $P --user-pool-id "$POOL" --username alex
    aws cognito-idp admin-disable-user $P --user-pool-id "$POOL" --username alex
