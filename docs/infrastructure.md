@@ -373,7 +373,7 @@ Teams created before GSI3 existed have no `GSI3PK`, so the ops routes don't list
 
 ### Backfills
 
-One-off migrations for items written before a change, in `backend/src/data/backfill.ts`, run with `npm run backfill` from `backend/` (`backend/scripts/backfill.ts`). They run with your SSO credentials, not a Lambda role: no Lambda may `Scan` the table, and `index.ts` doesn't export them. Each mode scans the whole table (strongly consistent), is a dry run unless given `--apply`, prints counts only (never emails, names or user IDs), and conditions every write so it never overwrites a newer value and never re-creates an item the purge deleted in the meantime. Each is idempotent: run it again and it finds nothing. If one stops partway (a throttle, an expired session), run it again.
+One-off migrations for items written before a change, in `backend/src/data/backfill.ts`, run with `npm run backfill` from `backend/` (`backend/scripts/backfill.ts`). They run with your SSO credentials, not a Lambda role: no Lambda may `Scan` the table, and `index.ts` doesn't export them. Each mode scans the whole table (strongly consistent), is a dry run unless given `--apply`, prints counts only (never emails, names or user IDs), and conditions every write so it never overwrites a newer value and never re-creates an item the purge deleted in the meantime. Each is idempotent: run it again and it finds nothing. Two guards against pointing it at the wrong place: `--table` must be an app table's name (`supply-checkout-<env>-app`), and `--profile` is required. Before it reads or writes anything, it asks STS which account the profile signs in to and prints it in its first line (`members on supply-checkout-prod-app in us-east-1 in account <account ID> (profile supply-prod)`): check it's the account you mean before you run it with `--apply`. With `--endpoint` (DynamoDB Local), it needs no profile and takes any table name. If one stops partway (a throttle, an expired session), run it again.
 
 | Mode | What it changes | Why |
 | --- | --- | --- |
@@ -387,7 +387,7 @@ Run them after the deploy that adds GSI3 is `ACTIVE`, in this order (`ops-index`
 aws sso login --profile supply-prod
 cd backend && npm ci
 B="--table supply-checkout-prod-app --region us-east-1 --profile supply-prod"
-npm run backfill -- stray-ops-keys $B            # dry run: expect 0
+npm run backfill -- stray-ops-keys $B            # dry run: expect 0; check the account in the first line
 npm run backfill -- stray-ops-keys $B --apply    # only if it found some, after looking at them
 npm run backfill -- ops-index $B                 # dry run: team META and owner MEMBER items without keys
 npm run backfill -- ops-index $B --apply

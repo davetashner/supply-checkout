@@ -5,7 +5,7 @@
 
 import { DeleteCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { createTeam, type Db, getOpsTeam, listOpsTeams } from "../src/data/index.js";
+import { createDb, createTeam, type Db, getOpsTeam, listOpsTeams } from "../src/data/index.js";
 import { connection, dbFromConnection } from "../src/data/client.js";
 import { backfillMemberCounts, backfillOpsIndex, expectedOpsKeys, runBackfill, stripStrayOpsKeys } from "../src/data/backfill.js";
 import { formatReport, main, USAGE } from "../scripts/backfill.js";
@@ -80,11 +80,29 @@ describe("the backfill CLI's arguments", () => {
     [["members", "--region", "r"], /--table and --region are required/],
     [["members", "--table", "t"], /--table and --region are required/],
     [["members", "--table", "t", "--region", "r", "--force"], /Unknown option '--force'/],
+    [["members", "--table", "supply-checkout-prod-app", "--region", "r"], /--profile is required/],
+    [["members", "--table", "supply-checkout-prod-app", "--region", "r", "--apply"], /--profile is required/],
+    [["members", "--table", "supply-checkout-prod-ap", "--region", "r", "--profile", "p"], /--table must be an app table/],
+    [["members", "--table", "other-table", "--region", "r", "--profile", "p", "--apply"], /--table must be an app table/],
+    [["members", "--table", "supply-checkout-Prod-app", "--region", "r", "--profile", "p"], /--table must be an app table/],
   ])("refuses %j", async (args, message) => {
     const result = await run(args);
     expect(result.code).toBe(2);
     expect(result.err).toMatch(message);
     expect(result.err).toContain(USAGE);
+  });
+
+  it("stops before reading when the profile's account can't be identified", async () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const connect = () => {
+      throw new Error("must not connect");
+    };
+    const callerAccount = () => Promise.reject(Object.assign(new Error("The SSO session has expired"), { name: "CredentialsProviderError" }));
+    const code = await main(["members", "--table", "supply-checkout-prod-app", "--region", "r", "--profile", "p", "--apply"], (l) => out.push(l), (l) => err.push(l), { callerAccount, connect });
+    expect(code).toBe(1);
+    expect(out).toEqual([]);
+    expect(err).toEqual(["Failed to identify the profile's account: CredentialsProviderError: The SSO session has expired"]);
   });
 
   it("reports a failure without item contents", async () => {
@@ -319,5 +337,24 @@ describe.skipIf(!endpoint)("the backfill CLI on DynamoDB Local", () => {
     }
     expect(await rawItem(db, `TEAM#${teamId}`, "META")).toMatchObject({ members: 1, GSI3PK: "OPS#TEAMS", GSI3SK: teamId });
     expect((await runBackfill(db, "ops-index", { apply: false })).found).toBe(0);
+  });
+
+  it("with a profile, names the account it signs in to before it writes", async () => {
+    const out: string[] = [];
+    const seen: { region?: string; credentials?: unknown } = {};
+    const deps = {
+      callerAccount: async (region: string, credentials: unknown) => {
+        Object.assign(seen, { region, credentials });
+        return "ACCOUNT-PLACEHOLDER";
+      },
+      // The app table's name, but DynamoDB Local's handle on this suite's table
+      connect: () => createDb({ tableName: table.db.tableName, region: REGION, endpoint, env: {} }),
+    };
+    const code = await main(["members", "--table", "supply-checkout-test-app", "--region", REGION, "--profile", "supply-test", "--apply"], (l) => out.push(l), (l) => out.push(l), deps);
+    expect(code).toBe(0);
+    expect(out[0]).toBe(`members on supply-checkout-test-app in ${REGION} in account ACCOUNT-PLACEHOLDER (profile supply-test)`);
+    expect(out.at(-1)).toBe("Done.");
+    expect(seen.region).toBe(REGION);
+    expect(typeof seen.credentials).toBe("function");
   });
 });
