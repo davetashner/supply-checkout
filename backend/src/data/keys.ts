@@ -74,6 +74,19 @@ export const keys = {
     PK: `TEAM#${id(teamId, "team ID")}`,
     SK: `INVITE#${id(inviteId, "invite ID")}`,
   }),
+  /**
+   * The team's latest invite to one address (hashEmail): `inviteId` names it.
+   * createInvite and resendInvite write it in the invite's transaction, on the
+   * condition that it's absent or still names the invite they found (gone or
+   * expired, for a new one; the one being replaced, for a re-send), so two
+   * creates at once can't both leave a live invite. Nothing else deletes it:
+   * one naming an invite that's gone is stale, and the next invite replaces
+   * it. It expires with its invite (TTL).
+   */
+  inviteGuard: (teamId: string, emailHash: string) => ({
+    PK: `TEAM#${id(teamId, "team ID")}`,
+    SK: `INVITEGUARD#${inviteLimitPartition(emailHash).slice(INVITE_LIMIT_PREFIX.length)}`,
+  }),
   product: (teamId: string, key: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `PRODUCT#${productKey(key)}` }),
   sheet: (teamId: string, sheetId: string) => ({
     PK: `TEAM#${id(teamId, "team ID")}`,
@@ -112,6 +125,15 @@ export const keys = {
   /** How many invites a team sent one address (its limit key) on a UTC day: so one team can't use up the address's allowance. */
   invitesFromTeamToAddress: (teamId: string, emailHash: string, day: string) => ({
     PK: `TEAM#${id(teamId, "team ID")}`,
+    SK: `LIMIT#INVITES#${date(day)}#${inviteLimitPartition(emailHash).slice(INVITE_LIMIT_PREFIX.length)}`,
+  }),
+  /**
+   * How many invites one user sent one address (its limit key) on a UTC day,
+   * from all the teams they own: so one account owning many teams can't use
+   * up the address's allowance either.
+   */
+  invitesFromUserToAddress: (userId: string, emailHash: string, day: string) => ({
+    PK: `USER#${id(userId, "user ID")}`,
     SK: `LIMIT#INVITES#${date(day)}#${inviteLimitPartition(emailHash).slice(INVITE_LIMIT_PREFIX.length)}`,
   }),
   webhook: (eventId: string) => ({ PK: `WEBHOOK#${id(eventId, "webhook event ID")}`, SK: "DONE" }),

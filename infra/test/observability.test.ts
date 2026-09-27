@@ -52,6 +52,7 @@ const ALARM_IDS = [
   "email-verification-not-saved",
   "email-codes-failing",
   "near-sending-limit",
+  "invite-surge",
   "email-bouncing",
   "email-complaints",
   "email-events-dropped",

@@ -832,6 +832,27 @@ describe("invites for Google and Apple users", () => {
     expect((await call("POST", `/invites/${inviteId}/accept`, linked, linked, { token })).status).toBe(200);
   });
 
+  // supply-checkout-mcnv: the member items don't wait for the app to load /me after its refresh
+  it("copies a linked user's newly proven address to their member items when the code is checked, before any /me", async () => {
+    const linked = "8f0e5b1c-0000-4000-8000-00000000000f";
+    const attributes: Record<string, string> = { sub: linked, email: "pat.new@example.com", email_verified: "false", identities: identities("Google", GOOGLE_ID), [LINKED_EMAIL_ATTRIBUTE]: "pat.old@example.com" };
+    users.set(linked, { sub: linked, attributes });
+    table.put({ PK: "TEAM#team-a", SK: `MEMBER#${linked}`, type: "member", teamId: "team-a", userId: linked, role: "viewer", email: "pat.old@example.com" });
+    table.put({ PK: `USER#${linked}`, SK: "TEAM#team-a", type: "userTeam", userId: linked, teamId: "team-a", teamName: "team-a", role: "viewer" });
+    expect((await call("POST", "/me/email/code", linked, linked)).status).toBe(204);
+    // A wrong code changes nothing
+    expect((await call("POST", "/me/email/verify", linked, linked, { code: "654321" })).status).toBe(400);
+    expect(table.get("TEAM#team-a", `MEMBER#${linked}`)?.email).toBe("pat.old@example.com");
+    expect((await call("POST", "/me/email/verify", linked, linked, { code: "123456" })).status).toBe(204);
+    // Not yet recorded in Cognito (no refresh has run), so it doesn't count for invites...
+    expect(attributes[LINKED_EMAIL_ATTRIBUTE]).toBe("pat.old@example.com");
+    // ...but the member item already names the address the code proved
+    expect(table.get("TEAM#team-a", `MEMBER#${linked}`)).toMatchObject({ email: "pat.new@example.com", role: "viewer" });
+    // And /me, while the address isn't recorded, leaves it alone rather than put the old one back
+    expect((await call("GET", "/me", linked, linked)).body).toMatchObject({ user: { emailVerified: false } });
+    expect(table.get("TEAM#team-a", `MEMBER#${linked}`)?.email).toBe("pat.new@example.com");
+  });
+
   // supply-checkout-cjw7. This fake Cognito accepts a code for whatever the email is when it's
   // checked, even after a rewrite (undocumented either way): the API mustn't rely on it not doing so.
   describe("a code proves only the address it was sent to", () => {

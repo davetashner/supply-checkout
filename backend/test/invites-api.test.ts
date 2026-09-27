@@ -14,10 +14,11 @@ import type { CognitoUser } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
-import { hashEmail, hashInviteToken, inviteLimitKey, INVITES_PER_ADDRESS_PER_DAY, INVITES_PER_TEAM_ADDRESS_PER_DAY, INVITES_PER_TEAM_PER_DAY, MEMBERS_PER_TRIAL_TEAM } from "../src/data/index.js";
+import { hashEmail, hashInviteToken, inviteLimitKey, INVITES_PER_ADDRESS_PER_DAY, INVITES_PER_TEAM_ADDRESS_PER_DAY, INVITES_PER_TEAM_PER_DAY, INVITES_PER_USER_ADDRESS_PER_DAY, MEMBERS_PER_TRIAL_TEAM } from "../src/data/index.js";
 import { INVITE_LIMIT_ATTRIBUTES } from "../src/data/schema.js";
 import type { Observability } from "../src/observability/index.js";
-import { accountPartitions, fakeMailer, unusedDeleteUser, unusedDeletionLog, unusedEmailCodes } from "./helpers.js";
+import { connection } from "../src/data/client.js";
+import { accountPartitions, fakeDb, fakeMailer, unusedDeleteUser, unusedDeletionLog, unusedEmailCodes } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_pool";
@@ -266,6 +267,65 @@ describe("POST /teams/{teamId}/invites", () => {
     expect(mails.sent).toHaveLength(3);
   });
 
+  it("makes one invite when two requests for the same address race", async () => {
+    const results = await Promise.all([invite("pat@example.com"), invite("Pat@Example.com", "viewer")]);
+    expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+    expect(results.find((r) => r.status === 409)?.body.error.message).toBe("They already have an invite to this team. Resend it instead.");
+    expect(invitesIn()).toHaveLength(1);
+    expect(mails.sent).toHaveLength(1);
+    const made = results.find((r) => r.status === 201)?.body.invite.id;
+    expect(table.get("TEAM#team-a", `INVITEGUARD#${hashEmail("pat@example.com")}`)).toMatchObject({ type: "inviteGuard", inviteId: made, expiresAt: stored(made)?.expiresAt });
+  });
+
+  it("refuses an address whose guard names a live invite the listing didn't show yet", async () => {
+    const first = (await invite("pat@example.com")).body.invite.id as string;
+    // The listing is read after the guard; an invite committed in between is missing from it
+    const original = table.scoped.bind(table);
+    table.scoped = (partitions) => {
+      const db = original(partitions);
+      return fakeDb(async (command) => {
+        const out = (await connection(db).doc.send(command as never)) as { Items?: Record<string, unknown>[] };
+        if ((command as { constructor: { name: string } }).constructor.name === "QueryCommand" && out.Items) return { ...out, Items: out.Items.filter((i) => i.inviteId !== first) };
+        return out;
+      });
+    };
+    expect(await invite("pat@example.com")).toMatchObject({ status: 409, body: { error: { message: "They already have an invite to this team. Resend it instead." } } });
+    expect(invitesIn()).toHaveLength(1);
+  });
+
+  it("replaces a guard whose invite is gone: revoked, accepted and removed, or expired", async () => {
+    const guard = () => table.get("TEAM#team-a", `INVITEGUARD#${hashEmail("pat@example.com")}`)?.inviteId;
+    const first = (await invite("pat@example.com")).body.invite.id as string;
+    await revoke(first);
+    const second = (await invite("pat@example.com")).body.invite.id as string;
+    expect(guard()).toBe(second);
+    // One naming an invite that never existed (or TTL removed)
+    table.put({ ...(table.get("TEAM#team-a", `INVITEGUARD#${hashEmail("pat@example.com")}`) as Record<string, unknown>), inviteId: "gone" });
+    await revoke(second);
+    const third = (await invite("pat@example.com")).body.invite.id as string;
+    expect(guard()).toBe(third);
+    now += 8 * DAY;
+    const fourth = (await invite("pat@example.com")).body.invite.id as string;
+    expect(guard()).toBe(fourth);
+    // Re-sending the expired one while a newer one is live: refused
+    expect(await resend(third)).toMatchObject({ status: 409, body: { error: { message: "They already have an invite to this team. Resend it instead." } } });
+    // Once that one's revoked, the expired one can be re-sent, and takes the guard
+    await revoke(fourth);
+    const fifth = (await resend(third)).body.invite.id as string;
+    expect(guard()).toBe(fifth);
+    // Re-sending a live one moves the guard with it
+    const sixth = (await resend(fifth)).body.invite.id as string;
+    expect(guard()).toBe(sixth);
+  });
+
+  it("re-sends an invite from before guards", async () => {
+    const id = (await invite("pat@example.com")).body.invite.id as string;
+    [...table.items.keys()].filter((k) => k.includes("INVITEGUARD#")).forEach((k) => table.items.delete(k));
+    expect(table.get("TEAM#team-a", `INVITEGUARD#${hashEmail("pat@example.com")}`)).toBeUndefined();
+    const again = (await resend(id)).body.invite.id as string;
+    expect(table.get("TEAM#team-a", `INVITEGUARD#${hashEmail("pat@example.com")}`)?.inviteId).toBe(again);
+  });
+
   it("checks the body: an address, a role, and nothing else", async () => {
     for (const body of [
       { email: "not-an-address", role: "viewer" },
@@ -333,6 +393,47 @@ describe("member cap", () => {
     expect(table.get("TEAM#team-a", "META")?.members).toBe(MEMBERS_PER_TRIAL_TEAM);
   });
 
+  it("checks the link's token before saying anything about the team", async () => {
+    await invite("pat@example.com");
+    const link = lastLink();
+    table.put({ ...table.get("TEAM#team-a", "META"), members: MEMBERS_PER_TRIAL_TEAM });
+    // Without the link, a full team is just an invite that doesn't work
+    const wrong = await accept(link.id, "x".repeat(link.token.length));
+    expect(wrong).toMatchObject({ status: 404, body: { error: { code: "not_found" } } });
+    expect(await accept(link.id, `${link.token}x`)).toMatchObject({ status: 404 });
+    // Nothing about the team or the caller's teams was read for it
+    expect(table.calls.filter((c) => c.partitions.includes(`USER#${PAT}`) && c.command === "QueryCommand")).toEqual([]);
+    expect(await accept(link.id, link.token)).toMatchObject({ status: 429, body: { error: FULL } });
+  });
+
+  it("answers an invite whose team closed while it was being accepted as expired, not full", async () => {
+    await invite("pat@example.com");
+    const link = lastLink();
+    table.put({ ...table.get("TEAM#team-a", "META"), members: 3 });
+    // The team closes between the accept's checks and its write (its invites not yet deleted)
+    let metaReads = 0;
+    table.afterGet = (item) => {
+      if (item?.SK === "META" && item.PK === "TEAM#team-a" && ++metaReads === 1) table.put({ ...item, closedAt: new Date(now).toISOString() });
+    };
+    const res = await accept(link.id, link.token);
+    table.afterGet = undefined;
+    expect(res).toMatchObject({ status: 404, body: { error: { code: "not_found" } } });
+    expect(table.get("TEAM#team-a", `MEMBER#${PAT}`)).toBeUndefined();
+  });
+
+  it("answers an invite whose team was deleted while it was being accepted as expired, not full", async () => {
+    await invite("pat@example.com");
+    const link = lastLink();
+    table.put({ ...table.get("TEAM#team-a", "META"), members: 3 });
+    let metaReads = 0;
+    table.afterGet = (item) => {
+      if (item?.SK === "META" && item.PK === "TEAM#team-a" && ++metaReads === 1) [...table.items.keys()].filter((k) => k === `TEAM#team-a\u0000META`).forEach((k) => table.items.delete(k));
+    };
+    const res = await accept(link.id, link.token);
+    table.afterGet = undefined;
+    expect(res).toMatchObject({ status: 404, body: { error: { code: "not_found" } } });
+  });
+
   it("counts a team from before the member count on its next change", async () => {
     expect(table.get("TEAM#team-a", "META")?.members).toBeUndefined();
     await invite("pat@example.com");
@@ -376,12 +477,14 @@ describe("rate limits", () => {
   });
 
   it(`sends one address at most ${INVITES_PER_ADDRESS_PER_DAY} invites a day, from every team together`, async () => {
-    // Enough teams, each at its own cap for the address, to reach the address's cap
+    // Enough teams, each with its own owner and at its own cap for the address, to reach the address's cap
     const teams = Array.from({ length: INVITES_PER_ADDRESS_PER_DAY / INVITES_PER_TEAM_ADDRESS_PER_DAY }, (_, i) => `team-flood-${i}`);
     for (const teamId of teams) {
-      team(teamId, teamId, { [OWNER]: "owner" });
-      let id = (await invite("pat@example.com", "viewer", OWNER, teamId)).body.invite.id as string;
-      for (let i = 1; i < INVITES_PER_TEAM_ADDRESS_PER_DAY; i++) id = (await resend(id, OWNER, teamId)).body.invite.id;
+      const owner = `user-${teamId}`;
+      USERS[owner] = { sub: owner, email: `${teamId}@example.com`, emailVerified: true, emailVerifiedInCognito: true };
+      team(teamId, teamId, { [owner]: "owner" });
+      let id = (await invite("pat@example.com", "viewer", owner, teamId)).body.invite.id as string;
+      for (let i = 1; i < INVITES_PER_TEAM_ADDRESS_PER_DAY; i++) id = (await resend(id, owner, teamId)).body.invite.id;
     }
     expect(mails.sent).toHaveLength(INVITES_PER_ADDRESS_PER_DAY);
     // Another team is refused, with the same message
@@ -392,6 +495,25 @@ describe("rate limits", () => {
     expect((await invite("quinn@example.com", "viewer", OTHER_OWNER, "team-b")).status).toBe(201);
     now += DAY;
     expect((await invite("pat@example.com", "viewer", OTHER_OWNER, "team-b")).status).toBe(201);
+  });
+
+  it(`lets one account send one address ${INVITES_PER_USER_ADDRESS_PER_DAY} invites a day from all the teams it owns, so it can't use up the address's allowance either`, async () => {
+    const teams = ["team-a", ...Array.from({ length: INVITES_PER_ADDRESS_PER_DAY / INVITES_PER_TEAM_ADDRESS_PER_DAY }, (_, i) => `team-mine-${i}`)];
+    for (const teamId of teams.slice(1)) team(teamId, teamId, { [OWNER]: "owner" });
+    for (const teamId of teams.slice(0, INVITES_PER_USER_ADDRESS_PER_DAY)) expect((await invite("pat@example.com", "viewer", OWNER, teamId)).status, teamId).toBe(201);
+    const refused = await invite("PAT+x@example.com", "viewer", OWNER, teams[INVITES_PER_USER_ADDRESS_PER_DAY]);
+    expect(refused).toMatchObject({ status: 429, body: { error: { code: "quota_exceeded", message: "You've sent as many invites as you can for now. Try again tomorrow." } } });
+    expect(invitesIn(teams[INVITES_PER_USER_ADDRESS_PER_DAY])).toEqual([]);
+    // Re-sends count too
+    expect((await resend(lastLink().id, OWNER, teams[INVITES_PER_USER_ADDRESS_PER_DAY - 1])).status).toBe(429);
+    // The counter is in the inviter's own partition, and the address's own counter has room for others
+    expect(table.get(`USER#${OWNER}`, `LIMIT#INVITES#2026-09-26#${inviteLimitKey("pat@example.com")}`)).toMatchObject({ count: INVITES_PER_USER_ADDRESS_PER_DAY, type: "inviteLimit" });
+    expect(table.get(`INVITELIMIT#${inviteLimitKey("pat@example.com")}`, "LIMIT#INVITES#2026-09-26")).toMatchObject({ count: INVITES_PER_USER_ADDRESS_PER_DAY });
+    expect((await invite("pat@example.com", "viewer", OTHER_OWNER, "team-b")).status).toBe(201);
+    // The owner's other addresses aren't affected
+    expect((await invite("quinn@example.com", "viewer", OWNER, teams[INVITES_PER_USER_ADDRESS_PER_DAY])).status).toBe(201);
+    now += DAY;
+    expect((await invite("pat@example.com", "viewer", OWNER, teams[INVITES_PER_USER_ADDRESS_PER_DAY])).status).toBe(201);
   });
 
   it("counts +tags, and dots in a Gmail address, as the same mailbox", async () => {
@@ -528,6 +650,15 @@ describe("POST /teams/{teamId}/invites/{inviteId}/resend", () => {
     expect(await resend("no-such-invite")).toMatchObject({ status: 404 });
     // Nothing else was sent to anyone
     expect(mails.sent.map((m) => m.to)).toEqual(["pat@example.com", "pat@example.com"]);
+  });
+
+  it("refuses to re-send to an address that has become a member's since", async () => {
+    const id = (await invite("pat@example.com")).body.invite.id as string;
+    // Pat joined with another invite (or the address moved to a member's item)
+    member("team-a", PAT, "viewer");
+    expect(await resend(id)).toMatchObject({ status: 409, body: { error: { code: "aborted", message: "They're already a member of this team" } } });
+    expect(stored(id)).toBeDefined();
+    expect(mails.sent).toHaveLength(1);
   });
 
   it("can't re-send another team's invite", async () => {

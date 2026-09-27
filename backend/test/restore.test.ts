@@ -758,9 +758,9 @@ describe.skipIf(!endpoint)("re-applying deletions on DynamoDB Local", () => {
     expect(await rawItem(db, `TEAM#${e.teamId}`, `MEMBER#${deleted2}`)).toMatchObject({ role: "owner" });
     // G: untouched
     expect((await partition(db, `TEAM#${g.teamId}`)).length).toBeGreaterThan(2);
-    // Only the daily counter is left of the deleted user
+    // Only the daily counters are left of the deleted user (deleted3 also invited someone)
     expect((await partition(db, `USER#${deleted}`)).map((i) => i.SK)).toEqual(["LIMIT#TEAMS#2026-09-27"]);
-    expect((await partition(db, `USER#${deleted3}`)).map((i) => i.SK)).toEqual(["LIMIT#TEAMS#2026-09-27"]);
+    expect((await partition(db, `USER#${deleted3}`)).map((i) => String(i.SK).replace(/#[0-9a-f]{64}$/, "#<address>"))).toEqual(["LIMIT#INVITES#2026-09-27#<address>", "LIMIT#TEAMS#2026-09-27"]);
 
     // Again: only the team for a person is left
     const again = await planDeletions(db, records);
