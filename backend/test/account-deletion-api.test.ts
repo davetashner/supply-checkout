@@ -11,7 +11,7 @@ import type { CognitoUser } from "../src/api/cognito-user.js";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, DATA_ROUTES, routeKey } from "../src/api/routes.js";
-import { authorizeTeam, CLOSED_TEAM_RETENTION_DAYS, createInvite, hashEmail, listTeamsToPurge, liveUpdateRecipients, purgeTeam, recordReceiptRead, startAccountDeletion, TeamClosedError, updateTeam } from "../src/data/index.js";
+import { authorizeTeam, CLOSED_TEAM_RETENTION_DAYS, createInvite, REOPEN_CUTOFF_MINUTES, hashEmail, listTeamsToPurge, liveUpdateRecipients, purgeTeam, recordReceiptRead, startAccountDeletion, TeamClosedError, updateTeam } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { PURGE_BUDGET_MS } from "../src/ops/names.js";
 import { createTeamPurgeHandler } from "../src/ops/team-purge-handler.js";
@@ -213,7 +213,9 @@ describe("closing a team", () => {
     expect((await data("GET", "/teams/team-a/products", PAT)).status).toBe(200);
     expect((await data("GET", "/teams/team-a/sheets/s1", VIEWER)).status).toBe(200);
     const me = await call("GET", "/me", PAT);
-    expect(me.body.teams.find((t: { id: string }) => t.id === "team-a")).toMatchObject({ closedAt: new Date(NOW).toISOString(), deletesAt });
+    // Owners can reopen it until REOPEN_CUTOFF_MINUTES before it's deleted
+    const reopenBy = new Date(NOW + CLOSED_TEAM_RETENTION_DAYS * DAY - REOPEN_CUTOFF_MINUTES * 60_000).toISOString();
+    expect(me.body.teams.find((t: { id: string }) => t.id === "team-a")).toMatchObject({ closedAt: new Date(NOW).toISOString(), deletesAt, reopenBy });
     // Its live updates stop
     expect(await liveUpdateRecipients(table.db("team-a"), "team-a")).toEqual([]);
     expect((await liveUpdateRecipients(table.db("team-b"), "team-b")).sort()).toEqual([CO_OWNER, OWNER, PAT]);
@@ -380,7 +382,7 @@ describe("reopening a team", () => {
     expect((await data("PATCH", "/teams/team-a/products/0123", PAT, { data: { name: "Gloves" }, expectedVersion: 3 })).status).toBe(200);
     expect((await call("POST", "/teams/team-a/invites", OWNER, { email: "back@example.com", role: "viewer" })).status).toBe(201);
     const me = await call("GET", "/me", PAT);
-    expect(me.body.teams.find((t: { id: string }) => t.id === "team-a")).toMatchObject({ closedAt: null, deletesAt: null });
+    expect(me.body.teams.find((t: { id: string }) => t.id === "team-a")).toMatchObject({ closedAt: null, deletesAt: null, reopenBy: null });
     // What the closure undid stays undone: the old invite and the removed viewer
     expect(table.get("TEAM#team-a", "INVITE#inv-a1")).toBeUndefined();
     expect(table.get("TEAM#team-a", `MEMBER#${VIEWER}`)).toBeUndefined();

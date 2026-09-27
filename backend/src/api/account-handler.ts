@@ -121,6 +121,8 @@ import {
   listTeamsForUser,
   liveComp,
   mailAddress,
+  memberCap,
+  REOPEN_CUTOFF_MINUTES,
   markInviteNotSent,
   normalizeEmail,
   clearCodeSent,
@@ -194,9 +196,14 @@ export function errorFor(error: unknown): ApiError {
  * A team as /me and the create and accept routes return it. `comp` is a live
  * comp from support (ADR 0015): while it's there, the team is active on its
  * plan whatever `status` says. Who granted it and why aren't shown here.
+ * `members` and `memberCap` are for the members screen's seat count
+ * (`members` is null on a team from before the count), and `reopenBy` is when
+ * a closed team stops being reopenable (REOPEN_CUTOFF_MINUTES before it's
+ * deleted).
  */
 export function teamBody(team: Team, role: Role, now = new Date()) {
   const comp = liveComp(team, now);
+  const deletesAt = team.closedAt ? (team.purgeAfter ?? null) : null;
   return {
     id: team.teamId,
     name: team.name,
@@ -207,8 +214,11 @@ export function teamBody(team: Team, role: Role, now = new Date()) {
     homeRegion: team.homeRegion,
     // A closed team is read-only until deletesAt, when the purge deletes it
     closedAt: team.closedAt ?? null,
-    deletesAt: team.closedAt ? (team.purgeAfter ?? null) : null,
+    deletesAt,
+    reopenBy: deletesAt ? new Date(Date.parse(deletesAt) - REOPEN_CUTOFF_MINUTES * 60_000).toISOString() : null,
     comp: comp ? { plan: comp.plan, until: comp.until } : null,
+    members: typeof team.members === "number" ? team.members : null,
+    memberCap: memberCap(team, now),
   };
 }
 

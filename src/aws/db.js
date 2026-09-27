@@ -39,7 +39,10 @@ function querySnap(docs, order) {
   return { docs: out, size: out.length, empty: !out.length, docChanges: () => [], metadata: META };
 }
 
-export function createDb({ api, config, teamId, userId, token, onRemoved }) {
+// onClosed: a write was refused because an owner closed the team meanwhile. onResync: both
+// collections are being re-listed (live.js), a moment to check anything else that may have
+// changed unannounced (account.js: the team switcher).
+export function createDb({ api, config, teamId, userId, token, onRemoved, onClosed, onResync }) {
   const base = `/teams/${encodeURIComponent(teamId)}`;
   const colls = {};
   const inflight = new Map();
@@ -60,6 +63,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
   // which the app acts on (src/main.js); anything else means this user is no longer in the team.
   function denied(e) {
     if (e.code !== "permission_denied") return e;
+    if (e.reason === "team_closed") onClosed();
     if (e.reason === "view_only" || e.reason === "team_closed") return { ...e, code: "invalid_argument" };
     lost();
     return e;
@@ -127,7 +131,11 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
       .finally(() => { c.listing = null; });
     return c.listing;
   }
-  const resync = () => { if (!removed) Object.keys(colls).forEach((n) => colls[n].listeners.size && relist(n)); };
+  const resync = () => {
+    if (removed) return;
+    Object.keys(colls).forEach((n) => colls[n].listeners.size && relist(n));
+    onResync();
+  };
 
   // A live event: fetch what changed (at most one fetch per document at a time)
   async function fetchDoc(name, id) {
