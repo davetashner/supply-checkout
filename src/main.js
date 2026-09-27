@@ -106,12 +106,21 @@ async function saving(form, fn) {
 // A checkout or return whose sheet line saved but whose storage count didn't (the artifact's
 // two writes, src/moves.js): the quantity can't change, so Try again finishes the same action,
 // and the note says the sheet has it.
+//
+// Until it's finished, Escape and tapping outside don't close the form (src/dom.js), and Cancel
+// asks for a second tap first, since closing it leaves the storage count unchanged.
 function owing(m, action) {
   if (!action.due) return;
   m.querySelectorAll(".stepper input, .stepper button").forEach(c => { c.disabled = true; });
+  m.querySelector("#f").dataset.owing = "";
   const note = m.querySelector("#saveFailed");
-  if (note) note.textContent = "Saved on the sheet, but the storage count didn't save. Tap Try again to finish; nothing is counted twice.";
+  if (note) note.textContent = "Saved on the sheet, but the storage count didn't save. Tap Try again to finish; nothing is counted twice. Cancel leaves storage as it is.";
 }
+// Cancel, which warns first while a storage count is owed (owing above)
+const cancelling = (m, action) => {
+  const b = m.querySelector("#cancel");
+  b.addEventListener("click", () => (action.due ? arm(b, "Tap again to leave storage as it is", closeModal) : closeModal()));
+};
 
 const currentSheet = () => sheets.find(s => s.id === ui.sheetId);
 async function sheetGone(id) {
@@ -371,7 +380,7 @@ function checkoutModal(s, code, key = keyOf(code)) {
     </form>`, m => {
     const getQty = wireStepper(m, "fQty", v => setText(m.querySelector("#go"), `Add ${v} to sheet`));
     m.querySelector("#go").textContent = "Add 1 to sheet";
-    m.querySelector("#cancel").addEventListener("click", closeModal);
+    cancelling(m, action);
     const form = m.querySelector("#f");
     onSubmit(form, () => {
       const qty = getQty(); if (!qty) { toast("Choose at least 1."); return; }
@@ -473,14 +482,13 @@ function returnModal(s, code, key = keyOf(code)) {
       setHTML(m.querySelector("#sum"), `<span>Returned <b>${back}</b> of ${o}</span><span>Used <b>${o - back}</b></span><span>Charge <b>${money((o - back) * price)}</b></span>`);
     };
     const getR = wireStepper(m, "fRet", paint); paint(1);
-    m.querySelector("#cancel").addEventListener("click", closeModal);
+    cancelling(m, action);
     const form = m.querySelector("#f");
     onSubmit(form, () => {
       const r = getR(); if (!r) { toast("Choose at least 1."); return; }
       saving(form, async () => {
-        const cur = own((currentSheet() || s).items || {}, key) || line;
         return closing(write(async () => {
-          const done = await recordReturn(db, action, s.id, key, r, cur);
+          const done = await recordReturn(db, action, s.id, key, r);
           toast(`${done.quantity} returned · ${int(done.line.returned)} of ${int(done.line.out)} back`);
         }, undefined, s.id));
       }).then(() => owing(m, action));
@@ -504,15 +512,7 @@ function lineModal(s, key) {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     const form = m.querySelector("#f");
     // The form is busy until it's removed, so it's removed once
-    armButton(m.querySelector("#remove"), "Tap to remove", () => busy(form, () => closing(write(async () => {
-      // Saved as the whole sheet without the line, so only if the sheet is still there:
-      // a set would make a sheet someone else deleted again
-      const ref = db.doc("sheets/" + s.id);
-      const got = await ref.get();
-      if (!got.exists) throw { code: "not_found" };
-      const body = got.data(); body.items = { ...(body.items || {}) }; delete body.items[key];
-      await ref.set(body);
-    }, "Removed", s.id))));
+    armButton(m.querySelector("#remove"), "Tap to remove", () => busy(form, () => closing(write(() => removeLine(s.id, key), "Removed", s.id))));
     onSubmit(form, () => {
       const out = int(m.querySelector("#fOut").value), returned = Math.min(int(m.querySelector("#fRet").value), out);
       // Typed prices are kept in whole cents (ADR 0014)
@@ -520,6 +520,35 @@ function lineModal(s, key) {
       saving(form, () => closing(write(() => db.doc("sheets/" + s.id).update({ items: { [key]: { out, returned, price } } }), "Saved", s.id)));
     });
   });
+}
+
+// Removes a line without making a sheet someone else deleted again. The web build's db saves the
+// sheet without it, on the version it read, so a sheet deleted since is refused (ADR 0006).
+// claude.ai's db has no conditional writes, but its update refuses a document that's gone, so
+// the artifact build sets the line to null in one update: nothing is read first, so there's no
+// moment in which the sheet could be deleted and then saved again. A null line is a removed one
+// (sheets are read without them, liveSheet below). If the runtime refuses a null value, the
+// sheet is read and saved whole without the line, as long as it's still there: that leaves the
+// moment between the read and the write, as before.
+async function removeLine(id, key) {
+  const ref = db.doc("sheets/" + id);
+  // WEB: the artifact build keeps only the update, since claude.ai's db has no commands (src/build.js)
+  if (!(WEB && db.command)) {
+    try { await ref.update({ items: { [key]: null } }); return; }
+    // Refused: the sheet is gone (not_found below), the runtime doesn't take a null value, or
+    // this user is a viewer (the set below is refused too)
+    catch (e) { if (e.code !== "invalid_argument") throw e; }
+  }
+  const got = await ref.get();
+  if (!got.exists) throw { code: "not_found" };
+  const body = got.data(); body.items = { ...(body.items || {}) }; delete body.items[key];
+  await ref.set(body);
+}
+// A sheet as the app shows it: without lines the artifact build removed (removeLine above)
+function liveSheet(d) {
+  const s = { id: d.id, ...d.data() };
+  for (const [k, it] of Object.entries(Object(s.items))) if (it === null) delete s.items[k];
+  return s;
 }
 
 // An item's storage value in whole cents (ADR 0014): its count times its cost each, or
@@ -1007,7 +1036,7 @@ draw();
     if (pFirst) { pFirst = false; ready(); } else render();
   }, onErr);
   db.collection("sheets").orderBy("date", "desc").onSnapshot(snap => {
-    sheets = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    sheets = snap.docs.map(liveSheet);
     if (sFirst) { sFirst = false; ready(); } else render();
   }, onErr);
 })();
