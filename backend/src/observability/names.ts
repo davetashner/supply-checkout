@@ -36,6 +36,8 @@ export const BusinessMetric = {
   ReceiptReads: "ReceiptReads",
   /** Receipt reads that failed on our side or Bedrock's (J5). */
   ReceiptReadFailures: "ReceiptReadFailures",
+  /** Units a receipt's lines added to existing sheets, bought for the client rather than taken from storage (J5). */
+  ReceiptLines: "ReceiptLines",
   /** Model tokens used reading receipts; the team ID goes in metadata (J5). */
   ReceiptTokens: "ReceiptTokens",
   /** New teams created by sign-up (J1). */

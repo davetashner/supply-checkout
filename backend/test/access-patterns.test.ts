@@ -8,12 +8,14 @@ import {
   adjustStock,
   authorizeTeam,
   ConflictError,
+  countEmailCode,
   createInvite,
   createProduct,
   createSheet,
   createTeam,
   deleteProduct,
   deleteSheet,
+  EMAIL_CODES_PER_USER_PER_DAY,
   findInvite,
   findInviteForEmail,
   ForbiddenError,
@@ -112,6 +114,16 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       expect(owner.homeRegion).toBe(REGION);
       expect(await rawItem(db, `TEAM#${t.teamId}`, "META")).toMatchObject({ type: "team", name: "Echo Cleaning", homeRegion: REGION, version: 1 });
       expect(await getTeam(db, owner)).toMatchObject({ teamId: t.teamId, homeRegion: REGION, status: "trialing" });
+    });
+
+    it("counts a user's email verification codes per UTC day, up to the limit", async () => {
+      db = table.db;
+      const userId = newUser();
+      const now = new Date("2026-09-26T12:00:00.000Z");
+      for (let i = 0; i < EMAIL_CODES_PER_USER_PER_DAY; i++) await countEmailCode(db, userId, now);
+      await expect(countEmailCode(db, userId, now)).rejects.toThrow(LimitReachedError);
+      await countEmailCode(db, newUser(), now);
+      await countEmailCode(db, userId, new Date("2026-09-27T00:00:00.000Z"));
     });
 
     it("starts a trial, and makes one team per request key however often it's sent", async () => {

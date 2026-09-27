@@ -80,6 +80,8 @@ export const keys = {
   stripe: (customerId: string) => ({ PK: `STRIPE#${id(customerId, "Stripe customer ID")}`, SK: "TEAM" }),
   /** How many teams the user created on a UTC day (YYYY-MM-DD): the per-user rate limit. */
   teamsCreated: (userId: string, day: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: `LIMIT#TEAMS#${date(day)}` }),
+  /** How many email verification codes the user asked for on a UTC day: the per-user limit. */
+  emailCodes: (userId: string, day: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: `LIMIT#EMAILCODES#${date(day)}` }),
   /** How many invites a team sent (created or re-sent) on a UTC day: the per-team invite limit. */
   invitesSent: (teamId: string, day: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `LIMIT#INVITES#${date(day)}` }),
   /**
