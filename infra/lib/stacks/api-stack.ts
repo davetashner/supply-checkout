@@ -49,6 +49,7 @@ import {
   OPS_OWNERS_PREFIX,
   OPS_TEAMS_PARTITION,
   OWNER_OPERATOR_AUDIT_ATTRIBUTES,
+  REOPEN_ATTRIBUTES,
   STUCK_IMPORT_ATTRIBUTES,
   tableName,
 } from "../../../backend/src/data/schema.js";
@@ -146,6 +147,9 @@ export class ApiStack extends SupplyCheckoutStack {
   /** Primary region only (ADR 0015). */
   readonly opsFunction?: NodejsFunction;
   readonly operatorAccessRole?: Role;
+  /** Primary region only: reopens closed teams for the ops function (supply-checkout-6uw.6). */
+  readonly opsReopenFunction?: NodejsFunction;
+  readonly operatorReopenRole?: Role;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "api", layer: "stateless" });
@@ -403,6 +407,8 @@ export class ApiStack extends SupplyCheckoutStack {
       const ops = this.addOps(config, table, tableArn, tableKeyStatement);
       this.opsFunction = ops.fn;
       this.operatorAccessRole = ops.role;
+      this.opsReopenFunction = ops.reopen;
+      this.operatorReopenRole = ops.reopenRole;
       const opsAuthorizer = opsJwtAuthorizer(this, { envName: config.envName });
       const opsIntegration = new HttpLambdaIntegration("OpsIntegration", this.live(ops.fn));
       for (const route of OPS_ROUTES) {
@@ -563,7 +569,70 @@ export class ApiStack extends SupplyCheckoutStack {
     fn.addToRolePolicy(new PolicyStatement({ actions: ["sts:AssumeRole", "sts:TagSession"], resources: [role.roleArn] }));
     fn.addToRolePolicy(new PolicyStatement({ actions: ["cognito-idp:AdminListGroupsForUser"], resources: [ssm(identity.opsUserPoolArn)] }));
     fn.addEnvironment(API_ENV.opsRoleArn, role.roleArn);
-    return { fn, role };
+
+    // The operator reopen function (supply-checkout-6uw.6). Reopening a team
+    // removes its closure fields; IAM can't tell removing an attribute from
+    // setting it, so a role that could reopen a team could also close one and
+    // have the purge delete it. The operator-access role gets none of them.
+    // This function, with no route and only the ops function allowed to
+    // invoke it, takes plain values and only removes them. Like the others,
+    // its own role can't reach the table: per request it assumes the
+    // operator-reopen role, tagged with the team, which may GetItem and
+    // UpdateItem only that team's items naming only REOPEN_ATTRIBUTES,
+    // returning nothing, and put and query only that team's operator audit.
+    const reopen = this.handler(
+      "OpsReopenFunction",
+      "reopen",
+      { memorySize: 256, description: "Reopens a closed team for the ops function, audited (ADR 0015)", environment: { [API_ENV.tableName]: table } },
+      "operator",
+    );
+    const reopenFnRole = reopen.role;
+    if (!reopenFnRole) throw new Error("The reopen function has no role");
+    const reopenRole = new Role(this, "OperatorReopenRole", {
+      description: "Assumed by the operator reopen function per request, tagged with the team (ADR 0015): that team's closure fields, and its operator audit",
+      maxSessionDuration: Duration.hours(1),
+      assumedBy: new ArnPrincipal(reopenFnRole.roleArn)
+        .withConditions({
+          StringLike: { [`aws:RequestTag/${OPS_SESSION_TAG}`]: "?*" },
+          "ForAllValues:StringEquals": { "aws:TagKeys": [OPS_SESSION_TAG] },
+        })
+        .withSessionTags(),
+      inlinePolicies: {
+        ReopenScope: new PolicyDocument({
+          statements: [
+            new PolicyStatement({
+              sid: "ReopenClosureFieldsOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [`TEAM#${tag}`],
+                  "dynamodb:Attributes": [...REOPEN_ATTRIBUTES],
+                },
+                // A GetItem without a projection names no attributes and would return the whole
+                // item: Select must be SPECIFIC_ATTRIBUTES (a ProjectionExpression implies it)
+                StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES", "dynamodb:ReturnValues": "NONE" },
+              },
+            }),
+            new PolicyStatement({
+              sid: "TeamOperatorAuditAppendOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:PutItem", "dynamodb:Query"],
+              resources: [tableArn],
+              conditions: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`${OPERATOR_AUDIT_PREFIX}${tag}`] } },
+            }),
+            tableKeyStatement(),
+          ],
+        }),
+      },
+    });
+    reopen.addToRolePolicy(new PolicyStatement({ actions: ["sts:AssumeRole", "sts:TagSession"], resources: [reopenRole.roleArn] }));
+    reopen.addEnvironment(API_ENV.opsReopenRoleArn, reopenRole.roleArn);
+    // Only the ops function may invoke it, and only the unqualified function
+    fn.addToRolePolicy(new PolicyStatement({ sid: "InvokeReopenOnly", actions: ["lambda:InvokeFunction"], resources: [reopen.functionArn] }));
+    fn.addEnvironment(API_ENV.opsReopenFunction, reopen.functionName);
+    return { fn, role, reopen, reopenRole };
   }
 
   /** A function from backend/src/<dir>/<name>.ts. */

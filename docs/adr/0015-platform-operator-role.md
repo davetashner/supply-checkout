@@ -73,6 +73,7 @@ The sections below give the details.
 | `GET /ops/teams/{teamId}` | One team's account record from GSI3, plus its Stripe subscription and recent invoices |
 | `PUT /ops/teams/{teamId}/comp` | Comp or extend a plan (plan, seats, `until`, reason), including free for pilot teams |
 | `DELETE /ops/teams/{teamId}/comp` | End a comp early |
+| `POST /ops/teams/{teamId}/reopen` | Reopen a closed team until 5 minutes before its purge (`supply-checkout-6uw.6`). Through a separate reopen function and role, since `OperatorAccessRole` must never write closure fields (it could then close a team and have it purged) |
 | `POST /ops/campaigns`, `GET /ops/campaigns`, `POST /ops/campaigns/{id}/pause`, `.../end` | Promo campaigns (`supply-checkout-8jc.8`) |
 | `GET /ops/audit` | The operator audit trail |
 

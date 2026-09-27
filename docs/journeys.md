@@ -59,7 +59,7 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 2. Sign up and accept the terms.
 3. Name the team.
 
-**Expected:** an empty team ready to use in under a minute, with a 14-day trial and no card needed. The terms acceptance time is stored.
+**Expected:** an empty team ready to use in under a minute, with a 14-day trial and no card needed. The terms acceptance time is stored. In the web app, the new team opens with a short **Get your team started** checklist above the sheets and inventory: add supplies (by hand, or import a CSV using the import's template), invite the crew from Members, and create a first sheet. Each step ticks itself off from what's saved, and the checklist shows to the team's owners on that device until every step is done or they dismiss it (`supply-checkout-dhc`: `tests/aws-first-run.spec.js`, including accessibility in light and dark mode and a phone-width layout).
 
 **Status:** planned. `supply-checkout-21q` (landing and sign-up), `supply-checkout-zsm` (sign-in), `supply-checkout-l5y` (team creation: `GET /me` and `POST /teams`, see [docs/api/onboarding.md](api/onboarding.md)), `supply-checkout-x0l` (trial).
 
@@ -75,7 +75,7 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Status:** partly tested. Adding items works today. Creating the team first is planned (`supply-checkout-l5y`), as is importing an existing inventory (`supply-checkout-ig9`).
 
-**Tests:** `inventory.spec.js` (all tests), `barcode.spec.js`: "an item's barcode can be scanned when adding it to inventory".
+**Tests:** `inventory.spec.js` (all tests), `barcode.spec.js`: "an item's barcode can be scanned when adding it to inventory", and in the web app, `aws-first-run.spec.js` (the new team's checklist leads here).
 
 ### J3. Invite the crew
 
@@ -193,7 +193,7 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Expected:** done without contacting support. The user is out of every team, a team they were alone in is closed, invites to their address and their sign-in are gone, and a closed team's data is deleted 30 days after it closed. Closing a team will cancel its subscription once billing is built (`supply-checkout-x0l`).
 
-**Status:** built (`supply-checkout-b1h`). The 30-day deadline is watched: the hourly purge sends `ClosedTeamsOverdue`, the closed teams still there more than 24 hours after their deletion date, and **Deletion overdue** alarms on any; if the purge stops sending the gauge for 3 hours (its schedule disabled or deleted, or every run failing before it reads the index), **Deletion job not running** alarms ([J9, J10, J11](#j9-j10-j11-roles-cancellation-and-deletion)). **Tests:** `backend/test/account-deletion-api.test.ts` (closing, deleting, the purge and its overdue gauge, isolation of each session), `backend/test/closing.test.ts` (the same against DynamoDB Local, including that the data is gone after 30 days and not before), `tests/aws-account-deletion.spec.js` (the web app: leaving, closing, a closed team, reopening it, deleting). An owner who is still in a closed team can reopen it until an hour before the purge (`supply-checkout-d9su`), and never once the purge has marked it `purging`.
+**Status:** built (`supply-checkout-b1h`). The 30-day deadline is watched: the hourly purge sends `ClosedTeamsOverdue`, the closed teams still there more than 24 hours after their deletion date, and **Deletion overdue** alarms on any; if the purge stops sending the gauge for 3 hours (its schedule disabled or deleted, or every run failing before it reads the index), **Deletion job not running** alarms ([J9, J10, J11](#j9-j10-j11-roles-cancellation-and-deletion)). **Tests:** `backend/test/account-deletion-api.test.ts` (closing, deleting, the purge and its overdue gauge, isolation of each session), `backend/test/closing.test.ts` (the same against DynamoDB Local, including that the data is gone after 30 days and not before), `tests/aws-account-deletion.spec.js` (the web app: leaving, closing, a closed team, reopening it, deleting). An owner who is still in a closed team can reopen it until an hour before the purge (`supply-checkout-d9su`), and never once the purge has marked it `purging`. Support can reopen it until 5 minutes before the purge, and never once it's marked `purging`, for a disputed closure (`npm run ops -- reopen`, `supply-checkout-6uw.6`; tests in `backend/test/ops-api.test.ts`, `ops-reopen.test.ts` and `ops-ddb.test.ts`).
 
 ### J12. Choose a plan in the mobile app
 

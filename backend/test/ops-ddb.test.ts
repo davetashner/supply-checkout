@@ -5,7 +5,23 @@
 import { describe, expect, it } from "vitest";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { connection } from "../src/data/client.js";
-import { clearStuckImport, closeTeam, createTeam, endComp, getOpsTeam, listOperatorAudit, listOpsTeams, listStuckImportsForOps, reopenTeam, setComp } from "../src/data/index.js";
+import {
+  CLOSED_TEAM_RETENTION_DAYS,
+  clearStuckImport,
+  closeTeam,
+  createTeam,
+  endComp,
+  getOpsTeam,
+  listOperatorAudit,
+  listOpsTeams,
+  listStuckImportsForOps,
+  listSupportActions,
+  listTeamsToPurge,
+  reopenOpsTeam,
+  reopenTeam,
+  setComp,
+  TeamDeletingError,
+} from "../src/data/index.js";
 import { endpoint, newUser, rawItem, useTable } from "./helpers.js";
 
 describe.skipIf(!endpoint)("operators (ADR 0015) on DynamoDB Local", () => {
@@ -55,6 +71,34 @@ describe.skipIf(!endpoint)("operators (ADR 0015) on DynamoDB Local", () => {
     expect(record.closedAt).toBeUndefined();
     expect(record.version).toBe(reopened.version);
     expect(await setComp(table.db, op, team.teamId, { plan: "free", until, reason: "Pilot", expectedVersion: reopened.version, idempotencyKey: "ddb-reopen-0002" }, now)).toMatchObject({ replayed: false });
+  });
+
+  it("reopens a closed team for an operator, in its last hour too, audited for the owners (supply-checkout-6uw.6)", async () => {
+    const ownerId = newUser();
+    const name = `Ops Operator Reopen ${ownerId}`;
+    const { team, context } = await createTeam(table.db, { userId: ownerId, email: "owner@example.com" }, { name }, now);
+    // Closed long enough ago that its purge is 30 minutes away: past the owners' cutoff
+    const closedAt = new Date(now.getTime() - CLOSED_TEAM_RETENTION_DAYS * 86_400_000 + 30 * 60_000);
+    const { team: closed } = await closeTeam(table.db, context, { confirmName: name }, closedAt);
+    const later = new Date(now.getTime() + 60 * 86_400_000);
+    expect((await listTeamsToPurge(table.db, later, 1000)).map((t) => t.teamId)).toContain(team.teamId);
+    await expect(reopenTeam(table.db, context, { confirmName: name }, now)).rejects.toBeInstanceOf(TeamDeletingError);
+
+    const input = { reason: "Disputed closure", expectedVersion: closed.version, idempotencyKey: "ddb-ops-reopen-0001" };
+    const outcome = await reopenOpsTeam(table.db, op, team.teamId, input, now);
+    expect(outcome).toMatchObject({ replayed: false, version: closed.version + 1 });
+    expect(await reopenOpsTeam(table.db, op, team.teamId, input, now)).toEqual({ ...outcome, replayed: true });
+    const meta = await rawItem(table.db, `TEAM#${team.teamId}`, "META");
+    for (const field of ["closedAt", "closedBy", "purgeAfter", "GSI1PK", "GSI1SK"]) expect(meta?.[field], field).toBeUndefined();
+    expect((await listTeamsToPurge(table.db, later, 1000)).map((t) => t.teamId)).not.toContain(team.teamId);
+    expect((await getOpsTeam(table.db, op, team.teamId, now)).team.closedAt).toBeUndefined();
+    const actions = await listSupportActions(table.db, context, {});
+    expect(actions.items).toEqual(expect.arrayContaining([expect.objectContaining({ action: "ops.team.reopen", reason: "Disputed closure", before: { closedAt: closed.closedAt, purgeAfter: closed.purgeAfter }, after: null })]));
+
+    // Closed again, 2 minutes from its purge: too late even for an operator
+    const { team: again } = await closeTeam(table.db, context, { confirmName: name }, new Date(now.getTime() - CLOSED_TEAM_RETENTION_DAYS * 86_400_000 + 2 * 60_000));
+    await expect(reopenOpsTeam(table.db, op, team.teamId, { ...input, expectedVersion: again.version, idempotencyKey: "ddb-ops-reopen-0002" }, now)).rejects.toBeInstanceOf(TeamDeletingError);
+    expect((await rawItem(table.db, `TEAM#${team.teamId}`, "META"))?.closedAt).toBe(again.closedAt);
   });
 
   it("lists a stuck import and takes it out of the check, audited", async () => {
