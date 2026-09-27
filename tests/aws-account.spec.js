@@ -728,7 +728,7 @@ test.describe("first sign-in and teams", () => {
     await page.clock.fastForward(61e3);
     await setVisible(page, true);
     await expect(page.getByRole("heading", { name: `You're no longer in ${TEAM.name}` })).toBeVisible();
-    expect(backend.requests("GET", "/me")).toHaveLength(2);
+    await expect.poll(() => backend.requests("GET", "/me").length).toBe(2);
     await expect(page.getByLabel("Team").locator("option")).toHaveText(["Echo Cleaning", "Bravo Co"]);
   });
 });
