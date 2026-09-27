@@ -66,7 +66,8 @@ button,input,select{font:inherit;color:inherit}
 .notice.resume{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;color:var(--ink);border-color:var(--out);background:var(--out-soft)}
 #receiptView{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
 #receiptView[hidden]{display:none}
-#rBody{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
+#rBody,#rForm{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
+#rForm{border:0;margin:0;padding:0;min-width:0}
 .reading{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:22px;display:grid;gap:10px;justify-items:start}
 .reading h2{font-size:30px}
 .reading p{margin:0}
@@ -103,7 +104,7 @@ select{background:var(--ground);border:1px solid var(--line);border-radius:9px;p
 .ractions{display:flex;align-items:center;gap:4px}
 .ractions .num{font-weight:500}
 .spacer{flex:1}
-#rBody > .btn{justify-self:start}
+#rForm > .btn{justify-self:start}
 .sumtable{width:100%;min-width:0;border-collapse:collapse}
 .sumtable td{padding:6px 0;border-bottom:1px solid var(--line);font-family:var(--body);text-align:right}
 .sumtable td:first-child{text-align:left}

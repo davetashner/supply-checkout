@@ -29,10 +29,13 @@ import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { LogGroup } from "aws-cdk-lib/aws-logs";
 import { AaaaRecord, ARecord, RecordTarget } from "aws-cdk-lib/aws-route53";
 import { CloudFrontTarget } from "aws-cdk-lib/aws-route53-targets";
+import { Secret } from "aws-cdk-lib/aws-secretsmanager";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import {
+  DOWNGRADE_PENDING,
   LINKED_EMAIL,
+  LOG_CORRELATION_KEY_ENV,
   OPERATORS_GROUP,
   PROVIDER_EMAIL_VERIFIED,
   PROVIDER_EMAIL_VERIFIED_ATTRIBUTE,
@@ -132,10 +135,15 @@ export class IdentityStack extends SupplyCheckoutStack {
       //   domain), for the triggers. Cognito rewrites them at every provider sign-in.
       // - The email a native user had when a provider was linked to it, set only
       //   by the linking trigger: no IdP maps it and no client can write it.
+      // - A linked user's pending downgrade, set and cleared only by the
+      //   email_verified trigger (supply-checkout-0qr8): likewise never mapped
+      //   and never client-writable. Clients can read it, as every attribute:
+      //   the account API sees it through GetUser.
       customAttributes: {
         [PROVIDER_EMAIL_VERIFIED]: new StringAttribute({ mutable: true }),
         [PROVIDER_HOSTED_DOMAIN]: new StringAttribute({ mutable: true }),
         [LINKED_EMAIL]: new StringAttribute({ mutable: true }),
+        [DOWNGRADE_PENDING]: new StringAttribute({ mutable: true }),
       },
       accountRecovery: AccountRecovery.EMAIL_ONLY,
       userVerification: {
@@ -229,7 +237,8 @@ export class IdentityStack extends SupplyCheckoutStack {
       // maps must be in this list, so the IdPs don't map emailVerified; they
       // map their claim to custom:idp_email_verified, which the trigger reads
       // only at a provider sign-in, right after Cognito has rewritten it; the
-      // same goes for Google's hd in custom:idp_hd. Never custom:linked_email.
+      // same goes for Google's hd in custom:idp_hd. Never custom:linked_email
+      // or custom:downgrade_pending.
       writeAttributes: providers.length
         ? writable.withCustomAttributes(PROVIDER_EMAIL_VERIFIED, PROVIDER_HOSTED_DOMAIN)
         : writable,
@@ -457,7 +466,23 @@ export class IdentityStack extends SupplyCheckoutStack {
     const signInGuard = this.trigger("SignInGuard", "sign-in-guard", "Refuses password, email-code and passkey sign-ins by Google and Apple users");
     this.userPool.addTrigger(UserPoolOperation.PRE_AUTHENTICATION, signInGuard);
 
-    const emailVerified = this.trigger("EmailVerified", "email-verified", "Sets email_verified for Google and Apple users from the provider's own claim");
+    // The key for the log correlation handle in a failed downgrade's log
+    // (logCorrelation() in email-verified-handler.ts): generated in Secrets
+    // Manager and passed in with a dynamic reference resolved at deploy time,
+    // like the providers' secrets, so the function's role needs no access to
+    // Secrets Manager. Operators read it to find the user a handle names
+    // (docs/journeys.md, "Email verification not saved").
+    const correlationKey = new Secret(this, "LogCorrelationKey", {
+      description: "Key for the email_verified trigger's log correlation handles (an HMAC of the user's sub)",
+      generateSecretString: { passwordLength: 48, excludePunctuation: true },
+    });
+    Validations.of(correlationKey).acknowledge({
+      id: "AwsSolutions-SMG4",
+      reason: "Only a log correlation key, not a credential: rotating it would only stop older logs' handles matching. Rotate by hand (replace the secret and redeploy) if it leaks.",
+    });
+    const emailVerified = this.trigger("EmailVerified", "email-verified", "Sets email_verified for Google and Apple users from the provider's own claim", {
+      [LOG_CORRELATION_KEY_ENV]: correlationKey.secretValue.unsafeUnwrap(),
+    });
     this.userPool.addTrigger(UserPoolOperation.PRE_TOKEN_GENERATION, emailVerified);
     new Policy(this, "EmailVerifiedUpdateUser", {
       roles: [emailVerified.role as Role],
@@ -486,7 +511,7 @@ export class IdentityStack extends SupplyCheckoutStack {
   }
 
   /** A function from backend/src/identity/<name>.ts, with its own log group and a role that can write only to it. */
-  private trigger(id: string, name: string, description: string): NodejsFunction {
+  private trigger(id: string, name: string, description: string, environment: Record<string, string> = {}): NodejsFunction {
     const logGroup = new LogGroup(this, `${id}Logs`, { retention: LOG_RETENTION });
     const role = new Role(this, `${id}Role`, {
       assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
@@ -505,7 +530,7 @@ export class IdentityStack extends SupplyCheckoutStack {
       // Cognito waits 5 seconds for a trigger
       timeout: Duration.seconds(5),
       description,
-      environment: { NODE_OPTIONS: "--enable-source-maps" },
+      environment: { NODE_OPTIONS: "--enable-source-maps", ...environment },
       bundling,
     });
   }

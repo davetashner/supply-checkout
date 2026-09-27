@@ -59,6 +59,10 @@
 //   it fails the check above too. When the person verifies a new address with
 //   a Cognito code, that trigger records it here, and another provider can be
 //   linked for it.
+// - That user has no downgrade pending (`custom:downgrade_pending`): the
+//   email_verified trigger flagged a downgrade it couldn't finish, so its
+//   email may be a provider's rewrite even if it matches the record
+//   (supply-checkout-0qr8).
 //
 // Linking records the email in `custom:linked_email` (which no IdP maps and no
 // client can write) first, then calls AdminLinkProviderForUser. If recording
@@ -93,7 +97,7 @@
 import type { PreSignUpTriggerEvent } from "aws-lambda";
 import type { Observability } from "../observability/index.js";
 import type { LinkProviderForUser, ListUsersByEmail, PoolUser, UpdateUserAttributes } from "./cognito-admin.js";
-import { asciiLower, isFederatedOnly, linkedProviders, providerSaysVerified } from "./email-verified-handler.js";
+import { asciiLower, isDowngradePending, isFederatedOnly, linkedProviders, providerSaysVerified } from "./email-verified-handler.js";
 import {
   FEDERATED_PROVIDERS,
   type FederatedProvider,
@@ -169,7 +173,7 @@ export function authoritative(provider: FederatedProvider, email: string, hosted
 
 /** Why `user` can't have `provider` linked to it, if it can't. */
 function refusal(user: PoolUser, provider: FederatedProvider, email: string): Outcome | undefined {
-  if (user.status !== "CONFIRMED" || !user.enabled || user.attributes.email_verified !== "true") return "not-eligible";
+  if (user.status !== "CONFIRMED" || !user.enabled || user.attributes.email_verified !== "true" || isDowngradePending(user.attributes)) return "not-eligible";
   const linked = linkedProviders(user.attributes.identities);
   // Unreadable: don't guess that linking would succeed
   if (!linked || linked.includes(provider)) return "already-linked";

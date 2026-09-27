@@ -1094,6 +1094,10 @@ test.describe("stock commands", () => {
     await saveReceipt(page);
     await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
     expect(backend.doc("t1", "sheets", "s1").data.items.SKU1.out).toBe(5);
+    // Locked until it's saved: a changed line would be a new operation, adding the lines again
+    await expect(page.locator("#rLocked")).toBeVisible();
+    await expect(page.locator(".rline").first().getByLabel("Qty")).toBeDisabled();
+    await expect(page.getByRole("button", { name: "+ Add item" })).toBeDisabled();
     await hideToast(page);
     await page.getByRole("button", { name: "Try again" }).click();
     await expect(toast(page)).toHaveText("Saved to 1 sheet");
@@ -1127,6 +1131,9 @@ test.describe("stock commands", () => {
     await saveReceipt(page);
     await expect(toast(page)).toHaveText("Each line must be an object. The latest is showing.");
     await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+    // Refused, so nothing was saved: the review can be changed
+    await expect(page.locator("#rLocked")).toHaveCount(0);
+    await expect(page.locator(".rline").first().getByLabel("Qty")).toBeEnabled();
     backend.write("t1", "sheets", "s1", { ...usedState.seed["sheets/s1"], status: "closed" });
     await hideToast(page);
     await page.getByRole("button", { name: "Save", exact: true }).click();

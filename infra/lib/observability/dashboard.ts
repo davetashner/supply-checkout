@@ -96,7 +96,7 @@ export class OpsDashboard extends Construct {
     this.dashboard.addWidgets(
       businessGraph("J4: checkouts and returns", [BusinessMetric.Checkouts, BusinessMetric.Returns]),
       businessGraph("J4: writes and conflicts", [BusinessMetric.Writes, BusinessMetric.ConditionalWriteConflicts]),
-      businessGraph("J5: receipt reads", [BusinessMetric.ReceiptReads, BusinessMetric.ReceiptReadFailures]),
+      businessGraph("J5: receipt reads and lines", [BusinessMetric.ReceiptReads, BusinessMetric.ReceiptReadFailures, BusinessMetric.ReceiptLines]),
       businessGraph("J5: receipt tokens", [BusinessMetric.ReceiptTokens]),
     );
     this.dashboard.addWidgets(
