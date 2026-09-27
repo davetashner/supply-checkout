@@ -50,10 +50,13 @@ export const TEAM_PURGE_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "closedAt", "purge
 
 /**
  * The only attributes the team purge's one update may name: the META item's
- * key, the closure fields its condition reads, and the `purging` mark it
- * sets. Its IAM policy allows UpdateItem with exactly these.
+ * key, `purgeAfter` (its condition: a team has it exactly while it's closed,
+ * since closeTeam sets it with `closedAt` and reopenTeam removes both in one
+ * transaction), and the `purging` mark it sets. Its IAM policy allows
+ * UpdateItem with exactly these, so a buggy update can't close or reopen a
+ * team: `closedAt` isn't among them.
  */
-export const TEAM_PURGE_MARK_ATTRIBUTES = [PK, SK, "closedAt", "purgeAfter", "purging"] as const;
+export const TEAM_PURGE_MARK_ATTRIBUTES = [PK, SK, "purgeAfter", "purging"] as const;
 
 /**
  * The only attributes the stuck-import check may name or read (ADR 0005): the

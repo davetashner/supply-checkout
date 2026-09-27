@@ -732,7 +732,8 @@ describe("purging closed teams", () => {
       if (command === "QueryCommand" && input.Select !== "COUNT") expect(input).toMatchObject({ Select: "SPECIFIC_ATTRIBUTES", ProjectionExpression: expect.any(String) });
       if (command === "QueryCommand" && input.Select === "COUNT") expect(input).toMatchObject({ IndexName: "GSI1", ExpressionAttributeValues: expect.objectContaining({ ":pk": "TEAMS#CLOSED" }) });
       if (command === "GetCommand") expect(input.ProjectionExpression).toEqual(expect.any(String));
-      if (command === "UpdateCommand") expect(input).toMatchObject({ Key: { PK: "TEAM#team-a", SK: "META" }, UpdateExpression: "SET purging = :now" });
+      // Never closedAt: the mark can't close or reopen a team
+      if (command === "UpdateCommand") expect(input).toMatchObject({ Key: { PK: "TEAM#team-a", SK: "META" }, UpdateExpression: "SET purging = :now", ConditionExpression: "attribute_exists(purgeAfter) AND purgeAfter <= :now" });
       expect(input.ReturnValues).toBeUndefined();
       expect(["QueryCommand", "GetCommand", "DeleteCommand", "UpdateCommand"]).toContain(command);
     }

@@ -3046,7 +3046,6 @@
                   "dynamodb:Attributes": [
                     "PK",
                     "SK",
-                    "closedAt",
                     "purgeAfter",
                     "purging"
                   ]

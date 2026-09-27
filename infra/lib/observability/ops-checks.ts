@@ -170,8 +170,9 @@ export class OpsChecks extends Construct {
     this.teamPurge.addToRolePolicy(
       new PolicyStatement({
         sid: "MarkClosedTeamPurging",
-        // One update: `purging` on a team's META item, conditioned on its closure
-        // fields, before anything is deleted, so reopenTeam refuses it from then on
+        // One update: `purging` on a team's META item, conditioned on its purgeAfter,
+        // before anything is deleted, so reopenTeam refuses it from then on. Not
+        // closedAt: this grant can't close or reopen a team
         actions: ["dynamodb:UpdateItem"],
         resources: [tableArn],
         conditions: {

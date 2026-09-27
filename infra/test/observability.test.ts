@@ -495,11 +495,11 @@ describe("scheduled checks", () => {
       "ForAllValues:StringEquals": { "dynamodb:Attributes": attributes },
       StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
     });
-    // The purging mark: team partitions only, naming only the META item's key, closure fields and the mark
+    // The purging mark: team partitions only, naming only the META item's key, purgeAfter and the mark: never closedAt, so it can't close or reopen a team
     expect(mark?.Resource).toEqual(table);
     expect(mark?.Condition).toEqual({
       "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
-      "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "closedAt", "purgeAfter", "purging"] },
+      "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "purgeAfter", "purging"] },
       StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
     });
   });

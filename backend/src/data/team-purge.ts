@@ -136,7 +136,9 @@ export async function purgeTeam(db: Db, teamId: string, now: Date): Promise<Purg
         TableName: db.tableName,
         Key: keys.team(teamId),
         UpdateExpression: "SET purging = :now",
-        ConditionExpression: "attribute_exists(closedAt) AND purgeAfter <= :now",
+        // purgeAfter exists exactly while the team is closed (closeTeam and reopenTeam set and remove it
+        // with closedAt), so this is "still closed and due" without naming closedAt (TEAM_PURGE_MARK_ATTRIBUTES)
+        ConditionExpression: "attribute_exists(purgeAfter) AND purgeAfter <= :now",
         ExpressionAttributeValues: { ":now": now.toISOString() },
       }),
     )
