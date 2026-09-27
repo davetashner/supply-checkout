@@ -14,7 +14,9 @@
 #
 #   4. removes the local worktree and branch, and pulls main
 #   5. closes every bead named in a "Closes <bead-id>" line of the PR body
-#   6. if .beads/issues.jsonl is stale, suggests npm run beads:pr in one line
+#   6. if .beads/issues.jsonl is stale, suggests npm run beads:pr in one line,
+#      and if the backlog page (dist/backlog/index.html) is missing or older
+#      than the merge, suggests rebuilding and republishing it in one line
 #
 # Only one land runs at a time across every worktree and session: without a
 # merge queue, two lands at once keep pushing each other's PRs behind main. A
@@ -369,4 +371,19 @@ fi
 # One line, not a warning: refresh the export once after a batch of merges
 if ! node scripts/export-beads.mjs --check >/dev/null; then
   echo "The beads export is stale; after this batch of merges, refresh it with: npm run beads:pr"
+fi
+
+# The backlog page is gitignored, so it goes stale after every merge until the
+# lead rebuilds it (see CLAUDE.md). Older than the merge, or than now if
+# GitHub doesn't give the merge time.
+page="$main/dist/backlog/index.html"
+merged_at="$(gh pr view "$pr" --json mergedAt -q '.mergedAt // ""' 2>/dev/null || true)"
+if ! python3 - "$page" "$merged_at" <<'PY' 2>/dev/null
+import datetime, os, sys
+page, merged_at = sys.argv[1:]
+when = datetime.datetime.fromisoformat(merged_at.replace("Z", "+00:00")).timestamp() if merged_at else datetime.datetime.now().timestamp()
+sys.exit(0 if os.path.getmtime(page) >= when else 1)
+PY
+then
+  echo "The backlog page is out of date; rebuild it with npm run backlog:page and republish it"
 fi

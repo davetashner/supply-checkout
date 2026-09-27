@@ -43,6 +43,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `scripts/check-stray-files.mjs` | Blocks merge and patch leftovers (`*.orig`, `*.rej`) from being committed (pre-commit hook and CI). Tests: `scripts/check-stray-files.test.mjs` (`npm run test:scripts`). |
 | `scripts/check-region-strings.mjs` | Blocks AWS region names in `infra/`, `backend/` and `src/` outside `infra/lib/config.ts` (ADR 0010; pre-commit hook and CI). |
 | `scripts/export-beads.mjs` | Writes the beads backlog export without owner emails (`npm run beads:export`). |
+| `scripts/backlog-page.mjs` | Builds the backlog page (Upcoming and Completed tabs) from the beads database into the main checkout's `dist/backlog/index.html`, from the template `scripts/backlog-page.html`, with only an allowlist of bead fields and no emails (`npm run backlog:page`). The lead republishes it to the private backlog artifact after merges. Tests: `scripts/backlog-page.test.mjs` (`npm run test:scripts`). |
 | `scripts/beads-pr.sh` | Refreshes the committed beads export through a `chore:` PR and lands it (`npm run beads:pr`); does nothing if the export is current. |
 | `tests/` | Playwright end-to-end tests, run against an in-memory mock of the claude.ai runtime (`tests/mock-claude.js`), and the web build's runtime against a fake AWS backend (`tests/fake-aws.js`). |
 | `infra/` | The AWS CDK app (TypeScript) for the SaaS version. Its own npm package; see [Infrastructure](docs/infrastructure.md). |
@@ -127,7 +128,7 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | Lint and validate HTML | ESLint on `src/`, `demo/`, scripts and tests; builds all three and runs html-validate on each |
 | Lint GitHub workflows | actionlint |
 | No region names outside the config module | `scripts/check-region-strings.mjs`: fails on any AWS region name in `infra/`, `backend/` or `src/` outside `infra/lib/config.ts` (ADR 0010) |
-| Shell scripts | shellcheck on `scripts/*.sh`, the `land-pr.sh` and `beads-pr.sh` tests against a fake `gh`, and the Node tests for `publish-web.mjs`, `ops.mjs` and `check-stray-files.mjs` (`npm run test:scripts`) |
+| Shell scripts | shellcheck on `scripts/*.sh`, the `land-pr.sh` and `beads-pr.sh` tests against a fake `gh`, and the Node tests for `publish-web.mjs`, `ops.mjs`, `check-stray-files.mjs` and `backlog-page.mjs` (`npm run test:scripts`) |
 | Secret scan | gitleaks on commits: on a pull request, only the PR's own commits (base..head), so a flagged string on another branch doesn't fail every PR; on the merge queue, pushes to `main`, the nightly run and manual runs, every commit on every branch. Also `scripts/check-public-safety.mjs` on every file (AWS account and SSO identifiers, email addresses, AWS and Stripe keys, private keys), and `scripts/check-stray-files.mjs`, which fails on any tracked `*.orig` or `*.rej` file |
 | Dependency audit | `npm audit` fails on high-severity advisories; dependency review fails a PR that adds a moderate-or-worse vulnerable package |
 | CodeQL (javascript-typescript), CodeQL (actions) | CodeQL `security-extended` queries on the app, scripts, tests and workflows (`.github/workflows/codeql.yml`, which also runs weekly). Results go to the repository's code scanning alerts |

@@ -1,0 +1,228 @@
+<title>Supply Checkout Backlog</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#f3f5f4; --surface:#ffffff; --sunk:#e9eeec; --line:#d5ddda; --ink:#15201c; --muted:#5a6964;
+  --accent:#0d7a62; --accent-soft:#d6efe7; --warn:#a4660f; --warn-soft:#f7ead3; --crit:#b3261e; --crit-soft:#f8dedb;
+  --info:#2f5f8f; --info-soft:#dde8f3;
+  --display:"Big Shoulders Display","Arial Narrow",Impact,sans-serif;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  color-scheme:dark;
+  --bg:#111614; --surface:#171e1b; --sunk:#1d2622; --line:#2c3833; --ink:#e3ebe7; --muted:#95a59f;
+  --accent:#5cc9a7; --accent-soft:#18372d; --warn:#e0a54a; --warn-soft:#3a2d16; --crit:#f0877d; --crit-soft:#3d1c19;
+  --info:#8ab8e6; --info-soft:#1b2c3d;
+}}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#111614; --surface:#171e1b; --sunk:#1d2622; --line:#2c3833; --ink:#e3ebe7; --muted:#95a59f;
+  --accent:#5cc9a7; --accent-soft:#18372d; --warn:#e0a54a; --warn-soft:#3a2d16; --crit:#f0877d; --crit-soft:#3d1c19;
+  --info:#8ab8e6; --info-soft:#1b2c3d;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans);padding-inline:16px;padding-block:24px 64px}
+.wrap{max-width:1040px;margin:0 auto;display:flex;flex-direction:column;gap:20px}
+header{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:8px 24px}
+.mark{display:flex;align-items:center;gap:12px}
+.bars{display:flex;gap:2px;height:30px;align-items:stretch}
+.bars i{display:block;background:var(--ink);border-radius:1px}
+h1{font:800 34px/1 var(--display);letter-spacing:.04em;text-transform:uppercase;margin:0;text-wrap:balance}
+.gen{color:var(--muted);font-size:13px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.stat{background:var(--surface);padding:12px 14px;display:flex;flex-direction:column;gap:2px}
+.stat b{font:700 28px/1.1 var(--display);font-variant-numeric:tabular-nums;letter-spacing:.02em}
+.stat span{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+.meter{height:6px;border-radius:3px;background:var(--sunk);overflow:hidden;margin-top:6px}
+.meter i{display:block;height:100%;background:var(--accent)}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tabs button{font:600 14px var(--sans);color:var(--muted);background:none;border:0;border-bottom:3px solid transparent;padding:10px 14px;margin-bottom:-1px;cursor:pointer;display:flex;gap:8px;align-items:center}
+.tabs button[aria-selected="true"]{color:var(--ink);border-color:var(--accent)}
+.tabs .n{font:500 12px var(--mono);background:var(--sunk);border-radius:99px;padding:1px 8px;color:var(--muted)}
+button:focus-visible,summary:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.filters input,.filters select{font:14px var(--sans);color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}
+.filters input{flex:1 1 220px}
+.chip{font:500 13px var(--sans);border:1px solid var(--line);background:var(--surface);color:var(--muted);border-radius:99px;padding:6px 12px;cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+section.group{display:flex;flex-direction:column;gap:8px}
+section.group h2{font:700 20px/1.2 var(--display);letter-spacing:.05em;text-transform:uppercase;margin:12px 0 0;display:flex;gap:10px;align-items:baseline}
+section.group h2 small{font:400 13px var(--sans);letter-spacing:0;text-transform:none;color:var(--muted)}
+.list{background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+details{border-top:1px solid var(--line)}
+details:first-child{border-top:0}
+summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:46px 1fr auto;gap:4px 12px;padding:10px 14px;align-items:start}
+summary::-webkit-details-marker{display:none}
+summary:hover{background:var(--sunk)}
+.pri{font:500 12px var(--mono);border-radius:5px;padding:2px 0;text-align:center;margin-top:1px}
+.p0{background:var(--crit-soft);color:var(--crit)} .p1{background:var(--warn-soft);color:var(--warn)}
+.p2{background:var(--info-soft);color:var(--info)} .p3,.p4{background:var(--sunk);color:var(--muted)}
+.t{font-weight:500;overflow-wrap:anywhere}
+.meta{grid-column:2/4;display:flex;flex-wrap:wrap;gap:4px 10px;color:var(--muted);font-size:12.5px;align-items:center}
+.id{font:12px var(--mono)}
+.lab{font-size:11.5px;border:1px solid var(--line);border-radius:4px;padding:0 6px}
+.lab.mvp{border-color:var(--accent);color:var(--accent)}
+.side{font:12.5px var(--mono);color:var(--muted);white-space:nowrap;text-align:right}
+.side a{color:var(--accent)}
+.state{font:600 11px var(--sans);text-transform:uppercase;letter-spacing:.06em;border-radius:4px;padding:2px 6px}
+.s-prog{background:var(--accent-soft);color:var(--accent)} .s-ready{background:var(--info-soft);color:var(--info)}
+.s-blocked{background:var(--warn-soft);color:var(--warn)} .s-epic{background:var(--sunk);color:var(--ink)}
+.body{padding:4px 14px 14px 72px;display:flex;flex-direction:column;gap:10px;font-size:14px}
+.body h3{font:600 11.5px var(--sans);text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:0 0 2px}
+.body p{margin:0;white-space:pre-wrap;max-width:72ch;overflow-wrap:anywhere}
+.body .deps{font:12.5px var(--mono);color:var(--muted)}
+.empty{color:var(--muted);padding:18px 14px}
+@media (max-width:560px){
+  summary{grid-template-columns:40px 1fr}
+  .side{grid-column:2;text-align:left}
+  .meta{grid-column:2}
+  .body{padding-left:14px}
+  h1{font-size:28px}
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="mark">
+      <div class="bars" aria-hidden="true"><i style="width:3px"></i><i style="width:1px"></i><i style="width:2px"></i><i style="width:1px"></i><i style="width:4px"></i><i style="width:1px"></i><i style="width:2px"></i></div>
+      <h1>Supply Checkout Backlog</h1>
+    </div>
+    <div class="gen" id="gen"></div>
+  </header>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tab-upcoming" aria-selected="true" data-tab="upcoming">Upcoming <span class="n" id="n-upcoming"></span></button>
+    <button role="tab" id="tab-done" aria-selected="false" data-tab="done">Completed <span class="n" id="n-done"></span></button>
+  </div>
+
+  <div class="filters">
+    <input id="q" type="search" placeholder="Search titles, IDs, notes" aria-label="Search">
+    <select id="epic" aria-label="Epic"></select>
+    <button class="chip" id="f-mvp" aria-pressed="false">MVP only</button>
+    <button class="chip" id="f-epics" aria-pressed="false">Show epics</button>
+  </div>
+
+  <div id="view"></div>
+</div>
+
+<script>
+const DATA = /*__DATA__*/null;
+const REPO = "https://github.com/davetashner/supply-checkout/pull/";
+const items = DATA.items;
+const byId = new Map(items.map(i => [i.id, i]));
+const epics = items.filter(i => i.type === "epic").sort((a,b) => a.title.localeCompare(b.title));
+const state = { tab: "upcoming", q: "", epic: "", mvp: false, epicsShown: false };
+try { const s = JSON.parse(localStorage.getItem("backlog-view") || "{}"); Object.assign(state, s); } catch {}
+if (location.hash === "#completed") state.tab = "done";
+if (location.hash === "#upcoming") state.tab = "upcoming";
+const save = () => { try { localStorage.setItem("backlog-view", JSON.stringify(state)); } catch {} };
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const short = id => id.replace(/^supply-checkout-/, "");
+const day = iso => iso ? new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
+const dayKey = iso => iso ? iso.slice(0, 10) : "";
+const epicOf = i => { let p = i.parent; while (p && byId.get(p) && byId.get(p).type !== "epic") p = byId.get(p).parent; return p && byId.get(p); };
+const prLinks = s => (s.match(/#\d+/g) || []).filter((v, k, a) => a.indexOf(v) === k)
+  .map(n => `<a href="${REPO}${n.slice(1)}" target="_blank" rel="noopener">PR ${n}</a>`).join(" ");
+
+document.getElementById("gen").textContent = "Beads as of " + new Date(DATA.generated).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+
+// Summary
+const work = items.filter(i => i.type !== "epic");
+const mvp = work.filter(i => i.labels.includes("mvp"));
+const mvpDone = mvp.filter(i => i.status === "closed").length;
+const count = f => work.filter(f).length;
+const stats = [
+  ["Completed", count(i => i.status === "closed")],
+  ["In progress", count(i => i.status === "in_progress")],
+  ["Ready to start", count(i => i.status === "open" && i.ready)],
+  ["Waiting on others", count(i => i.status === "open" && !i.ready)],
+];
+document.getElementById("stats").innerHTML = stats.map(([l, v]) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join("") +
+  `<div class="stat"><b>${Math.round(100 * mvpDone / Math.max(1, mvp.length))}%</b><span>MVP done · ${mvpDone} of ${mvp.length}</span><div class="meter"><i style="width:${100 * mvpDone / Math.max(1, mvp.length)}%"></i></div></div>`;
+
+// Epic select
+const sel = document.getElementById("epic");
+sel.innerHTML = `<option value="">All epics</option>` + epics.map(e => `<option value="${e.id}">${esc(e.title)} (${e.childrenClosed}/${e.children})</option>`).join("");
+
+function matches(i) {
+  if (i.type === "epic" && !state.epicsShown) return false;
+  if (state.mvp && !i.labels.includes("mvp")) return false;
+  if (state.epic && i.id !== state.epic && (epicOf(i) || {}).id !== state.epic) return false;
+  if (state.q) {
+    const q = state.q.toLowerCase();
+    if (![i.id, i.title, i.description, i.notes, i.acceptance, i.reason, i.labels.join(" ")].join(" ").toLowerCase().includes(q)) return false;
+  }
+  return true;
+}
+
+function row(i, mode) {
+  const e = epicOf(i);
+  let badge = "";
+  if (i.type === "epic") badge = `<span class="state s-epic">Epic ${i.childrenClosed}/${i.children}</span>`;
+  else if (mode === "up") badge = i.status === "in_progress" ? `<span class="state s-prog">In progress</span>`
+    : i.ready ? `<span class="state s-ready">Ready</span>` : `<span class="state s-blocked">Blocked</span>`;
+  const side = mode === "done" ? (prLinks(i.reason) || day(i.closed)) : badge;
+  const labels = i.labels.map(l => `<span class="lab${l === "mvp" ? " mvp" : ""}">${esc(l)}</span>`).join("");
+  const blockers = i.blockedBy.map(b => `${short(b)} ${esc(byId.get(b).title)}`);
+  return `<details><summary>
+      <span class="pri p${i.priority}">P${i.priority}</span>
+      <span class="t">${esc(i.title)}</span>
+      <span class="side">${side}</span>
+      <span class="meta"><span class="id">${short(i.id)}</span>${e ? `<span>${esc(e.title)}</span>` : ""}${labels}${mode === "done" ? `<span>closed ${day(i.closed)}</span>` : ""}</span>
+    </summary><div class="body">
+      ${i.description ? `<div><h3>What</h3><p>${esc(i.description)}</p></div>` : ""}
+      ${i.acceptance.trim() ? `<div><h3>Done when</h3><p>${esc(i.acceptance.trim())}</p></div>` : ""}
+      ${i.notes ? `<div><h3>Notes</h3><p>${esc(i.notes)}</p></div>` : ""}
+      ${blockers.length ? `<div><h3>Waiting on</h3><p class="deps">${blockers.join("\n")}</p></div>` : ""}
+      ${i.reason ? `<div><h3>Closed</h3><p>${esc(i.reason)}</p></div>` : ""}
+    </div></details>`;
+}
+
+function group(title, note, list, mode) {
+  return `<section class="group"><h2>${title} <small>${list.length}${note ? " · " + note : ""}</small></h2>
+    <div class="list">${list.length ? list.map(i => row(i, mode)).join("") : `<div class="empty">Nothing here with these filters.</div>`}</div></section>`;
+}
+
+function render() {
+  document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === state.tab)));
+  document.getElementById("q").value = state.q;
+  sel.value = state.epic;
+  document.getElementById("f-mvp").setAttribute("aria-pressed", String(state.mvp));
+  document.getElementById("f-epics").setAttribute("aria-pressed", String(state.epicsShown));
+  const shown = items.filter(matches);
+  const byPri = (a, b) => a.priority - b.priority || a.title.localeCompare(b.title);
+  const up = shown.filter(i => i.status !== "closed");
+  const done = shown.filter(i => i.status === "closed").sort((a, b) => (b.closed || "").localeCompare(a.closed || ""));
+  document.getElementById("n-upcoming").textContent = up.length;
+  document.getElementById("n-done").textContent = done.length;
+  let html = "";
+  if (state.tab === "upcoming") {
+    html += group("In progress", "claimed by a session or agent", up.filter(i => i.status === "in_progress").sort(byPri), "up");
+    html += group("Next up", "unblocked, highest priority first", up.filter(i => i.status === "open" && (i.ready || i.type === "epic")).sort(byPri), "up");
+    html += group("Blocked", "waiting on another bead", up.filter(i => i.status === "open" && !i.ready && i.type !== "epic").sort(byPri), "up");
+  } else {
+    const days = new Map();
+    for (const i of done) { const k = dayKey(i.closed); if (!days.has(k)) days.set(k, []); days.get(k).push(i); }
+    for (const [k, list] of days) {
+      const label = k ? new Date(k + "T12:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }) : "Undated";
+      html += group(label, "", list, "done");
+    }
+    if (!done.length) html = group("Completed", "", [], "done");
+  }
+  document.getElementById("view").innerHTML = html;
+  save();
+}
+
+document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click", () => { state.tab = b.dataset.tab; render(); }));
+document.getElementById("q").addEventListener("input", e => { state.q = e.target.value; render(); });
+sel.addEventListener("change", e => { state.epic = e.target.value; render(); });
+document.getElementById("f-mvp").addEventListener("click", () => { state.mvp = !state.mvp; render(); });
+document.getElementById("f-epics").addEventListener("click", () => { state.epicsShown = !state.epicsShown; render(); });
+render();
+</script>
