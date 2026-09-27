@@ -370,22 +370,37 @@ aws dynamodb describe-table --profile supply-prod --region us-east-1 --table-nam
 npx cdk deploy supply-checkout-prod-us-east-1-identity supply-checkout-prod-us-east-1-api supply-checkout-prod-us-east-1-observability --profile supply-prod
 ```
 
-Teams created before GSI3 existed have no `GSI3PK`, so the ops routes don't list them until they're backfilled.
+Teams created before GSI3 existed have no `GSI3PK`, so the ops routes don't list them until they're backfilled (see "Backfills" below).
 
-**Stray index keys, before and after the first deploy.** Until this change, a document write or an item could carry a field named `GSI3PK` (documents now refuse every `GSI<n>PK` and `GSI<n>SK` field, `isReservedField` in `backend/src/data/documents.ts`). An item with a forged `GSI3PK` would put customer-chosen values in the operators' index. So before deploying the `data` stack that adds GSI3, and once more after, find every item with `GSI3PK` that isn't a team's `META`, a `MEMBER#` item or an `OPAUDIT#` item, and strip the keys:
+**Stray index keys, before and after the first deploy.** Until this change, a document write or an item could carry a field named `GSI3PK` (documents now refuse every `GSI<n>PK` and `GSI<n>SK` field, `isReservedField` in `backend/src/data/documents.ts`). An item with a forged `GSI3PK` would put customer-chosen values in the operators' index. So before deploying the `data` stack that adds GSI3, and once more after, run the `stray-ops-keys` backfill (below): it finds every item whose GSI3 keys aren't exactly what a team's `META` item, an owner's `MEMBER#` item or an operator audit event (`OPAUDIT#<teamId>`, `AUDIT#...`) should have, and removes them. Expect none. Any found is worth a look before it's removed: the dry run names each one's partition type and team ID (never user IDs or emails), and it came from a document write with that field. `MEMBER#` items with `GSI3PK` must be owners; the data layer removes it when an owner is demoted.
+
+### Backfills
+
+One-off migrations for items written before a change, in `backend/src/data/backfill.ts`, run with `npm run backfill` from `backend/` (`backend/scripts/backfill.ts`). They run with your SSO credentials, not a Lambda role: no Lambda may `Scan` the table, and `index.ts` doesn't export them. Each mode scans the whole table (strongly consistent), is a dry run unless given `--apply`, prints counts only (never emails, names or user IDs), and conditions every write so it never overwrites a newer value and never re-creates an item the purge deleted in the meantime. Each is idempotent: run it again and it finds nothing. Two guards against pointing it at the wrong place: `--table` must be an app table's name (`supply-checkout-<env>-app`), and `--profile` is required. Before it reads or writes anything, it asks STS which account the profile signs in to and prints it in its first line (`members on supply-checkout-prod-app in us-east-1 in account <account ID> (profile supply-prod)`): check it's the account you mean before you run it with `--apply`. With `--endpoint` (DynamoDB Local), it needs no profile and takes any table name. If one stops partway (a throttle, an expired session), run it again.
+
+| Mode | What it changes | Why |
+| --- | --- | --- |
+| `stray-ops-keys` | Removes `GSI3PK` and `GSI3SK` from items that shouldn't have them, or have other values than they should, on the condition that they're still the values it read (and, for a member, that they haven't been made an owner since). | Nothing customer-written may reach the operators' index (above). |
+| `ops-index` | Sets GSI3 keys on every team `META` item and owner `MEMBER#` item without them, on the condition that they're still absent (and that the member is still an owner). Closed teams too: they stay in the index until the purge deletes them, as a team made today does. | Teams made before PR #99 aren't in the ops team list. |
+| `members` | Sets the `members` count on every team `META` item without one, from a strongly consistent count of its `MEMBER#` items, on the condition that it's still absent. A membership change that commits after the count sets the count itself (`teamCounts`), so the backfill's write fails and it leaves that team alone. | Teams made before PR #93 have no count, so the join-during-deletion guard (PR #103) can't protect them until their next membership change. |
+
+Run them after the deploy that adds GSI3 is `ACTIVE`, in this order (`ops-index` after `stray-ops-keys`, so a team whose keys were wrong gets them back correctly), each as a dry run first:
 
 ```bash
-P="--profile supply-prod --region us-east-1"; T=supply-checkout-prod-app
-aws dynamodb scan $P --table-name $T --projection-expression "PK, SK" \
-  --filter-expression "(attribute_exists(GSI3PK) OR attribute_exists(GSI3SK)) AND SK <> :meta AND NOT begins_with(SK, :member) AND NOT begins_with(PK, :audit)" \
-  --expression-attribute-values '{":meta":{"S":"META"},":member":{"S":"MEMBER#"},":audit":{"S":"OPAUDIT#"}}' \
-  --output json > stray-gsi3.json
-jq -c '.Items[]' stray-gsi3.json | while read -r key; do
-  aws dynamodb update-item $P --table-name $T --key "$key" --update-expression "REMOVE GSI3PK, GSI3SK"
-done
+aws sso login --profile supply-prod
+cd backend && npm ci
+B="--table supply-checkout-prod-app --region us-east-1 --profile supply-prod"
+npm run backfill -- stray-ops-keys $B            # dry run: expect 0; check the account in the first line
+npm run backfill -- stray-ops-keys $B --apply    # only if it found some, after looking at them
+npm run backfill -- ops-index $B                 # dry run: team META and owner MEMBER items without keys
+npm run backfill -- ops-index $B --apply
+npm run backfill -- members $B                   # dry run: teams without a count
+npm run backfill -- members $B --apply
+npm run backfill -- ops-index $B && npm run backfill -- members $B   # both find 0
+npm run ops -- teams                             # every team is listed
 ```
 
-Expect none. Any found is worth a look (whose team, and when it was written) before it's removed: it came from a document write with that field. `MEMBER#` items with `GSI3PK` must be owners; the data layer removes it when an owner is demoted.
+A line such as `changed by something else first, left alone: 1` is a race the condition caught (a membership change, a promotion, a purge): the item already has a current value, or no longer exists. `keys that aren't valid IDs, left alone` shouldn't happen; such an item is worth a look. The tests (`backend/test/backfill.test.ts`) run every mode, its races and the CLI against DynamoDB Local.
 
 The role's IAM conditions (`dynamodb:Attributes`, `dynamodb:Select`, `dynamodb:LeadingKeys` patterns) aren't enforced by DynamoDB Local, so after the first deploy, and after any change to the role or to `backend/src/data/operator.ts`, list teams, read a test team, comp it and end the comp, and confirm `/aws/lambda/<ops function>` logs no `AccessDeniedException`.
 
