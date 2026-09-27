@@ -20,7 +20,7 @@ import {
 import { cognitoLinking, type LinkProviderForUser, type ListUsersByEmail, type PoolUser, type UpdateUserAttributes } from "../src/identity/cognito-admin.js";
 import { emailVerifiedFrom } from "../src/api/cognito-user.js";
 import { createEmailVerifiedHandler, LINKED_FAILED_ERROR } from "../src/identity/email-verified-handler.js";
-import { LINKED_EMAIL_ATTRIBUTE, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE, PROVIDER_HOSTED_DOMAIN_ATTRIBUTE } from "../src/identity/names.js";
+import { DOWNGRADE_PENDING_ATTRIBUTE, LINKED_EMAIL_ATTRIBUTE, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE, PROVIDER_HOSTED_DOMAIN_ATTRIBUTE } from "../src/identity/names.js";
 import { createSignInGuardHandler } from "../src/identity/sign-in-guard-handler.js";
 import type { Observability } from "../src/observability/index.js";
 import { REGION } from "./helpers.js";
@@ -506,11 +506,11 @@ describe("signing in with Google or Apple to an existing account", () => {
 
   function fakePool(initial: User[]) {
     const users = new Map(initial.map((u) => [u.username, u]));
-    /** Set to make the next AdminUpdateUserAttributes calls fail, as a throttled Cognito would. */
-    const broken = { writes: false };
+    /** Set to make the next AdminUpdateUserAttributes calls fail (all, or those `writes` picks), as a throttled Cognito would. */
+    const broken: { writes: boolean | ((attributes: Readonly<Record<string, string>>) => boolean) } = { writes: false };
     const listUsersByEmail: ListUsersByEmail = async (_pool, email) => ({ users: [...users.values()].filter((u) => u.attributes.email === email), more: false });
     const updateUserAttributes: UpdateUserAttributes = async (_pool, username, attributes) => {
-      if (broken.writes) throw new Error("AdminUpdateUserAttributes failed: 400 TooManyRequestsException");
+      if (typeof broken.writes === "function" ? broken.writes(attributes) : broken.writes) throw new Error("AdminUpdateUserAttributes failed: 400 TooManyRequestsException");
       const user = users.get(username);
       if (!user) throw new Error("AdminUpdateUserAttributes failed: 400 UserNotFoundException");
       Object.assign(user.attributes, attributes);
@@ -527,7 +527,7 @@ describe("signing in with Google or Apple to an existing account", () => {
     /** The pre token generation trigger, as Cognito runs it before issuing tokens: its outcome, or the error that fails the sign-in. */
     async function token(user: User, triggerSource: string): Promise<{ outcome?: unknown; error?: string }> {
       const logs: Logged[] = [];
-      const emailVerified = createEmailVerifiedHandler({ updateUserAttributes, obs: fakeObservability(logs) });
+      const emailVerified = createEmailVerifiedHandler({ updateUserAttributes, obs: fakeObservability(logs), sleep: async () => {} });
       const event = { triggerSource, userPoolId: POOL, userName: user.username, request: { userAttributes: { ...user.attributes, "cognito:user_status": user.status } }, response: {} };
       try {
         await emailVerified(event as unknown as PreTokenGenerationTriggerEvent);
@@ -657,6 +657,57 @@ describe("signing in with Google or Apple to an existing account", () => {
     // The next provider sign-in unverifies it
     expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, GMAIL, "true")).outcome).toBe("linked-unverified");
     expect(user.attributes.email_verified).toBe("false");
+  });
+
+  // supply-checkout-0qr8: the flag went through, the downgrade didn't (twice)
+  it("never records a rewritten address after a failed downgrade, and links no one into it, until a sign-in downgrades it", async () => {
+    const attacker = "8f0e5b1c-0000-4000-8000-00000000000a";
+    const pool = fakePool([existing(ICLOUD, attacker)]);
+    await pool.providerSignIn("SignInWithApple", APPLE_ID, ICLOUD, "true");
+    const user = pool.users.get(attacker) as User;
+    pool.broken.writes = (attributes) => attributes.email_verified === "false";
+    expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, GMAIL, "true")).error).toBe(LINKED_FAILED_ERROR);
+    expect(user.attributes).toMatchObject({ email: GMAIL, email_verified: "true", [LINKED_EMAIL_ATTRIBUTE]: ICLOUD, [DOWNGRADE_PENDING_ATTRIBUTE]: "1" });
+    // Refreshes and API sign-ins from the person's other sessions record nothing, even with Cognito working again
+    pool.broken.writes = false;
+    for (const source of ["TokenGeneration_RefreshTokens", "TokenGeneration_Authentication"]) {
+      expect(await pool.token(user, source)).toEqual({ outcome: "linked-downgrade-pending" });
+    }
+    expect(user.attributes[LINKED_EMAIL_ATTRIBUTE]).toBe(ICLOUD);
+    expect(apiVerified(user)).toBe(false);
+    // Even if the address had been recorded (say, by a refresh in the moment before the flag), the flag keeps it untrusted and unlinkable
+    user.attributes[LINKED_EMAIL_ATTRIBUTE] = GMAIL;
+    expect(apiVerified(user)).toBe(false);
+    const victim = await pool.providerSignIn("Google", GOOGLE_ID, GMAIL, "true", null);
+    expect(victim.outcome).toBe("not-eligible");
+    expect(victim.user?.username).toBe(`google_${GOOGLE_ID}`);
+    expect(JSON.parse(user.attributes.identities ?? "[]")).toHaveLength(1);
+    // The next Managed Login sign-in downgrades it and clears the flag
+    expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, GMAIL, "true")).outcome).toBe("linked-unverified");
+    expect(user.attributes).toMatchObject({ email_verified: "false", [DOWNGRADE_PENDING_ATTRIBUTE]: "" });
+    // Proven with a code, the address is recorded at the next refresh
+    pool.verifyWithCode(user, GMAIL);
+    user.attributes[LINKED_EMAIL_ATTRIBUTE] = ICLOUD;
+    expect(await pool.token(user, "TokenGeneration_RefreshTokens")).toEqual({ outcome: "linked-recorded" });
+    expect(apiVerified(user)).toBe(true);
+  });
+
+  it("lets an operator's fix (email_verified false, linked email cleared) end a pending downgrade", async () => {
+    const pool = fakePool([existing(ICLOUD)]);
+    await pool.providerSignIn("SignInWithApple", APPLE_ID, ICLOUD, "true");
+    const user = pool.users.get(NATIVE) as User;
+    pool.broken.writes = (attributes) => attributes.email_verified === "false";
+    expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, GMAIL, "true")).error).toBe(LINKED_FAILED_ERROR);
+    pool.broken.writes = false;
+    // The runbook
+    user.attributes.email_verified = "false";
+    user.attributes = Object.fromEntries(Object.entries(user.attributes).filter(([name]) => name !== LINKED_EMAIL_ATTRIBUTE));
+    expect(await pool.token(user, "TokenGeneration_RefreshTokens")).toEqual({ outcome: "linked-cleared" });
+    expect(user.attributes[DOWNGRADE_PENDING_ATTRIBUTE]).toBe("");
+    expect(apiVerified(user)).toBe(false);
+    pool.verifyWithCode(user, GMAIL);
+    expect(await pool.token(user, "TokenGeneration_RefreshTokens")).toEqual({ outcome: "linked-recorded" });
+    expect(apiVerified(user)).toBe(true);
   });
 
   it("gives an old Google account still carrying a work address its own account, not the address's current owner's", async () => {
