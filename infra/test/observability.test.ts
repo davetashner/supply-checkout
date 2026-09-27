@@ -412,22 +412,30 @@ describe("scheduled checks", () => {
     expect(found.map((s) => s.Action)).toEqual([
       ["logs:CreateLogStream", "logs:PutLogEvents"],
       "dynamodb:Query",
-      ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:DeleteItem"],
-      ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"],
+      "dynamodb:Query",
+      ["dynamodb:GetItem", "dynamodb:DeleteItem"],
+      ["kms:Decrypt", "kms:DescribeKey"],
     ]);
     const attributes = ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "purgeAfter", "stripeCustomerId", "teamId"];
-    const [, index, items] = found as Record<string, unknown>[];
+    const [, index, query, items] = found as Record<string, unknown>[];
     expect(index?.Condition).toEqual({
       "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAMS#CLOSED"], "dynamodb:Attributes": attributes },
       StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
     });
-    expect(items?.Resource).toEqual({
+    const table = {
       "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]],
+    };
+    expect(query?.Resource).toEqual(table);
+    expect(query?.Condition).toEqual({
+      "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*", "USER#*", "STRIPE#*"] },
+      "ForAllValues:StringEquals": { "dynamodb:Attributes": attributes },
+      StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
     });
+    expect(items?.Resource).toEqual(table);
     expect(items?.Condition).toEqual({
       "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*", "USER#*", "STRIPE#*"] },
       "ForAllValues:StringEquals": { "dynamodb:Attributes": attributes },
-      StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE", "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
     });
   });
 

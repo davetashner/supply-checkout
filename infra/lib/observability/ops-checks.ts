@@ -41,7 +41,7 @@ export interface OpsChecksProps {
  * - `teamPurge` isn't a check: every PURGE_EVERY_HOURS it deletes the closed
  *   teams whose read-only period has ended (backend/src/ops/team-purge-handler.ts).
  *   It may Query only GSI1's closed-teams partition there, and on the table
- *   only GetItem, Query and DeleteItem on `TEAM#`, `USER#` and `STRIPE#`
+ *   only GetItem, Query (SPECIFIC_ATTRIBUTES) and DeleteItem on `TEAM#`, `USER#` and `STRIPE#`
  *   partitions, naming only TEAM_PURGE_ATTRIBUTES (keys, the closure fields,
  *   the Stripe customer and link): it deletes whole items without reading
  *   documents, emails or names. The partitions are wildcards because it acts
@@ -126,24 +126,39 @@ export class OpsChecks extends Construct {
         },
       }),
     );
+    const purgePartitions = { "dynamodb:LeadingKeys": ["TEAM#*", "USER#*", "STRIPE#*"] };
+    this.teamPurge.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ListClosedTeamKeys",
+        // A team partition's keys, and nothing else: the Select must be explicit
+        actions: ["dynamodb:Query"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": purgePartitions,
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...TEAM_PURGE_ATTRIBUTES] },
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
     this.teamPurge.addToRolePolicy(
       new PolicyStatement({
         sid: "DeleteClosedTeamItems",
-        // GetItem reads a team's closure fields, Query its partition's keys
-        // (and nothing else, dynamodb:Attributes), DeleteItem removes each item
-        actions: ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:DeleteItem"],
+        // GetItem reads a team's closure fields (dynamodb:Attributes), DeleteItem
+        // removes each item, returning nothing
+        actions: ["dynamodb:GetItem", "dynamodb:DeleteItem"],
         resources: [tableArn],
         conditions: {
-          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*", "USER#*", "STRIPE#*"] },
+          "ForAllValues:StringLike": purgePartitions,
           "ForAllValues:StringEquals": { "dynamodb:Attributes": [...TEAM_PURGE_ATTRIBUTES] },
-          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE", "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
         },
       }),
     );
     this.teamPurge.addToRolePolicy(
       new PolicyStatement({
         sid: "TableKeyThroughDynamoDb",
-        actions: ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"],
+        // Reads and deletes only: nothing it sends is encrypted, so no Encrypt or GenerateDataKey
+        actions: ["kms:Decrypt", "kms:DescribeKey"],
         resources: [tableKey],
         conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
       }),

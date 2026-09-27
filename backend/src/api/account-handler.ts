@@ -464,14 +464,21 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const left = await Promise.allSettled(
       teams.map(async ({ db, ctx, team, alone }) => {
         if (alone) {
-          const { closedNow } = await closeTeam(db, ctx, { confirmName: team.name }, at);
+          // Only while they're still alone in it: someone who joined meanwhile makes it a ConflictError
+          const { closedNow } = await closeTeam(db, ctx, { confirmName: team.name, onlyMember: true }, at);
           if (closedNow) obs.count(BusinessMetric.TeamsClosed, 1, { teamId: ctx.teamId });
         }
         await removeMember(db, ctx, userId, { reason: "account_deleted" }, at);
       }),
     );
     const failed = left.find((r) => r.status === "rejected");
-    if (failed) throw (failed as PromiseRejectedResult).reason;
+    if (failed) {
+      // Not stuck unable to join for the mark's 30 days: a retry marks the account again
+      // before it lists the teams, so taking the mark away here loses nothing. (The
+      // teams already left stay left.)
+      await cancelAccountDeletion(own, userId);
+      throw (failed as PromiseRejectedResult).reason;
+    }
     const invites = email ? await listInvitesForEmail(own, email, at, { includeExpired: true }) : [];
     for (const invite of invites) await deleteInviteForEmail(dbFor({ userId, teamId: invite.teamId, invitee }), email as string, invite);
     const rowsDeleted = await deleteUserRows(own, userId);

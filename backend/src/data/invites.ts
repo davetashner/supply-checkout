@@ -7,7 +7,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
-import { ConflictError, InvalidInputError, LimitReachedError, NotFoundError, TeamFullError, conflictOnConditionFailure } from "./errors.js";
+import { ConflictError, InvalidInputError, LimitReachedError, NotFoundError, TeamClosedError, TeamFullError, conflictOnConditionFailure } from "./errors.js";
 import { gsi1, gsi2, id, inviteePartition, keys, prefixes, strip, teamPartition } from "./keys.js";
 import {
   type Invite,
@@ -113,6 +113,9 @@ async function writeInvite(
           countOne(db.tableName, keys.invitesSent(ctx.teamId, day), INVITES_PER_TEAM_PER_DAY, epoch),
           countOne(db.tableName, keys.invitesToAddress(limitKey, day), INVITES_PER_ADDRESS_PER_DAY, epoch),
           countOne(db.tableName, keys.invitesFromTeamToAddress(ctx.teamId, limitKey, day), INVITES_PER_TEAM_ADDRESS_PER_DAY, epoch),
+          // Still open when it commits: closeTeam deletes the invites it finds, so one
+          // written after that would outlive the closure
+          { ConditionCheck: { TableName: db.tableName, Key: keys.team(ctx.teamId), ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(closedAt)" } },
         ],
       }),
     );
@@ -122,6 +125,7 @@ async function writeInvite(
     // Either counter at its limit. One message for both, so an owner can't
     // learn how many invites another team sent the address.
     if (codes && [1, 2, 3].some((i) => codes[at + i] === "ConditionalCheckFailed")) throw new LimitReachedError(TOO_MANY_INVITES);
+    if (codes && codes[at + 4] === "ConditionalCheckFailed") throw new TeamClosedError("This team was closed. It's read-only until its data is deleted.");
     if (codes && at > 0 && codes[0] === "ConditionalCheckFailed") throw new NotFoundError("This invite was accepted or revoked just now");
     return conflictOnConditionFailure("Someone else changed this team's invites just now; try again")(error);
   }

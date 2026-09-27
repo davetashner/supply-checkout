@@ -90,6 +90,21 @@ describe.skipIf(!endpoint)("closing teams and deleting accounts (DynamoDB Local)
     expect(again).toEqual({ team: closed, closedNow: false });
   });
 
+  it("closes for a lone member only while they're still alone, and refuses an invite written after the closure", async () => {
+    const now = new Date();
+    const { teamId, owner } = await team(now);
+    // Two members: an account deletion's close must not go through
+    await expect(closeTeam(table.db, owner, { confirmName: "Echo Cleaning", onlyMember: true }, now)).rejects.toBeInstanceOf(ConflictError);
+    expect((await getTeam(table.db, owner)).closedAt).toBeUndefined();
+    const soloId = newUser();
+    const solo = await createTeam(table.db, { userId: soloId }, { name: "Solo" }, now);
+    expect((await closeTeam(table.db, solo.context, { confirmName: "Solo", onlyMember: true }, now)).closedNow).toBe(true);
+    // An owner's context from before the closure can't add an invite after it
+    await closeTeam(table.db, owner, { confirmName: "Echo Cleaning" }, now);
+    await expect(createInvite(table.db, owner, { email: `after.${teamId}@example.com`, role: "viewer" }, now)).rejects.toBeInstanceOf(TeamClosedError);
+    expect((await partition(`TEAM#${teamId}`)).filter((i) => String(i.SK).startsWith("INVITE#"))).toEqual([]);
+  });
+
   it("refuses to close for an owner demoted since their context was issued", async () => {
     const now = new Date();
     const { teamId, owner, crewId } = await team(now);

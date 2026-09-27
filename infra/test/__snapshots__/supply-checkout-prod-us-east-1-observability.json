@@ -2584,9 +2584,53 @@
               "Sid": "ClosedTeamsIndexOnly"
             },
             {
+              "Action": "dynamodb:Query",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "TEAM#*",
+                    "USER#*",
+                    "STRIPE#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "GSI1PK",
+                    "GSI1SK",
+                    "closedAt",
+                    "purgeAfter",
+                    "stripeCustomerId",
+                    "teamId"
+                  ]
+                },
+                "StringEquals": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "ListClosedTeamKeys"
+            },
+            {
               "Action": [
                 "dynamodb:GetItem",
-                "dynamodb:Query",
                 "dynamodb:DeleteItem"
               ],
               "Condition": {
@@ -2610,8 +2654,7 @@
                   ]
                 },
                 "StringEqualsIfExists": {
-                  "dynamodb:ReturnValues": "NONE",
-                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                  "dynamodb:ReturnValues": "NONE"
                 }
               },
               "Effect": "Allow",
@@ -2636,9 +2679,7 @@
             {
               "Action": [
                 "kms:Decrypt",
-                "kms:DescribeKey",
-                "kms:Encrypt",
-                "kms:GenerateDataKey"
+                "kms:DescribeKey"
               ],
               "Condition": {
                 "StringEquals": {

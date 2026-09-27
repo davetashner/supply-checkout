@@ -11,7 +11,7 @@ import type { CognitoUser } from "../src/api/cognito-user.js";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, DATA_ROUTES, routeKey } from "../src/api/routes.js";
-import { CLOSED_TEAM_RETENTION_DAYS, hashEmail, liveUpdateRecipients, purgeTeam, startAccountDeletion } from "../src/data/index.js";
+import { authorizeTeam, CLOSED_TEAM_RETENTION_DAYS, createInvite, hashEmail, liveUpdateRecipients, purgeTeam, recordReceiptRead, startAccountDeletion, TeamClosedError, updateTeam } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { PURGE_BUDGET_MS } from "../src/ops/names.js";
 import { createTeamPurgeHandler } from "../src/ops/team-purge-handler.js";
@@ -205,6 +205,30 @@ describe("closing a team", () => {
     expect(meta()).toMatchObject({ members: 2, owners: 1 });
   });
 
+  it("refuses a CSV import, a rename and a receipt read", async () => {
+    await close();
+    const imported = await data("POST", "/teams/team-a/imports", OWNER, { importId: crypto.randomUUID(), csv: "name,price\nRags,1.5\n" });
+    expect(imported).toMatchObject({ status: 403, body: { error: { code: "permission_denied", reason: "team_closed" } } });
+    expect(partition("TEAM#team-a").filter((i) => String(i.SK).startsWith("IMPORT#") || i.name === "Rags")).toEqual([]);
+    const owner = await authorizeTeam(table.db("team-a"), OWNER, "team-a");
+    await expect(updateTeam(table.db("team-a"), owner, { name: "Renamed" }, 2)).rejects.toBeInstanceOf(TeamClosedError);
+    const pat = await authorizeTeam(table.db("team-a"), PAT, "team-a");
+    await expect(recordReceiptRead(table.db("team-a"), pat, "2026-09", 200)).rejects.toBeInstanceOf(TeamClosedError);
+    expect(meta()).toMatchObject({ name: "Team team-a", version: 2 });
+    expect(table.get("TEAM#team-a", "USAGE#2026-09")).toBeUndefined();
+  });
+
+  it("refuses an invite whose check passed before the team closed, if it commits after", async () => {
+    const owner = await authorizeTeam(table.db("team-a"), OWNER, "team-a");
+    // The team closes between the invite's checks and its transaction
+    table.beforeTransactWrite = () => {
+      table.put({ ...(meta() as Record<string, unknown>), closedAt: new Date(NOW).toISOString() });
+      table.beforeTransactWrite = undefined;
+    };
+    await expect(createInvite(table.db(undefined), owner, { email: "racer@example.com", role: "viewer" }, new Date(NOW))).rejects.toBeInstanceOf(TeamClosedError);
+    expect(partition("TEAM#team-a").filter((i) => i.email === "racer@example.com")).toEqual([]);
+  });
+
   it("lets its last owner leave, moving both counts", async () => {
     await close();
     expect((await call("DELETE", `/teams/team-a/members/${PAT}`, PAT)).status).toBe(204);
@@ -319,6 +343,37 @@ describe("deleting an account", () => {
     // team-b has another owner, so the caller just left it
     expect(meta("team-b")).toMatchObject({ owners: 1, members: 2 });
     expect(meta("team-b")?.closedAt).toBeUndefined();
+  });
+
+  it("doesn't close a team someone joined after the caller's check, and doesn't leave the account blocked", async () => {
+    team("team-solo", { [SOLO]: "owner" });
+    // Sam accepts an invite between the deletion's read of the team and its closing
+    table.beforeTransactWrite = () => {
+      member("team-solo", "user-sam", "contributor");
+      table.put({ ...(meta("team-solo") as Record<string, unknown>), members: 2 });
+      table.beforeTransactWrite = undefined;
+    };
+    expect(await deleteAccount(SOLO)).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
+    expect(meta("team-solo")?.closedAt).toBeUndefined();
+    expect(table.get("TEAM#team-solo", `MEMBER#${SOLO}`)).toBeDefined();
+    expect(table.get(`USER#${SOLO}`, "DELETING")).toBeUndefined();
+    expect(deleted).toEqual([]);
+    // Now they're the only owner of a team with someone else in it
+    expect((await deleteAccount(SOLO)).body.error.reason).toBe("last_owner");
+  });
+
+  it("takes the mark away when a team refuses the caller's leaving after the check (the other owner stepped down meanwhile)", async () => {
+    await close("team-a");
+    table.beforeTransactWrite = () => {
+      table.put({ ...(table.get("TEAM#team-b", `MEMBER#${CO_OWNER}`) as Record<string, unknown>), role: "viewer" });
+      table.put({ ...(meta("team-b") as Record<string, unknown>), owners: 1 });
+      table.beforeTransactWrite = undefined;
+    };
+    const res = await deleteAccount(OWNER);
+    expect(res).toMatchObject({ status: 409, body: { error: { reason: "last_owner" } } });
+    expect(table.get(`USER#${OWNER}`, "DELETING")).toBeUndefined();
+    expect(table.get("TEAM#team-b", `MEMBER#${OWNER}`)).toBeDefined();
+    expect(deleted).toEqual([]);
   });
 
   it("names a single blocking team on its own", async () => {

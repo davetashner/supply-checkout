@@ -230,13 +230,21 @@ const confirmation = (value: string) => value.normalize("NFKC").trim().toLocaleL
  * deletes all of it once `purgeAfter` passes (team-purge.ts). Members keep
  * read access meanwhile, so owners can export the data.
  *
+ * With `onlyMember`, the closure is also conditioned on the team still having one
+ * member (account deletion closing a team its caller is alone in).
+ *
  * Idempotent: closing a closed team changes nothing and returns it as it is,
  * with `closedNow: false`, after deleting any invites still there (a retry
  * after the invites step failed part-way). The Stripe subscription isn't
  * cancelled here yet: billing (supply-checkout-x0l) does that from the
  * team's `closedAt`.
  */
-export async function closeTeam(db: Db, ctx: TeamContext, input: { readonly confirmName: string }, now = new Date()): Promise<{ team: Team; closedNow: boolean }> {
+export async function closeTeam(
+  db: Db,
+  ctx: TeamContext,
+  input: { readonly confirmName: string; readonly onlyMember?: boolean },
+  now = new Date(),
+): Promise<{ team: Team; closedNow: boolean }> {
   writable(db, ctx, "owner", { whileClosed: true });
   if (typeof input.confirmName !== "string") throw new InvalidInputError(CONFIRM);
   const current = await getTeam(db, ctx);
@@ -246,6 +254,11 @@ export async function closeTeam(db: Db, ctx: TeamContext, input: { readonly conf
     if (confirmation(input.confirmName) !== confirmation(current.name)) throw new InvalidInputError(CONFIRM);
     const closedAt = now.toISOString();
     const purgeAfter = new Date(now.getTime() + CLOSED_TEAM_RETENTION_DAYS * DAY_MS).toISOString();
+    // With `onlyMember` (account deletion closing a team its caller is alone in): only
+    // while the count still says one member, so someone who joined since the caller's
+    // read keeps an open team (ConflictError). A team from before the count has none
+    // to condition on.
+    const alone = input.onlyMember === true && typeof current.members === "number";
     await connection(db)
       .doc.send(
         new TransactWriteCommand({
@@ -255,8 +268,8 @@ export async function closeTeam(db: Db, ctx: TeamContext, input: { readonly conf
                 TableName: db.tableName,
                 Key: keys.team(ctx.teamId),
                 UpdateExpression: "SET closedAt = :at, closedBy = :by, purgeAfter = :purge, GSI1PK = :gpk, GSI1SK = :gsk, #version = #version + :one",
-                ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(closedAt)",
-                ExpressionAttributeNames: { "#version": "version" },
+                ConditionExpression: `attribute_exists(PK) AND attribute_not_exists(closedAt)${alone ? " AND #members = :one" : ""}`,
+                ExpressionAttributeNames: { "#version": "version", ...(alone ? { "#members": "members" } : {}) },
                 ExpressionAttributeValues: {
                   ":at": closedAt,
                   ":by": ctx.userId,
