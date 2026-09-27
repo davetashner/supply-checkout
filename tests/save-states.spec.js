@@ -102,6 +102,47 @@ test("a checkout that didn't save keeps what was entered, says so, and saves onc
   expect((await doc(page, "sheets/s1")).items.NEW1).toMatchObject({ name: "Wax", price: 4.25, out: 3 });
 });
 
+// A save whose answer was lost: the artifact's write carries a mark for the action, which Try
+// again finds, so it counts once (src/moves.js). The web build's commands do this with operation
+// IDs (tests/aws-save-states.spec.js).
+const loseWrites = (page, prefix) => mock(page, (p) => { window.__mock.loseWrites = p; }, prefix);
+test("a checkout whose answer was lost counts once on Try again, on the line and in storage", async ({ page }) => {
+  // The line already has as many marks as it keeps: the oldest goes
+  const old = Array.from({ length: 10 }, (_, i) => `o${i}`);
+  const s1 = usedState.seed["sheets/s1"];
+  await openEcho(page, { ...usedState, seed: { ...usedState.seed, "sheets/s1": { ...s1, items: { ...s1.items, SKU1: { ...s1.items.SKU1, ops: old } } } } });
+  await enterBarcode(page, "SKU1");
+  await loseWrites(page, "sheets/");
+  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+  const lost = (await doc(page, "sheets/s1")).items.SKU1;
+  expect(lost.out).toBe(4);
+  expect(lost.ops).toEqual([...old.slice(1), expect.any(String)]);
+  await loseWrites(page, null);
+  await hideToast(page);
+  await modal(page).getByRole("button", { name: "Try again" }).click();
+  await expect(toast(page)).toHaveText("Checked out 1 × Paper towels, 6 roll");
+  await expect(lineRow(page, "Paper towels").locator("td").nth(2)).toHaveText("4");
+  await expect.poll(() => doc(page, "products/SKU1").then((p) => p.stock)).toBe(9);
+  expect((await doc(page, "sheets/s1")).items.SKU1).toEqual(lost);
+});
+
+test("a return whose answer was lost counts once on Try again", async ({ page }) => {
+  await openEcho(page);
+  await page.getByRole("button", { name: "Return", exact: true }).click();
+  await enterBarcode(page, "SKU1");
+  await loseWrites(page, "sheets/");
+  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await expect(modal(page).getByRole("button", { name: "Try again" })).toBeVisible();
+  expect((await doc(page, "sheets/s1")).items.SKU1.returned).toBe(2);
+  await loseWrites(page, null);
+  await hideToast(page);
+  await modal(page).getByRole("button", { name: "Try again" }).click();
+  await expect(toast(page)).toHaveText("1 returned · 2 of 3 back");
+  await expect.poll(() => doc(page, "products/SKU1").then((p) => p.stock)).toBe(11);
+  expect((await doc(page, "sheets/s1")).items.SKU1.returned).toBe(2);
+});
+
 test("changing the quantity after a failure names the new request on the button", async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "SKU1");
@@ -335,6 +376,29 @@ test("in the artifact, a write that never answers fails after 20 seconds and can
   await expect(toast(page)).toHaveText("Saved");
   await expect(modal(page)).toBeEmpty();
   await expect(page.getByRole("heading", { name: "Echo Two" })).toBeVisible();
+});
+
+test("in the artifact, a checkout that timed out and then landed counts once on Try again", async ({ page }) => {
+  test.skip(currentBuild() === "web", "The web build's requests have their own timeout");
+  await page.clock.install();
+  await openEcho(page);
+  await enterBarcode(page, "SKU1");
+  const before = await writes(page);
+  await hold(page);
+  await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+  await page.clock.fastForward(WRITE_TIMEOUT);
+  await expect(failedNote(page)).toHaveText("Not saved. Check your connection, then tap Try again.");
+  await hideToast(page);
+  // Try again waits for the first attempt, which lands now, and finds it saved
+  await modal(page).getByRole("button", { name: "Try again" }).click();
+  await expect(modal(page).getByRole("button", { name: "Saving…" })).toBeDisabled();
+  await release(page);
+  await expect(toast(page)).toHaveText("Checked out 1 × Paper towels, 6 roll");
+  await expect(lineRow(page, "Paper towels").locator("td").nth(2)).toHaveText("4");
+  await expect.poll(() => doc(page, "products/SKU1").then((p) => p.stock)).toBe(9);
+  expect((await doc(page, "sheets/s1")).items.SKU1.out).toBe(4);
+  // The line once and the storage count once
+  expect(await writes(page)).toBe(before + 2);
 });
 
 test("in the artifact, a sheet action that never answers gives its button back after 20 seconds", async ({ page }) => {
