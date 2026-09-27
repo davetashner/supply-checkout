@@ -6,7 +6,7 @@
 // saying when its data will be deleted, and for its owners a way to reopen it.
 import { esc } from "../format.js";
 import { armButton, toast } from "../dom.js";
-import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, forgetLocal, local, tab } from "./session.js";
+import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, firstRunKey, forgetLocal, local, tab } from "./session.js";
 import { createDb } from "./db.js";
 import { openImport } from "./import.js";
 import { openMembers, openReopen } from "./members.js";
@@ -65,7 +65,7 @@ export async function start(config) {
   box.className = "account";
   box.setAttribute("aria-live", "polite");
   document.querySelector(".top").after(box);
-  let db = null;
+  let db = null, created = null;
   const session = createSession(config, {
     onSignedOut: () => { if (db) db.stop(); signIn(); },
     onRefreshed: () => { if (db) db.reconnect(); },
@@ -159,7 +159,12 @@ export async function start(config) {
       if (keyName !== null && keyName !== name) key = crypto.randomUUID();
       keyName = name;
       btn.disabled = true;
-      try { resolve((await session.api("POST", "/teams", { name }, { "Idempotency-Key": key })).team); }
+      try {
+        const { team } = await session.api("POST", "/teams", { name }, { "Idempotency-Key": key });
+        // A new team: its owner gets the first-run checklist (firstRun below)
+        created = team.id;
+        resolve(team);
+      }
       catch (err) {
         btn.disabled = false;
         setError(err.code === "quota_exceeded" ? "You've made as many teams as you can for now. Try again tomorrow, or join a team you've been invited to."
@@ -250,7 +255,7 @@ export async function start(config) {
   // The team bar under the header: which team, a switcher, managing members and importing
   // inventory (owners; importing only while the team is open), leaving (everyone else), the
   // account, and Sign out. A closed team says when it will be deleted; its owners can reopen it.
-  function teamBar(me, team) {
+  function teamBar(me, team, fr) {
     const bar = document.createElement("div");
     bar.className = "teambar";
     const owner = team.role === "owner";
@@ -270,7 +275,7 @@ export async function start(config) {
     const verify = bar.querySelector("#verifyEmail");
     if (verify) verify.addEventListener("click", () => openVerifyEmail(session, me.user.email, (fresh) => { me.user = fresh.user; verify.remove(); }));
     if (owner) {
-      bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed));
+      bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed, invited(fr)));
       if (!team.closedAt) bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id, download));
       else bar.querySelector("#reopenTeam").addEventListener("click", () => openReopen(session.api, team, changed));
     } else {
@@ -279,11 +284,34 @@ export async function start(config) {
     }
   }
 
+  // The first-run checklist (src/first-run.js) for an owner's open team: for a team they just
+  // created, or one whose checklist this device started and they haven't finished or
+  // dismissed. Its state is kept per team (firstRunKey); if storage can't be read, a team
+  // created now still gets it until the page is closed.
+  function firstRun(me, team) {
+    if (team.role !== "owner" || team.closedAt) return null;
+    const key = firstRunKey(team.id);
+    const state = local.json(key) || (created === team.id ? {} : null);
+    if (!state || state.done) return null;
+    const fr = {
+      state,
+      save: () => local.set(key, JSON.stringify(state)),
+      // Set by the checklist, to redraw it
+      onChange: () => {},
+      invite: () => openMembers(session.api, team, me.user.id, changed, invited(fr)),
+      importCsv: () => openImport(session.api, team.id, download),
+    };
+    return fr;
+  }
+  // What the members screen runs when an invite is sent: tick the checklist's step
+  const invited = (fr) => () => { if (fr) { fr.state.invited = true; fr.save(); fr.onChange(); } };
+
   function open(me, team) {
     local.set(TEAM_KEY, team.id);
     document.body.classList.remove("account-open");
     box.innerHTML = "";
-    teamBar(me, team);
+    const fr = firstRun(me, team);
+    teamBar(me, team, fr);
     const claims = session.claims();
     const name = [claims.given_name, claims.family_name].filter(Boolean).join(" ") || claims.email;
     const profile = { id: me.user.id, name, avatarUrl: AVATAR, isMe: true };
@@ -302,6 +330,7 @@ export async function start(config) {
       downloads: { save: download },
       // Where src/main.js keeps this team's receipt draft
       drafts: { key: draftKey(team.id) },
+      firstRun: fr,
     };
   }
 

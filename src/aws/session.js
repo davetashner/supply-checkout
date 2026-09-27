@@ -20,6 +20,12 @@ export const TEAM_KEY = "supplyCheckout.team";
 // web builds'), and is forgotten the same way.
 export const DRAFT_KEY = "supplyCheckout.receiptDraft";
 export const draftKey = (teamId) => `${DRAFT_KEY}.${teamId}`;
+// The first-run checklist's state for a team this device's owner created (src/first-run.js):
+// {} while it's showing, invited once they've invited someone, done once it's finished or
+// dismissed. Not forgotten on sign-out, so a dismissed checklist stays dismissed; it holds no
+// team data.
+export const FIRST_RUN_KEY = "supplyCheckout.firstRun";
+export const firstRunKey = (teamId) => `${FIRST_RUN_KEY}.${teamId}`;
 // Whose the team choice and drafts on this device are: the user ID from /me. A session can
 // end without Sign out (it expired, or a sign-out timed out here but went through), and then
 // the next person to sign in may be someone else; account.js forgets the saved team and
