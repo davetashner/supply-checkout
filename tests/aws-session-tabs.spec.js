@@ -230,6 +230,75 @@ test.describe("another tab", () => {
   });
 });
 
+test.describe("signing out or deleting the account here", () => {
+  const hideAndShow = async (page) => { await setVisible(page, false); await setVisible(page, true); };
+
+  test("switching away before Managed Login's sign-out loads doesn't reload over it", async ({ page }) => {
+    const backend = await openPat(page);
+    // A sign-out that fails leaves the mark watched
+    backend.on("POST", "/auth/sign-out", { abort: true });
+    await page.locator(".teambar").getByRole("button", { name: "Sign out" }).click();
+    await expect(page.locator("#toast")).toHaveText("Couldn't sign out. Try again.");
+    // One that goes through removes the mark; the tab is hidden and shown again before the
+    // sign-out page loads, and nothing replaces the navigation to it
+    await page.locator(".teambar").getByRole("button", { name: "Sign out" }).click();
+    await expect.poll(() => backend.authRequests.length).toBe(1);
+    expect(new URL(backend.authRequests[0]).pathname).toBe("/logout");
+    expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.owner"))).toBeNull();
+    await hideAndShow(page);
+    await page.evaluate(() => dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
+    await expect(changedScreen(page)).toHaveCount(0);
+    expect(backend.pageLoads).toBe(1);
+    expect(backend.authRequests).toHaveLength(1);
+  });
+
+  test("a failed sign-out keeps watching the mark", async ({ page }) => {
+    const backend = await openPat(page);
+    backend.on("POST", "/auth/sign-out", { abort: true });
+    await page.locator(".teambar").getByRole("button", { name: "Sign out" }).click();
+    await expect(page.locator("#toast")).toHaveText("Couldn't sign out. Try again.");
+    await page.evaluate(() => localStorage.setItem("supplyCheckout.owner", "u-sam"));
+    await setVisible(page, true);
+    await expect(changedScreen(page)).toBeVisible();
+    await expect.poll(() => backend.pageLoads).toBe(2);
+  });
+
+  test("switching away from the deleted screen leaves it and its sign-out link", async ({ page }) => {
+    const backend = await openPat(page);
+    await page.locator(".teambar").getByRole("button", { name: "Account" }).click();
+    await modal(page).getByLabel("Type DELETE to confirm").fill("DELETE");
+    await modal(page).getByRole("button", { name: "Delete account" }).click();
+    await expect(page.getByRole("heading", { name: "Your account is deleted" })).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.owner"))).toBeNull();
+    await hideAndShow(page);
+    await expect(page.getByRole("heading", { name: "Your account is deleted" })).toBeVisible();
+    expect(backend.pageLoads).toBe(1);
+    await page.getByRole("link", { name: "Done" }).click();
+    await expect.poll(() => backend.authRequests.length).toBe(1);
+    expect(new URL(backend.authRequests[0]).pathname).toBe("/logout");
+    expect(backend.pageLoads).toBe(1);
+  });
+});
+
+test.describe("a receipt draft", () => {
+  test("isn't kept once the owner mark isn't this user's, even before this tab has heard", async ({ page }) => {
+    const line = { id: "l1", name: "Paper towels", raw: "", qty: 2, price: 8, dest: "stock", code: "", match: "SKU1", suggested: false, useName: "inv", usePrice: "receipt" };
+    const draft = JSON.stringify({ store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines: [line] });
+    const backend = new FakeBackend({ docs: seeded() });
+    await openAws(page, backend, { storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.receiptDraft.t1": draft } } });
+    await connected(page);
+    await page.getByRole("button", { name: "Continue review" }).click();
+    const saved = () => page.evaluate(() => JSON.parse(localStorage.getItem("supplyCheckout.receiptDraft.t1")).savePrices);
+    // Kept while the mark is Pat's
+    await page.locator("#rSavePrices").uncheck();
+    expect(await saved()).toBe(false);
+    // Sam's sign-in changed the mark; this tab's storage event hasn't run yet
+    await page.evaluate(() => localStorage.setItem("supplyCheckout.owner", "u-sam"));
+    await page.locator("#rSavePrices").check();
+    expect(await saved()).toBe(false);
+  });
+});
+
 test.describe("an invite saved in this tab", () => {
   const invited = { id: "i1", teamName: "Bravo Co", role: "contributor", expiresAt: "2026-10-03T12:00:00.000Z" };
   const savedInvite = (page) => page.evaluate(() => JSON.parse(sessionStorage.getItem("supplyCheckout.invite")));

@@ -120,16 +120,22 @@ export async function start(config) {
 
   // Leaves the page once the session is revoked; otherwise stays signed in and says so.
   // The button is off while it runs, so it can't be pressed again meanwhile.
+  // The owner mark isn't watched meanwhile: signing out removes it, and the reload that would
+  // set off (the tab hidden before Managed Login's page loads) would replace the sign-out there
   async function signOut(e) {
-    const button = e.currentTarget;
+    const button = e.currentTarget, was = owner;
     button.disabled = true;
+    owner = null;
     if (await session.signOut()) { if (db) db.stop(); }
-    else { button.disabled = false; toast("Couldn't sign out. Try again.", 5000); }
+    else { owner = was; button.disabled = false; toast("Couldn't sign out. Try again.", 5000); }
   }
 
   // The account is gone: forget everything here, stop live updates, and say so. Done signs
   // out of Managed Login too.
+  // The owner mark isn't watched any more: forgetting the user removes it, and a reload would
+  // replace this screen and its sign-out link
   async function deleted() {
+    owner = null;
     if (db) db.stop();
     const out = await session.forgetDeleted();
     show(`<h2>Your account is deleted</h2>
@@ -429,8 +435,10 @@ export async function start(config) {
       downloads: { save: download },
       // Where src/main.js keeps this team's receipt draft
       // Read on every load and save: null once the session has ended (signed out, it expired,
-      // or someone else signed in), so a save failing then can't write this user's draft back
-      drafts: { get key() { return session.token() ? draftKey(team.id) : null; } },
+      // or someone else signed in), so a save failing then can't write this user's draft back;
+      // and once the owner mark isn't this user's, even before this tab has heard, so a save
+      // finishing just before the storage event can't either
+      drafts: { get key() { return session.token() && (!owner || local.get(OWNER_KEY) === owner) ? draftKey(team.id) : null; } },
       firstRun: fr,
     };
   }
