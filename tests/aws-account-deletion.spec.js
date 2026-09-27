@@ -179,7 +179,8 @@ test.describe("deleting an account", () => {
     expect(await page.evaluate(() => [localStorage.getItem("supplyCheckout.team"), localStorage.getItem("supplyCheckout.owner")])).toEqual([null, null]);
     await expect.poll(() => backend.requests("POST", "/auth/refresh").length).toBeGreaterThan(1);
     const done = page.getByRole("link", { name: "Done" });
-    await expect(done).toHaveAttribute("href", new RegExp(`^${AUTH.replace(/\./g, "\\.")}/logout\\?client_id=test-client&logout_uri=`));
+    expect(await done.getAttribute("href")).toMatch(/^https:\/\/auth\.supply-checkout\.test\/logout\?client_id=test-client&logout_uri=/);
+    expect(AUTH).toBe("https://auth.supply-checkout.test");
   });
 
   test("from the first screen, before any team, for a user without an email, and Cancel closes it", async ({ page }) => {
