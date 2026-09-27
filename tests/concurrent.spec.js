@@ -26,13 +26,19 @@ test("checking out again adds to the latest count", async ({ page }) => {
   await expect(lineRow(page, "Paper towels").locator("td").nth(2)).toHaveText("6");
 });
 
-test("a return saved after someone else removed the line still records it", async ({ page }) => {
+test("a return saved after someone else removed the line says so, and doesn't make a partial line", async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await enterBarcode(page, "SKU1");
   await elsewhere(page, (docs) => { delete docs.get("sheets/s1").items.SKU1; });
+  await expect(lineRow(page, "Paper towels")).toHaveCount(0);
   await modal(page).getByRole("button", { name: "Save return" }).click();
-  await expect(page.locator("#toast")).toContainText("returned");
+  await expect(page.locator("#toast")).toHaveText("Someone else removed this item from the sheet, so the return wasn't saved.");
+  await expect(page.locator("#overlay")).toBeHidden();
+  const [line, stock] = await page.evaluate(() => [window.__mock.docs.get("sheets/s1").items.SKU1, window.__mock.docs.get("products/SKU1").stock]);
+  expect(line).toBeUndefined();
+  expect(stock).toBe(10);
+  await expect(lineRow(page, "Paper towels")).toHaveCount(0);
 });
 
 const DELETED = "Someone else deleted this sheet, so your change wasn't saved.";

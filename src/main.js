@@ -1,21 +1,13 @@
 import "./theme.js";
 import { use, help } from "./runtime.js";
 import { WEB } from "./build.js";
-import { checkOut, recordReturn, setStock, saveItem, addLines, markOf } from "./moves.js";
+import { checkOut, recordReturn, saveItem, addLines, markOf } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, newKey, uid, round2, numOrNull } from "./format.js";
 import { lines, lineCharge, totals } from "./sheet-math.js";
 import { $, toast, openModal, closeModal, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
 import { RECEIPT_PROMPT, sampleErr } from "./receipt-prompt.js";
 import { sheetCsv, sheetsCsv, inventoryCsv, allJson } from "./export.js";
-
-async function bumpStock(key, delta) {
-  // Adds (or removes) units from the storage count. Items nobody has counted stay uncounted when removing.
-  // The artifact build only: in the web build, checkouts and returns move stock on the server (src/moves.js).
-  const p = products[key]; if (!p || !delta) return true;
-  if (!hasStock(p) && delta < 0) return true;
-  return write(() => setStock(db, key, Math.max(0, (hasStock(p) ? p.stock : 0) + delta)));
-}
 
 let db = null, userNs = null, dl = null, myId = null, canWrite = true, connected = false, isOwner = false;
 // Keyed by product key, which can be any barcode's: no prototype, so a key like
@@ -101,6 +93,16 @@ async function saving(form, fn) {
   form.querySelector(".modal-actions").insertAdjacentHTML("beforebegin", `<p class="save-failed" id="saveFailed">${navigator.onLine ? "Not saved. Check your connection, then tap Try again." : "Not saved: you're offline. Tap Try again when you're back online."}</p>`);
   go.setAttribute("aria-describedby", "saveFailed");
   go.focus();
+}
+
+// A checkout or return whose sheet line saved but whose storage count didn't (the artifact's
+// two writes, src/moves.js): the quantity can't change, so Try again finishes the same action,
+// and the note says the sheet has it.
+function owing(m, action) {
+  if (!action.due) return;
+  m.querySelectorAll(".stepper input, .stepper button").forEach(c => { c.disabled = true; });
+  const note = m.querySelector("#saveFailed");
+  if (note) note.textContent = "Saved on the sheet, but the storage count didn't save. Tap Try again to finish; nothing is counted twice.";
 }
 
 const currentSheet = () => sheets.find(s => s.id === ui.sheetId);
@@ -379,10 +381,8 @@ function checkoutModal(s, code, key = keyOf(code)) {
         // A new line copies the item's cost too (ADR 0014); an existing line keeps its snapshot
         const from = cur || prod, cost = from && hasCost(from) ? { cost: from.cost } : {};
         const item = { code, name: cur ? cur.name : name, price: cur ? cur.price : price, ...cost, out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) };
-        let after;
-        if (!await write(async () => { ({ after } = await checkOut(db, action, s.id, key, qty, item, oneOff, bumpStock)); }, `Checked out ${qty} × ${item.name}`, s.id)) return false;
-        closeModal(); await after(); return true;
-      });
+        return closing(write(() => checkOut(db, action, s.id, key, qty, item, oneOff), `Checked out ${qty} × ${item.name}`, s.id));
+      }).then(() => owing(m, action));
     });
   });
 }
@@ -466,14 +466,11 @@ function returnModal(s, code, key = keyOf(code)) {
       const r = getR(); if (!r) { toast("Choose at least 1."); return; }
       saving(form, async () => {
         const cur = own((currentSheet() || s).items || {}, key) || line;
-        let after;
-        if (!await write(async () => {
-          const done = await recordReturn(db, action, s.id, key, r, cur, bumpStock);
-          after = done.after;
+        return closing(write(async () => {
+          const done = await recordReturn(db, action, s.id, key, r, cur);
           toast(`${done.quantity} returned · ${int(done.line.returned)} of ${int(done.line.out)} back`);
-        }, undefined, s.id)) return false;
-        closeModal(); await after(); return true;
-      });
+        }, undefined, s.id));
+      }).then(() => owing(m, action));
     });
   });
 }
