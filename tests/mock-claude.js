@@ -16,6 +16,7 @@ export function installMockClaude(opts) {
     downloadError = null, // downloads.save rejects with this code ("bare": rejects with no error object)
     sampleHang = false, // sample.json waits until its signal aborts
     instantUpdates = false, // listeners fire during a write, before it resolves (like a local-first database)
+    viewOnlyNotice = undefined, // user.viewOnlyNotice() answers this (the web build's closed team); undefined: claude.ai has no such method
   } = opts || {};
   const clone = (o) => (o === undefined ? undefined : JSON.parse(JSON.stringify(o)));
   const docs = new Map(Object.entries(clone(seed)));
@@ -119,6 +120,7 @@ export function installMockClaude(opts) {
     me: async () => ({ ...profile(userId), isOwner: owner, canEdit: canWrite }),
     can: async () => { fails("can"); return canWrite; },
     isOwner: async () => { fails("isOwner"); return owner; },
+    ...(viewOnlyNotice === undefined ? {} : { viewOnlyNotice: async () => viewOnlyNotice }),
     canEdit: async () => canWrite,
     profiles: async (ids) => { fails("profiles"); return Object.fromEntries([].concat(ids).map((id) => [id, profile(id)])); },
   };

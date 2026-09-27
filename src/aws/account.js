@@ -18,6 +18,14 @@ const ROLE = { owner: "an owner", contributor: "a contributor", viewer: "a viewe
 // screens again with the new /me it holds (its invites, and whether they're verified)
 const AGAIN = Symbol("again");
 const day = (iso) => new Date(iso).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+const moment = (iso) => new Date(iso).toLocaleString("en-US", { month: "long", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+// The team switcher asks /me again (dropping teams the user was removed from, adding ones
+// they joined) when the team's data is re-listed, at most this often; /me is the API's
+// heaviest route, so the polling fallback's re-lists (every 15 seconds) ask far less often
+const ME_EVERY = 60e3, ME_EVERY_POLLING = 600e3;
+// Why the app is read-only when the team is closed (src/main.js asks, user.viewOnlyNotice)
+const CLOSED_NOTICE = "This team is closed, so nothing in it can be changed.";
+const CLOSED_MEANWHILE = "An owner closed this team, so nothing in it can be changed now. Reload the page to see when it will be deleted.";
 
 // A plain circle for the signed-in user's avatar; the API has no pictures yet
 const AVATAR = "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><circle cx="1" cy="1" r="1" fill="#0E6B58"/></svg>');
@@ -252,6 +260,41 @@ export async function start(config) {
     changed(`You left ${team.name}.`, true);
   }
 
+  // Which team: a switcher when there are several. Switching loads the page again for the
+  // other team: new data, role and live updates.
+  function drawSwitcher(el, teams, team) {
+    el.innerHTML = teams.length > 1
+      ? `<label for="teamSwitch">Team</label><select id="teamSwitch">${teams.map((t) => `<option value="${esc(t.id)}"${t.id === team.id ? " selected" : ""}>${esc(t.name)}</option>`).join("")}</select>`
+      : `<span>Team: <strong>${esc(team.name)}</strong></span>`;
+    const pick = el.querySelector("#teamSwitch");
+    if (pick) pick.addEventListener("change", () => { local.set(TEAM_KEY, pick.value); location.reload(); });
+  }
+
+  // /me again, when the team's data is re-listed (at most every ME_EVERY, or ME_EVERY_POLLING
+  // for the polling fallback's re-lists): the switcher then
+  // drops teams the user was removed from meanwhile, which nothing else tells this page. If
+  // the open team is gone too, the re-list's 403 says so (removed), so the switcher waits.
+  let meAt = 0;
+  async function refreshTeams(me, team, el, why) {
+    if (Date.now() - meAt < (why === "poll" ? ME_EVERY_POLLING : ME_EVERY)) return;
+    meAt = Date.now();
+    let teams;
+    try { teams = (await session.api("GET", "/me")).teams; } catch { return; }
+    if (!teams.some((t) => t.id === team.id)) return;
+    me.teams = teams;
+    drawSwitcher(el, teams, team);
+  }
+
+  // A closed team's owners can reopen it until reopenBy (an hour before it's deleted); then
+  // the button goes. An API from before reopenBy leaves the button, and the server refuses a
+  // late reopening (team_deleting). Checked again at least daily, so a page left open notices.
+  function reopenWindow(bar, team) {
+    const left = Date.parse(team.reopenBy) - Date.now();
+    if (left > 0) { setTimeout(() => reopenWindow(bar, team), Math.min(left, 864e5)); return; }
+    bar.querySelector("#reopenTeam").remove();
+    bar.querySelector("#reopenBy").textContent = " It's too close to being deleted to reopen now.";
+  }
+
   // The team bar under the header: which team, a switcher, managing members and importing
   // inventory (owners; importing only while the team is open), leaving (everyone else), the
   // account, and Sign out. A closed team says when it will be deleted; its owners can reopen it.
@@ -259,15 +302,11 @@ export async function start(config) {
     const bar = document.createElement("div");
     bar.className = "teambar";
     const owner = team.role === "owner";
-    bar.innerHTML = (me.teams.length > 1
-      ? `<label for="teamSwitch">Team</label><select id="teamSwitch">${me.teams.map((t) => `<option value="${esc(t.id)}"${t.id === team.id ? " selected" : ""}>${esc(t.name)}</option>`).join("")}</select>`
-      : `<span>Team: <strong>${esc(team.name)}</strong></span>`)
-      + `<span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${team.closedAt ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}<button type="button" class="btn ghost" id="accountOpen">Account</button><button type="button" class="btn ghost" id="signOut">Sign out</button>`
-      + (team.closedAt ? `<p class="closed-note" role="status">This team was closed on ${esc(day(team.closedAt))}. It's read-only, and everything in it will be deleted on ${esc(day(team.deletesAt))}.${owner ? " Use Export data to keep a copy." : ""}</p>${owner ? `<button type="button" class="btn" id="reopenTeam">Reopen team</button>` : ""}` : "");
+    const reopenBy = owner && team.reopenBy ? `<span id="reopenBy"> Reopen by ${esc(moment(team.reopenBy))} to keep it.</span>` : "";
+    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${team.closedAt ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}<button type="button" class="btn ghost" id="accountOpen">Account</button><button type="button" class="btn ghost" id="signOut">Sign out</button>`
+      + (team.closedAt ? `<p class="closed-note" role="status">This team was closed on ${esc(day(team.closedAt))}. It's read-only, and everything in it will be deleted on ${esc(day(team.deletesAt))}.${owner ? " Use Export data to keep a copy." : ""}${reopenBy}</p>${owner ? `<button type="button" class="btn" id="reopenTeam">Reopen team</button>` : ""}` : "");
     box.after(bar);
-    const pick = bar.querySelector("#teamSwitch");
-    // Switching loads the page again for the other team: new data, role and live updates
-    if (pick) pick.addEventListener("change", () => { local.set(TEAM_KEY, pick.value); location.reload(); });
+    drawSwitcher(bar.querySelector(".team-pick"), me.teams, team);
     bar.querySelector("#signOut").addEventListener("click", signOut);
     bar.querySelector("#accountOpen").addEventListener("click", () => account(me));
     // Verifying here needs nothing else to change: the team is open, and invites only matter
@@ -277,11 +316,15 @@ export async function start(config) {
     if (owner) {
       bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed, invited(fr)));
       if (!team.closedAt) bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id, download));
-      else bar.querySelector("#reopenTeam").addEventListener("click", () => openReopen(session.api, team, changed));
+      else {
+        bar.querySelector("#reopenTeam").addEventListener("click", () => openReopen(session.api, team, changed));
+        if (team.reopenBy) reopenWindow(bar, team);
+      }
     } else {
       const leave = bar.querySelector("#leaveTeam");
       armButton(leave, "Tap again to leave", () => leaveTeam(me, team, leave));
     }
+    return bar;
   }
 
   // The first-run checklist (src/first-run.js) for an owner's open team: for a team they just
@@ -311,11 +354,20 @@ export async function start(config) {
     document.body.classList.remove("account-open");
     box.innerHTML = "";
     const fr = firstRun(me, team);
-    teamBar(me, team, fr);
+    const bar = teamBar(me, team, fr);
+    // /me was just loaded
+    meAt = Date.now();
+    let viewOnly = team.closedAt ? CLOSED_NOTICE : null;
     const claims = session.claims();
     const name = [claims.given_name, claims.family_name].filter(Boolean).join(" ") || claims.email;
     const profile = { id: me.user.id, name, avatarUrl: AVATAR, isMe: true };
-    db = createDb({ api: session.api, config, teamId: team.id, userId: me.user.id, token: session.token, onRemoved: () => removed(team) });
+    db = createDb({
+      api: session.api, config, teamId: team.id, userId: me.user.id, token: session.token,
+      onRemoved: () => removed(team),
+      // A write refused because another owner closed the team meanwhile
+      onClosed: () => { viewOnly = CLOSED_MEANWHILE; },
+      onResync: (why) => refreshTeams(me, team, bar.querySelector(".team-pick"), why),
+    });
     return {
       db,
       user: {
@@ -324,6 +376,8 @@ export async function start(config) {
         can: async (what) => what === "data.write" && team.role !== "viewer" && !team.closedAt,
         // Team owners can export all the team's data (the app's "Export data")
         isOwner: async () => team.role === "owner",
+        // Why it's read-only, when that's because the team is closed; null: the role says why
+        viewOnlyNotice: async () => viewOnly,
         // Only the signed-in user's own profile: the API doesn't share other members' names yet
         profiles: async (ids) => Object.fromEntries([].concat(ids).filter((id) => id === me.user.id).map((id) => [id, profile])),
       },

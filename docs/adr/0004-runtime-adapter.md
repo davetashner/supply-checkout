@@ -10,7 +10,7 @@ All of the app's data, identity and AI calls go through `window.claude.use(name)
 | Capability | What the app calls |
 | --- | --- |
 | `db` | `collection(name).doc(id)` with `set`, `update` (deep merge), `delete`, `onSnapshot`, and `collection("sheets").orderBy("date", "desc")` |
-| `user` | `can("data.write")` to decide between view-only and contributor; `isOwner()` to offer exporting all data |
+| `user` | `can("data.write")` to decide between view-only and contributor; `isOwner()` to offer exporting all data; optionally `viewOnlyNotice()`, why the page is read-only when it isn't the role (the web build's closed team) |
 | `downloads` | Saving a sheet's CSV, and exporting all data as CSV or JSON |
 | `sample` | `json(prompt, { images, signal })` and `limits()` for receipt reading |
 
