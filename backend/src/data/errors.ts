@@ -18,6 +18,15 @@ export class ConflictError extends Error {
   override readonly name: string = "ConflictError";
 }
 
+/**
+ * A closed team is too close to its purge to reopen (reopenTeam,
+ * REOPEN_CUTOFF_MINUTES): the scheduled purge may already be deleting it.
+ * (409, reason `team_deleting`)
+ */
+export class TeamDeletingError extends ConflictError {
+  override readonly name = "TeamDeletingError";
+}
+
 /** The change would leave the team without an owner. (409) */
 export class LastOwnerError extends ConflictError {
   override readonly name = "LastOwnerError";

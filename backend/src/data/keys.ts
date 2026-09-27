@@ -100,6 +100,8 @@ export const keys = {
   verifiedEmail: (userId: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: VERIFIED_EMAIL_SK }),
   /** The address the user's last verification code was sent to (verified-email.ts). */
   emailCodeSent: (userId: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: EMAIL_CODE_SENT_SK }),
+  /** How many times a team was reopened on a UTC day: the per-team reopen limit (reopenTeam). */
+  reopens: (teamId: string, day: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `LIMIT#REOPENS#${date(day)}` }),
   /** How many invites a team sent (created or re-sent) on a UTC day: the per-team invite limit. */
   invitesSent: (teamId: string, day: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `LIMIT#INVITES#${date(day)}` }),
   /**
