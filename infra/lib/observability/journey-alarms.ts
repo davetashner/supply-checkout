@@ -142,7 +142,7 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       title: "Email verification not saved",
       journeys: "J3",
       severity: "P2",
-      rule: "Any EmailVerifyFailures or EmailUnverifyFailures over 15 minutes: the sign-in trigger couldn't copy a Google or Apple user's email_verified, so they stay unverified (and can't accept invites) or, for a downgrade, stay verified. The sign-in goes ahead and the next one retries, so the Lambda Errors alarm doesn't see it.",
+      rule: "Any EmailVerifyFailures or EmailUnverifyFailures over 15 minutes: the sign-in trigger couldn't copy a Google or Apple user's email_verified, so they stay unverified (and can't accept invites) or, for a downgrade, stay verified; or couldn't unverify or record a linked user's changed email. The sign-in goes ahead (a linked user's failed downgrade fails it) and the next one retries, so the Lambda Errors alarm doesn't see it.",
       metric: new MathExpression({
         expression: "FILL(v, 0) + FILL(u, 0)",
         usingMetrics: {
