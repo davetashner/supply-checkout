@@ -50,11 +50,12 @@ test.describe("another tab", () => {
     await expect.poll(() => backend.pageLoads).toBe(2);
     expect((await sockets(page)).every((s) => s.closed)).toBe(true);
 
-    // The save already sent is answered 401 (the API's latest token is Sam's): Pat's tab
-    // doesn't refresh with the cookie, which is Sam's now, or send anything again
+    // The save already sent is answered 401 (the API's latest token is Sam's), or, in WebKit,
+    // cancelled by the reload: either way Pat's tab doesn't refresh with the cookie, which is
+    // Sam's now, or send anything again
     const refreshes = backend.requests("POST", "/auth/refresh").length;
     release();
-    await expect(page.locator("#toast")).toHaveText("You're signed out, so that wasn't saved. Sign in, then make your change again.");
+    await expect(page.locator("#toast")).toBeVisible();
     expect(backend.requests("POST", "/auth/refresh")).toHaveLength(refreshes);
     expect(backend.requests("PUT", /^\/teams\/t1\/sheets\//)).toHaveLength(1);
     expect(backend.docs.size).toBe(Object.keys(seeded()).length);
@@ -128,6 +129,27 @@ test.describe("another tab", () => {
     await expect(changedScreen(page)).toBeVisible();
     await expect(page.locator(".teambar")).toHaveCount(0);
     expect(backend.requests("GET", /^\/teams\/t-/)).toEqual([]);
+    await other.close();
+  });
+
+  test("a team that fails to be created as the other tab signs someone else in says nothing", async ({ page }) => {
+    const backend = new FakeBackend({ teams: [] });
+    await openAws(page, backend);
+    let release;
+    const wait = new Promise((r) => { release = r; });
+    backend.on("POST", "/teams", { wait, abort: true });
+    await page.getByLabel("Team name").fill("Pat's team");
+    await page.getByRole("button", { name: "Create team" }).click();
+    await expect.poll(() => backend.requests("POST", "/teams").length).toBe(1);
+
+    backend.user = SAM;
+    const other = await otherTab(page, backend);
+    await expect(other.getByRole("heading", { name: "Name your team" })).toBeVisible();
+    await expect(changedScreen(page)).toBeVisible();
+    release();
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 200)));
+    await expect(changedScreen(page)).toBeVisible();
+    expect(backend.teams).toEqual([]);
     await other.close();
   });
 

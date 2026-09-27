@@ -44,7 +44,8 @@ function show(html, mount) {
 }
 const until = (fn) => new Promise(fn);
 const errorText = (m) => `<p class="error" role="alert" id="accountError"${m ? "" : " hidden"}>${esc(m)}</p>`;
-const setError = (m) => { const e = box.querySelector("#accountError"); e.textContent = m; e.hidden = false; };
+// Not once another screen has taken over (the session ended while a request was on its way)
+const setError = (m) => { const e = box.querySelector("#accountError"); if (e) { e.textContent = m; e.hidden = false; } };
 
 // The invite in the link (?invite=<id>&token=<token>), kept across sign-in
 function takeInvite() {
