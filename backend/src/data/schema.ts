@@ -79,8 +79,11 @@ export function tableName(envName: string): string {
  * The only attributes the live-updates stream consumer may read (ADR 0016):
  * the keys, a MEMBER item's user ID and role, and the META item's billing
  * status, closure and comp (closed teams get nothing; a live comp keeps an
- * ended team's notices going, ADR 0015). Its IAM policy allows exactly these (dynamodb:Attributes), so it
- * can't read documents, emails or anything else in a team's partition.
+ * ended team's notices going, ADR 0015). Its IAM policy allows exactly these
+ * (dynamodb:Attributes), so it can't read documents, emails or anything else
+ * in a team's partition through the table. It does see whole items in the
+ * stream images it is handed (MEMBER items carry emails), which it must never
+ * log (publisher-handler.ts).
  */
 export const LIVE_AUDIENCE_ATTRIBUTES = [PK, SK, "userId", "role", "status", "closedAt", "compPlan", "compUntil"] as const;
 

@@ -4,13 +4,25 @@
 // is shown again and every 10 minutes, it asks for a full re-list (onResync), because
 // events sent while disconnected are gone. If the socket can't get going three times in
 // a row, it polls by re-listing instead, and keeps trying the socket every 2 minutes.
+// It passes on document events (v 1) and "re-list this collection" events (v 2, op "list"),
+// each once: a retried batch sends the same eventId again, so the last SEEN are remembered.
 const PROTOCOL = "aws-appsync-event-ws";
 const ACK_WAIT = 10e3, KEEP_ALIVE = 300e3, RESYNC = 600e3, RETRY_WHILE_POLLING = 120e3, POLL = 15e3, POLL_HIDDEN = 60e3;
+const SEEN = 500;
 const b64url = (s) => btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
 export function createLive({ url, host, channel, token, onEvent, onResync }) {
   let ws = null, stopped = false, failures = 0, step = 0, polling = false;
   let retryTimer, pollTimer, resyncTimer;
+  const seen = new Set();
+  // False for an eventId already passed on; events without one always go through
+  const fresh = (id) => {
+    if (typeof id !== "string" || !id) return true;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    if (seen.size > SEEN) seen.delete(seen.values().next().value);
+    return true;
+  };
 
   function connect() {
     clearTimeout(retryTimer);
@@ -41,7 +53,7 @@ export function createLive({ url, host, channel, token, onEvent, onResync }) {
       } else if (msg.type === "data" && msg.id === subId) {
         let ev = null;
         try { ev = JSON.parse(msg.event); } catch {}
-        if (ev && ev.v === 1) onEvent(ev);
+        if (ev && (ev.v === 1 || (ev.v === 2 && ev.op === "list")) && fresh(ev.eventId)) onEvent(ev);
       }
     };
     sock.onclose = () => {

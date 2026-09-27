@@ -169,7 +169,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     const table = tableName(config.envName);
     // The api stack deploys first and publishes its ID in this region
     const apiId = StringParameter.valueForStringParameter(this, apiOutputParameters(config.envName).apiId);
-    this.alarms = new JourneyAlarms(this, "JourneyAlarms", { envName: config.envName, region, tableName: table, apiId, topics: this.topics });
+    this.alarms = new JourneyAlarms(this, "JourneyAlarms", { envName: config.envName, region, primary: this.isPrimaryRegion, tableName: table, apiId, topics: this.topics });
 
     for (const [severity, topic] of Object.entries(this.topics.topics)) {
       new StringParameter(this, `AlarmTopic${severity}Param`, {

@@ -2,7 +2,7 @@
 
 How the browser adapter (bead `supply-checkout-a2b`) turns AppSync Events into the app's `onSnapshot` callbacks ([ADR 0006](../adr/0006-api-and-realtime-sync.md), with the per-member channels of [ADR 0016](../adr/0016-per-member-live-update-channels.md)). The HTTP data API it fetches from is in [openapi.yaml](openapi.yaml).
 
-**In short:** subscribe to your own channel, `/users/<sub>`, with the Cognito access token. Each event names a document that changed (team, collection, ID, operation, version) and carries **none of its data**. Ignore events for teams other than the one on screen. Fetch the document through the data API, which checks membership on every request. Re-list both collections after every (re)subscribe. If the WebSocket can't connect, poll the list routes instead.
+**In short:** subscribe to your own channel, `/users/<sub>`, with the Cognito access token. Each event names a document that changed (team, collection, ID, operation, version), or says a whole collection changed, and carries **none of its data**. Skip an `eventId` you've already had. Ignore events for teams other than the one on screen. Fetch the document through the data API, which checks membership on every request. Re-list both collections after every (re)subscribe. If the WebSocket can't connect, poll the list routes instead.
 
 ## Why events carry no data, and who gets them
 
@@ -67,9 +67,9 @@ Each `data` message carries one event as a JSON string:
 
 | Field | |
 | --- | --- |
-| `v` | Format version, `1`. Ignore events with a `v` you don't know. |
+| `v` | Format version: `1` for a document event, as here; `2` for a [collection event](#collection-events). Ignore events with a `v` you don't know. |
 | `teamId` | The team whose document changed. Your channel carries every team you're in: ignore events for a team you aren't showing. |
-| `eventId` | The DynamoDB stream record's ID. A retried batch publishes the same event again with the same `eventId`. |
+| `eventId` | The DynamoDB stream record's ID. A retried batch publishes the same event again with the same `eventId`, and a batch that keeps failing part way can send it up to 25 times: skip one you've already applied. |
 | `collection` | `products` or `sheets` |
 | `id` | The product key or sheet ID (the last segment of the document's API path; percent-encode it in the URL) |
 | `op` | `put` (created, replaced, updated, or a product's stock changed) or `delete` |
@@ -77,6 +77,20 @@ Each `data` message carries one event as a JSON string:
 | `at` | When DynamoDB recorded the change, epoch milliseconds, to the second. For measuring, not ordering. |
 
 There is nothing else in an event, and there never will be document data (a test checks every field).
+
+### Collection events
+
+A batch of stream records with more than 10 changes to one team's collection (`COLLECTION_EVENT_AFTER` in `backend/src/realtime/channels.ts`: a CSV import, say) goes out as one event instead of one per document, in the place of the first of them:
+
+```json
+{ "v": 2, "teamId": "7d3b8a52-…", "eventId": "<first record's ID>~<last record's ID>", "collection": "products", "op": "list", "changes": 25, "at": 1790000000000 }
+```
+
+It names no documents. **Re-list the collection** (`GET /teams/{teamId}/{collection}`, following `cursor`), as after a subscribe. Its `v` is 2 so that a client that only knows `v: 1` ignores it rather than taking it for a document; `changes` is how many changes it stands for, for measuring. A retry of the same records sends the same `eventId`; a retry that starts part way through sends a different one, which must be applied. The web app re-lists at once, drops any burst it was holding, and counts it as a full second's fetches (`src/aws/db.js`).
+
+### Deploying
+
+The web app has to understand collection events before the consumer sends them: deploy the web build first (it ignores `v` it doesn't know, and handles `v: 2` `op: "list"`), then the backend. A tab opened before the web deploy ignores collection events and catches up on its next re-list (every 10 minutes, when it's shown again, or on reconnect), so deploying the backend some minutes after the web build keeps that window short. Rolling back is the other way round: the backend first.
 
 Events for a team you've just been added to start within about 30 seconds of joining (normally at once); the re-list after subscribing covers the gap.
 
@@ -86,8 +100,10 @@ Events for a team you've just been added to start within about 30 seconds of joi
   - `404`: it was deleted since; treat as a `delete`.
   - `403 permission_denied`: the user is no longer a member. Unsubscribe, close the socket, stop polling, and show that they've been removed from the team.
 - **`delete`**: drop the document locally. No fetch.
+- **Once**: skip an event whose `eventId` you've already applied (the web app remembers the last 500, `src/aws/live.js`). Events without an `eventId` always go through.
+- **`list`**: re-list the collection (see [Collection events](#collection-events)).
 - **Coalesce**: keep at most one fetch in flight per document; if more events for it arrive meanwhile, fetch once more when it finishes. A busy sheet can change several times a second.
-- **Bursts**: a bulk write (a CSV import of hundreds of items) sends an event per document. Don't fetch them all: past a few fetches a second for one collection, hold the events and re-list the collection once they stop. The web app fetches up to 10 documents per collection a second; past that it holds events and re-lists after 300 ms without one, or 2 seconds after the first was held if they keep coming, and it counts the re-list as a full second's fetches (`BURST_FETCHES` and the rest in `src/aws/db.js`). A 200-row import costs each client at most 10 fetches and a re-list or two, not 200 fetches.
+- **Bursts**: a bulk write (a CSV import of hundreds of items) usually arrives as collection events, but can still send many document events when the stream splits it into small batches. Don't fetch them all: past a few fetches a second for one collection, hold the events and re-list the collection once they stop. The web app fetches up to 10 documents per collection a second; past that it holds events and re-lists after 300 ms without one, or 2 seconds after the first was held if they keep coming, and it counts the re-list as a full second's fetches (`BURST_FETCHES` and the rest in `src/aws/db.js`). A 200-row import costs each client at most 10 fetches and a re-list or two, not 200 fetches.
 - **Other teams**: drop events whose `teamId` isn't the team on screen, before anything else.
 - **Order**: events for one team arrive in the order the writes happened, but a retry can repeat older events after newer ones. Because every `put` is answered by fetching the current document, a repeated or out-of-order event only costs a fetch; it can't leave stale data on screen.
 - **Your own writes** come back as events too. The write's response already has the new version, so a `put` whose `version` equals the one you just wrote can be skipped for sheets. For products, fetch anyway (stock).
@@ -119,7 +135,8 @@ At 15 seconds, a crew of five polling both collections all day is well under the
 Built in `supply-checkout-4zn` ([ADR 0016](../adr/0016-per-member-live-update-channels.md)):
 
 - The consumer reads a team's audience with `liveUpdateRecipients` (`backend/src/data/live-audience.ts`): the `META` item's `status` and the `MEMBER#` items' `userId` and `role`, strongly consistent. An ended team, or one that doesn't exist, has nobody.
-- It keeps each team's audience for `AUDIENCE_TTL_MS` (30 seconds, `backend/src/realtime/channels.ts`), and forgets it as soon as a batch contains a write to that team's `META` or `MEMBER#` items. The event source mapping passes those items to the consumer for this reason; they're never published.
+- It keeps each team's audience for `AUDIENCE_TTL_MS` (30 seconds, `backend/src/realtime/channels.ts`), and forgets it as soon as a batch contains a write to that team's `META` or `MEMBER#` items. The event source mapping passes those items to the consumer for this reason; they're never published, and never logged (they carry members' emails).
+- It asks for the audience before each chunk of 5 events, not once per team, so the 30 seconds hold however long an invocation runs. A read that takes over 2 seconds (`AUDIENCE_READ_TIMEOUT_MS`) fails, and the team's remaining records are retried.
 - Nothing else has to call anything: removing a member (`removeMember`) deletes the `MEMBER#` item, and the billing webhook sets `status` with `updateTeam`.
 - Tests: `backend/test/live-update-cutoff.test.ts` removes a member, has a member leave, and cancels a team through the Stripe webhook's context, against DynamoDB Local, and checks that notices stop at once when the consumer sees the change and within the cache time when it doesn't. `backend/test/realtime-authorizer.test.ts` checks that nobody can subscribe to another user's channel.
 

@@ -180,6 +180,13 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     // Only the collections this page reads (not "__proto__", "constructor" and the like)
     if (!Object.hasOwn(colls, ev.collection)) return;
     const c = colls[ev.collection];
+    // Many changes at once (an import): re-list now, in place of any burst being held
+    if (ev.op === "list") {
+      if (c.held) { clearTimeout(c.held.timer); c.held = null; }
+      c.fetched = Array(BURST_FETCHES).fill(Date.now());
+      relist(ev.collection);
+      return;
+    }
     if (ev.op === "delete") { put(ev.collection, ev.id, null); return; }
     const held = c.docs.get(ev.id);
     // Skip what's already here: an older version, or (for sheets) the same one, such as
