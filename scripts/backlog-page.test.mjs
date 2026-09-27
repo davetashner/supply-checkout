@@ -40,7 +40,8 @@ function generate() {
 
 // Just enough DOM to run the page's script and read what it renders
 function render(html) {
-  const code = html.match(/<script>([\s\S]*)<\/script>/)[1];
+  // The template has one inline script, and the data escapes every "<"
+  const code = html.slice(html.indexOf("<script>") + "<script>".length, html.lastIndexOf("</" + "script>"));
   const els = new Map();
   const el = (id) => {
     if (!els.has(id)) els.set(id, { id, textContent: "", innerHTML: "", value: "", attrs: {}, dataset: {}, handlers: {},
