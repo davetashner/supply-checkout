@@ -49,11 +49,11 @@ While working on a change, run just the file and browser you're touching, e.g. `
 | `sheets.spec.js` | Editing, filtering, reopening and deleting sheets; editing and removing lines; picking and returning items without barcodes |
 | `inventory.spec.js` | Adding, editing and deleting items; storage counts and totals; view-only and disconnected states |
 | `barcode.spec.js` | Reading barcode photos with the browser's detector or ZXing, at several sizes, and when the photo can't be read |
-| `receipts.spec.js` | Receipt review: clients, existing sheets, name and price choices, barcodes, splitting, every save check, and partial save failures |
+| `receipts.spec.js` | Receipt review: clients, existing sheets, name and price choices, barcodes, splitting, every save check, partial save failures, a save whose answer was lost or timed out adding each line and each stock line once, and the review locked from the first attempt until it's saved |
 | `startup.spec.js` | Starting without the runtime or with capabilities declined, lost connections, download failures, and saved-draft problems |
-| `export.spec.js` | Exporting all data: sheets and inventory as CSV, everything as JSON, matching the screens; formula-like text guarded; owners only, including view-only owners; 1,000 sheets |
+| `export.spec.js` | Exporting all data: sheets and inventory as CSV, everything as JSON, matching the screens; formula-like text guarded; the artifact's marks of recent saves left out of the JSON; owners only, including view-only owners; 1,000 sheets |
 | `failures.spec.js` | Every kind of save that can fail leaves the screen as it was |
-| `save-states.spec.js` | Saving on a slow or flaky connection: a form says Saving… and can't be sent twice or closed meanwhile, nothing shows as saved before it is, a save that didn't go through keeps what was entered and offers Try again, and going offline and back says so |
+| `save-states.spec.js` | Saving on a slow or flaky connection: a form says Saving… and can't be sent twice or closed meanwhile, nothing shows as saved before it is, a save that didn't go through keeps what was entered and offers Try again, a checkout or return whose answer was lost (or, in the artifact, timed out and then landed) counted once on Try again, and going offline and back says so |
 | `legacy-data.spec.js` | Sheets and items missing fields that older versions didn't save |
 | `concurrent.spec.js` | Someone else changing or deleting data while a form is open |
 | `demo.spec.js` | The demo build (web runs only): the banner, a checkout, a receipt and a download with no requests outside the page and Google Fonts; a reload starting over; the theme control; the banner's accessibility and 320px layout |
