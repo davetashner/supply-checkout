@@ -58,7 +58,7 @@
 // Otherwise the account is marked as being deleted (no more joins), the
 // caller leaves every team, closing first any open team they're the only
 // member of, every invite to their verified email is deleted, their USER#
-// rows go, and last their Cognito user, with their own access token
+// rows go (not the LIMIT# counters, left to their TTL), and last their Cognito user, with their own access token
 // (DeleteUser: no IAM permission to delete anyone else). Every step is
 // idempotent, so a retry after a failure part-way carries on. Each removal
 // and closure is audited in its team; the log line has only IDs and counts.

@@ -13,8 +13,9 @@
 //    mark away again.
 // 3. Every invite addressed to their verified email is deleted
 //    (deleteInviteForEmail).
-// 4. deleteUserRows deletes what's left in the partition: stale team-switcher
-//    rows and the daily team-creation counters.
+// 4. deleteUserRows deletes what's left in the partition (stale team-switcher
+//    rows), except the daily rate-limit counters (`LIMIT#…`), which expire by
+//    their TTL, so deleting an account can't reset a daily limit.
 // 5. The Cognito user is deleted last, with the user's own access token.
 //
 // The mark stays until its TTL: by then the Cognito user is gone, and its
@@ -50,10 +51,15 @@ export async function cancelAccountDeletion(db: Db, userId: string): Promise<voi
   await connection(db).doc.send(new DeleteCommand({ TableName: db.tableName, Key: keys.accountDeletion(id(userId, "user ID")) }));
 }
 
+/** Rate-limit counters (`LIMIT#TEAMS#<day>`, `LIMIT#EMAILCODES#<day>`, …): left to their TTL. */
+const LIMIT_PREFIX = "LIMIT#";
+
 /**
- * Deletes every item in the user's own partition except the deletion mark,
- * and returns how many. Call it after the user has left every team, so the
- * only team-switcher rows left are stale ones.
+ * Deletes every item in the user's own partition except the deletion mark and
+ * the rate-limit counters (they hold no personal data, expire within days, and
+ * deleting them would let a delete-and-recreate reset a daily limit), and
+ * returns how many. Call it after the user has left every team, so the only
+ * team-switcher rows left are stale ones.
  */
 export async function deleteUserRows(db: Db, userId: string): Promise<number> {
   const mark = keys.accountDeletion(id(userId, "user ID"));
@@ -70,7 +76,10 @@ export async function deleteUserRows(db: Db, userId: string): Promise<number> {
         ExclusiveStartKey,
       }),
     );
-    for (const item of page.Items ?? []) if (item.SK !== mark.SK) rows.push({ PK: item.PK as string, SK: item.SK as string });
+    for (const item of page.Items ?? []) {
+      const sk = String(item.SK);
+      if (sk !== mark.SK && !sk.startsWith(LIMIT_PREFIX)) rows.push({ PK: item.PK as string, SK: sk });
+    }
     ExclusiveStartKey = page.LastEvaluatedKey;
   } while (ExclusiveStartKey);
   for (const key of rows) await connection(db).doc.send(new DeleteCommand({ TableName: db.tableName, Key: key }));

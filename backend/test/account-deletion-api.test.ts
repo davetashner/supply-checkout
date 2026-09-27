@@ -291,6 +291,7 @@ describe("deleting an account", () => {
     invite("team-a", "inv-a-pat", "pat@example.com");
     table.put({ PK: `USER#${PAT}`, SK: "TEAM#gone", type: "userTeam", userId: PAT, teamId: "gone", teamName: "Gone", role: "viewer" });
     table.put({ PK: `USER#${PAT}`, SK: "LIMIT#TEAMS#2026-09-26", type: "teamsCreated", count: 1, expiresAt: NOW / 1000 + 86400 });
+    table.put({ PK: `USER#${PAT}`, SK: "LIMIT#EMAILCODES#2026-09-26", type: "emailCodes", count: 2, expiresAt: NOW / 1000 + 86400 });
 
     expect(await deleteAccount(PAT, " delete ")).toEqual({ status: 204, body: undefined });
     expect(deleted).toEqual([PAT]);
@@ -308,10 +309,12 @@ describe("deleting an account", () => {
     // Every invite to Pat's address, from any team, expired or not (team-a's went when Pat left it)
     for (const [teamId, inviteId] of [["team-c", "inv-c1"], ["team-c", "inv-c2"], ["team-a", "inv-a-pat"]]) expect(table.get(`TEAM#${teamId}`, `INVITE#${inviteId}`)).toBeUndefined();
     expect(table.get("TEAM#team-a", "INVITE#inv-a1")).toBeDefined();
-    // Nothing left in Pat's partition but the deletion mark, which expires
-    expect(partition(`USER#${PAT}`)).toEqual([expect.objectContaining({ SK: "DELETING", type: "accountDeletion", expiresAt: NOW / 1000 + 30 * 86400 })]);
+    // Nothing left in Pat's partition but the deletion mark and the daily limit counters, which all expire:
+    // deleting the account doesn't reset a daily limit
+    expect(partition(`USER#${PAT}`).map((i) => i.SK).sort()).toEqual(["DELETING", "LIMIT#EMAILCODES#2026-09-26", "LIMIT#TEAMS#2026-09-26"]);
+    expect(table.get(`USER#${PAT}`, "DELETING")).toMatchObject({ type: "accountDeletion", expiresAt: NOW / 1000 + 30 * 86400 });
     expect(counts).toMatchObject({ [BusinessMetric.AccountsDeleted]: 1, [BusinessMetric.TeamsClosed]: 1 });
-    expect(logs).toContainEqual(["info", "Account deleted", { userId: PAT, teamsLeft: 3, teamsClosed: 1, invitesDeleted: 2, rowsDeleted: 2 }]);
+    expect(logs).toContainEqual(["info", "Account deleted", { userId: PAT, teamsLeft: 3, teamsClosed: 1, invitesDeleted: 2, rowsDeleted: 1 }]);
     // No addresses or team names in any log line
     expect(JSON.stringify(logs)).not.toMatch(/@|Team /);
     // Every session was for Pat, and reached only Pat's teams and the teams that invited Pat's verified address

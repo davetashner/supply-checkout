@@ -166,9 +166,9 @@ describe.skipIf(!endpoint)("closing teams and deleting accounts (DynamoDB Local)
     for (const invite of invites) await deleteInviteForEmail(table.db, email, invite);
     await deleteInviteForEmail(table.db, email, invites[0] as { teamId: string; inviteId: string });
     expect(await listInvitesForEmail(table.db, email, now, { includeExpired: true })).toEqual([]);
-    // The team row and the day's team counter
-    expect(await deleteUserRows(table.db, userId)).toBe(2);
-    expect((await partition(`USER#${userId}`)).map((i) => i.SK)).toEqual(["DELETING"]);
+    // The team row; the day's team counter stays until its TTL, so the limit isn't reset
+    expect(await deleteUserRows(table.db, userId)).toBe(1);
+    expect((await partition(`USER#${userId}`)).map((i) => String(i.SK).replace(/\d{4}-\d{2}-\d{2}$/, "<day>"))).toEqual(["DELETING", "LIMIT#TEAMS#<day>"]);
   });
 
   it("purges a closed team once its 30 days are over, and not before; everything it had is gone", async () => {
