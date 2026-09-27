@@ -41,7 +41,8 @@ function querySnap(docs, order) {
 
 // onClosed: a write was refused because an owner closed the team meanwhile. onResync: both
 // collections are being re-listed (live.js), a moment to check anything else that may have
-// changed unannounced (account.js: the team switcher).
+// changed unannounced (account.js: the team switcher); it's told "poll" when the re-list is
+// the polling fallback's (live.js), which runs every 15 seconds.
 export function createDb({ api, config, teamId, userId, token, onRemoved, onClosed, onResync }) {
   const base = `/teams/${encodeURIComponent(teamId)}`;
   const colls = {};
@@ -131,10 +132,10 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
       .finally(() => { c.listing = null; });
     return c.listing;
   }
-  const resync = () => {
+  const resync = (why) => {
     if (removed) return;
     Object.keys(colls).forEach((n) => colls[n].listeners.size && relist(n));
-    onResync();
+    onResync?.(why);
   };
 
   // A live event: fetch what changed (at most one fetch per document at a time)

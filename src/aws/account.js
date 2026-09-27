@@ -6,7 +6,7 @@
 // saying when its data will be deleted, and for its owners a way to reopen it.
 import { esc } from "../format.js";
 import { armButton, toast } from "../dom.js";
-import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, forgetLocal, local, tab } from "./session.js";
+import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, firstRunKey, forgetLocal, local, tab } from "./session.js";
 import { createDb } from "./db.js";
 import { openImport } from "./import.js";
 import { openMembers, openReopen } from "./members.js";
@@ -20,8 +20,9 @@ const AGAIN = Symbol("again");
 const day = (iso) => new Date(iso).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
 const moment = (iso) => new Date(iso).toLocaleString("en-US", { month: "long", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" });
 // The team switcher asks /me again (dropping teams the user was removed from, adding ones
-// they joined) when the team's data is re-listed, at most this often
-const ME_EVERY = 60e3;
+// they joined) when the team's data is re-listed, at most this often; /me is the API's
+// heaviest route, so the polling fallback's re-lists (every 15 seconds) ask far less often
+const ME_EVERY = 60e3, ME_EVERY_POLLING = 600e3;
 // Why the app is read-only when the team is closed (src/main.js asks, user.viewOnlyNotice)
 const CLOSED_NOTICE = "This team is closed, so nothing in it can be changed.";
 const CLOSED_MEANWHILE = "An owner closed this team, so nothing in it can be changed now. Reload the page to see when it will be deleted.";
@@ -72,7 +73,7 @@ export async function start(config) {
   box.className = "account";
   box.setAttribute("aria-live", "polite");
   document.querySelector(".top").after(box);
-  let db = null;
+  let db = null, created = null;
   const session = createSession(config, {
     onSignedOut: () => { if (db) db.stop(); signIn(); },
     onRefreshed: () => { if (db) db.reconnect(); },
@@ -166,7 +167,12 @@ export async function start(config) {
       if (keyName !== null && keyName !== name) key = crypto.randomUUID();
       keyName = name;
       btn.disabled = true;
-      try { resolve((await session.api("POST", "/teams", { name }, { "Idempotency-Key": key })).team); }
+      try {
+        const { team } = await session.api("POST", "/teams", { name }, { "Idempotency-Key": key });
+        // A new team: its owner gets the first-run checklist (firstRun below)
+        created = team.id;
+        resolve(team);
+      }
       catch (err) {
         btn.disabled = false;
         setError(err.code === "quota_exceeded" ? "You've made as many teams as you can for now. Try again tomorrow, or join a team you've been invited to."
@@ -264,12 +270,13 @@ export async function start(config) {
     if (pick) pick.addEventListener("change", () => { local.set(TEAM_KEY, pick.value); location.reload(); });
   }
 
-  // /me again, when the team's data is re-listed (at most every ME_EVERY): the switcher then
+  // /me again, when the team's data is re-listed (at most every ME_EVERY, or ME_EVERY_POLLING
+  // for the polling fallback's re-lists): the switcher then
   // drops teams the user was removed from meanwhile, which nothing else tells this page. If
   // the open team is gone too, the re-list's 403 says so (removed), so the switcher waits.
   let meAt = 0;
-  async function refreshTeams(me, team, el) {
-    if (Date.now() - meAt < ME_EVERY) return;
+  async function refreshTeams(me, team, el, why) {
+    if (Date.now() - meAt < (why === "poll" ? ME_EVERY_POLLING : ME_EVERY)) return;
     meAt = Date.now();
     let teams;
     try { teams = (await session.api("GET", "/me")).teams; } catch { return; }
@@ -291,7 +298,7 @@ export async function start(config) {
   // The team bar under the header: which team, a switcher, managing members and importing
   // inventory (owners; importing only while the team is open), leaving (everyone else), the
   // account, and Sign out. A closed team says when it will be deleted; its owners can reopen it.
-  function teamBar(me, team) {
+  function teamBar(me, team, fr) {
     const bar = document.createElement("div");
     bar.className = "teambar";
     const owner = team.role === "owner";
@@ -307,7 +314,7 @@ export async function start(config) {
     const verify = bar.querySelector("#verifyEmail");
     if (verify) verify.addEventListener("click", () => openVerifyEmail(session, me.user.email, (fresh) => { me.user = fresh.user; verify.remove(); }));
     if (owner) {
-      bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed));
+      bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed, invited(fr)));
       if (!team.closedAt) bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id, download));
       else {
         bar.querySelector("#reopenTeam").addEventListener("click", () => openReopen(session.api, team, changed));
@@ -320,11 +327,34 @@ export async function start(config) {
     return bar;
   }
 
+  // The first-run checklist (src/first-run.js) for an owner's open team: for a team they just
+  // created, or one whose checklist this device started and they haven't finished or
+  // dismissed. Its state is kept per team (firstRunKey); if storage can't be read, a team
+  // created now still gets it until the page is closed.
+  function firstRun(me, team) {
+    if (team.role !== "owner" || team.closedAt) return null;
+    const key = firstRunKey(team.id);
+    const state = local.json(key) || (created === team.id ? {} : null);
+    if (!state || state.done) return null;
+    const fr = {
+      state,
+      save: () => local.set(key, JSON.stringify(state)),
+      // Set by the checklist, to redraw it
+      onChange: () => {},
+      invite: () => openMembers(session.api, team, me.user.id, changed, invited(fr)),
+      importCsv: () => openImport(session.api, team.id, download),
+    };
+    return fr;
+  }
+  // What the members screen runs when an invite is sent: tick the checklist's step
+  const invited = (fr) => () => { if (fr) { fr.state.invited = true; fr.save(); fr.onChange(); } };
+
   function open(me, team) {
     local.set(TEAM_KEY, team.id);
     document.body.classList.remove("account-open");
     box.innerHTML = "";
-    const bar = teamBar(me, team);
+    const fr = firstRun(me, team);
+    const bar = teamBar(me, team, fr);
     // /me was just loaded
     meAt = Date.now();
     let viewOnly = team.closedAt ? CLOSED_NOTICE : null;
@@ -336,7 +366,7 @@ export async function start(config) {
       onRemoved: () => removed(team),
       // A write refused because another owner closed the team meanwhile
       onClosed: () => { viewOnly = CLOSED_MEANWHILE; },
-      onResync: () => refreshTeams(me, team, bar.querySelector(".team-pick")),
+      onResync: (why) => refreshTeams(me, team, bar.querySelector(".team-pick"), why),
     });
     return {
       db,
@@ -354,6 +384,7 @@ export async function start(config) {
       downloads: { save: download },
       // Where src/main.js keeps this team's receipt draft
       drafts: { key: draftKey(team.id) },
+      firstRun: fr,
     };
   }
 

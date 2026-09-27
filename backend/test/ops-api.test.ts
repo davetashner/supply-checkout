@@ -8,14 +8,29 @@ import type { DataEvent } from "../src/api/data-handler.js";
 import { createDataHandler } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { OPS_ROUTES, routeKey } from "../src/api/routes.js";
-import { createTeam, latestCompEnd, liveComp, memberCap, MEMBERS_PER_TEAM, MEMBERS_PER_TRIAL_TEAM } from "../src/data/index.js";
+import {
+  CLOSED_TEAM_RETENTION_DAYS,
+  closeTeam,
+  createTeam,
+  latestCompEnd,
+  listTeamsToPurge,
+  liveComp,
+  memberCap,
+  MEMBERS_PER_TEAM,
+  MEMBERS_PER_TRIAL_TEAM,
+  OPS_REOPEN_CUTOFF_MINUTES,
+  REOPEN_CUTOFF_MINUTES,
+  reopenTeam,
+  TeamDeletingError,
+} from "../src/data/index.js";
 import { OWNER_OPERATOR_AUDIT_ATTRIBUTES } from "../src/data/schema.js";
 import type { Observability } from "../src/observability/index.js";
 import type { OperatorDirectory } from "../src/operator/cognito.js";
 import { createOpsHandler, groupsClaim, type OpsEvent } from "../src/operator/ops-handler.js";
 import { REGION } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
-import { opsPolicy } from "./ops-policy.js";
+import { createReopenHandler, type ReopenRequest } from "../src/operator/reopen-handler.js";
+import { opsPolicy, reopenPolicy } from "./ops-policy.js";
 
 const OPS_ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_ops";
 const CUSTOMER_ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_pool";
@@ -30,6 +45,9 @@ const OWNER_EMAIL = "owner@example.com";
 let table: MemoryTable;
 let now: number;
 let denied: { command: string; input: Record<string, unknown> }[];
+let reopenDenied: { command: string; input: Record<string, unknown> }[];
+let reopenCalls: ReopenRequest[];
+let reopenTags: string[];
 let tags: string[];
 let logs: unknown[];
 let directoryCalls: string[];
@@ -105,6 +123,9 @@ beforeEach(async () => {
   now = NOW;
   table = new MemoryTable();
   denied = [];
+  reopenDenied = [];
+  reopenCalls = [];
+  reopenTags = [];
   tags = [];
   logs = [];
   directoryCalls = [];
@@ -118,6 +139,12 @@ beforeEach(async () => {
     dbFor: (operatorSub, teamId) => {
       tags.push(`${operatorSub} ${teamId ?? "."}`);
       return table.guarded(opsPolicy(teamId ?? ".", denied));
+    },
+    // The operator reopen function, on its own role's policy, as Lambda would pass it: through JSON
+    reopen: async (request) => {
+      reopenCalls.push(request);
+      const reopen = createReopenHandler({ dbFor: (_sub, teamId) => { reopenTags.push(teamId ?? "."); return table.guarded(reopenPolicy(teamId ?? ".", reopenDenied)); }, obs: fakeObservability(), now: () => now });
+      return JSON.parse(JSON.stringify(await reopen(JSON.parse(JSON.stringify(request)))));
     },
     directory,
     issuerUrl: OPS_ISSUER,
@@ -190,6 +217,7 @@ describe("who gets in", () => {
     const broken = createOpsHandler({
       dbFor: () => table.db(),
       directory: { getUser: () => Promise.reject(new Error("GetUser failed: 500")), groupsFor: async () => [] },
+      reopen: () => Promise.reject(new Error("not called")),
       issuerUrl: OPS_ISSUER,
       clientId: OPS_CLIENT,
       obs: fakeObservability(),
@@ -518,5 +546,195 @@ describe("stuck imports (supply-checkout-6uw.2)", () => {
 
   it("refuses a bad import ID", async () => {
     expect((await call("POST", `/ops/teams/${teamA}/imports/bad%20id/clear`, { body: { reason: "Clearing it" }, key: "clear-key-0007" })).status).toBe(400);
+  });
+});
+
+describe("reopening a closed team (supply-checkout-6uw.6)", () => {
+  const MINUTE = 60_000;
+  let ctx: Awaited<ReturnType<typeof createTeam>>["context"];
+  let teamC: string;
+  const NAME = "Charlie Custodial";
+
+  /** Team C, closed by its owner so that its purge is `minutes` from now. */
+  async function closeC(minutes: number) {
+    const setup = table.db();
+    const made = await createTeam(setup, { userId: "user-c", email: "c@example.com" }, { name: NAME }, new Date(NOW - 40 * DAY));
+    ctx = made.context;
+    teamC = made.team.teamId;
+    const closedAt = new Date(NOW - CLOSED_TEAM_RETENTION_DAYS * DAY + minutes * MINUTE);
+    await closeTeam(setup, ctx, { confirmName: NAME }, closedAt);
+    return teamOf(teamC);
+  }
+
+  const reopen = (teamId: string, body: Record<string, unknown> | undefined, ...key: [string?]) => call("POST", `/ops/teams/${teamId}/reopen`, { body, key: key.length ? key[0] : "reopen-key-0001" });
+
+  it("removes the closure and the purge index keys, moves the version and audits it in the same transaction, without the ops role touching closure fields", async () => {
+    const closed = await closeC(5 * 24 * 60);
+    expect(closed.GSI1PK).toBe("TEAMS#CLOSED");
+    const version = (await call("GET", `/ops/teams/${teamC}`)).body.team.version as number;
+    table.requests.length = 0;
+    const res = await reopen(teamC, { reason: "Owner closed it by mistake", expectedVersion: version });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ eventId: expect.any(String), replayed: false, version: version + 1 });
+    const meta = teamOf(teamC);
+    for (const field of ["closedAt", "closedBy", "purgeAfter", "GSI1PK", "GSI1SK"]) expect(meta[field], field).toBeUndefined();
+    expect(meta).toMatchObject({ name: NAME, version: version + 1, owners: 1 });
+    // One transaction: the META item, the audit item and the idempotency record
+    const writes = table.requests.filter((r) => r.command === "TransactWriteCommand");
+    expect(writes).toHaveLength(1);
+    expect((writes[0]?.input.TransactItems as Record<string, unknown>[]).map((i) => Object.keys(i)[0])).toEqual(["Update", "Put", "Put"]);
+    expect(auditItems(teamC).filter((a) => a.action !== "ops.team.read")).toEqual([
+      expect.objectContaining({ action: "ops.team.reopen", operatorSub: OPERATOR, reason: "Owner closed it by mistake", before: { closedAt: closed.closedAt, purgeAfter: closed.purgeAfter }, after: null, idempotencyKey: "reopen-key-0001" }),
+    ]);
+    // The purge no longer finds it, and the owner can write again
+    expect(await listTeamsToPurge(table.db(), new Date(NOW + 60 * DAY))).toEqual([]);
+    // Every call stayed inside its role: the ops function never got a session for the team, and the reopen function's calls fit its policy
+    expect(tags.filter((t) => t.endsWith(` ${teamC}`))).toEqual([]);
+    expect(denied).toEqual([]);
+    expect(reopenDenied).toEqual([]);
+    expect(reopenTags).toEqual([teamC]);
+    expect(reopenCalls).toEqual([{ operatorSub: OPERATOR, teamId: teamC, reason: "Owner closed it by mistake", expectedVersion: version, idempotencyKey: "reopen-key-0001" }]);
+  });
+
+  it("shows the owners what support did, never who", async () => {
+    const closed = await closeC(24 * 60);
+    await reopen(teamC, { reason: "Disputed closure", expectedVersion: closed.version });
+    const data = createDataHandler({ dbForTeam: (teamId) => table.db(teamId), obs: fakeObservability(), now: () => now });
+    const res = await data({
+      routeKey: "GET /teams/{teamId}/support-actions",
+      rawPath: `/teams/${teamC}/support-actions`,
+      headers: {},
+      pathParameters: { teamId: teamC },
+      requestContext: { authorizer: { jwt: { claims: { iss: CUSTOMER_ISSUER, token_use: "access", exp: Math.floor(now / 1000) + 600, sub: "user-c" }, scopes: [] } } },
+    } as unknown as DataEvent);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body as string);
+    expect(body.actions).toEqual([
+      { eventId: expect.any(String), ts: expect.any(String), actor: "Supply Checkout support", action: "ops.team.reopen", reason: "Disputed closure", before: { closedAt: closed.closedAt, purgeAfter: closed.purgeAfter }, after: null },
+    ]);
+    expect(JSON.stringify(body)).not.toContain(OPERATOR);
+  });
+
+  it("replays a retry with the same key, even though the team is open by then, and refuses the key for another body", async () => {
+    const closed = await closeC(24 * 60);
+    const first = await reopen(teamC, { reason: "Disputed closure", expectedVersion: closed.version });
+    const again = await reopen(teamC, { reason: "Disputed closure", expectedVersion: closed.version });
+    expect(again.status).toBe(200);
+    expect(again.body).toEqual({ ...first.body, replayed: true });
+    expect(auditItems(teamC)).toHaveLength(1);
+    const other = await reopen(teamC, { reason: "Another reason", expectedVersion: closed.version });
+    expect(other.status).toBe(409);
+    expect(other.body.error.message).toMatch(/Idempotency-Key/);
+    // A new key on an open team
+    const open = await reopen(teamC, { reason: "Disputed closure", expectedVersion: closed.version }, "reopen-key-0002");
+    expect(open.status).toBe(409);
+    expect(open.body.error.message).toBe("This team isn't closed");
+  });
+
+  it("restores a closure in its last hour, after the owners' cutoff, until a few minutes before the purge", async () => {
+    const minutes = REOPEN_CUTOFF_MINUTES - 30;
+    expect(minutes).toBeGreaterThan(OPS_REOPEN_CUTOFF_MINUTES);
+    const closed = await closeC(minutes);
+    // Too late for the owner
+    await expect(reopenTeam(table.db(teamC), ctx, { confirmName: NAME }, new Date(now))).rejects.toBeInstanceOf(TeamDeletingError);
+    const res = await reopen(teamC, { reason: "Disputed closure, last hour", expectedVersion: closed.version });
+    expect(res.status).toBe(200);
+    expect(teamOf(teamC).closedAt).toBeUndefined();
+  });
+
+  it.each([OPS_REOPEN_CUTOFF_MINUTES, 1, -1, -60])("refuses a team whose purge is %d minutes away, as being deleted", async (minutes) => {
+    const closed = await closeC(minutes);
+    const res = await reopen(teamC, { reason: "Too late", expectedVersion: closed.version });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatchObject({ code: "aborted", reason: "team_deleting" });
+    expect(teamOf(teamC).closedAt).toBe(closed.closedAt);
+    expect(auditItems(teamC)).toEqual([]);
+  });
+
+  it("refuses a team the purge has marked purging, whatever its purgeAfter says", async () => {
+    const closed = await closeC(24 * 60);
+    table.put({ ...teamOf(teamC), purging: new Date(now).toISOString() });
+    const res = await reopen(teamC, { reason: "Too late", expectedVersion: closed.version });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatchObject({ code: "aborted", reason: "team_deleting" });
+    expect(teamOf(teamC).closedAt).toBe(closed.closedAt);
+    expect(reopenDenied).toEqual([]);
+  });
+
+  it("loses to a purge that marks the team between the read and the write", async () => {
+    const closed = await closeC(24 * 60);
+    table.afterGet = () => {
+      table.afterGet = undefined;
+      table.put({ ...teamOf(teamC), purging: new Date(now).toISOString() });
+    };
+    const res = await reopen(teamC, { reason: "Racing the purge", expectedVersion: closed.version });
+    expect(res.status).toBe(409);
+    expect(teamOf(teamC).closedAt).toBe(closed.closedAt);
+    expect(auditItems(teamC)).toEqual([]);
+  });
+
+  it("refuses a stale version, an open team, a team with no owner left, and a team that isn't there", async () => {
+    const closed = await closeC(24 * 60);
+    expect((await reopen(teamC, { reason: "Stale", expectedVersion: (closed.version as number) - 1 })).status).toBe(409);
+    expect((await reopen(teamA, { reason: "Open", expectedVersion: 1 })).body.error.message).toBe("This team isn't closed");
+    expect((await reopen("no-such-team", { reason: "Missing", expectedVersion: 1 })).status).toBe(404);
+    table.put({ ...teamOf(teamC), owners: 0 });
+    const ownerless = await reopen(teamC, { reason: "Nobody to reopen it for", expectedVersion: closed.version }, "reopen-key-0003");
+    expect(ownerless.status).toBe(409);
+    expect(ownerless.body.error.message).toMatch(/no owner/);
+    expect(teamOf(teamC).closedAt).toBe(closed.closedAt);
+    expect(auditItems(teamC)).toEqual([]);
+  });
+
+  it("refuses when the closure changed between the read and the write", async () => {
+    const closed = await closeC(24 * 60);
+    // Another writer bumps the version after the reopen function read the team
+    table.afterGet = () => {
+      table.afterGet = undefined;
+      table.put({ ...teamOf(teamC), version: (closed.version as number) + 1 });
+    };
+    const res = await reopen(teamC, { reason: "Racing", expectedVersion: closed.version });
+    expect(res.status).toBe(409);
+    expect(teamOf(teamC).closedAt).toBe(closed.closedAt);
+    expect(auditItems(teamC)).toEqual([]);
+  });
+
+  it.each<[string, Record<string, unknown> | undefined, string | undefined]>([
+    ["no reason", { expectedVersion: 2 }, "reopen-key-0004"],
+    ["a short reason", { reason: "no", expectedVersion: 2 }, "reopen-key-0004"],
+    ["no version", { reason: "Disputed closure" }, "reopen-key-0004"],
+    ["an extra field", { reason: "Disputed closure", expectedVersion: 2, closedAt: "x" }, "reopen-key-0004"],
+    ["no body", undefined, "reopen-key-0004"],
+    ["no Idempotency-Key", { reason: "Disputed closure", expectedVersion: 2 }, undefined],
+  ])("refuses a reopen with %s", async (_what, body, key) => {
+    const closed = await closeC(24 * 60);
+    expect((await reopen(teamC, body, key)).status).toBe(400);
+    expect(teamOf(teamC).closedAt).toBe(closed.closedAt);
+  });
+
+  it("refuses a bad team ID without invoking the reopen function, and answers 500 when it fails", async () => {
+    expect((await reopen("bad%20id", { reason: "Disputed closure", expectedVersion: 2 })).status).toBe(400);
+    expect(reopenCalls).toEqual([]);
+    const failing = createOpsHandler({
+      dbFor: () => table.db(),
+      directory,
+      reopen: () => Promise.reject(new Error("Reopen function failed: 500")),
+      issuerUrl: OPS_ISSUER,
+      clientId: OPS_CLIENT,
+      obs: fakeObservability(),
+      now: () => now,
+    });
+    const res = await failing(event("POST", `/ops/teams/${teamA}/reopen`, { body: { reason: "Disputed closure", expectedVersion: 2 }, key: "reopen-key-0005" }));
+    expect(res.statusCode).toBe(500);
+  });
+
+  it("is refused to anyone but an operator", async () => {
+    await closeC(24 * 60);
+    groups.set("member-only", []);
+    const res = await call("POST", `/ops/teams/${teamC}/reopen`, { body: { reason: "Disputed closure", expectedVersion: 2 }, key: "reopen-key-0006", claims: { sub: "member-only" } });
+    expect(res.status).toBe(403);
+    expect(reopenCalls).toEqual([]);
+    expect((await call("POST", `/ops/teams/${teamC}/reopen`, { body: { reason: "Disputed closure", expectedVersion: 2 }, key: "reopen-key-0007", claims: { iss: CUSTOMER_ISSUER, client_id: WEB_CLIENT } })).status).toBe(401);
+    expect(teamOf(teamC).closedAt).toBeDefined();
   });
 });

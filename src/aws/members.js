@@ -119,10 +119,11 @@ function openParts(team) {
     </form>`;
 }
 
-// The invites half of the screen, while the team is open. `changed` gets the invites each
-// time they change. Returns a way to drop the invites for an address, which the server
-// revoked when that member was removed, and one to turn Send invite off while the team is full.
-function wireInvites(api, team, m, changed) {
+// The invites half of the screen, while the team is open. `invited` runs when an invite is
+// sent or re-sent; `changed` gets the invites each time they change. Returns a way to drop the
+// invites for an address, which the server revoked when that member was removed, and one to
+// turn Send invite off while the team is full.
+function wireInvites(api, team, m, invited, changed) {
   const invitesPath = `/teams/${encodeURIComponent(team.id)}/invites`;
   const inviteList = m.querySelector("#invitesList"), inviteFail = m.querySelector("#invitesFail");
   const form = m.querySelector("#inviteForm"), email = m.querySelector("#inviteEmail"), role = m.querySelector("#inviteRole"), send = m.querySelector("#inviteSend");
@@ -145,6 +146,7 @@ function wireInvites(api, team, m, changed) {
   function sent(invite, replacing) {
     invites = [invite, ...invites.filter((x) => x.id !== replacing && x.id !== invite.id)];
     drawInvites();
+    invited();
     toast(invite.inviteStatus === "failed" ? `Couldn't send the invite to ${invite.email}` : `Invite sent to ${invite.email}`);
   }
 
@@ -300,8 +302,9 @@ function wireSupport(api, team, m) {
 }
 
 // `leave` runs when the owner changes their own role, leaves or closes the team: their access
-// changed, so the page starts again (account.js)
-export function openMembers(api, team, me, leave) {
+// changed, so the page starts again (account.js). `invited` runs when an invite is sent or
+// re-sent (the first-run checklist's step).
+export function openMembers(api, team, me, leave, invited) {
   const path = `/teams/${encodeURIComponent(team.id)}/members`;
   const closed = !!team.closedAt;
   // From /me; an API from before it has none, and the screen then shows no count
@@ -323,7 +326,7 @@ export function openMembers(api, team, me, leave) {
     const say = (text) => { fail.textContent = text; fail.hidden = !text; };
     m.querySelector("#membersClose").addEventListener("click", closeModal);
     // Invites that haven't expired count against the cap, failed ones too, as the server counts them
-    const invites = closed ? null : wireInvites(api, team, m, (list) => { waiting = list.filter((i) => Date.parse(i.expiresAt) > Date.now()).length; gate(); });
+    const invites = closed ? null : wireInvites(api, team, m, invited, (list) => { waiting = list.filter((i) => Date.parse(i.expiresAt) > Date.now()).length; gate(); });
     if (!closed) wireClose(api, team, m, leave);
     wireSupport(api, team, m);
 

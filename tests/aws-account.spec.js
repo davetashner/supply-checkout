@@ -690,6 +690,35 @@ test.describe("first sign-in and teams", () => {
     await expectAccessible(page);
   });
 
+  test("while polling instead of a socket, /me is asked at most every 10 minutes", async ({ page }) => {
+    const backend = new FakeBackend({ teams, docs: seeded() });
+    await page.clock.install();
+    // The socket never opens, so after three tries the app polls every 15 seconds
+    await openAws(page, backend, { ws: { open: false } });
+    await connected(page);
+    const meCalls = () => backend.requests("GET", "/me").length;
+    const polls = () => backend.requests("GET", "/teams/t1/products").length;
+    for (let i = 0; i < 3; i++) await page.clock.fastForward(5e3);
+    await expect.poll(polls).toBeGreaterThan(1);
+    for (let i = 0; i < 8; i++) {
+      const before = polls();
+      await page.clock.fastForward(61e3);
+      await expect.poll(polls).toBeGreaterThan(before);
+    }
+    expect(meCalls()).toBe(1);
+    // Showing the tab again is not a poll: the usual minute applies
+    await setVisible(page, true);
+    await expect.poll(meCalls).toBe(2);
+    for (let i = 0; i < 9; i++) {
+      const before = polls();
+      await page.clock.fastForward(61e3);
+      await expect.poll(polls).toBeGreaterThan(before);
+    }
+    expect(meCalls()).toBe(2);
+    await page.clock.fastForward(61e3);
+    await expect.poll(meCalls).toBe(3);
+  });
+
   test("a /me without the open team leaves the switcher to the removal notice", async ({ page }) => {
     const backend = new FakeBackend({ teams, docs: seeded() });
     await page.clock.install();

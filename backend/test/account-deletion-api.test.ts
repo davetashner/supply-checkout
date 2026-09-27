@@ -263,6 +263,14 @@ describe("closing a team", () => {
     expect(partition("TEAM#team-a").filter((i) => i.email === "racer@example.com")).toEqual([]);
   });
 
+  it("still answers /me when a closed team's purgeAfter isn't a date, with no reopenBy", async () => {
+    await close();
+    table.put({ ...(meta() as Record<string, unknown>), purgeAfter: "not a date" });
+    const me = await call("GET", "/me", PAT);
+    expect(me.status).toBe(200);
+    expect(me.body.teams.find((t: { id: string }) => t.id === "team-a")).toMatchObject({ closedAt: new Date(NOW).toISOString(), deletesAt: "not a date", reopenBy: null });
+  });
+
   it("lets its last owner leave, moving both counts", async () => {
     await close();
     expect((await call("DELETE", `/teams/team-a/members/${PAT}`, PAT)).status).toBe(204);

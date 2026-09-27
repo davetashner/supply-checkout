@@ -61,6 +61,21 @@
 .verify-form{display:grid;gap:10px}
 .verify-form input{background:var(--ground);border:1px solid var(--line);border-radius:9px;padding:9px 12px;width:100%;max-width:12em;font-family:var(--mono);font-size:20px;letter-spacing:.2em}
 .verify-done{font-weight:600}
+/* The first-run checklist for an owner's new team (src/first-run.js), above the sheets and inventory */
+.first-run{display:grid;gap:10px;background:var(--surface);border:1px solid var(--accent);border-radius:14px;padding:16px 18px;margin-block:0 14px;overflow-wrap:anywhere}
+.first-run[hidden]{display:none}
+.first-run p{margin:0}
+.first-run-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.first-run h2{font-size:24px;margin:0}
+.first-run-steps{list-style:none;margin:0;padding:0;display:grid;gap:12px}
+.first-run-steps li{display:flex;gap:12px;align-items:flex-start;border-top:1px solid var(--line);padding-top:12px}
+.first-run-steps .step{display:grid;gap:6px;flex:1;min-width:0}
+.first-run-steps h3{margin:0;font-size:17px}
+.first-run-steps .check{flex:none;width:22px;height:22px;border-radius:50%;border:2px solid var(--line);margin-top:1px}
+.first-run-steps .done .check{background:var(--accent);border-color:var(--accent);position:relative}
+.first-run-steps .done .check::after{content:"";position:absolute;left:6px;top:2px;width:5px;height:10px;border:solid var(--accent-ink);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.first-run-steps .done h3{color:var(--muted);text-decoration:line-through}
+.first-run .btn{white-space:normal}
 /* The team's seats and support activity, on the members screen */
 .seats{margin:0;font-weight:600}
 .support-actions{list-style:none;margin:0;padding:0;display:grid;gap:8px;font-size:14px;overflow-wrap:anywhere}

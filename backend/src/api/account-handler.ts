@@ -204,6 +204,8 @@ export function errorFor(error: unknown): ApiError {
 export function teamBody(team: Team, role: Role, now = new Date()) {
   const comp = liveComp(team, now);
   const deletesAt = team.closedAt ? (team.purgeAfter ?? null) : null;
+  // A purgeAfter that isn't a date gives no reopenBy rather than failing all of /me
+  const purgeMs = deletesAt ? Date.parse(deletesAt) : NaN;
   return {
     id: team.teamId,
     name: team.name,
@@ -215,7 +217,7 @@ export function teamBody(team: Team, role: Role, now = new Date()) {
     // A closed team is read-only until deletesAt, when the purge deletes it
     closedAt: team.closedAt ?? null,
     deletesAt,
-    reopenBy: deletesAt ? new Date(Date.parse(deletesAt) - REOPEN_CUTOFF_MINUTES * 60_000).toISOString() : null,
+    reopenBy: Number.isFinite(purgeMs) ? new Date(purgeMs - REOPEN_CUTOFF_MINUTES * 60_000).toISOString() : null,
     comp: comp ? { plan: comp.plan, until: comp.until } : null,
     members: typeof team.members === "number" ? team.members : null,
     memberCap: memberCap(team, now),
