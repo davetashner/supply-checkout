@@ -219,7 +219,7 @@ export class MemoryTable {
   /**
    * All or nothing, like DynamoDB: every condition is checked first, and a
    * failure cancels the lot with a reason per item. Update understands
-   * `ADD a :v, ...` and `SET a = :v, b = b + :v, c = if_not_exists(c, :z) + :v`, on paths (`#items.#line.#out`)
+   * `ADD a :v, ...`, `REMOVE a, b` and `SET a = :v, b = b + :v, c = if_not_exists(c, :z) + :v`, on paths (`#items.#line.#out`)
    * whose parent exists, as DynamoDB requires. ConditionCheck only checks.
    * `beforeTransactWrite` runs first: a concurrent writer.
    */
@@ -277,10 +277,13 @@ export class MemoryTable {
       return parent as Item;
     };
     const number = (path: string[]) => (MemoryTable.resolve(next, path) as number | undefined) ?? 0;
-    for (const [, verb, rest] of (input.UpdateExpression ?? "").matchAll(/(ADD|SET) (.+?)(?= (?:ADD|SET) |$)/g)) {
+    for (const [, verb, rest] of (input.UpdateExpression ?? "").matchAll(/(ADD|SET|REMOVE) (.+?)(?= (?:ADD|SET|REMOVE) |$)/g)) {
       // Split on commas outside parentheses: if_not_exists(a, :b) is one operand
       for (const part of (rest as string).split(/,(?![^(]*\))/).map((p) => p.trim())) {
-        if (verb === "ADD") {
+        if (verb === "REMOVE") {
+          const path = MemoryTable.path(part, input.ExpressionAttributeNames);
+          Reflect.deleteProperty(parentOf(path), path[path.length - 1] as string);
+        } else if (verb === "ADD") {
           const [name, value] = part.split(" ") as [string, string];
           const path = MemoryTable.path(name, input.ExpressionAttributeNames);
           const parent = parentOf(path);

@@ -51,6 +51,7 @@ function fakeObservability(): Observability {
     count: (metric, value = 1) => {
       counts[metric] = (counts[metric] ?? 0) + value;
     },
+    gauge: () => {},
     flush: () => {},
   };
 }

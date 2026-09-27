@@ -4,7 +4,7 @@
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { clearedCookie, cookieToken, createAuthHandler, refreshCookie } from "../src/api/auth-handler.js";
-import type { Observability } from "../src/observability/index.js";
+import { BusinessMetric, type Observability } from "../src/observability/index.js";
 
 const APP = "https://app.example.com";
 const AUTH = "https://auth.example.com";
@@ -19,10 +19,11 @@ let sent: Sent[];
 let reply: (url: string) => Response | Promise<Response>;
 let handler: ReturnType<typeof createAuthHandler>;
 
+let counted: string[] = [];
 const obs = {
   region: "test-local-1",
   logger: { info: () => {}, warn: () => {}, error: () => {} },
-  count: () => {},
+  count: (metric: string) => counted.push(metric),
   flush: () => {},
 } as unknown as Observability;
 
@@ -31,6 +32,7 @@ const tokens = (extra: Record<string, unknown> = {}) =>
 
 beforeEach(() => {
   sent = [];
+  counted = [];
   reply = () => tokens();
   const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     sent.push({ url: String(url), form: Object.fromEntries(new URLSearchParams(String(init?.body))) });
@@ -141,17 +143,21 @@ describe("POST /auth/sign-out", () => {
     const response = await call("/auth/sign-out", { cookies: ["__Secure-sc_refresh=refresh-1"] });
     expect(response).toEqual({ status: 204, body: undefined, cookies: [clearedCookie()] });
     expect(sent).toEqual([{ url: `${AUTH}/oauth2/revoke`, form: { client_id: "web-client", token: "refresh-1" } }]);
+    expect(counted).toEqual([]);
   });
 
-  it("clears the cookie even when there's no token or revoking fails", async () => {
+  it("clears the cookie even when there's no token or revoking fails, counting each failed revoke", async () => {
     expect((await call("/auth/sign-out")).status).toBe(204);
     expect(sent).toEqual([]);
+    expect(counted).toEqual([]);
     reply = () => new Response("down", { status: 503 });
     expect((await call("/auth/sign-out", { cookies: ["__Secure-sc_refresh=refresh-1"] })).cookies).toEqual([clearedCookie()]);
     reply = () => {
       throw new TypeError("fetch failed");
     };
     expect((await call("/auth/sign-out", { cookies: ["__Secure-sc_refresh=refresh-1"] })).status).toBe(204);
+    // For the "Sign-out not revoking" alarm: the token stays valid at Cognito
+    expect(counted).toEqual([BusinessMetric.SignOutRevokeFailures, BusinessMetric.SignOutRevokeFailures]);
   });
 
   it("refuses another origin", async () => {
