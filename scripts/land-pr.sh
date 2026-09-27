@@ -65,7 +65,10 @@ fail() { printf '%s\n' "$@"; exit 1; }
 # The land lock (see the top). Waits while another land holds it.
 lock="$(git rev-parse --path-format=absolute --git-common-dir)/land-pr.lock"
 lock_poll=10 have_lock=""
-lock_field() { sed -n "s/^$1=//p" "$lock" 2>/dev/null | head -1; }
+# Prints nothing, and still succeeds, once the lock is gone: the holder can
+# release it at any moment, and under set -e and pipefail a failed read here
+# would end a waiting land.
+lock_field() { { sed -n "s/^$1=//p" "$lock" 2>/dev/null || true; } | head -1; }
 # A PID only counts as a land if that process is still running this script
 land_running() { [ -n "$1" ] && ps -p "$1" -o command= 2>/dev/null | grep -q 'land-pr'; }
 take_lock() {
