@@ -4,6 +4,7 @@ import { afterAll, beforeAll } from "vitest";
 import { authorizeTeam, createDb, type Db, type Role, type TeamContext } from "../src/data/index.js";
 import { connection, dbFromConnection } from "../src/data/client.js";
 import { createLocalTable, deleteLocalTable } from "../src/data/local-table.js";
+import type { EmailCodes } from "../src/api/cognito-user.js";
 import { EmailNotSentError, type Mailer, type MessageTags } from "../src/email/mailer.js";
 import type { EmailInput } from "../src/email/templates.js";
 
@@ -53,6 +54,12 @@ export function contextFor(role: Role, homeRegion = REGION, teamId = "t1", userI
   const db = fakeDb(async () => ({ Responses: [{ Item: { homeRegion } }, { Item: { role } }] }));
   return authorizeTeam(db, userId, teamId);
 }
+
+/** Email verification codes for handlers whose tests don't use them (account-api.test.ts does). */
+export const unusedEmailCodes: EmailCodes = {
+  send: () => Promise.reject(new Error("not used")),
+  verify: () => Promise.reject(new Error("not used")),
+};
 
 /** A mailer that records what it would send, or fails like SES when `fail` names an error. */
 export function fakeMailer() {
