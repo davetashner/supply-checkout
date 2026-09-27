@@ -192,7 +192,7 @@ export async function createTeam(
       new TransactWriteCommand({
         TransactItems: [
           // Both in the operators' index (ADR 0015): the team's account record, and its owner
-          { Put: { TableName: db.tableName, Item: { ...keys.team(teamId), ...gsi3.team(createdAt, teamId), ...team }, ConditionExpression: "attribute_not_exists(PK)" } },
+          { Put: { TableName: db.tableName, Item: { ...keys.team(teamId), ...gsi3.team(teamId), ...team }, ConditionExpression: "attribute_not_exists(PK)" } },
           { Put: { TableName: db.tableName, Item: { ...keys.member(teamId, userId), ...gsi3.owner(teamId, userId), ...member } } },
           { Put: { TableName: db.tableName, Item: { ...keys.userTeam(userId, teamId), ...userTeam } } },
           {

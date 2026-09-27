@@ -71,8 +71,15 @@ export interface ListOptions {
  * document's ID and version, and the team (which comes from the path, never
  * the body). A document can't contain them.
  */
-export const RESERVED_FIELDS: readonly string[] = ["PK", "SK", "GSI1PK", "GSI1SK", "GSI2PK", "GSI2SK", "type", "id", "key", "version", "teamId"];
+export const RESERVED_FIELDS: readonly string[] = ["PK", "SK", "GSI1PK", "GSI1SK", "GSI2PK", "GSI2SK", "GSI3PK", "GSI3SK", "type", "id", "key", "version", "teamId"];
 const RESERVED = new Set(RESERVED_FIELDS);
+/** Every index key, including indexes not added yet: a document must never put itself in an index (ADR 0015's GSI3 is the operators'). */
+const INDEX_KEY = /^GSI\d+(PK|SK)$/;
+
+/** True for a field only the server may set: RESERVED_FIELDS, and any GSI<n>PK or GSI<n>SK. */
+export function isReservedField(field: string): boolean {
+  return RESERVED.has(field) || INDEX_KEY.test(field);
+}
 
 /**
  * The largest document, as UTF-8 JSON. DynamoDB's item limit is 400 KB,
@@ -129,7 +136,7 @@ function checkDocument(collection: Collection, data: unknown): DocumentData {
   if (!isMap(data)) throw new InvalidInputError("A document is a JSON object");
   checkValue(data, 0);
   for (const field of Object.keys(data)) {
-    if (RESERVED.has(field)) throw new InvalidInputError(`"${field}" is set by the server`);
+    if (isReservedField(field)) throw new InvalidInputError(`"${field}" is set by the server`);
   }
   // `stock` changes with an atomic ADD elsewhere (adjustStock), so it has to be a number
   if (collection === "products") {
@@ -181,7 +188,7 @@ function toItem(collection: Collection, teamId: string, docId: string, data: Doc
 
 function fromItem(collection: Collection, item: Record<string, unknown>): StoredDocument {
   const data: DocumentData = {};
-  for (const [k, v] of Object.entries(item)) if (!RESERVED.has(k)) data[k] = v;
+  for (const [k, v] of Object.entries(item)) if (!isReservedField(k)) data[k] = v;
   const id = String(collection === "products" ? item.key : item.id);
   return { id, version: typeof item.version === "number" ? item.version : 1, data };
 }

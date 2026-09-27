@@ -13,6 +13,30 @@ import { JourneyAlarms } from "../observability/journey-alarms.js";
 import { OpsChecks } from "../observability/ops-checks.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
+/** Admin and configuration calls on the operator pool that alert P1 (ADR 0015), unless CloudFormation made them. */
+export const OPERATOR_POOL_ADMIN_EVENTS = [
+  "AdminCreateUser",
+  "AdminAddUserToGroup",
+  "AdminRemoveUserFromGroup",
+  "AdminSetUserPassword",
+  "AdminResetUserPassword",
+  "AdminEnableUser",
+  "AdminSetUserMFAPreference",
+  "AdminUpdateUserAttributes",
+  "AdminLinkProviderForUser",
+  "CreateGroup",
+  "UpdateGroup",
+  "DeleteGroup",
+  "UpdateUserPool",
+  "SetUserPoolMfaConfig",
+  "CreateUserPoolClient",
+  "UpdateUserPoolClient",
+  "CreateIdentityProvider",
+] as const;
+
+/** What an operator's own access token can change (the aws.cognito.signin.user.admin scope); each alerts P1. */
+export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySoftwareToken", "SetUserMFAPreference", "UpdateUserAttributes", "DeleteUser"] as const;
+
 /**
  * Alarms, dashboards and (later) synthetics canaries for the stacks in this
  * region (supply-checkout-7pe, docs/journeys.md).
@@ -27,9 +51,10 @@ import { SupplyCheckoutStack } from "./base-stack.js";
  * - `dashboard`: primary region only, drawing every region's metrics.
  * - `checks`: primary region only, the scheduled checks that send the
  *   StuckImports and EmailQuotaUsedPercent gauges (ops-checks.ts).
- * - `operatorChanges`: primary region only, a P1 alert whenever someone
- *   creates a user in the operator pool or adds or removes one from a group
- *   there (ADR 0015), from CloudTrail through EventBridge.
+ * - `operatorChanges`: primary region only, P1 alerts on changes to the
+ *   operator pool's users, groups, passwords, MFA and settings, and on what
+ *   an operator's own token can change (ADR 0015), from CloudTrail through
+ *   EventBridge.
  *
  * Log retention and X-Ray tracing for every function are set app-wide by
  * ObservabilityDefaults (observability/defaults.ts).
@@ -39,7 +64,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
   readonly alarms: JourneyAlarms;
   readonly dashboard?: OpsDashboard;
   readonly checks?: OpsChecks;
-  readonly operatorChanges?: Rule;
+  readonly operatorChanges?: Rule[];
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "observability", layer: "stateless" });
@@ -74,23 +99,47 @@ export class ObservabilityStack extends SupplyCheckoutStack {
   }
 
   /**
-   * ADR 0015's alert on the operator pool's membership: AdminCreateUser,
-   * AdminAddUserToGroup and AdminRemoveUserFromGroup there, as CloudTrail
-   * records them (management events reach EventBridge in the region of the
-   * call), go to the P1 topic. Adding an operator is rare and deliberate, so
+   * ADR 0015's alerts on the operator pool, from CloudTrail through
+   * EventBridge (management events reach EventBridge in the region of the
+   * call), to the P1 topic. Changes to who is an operator, how they sign in,
+   * or how the pool and its client are set up are rare and deliberate, so
    * every one is worth a message; one nobody expected is an escalation.
+   *
+   * - `OperatorPoolAdminChanges`: the admin and configuration calls in
+   *   OPERATOR_POOL_ADMIN_EVENTS on the operator pool, except those
+   *   CloudFormation makes for a deploy.
+   * - `OperatorSelfServiceChanges`: what an operator's own access token can
+   *   do with the aws.cognito.signin.user.admin scope (OPERATOR_SELF_SERVICE_EVENTS):
+   *   replace their TOTP, turn MFA settings, change attributes or delete
+   *   themselves. A stolen token could use these to keep access. CloudTrail
+   *   puts the pool ID in requestParameters or additionalEventData for
+   *   these, so the rule matches either ("Operators" in docs/infrastructure.md
+   *   says how to check it after a deploy).
    */
-  private alertOnOperatorChanges(envName: string): Rule {
+  private alertOnOperatorChanges(envName: string): Rule[] {
     const poolId = StringParameter.valueForStringParameter(this, identityOutputParameters(envName).opsUserPoolId);
-    const rule = new Rule(this, "OperatorPoolChanges", {
-      description: "Operator pool: a user created, or added to or removed from a group (ADR 0015)",
+    const base = { source: ["aws.cognito-idp"], detailType: ["AWS API Call via CloudTrail"] };
+    const admin = new Rule(this, "OperatorPoolChanges", {
+      description: "Operator pool: users, groups, passwords, MFA or pool and client settings changed outside a deploy (ADR 0015)",
       eventPattern: {
-        source: ["aws.cognito-idp"],
-        detailType: ["AWS API Call via CloudTrail"],
+        ...base,
         detail: {
           eventSource: ["cognito-idp.amazonaws.com"],
-          eventName: ["AdminCreateUser", "AdminAddUserToGroup", "AdminRemoveUserFromGroup"],
+          eventName: [...OPERATOR_POOL_ADMIN_EVENTS],
           requestParameters: { userPoolId: [poolId] },
+          // Not CloudFormation's own calls during a deploy (an absent invokedBy is a person or a script)
+          userIdentity: { invokedBy: [{ exists: false }, { "anything-but": "cloudformation.amazonaws.com" }] },
+        },
+      },
+    });
+    const selfService = new Rule(this, "OperatorSelfServiceChanges", {
+      description: "Operator pool: an operator's token replaced TOTP, changed MFA or attributes, or deleted the user (ADR 0015)",
+      eventPattern: {
+        ...base,
+        detail: {
+          eventSource: ["cognito-idp.amazonaws.com"],
+          eventName: [...OPERATOR_SELF_SERVICE_EVENTS],
+          $or: [{ requestParameters: { userPoolId: [poolId] } }, { additionalEventData: { userPoolId: [poolId] } }],
         },
       },
     });
@@ -104,21 +153,23 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         conditions: { StringEquals: { "aws:SourceAccount": Aws.ACCOUNT_ID } },
       }),
     );
-    // Only this rule may publish to the topic (not any rule in the account)
+    // Only these rules may publish to the topic (not any rule in the account)
     topic.addToResourcePolicy(
       new PolicyStatement({
         sid: "AllowOperatorPoolAlertToPublish",
         principals: [new ServicePrincipal("events.amazonaws.com")],
         actions: ["sns:Publish"],
         resources: [topic.topicArn],
-        conditions: { ArnEquals: { "aws:SourceArn": rule.ruleArn } },
+        conditions: { ArnEquals: { "aws:SourceArn": [admin.ruleArn, selfService.ruleArn] } },
       }),
     );
     const message = RuleTargetInput.fromText(
       `Supply Checkout ${envName}: ${EventField.fromPath("$.detail.eventName")} on the operator pool at ${EventField.fromPath("$.detail.eventTime")} (CloudTrail event ${EventField.fromPath("$.detail.eventID")} says who). If nobody expected it, follow "Operators" in docs/infrastructure.md.`,
     );
-    // A plain target: events-targets' SnsTopic would add a topic policy for every rule in the account
-    rule.addTarget({ bind: () => ({ arn: topic.topicArn, input: message }) });
-    return rule;
+    for (const rule of [admin, selfService]) {
+      // A plain target: events-targets' SnsTopic would add a topic policy for every rule in the account
+      rule.addTarget({ bind: () => ({ arn: topic.topicArn, input: message }) });
+    }
+    return [admin, selfService];
   }
 }

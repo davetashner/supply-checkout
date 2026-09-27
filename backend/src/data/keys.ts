@@ -151,8 +151,8 @@ export const gsi1 = {
 
 /** GSI3 keys: the operators' index (ADR 0015; schema.ts). */
 export const gsi3 = {
-  /** On a team's META item: every team in one index partition, oldest first. */
-  team: (createdAt: string, teamId: string) => ({ GSI3PK: OPS_TEAMS_PARTITION, GSI3SK: `${createdAt}#${id(teamId, "team ID")}` }),
+  /** On a team's META item: every team in one index partition, keyed by team ID so one team is a direct lookup. */
+  team: (teamId: string) => ({ GSI3PK: OPS_TEAMS_PARTITION, GSI3SK: id(teamId, "team ID") }),
   /** On an owner's MEMBER item, while they're an owner. */
   owner: (teamId: string, userId: string) => ({ GSI3PK: opsOwnersPartition(teamId), GSI3SK: id(userId, "user ID") }),
   /** On an operator audit item: the audit by month. */

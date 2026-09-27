@@ -223,7 +223,8 @@ describe("add lines", () => {
     expect(movements()).toEqual([]);
     expect(table.transactions).toEqual([2]);
     expect(operations()).toEqual([expect.objectContaining({ SK: `OP#${id}`, command: "addLines" })]);
-    expect(counts).toMatchObject({ Checkouts: 6, Writes: 1 });
+    expect(counts).toMatchObject({ ReceiptLines: 6, Writes: 1 });
+    expect(counts).not.toHaveProperty("Checkouts");
   });
 
   it("changes nothing when replayed, and refuses the ID for a different request", async () => {
@@ -233,7 +234,7 @@ describe("add lines", () => {
     const again = await call("POST", LINES, { operationId: id.toUpperCase(), lines: [tape] });
     expect(again).toMatchObject({ status: 200, body: { ...first.body, replayed: true } });
     expect(items()?.["k-tape"]).toMatchObject({ out: 2 });
-    expect(counts).toMatchObject({ Checkouts: 2, Writes: 1 });
+    expect(counts).toMatchObject({ ReceiptLines: 2, Writes: 1 });
     expect((await call("POST", LINES, { operationId: id, lines: [{ ...tape, quantity: 3 }] })).status).toBe(400);
     expect((await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: id, productKey: "k-tape", quantity: 2 })).status).toBe(400);
     expect(items()?.["k-tape"]).toMatchObject({ out: 2 });

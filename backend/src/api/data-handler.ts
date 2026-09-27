@@ -204,7 +204,8 @@ async function runCommand(deps: DataHandlerDeps, route: DataRoute, event: DataEv
     const { result, replayed } = await addLines(db, ctx, { ...body, sheetId } as Parameters<typeof addLines>[2], at);
     if (!replayed) {
       deps.obs.count(BusinessMetric.Writes, 1, { teamId: ctx.teamId });
-      deps.obs.count(BusinessMetric.Checkouts, result.lines.reduce((n, l) => n + l.quantity, 0), { teamId: ctx.teamId });
+      // Bought for the client, not taken from storage: counted apart from Checkouts
+      deps.obs.count(BusinessMetric.ReceiptLines, result.lines.reduce((n, l) => n + l.quantity, 0), { teamId: ctx.teamId });
     }
     // The sheet as it is now, read after the write (null if it's since been deleted)
     const sheet = await getDocument(db, ctx, "sheets", sheetId);

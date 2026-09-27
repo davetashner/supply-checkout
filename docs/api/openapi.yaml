@@ -55,7 +55,7 @@ info:
     - A document is any JSON object up to 350,000 bytes (UTF-8 JSON), nested
       at most 16 levels, with numbers DynamoDB can store. These top-level
       fields are the server's and are refused in a body: `PK`, `SK`, `GSI1PK`,
-      `GSI1SK`, `GSI2PK`, `GSI2SK`, `type`, `id`, `key`, `version`, `teamId`. For sheets, `date` must be a string
+      `GSI1SK`, `GSI2PK`, `GSI2SK`, `GSI3PK`, `GSI3SK` (and any `GSI<n>PK` or `GSI<n>SK`), `type`, `id`, `key`, `version`, `teamId`. For sheets, `date` must be a string
       and `items` an object. A barcode (`code`, on a product and on each line
       in a sheet's `items`) must be a string of at most 256 characters, the
       product key limit; it's empty for an item without a barcode. A line's
@@ -905,7 +905,7 @@ paths:
     get:
       tags: [ops]
       operationId: opsListTeams
-      summary: Teams, newest first, 50 a page, with their owners.
+      summary: Teams, newest first, 50 a page, with their owners. Audited as `ops.teams.list` (with `q` and the teams returned).
       security: [{ opsCognito: [] }]
       parameters:
         - { name: q, in: query, description: "A team ID, or part of a team's name (any case).", schema: { type: string, maxLength: 200 } }
@@ -1017,7 +1017,7 @@ paths:
     get:
       tags: [ops]
       operationId: opsListAudit
-      summary: The operator audit, newest first, for one team or one month (default this month, UTC).
+      summary: The operator audit, newest first, for one team (`teamId`; `PLATFORM` for team lists and searches) or one month (default this month, UTC).
       security: [{ opsCognito: [] }]
       parameters:
         - { name: teamId, in: query, schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" } }
@@ -1043,7 +1043,7 @@ paths:
                         ts: { type: string, format: date-time }
                         teamId: { type: string }
                         operatorSub: { type: string, description: The operator's `sub` in the operator pool. }
-                        action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end, ops.import.clear] }
+                        action: { type: string, enum: [ops.teams.list, ops.team.read, ops.comp.set, ops.comp.end, ops.import.clear] }
                         target: { type: string }
                         reason: { type: string }
                         before: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
@@ -1408,7 +1408,7 @@ components:
         status: { type: string, description: The Stripe subscription status. }
         trialEndsAt: { type: [string, "null"], format: date-time }
         ownerCount: { type: integer }
-        members: { type: [integer, "null"] }
+        closedAt: { type: [string, "null"], format: date-time, description: "Set once an owner closed the team: it's read-only until it's deleted, and comps are refused (409). A deleted team drops out of the list." }
         createdAt: { type: string, format: date-time }
         stripeCustomerId: { type: [string, "null"] }
         version: { type: integer, description: Send as `expectedVersion` to change the comp. }
@@ -1674,7 +1674,7 @@ components:
                   - type: "null"
               version: { type: integer, description: The team's version after the change. }
     CompConflict:
-      description: "`aborted`, nothing changed: the team isn't at `expectedVersion` (read it again), it has no comp to end, or the Idempotency-Key was used for a different request."
+      description: "`aborted`, nothing changed: the team isn't at `expectedVersion` (read it again), it's closed, it has no comp to end, or the Idempotency-Key was used for a different request."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     Document:
       description: The document after the request.

@@ -87,14 +87,15 @@ export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as
  * inventory:
  *
  * - Every team: GSI3PK `OPS#TEAMS` (OPS_TEAMS_PARTITION), GSI3SK
- *   `<createdAt>#<teamId>`, on the team's META item.
+ *   `<teamId>`, on the team's META item, so one team is a direct lookup.
  * - A team's owners: GSI3PK `OPS#OWNERS#<teamId>`, GSI3SK `<userId>`, on each
  *   owner's MEMBER item, and only while they're an owner.
  * - The operator audit trail by month: GSI3PK `OPS#AUDIT#<yyyy-mm>`, GSI3SK
  *   `<ts>#<eventId>`, on each operator audit item (`OPAUDIT#` partitions).
  *
  * Nothing else (sheets, products, movements, invites, imports) ever has
- * GSI3PK, so it isn't in the index.
+ * GSI3PK, so it isn't in the index: documents and imports refuse every
+ * GSI<n>PK and GSI<n>SK field (isReservedField in documents.ts).
  */
 export const GSI3 = "GSI3";
 export const GSI3PK = "GSI3PK";
@@ -154,6 +155,8 @@ export const OWNER_OPERATOR_AUDIT_ATTRIBUTES = [PK, SK, "eventId", "ts", "action
  * its SK:
  *
  * - A team's account record: never its `homeRegion` or anything about its data.
+ *   `closedAt` (a closed team is read-only until the purge deletes it, and
+ *   can't be comped) rather than the member count, for want of room.
  * - An owner's email and join date.
  * - An operator audit event's action and operator, for the month's summary.
  *   The reason and the before and after values are read per team, from the
@@ -166,7 +169,7 @@ export const OPS_INDEX_ATTRIBUTES = [
   "status",
   "trialEndsAt",
   "owners",
-  "members",
+  "closedAt",
   "createdAt",
   "stripeCustomerId",
   "version",

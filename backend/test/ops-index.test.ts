@@ -12,7 +12,7 @@ describe("the operators' index", () => {
   it("lists a new team and its owner", async () => {
     const table = new MemoryTable();
     const { team } = await createTeam(table.db(), { userId: "user-owner", email: "owner@example.com" }, { name: "Acme" }, NOW);
-    expect(table.get(`TEAM#${team.teamId}`, "META")).toMatchObject({ GSI3PK: "OPS#TEAMS", GSI3SK: `2026-09-26T12:00:00.000Z#${team.teamId}` });
+    expect(table.get(`TEAM#${team.teamId}`, "META")).toMatchObject({ GSI3PK: "OPS#TEAMS", GSI3SK: team.teamId });
     expect(table.get(`TEAM#${team.teamId}`, "MEMBER#user-owner")).toMatchObject({ GSI3PK: `OPS#OWNERS#${team.teamId}`, GSI3SK: "user-owner" });
   });
 
