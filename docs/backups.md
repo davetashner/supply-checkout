@@ -335,7 +335,15 @@ Restored tables have no deletion protection. The drill's copy in the target vaul
 
 ## Deletion records
 
-Deleted data lives on in the backups: up to 35 days in PITR and the workload vault, and 90 days in the backup account's copies. The purge also deletes a team's audit trail, and an account's deletion mark expires after 30 days, so a restored table has nothing that says what was deleted after its recovery point. Without help, a restore would bring deleted accounts and teams back.
+### How long deleted data stays in backups
+
+Deleted data lives on in the backups: up to 35 days in PITR and the workload vault (`LOCAL_RETENTION`), and up to 90 days in the backup account's copies (`COPY_RETENTION`, both in `infra/lib/backup.ts`). The clock starts when the data is deleted: when an account is deleted, or when the purge deletes a team 30 days after it was closed. So deleted data is gone from every backup within 90 days of its deletion, once AWS removes the expired recovery points. A restore re-applies the recorded account and team deletions ([step 4](#4-re-apply-deletions-on-the-restored-table)), so restoring doesn't bring them back. Smaller deletions (a sheet or an item) aren't recorded: like every other change after the recovery point, they're undone by a restore.
+
+The [terms of service](legal/terms-of-service.md) (section 8) and the privacy policy must say the same. Change them with `LOCAL_RETENTION`, `COPY_RETENTION` or PITR's window.
+
+### Why deletion records
+
+The purge also deletes a team's audit trail, and an account's deletion mark expires after 30 days, so a restored table has nothing that says what was deleted after its recovery point. Without help, a restore would bring deleted accounts and teams back.
 
 So every deletion also writes a record to the deletion records bucket, `supply-checkout-<env>-deletions-<region>-<account>` in the primary region (its name is in `/supply-checkout/<env>/data/deletions-bucket-name`). The code is `backend/src/deletions/`.
 
