@@ -900,6 +900,152 @@
         "TreatMissingData": "breaching"
       }
     },
+    "ChangeAlertsChanges7D967739": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Backups (workload account): a vault's access policy or lock, the plan, a selection or the region's settings changed or deleted",
+        "EventPattern": {
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "source": [
+            "aws.backup"
+          ],
+          "detail": {
+            "eventSource": [
+              "backup.amazonaws.com"
+            ],
+            "eventName": [
+              "PutBackupVaultAccessPolicy",
+              "DeleteBackupVaultAccessPolicy",
+              "PutBackupVaultLockConfiguration",
+              "DeleteBackupVaultLockConfiguration",
+              "DeleteBackupVault",
+              "UpdateBackupPlan",
+              "DeleteBackupPlan",
+              "DeleteBackupSelection",
+              "UpdateRegionSettings"
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-backup-changes",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp1arnC96584B6F00A464EAD1953AFF4B05118Parameter"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "account": "$.account",
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod backups, workload account <account>: <detail-eventName> at <detail-eventTime> (CloudTrail event <detail-eventID> says who). Expected only during a deploy of the backup stacks. Otherwise follow \\\"When backups are tampered with\\\" in docs/backups.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "ChangeAlertsKeyChangesA5C37BB6": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Backups (workload account): the vault key was scheduled for deletion, disabled or given a new policy",
+        "EventPattern": {
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "source": [
+            "aws.kms"
+          ],
+          "detail": {
+            "eventSource": [
+              "kms.amazonaws.com"
+            ],
+            "eventName": [
+              "ScheduleKeyDeletion",
+              "DisableKey",
+              "PutKeyPolicy"
+            ],
+            "resources": {
+              "ARN": [
+                {
+                  "Fn::GetAtt": [
+                    "VaultKey6B75F33E",
+                    "Arn"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "Name": "supply-checkout-prod-backup-key-changes",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "backup"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateful"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp1arnC96584B6F00A464EAD1953AFF4B05118Parameter"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "account": "$.account",
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod backups, workload account <account>: <detail-eventName> at <detail-eventTime> (CloudTrail event <detail-eventID> says who). Expected only during a deploy of the backup stacks. Otherwise follow \\\"When backups are tampered with\\\" in docs/backups.md.\""
+            }
+          }
+        ]
+      }
+    },
     "VaultArnParamA36B4823": {
       "Type": "AWS::SSM::Parameter",
       "Properties": {
@@ -959,6 +1105,10 @@
     "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp2arnC96584B6F00A464EAD1953AFF4B05118Parameter": {
       "Type": "AWS::SSM::Parameter::Value<String>",
       "Default": "/supply-checkout/prod/observability/alarm-topic-p2-arn"
+    },
+    "SsmParameterValuesupplycheckoutprodobservabilityalarmtopicp1arnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/observability/alarm-topic-p1-arn"
     },
     "BootstrapVersion": {
       "Type": "AWS::SSM::Parameter::Value<String>",

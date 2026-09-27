@@ -2,7 +2,7 @@
 
 How the `app` table and the S3 buckets are protected, how to set up the copy to a separate backup account, what to do when a backup fails, and the restore drill (bead `supply-checkout-8x1`).
 
-The CDK is in `infra/lib/stacks/backup-stack.ts` (workload account), `infra/lib/stacks/backup-account-stack.ts` (backup account) and `infra/lib/backup.ts` (names and retention). The tests in `infra/test/backup.test.ts` check the plan, the retention, the copy rule, both vault locks and the IAM roles.
+The CDK is in `infra/lib/stacks/backup-stack.ts` (workload account), `infra/lib/stacks/backup-account-stack.ts` (backup account), `infra/lib/backup.ts` (names and retention) and `infra/lib/backup-alerts.ts` (the alerts on changes, in both accounts). The tests in `infra/test/backup.test.ts` check the plan, the retention, the copy rule, both vault locks, the IAM roles and the alerts.
 
 ## What protects what
 
@@ -23,7 +23,7 @@ The CDK is in `infra/lib/stacks/backup-stack.ts` (workload account), `infra/lib/
 
 - **Backup account: compliance mode.** This copy is the one that has to survive a stolen administrator session in the workload account, ransomware, or a mistake. Once the lock's grace period ends (`COMPLIANCE_GRACE_DAYS`, 3 days after the vault stack is first deployed), nobody can delete a copy within its first 30 days, shorten its retention, or remove the lock. That includes the backup account's root user and AWS Support. The cost of getting it wrong is bounded: DynamoDB backups of this table are small, and `MaxRetentionDays` (365) stops a mistaken rule from keeping copies for years.
 - **The lock's limits are permanent.** After the grace period, the compliance vault's minimum (30 days) and maximum (365 days) can never change. A stack update that changes `COPY_LOCK` in `infra/lib/backup.ts` will fail, and the only way out is a new vault. The workload vault's limits (`WORKLOAD_LOCK`: 7 and 365 days) can still be changed.
-- **What the lock doesn't stop.** An administrator of the backup account can still make the copies unusable: by scheduling deletion of the vault's KMS key (after which nothing in the vault can be decrypted), or by changing the vault access policy so no new copies arrive. The lock only protects the recovery points themselves. A service control policy on the backup account that denies `kms:ScheduleKeyDeletion`, `kms:DisableKey` and `kms:PutKeyPolicy` on that key, and `backup:PutBackupVaultAccessPolicy` and `backup:DeleteBackupVaultAccessPolicy` on the vault, closes that gap (a bead is coming for it). Until then, keep administrator access to the backup account to the owner.
+- **What the lock doesn't stop.** An administrator of the backup account can still make the copies unusable: by scheduling deletion of the vault's KMS key (after which nothing in the vault can be decrypted), or by changing the vault access policy so no new copies arrive. The lock only protects the recovery points themselves. A service control policy on the backup account that denies `kms:ScheduleKeyDeletion`, `kms:DisableKey` and `kms:PutKeyPolicy` on that key, and `backup:PutBackupVaultAccessPolicy` and `backup:DeleteBackupVaultAccessPolicy` on the vault, closes that gap (a bead is coming for it). Until then, keep administrator access to the backup account to the owner. Each of those calls does [alert](#alerts-on-the-backups), and a key scheduled for deletion waits at least 7 days, time to cancel it.
 - **Workload account: governance mode.** It's the fast, local restore path, and it sits in the account an attacker would already be in. Its lock and deny policy stop accidental deletion, and an administrator can still fix a misconfiguration. Compliance mode here would add no protection the copy doesn't already give.
 - **Grace period.** For the first 3 days after deploying the vault stack, the lock can still be changed or removed (`aws backup delete-backup-vault-lock-configuration`). Check the first copy lands in that window.
 
@@ -55,7 +55,14 @@ The owner does this once. Agents can't create accounts or deploy. The profile na
      --resource-type-management-preference DynamoDB=true
    ```
 
-3. **Deploy the vault stack in the backup account.** Bootstrap CDK there once, then deploy with the workload account IDs as a parameter. Account IDs are never committed: they're CloudFormation parameters, given on the command line.
+3. **Deploy the vault stack in the backup account.** First, give it somewhere to send its alerts: the same email parameter the observability stack reads, created in the backup account (`String`, never committed). `-c alarmContacts='{"email":2}'` on the deploy subscribes `email-1` and `email-2`.
+
+   ```bash
+   aws ssm put-parameter --profile supply-backup --region us-east-1 --type String \
+     --name /supply-checkout/prod/alarms/email-1 --value '<address>'
+   ```
+
+   Bootstrap CDK there once, then deploy with the workload account IDs as a parameter. Account IDs are never committed: they're CloudFormation parameters, given on the command line.
 
    ```bash
    cd infra
@@ -64,7 +71,7 @@ The owner does this once. Agents can't create accounts or deploy. The profile na
      --parameters SourceAccountIds=<prod account ID> --parameters OrganizationId=<o-...>
    ```
 
-   The stack is `supply-checkout-<env>-<region>-backup-vault`, and `-c envName=staging` deploys staging's vault. The `CopyVaultArn` output is the vault's ARN. `RestoreAccountIds` (default empty) lists the accounts a copy may be sent to for a restore; leave it empty until a drill or a real restore needs it. CloudFormation rejects anything but 12-digit account IDs and an `o-` organization ID. Every account must also be in the organization: the vault and key policies check `aws:PrincipalOrgID`.
+   The stack is `supply-checkout-<env>-<region>-backup-vault`, and `-c envName=staging` deploys staging's vault. Confirm the subscription from the email AWS sends. The `copies-missing` alarm fires until the first copy lands (step 6), which also shows its email arrives. The `CopyVaultArn` output is the vault's ARN. `RestoreAccountIds` (default empty) lists the accounts a copy may be sent to for a restore; leave it empty until a drill or a real restore needs it. CloudFormation rejects anything but 12-digit account IDs and an `o-` organization ID. Every account must also be in the organization: the vault and key policies check `aws:PrincipalOrgID`.
 
 4. **Tell the workload account where the copies go.** In the workload account, in the primary region. The organization ID lets the backup role copy only to a vault inside the organization (`aws:ResourceOrgID`), even if the vault ARN is wrong.
 
@@ -134,6 +141,8 @@ The owner does this once. Agents can't create accounts or deploy. The profile na
 
    The `no-recent-backup` alarm can fire before the first backup completes. It clears once one does.
 
+9. **Check the alerts once.** In the backup account, `aws cloudwatch list-metrics --namespace AWS/Backup --metric-name NumberOfRecoveryPointsCompleted --profile supply-backup --region us-east-1` should list the copy vault, and `supply-checkout-prod-backup-copies-missing` should be `OK` (`aws cloudwatch describe-alarms --alarm-names ...`). If the metric isn't there, or has other dimensions than `BackupVaultName` (alone or with `ResourceType`), the alarm stays in `ALARM`: change its metrics in `backup-account-stack.ts` to match. Then check a change rule fires, in each account: re-applying a vault's access policy unchanged is harmless (`aws backup get-backup-vault-access-policy`, then `put-backup-vault-access-policy` with the same policy) and should send a `PutBackupVaultAccessPolicy` message, to P1 in the workload account and to the backup alerts topic in the backup account. If nothing arrives, look at that CloudTrail event and the rule's pattern.
+
 ## Roles
 
 | Role | Account | Can |
@@ -151,6 +160,42 @@ The workload vault key lets the backup account use `kms:Decrypt`, `kms:DescribeK
 The permissions haven't been checked against a real job yet. In the first copy and the drill, look for `AccessDenied` from KMS in CloudTrail. If the `kms:ViaService` condition or the missing `kms:Encrypt` is the cause, change the key policy (key policies, unlike the compliance lock, can be changed any time) and record it here.
 
 Whoever starts a restore or copy job needs `iam:PassRole` on the role, and their own permission to call AWS Backup.
+
+## Alerts on the backups
+
+A compromised workload administrator can delete the plan and its alarms in the same account, so the backup account watches too.
+
+| Where | Alert | Fires when | Goes to |
+| --- | --- | --- | --- |
+| Workload | `supply-checkout-<env>-p2-backup-failed` | A backup or copy job failed, aborted or expired in the last hour | P2 topic |
+| Workload | `supply-checkout-<env>-p2-no-recent-backup` | No backup completed in 24 hours | P2 topic |
+| Workload | Rule `supply-checkout-<env>-backup-changes` | A vault's access policy or lock was put or deleted, a vault deleted, the plan updated or deleted, a selection deleted, or the region's opt-in settings changed (`BACKUP_CHANGE_EVENTS`) | P1 topic |
+| Workload | Rule `supply-checkout-<env>-backup-key-changes` | The vault key was scheduled for deletion, disabled or given a new key policy (`BACKUP_KEY_EVENTS`) | P1 topic |
+| Backup | `supply-checkout-<env>-backup-copies-missing` | No copy completed in the copy vault for 36 hours (three 12-hour periods; no data counts as none) | `supply-checkout-<env>-backup-alerts` |
+| Backup | Rules `supply-checkout-<env>-backup-vault-changes` and `-backup-vault-key-changes` | The same calls, in the backup account, on its vaults and its vault key | `supply-checkout-<env>-backup-alerts` |
+
+- The rules read CloudTrail's management events, which reach EventBridge in the region of the call, and send a message naming the event, its time and its CloudTrail event ID, never who made it. Look that up in CloudTrail.
+- The change rules match CloudFormation's own calls too: a deploy of a backup stack that changes a vault policy or the plan alerts. That's rare and worth knowing about.
+- The workload rules alert on any vault, plan or selection in the account and region, not only Supply Checkout's; there are no others.
+- The copies-missing alarm is what notices a workload account whose plan, copy rule or alarms were deleted: nothing in the workload account can stop it.
+- The backup account's topic is encrypted with its own key and lets only that account's alarms and its two rules publish. Its recipients are the `/supply-checkout/<env>/alarms/email-<n>` parameters in the backup account ([step 3](#setting-it-up)).
+
+### When copies stop arriving
+
+1. In the workload account, check the backup alarms and the jobs (`aws backup list-copy-jobs`, [When a backup fails](#when-a-backup-fails)). A failed copy job says why.
+2. If there's no copy job at all, check the plan still exists and still has its copy rule (`aws backup list-backup-plans`, `get-backup-plan`), and look in CloudTrail for `DeleteBackupPlan`, `UpdateBackupPlan` or `DeleteBackupSelection`. If someone removed them, treat it as the workload account being compromised: follow the incident response process, and keep the backup account's copies (which nobody can delete within 30 days) out of reach of the workload account.
+3. If copy jobs completed but no copy is in the vault, check the vault access policy in the backup account (`get-backup-vault-access-policy`) and CloudTrail there for `PutBackupVaultAccessPolicy`.
+4. Redeploying the backup stack puts the plan and selection back. Then start an on-demand backup and copy ([step 6](#setting-it-up)) and watch the alarm go back to `OK`.
+
+### When backups are tampered with
+
+A change rule fired. If it matches a deploy someone just ran of a backup stack, it's expected. Otherwise:
+
+1. Find the event: in CloudTrail, in the account and region named in the message, look up the event ID. It shows who made the call, from where, and what it changed.
+2. **Key scheduled for deletion or disabled:** cancel it now (`aws kms cancel-key-deletion`, then `enable-key`). A key waits at least 7 days before it's deleted; after that, nothing it encrypted can be read.
+3. **Vault access policy or lock changed or deleted:** compare with the template (redeploy the stack to put it back). A compliance-mode lock can't be removed after its grace period, so a `DeleteBackupVaultLockConfiguration` that succeeded means it was still in the grace period.
+4. **Plan or selection deleted or changed:** redeploy the backup stack, and see [When copies stop arriving](#when-copies-stop-arriving).
+5. If nobody expected it, treat the account as compromised: revoke the principal's sessions and credentials, and review what else it did in CloudTrail.
 
 ## When a backup fails
 
