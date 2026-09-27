@@ -27,6 +27,8 @@ import {
   ACCOUNT_SESSION_TAGS,
   API_ENV,
   AUTH_ROUTES,
+  BILLING_ROUTES,
+  BILLING_SESSION_TAGS,
   DATA_ROUTES,
   IDEMPOTENCY_HEADER,
   OPS_ROUTES,
@@ -37,6 +39,7 @@ import {
 import {
   COMMITTING_IMPORTS_PARTITION,
   COMP_ATTRIBUTES,
+  CUSTOMER_LINK_TEAM_ATTRIBUTES,
   GSI1,
   GSI2,
   GSI3,
@@ -50,10 +53,13 @@ import {
   OPS_TEAMS_PARTITION,
   OWNER_OPERATOR_AUDIT_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
+  STRIPE_LINK_ATTRIBUTES,
+  STRIPE_LINK_PREFIX,
   STUCK_IMPORT_ATTRIBUTES,
   tableName,
 } from "../../../backend/src/data/schema.js";
-import type { DeploymentConfig } from "../config.js";
+import { STRIPE_ENV, stripeSecretName } from "../../../backend/src/billing/names.js";
+import { type DeploymentConfig, stripeModeOf, stripeSecretArn } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import { grantPutDeletionRecords } from "../deletions.js";
 import { grantSendEmail } from "../email.js";
@@ -144,6 +150,9 @@ export class ApiStack extends SupplyCheckoutStack {
   readonly accountFunction: NodejsFunction;
   readonly dataAccessRole: Role;
   readonly accountAccessRole: Role;
+  /** Starts Stripe Checkout (ADR 0009): one of only two kinds of function that may read the Stripe secret key. */
+  readonly billingFunction: NodejsFunction;
+  readonly billingAccessRole: Role;
   /** Primary region only (ADR 0015). */
   readonly opsFunction?: NodejsFunction;
   readonly operatorAccessRole?: Role;
@@ -341,6 +350,10 @@ export class ApiStack extends SupplyCheckoutStack {
     // A deleted account's record (user ID, time, teams it closed), in the primary region's bucket
     grantPutDeletionRecords(this.accountFunction, config, "user");
 
+    const billing = this.addBilling(config, table, tableArn, region, appOrigin, ssm(identity.issuerUrl), tableKeyStatement);
+    this.billingFunction = billing.fn;
+    this.billingAccessRole = billing.role;
+
     // The API
     this.api = new HttpApi(this, "HttpApi", {
       apiName: `supply-checkout-${config.envName}`,
@@ -403,6 +416,12 @@ export class ApiStack extends SupplyCheckoutStack {
       stage.node.addDependency(...added);
       routeSettings[routeKey(route)] = { ThrottlingRateLimit: route.throttle.rate, ThrottlingBurstLimit: route.throttle.burst };
     }
+    const billingIntegration = new HttpLambdaIntegration("BillingIntegration", this.live(this.billingFunction));
+    for (const route of BILLING_ROUTES) {
+      const added = this.api.addRoutes({ path: route.path, methods: [route.method as HttpMethod], integration: billingIntegration, authorizer });
+      stage.node.addDependency(...added);
+      routeSettings[routeKey(route)] = { ThrottlingRateLimit: route.throttle.rate, ThrottlingBurstLimit: route.throttle.burst };
+    }
     if (this.isPrimaryRegion) {
       const ops = this.addOps(config, table, tableArn, tableKeyStatement);
       this.opsFunction = ops.fn;
@@ -443,6 +462,106 @@ export class ApiStack extends SupplyCheckoutStack {
 
     new StringParameter(this, "ApiIdParam", { parameterName: outputs.apiId, stringValue: this.api.apiId, description: "HTTP API ID in this region" });
     new StringParameter(this, "ApiUrlParam", { parameterName: outputs.url, stringValue: `https://${names.api}`, description: "API base URL" });
+  }
+
+  /**
+   * The billing function and the billing-access role it assumes (ADR 0009,
+   * supply-checkout-x0l). Owners start Stripe Checkout through it. Its own
+   * role can't reach the table: it may assume the billing-access role, and
+   * read the one Stripe secret key for this environment and mode
+   * (secretsmanager:GetSecretValue on that secret's ARN only). The
+   * billing-access role, tagged with the path's team and (once Stripe has
+   * made it) the team's Stripe customer, may:
+   *
+   * - GetItem in `TEAM#<teamId>` (the membership check and the team).
+   * - UpdateItem in `TEAM#<teamId>` naming only the keys and
+   *   `stripeCustomerId`, returning nothing (linking the customer).
+   * - PutItem in `STRIPE#<stripeCustomer>` naming only the link's
+   *   attributes, returning nothing.
+   *
+   * No Query, Scan or DeleteItem, and no other team's partition.
+   */
+  private addBilling(config: DeploymentConfig, table: string, tableArn: string, region: string, appOrigin: string, issuerUrl: string, tableKeyStatement: () => PolicyStatement) {
+    const mode = stripeModeOf(config);
+    const fn = this.handler("BillingFunction", "billing", {
+      memorySize: 512,
+      description: "Starts Stripe Checkout for a team's owner (ADR 0009)",
+      environment: {
+        [API_ENV.tableName]: table,
+        [API_ENV.issuerUrl]: issuerUrl,
+        [API_ENV.appUrl]: appOrigin,
+        [STRIPE_ENV.secretId]: stripeSecretName(config.envName, mode),
+        [STRIPE_ENV.mode]: mode,
+      },
+    });
+    const fnRole = fn.role;
+    if (!fnRole) throw new Error("The billing function has no role");
+    const tag = (key: string) => `\${aws:PrincipalTag/${key}}`;
+    const tags = Object.values(BILLING_SESSION_TAGS);
+    const team = `TEAM#${tag(BILLING_SESSION_TAGS.teamId)}`;
+    const role = new Role(this, "BillingAccessRole", {
+      description: "Assumed by the billing function per request, tagged with the team and its Stripe customer: reads the team, and links the customer",
+      maxSessionDuration: Duration.hours(1),
+      assumedBy: new ArnPrincipal(fnRole.roleArn)
+        .withConditions({
+          // Every session names a team and a customer (or the unused marker), and nothing else
+          StringLike: Object.fromEntries(tags.map((key) => [`aws:RequestTag/${key}`, "?*"])),
+          "ForAllValues:StringEquals": { "aws:TagKeys": tags },
+        })
+        .withSessionTags(),
+      inlinePolicies: {
+        TeamAndCustomerLinkOnly: new PolicyDocument({
+          statements: [
+            // GetItem also covers TransactGetItems (the membership check)
+            new PolicyStatement({
+              sid: "TeamReadOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:GetItem"],
+              resources: [tableArn],
+              conditions: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [team] } },
+            }),
+            // The team's Stripe customer, in the same transaction as the link
+            new PolicyStatement({
+              sid: "TeamStripeCustomerOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:UpdateItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [team], "dynamodb:Attributes": [...CUSTOMER_LINK_TEAM_ATTRIBUTES] },
+                StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+              },
+            }),
+            // The customer's link to the team: only the customer Stripe returned (the tag)
+            new PolicyStatement({
+              sid: "StripeLinkOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:PutItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [`${STRIPE_LINK_PREFIX}${tag(BILLING_SESSION_TAGS.stripeCustomer)}`],
+                  "dynamodb:Attributes": [...STRIPE_LINK_ATTRIBUTES],
+                },
+                StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+              },
+            }),
+            tableKeyStatement(),
+          ],
+        }),
+      },
+    });
+    fn.addToRolePolicy(new PolicyStatement({ actions: ["sts:AssumeRole", "sts:TagSession"], resources: [role.roleArn] }));
+    fn.addEnvironment(API_ENV.billingRoleArn, role.roleArn);
+    // The Stripe secret key: this one secret only. It's encrypted with Secrets Manager's
+    // AWS managed key, which needs no KMS grant here
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ReadStripeSecretKey",
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: [stripeSecretArn({ partition: Aws.PARTITION, region, account: Aws.ACCOUNT_ID }, config.envName, mode)],
+      }),
+    );
+    return { fn, role };
   }
 
   /**

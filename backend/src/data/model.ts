@@ -36,7 +36,10 @@ export interface Team {
    * on the condition that it's still absent (teamCounts).
    */
   readonly members?: number;
+  /** The team's Stripe customer (linkStripeCustomer), made the first time an owner starts a checkout. */
   readonly stripeCustomerId?: string;
+  /** The team's Stripe subscription, which the billing webhook records (ADR 0009). */
+  readonly stripeSubscriptionId?: string;
   /**
    * When an owner closed the team (ISO 8601; closeTeam). A closed team is
    * read-only: members can still read and export it, and leave, but nothing

@@ -25,8 +25,10 @@ export type ErrorCode =
  * without an owner), `team_full` (the team is at its member cap), and for
  * verifying an email address: `code_mismatch` and `code_expired` (the code
  * entered), `already_verified` and `email_in_use` (another account has it).
+ * And `already_subscribed`: the team has a Stripe subscription that hasn't
+ * ended, so it can't start another checkout.
  */
-export type ErrorReason = "view_only" | "owners_only" | "not_member" | "last_owner" | "team_full" | "team_closed" | "team_deleting" | "code_mismatch" | "code_expired" | "already_verified" | "email_in_use" | "email_changed";
+export type ErrorReason = "view_only" | "owners_only" | "not_member" | "last_owner" | "team_full" | "team_closed" | "team_deleting" | "code_mismatch" | "code_expired" | "already_verified" | "email_in_use" | "email_changed" | "already_subscribed";
 
 /** An error with the HTTP status and code the client sees. */
 export class ApiError extends Error {
