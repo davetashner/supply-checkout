@@ -13,9 +13,9 @@ const seeded = (team = "t1") => Object.fromEntries(Object.entries(usedState.seed
 const account = (page) => page.locator("#account");
 const alert = (page) => page.locator("#accountError");
 // Once connected, live updates subscribe and the app lists both collections again. Wait
-// for that re-list before changing the session, or it can meet the change first: a CI
-// runner slow enough to connect before it subscribes gave the re-list the expired token,
-// so it refreshed, and the write under test went out with the new token at once.
+// for that re-list before changing the session or the user's teams, or on a slow runner it
+// can meet the change first: an expired token refreshed before the write under test, or a
+// removal shown before the tab comes back.
 const relisted = (backend, team = "t1") =>
   expect.poll(() => ["products", "sheets"].map((c) => backend.requests("GET", `/teams/${team}/${c}`).length)).toEqual([2, 2]);
 
@@ -731,6 +731,9 @@ test.describe("first sign-in and teams", () => {
     await page.clock.install();
     await openAws(page, backend);
     await connected(page);
+    // Or the re-list meets the removal first, and the removal notice ends the page before
+    // it's shown again, so /me isn't asked
+    await relisted(backend);
     backend.teams = backend.teams.filter((t) => t.id !== "t1");
     await page.clock.fastForward(61e3);
     await setVisible(page, true);
