@@ -6,6 +6,9 @@
 //   PUT    /ops/teams/{teamId}/comp     Comp a team or change or extend its comp
 //   DELETE /ops/teams/{teamId}/comp     End a comp early
 //   GET    /ops/audit?month=|teamId=    The operator audit trail
+//   GET    /ops/imports                 Imports stuck part-way (the "Imports stuck" alarm)
+//   POST   /ops/teams/{teamId}/imports/{importId}/clear
+//                                       Take a stuck import out of the check (audited)
 //
 // Who gets in, on every request:
 // 1. API Gateway's ops JWT authorizer checks the token against the operator
@@ -29,6 +32,7 @@
 
 import type { APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyStructuredResultV2, Context } from "aws-lambda";
 import {
+  clearStuckImport,
   ConflictError,
   endComp,
   getOpsTeam,
@@ -37,6 +41,7 @@ import {
   listOperatorAudit,
   listOpsOwners,
   listOpsTeams,
+  listStuckImportsForOps,
   NotFoundError,
   type Operator,
   type OperatorAuditEvent,
@@ -46,6 +51,7 @@ import {
   setComp,
 } from "../data/index.js";
 import { OPERATORS_GROUP } from "../identity/names.js";
+import { STUCK_IMPORT_AFTER_MINUTES } from "../ops/names.js";
 import type { Observability } from "../observability/index.js";
 import { ApiError, errorFor as apiErrorFor, errorResponse, header, json, jsonBody } from "../api/http.js";
 import { IDEMPOTENCY_HEADER, OPS_ROUTES, type OpsRoute, routeKey } from "../api/routes.js";
@@ -152,6 +158,14 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
     return { sub };
   }
 
+  function importIdFrom(event: OpsEvent): string {
+    const value = event.pathParameters?.importId;
+    if (typeof value !== "string" || !ID.test(value)) throw new ApiError(400, "bad_request", "Invalid import ID");
+    return value;
+  }
+
+  const stuckBefore = () => new Date(now() - STUCK_IMPORT_AFTER_MINUTES * 60_000);
+
   function teamIdFrom(event: OpsEvent): string {
     const value = event.pathParameters?.teamId;
     if (typeof value !== "string" || !ID.test(value)) throw new ApiError(400, "bad_request", "Invalid team ID");
@@ -191,6 +205,18 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
       const teamId = teamIdFrom(event);
       const body = jsonBody(event, ["reason", "expectedVersion"]);
       const outcome = await endComp(deps.dbFor(op.sub, teamId), op, teamId, { ...body, idempotencyKey: header(event, IDEMPOTENCY_HEADER) } as Parameters<typeof endComp>[3], new Date(now()));
+      return { teamId, response: json(200, outcome) };
+    },
+    async listStuckImports(event, op) {
+      if (event.body) jsonBody(event, []);
+      const imports = await listStuckImportsForOps(deps.dbFor(op.sub), op, stuckBefore());
+      return { response: json(200, { imports, stuckAfterMinutes: STUCK_IMPORT_AFTER_MINUTES }) };
+    },
+    async clearStuckImport(event, op) {
+      const teamId = teamIdFrom(event);
+      const importId = importIdFrom(event);
+      const body = jsonBody(event, ["reason"]);
+      const outcome = await clearStuckImport(deps.dbFor(op.sub, teamId), op, teamId, importId, { reason: body.reason, idempotencyKey: header(event, IDEMPOTENCY_HEADER), startedBefore: stuckBefore() }, new Date(now()));
       return { teamId, response: json(200, outcome) };
     },
     async listAudit(event, op) {

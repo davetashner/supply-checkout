@@ -12,6 +12,9 @@
 // the button stays off until it matches. A closed team is read-only: this screen then only
 // removes people and lets anyone leave, its last owner too, and invites nobody. The whole of
 // src/aws/ is web-only, so none of this is in the artifact build.
+//
+// Reopening a closed team (POST /teams/{teamId}/reopen, openReopen) is offered to its owners
+// in the team bar's closed-team notice, typing the team's name the same way.
 import { esc } from "../format.js";
 import { armButton, openModal, closeModal, toast } from "../dom.js";
 
@@ -198,6 +201,47 @@ function wireClose(api, team, m, leave) {
       fail.hidden = false;
       button.disabled = false;
     }
+  });
+}
+
+// What went wrong reopening the team, in words
+const reopenFailure = (e) =>
+  e.reason === "team_deleting" ? "This team is about to be deleted, so it can't be reopened any more."
+    : e.code === "bad_request" ? "Type the team's name as it's shown."
+    : e.code === "quota_exceeded" ? "This team has been reopened as many times as it can be today. Try again tomorrow."
+    : e.code === "aborted" ? "Someone else changed the team just now. Try again."
+    : e.code === "permission_denied" ? "Only the team's owners can reopen it."
+    : "Couldn't reopen the team. Check your connection and try again.";
+
+// Reopening a closed team, for its owners: the button stays off until the typed name matches.
+// `done` runs once it's open again: the team's access changed, so the page starts again.
+export function openReopen(api, team, done) {
+  openModal(`<h2>Reopen ${esc(team.name)}</h2>
+    <p class="hint">Reopening makes the team writable again for its members, straight away, and it won't be deleted. Every owner gets an email about it.</p>
+    <p class="hint">Invites that were cancelled when it closed stay cancelled, and anyone who left or was removed while it was closed isn't back: invite them again from Members.</p>
+    <form id="reopenForm" class="close-form" novalidate>
+      <div class="field"><label for="reopenName">Type the team's name, <strong>${esc(team.name)}</strong>, to reopen it</label><input type="text" id="reopenName" autocomplete="off" spellcheck="false" data-autofocus></div>
+      <p class="error" role="alert" id="reopenFail" hidden></p>
+      <div class="modal-actions"><button type="button" class="btn" id="reopenCancel">Cancel</button><button type="submit" class="btn primary" id="reopenTeamGo" disabled>Reopen team</button></div>
+    </form>`, (m) => {
+    const name = m.querySelector("#reopenName"), button = m.querySelector("#reopenTeamGo"), fail = m.querySelector("#reopenFail");
+    m.querySelector("#reopenCancel").addEventListener("click", closeModal);
+    name.addEventListener("input", () => { button.disabled = typed(name.value) !== typed(team.name); });
+    m.querySelector("#reopenForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      button.disabled = true;
+      fail.hidden = true;
+      try {
+        await api("POST", `/teams/${encodeURIComponent(team.id)}/reopen`, { name: name.value });
+      } catch (err) {
+        fail.textContent = reopenFailure(err);
+        fail.hidden = false;
+        button.disabled = false;
+        return;
+      }
+      closeModal();
+      done(`You reopened ${team.name}. Its members can change it again, and it won't be deleted.`);
+    });
   });
 }
 

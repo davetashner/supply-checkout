@@ -80,6 +80,12 @@ export const BusinessMetric = {
   TeamClosedNotices: "TeamClosedNotices",
   /** Owners of a closed team who couldn't be emailed about it (SES refused, no address, or the owners couldn't be listed); the team stays closed. */
   TeamClosedNoticeFailures: "TeamClosedNoticeFailures",
+  /** Closed teams an owner reopened before the purge. */
+  TeamsReopened: "TeamsReopened",
+  /** Owners emailed that their team was reopened. */
+  TeamReopenedNotices: "TeamReopenedNotices",
+  /** Owners of a reopened team who couldn't be emailed about it (SES refused, no address, or the owners couldn't be listed); the team stays open. */
+  TeamReopenedNoticeFailures: "TeamReopenedNoticeFailures",
   /** Accounts their users deleted: the Cognito user and every row that named them. */
   AccountsDeleted: "AccountsDeleted",
   /** Closed teams deleted by the scheduled purge once their read-only period ended. */

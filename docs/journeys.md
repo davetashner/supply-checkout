@@ -193,7 +193,7 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Expected:** done without contacting support. The user is out of every team, a team they were alone in is closed, invites to their address and their sign-in are gone, and a closed team's data is deleted 30 days after it closed. Closing a team will cancel its subscription once billing is built (`supply-checkout-x0l`).
 
-**Status:** built (`supply-checkout-b1h`). The 30-day deadline is watched: the hourly purge sends `ClosedTeamsOverdue`, the closed teams still there more than 24 hours after their deletion date, and **Deletion overdue** alarms on any; if the purge stops sending the gauge for 3 hours (its schedule disabled or deleted, or every run failing before it reads the index), **Deletion job not running** alarms ([J9, J10, J11](#j9-j10-j11-roles-cancellation-and-deletion)). **Tests:** `backend/test/account-deletion-api.test.ts` (closing, deleting, the purge and its overdue gauge, isolation of each session), `backend/test/closing.test.ts` (the same against DynamoDB Local, including that the data is gone after 30 days and not before), `tests/aws-account-deletion.spec.js` (the web app: leaving, closing, a closed team, deleting).
+**Status:** built (`supply-checkout-b1h`). The 30-day deadline is watched: the hourly purge sends `ClosedTeamsOverdue`, the closed teams still there more than 24 hours after their deletion date, and **Deletion overdue** alarms on any; if the purge stops sending the gauge for 3 hours (its schedule disabled or deleted, or every run failing before it reads the index), **Deletion job not running** alarms ([J9, J10, J11](#j9-j10-j11-roles-cancellation-and-deletion)). **Tests:** `backend/test/account-deletion-api.test.ts` (closing, deleting, the purge and its overdue gauge, isolation of each session), `backend/test/closing.test.ts` (the same against DynamoDB Local, including that the data is gone after 30 days and not before), `tests/aws-account-deletion.spec.js` (the web app: leaving, closing, a closed team, reopening it, deleting). An owner who is still in a closed team can reopen it until an hour before the purge (`supply-checkout-d9su`), and never once the purge has marked it `purging`.
 
 ### J12. Choose a plan in the mobile app
 
@@ -297,20 +297,15 @@ Every other alarm on this page waits for the resource or code it watches, and is
 
 **Imports stuck: what to do.** An import stops part-way when its Lambda times out or items keep changing under it, and the owner didn't press **Try again**. Nothing is lost: every row already committed is complete, and the plan for the rest is staged. Imports that no retry could finish (a row too large to save, or a planned key another item took) leave the check on their own when they stop: the owner was told which line and to choose the file again. So everything this alarm lists is something a retry would finish.
 
-1. Find the import in the check's logs: in Logs Insights on `/aws/lambda/supply-checkout-<env>-stuck-imports`, `filter message = "Import stuck"` gives each one's `teamId`, `importId`, `startedAt` and `committed` of `total` rows. They're IDs only; look up the team's owners from the team ID.
+1. List the stuck imports with the operator CLI ([Operators](infrastructure.md#operators)): `npm run ops -- stuck-imports` gives each one's team ID, import ID, start time and `committed` of `total` rows. They're IDs only; `npm run ops -- team <teamId>` shows the team's owners (and is audited). The check's own logs have the same: in Logs Insights on `/aws/lambda/supply-checkout-<env>-stuck-imports`, `filter message = "Import stuck"`.
 2. Tell an owner of the team that their import stopped part-way, and ask them to import the same file again. If the app still shows **Try again**, that carries on from the first row not committed. Otherwise, choosing the file again starts a new import that re-plans against the inventory as it is now, leaves the rows already imported unchanged and finishes the rest. We can't finish it for them: the job keeps the plan, not the file, and a retry must send the same file.
-3. If the owner finished it as a new import (or doesn't want it), take the old job out of the check so the alarm recovers. This leaves the job itself alone, so a retry of it still works until it expires:
+3. If the owner finished it as a new import (or doesn't want it), take the old job out of the check so the alarm recovers. This leaves the job itself alone, so a retry of it still works until it expires. It's audited (`ops.import.clear`), and the team's owners see it under support actions:
 
    ```bash
-   aws dynamodb update-item --profile supply-prod --region us-east-1 \
-     --table-name supply-checkout-prod-app \
-     --key '{"PK":{"S":"TEAM#<teamId>"},"SK":{"S":"IMPORT#<importId>"}}' \
-     --update-expression 'REMOVE GSI1PK, GSI1SK' \
-     --condition-expression '#s = :committing' \
-     --expression-attribute-names '{"#s":"status"}' \
-     --expression-attribute-values '{":committing":{"S":"committing"}}'
+   npm run ops -- clear-import <teamId> <importId> --reason "Owner re-imported the file"
    ```
 
+   It refuses an import that isn't stuck: one that finished, was cleared already, or started less than an hour ago.
    Job records expire after 7 days anyway, which also clears the alarm.
 4. If imports keep getting stuck, look at the data function's logs for the import route (`POST /teams/{teamId}/imports`): timeouts mean the batches need to be smaller or the function's timeout longer.
 

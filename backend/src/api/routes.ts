@@ -93,6 +93,7 @@ export interface AccountRoute {
     | "revokeInvite"
     | "resendInvite"
     | "closeTeam"
+    | "reopenTeam"
     | "deleteAccount"
     | "sendEmailCode"
     | "verifyEmail";
@@ -110,7 +111,7 @@ export interface AccountRoute {
  * And a team's members: owners list them, change their roles and remove them,
  * and any member can leave. And a team's invites: owners invite people by
  * email, see each invite as pending, failed or expired, revoke it and re-send
- * it. Owners close a team, and anyone deletes their own account (the
+ * it. Owners close a team (and reopen it before it's deleted), and anyone deletes their own account (the
  * account handler's "Closing a team" and "Deleting an account"). And
  * verifying the user's email address with a code Cognito emails them.
  * Each needs a Cognito access token (the JWT
@@ -134,6 +135,8 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
   // Rare, and each does a lot: closing deletes the team's invites, and deleting an
   // account visits every team the user is in and deletes the Cognito user
   { method: "POST", path: "/teams/{teamId}/close", action: "closeTeam", throttle: { rate: 2, burst: 5 } },
+  // Rare, and it emails every owner
+  { method: "POST", path: "/teams/{teamId}/reopen", action: "reopenTeam", throttle: { rate: 2, burst: 5 } },
   { method: "DELETE", path: "/me", action: "deleteAccount", throttle: { rate: 2, burst: 5 } },
   // Cognito emails the code and limits codes and tries per user; these keep the total down too
   { method: "POST", path: "/me/email/code", action: "sendEmailCode", throttle: { rate: 5, burst: 10 } },
@@ -141,15 +144,16 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
 ];
 
 export interface OpsRoute {
-  readonly method: "GET" | "PUT" | "DELETE";
+  readonly method: "GET" | "PUT" | "DELETE" | "POST";
   readonly path: string;
-  readonly action: "listTeams" | "getTeam" | "setComp" | "endComp" | "listAudit";
+  readonly action: "listTeams" | "getTeam" | "setComp" | "endComp" | "listAudit" | "listStuckImports" | "clearStuckImport";
   readonly throttle: { readonly rate: number; readonly burst: number };
 }
 
 /**
  * Platform operators (ADR 0015): list and search teams, read one team's
- * account record, comp a team or end its comp, and read the operator audit.
+ * account record, comp a team or end its comp, read the operator audit, and
+ * list stuck imports and take one out of the stuck-import check.
  * Each needs an access token from the operator user pool (its own JWT
  * authorizer; a customer's token fails it), and the `ops` function checks
  * the `operators` group with Cognito on every request. Primary region only.
@@ -160,6 +164,9 @@ export const OPS_ROUTES: readonly OpsRoute[] = [
   { method: "PUT", path: "/ops/teams/{teamId}/comp", action: "setComp", throttle: { rate: 2, burst: 5 } },
   { method: "DELETE", path: "/ops/teams/{teamId}/comp", action: "endComp", throttle: { rate: 2, burst: 5 } },
   { method: "GET", path: "/ops/audit", action: "listAudit", throttle: { rate: 5, burst: 10 } },
+  // Imports stuck part-way (the "Imports stuck" alarm, docs/journeys.md J2), and taking one out of the check
+  { method: "GET", path: "/ops/imports", action: "listStuckImports", throttle: { rate: 5, burst: 10 } },
+  { method: "POST", path: "/ops/teams/{teamId}/imports/{importId}/clear", action: "clearStuckImport", throttle: { rate: 2, burst: 5 } },
 ];
 
 /**

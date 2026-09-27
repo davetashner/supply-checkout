@@ -2741,6 +2741,60 @@
         }
       }
     },
+    "HttpApiPOSTteamsteamIdreopenAccountIntegrationPermission91F8E73F": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/reopen"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTteamsteamIdreopen4AB88F46": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /teams/{teamId}/reopen",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiDELETEmeAccountIntegrationPermission5F54C1A0": {
       "Type": "AWS::Lambda::Permission",
       "Properties": {
@@ -3209,6 +3263,114 @@
         }
       }
     },
+    "HttpApiGETopsimportsOpsIntegrationPermission65555EB0": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "OpsFunctionLive79C895FB"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/ops/imports"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiGETopsimports3CEA7B94": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiOpsCognitoJwtEE918F68"
+        },
+        "RouteKey": "GET /ops/imports",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETopsteamsOpsIntegrationD9495125"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTopsteamsteamIdimportsimportIdclearOpsIntegrationPermission461B2CE3": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "OpsFunctionLive79C895FB"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/ops/teams/{teamId}/imports/{importId}/clear"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTopsteamsteamIdimportsimportIdclear20755C3C": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiOpsCognitoJwtEE918F68"
+        },
+        "RouteKey": "POST /ops/teams/{teamId}/imports/{importId}/clear",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETopsteamsOpsIntegrationD9495125"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiPOSTauthsessionAuthIntegration113028DA": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -3474,6 +3636,10 @@
             "ThrottlingRateLimit": 2,
             "ThrottlingBurstLimit": 5
           },
+          "POST /teams/{teamId}/reopen": {
+            "ThrottlingRateLimit": 2,
+            "ThrottlingBurstLimit": 5
+          },
           "DELETE /me": {
             "ThrottlingRateLimit": 2,
             "ThrottlingBurstLimit": 5
@@ -3505,6 +3671,14 @@
           "GET /ops/audit": {
             "ThrottlingRateLimit": 5,
             "ThrottlingBurstLimit": 10
+          },
+          "GET /ops/imports": {
+            "ThrottlingRateLimit": 5,
+            "ThrottlingBurstLimit": 10
+          },
+          "POST /ops/teams/{teamId}/imports/{importId}/clear": {
+            "ThrottlingRateLimit": 2,
+            "ThrottlingBurstLimit": 5
           }
         },
         "StageName": "$default",
@@ -3530,6 +3704,8 @@
         "HttpApiGETme466879BE",
         "HttpApiGETopsauditOpsIntegrationPermission0032A9FC",
         "HttpApiGETopsauditC36D0EF3",
+        "HttpApiGETopsimportsOpsIntegrationPermission65555EB0",
+        "HttpApiGETopsimports3CEA7B94",
         "HttpApiGETopsteamsteamIdOpsIntegrationPermission824867CA",
         "HttpApiGETopsteamsteamIdB43A1596",
         "HttpApiGETopsteamsOpsIntegrationPermissionBE2F3BC1",
@@ -3547,6 +3723,8 @@
         "HttpApiPOSTmeemailcode157ED3EE",
         "HttpApiPOSTmeemailverifyAccountIntegrationPermission0E703411",
         "HttpApiPOSTmeemailverify7BFB4943",
+        "HttpApiPOSTopsteamsteamIdimportsimportIdclearOpsIntegrationPermission461B2CE3",
+        "HttpApiPOSTopsteamsteamIdimportsimportIdclear20755C3C",
         "HttpApiPOSTteamsteamIdcloseAccountIntegrationPermission1183DF2C",
         "HttpApiPOSTteamsteamIdclose39531DA2",
         "HttpApiPOSTteamsteamIdimportsDataIntegrationPermission8AC0ABAB",
@@ -3555,6 +3733,8 @@
         "HttpApiPOSTteamsteamIdinvitesinviteIdresend75A0DA29",
         "HttpApiPOSTteamsteamIdinvitesAccountIntegrationPermissionE1270C09",
         "HttpApiPOSTteamsteamIdinvites598792ED",
+        "HttpApiPOSTteamsteamIdreopenAccountIntegrationPermission91F8E73F",
+        "HttpApiPOSTteamsteamIdreopen4AB88F46",
         "HttpApiPOSTteamsAccountIntegrationPermission37B4CDE2",
         "HttpApiPOSTteams93EBE9A5",
         "HttpApiPUTopsteamsteamIdcompOpsIntegrationPermissionE8BE1B52",
@@ -3948,6 +4128,82 @@
                     ]
                   },
                   "Sid": "CompAttributesOnly"
+                },
+                {
+                  "Action": "dynamodb:Query",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "IMPORTS#COMMITTING"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "GSI1PK",
+                        "GSI1SK",
+                        "committed",
+                        "total"
+                      ]
+                    },
+                    "StringEquals": {
+                      "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app/index/GSI1"
+                      ]
+                    ]
+                  },
+                  "Sid": "StuckImportsListOnly"
+                },
+                {
+                  "Action": "dynamodb:UpdateItem",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "TEAM#${aws:PrincipalTag/teamId}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "GSI1PK",
+                        "GSI1SK"
+                      ]
+                    },
+                    "StringEqualsIfExists": {
+                      "dynamodb:ReturnValues": "NONE"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "StuckImportIndexKeysOnly"
                 },
                 {
                   "Action": [

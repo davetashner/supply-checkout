@@ -13,7 +13,8 @@ import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
 import { authorizeTeam, createInvite, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS, verifiedEmailHash } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
-import { REGION, accountPartitions, fakeMailer, unusedDeleteUser } from "./helpers.js";
+import { connection } from "../src/data/client.js";
+import { REGION, accountPartitions, fakeDb, fakeMailer, unusedDeleteUser } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const mails = fakeMailer();
@@ -491,6 +492,113 @@ describe("verifying the caller's email address", () => {
     // The authorizer's user and the token's user differ: something is badly wrong
     expect((await call("POST", "/me/email/code", { user: UNVERIFIED, claims: { sub: PAT, token_use: "access", exp: String(Math.floor(now / 1000) + 600), iss: ISSUER } })).status).toBe(401);
     expect(codesSent).toEqual([]);
+  });
+});
+
+// supply-checkout-xv3k: MEMBER.email follows the address the user has verified now
+describe("keeping members' email current", () => {
+  const memberEmail = (team: string, user: string) => table.get(`TEAM#${team}`, `MEMBER#${user}`)?.email;
+  const memberUpdates = () => table.calls.filter((c) => c.command === "UpdateCommand" && c.partitions.some((p) => p.startsWith("TEAM#")));
+  /** `user` in `team` as `role`, with a switcher row, and the member item's email if given. */
+  function join(team: string, user: string, role: "owner" | "contributor" | "viewer", email?: string) {
+    table.put({ PK: `TEAM#${team}`, SK: `MEMBER#${user}`, type: "member", teamId: team, userId: user, role, ...(email ? { email } : {}) });
+    table.put({ PK: `USER#${user}`, SK: `TEAM#${team}`, type: "userTeam", userId: user, teamId: team, teamName: team, role });
+  }
+
+  it("copies the verified address to the caller's member item in every team on /me, and writes nothing when it's current", async () => {
+    table.seedTeam("team-b", { [OWNER]: "owner" });
+    join("team-b", PAT, "viewer", "pat-old@example.com");
+    table.put({ ...(table.get("TEAM#team-a", `MEMBER#${OWNER}`) as Record<string, unknown>), email: "owner-old@example.com" });
+    expect((await call("GET", "/me", { user: PAT })).status).toBe(200);
+    // Normalized, as createTeam and acceptInvite store it
+    expect(memberEmail("team-a", PAT)).toBe("pat@example.com");
+    expect(memberEmail("team-b", PAT)).toBe("pat@example.com");
+    // Only the caller's own member items
+    expect(memberEmail("team-a", OWNER)).toBe("owner-old@example.com");
+    expect(memberEmail("team-b", OWNER)).toBeUndefined();
+    expect(table.get("TEAM#team-a", `MEMBER#${PAT}`)).toMatchObject({ role: "contributor", type: "member", userId: PAT });
+    const writes = memberUpdates().length;
+    expect(writes).toBe(2);
+    expect((await call("GET", "/me", { user: PAT })).status).toBe(200);
+    expect(memberUpdates()).toHaveLength(writes);
+    // And the owner's list shows it
+    const listed = (await call("GET", "/teams/team-a/members")).body.members;
+    expect(listed.find((m: { userId: string }) => m.userId === PAT).email).toBe("pat@example.com");
+  });
+
+  it("never stores an unverified address", async () => {
+    join("team-a", UNVERIFIED, "viewer", "old@example.com");
+    expect((await call("GET", "/me", { user: UNVERIFIED })).status).toBe(200);
+    expect(memberEmail("team-a", UNVERIFIED)).toBe("old@example.com");
+    expect(memberUpdates()).toEqual([]);
+  });
+
+  it("leaves closed teams and teams the caller was removed from as they are", async () => {
+    table.seedTeam("team-closed", { [OWNER]: "owner" });
+    table.put({ ...(table.get("TEAM#team-closed", "META") as Record<string, unknown>), closedAt: new Date(now).toISOString() });
+    join("team-closed", PAT, "viewer", "pat-old@example.com");
+    table.seedTeam("team-gone", { [OWNER]: "owner" });
+    table.put({ PK: `USER#${PAT}`, SK: "TEAM#team-gone", type: "userTeam", userId: PAT, teamId: "team-gone", teamName: "team-gone", role: "viewer" });
+    expect((await call("GET", "/me", { user: PAT })).status).toBe(200);
+    expect(memberEmail("team-closed", PAT)).toBe("pat-old@example.com");
+    expect(table.get("TEAM#team-gone", `MEMBER#${PAT}`)).toBeUndefined();
+    expect(memberEmail("team-a", PAT)).toBe("pat@example.com");
+  });
+
+  it("updates every team's member item as soon as a new address is verified", async () => {
+    join("team-a", UNVERIFIED, "viewer", "old@example.com");
+    table.seedTeam("team-b", { [OWNER]: "owner" });
+    join("team-b", UNVERIFIED, "owner");
+    expect((await call("POST", "/me/email/code", { user: UNVERIFIED })).status).toBe(204);
+    expect((await call("POST", "/me/email/verify", { user: UNVERIFIED, body: { code: "123456" } })).status).toBe(204);
+    expect(memberEmail("team-a", UNVERIFIED)).toBe("pat@example.com");
+    expect(memberEmail("team-b", UNVERIFIED)).toBe("pat@example.com");
+    // Each team's write on a session for that team only
+    const teamScopes = scopes.filter((s) => s.userId === UNVERIFIED && s.teamId).map((s) => s.teamId);
+    expect(new Set(teamScopes)).toEqual(new Set(["team-a", "team-b"]));
+    expect(scopes.every((s) => s.userId === UNVERIFIED || s.userId === OWNER)).toBe(true);
+    expect(JSON.stringify(logs)).not.toMatch(/pat@|old@/);
+  });
+
+  it("goes on when a member item can't be updated, logging only the team and the error's name", async () => {
+    table.seedTeam("team-b", { [OWNER]: "owner" });
+    join("team-b", PAT, "viewer", "pat-old@example.com");
+    const original = table.scoped.bind(table);
+    table.scoped = (partitions) => {
+      const db = original(partitions);
+      return fakeDb(async (command) => {
+        const name = (command as { constructor: { name: string } }).constructor.name;
+        if (name === "UpdateCommand" && String((command.input.Key as { PK?: string }).PK) === "TEAM#team-b") {
+          throw Object.assign(new Error("Throughput exceeded"), { name: "ProvisionedThroughputExceededException" });
+        }
+        return connection(db).doc.send(command as never);
+      });
+    };
+    const me = await handler(event("GET", "/me", { user: PAT }));
+    expect(me.statusCode).toBe(200);
+    expect(JSON.parse(me.body as string).teams).toHaveLength(2);
+    expect(memberEmail("team-a", PAT)).toBe("pat@example.com");
+    expect(memberEmail("team-b", PAT)).toBe("pat-old@example.com");
+    expect(logs).toContainEqual(["Member email not updated", { teamId: "team-b", code: "ProvisionedThroughputExceededException" }]);
+    expect(JSON.stringify(logs)).not.toMatch(/pat@|pat-old@/);
+  });
+
+  it("still verifies the address when the teams can't be listed", async () => {
+    join("team-a", UNVERIFIED, "viewer", "old@example.com");
+    expect((await call("POST", "/me/email/code", { user: UNVERIFIED })).status).toBe(204);
+    const original = table.scoped.bind(table);
+    table.scoped = (partitions) => {
+      const db = original(partitions);
+      return fakeDb(async (command) => {
+        const name = (command as { constructor: { name: string } }).constructor.name;
+        if (name === "QueryCommand") throw Object.assign(new Error("Service unavailable"), { name: "InternalServerError" });
+        return connection(db).doc.send(command as never);
+      });
+    };
+    expect((await call("POST", "/me/email/verify", { user: UNVERIFIED, body: { code: "123456" } })).status).toBe(204);
+    expect(table.get(`USER#${UNVERIFIED}`, "VERIFIED_EMAIL")).toBeDefined();
+    expect(memberEmail("team-a", UNVERIFIED)).toBe("old@example.com");
+    expect(logs).toContainEqual(["Member emails not updated", { code: "InternalServerError" }]);
   });
 });
 

@@ -4,7 +4,7 @@
 import { DeleteCommand, GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { auditPut } from "./audit.js";
 import { type Db, connection } from "./client.js";
-import { ConflictError, InvalidInputError, LastOwnerError, conflictOnConditionFailure } from "./errors.js";
+import { ConflictError, ForbiddenError, InvalidInputError, LastOwnerError, LimitReachedError, TeamDeletingError, conflictOnConditionFailure } from "./errors.js";
 import { gsi1, gsi3, id, keys, prefixes, strip, teamPartition } from "./keys.js";
 import {
   type Invite,
@@ -13,8 +13,11 @@ import {
   type Team,
   type UserTeam,
   CLOSED_TEAM_RETENTION_DAYS,
+  REOPEN_CUTOFF_MINUTES,
+  REOPENS_PER_TEAM_PER_DAY,
   isClosed,
   memberRole,
+  normalizeEmail,
   ownersUpdate,
   teamCounts,
   teamName,
@@ -25,7 +28,7 @@ import { queryAll, versionedSet } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
 export type { Invite, InviteFailure, Member, MemberRole, Team, UserTeam } from "./model.js";
-export { CLOSED_TEAM_RETENTION_DAYS, isClosed } from "./model.js";
+export { CLOSED_TEAM_RETENTION_DAYS, REOPEN_CUTOFF_MINUTES, REOPENS_PER_TEAM_PER_DAY, isClosed } from "./model.js";
 
 const CHANGED = "Someone else changed this team's members just now; reload and try again";
 const LAST_OWNER = "A team needs at least one owner. Make someone else an owner first.";
@@ -65,6 +68,38 @@ export async function getMember(db: Db, ctx: TeamContext, userId: string): Promi
   readable(ctx);
   const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: keys.member(ctx.teamId, userId), ConsistentRead: true }));
   return strip<Member>(Item);
+}
+
+/**
+ * Sets the email on the caller's own MEMBER item to `verifiedEmail`, when it
+ * differs (or there's none), so the members list and owner notices use the
+ * address the caller has verified now, not the one they had when they joined
+ * (supply-checkout-xv3k). Pass only an address the identity provider has
+ * verified for this user. Always the context's own user: a context names one
+ * member, and nothing here takes another's ID. Any member may, whatever their
+ * role; a closed team is left as it is (TeamClosedError), since nothing about
+ * it changes any more. True when it wrote, false when the item already had
+ * this address or is gone (the caller left meanwhile: nothing is recreated).
+ */
+export async function setOwnMemberEmail(db: Db, ctx: TeamContext, verifiedEmail: string): Promise<boolean> {
+  writable(db, ctx, "viewer");
+  const email = normalizeEmail(verifiedEmail);
+  try {
+    await connection(db).doc.send(
+      new UpdateCommand({
+        TableName: db.tableName,
+        Key: keys.member(ctx.teamId, ctx.userId),
+        UpdateExpression: "SET email = :email",
+        // AND binds tighter than OR: the item exists, and has no email or another one
+        ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(email) OR attribute_exists(PK) AND email <> :email",
+        ExpressionAttributeValues: { ":email": email },
+      }),
+    );
+    return true;
+  } catch (error) {
+    if ((error as { name?: string } | null)?.name === "ConditionalCheckFailedException") return false;
+    throw error;
+  }
 }
 
 /**
@@ -179,7 +214,9 @@ export async function setMemberRole(db: Db, ctx: TeamContext, userId: string, ro
  * Owners remove members; any member can remove themselves (leave). The team's
  * member count goes down in the same transaction, and removing an owner also
  * decrements the owner count, conditioned on another owner remaining
- * (LastOwnerError). Their pending invites to the team are revoked first. The
+ * (LastOwnerError). Their pending invites to the team are revoked first: for
+ * the address on their member item and, when they leave, for `verifiedEmail`,
+ * the address their identity provider has verified for them now. The
  * removal is audited in the same transaction (`member.left` or
  * `member.removed`, with `reason` when given).
  *
@@ -187,7 +224,13 @@ export async function setMemberRole(db: Db, ctx: TeamContext, userId: string, ro
  * owner may leave too: nothing about a closed team can change any more, and
  * the purge deletes it.
  */
-export async function removeMember(db: Db, ctx: TeamContext, userId: string, options: { readonly reason?: "account_deleted" } = {}, now = new Date()): Promise<void> {
+export async function removeMember(
+  db: Db,
+  ctx: TeamContext,
+  userId: string,
+  options: { readonly reason?: "account_deleted"; readonly verifiedEmail?: string } = {},
+  now = new Date(),
+): Promise<void> {
   const minimum = userId === ctx.userId ? "viewer" : "owner";
   writable(db, ctx, minimum, { whileClosed: true });
   const [{ role: from, email }, count] = await Promise.all([currentMember(db, ctx, userId), memberCount(db, ctx.teamId)]);
@@ -200,7 +243,12 @@ export async function removeMember(db: Db, ctx: TeamContext, userId: string, opt
   // Any other invite to this team for their address goes first, so someone
   // removed can't rejoin with an invite they hadn't used. If the removal then
   // fails (the last owner), only their own unused invites are gone.
-  if (typeof email === "string" && email) await revokeInvitesForEmail(db, ctx, email, minimum);
+  // Leaving, the caller's current verified address too (`verifiedEmail`), in
+  // case the member item has none or an older one (supply-checkout-u0vv)
+  const addresses = new Set<string>();
+  if (typeof email === "string" && email) addresses.add(normalizeEmail(email));
+  if (userId === ctx.userId && options.verifiedEmail) addresses.add(normalizeEmail(options.verifiedEmail));
+  for (const address of addresses) await revokeInvitesForEmail(db, ctx, address, minimum);
   const audit = auditPut(db, ctx, { action: userId === ctx.userId ? "member.left" : "member.removed", target: userId, ...(options.reason ? { detail: { reason: options.reason } } : {}) }, now);
   await connection(db)
     .doc.send(
@@ -330,6 +378,114 @@ export async function closeTeam(
 }
 
 const CONFIRM = "Type the team's name to close it";
+
+const REOPEN_CONFIRM = "Type the team's name to reopen it";
+const TOO_LATE = "This team is about to be deleted and can't be reopened any more";
+const TOO_OFTEN = `A team can be reopened ${REOPENS_PER_TEAM_PER_DAY} times a day. Try again tomorrow.`;
+
+/**
+ * Reopens a closed team before the purge deletes it. The caller types the
+ * team's name to confirm (`confirmName`, compared as closeTeam compares it).
+ *
+ * Only owners reopen a team: an owner who is still a member of it, re-checked
+ * at write time as closeTeam does, so an owner removed or demoted since the
+ * context was issued can't. System contexts (billing, email events) are
+ * refused (ForbiddenError). Operator reopen (bead 6uw.6) will need its own
+ * path: operators never get a TeamContext (ADR 0015).
+ *
+ * A team can be reopened REOPENS_PER_TEAM_PER_DAY times a UTC day
+ * (LimitReachedError after that): each reopening and the closure after it
+ * email every owner, so this caps those emails without silencing a closure.
+ *
+ * In one transaction: the META item loses `closedAt`, `closedBy`,
+ * `purgeAfter` and its closed-teams index keys (GSI1PK, GSI1SK), so the
+ * purge no longer finds it, and its version moves; a `team.reopened` audit
+ * event records when it was closed and by whom, and the day's reopen counter
+ * moves. The update is conditioned on
+ * the team still having the closure that was read (same `closedAt` and
+ * `purgeAfter`), on `purgeAfter` being more than REOPEN_CUTOFF_MINUTES away
+ * (TeamDeletingError otherwise: the purge may already be deleting it), on
+ * the team not being marked `purging` (TeamDeletingError: purgeTeam sets the
+ * mark, conditioned on the team still being closed and due, before it deletes
+ * anything, so whichever write lands first wins, whatever the clocks say),
+ * and on the team having an owner.
+ *
+ * From then on the team is writable again (authorizeTeam reads `closedAt`)
+ * and its members get live updates again (liveUpdateRecipients). Nothing
+ * the closure undid comes back: its invites stay deleted, and anyone who
+ * left or was removed while it was closed stays out, so owners invite people
+ * again. The Stripe subscription isn't touched: closing doesn't cancel it yet
+ * either (billing, supply-checkout-x0l, will need to resume it here).
+ *
+ * Idempotent: reopening a team that isn't closed changes nothing and returns
+ * it as it is, with `reopenedNow: false`.
+ */
+export async function reopenTeam(
+  db: Db,
+  ctx: TeamContext,
+  input: { readonly confirmName: string },
+  now = new Date(),
+): Promise<{ team: Team; reopenedNow: boolean }> {
+  writable(db, ctx, "owner", { whileClosed: true });
+  // Owners only: writable lets system contexts (billing, email events) through
+  if (ctx.role !== "owner") throw new ForbiddenError("Only the team's owners can reopen it");
+  if (typeof input.confirmName !== "string") throw new InvalidInputError(REOPEN_CONFIRM);
+  const current = await getTeam(db, ctx);
+  if (!current) throw new ConflictError(CHANGED);
+  if (!isClosed(current)) return { team: current, reopenedNow: false };
+  if (confirmation(input.confirmName) !== confirmation(current.name)) throw new InvalidInputError(REOPEN_CONFIRM);
+  const cutoff = new Date(now.getTime() + REOPEN_CUTOFF_MINUTES * 60_000).toISOString();
+  // Too close to the purge, or the purge has started: it marks the team before deleting anything
+  if (typeof current.purgeAfter !== "string" || current.purgeAfter <= cutoff || current.purging !== undefined) throw new TeamDeletingError(TOO_LATE);
+  await connection(db)
+    .doc.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Update: {
+              TableName: db.tableName,
+              Key: keys.team(ctx.teamId),
+              UpdateExpression: "REMOVE closedAt, closedBy, purgeAfter, GSI1PK, GSI1SK SET #version = #version + :one",
+              ConditionExpression: "closedAt = :at AND purgeAfter = :purge AND purgeAfter > :cutoff AND attribute_not_exists(purging) AND owners > :zero",
+              ExpressionAttributeNames: { "#version": "version" },
+              ExpressionAttributeValues: { ":at": current.closedAt, ":purge": current.purgeAfter, ":cutoff": cutoff, ":one": 1, ":zero": 0 },
+            },
+          },
+          // The caller's own membership, as it is now
+          {
+            ConditionCheck: {
+              TableName: db.tableName,
+              Key: keys.member(ctx.teamId, ctx.userId),
+              ConditionExpression: "#role = :owner",
+              ExpressionAttributeNames: { "#role": "role" },
+              ExpressionAttributeValues: { ":owner": "owner" },
+            },
+          },
+          auditPut(db, ctx, { action: "team.reopened", detail: { closedAt: current.closedAt, ...(current.closedBy ? { closedBy: current.closedBy } : {}) } }, now),
+          // The day's reopen counter, refused at the limit
+          {
+            Update: {
+              TableName: db.tableName,
+              Key: keys.reopens(ctx.teamId, now.toISOString().slice(0, 10)),
+              UpdateExpression: "ADD #count :one SET #type = :type, expiresAt = :expires",
+              ConditionExpression: "attribute_not_exists(#count) OR #count < :max",
+              ExpressionAttributeNames: { "#count": "count", "#type": "type" },
+              ExpressionAttributeValues: { ":one": 1, ":max": REOPENS_PER_TEAM_PER_DAY, ":type": "reopenLimit", ":expires": Math.floor(now.getTime() / 1000) + 2 * 24 * 60 * 60 },
+            },
+          },
+        ],
+      }),
+    )
+    .catch(async (error: unknown) => {
+      const reasons = (error as { name?: string; CancellationReasons?: { Code?: string }[] } | null)?.name === "TransactionCanceledException" ? ((error as { CancellationReasons?: { Code?: string }[] }).CancellationReasons ?? []) : [];
+      // Only the counter refused it: every other condition held
+      if (reasons[3]?.Code === "ConditionalCheckFailed" && reasons.slice(0, 3).every((r) => r.Code === "None")) throw new LimitReachedError(TOO_OFTEN);
+      // The team changed since it was read: if the purge marked it meanwhile, say so
+      if (reasons[0]?.Code === "ConditionalCheckFailed" && (await getTeam(db, ctx))?.purging !== undefined) throw new TeamDeletingError(TOO_LATE);
+      return conflictOnConditionFailure(CHANGED)(error);
+    });
+  return { team: (await getTeam(db, ctx)) as Team, reopenedNow: true };
+}
 
 /**
  * The verified user's teams, for the team switcher. This reads the user's own

@@ -206,6 +206,8 @@ export class FakeBackend {
 
     m = path.match(/^\/teams\/([^/]+)\/close$/);
     if (m && method === "POST") return this.closeTeam(decodeURIComponent(m[1]), call.body, err);
+    m = path.match(/^\/teams\/([^/]+)\/reopen$/);
+    if (m && method === "POST") return this.reopenTeam(decodeURIComponent(m[1]), call.body, err);
 
     m = path.match(/^\/teams\/([^/]+)\/members(?:\/([^/]+))?$/);
     if (m) return this.member(decodeURIComponent(m[1]), m[2] && decodeURIComponent(m[2]), method, call.body, err);
@@ -298,6 +300,20 @@ export class FakeBackend {
       const now = Date.now();
       Object.assign(mine, { closedAt: new Date(now).toISOString(), deletesAt: new Date(now + 30 * 86400_000).toISOString() });
       this.teamInvites[team] = [];
+    }
+    return [200, { team: clone(mine) }];
+  }
+
+  // Reopening a closed team as the API runs it: owners, typing its name; reopening an open
+  // team returns it as it is
+  reopenTeam(team, body, err) {
+    const mine = this.teams.find((t) => t.id === team);
+    if (!mine) return err(403, "permission_denied", "not_member");
+    if (mine.role !== "owner") return err(403, "permission_denied", "owners_only");
+    const typed = (v) => String(v).normalize("NFKC").trim().toLowerCase();
+    if (mine.closedAt) {
+      if (typed(body.name) !== typed(mine.name)) return err(400, "bad_request");
+      Object.assign(mine, { closedAt: null, deletesAt: null });
     }
     return [200, { team: clone(mine) }];
   }

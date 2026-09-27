@@ -115,6 +115,7 @@ export class OpsDashboard extends Construct {
     this.dashboard.addWidgets(
       businessGraph("Accounts: teams closed, accounts deleted, teams purged", [BusinessMetric.TeamsClosed, BusinessMetric.AccountsDeleted, BusinessMetric.TeamsPurged]),
       businessGraph("Accounts: owners emailed that their team closed, and not", [BusinessMetric.TeamClosedNotices, BusinessMetric.TeamClosedNoticeFailures]),
+      businessGraph("Accounts: teams reopened, owners emailed about it, and not", [BusinessMetric.TeamsReopened, BusinessMetric.TeamReopenedNotices, BusinessMetric.TeamReopenedNoticeFailures]),
       // The purge's gauge (primary region), at its maximum
       graph("J11: closed teams overdue for deletion", each((r) => business(BusinessMetric.ClosedTeamsOverdue, r, FIVE_MINUTES, "Maximum")), WIDTH / 4),
       businessGraph("J3: email codes not sent or checked (5xx)", [BusinessMetric.EmailCodeSendFailures, BusinessMetric.EmailCodeVerifyFailures]),
