@@ -1841,6 +1841,7 @@ components:
         homeRegion: { type: string, description: The region the team was created in (ADR 0010). }
         closedAt: { type: [string, "null"], format: date-time, description: "When an owner closed the team (`closeTeam`), or `null`. A closed team is read-only." }
         deletesAt: { type: [string, "null"], format: date-time, description: "When a closed team's data is deleted: 30 days after `closedAt`. `null` for a team that isn't closed." }
+        reopenBy: { type: [string, "null"], format: date-time, description: "Until when owners can reopen a closed team: an hour before `deletesAt` (after that, reopening is 409 `team_deleting`). `null` for a team that isn't closed." }
         comp:
           description: A live comp from Supply Checkout support (ADR 0015). While it's set, the team is active on `plan` until `until`, whatever `status` says.
           oneOf:
@@ -1850,6 +1851,8 @@ components:
                 plan: { type: string }
                 until: { type: string, format: date-time }
             - type: "null"
+        members: { type: [integer, "null"], description: "How many members the team has, or `null` for a team from before the count (the members list has them)." }
+        memberCap: { type: integer, description: "How many members the team may have. Pending invites count against it when inviting (429 `team_full`)." }
     Invite:
       type: object
       description: A pending invite, to show. Accepting it needs the token from the invite email.

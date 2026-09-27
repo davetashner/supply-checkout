@@ -105,7 +105,8 @@ test.describe("a closed team", () => {
     const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...CLOSED }], members: { t1: [ME, SAM] } }));
     await expect(bar(page).locator(".closed-note")).toHaveText("This team was closed on September 26, 2026. It's read-only, and everything in it will be deleted on October 26, 2026. Use Export data to keep a copy.");
     await expect(bar(page).getByRole("button", { name: "Import CSV" })).toHaveCount(0);
-    await expect(page.locator("#notice")).toContainText("view-only");
+    // Why it's read-only: the team is closed, not the owner's role
+    await expect(page.locator("#notice")).toHaveText("This team is closed, so nothing in it can be changed.");
     await expectAccessible(page);
     await bar(page).getByRole("button", { name: "Members" }).click();
     await expect(dialog(page)).toContainText("This team is closed: you can remove people or leave it, but not invite anyone or change roles.");
@@ -132,6 +133,50 @@ test.describe("a closed team", () => {
     await expect(bar(page).locator(".closed-note")).toHaveText("This team was closed on September 26, 2026. It's read-only, and everything in it will be deleted on October 26, 2026.");
     await expect(bar(page).getByRole("button", { name: "Leave team" })).toBeVisible();
     await expect(bar(page).getByRole("button", { name: "Reopen team" })).toHaveCount(0);
+    await expect(page.locator("#notice")).toHaveText("This team is closed, so nothing in it can be changed.");
+  });
+
+  test.describe("reopening has a deadline", () => {
+    test.use({ timezoneId: "America/New_York" });
+    // Owners can reopen it until an hour before it's deleted (reopenBy, from /me)
+    const SOON = { ...CLOSED, reopenBy: "2026-10-26T11:00:00.000Z" };
+
+    test("an owner sees when reopening stops, and the button goes then", async ({ page }) => {
+      await page.clock.install({ time: new Date("2026-10-26T10:30:00.000Z") });
+      await open(page, new FakeBackend({ teams: [{ ...TEAM, ...SOON }], members: { t1: [ME] } }));
+      await expect(bar(page).locator(".closed-note")).toContainText("Use Export data to keep a copy.");
+      await expect(bar(page).locator("#reopenBy")).toHaveText(/^ Reopen by October 26, 2026,? (at )?7:00\sAM EDT to keep it\.$/);
+      await expect(bar(page).getByRole("button", { name: "Reopen team" })).toBeVisible();
+      await expectAccessible(page);
+      await page.clock.fastForward(29 * 60e3);
+      await expect(bar(page).getByRole("button", { name: "Reopen team" })).toBeVisible();
+      await page.clock.fastForward(2 * 60e3);
+      await expect(bar(page).getByRole("button", { name: "Reopen team" })).toHaveCount(0);
+      await expect(bar(page).locator("#reopenBy")).toHaveText(" It's too close to being deleted to reopen now.");
+    });
+
+    test("a page left open for days checks again each day", async ({ page }) => {
+      await page.clock.install({ time: new Date("2026-10-24T10:00:00.000Z") });
+      await open(page, new FakeBackend({ teams: [{ ...TEAM, ...SOON }], members: { t1: [ME] } }));
+      await page.clock.fastForward(86400e3);
+      await expect(bar(page).getByRole("button", { name: "Reopen team" })).toBeVisible();
+      await page.clock.fastForward(86400e3);
+      await page.clock.fastForward(86400e3);
+      await expect(bar(page).getByRole("button", { name: "Reopen team" })).toHaveCount(0);
+    });
+
+    test("past the deadline, the owner can't reopen it", async ({ page }) => {
+      await page.clock.install({ time: new Date("2026-10-26T11:30:00.000Z") });
+      await open(page, new FakeBackend({ teams: [{ ...TEAM, ...SOON }], members: { t1: [ME] } }));
+      await expect(bar(page).locator(".closed-note")).toHaveText("This team was closed on September 26, 2026. It's read-only, and everything in it will be deleted on October 26, 2026. Use Export data to keep a copy. It's too close to being deleted to reopen now.");
+      await expect(bar(page).getByRole("button", { name: "Reopen team" })).toHaveCount(0);
+    });
+
+    test("a contributor isn't told a deadline that isn't theirs", async ({ page }) => {
+      await page.clock.install({ time: new Date("2026-10-26T10:30:00.000Z") });
+      await open(page, new FakeBackend({ teams: [{ ...TEAM, ...SOON, role: "contributor" }] }));
+      await expect(bar(page).locator(".closed-note")).toHaveText("This team was closed on September 26, 2026. It's read-only, and everything in it will be deleted on October 26, 2026.");
+    });
   });
 
   test("an owner types the team's name to reopen it, and starts again with it open", async ({ page }) => {
@@ -190,7 +235,9 @@ test.describe("a closed team", () => {
     await page.getByRole("button", { name: "+ New sheet" }).click();
     await page.getByLabel("Client", { exact: true }).fill("Delta");
     await page.getByRole("button", { name: "Create sheet" }).click();
-    await expect(page.locator("#notice")).toContainText("view-only");
+    const closed = "An owner closed this team, so nothing in it can be changed now. Reload the page to see when it will be deleted.";
+    await expect(page.locator("#toast")).toHaveText(closed);
+    await expect(page.locator("#notice")).toHaveText(closed);
     await expect(page.getByRole("heading", { name: /no longer in/ })).toHaveCount(0);
   });
 });
