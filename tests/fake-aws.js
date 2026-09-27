@@ -39,6 +39,9 @@ export class FakeBackend {
     Object.assign(this, { teams: clone(teams), invites: clone(invites), members: clone(members), teamInvites: clone(teamInvites), user, signedIn, claims, config, expiresIn });
     // Invites for the user's address that /me lists once they verify it (the email routes)
     this.pendingInvites = [];
+    // An address a provider rewrites the user's email to while a code is being sent: that
+    // send answers 409 email_changed, as the API does when GetUser shows a new address
+    this.rewriteEmail = null;
     this.inviteIds = 0;
     this.docs = new Map(Object.entries(docs).map(([k, data]) => [k, { version: 1, data: clone(data) }]));
     this.calls = [];
@@ -163,11 +166,22 @@ export class FakeBackend {
     if (path === "/me" && method === "DELETE") return this.deleteAccount(call.body, err);
     if (path === "/me") return [200, { user: this.user, teams: this.teams, invites: this.invites }];
     // Verifying the email as Cognito does it: a code for an unverified address, and 123456 is
-    // the code it sent. Verifying lists pendingInvites (invites for the address) in /me.
+    // the code it sent. A code counts only for the address it was sent to (409 email_changed
+    // otherwise, and the code is spent). Verifying lists pendingInvites (invites for the
+    // address) in /me.
     if (path === "/me/email/code" || path === "/me/email/verify") {
       if (this.user.emailVerified) return err(409, "aborted", "already_verified");
-      if (path === "/me/email/code") { this.codesSent = (this.codesSent || 0) + 1; return [204]; }
-      if (!this.codesSent) return err(400, "bad_request", "code_expired");
+      if (path === "/me/email/code") {
+        if (this.rewriteEmail) {
+          this.user = { ...this.user, email: this.rewriteEmail };
+          this.rewriteEmail = null;
+          return err(409, "aborted", "email_changed");
+        }
+        this.codeSentTo = this.user.email;
+        return [204];
+      }
+      if (this.codeSentTo === undefined) return err(400, "bad_request", "code_expired");
+      if (this.codeSentTo !== this.user.email) { this.codeSentTo = undefined; return err(409, "aborted", "email_changed"); }
       if (call.body.code !== "123456") return err(400, "bad_request", "code_mismatch");
       this.user = { ...this.user, emailVerified: true };
       this.invites.push(...this.pendingInvites.splice(0));
