@@ -21,6 +21,11 @@ function apply(theme) {
 }
 
 apply(stored());
+// Other tabs change the device preference without reloading this page. Re-read
+// storage so a queued event can't restore an older choice; clear() resets System.
+window.addEventListener("storage", e => {
+  if ((e.key === KEY || e.key === null) && e.storageArea === localStorage) apply(stored());
+});
 document.querySelectorAll("#theme button").forEach(b => b.addEventListener("click", () => {
   const theme = b.dataset.theme;
   apply(theme);
