@@ -10,8 +10,9 @@ has the sequence diagram.
 ## Why
 
 The artifact saves a checkout as two writes: the sheet line (`PATCH` with the
-line's new absolute `out`), then the stock (`bumpStock` in `src/main.js`, a
-read-then-write). A retry or a double tap can take stock down twice, two people
+line's new absolute `out`), then the stock (`addStock` in `src/moves.js`, a
+read-then-write). Marks on the line and the item keep a retry from counting twice
+there, but two people
 checking out the same line at once can lose a count, and nothing records why
 stock changed.
 
@@ -32,8 +33,8 @@ the artifact's document write.
 
 | App action (src/main.js) | Artifact build | Web build (AWS adapter) |
 | --- | --- | --- |
-| Check out (`checkoutModal`) | `PATCH sheets/<id>` with the whole line, then `bumpStock(key, -qty)` | `POST /teams/{teamId}/sheets/{sheetId}/checkout`. No `bumpStock`. |
-| Return (`returnModal`) | `PATCH sheets/<id>` with `returned`, then `bumpStock(key, back - before)` | `POST /teams/{teamId}/sheets/{sheetId}/return`. No `bumpStock`. |
+| Check out (`checkoutModal`) | `PATCH sheets/<id>` with the whole line, then `addStock(key, -qty)` | `POST /teams/{teamId}/sheets/{sheetId}/checkout`. No `addStock`. |
+| Return (`returnModal`) | `PATCH sheets/<id>` with `returned`, then `addStock(key, back - before)` | `POST /teams/{teamId}/sheets/{sheetId}/return`. No `addStock`. |
 | Inventory form, "In storage now" (`productModal`) | `PUT products/<key>` with the new `stock` | `PUT products/<key>` without `stock`, if any other field changed, then, if the count differs, `POST /teams/{teamId}/products/{key}/stock` with `reason: "count"`. A blank count leaves stock as it is. |
 | Receipt save, General inventory lines (`saveReceipt`) | `PUT products/<key>` with `stock` plus the lines' quantities | `PUT products/<key>` without `stock` (price and name updates), if they changed, then one `POST .../products/{key}/stock` with `reason: "receipt"` per line: its quantity in eaches and its receipt price as `unitCost` |
 | Receipt save, a client's lines on an existing sheet (`saveReceipt`) | Reads the sheet, then `PATCH sheets/<id>` with the lines added to it and a mark for this receipt in `savedReceipts`; an attempt that finds its mark writes nothing | `POST /teams/{teamId}/sheets/{sheetId}/lines`, up to 40 lines each, no stock moved |
