@@ -47,7 +47,7 @@ async function write(fn, okMsg, sheetId) {
     if (sheetId && e && (e.code === "not_found" || (e.code === "invalid_argument" && await sheetGone(sheetId)))) {
       closeModal(); toast("Someone else deleted this sheet, so your change wasn't saved.");
     }
-    else if (e && e.code === "invalid_argument") { canWrite = false; render(); toast("You have view-only access. Ask the owner for Contributor access to make changes."); }
+    else if (e && e.code === "invalid_argument") { canWrite = false; await readViewOnly(); render(); toast(viewOnly || "You have view-only access. Ask the owner for Contributor access to make changes."); }
     else if (e && e.code === "quota_exceeded") toast("Storage is full. Delete old sheets or items to make room.");
     // Someone else saved this first (the web build's versioned writes, ADR 0006). Close the
     // editor so the latest values show, rather than an edit made on the old ones.
@@ -61,6 +61,11 @@ async function write(fn, okMsg, sheetId) {
   }
 }
 const OFFLINE = "You're offline, so that wasn't saved. Try again when you're back online.";
+// Why the page is read-only, when the runtime says (the web build: an owner closed the team);
+// otherwise it's the viewer's role. Asked again when a write is refused, since the reason can
+// change while the page is open. A runtime without it (claude.ai) throws, and the role it is.
+let viewOnly = null;
+async function readViewOnly() { try { viewOnly = (await userNs.viewOnlyNotice()) || null; } catch {} }
 
 // Saves a modal's form. Until the server answers, the submit button says Saving… and nothing
 // in the form can be changed, sent again or closed (src/dom.js), so a second tap can't save
@@ -139,7 +144,7 @@ function paintNotice() {
   const notice = $("#notice");
   if (!navigator.onLine) { notice.hidden = false; notice.textContent = "You're offline. Nothing can be saved until the connection is back."; }
   else if (!connected) { notice.hidden = false; notice.textContent = `Connecting to shared storage… If this doesn't clear, ${help().connecting}.`; }
-  else if (!canWrite) { notice.hidden = false; notice.textContent = "You have view-only access. Ask the owner to give you Contributor access to scan and edit."; }
+  else if (!canWrite) { notice.hidden = false; notice.textContent = viewOnly || "You have view-only access. Ask the owner to give you Contributor access to scan and edit."; }
   else notice.hidden = true;
 }
 // Going offline and back: the notice says so, and a form that didn't save says it can be
@@ -989,6 +994,7 @@ draw();
     try { myId = await userNs.id(); } catch {}
     try { const w = await userNs.can("data.write"); if (w === false) canWrite = false; } catch {}
     try { isOwner = (await userNs.isOwner()) === true; } catch {}
+    await readViewOnly();
   }
   if (!db) { $("#notice").hidden = false; $("#notice").textContent = "Shared storage isn't available in this view. " + help().missing; return; }
   const onErr = () => toast("Lost connection to shared storage. Reload the page.");
