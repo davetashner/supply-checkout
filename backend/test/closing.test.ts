@@ -6,7 +6,7 @@
 // stated period.
 
 import { randomUUID } from "node:crypto";
-import { QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import {
   acceptInvite,
@@ -15,6 +15,7 @@ import {
   CLOSED_TEAM_RETENTION_DAYS,
   closeTeam,
   ConflictError,
+  countTeamsDueBefore,
   createInvite,
   createTeam,
   deleteInviteForEmail,
@@ -36,7 +37,7 @@ import {
   startAccountDeletion,
   TeamClosedError,
 } from "../src/data/index.js";
-import { connection } from "../src/data/client.js";
+import { connection, dbFromConnection } from "../src/data/client.js";
 import { endpoint, newUser, rawItem, useTable } from "./helpers.js";
 
 const DAY = 86400_000;
@@ -196,5 +197,64 @@ describe.skipIf(!endpoint)("closing teams and deleting accounts (DynamoDB Local)
     expect(await purgeTeam(table.db, teamId, after)).toEqual({ deleted: 0, skipped: true });
     expect((await partition(`TEAM#${other.teamId}`)).length).toBeGreaterThan(5);
     expect(await listTeamsForUser(table.db, other.ownerId)).toHaveLength(1);
+  });
+
+  /** table.db, with `before` run ahead of each command it sends (a concurrent writer, or a failure). */
+  function intercepted(before: (command: { constructor: { name: string } }) => Promise<void>) {
+    const real = connection(table.db);
+    const send = async (command: { constructor: { name: string } }) => {
+      await before(command);
+      return real.doc.send(command as Parameters<typeof real.doc.send>[0]);
+    };
+    return dbFromConnection({ ...real, doc: { send } as unknown as typeof real.doc });
+  }
+
+  it("counts the closed teams due before a time on the index, without listing them", async () => {
+    const now = new Date("2026-09-02T00:00:00.000Z");
+    const later = new Date(now.getTime() + (CLOSED_TEAM_RETENTION_DAYS + 1) * DAY);
+    // The table is shared with the other tests, so relative to before
+    const before = await countTeamsDueBefore(table.db, later);
+    for (const t of [await team(now), await team(now)]) await closeTeam(table.db, t.owner, { confirmName: "Echo Cleaning" }, now);
+    expect(await countTeamsDueBefore(table.db, later)).toBe(before + 2);
+    expect(await countTeamsDueBefore(table.db, new Date(now.getTime() + (CLOSED_TEAM_RETENTION_DAYS - 1) * DAY))).toBeLessThanOrEqual(before);
+  });
+
+  it("marks a team purging before deleting anything, and a stopped run leaves it marked for the next", async () => {
+    const now = new Date("2026-09-03T00:00:00.000Z");
+    const { teamId, owner } = await team(now);
+    await closeTeam(table.db, owner, { confirmName: "Echo Cleaning" }, now);
+    const after = new Date(now.getTime() + CLOSED_TEAM_RETENTION_DAYS * DAY + 1000);
+    // Not due yet: no mark
+    expect(await purgeTeam(table.db, teamId, now)).toEqual({ deleted: 0, skipped: true });
+    expect(await rawItem(table.db, `TEAM#${teamId}`, "META")).not.toHaveProperty("purging");
+    // Stops at its first delete: marked, nothing gone
+    const stopping = intercepted(async (command) => {
+      if (command.constructor.name === "DeleteCommand") throw Object.assign(new Error("stopped"), { name: "TimeoutError" });
+    });
+    const items = (await partition(`TEAM#${teamId}`)).length;
+    await expect(purgeTeam(stopping, teamId, after)).rejects.toThrow("stopped");
+    expect(await rawItem(table.db, `TEAM#${teamId}`, "META")).toMatchObject({ purging: after.toISOString(), closedAt: now.toISOString() });
+    expect(await partition(`TEAM#${teamId}`)).toHaveLength(items);
+    // The next run carries on
+    expect((await purgeTeam(table.db, teamId, new Date(after.getTime() + 3_600_000))).skipped).toBe(false);
+    expect(await partition(`TEAM#${teamId}`)).toEqual([]);
+  });
+
+  it("leaves a team alone that was reopened after the purge read it", async () => {
+    const now = new Date("2026-09-04T00:00:00.000Z");
+    const { teamId, owner } = await team(now);
+    await closeTeam(table.db, owner, { confirmName: "Echo Cleaning" }, now);
+    const after = new Date(now.getTime() + CLOSED_TEAM_RETENTION_DAYS * DAY + 1000);
+    const items = (await partition(`TEAM#${teamId}`)).length;
+    // Reopened (its closure and index keys removed) between the purge's read and its mark
+    const racing = intercepted(async (command) => {
+      if (command.constructor.name !== "UpdateCommand") return;
+      await connection(table.db).doc.send(
+        new UpdateCommand({ TableName: table.db.tableName, Key: { PK: `TEAM#${teamId}`, SK: "META" }, UpdateExpression: "REMOVE closedAt, closedBy, purgeAfter, GSI1PK, GSI1SK" }),
+      );
+    });
+    expect(await purgeTeam(racing, teamId, after)).toEqual({ deleted: 0, skipped: true });
+    expect(await rawItem(table.db, `TEAM#${teamId}`, "META")).not.toHaveProperty("purging");
+    expect(await partition(`TEAM#${teamId}`)).toHaveLength(items);
   });
 });

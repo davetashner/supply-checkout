@@ -42,11 +42,18 @@ export const CLOSED_TEAMS_PARTITION = "TEAMS#CLOSED";
 /**
  * The only attributes the team purge may name (ADR 0005): the table and GSI1
  * keys (a MEMBER item's sort key names the member, whose team-switcher row it
- * deletes), the META item's closure fields and Stripe customer, and the
- * Stripe link's team. Its IAM policy allows exactly these (dynamodb:Attributes), so it
+ * deletes), the META item's closure fields (with `purging`, the mark it sets
+ * before deleting anything) and Stripe customer, and the Stripe link's team. Its IAM policy allows exactly these (dynamodb:Attributes), so it
  * deletes whole items without reading documents, emails or names.
  */
-export const TEAM_PURGE_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "closedAt", "purgeAfter", "stripeCustomerId", "teamId"] as const;
+export const TEAM_PURGE_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "closedAt", "purgeAfter", "purging", "stripeCustomerId", "teamId"] as const;
+
+/**
+ * The only attributes the team purge's one update may name: the META item's
+ * key, the closure fields its condition reads, and the `purging` mark it
+ * sets. Its IAM policy allows UpdateItem with exactly these.
+ */
+export const TEAM_PURGE_MARK_ATTRIBUTES = [PK, SK, "closedAt", "purgeAfter", "purging"] as const;
 
 /**
  * The only attributes the stuck-import check may name or read (ADR 0005): the
