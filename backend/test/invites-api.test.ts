@@ -14,7 +14,7 @@ import type { CognitoUser } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
-import { hashEmail, hashInviteToken, inviteLimitKey, INVITES_PER_ADDRESS_PER_DAY, INVITES_PER_TEAM_ADDRESS_PER_DAY, INVITES_PER_TEAM_PER_DAY } from "../src/data/index.js";
+import { hashEmail, hashInviteToken, inviteLimitKey, INVITES_PER_ADDRESS_PER_DAY, INVITES_PER_TEAM_ADDRESS_PER_DAY, INVITES_PER_TEAM_PER_DAY, MEMBERS_PER_TRIAL_TEAM } from "../src/data/index.js";
 import { INVITE_LIMIT_ATTRIBUTES } from "../src/data/schema.js";
 import type { Observability } from "../src/observability/index.js";
 import { accountPartitions, fakeMailer } from "./helpers.js";
@@ -293,8 +293,54 @@ describe("POST /teams/{teamId}/invites", () => {
   });
 });
 
+describe("member cap", () => {
+  const FULL = { code: "quota_exceeded", reason: "team_full" };
+
+  it(`refuses an invite once members and live invites fill a trial team's ${MEMBERS_PER_TRIAL_TEAM} places`, async () => {
+    // Three members already
+    for (let i = 0; i < MEMBERS_PER_TRIAL_TEAM - 3; i++) expect((await invite(`crew${i}@example.com`)).status).toBe(201);
+    const refused = await invite("one-too-many@example.com");
+    expect(refused).toMatchObject({ status: 429, body: { error: FULL } });
+    expect(refused.body.error.message).toContain(`${MEMBERS_PER_TRIAL_TEAM} members`);
+    expect(mails.sent).toHaveLength(MEMBERS_PER_TRIAL_TEAM - 3);
+    // Revoking one makes room; an expired one doesn't count
+    await revoke(lastLink().id);
+    expect((await invite("one-too-many@example.com")).status).toBe(201);
+    now += 8 * DAY;
+    expect((await invite("next-week@example.com")).status).toBe(201);
+  });
+
+  it("refuses to let someone join a full team, and keeps their invite", async () => {
+    await invite("pat@example.com");
+    const link = lastLink();
+    // Others joined meanwhile: the team's count is at its cap
+    table.put({ ...table.get("TEAM#team-a", "META"), members: MEMBERS_PER_TRIAL_TEAM });
+    const res = await accept(link.id, link.token);
+    expect(res).toMatchObject({ status: 429, body: { error: FULL } });
+    expect(table.get("TEAM#team-a", `MEMBER#${PAT}`)).toBeUndefined();
+    expect(table.get(`USER#${PAT}`, "TEAM#team-a")).toBeUndefined();
+    expect(stored(link.id)).toBeDefined();
+    // Room again: the same link works, and the count moves with the membership
+    table.put({ ...table.get("TEAM#team-a", "META"), members: MEMBERS_PER_TRIAL_TEAM - 1 });
+    expect((await accept(link.id, link.token)).status).toBe(200);
+    expect(table.get("TEAM#team-a", "META")?.members).toBe(MEMBERS_PER_TRIAL_TEAM);
+  });
+
+  it("counts a team from before the member count on its next change", async () => {
+    expect(table.get("TEAM#team-a", "META")?.members).toBeUndefined();
+    await invite("pat@example.com");
+    const link = lastLink();
+    expect((await accept(link.id, link.token)).status).toBe(200);
+    expect(table.get("TEAM#team-a", "META")?.members).toBe(4);
+    expect((await call("DELETE", `/teams/team-a/members/${PAT}`, PAT)).status).toBe(204);
+    expect(table.get("TEAM#team-a", "META")?.members).toBe(3);
+  });
+});
+
 describe("rate limits", () => {
   it(`lets a team send ${INVITES_PER_TEAM_PER_DAY} invites a day, re-sends included`, async () => {
+    // A paying team: a trial team's member cap is below the day's invite limit
+    table.put({ ...table.get("TEAM#team-a", "META"), status: "active" });
     for (let i = 0; i < INVITES_PER_TEAM_PER_DAY - 1; i++) expect((await invite(`crew${i}@example.com`)).status).toBe(201);
     const last = await invite("last@example.com");
     expect(last.status).toBe(201);

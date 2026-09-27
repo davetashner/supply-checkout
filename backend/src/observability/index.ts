@@ -36,6 +36,9 @@ export interface ObservabilityOptions {
 /** Values that are safe to put in logs and metric metadata: never secrets or personal data. */
 export type Metadata = Record<string, string | number | boolean>;
 
+/** Units a gauge can be in. */
+export type GaugeUnit = "Count" | "Percent";
+
 export interface Observability {
   readonly logger: Logger;
   /** The region every metric is dimensioned by. */
@@ -45,6 +48,11 @@ export interface Observability {
    * written beside the metric in the log line, not as a dimension.
    */
   count(metric: BusinessMetricName, value?: number, metadata?: Metadata): void;
+  /**
+   * Records a level measured now (a gauge, such as a scheduled check's
+   * finding), in the given unit. Alarms read its Maximum.
+   */
+  gauge(metric: BusinessMetricName, value: number, unit?: GaugeUnit): void;
   /** Writes buffered metrics. withObservability calls this after every invocation. */
   flush(): void;
 }
@@ -94,6 +102,11 @@ export function createObservability(options: ObservabilityOptions = {}): Observa
       metrics.addMetric(metric, MetricUnit.Count, value);
       pending = true;
       if (hasMetadata) flush();
+    },
+    gauge(metric, value, unit = "Count") {
+      if (!Number.isFinite(value) || value < 0) throw new Error(`Metric ${metric} needs a value of 0 or more (got ${value})`);
+      metrics.addMetric(metric, unit === "Percent" ? MetricUnit.Percent : MetricUnit.Count, value);
+      pending = true;
     },
   };
 }

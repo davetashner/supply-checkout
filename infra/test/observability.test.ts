@@ -11,6 +11,7 @@ import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
 import { alarmContactParameter, alarmContactsFromContext } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
 import { journeyAlarmSpecs } from "../lib/observability/journey-alarms.js";
+import { CHECK_EVERY_MINUTES, STUCK_IMPORT_AFTER_MINUTES } from "../../backend/src/ops/names.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
 
 // Region names live only in lib/config.ts (ADR 0010); tests use its constants.
@@ -38,6 +39,10 @@ const ALARM_IDS = [
   "functions-throttled",
   "database-errors",
   "database-throttled",
+  "sign-out-not-revoking",
+  "imports-stuck",
+  "email-verification-not-saved",
+  "near-sending-limit",
   "email-bouncing",
   "email-complaints",
   "email-events-dropped",
@@ -301,6 +306,117 @@ describe("live update alarms", () => {
   });
 });
 
+describe("alarms on sign-in, email and import failures the functions don't throw for", () => {
+  it("alarms on repeated sign-out revoke failures (J0)", () => {
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-sign-out-not-revoking",
+      Metrics: [
+        Match.objectLike({
+          MetricStat: {
+            Metric: { Namespace: "SupplyCheckout", MetricName: BusinessMetric.SignOutRevokeFailures, Dimensions: [{ Name: "Region", Value: EAST }] },
+            Stat: "Sum",
+            Period: 900,
+          },
+        }),
+      ],
+      Threshold: 2,
+      ComparisonOperator: "GreaterThanThreshold",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+    });
+  });
+
+  it("alarms on any failed email_verified update, promotion or downgrade (J3)", () => {
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-email-verification-not-saved",
+      Threshold: 0,
+      Metrics: Match.arrayWith([
+        Match.objectLike({ Expression: "FILL(v, 0) + FILL(u, 0)" }),
+        Match.objectLike({ Id: "v", MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.EmailVerifyFailures }), Period: 900, Stat: "Sum" }) }),
+        Match.objectLike({ Id: "u", MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.EmailUnverifyFailures }), Period: 900, Stat: "Sum" }) }),
+      ]),
+    });
+  });
+
+  it("alarms above 80% of the SES daily quota (J3) and on any stuck import (J2), reading the gauges' maximum", () => {
+    const t = observability();
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-near-sending-limit",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.EmailQuotaUsedPercent }), Stat: "Maximum", Period: 900 }) })],
+      Threshold: 80,
+      TreatMissingData: "notBreaching",
+    });
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-imports-stuck",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.StuckImports }), Stat: "Maximum", Period: 900 }) })],
+      Threshold: 0,
+    });
+    // Each 15-minute period holds at least one run of the checks
+    expect(CHECK_EVERY_MINUTES).toBeLessThanOrEqual(15);
+    expect(STUCK_IMPORT_AFTER_MINUTES).toBe(60);
+  });
+});
+
+describe("scheduled checks", () => {
+  const functions = (t: Template) => Object.values(t.findResources("AWS::Lambda::Function")).map((f) => f.Properties);
+
+  it("run in the primary region only, every 10 minutes, without retries", () => {
+    const { region } = build();
+    const west = Template.fromStack(region(WEST).observability);
+    west.resourceCountIs("AWS::Lambda::Function", 0);
+    west.resourceCountIs("AWS::Events::Rule", 0);
+    const t = observability();
+    expect(functions(t).map((f) => f.FunctionName).sort()).toEqual(["supply-checkout-prod-email-quota", "supply-checkout-prod-stuck-imports"]);
+    const rules = Object.values(t.findResources("AWS::Events::Rule")).map((r) => r.Properties);
+    expect(rules).toHaveLength(2);
+    for (const rule of rules) {
+      expect(rule.ScheduleExpression).toBe(`rate(${CHECK_EVERY_MINUTES} minutes)`);
+      expect(rule.Targets).toEqual([expect.objectContaining({ RetryPolicy: { MaximumRetryAttempts: 0 } })]);
+    }
+    t.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: "supply-checkout-prod-stuck-imports",
+      Runtime: "nodejs24.x",
+      Architectures: ["arm64"],
+      Environment: { Variables: Match.objectLike({ TABLE_NAME: "supply-checkout-prod-app" }) },
+    });
+  });
+
+  /** Every Allow statement on the function's role, X-Ray's own policy aside. */
+  function statements(t: Template, functionName: string) {
+    const [fn] = functions(t).filter((f) => f.FunctionName === functionName);
+    const role = (fn.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0];
+    return Object.values(t.findResources("AWS::IAM::Policy"))
+      .filter((p) => (p.Properties.Roles as { Ref: string }[]).some((r) => r.Ref === role) && !String(p.Properties.PolicyName).includes("XRayWrite"))
+      .flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
+  }
+
+  it("let the stuck-import check read only the committing-imports partition's keys and progress", () => {
+    const t = observability();
+    const found = statements(t, "supply-checkout-prod-stuck-imports");
+    expect(found.map((s) => s.Action)).toEqual([["logs:CreateLogStream", "logs:PutLogEvents"], "dynamodb:Query", ["kms:Decrypt", "kms:DescribeKey"]]);
+    const query = found.find((s) => s.Action === "dynamodb:Query") as Record<string, unknown>;
+    expect(query.Resource).toEqual({
+      "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app/index/GSI1"]],
+    });
+    expect(query.Condition).toEqual({
+      "ForAllValues:StringEquals": {
+        "dynamodb:LeadingKeys": ["IMPORTS#COMMITTING"],
+        "dynamodb:Attributes": ["PK", "SK", "GSI1PK", "GSI1SK", "committed", "total"],
+      },
+      StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+    });
+    const kms = found.find((s) => JSON.stringify(s.Action).includes("kms")) as Record<string, unknown>;
+    expect(kms.Condition).toEqual({ StringEquals: { "kms:ViaService": { "Fn::Join": ["", ["dynamodb.", { Ref: "AWS::Region" }, ".amazonaws.com"]] } } });
+  });
+
+  it("let the SES quota check read the account's quota and nothing else", () => {
+    const found = statements(observability(), "supply-checkout-prod-email-quota");
+    expect(found.map((s) => [s.Action, s.Resource === "*" ? "*" : "own log group"])).toEqual([
+      [["logs:CreateLogStream", "logs:PutLogEvents"], "own log group"],
+      ["ses:GetAccount", "*"],
+    ]);
+  });
+});
+
 describe("dashboard", () => {
   const body = (template: Template) => {
     const [dash] = Object.values(template.findResources("AWS::CloudWatch::Dashboard"));
@@ -365,8 +481,8 @@ describe("defaults for every function and log group", () => {
 
   function withFunctions() {
     const { app, region } = build({ [MANAGED_LOG_GROUPS]: true });
-    // The observability stack has no functions or log groups of its own
-    const stack = region(EAST).observability;
+    // Outside the primary region, the observability stack has no functions or log groups of its own
+    const stack = region(WEST).observability;
     testFunction(stack, "Plain");
     testFunction(stack, "PassThrough", Tracing.PASS_THROUGH);
     new LogGroup(stack, "Kept", { retention: RetentionDays.ONE_WEEK });

@@ -578,6 +578,12 @@ paths:
         invite's address. The invite must not have expired, and it works once.
         The caller joins with the invite's role. A missing or wrong token is
         the same 404 as an unknown invite.
+
+        A team has a member cap: 10 members while it's on a trial (or not
+        paying), 100 once its subscription is `active` or `past_due`. Joining
+        a full team is 429 `quota_exceeded` with `reason: "team_full"`, and
+        the invite stays usable for when an owner makes room. Two people
+        accepting for the last place at once can't both join.
       requestBody:
         required: true
         content:
@@ -609,7 +615,9 @@ paths:
         "409":
           description: "`aborted`: the caller is already a member of the team."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-        "429": { $ref: "#/components/responses/TooManyTeams" }
+        "429":
+          description: "`quota_exceeded`: the caller is already in 20 teams, or (with `reason: \"team_full\"`) the team is at its member cap."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /teams/{teamId}/members:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
     get:
@@ -734,6 +742,11 @@ paths:
         address, and each address can be sent 15 from all teams together;
         re-sends count. An address counts without a `+tag`, and a Gmail
         address without its dots. Past any of these, 429 `quota_exceeded`.
+
+        Members and live invites together can't exceed the team's member cap
+        (10 on a trial, 100 when paying; see acceptInvite): past it, 429
+        `quota_exceeded` with `reason: "team_full"`. Revoke an invite or
+        remove a member to make room.
 
         `email` must be a bare address (`name@example.com`): no display name,
         angle brackets, quotes, commas or spaces, and an ASCII domain
@@ -1225,13 +1238,13 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner]
+              enum: [view_only, owners_only, not_member, last_owner, team_full]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
                 `not_member`: the caller isn't in the path's team (or it
                 doesn't exist). `last_owner`: the change would leave the team
-                without an owner.
+                without an owner. `team_full`: the team is at its member cap.
   responses:
     Document:
       description: The document after the request.
@@ -1308,7 +1321,7 @@ components:
             properties:
               team: { $ref: "#/components/schemas/Team" }
     TooManyInvites:
-      description: "`quota_exceeded`: the team has sent 50 invites today (UTC) or 3 to this address, or the address has been sent 15 from all teams. Try again tomorrow."
+      description: "`quota_exceeded`: the team has sent 50 invites today (UTC) or 3 to this address, or the address has been sent 15 from all teams. Try again tomorrow. With `reason: \"team_full\"` (new invites only): the team's members and live invites fill its member cap."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     TooManyTeams:
       description: "`quota_exceeded`: the caller has created 5 teams today (UTC), or is already in 20 teams (the message says which)."

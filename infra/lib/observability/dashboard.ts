@@ -15,6 +15,7 @@ import {
   business,
   dynamoDbSystemErrors,
   dynamoDbThrottles,
+  FIVE_MINUTES,
   lambda,
 } from "./metrics.js";
 
@@ -104,6 +105,12 @@ export class OpsDashboard extends Construct {
       businessGraph("J7: billing errors", [BusinessMetric.CheckoutSessionErrors, BusinessMetric.WebhookSignatureFailures]),
       businessGraph("J4: live updates", [BusinessMetric.LiveUpdates, BusinessMetric.LiveUpdateFailures]),
     );
-    this.dashboard.addWidgets(businessGraph("J3: email bounces and complaints", [BusinessMetric.EmailBounces, BusinessMetric.EmailComplaints]));
+    this.dashboard.addWidgets(
+      businessGraph("J3: email bounces and complaints", [BusinessMetric.EmailBounces, BusinessMetric.EmailComplaints]),
+      businessGraph("J3: email verification not saved", [BusinessMetric.EmailVerifyFailures, BusinessMetric.EmailUnverifyFailures]),
+      businessGraph("J0: sign-outs not revoked", [BusinessMetric.SignOutRevokeFailures]),
+      // Gauges from the scheduled checks (primary region), at their maximum
+      graph("J2: stuck imports; J3: SES quota used %", each((r) => [BusinessMetric.StuckImports, BusinessMetric.EmailQuotaUsedPercent].map((name) => business(name, r, FIVE_MINUTES, "Maximum"))), WIDTH / 4),
+    );
   }
 }

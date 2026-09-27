@@ -6,6 +6,7 @@ import { AlarmTopics, alarmContactsFromContext } from "../observability/alarm-to
 import { apiOutputParameters } from "./api-stack.js";
 import { OpsDashboard } from "../observability/dashboard.js";
 import { JourneyAlarms } from "../observability/journey-alarms.js";
+import { OpsChecks } from "../observability/ops-checks.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
 /**
@@ -20,6 +21,8 @@ import { SupplyCheckoutStack } from "./base-stack.js";
  *   Alarms for resources other stacks add later (Cognito, CloudFront) go
  *   here too, with `topics.notify(alarm, severity)`.
  * - `dashboard`: primary region only, drawing every region's metrics.
+ * - `checks`: primary region only, the scheduled checks that send the
+ *   StuckImports and EmailQuotaUsedPercent gauges (ops-checks.ts).
  *
  * Log retention and X-Ray tracing for every function are set app-wide by
  * ObservabilityDefaults (observability/defaults.ts).
@@ -28,6 +31,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
   readonly topics: AlarmTopics;
   readonly alarms: JourneyAlarms;
   readonly dashboard?: OpsDashboard;
+  readonly checks?: OpsChecks;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "observability", layer: "stateless" });
@@ -50,6 +54,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     }
 
     if (this.isPrimaryRegion) {
+      this.checks = new OpsChecks(this, "OpsChecks", { envName: config.envName, tableName: table });
       this.dashboard = new OpsDashboard(this, "Dashboard", {
         envName: config.envName,
         regions: config.regions,

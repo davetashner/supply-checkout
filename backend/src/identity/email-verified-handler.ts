@@ -46,13 +46,15 @@
 // already matches. A failed update is logged and the sign-in goes ahead; the
 // next sign-in tries again. A failed promotion leaves the user unverified
 // (safe); a failed downgrade leaves them verified until the next sign-in, and
-// is logged as its own outcome, "downgrade-failed", at error level.
+// is logged as its own outcome, "downgrade-failed", at error level. Each
+// counts in its own business metric (EmailVerifyFailures,
+// EmailUnverifyFailures), which an alarm watches.
 //
 // Logs carry the provider and the outcome, never the email or the username
 // (which contains the provider's user ID).
 
 import type { PreTokenGenerationTriggerEvent } from "aws-lambda";
-import type { Observability } from "../observability/index.js";
+import { BusinessMetric, type Observability } from "../observability/index.js";
 import type { UpdateUserAttributes } from "./cognito-admin.js";
 import { FEDERATED_PROVIDERS, type FederatedProvider, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "./names.js";
 
@@ -128,6 +130,9 @@ export function createEmailVerifiedHandler(deps: EmailVerifiedDeps) {
         outcome,
         error: (error as Error).message,
       });
+      // The Lambda doesn't fail, so its Errors metric misses this; the "Email
+      // verification not saved" alarm (docs/journeys.md, J3) watches these counts
+      deps.obs.count(verified ? BusinessMetric.EmailVerifyFailures : BusinessMetric.EmailUnverifyFailures);
       return { outcome, provider };
     }
     return { outcome: verified ? "verified" : "unverified", provider };

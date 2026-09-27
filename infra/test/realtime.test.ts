@@ -2,7 +2,7 @@ import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { LIVE_AUDIENCE_ATTRIBUTES } from "../../backend/src/data/schema.js";
-import { REALTIME_ENV } from "../../backend/src/realtime/channels.js";
+import { CONSUMER_TIMEOUT_SECONDS, REALTIME_ENV, STREAM_BATCH_SIZE } from "../../backend/src/realtime/channels.js";
 import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { realtimeOutputParameters } from "../lib/stacks/realtime-stack.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
@@ -104,6 +104,7 @@ describe("the stream consumer", () => {
     expect(mapping.Properties).toMatchObject({
       EventSourceArn: { Ref: expect.stringMatching(/datatablestreamarn/) },
       StartingPosition: "LATEST",
+      BatchSize: STREAM_BATCH_SIZE,
       FunctionResponseTypes: ["ReportBatchItemFailures"],
       BisectBatchOnFunctionError: true,
       MaximumBatchingWindowInSeconds: 0,
@@ -141,6 +142,7 @@ describe("the stream consumer", () => {
   it("publishes to the API's own HTTP host, not the custom domain, and reads members from the app table", () => {
     realtime().hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "supply-checkout-prod-live-updates",
+      Timeout: CONSUMER_TIMEOUT_SECONDS,
       Environment: {
         Variables: Match.objectLike({
           [REALTIME_ENV.httpHost]: { "Fn::GetAtt": [Match.stringLikeRegexp("^EventApi"), "Dns.Http"] },

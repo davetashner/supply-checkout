@@ -157,6 +157,7 @@ export async function start(config) {
           if (err.code === "not_found") { dropInvite(); join.hidden = true; }
           setError(err.code === "not_found" ? "This invite has expired, was already used, or was sent to a different email address. Ask the person who invited you for a new one."
             : err.code === "permission_denied" ? "Your email address isn't verified yet. Verify it when you sign in, then open the invite link again."
+            : err.reason === "team_full" ? "This team is full. Ask the person who invited you to make room, then try again."
             : err.code === "quota_exceeded" ? "You're already in as many teams as you can be. Leave one to join this one."
             : "Couldn't join the team. Check your connection and try again.");
         }
