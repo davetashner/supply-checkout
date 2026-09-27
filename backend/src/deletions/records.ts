@@ -192,6 +192,7 @@ export async function readDeletionRecords(s3: S3Like, bucket: string, options: {
 }
 
 const PREFIX_ORDER = Object.values(DELETION_PREFIXES);
+// Every key was listed under one of the prefixes, so findIndex never returns -1 here
 const kindOrder = (key: string) => PREFIX_ORDER.findIndex((p) => key.startsWith(p));
 
 /** Two valid versions of one key: the earlier time (a survivor is judged from the first deletion), and every closed team either lists. */

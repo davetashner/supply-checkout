@@ -371,6 +371,7 @@ describe("the restore CLI's arguments", () => {
     [["deletions", "--table", "t", "--region", "r", "--endpoint", "http://127.0.0.1:9", "--bucket", "b", "--records-profile", "backup"], /--records-profile is for AWS, not --endpoint/],
     [["deletions", "--table", "t", "--region", "r", "--endpoint", "http://127.0.0.1:9"], /--bucket is required with --endpoint/],
     [["check", "--table", live, "--records-before", "2026-09-27T12:00:00Z", ...aws], /--records-before is only for deletions/],
+    [["check", "--table", live, "--accept-rewritten-records", ...aws], /--accept-rewritten-records is only for deletions/],
     [["deletions", "--table", restored, "--records-before", "yesterday", ...aws], /--records-before must be an ISO time in UTC/],
     [["deletions", "--table", restored, "--records-before", "2026-09-27T12:00:00+02:00", ...aws], /--records-before must be an ISO time in UTC/],
     [["deletions", "--table", restored, "--records-before", "2026-02-31T12:00:00Z", ...aws], /--records-before must be an ISO time in UTC/],
@@ -553,6 +554,52 @@ describe("the restore CLI's arguments", () => {
     expect(result.out).toContain("  accounts with rows to delete: 1 (dry run: would be)");
     // Never a user ID or a record's contents
     expect(result.out).not.toMatch(/u-gone|u-forged|junk/);
+  });
+
+  it("refuses --apply while a record has more than one version or there's a delete marker, unless --records-before or --accept-rewritten-records", async () => {
+    const bucket = fakeS3();
+    await s3DeletionLog({ bucket: "b", s3: bucket.s3 }).record({ kind: "user", id: "u-gone", deletedAt: NOW.toISOString() });
+    const writes: unknown[] = [];
+    const deps: Deps = {
+      callerAccount: async () => "acct",
+      s3: () => bucket.s3,
+      userPoolId: async () => "r_pool",
+      stillInPool: async () => new Set(),
+      connect: () =>
+        fakeDb(async (command) => {
+          if (command.constructor.name !== "ScanCommand") writes.push(command.input);
+          return { Items: [] };
+        }),
+    };
+    const args = ["deletions", "--table", restored, ...aws];
+    // Nothing odd: exits 0
+    expect((await run(args, deps)).code).toBe(0);
+
+    // A second valid version of the same record
+    bucket.objects.set("users/u-gone.json", JSON.stringify({ kind: "user", id: "u-gone", deletedAt: NOW.toISOString() }));
+    const refused = await run([...args, "--apply"], deps);
+    expect(refused.code).toBe(1);
+    expect(refused.err).toBe(
+      'Refusing --apply: 1 records with more than one version and 0 delete markers. Stop and investigate (docs/backups.md, "Put a restored table back into service", step 2), then run again with --records-before <time> or --accept-rewritten-records. Nothing was written.',
+    );
+    expect(refused.out).not.toContain("Checking recorded accounts");
+    // A dry run still reports, and exits 1
+    const dry = await run(args, deps);
+    expect(dry.code).toBe(1);
+    expect(dry.out).toContain("  records with more than one version (each is written once: look at them): 1");
+    // Accepted, or with the compromise's time: applies and exits 0
+    expect(await run([...args, "--accept-rewritten-records", "--apply"], deps)).toMatchObject({ code: 0, err: "" });
+    expect((await run([...args, "--records-before", "2026-09-28T00:00:00Z", "--apply"], deps)).code).toBe(0);
+    expect((await run([...args, "--accept-rewritten-records"], deps)).code).toBe(0);
+
+    // A delete marker alone is refused the same way
+    const marked = fakeS3();
+    await s3DeletionLog({ bucket: "b", s3: marked.s3 }).record({ kind: "team", id: "t1", deletedAt: NOW.toISOString() });
+    marked.state.deleteMarkers = [{ Key: "teams/t1.json" }];
+    const markedDeps = { ...deps, s3: () => marked.s3 };
+    expect(await run([...args, "--apply"], markedDeps)).toMatchObject({ code: 1, err: expect.stringContaining("0 records with more than one version and 1 delete markers") });
+    expect((await run([...args, "--accept-rewritten-records", "--apply"], markedDeps)).code).toBe(0);
+    expect(writes).toEqual([]);
   });
 
   it("refuses a user pool parameter that isn't a pool ID, before asking Cognito", async () => {
