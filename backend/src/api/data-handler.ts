@@ -46,6 +46,7 @@ import {
   returnItems,
   setDocument,
   type StoredDocument,
+  TeamClosedError,
   type TeamContext,
   TooLargeError,
   updateDocument,
@@ -82,6 +83,7 @@ export function errorFor(error: unknown): ApiError {
   // runs first. The membership check maps its own ForbiddenError before an
   // operation runs.
   if (error instanceof ForbiddenError) return viewOnly();
+  if (error instanceof TeamClosedError) return new ApiError(403, "permission_denied", error.message, "team_closed");
   return apiErrorFor(error);
 }
 

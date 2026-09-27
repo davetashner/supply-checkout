@@ -5,7 +5,7 @@
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { keys, prefixes, teamPartition } from "./keys.js";
-import { memberCap } from "./model.js";
+import { isClosed, memberCap } from "./model.js";
 
 export interface MemberCount {
   /** How many members the team has now. */
@@ -14,6 +14,8 @@ export interface MemberCount {
   readonly cap: number;
   /** How many owners the team's count says it has. */
   readonly owners: number;
+  /** The team was closed (closeTeam). */
+  readonly closed: boolean;
   /**
    * Set when the team has no `members` attribute yet (made before the
    * count): the MEMBER items just counted, for teamCounts' `counted`.
@@ -50,14 +52,15 @@ export async function memberCount(db: Db, teamId: string, now = new Date()): Pro
       Key: keys.team(teamId),
       ConsistentRead: true,
       // MEMBERS and STATUS are DynamoDB reserved words
-      ProjectionExpression: "#members, owners, #status, seats, compPlan, compUntil",
+      ProjectionExpression: "#members, owners, #status, seats, closedAt, compPlan, compUntil",
       ExpressionAttributeNames: { "#members": "members", "#status": "status" },
     }),
   );
   if (!Item) return undefined;
   const cap = memberCap(Item, now);
   const owners = typeof Item.owners === "number" ? Item.owners : 0;
-  if (typeof Item.members === "number") return { members: Item.members, cap, owners };
+  const closed = isClosed(Item);
+  if (typeof Item.members === "number") return { members: Item.members, cap, owners, closed };
   const counted = await countMemberItems(db, teamId);
-  return { members: counted, cap, owners, counted };
+  return { members: counted, cap, owners, closed, counted };
 }

@@ -1,17 +1,31 @@
 // Teams, members and each user's list of teams (ADR 0005, ADR 0007). Creating
 // a team issues a context, so createTeam lives in team-context.ts.
 
-import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { auditPut } from "./audit.js";
 import { type Db, connection } from "./client.js";
-import { ConflictError, LastOwnerError, conflictOnConditionFailure } from "./errors.js";
-import { gsi3, id, keys, prefixes, strip, teamPartition } from "./keys.js";
-import { type Member, type MemberRole, type Team, type UserTeam, memberRole, ownersUpdate, teamCounts, teamName } from "./model.js";
+import { ConflictError, InvalidInputError, LastOwnerError, conflictOnConditionFailure } from "./errors.js";
+import { gsi1, gsi3, id, keys, prefixes, strip, teamPartition } from "./keys.js";
+import {
+  type Invite,
+  type Member,
+  type MemberRole,
+  type Team,
+  type UserTeam,
+  CLOSED_TEAM_RETENTION_DAYS,
+  isClosed,
+  memberRole,
+  ownersUpdate,
+  teamCounts,
+  teamName,
+} from "./model.js";
 import { memberCount } from "./member-count.js";
 import { revokeInvitesForEmail } from "./invites.js";
 import { queryAll, versionedSet } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
 export type { Invite, InviteFailure, Member, MemberRole, Team, UserTeam } from "./model.js";
+export { CLOSED_TEAM_RETENTION_DAYS, isClosed } from "./model.js";
 
 const CHANGED = "Someone else changed this team's members just now; reload and try again";
 const LAST_OWNER = "A team needs at least one owner. Make someone else an owner first.";
@@ -165,21 +179,29 @@ export async function setMemberRole(db: Db, ctx: TeamContext, userId: string, ro
  * Owners remove members; any member can remove themselves (leave). The team's
  * member count goes down in the same transaction, and removing an owner also
  * decrements the owner count, conditioned on another owner remaining
- * (LastOwnerError). Their pending invites to the team are revoked first.
+ * (LastOwnerError). Their pending invites to the team are revoked first. The
+ * removal is audited in the same transaction (`member.left` or
+ * `member.removed`, with `reason` when given).
+ *
+ * A closed team still lets people leave and owners remove them, and its last
+ * owner may leave too: nothing about a closed team can change any more, and
+ * the purge deletes it.
  */
-export async function removeMember(db: Db, ctx: TeamContext, userId: string): Promise<void> {
+export async function removeMember(db: Db, ctx: TeamContext, userId: string, options: { readonly reason?: "account_deleted" } = {}, now = new Date()): Promise<void> {
   const minimum = userId === ctx.userId ? "viewer" : "owner";
-  writable(db, ctx, minimum);
+  writable(db, ctx, minimum, { whileClosed: true });
   const [{ role: from, email }, count] = await Promise.all([currentMember(db, ctx, userId), memberCount(db, ctx.teamId)]);
   if (!count) throw new ConflictError(CHANGED);
+  const closed = count.closed;
   // Writing the count for the first time: its condition is that nobody else
   // did, so a failure there can't be told apart from the last owner by the
   // cancellation reasons. The owner count read here answers that case.
-  if (count.counted !== undefined && from === "owner" && count.owners <= 1) throw new LastOwnerError(LAST_OWNER);
+  if (!closed && count.counted !== undefined && from === "owner" && count.owners <= 1) throw new LastOwnerError(LAST_OWNER);
   // Any other invite to this team for their address goes first, so someone
   // removed can't rejoin with an invite they hadn't used. If the removal then
   // fails (the last owner), only their own unused invites are gone.
   if (typeof email === "string" && email) await revokeInvitesForEmail(db, ctx, email, minimum);
+  const audit = auditPut(db, ctx, { action: userId === ctx.userId ? "member.left" : "member.removed", target: userId, ...(options.reason ? { detail: { reason: options.reason } } : {}) }, now);
   await connection(db)
     .doc.send(
       new TransactWriteCommand({
@@ -194,13 +216,120 @@ export async function removeMember(db: Db, ctx: TeamContext, userId: string): Pr
             },
           },
           { Delete: { TableName: db.tableName, Key: keys.userTeam(userId, ctx.teamId) } },
-          teamCounts(db.tableName, ctx.teamId, { members: -1, counted: count.counted, ...(from === "owner" ? { owners: -1 as const } : {}) }),
+          teamCounts(db.tableName, ctx.teamId, { members: -1, counted: count.counted, closed, ...(from === "owner" ? { owners: -1 as const } : {}) }),
+          audit,
           ...callerStillOwner(db, ctx, userId),
         ],
       }),
     )
-    .catch(memberChangeFailed(from === "owner" && count.counted === undefined ? 2 : undefined));
+    .catch(memberChangeFailed(from === "owner" && count.counted === undefined && !closed ? 2 : undefined));
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A team name as typed to confirm closing it: trimmed, compatibility-normalized and case-folded. */
+const confirmation = (value: string) => value.normalize("NFKC").trim().toLocaleLowerCase("en-US");
+
+/**
+ * An owner closes the team. The caller types the team's name to confirm
+ * (`confirmName`, compared ignoring case and surrounding spaces). In one
+ * transaction, conditioned on the caller still being an owner: the META item
+ * gets `closedAt`, `closedBy` and `purgeAfter` (CLOSED_TEAM_RETENTION_DAYS
+ * later) and joins the closed-teams index the purge reads, and a `team.closed`
+ * audit event is written. Then every invite to the team is deleted.
+ *
+ * From then on the team is read-only (writable refuses anything but leaving,
+ * removing members and revoking invites), its members' live updates stop
+ * (liveUpdateRecipients), nobody can join (teamCounts), and the purge
+ * deletes all of it once `purgeAfter` passes (team-purge.ts). Members keep
+ * read access meanwhile, so owners can export the data.
+ *
+ * With `onlyMember`, the closure is also conditioned on the team still having one
+ * member (account deletion closing a team its caller is alone in).
+ *
+ * Idempotent: closing a closed team changes nothing and returns it as it is,
+ * with `closedNow: false`, after deleting any invites still there (a retry
+ * after the invites step failed part-way). The Stripe subscription isn't
+ * cancelled here yet: billing (supply-checkout-x0l) does that from the
+ * team's `closedAt`.
+ */
+export async function closeTeam(
+  db: Db,
+  ctx: TeamContext,
+  input: { readonly confirmName: string; readonly onlyMember?: boolean },
+  now = new Date(),
+): Promise<{ team: Team; closedNow: boolean }> {
+  writable(db, ctx, "owner", { whileClosed: true });
+  if (typeof input.confirmName !== "string") throw new InvalidInputError(CONFIRM);
+  const current = await getTeam(db, ctx);
+  if (!current) throw new ConflictError(CHANGED);
+  let closedNow = false;
+  if (!isClosed(current)) {
+    if (confirmation(input.confirmName) !== confirmation(current.name)) throw new InvalidInputError(CONFIRM);
+    const closedAt = now.toISOString();
+    const purgeAfter = new Date(now.getTime() + CLOSED_TEAM_RETENTION_DAYS * DAY_MS).toISOString();
+    // With `onlyMember` (account deletion closing a team its caller is alone in): only
+    // while the count still says one member, so someone who joined since the caller's
+    // read keeps an open team (ConflictError). A team from before the count has none
+    // to condition on.
+    const alone = input.onlyMember === true && typeof current.members === "number";
+    await connection(db)
+      .doc.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Update: {
+                TableName: db.tableName,
+                Key: keys.team(ctx.teamId),
+                UpdateExpression: "SET closedAt = :at, closedBy = :by, purgeAfter = :purge, GSI1PK = :gpk, GSI1SK = :gsk, #version = #version + :one",
+                ConditionExpression: `attribute_exists(PK) AND attribute_not_exists(closedAt)${alone ? " AND #members = :one" : ""}`,
+                ExpressionAttributeNames: { "#version": "version", ...(alone ? { "#members": "members" } : {}) },
+                ExpressionAttributeValues: {
+                  ":at": closedAt,
+                  ":by": ctx.userId,
+                  ":purge": purgeAfter,
+                  ":gpk": gsi1.closedTeam(purgeAfter, ctx.teamId).GSI1PK,
+                  ":gsk": gsi1.closedTeam(purgeAfter, ctx.teamId).GSI1SK,
+                  ":one": 1,
+                },
+              },
+            },
+            // The caller's own membership, as it is now: an owner demoted or
+            // removed since the context was issued can't close the team
+            {
+              ConditionCheck: {
+                TableName: db.tableName,
+                Key: keys.member(ctx.teamId, ctx.userId),
+                ConditionExpression: "#role = :owner",
+                ExpressionAttributeNames: { "#role": "role" },
+                ExpressionAttributeValues: { ":owner": "owner" },
+              },
+            },
+            auditPut(db, ctx, { action: "team.closed" }, now),
+          ],
+        }),
+      )
+      .catch(conflictOnConditionFailure(CHANGED));
+    closedNow = true;
+  }
+  // Nobody can accept these any more (teamCounts refuses a closed team), but
+  // they hold addresses, so they go now rather than with the purge
+  const invites = await queryAll<Invite>(db, teamPartition(ctx.teamId), prefixes.invite);
+  for (const invite of invites) {
+    await connection(db).doc.send(
+      new DeleteCommand({
+        TableName: db.tableName,
+        Key: keys.invite(ctx.teamId, invite.inviteId),
+        ConditionExpression: "attribute_not_exists(PK) OR #type = :invite",
+        ExpressionAttributeNames: { "#type": "type" },
+        ExpressionAttributeValues: { ":invite": "invite" },
+      }),
+    );
+  }
+  return { team: closedNow ? ((await getTeam(db, ctx)) as Team) : current, closedNow };
+}
+
+const CONFIRM = "Type the team's name to close it";
 
 /**
  * The verified user's teams, for the team switcher. This reads the user's own

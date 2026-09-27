@@ -66,7 +66,7 @@ test("an owner sees the members and roles, changes a role and removes a member",
   await expect(page.locator("#toast")).toHaveText("Removed the member from the team");
   expect(backend.members.t1.map((m) => m.userId)).toEqual([USER.id]);
 
-  await dialog(page).getByRole("button", { name: "Close" }).click();
+  await dialog(page).getByRole("button", { name: "Close", exact: true }).click();
   await expect(page.locator("#overlay")).toBeHidden();
 });
 

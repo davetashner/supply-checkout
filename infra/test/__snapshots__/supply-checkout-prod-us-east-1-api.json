@@ -2687,6 +2687,114 @@
         }
       }
     },
+    "HttpApiPOSTteamsteamIdcloseAccountIntegrationPermission1183DF2C": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/close"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTteamsteamIdclose39531DA2": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /teams/{teamId}/close",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiDELETEmeAccountIntegrationPermission5F54C1A0": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/me"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiDELETEme4697CF78": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "DELETE /me",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiPOSTmeemailcodeAccountIntegrationPermission93EBB796": {
       "Type": "AWS::Lambda::Permission",
       "Properties": {
@@ -3362,6 +3470,14 @@
             "ThrottlingRateLimit": 5,
             "ThrottlingBurstLimit": 10
           },
+          "POST /teams/{teamId}/close": {
+            "ThrottlingRateLimit": 2,
+            "ThrottlingBurstLimit": 5
+          },
+          "DELETE /me": {
+            "ThrottlingRateLimit": 2,
+            "ThrottlingBurstLimit": 5
+          },
           "POST /me/email/code": {
             "ThrottlingRateLimit": 5,
             "ThrottlingBurstLimit": 10
@@ -3401,6 +3517,8 @@
         }
       },
       "DependsOn": [
+        "HttpApiDELETEmeAccountIntegrationPermission5F54C1A0",
+        "HttpApiDELETEme4697CF78",
         "HttpApiDELETEopsteamsteamIdcompOpsIntegrationPermission128F81C2",
         "HttpApiDELETEopsteamsteamIdcomp8D6C434B",
         "HttpApiDELETEteamsteamIdinvitesinviteIdAccountIntegrationPermission76ABDA4B",
@@ -3429,6 +3547,8 @@
         "HttpApiPOSTmeemailcode157ED3EE",
         "HttpApiPOSTmeemailverifyAccountIntegrationPermission0E703411",
         "HttpApiPOSTmeemailverify7BFB4943",
+        "HttpApiPOSTteamsteamIdcloseAccountIntegrationPermission1183DF2C",
+        "HttpApiPOSTteamsteamIdclose39531DA2",
         "HttpApiPOSTteamsteamIdimportsDataIntegrationPermission8AC0ABAB",
         "HttpApiPOSTteamsteamIdimportsA904FDBB",
         "HttpApiPOSTteamsteamIdinvitesinviteIdresendAccountIntegrationPermissionE3A2628E",

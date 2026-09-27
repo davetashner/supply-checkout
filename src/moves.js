@@ -3,8 +3,9 @@
 // The web build's db (src/aws/db.js) has `command`: one request that changes the sheet line and
 // the storage count together, adding on the server, so two people checking out at once can't
 // lose a count and a retry can't count twice (docs/api/commands.md). claude.ai's db doesn't, so
-// the artifact build writes the sheet line, then the storage count (bumpStock in src/main.js, a
-// read-then-write).
+// the artifact build writes the sheet line, then the storage count (addStock below, a
+// read-then-write), as one attempt: if the storage count fails, trying again finds the line
+// saved and writes only the storage count.
 //
 // `action` is one object per action the person confirms (one checkout or return form). The web
 // build's db gives each action an operation ID, and sends the same one on every attempt at the
@@ -13,14 +14,10 @@
 // The request depends only on what the person entered, never on the latest copy of the sheet,
 // so a retry after a live update is still the same request.
 //
-// Each resolves, once the sheet has saved, to { after, quantity, line }: what's left to do (the
-// artifact's storage count write, or nothing, since the command moved stock already), and for
-// a return, how many came back and the line as it is now. (Not `then`: an object with a
-// `then` method is a thenable, and awaiting it would call it.)
+// Each resolves, once the sheet and the storage count have saved, to { quantity, line }: for a
+// return, how many came back and the line as it is now.
 import { WEB } from "./build.js";
 import { int, own, uid, hasStock } from "./format.js";
-
-const nothing = async () => true;
 
 // claude.ai's db has no transactions or conditional writes, so the artifact build makes each
 // action's write detectable instead: it saves a mark for the action (a random ID) in the same
@@ -45,7 +42,7 @@ function attempt(action, fn) {
 
 async function move(db, action, command, sheetId, body, local) {
   // WEB: the artifact build leaves this path out, since claude.ai's db has no commands (src/build.js)
-  if (WEB && db.command) return { after: nothing, ...(await db.command(command, sheetId, body, action)) };
+  if (WEB && db.command) return db.command(command, sheetId, body, action);
   // As with the web build's operation IDs, a changed request (another quantity) is a new action
   const key = body.productKey, request = JSON.stringify([command, sheetId, body]), ref = db.doc("sheets/" + sheetId);
   if (action.request !== request) Object.assign(action, { request, mark: uid() });
@@ -54,25 +51,42 @@ async function move(db, action, command, sheetId, body, local) {
     const got = await ref.get();
     if (!got.exists) throw { code: "not_found" };
     const cur = own(got.data().items || {}, key);
-    // Saved already: what's left is what that attempt left to do (its storage count)
-    if (marked(cur, mark)) return saved.get(action);
-    saved.set(action, local);
-    await ref.update({ items: { [key]: { ...local.patch, ops: remember(cur, mark) } } });
-    return local;
+    // Saved already: what's left is what that attempt left to do, its storage count
+    if (!marked(cur, mark)) {
+      // A return changes part of the line, so it doesn't make a line someone else removed again
+      if (!cur && local.partial) throw { code: "refused", message: "Someone else removed this item from the sheet, so the return wasn't saved." };
+      saved.set(action, local);
+      await ref.update({ items: { [key]: { ...local.patch, ops: remember(cur, mark) } } });
+      // Until the storage count saves too, the form can't change the request (src/main.js)
+      action.due = true;
+    }
+    const done = saved.get(action);
+    await addStock(db, key, done.delta, mark);
+    action.due = false;
+    return done;
   });
+}
+
+// The artifact's storage count: adds delta (or takes it away) to the stock saved now, with the
+// action's mark on the item, so trying again after a lost answer adds nothing. An item nobody
+// has counted stays uncounted when taking away, and one someone deleted isn't made again.
+async function addStock(db, key, delta, mark) {
+  const ref = db.doc("products/" + key), got = await ref.get(), cur = got.exists ? got.data() : undefined;
+  if (!delta || !cur || marked(cur, mark) || (!hasStock(cur) && delta < 0)) return;
+  await ref.update({ stock: Math.max(0, (hasStock(cur) ? cur.stock : 0) + delta), ops: remember(cur, mark) });
 }
 
 // item: the whole line as it should be now. oneOff: the name, price and code of an item that
 // isn't in inventory, which the command needs to add its line ({} for an item in inventory).
-export const checkOut = (db, action, sheetId, key, qty, item, oneOff, bumpStock) =>
-  move(db, action, "checkout", sheetId, { productKey: key, quantity: qty, ...oneOff }, { patch: item, after: () => bumpStock(key, -qty) });
+export const checkOut = (db, action, sheetId, key, qty, item, oneOff) =>
+  move(db, action, "checkout", sheetId, { productKey: key, quantity: qty, ...oneOff }, { patch: item, delta: -qty });
 // r: how many the person is returning. The command adds it on the server, which refuses more
 // than are left. The artifact writes the line's new returned count, added to the latest copy
 // of the line (cur), in case someone else recorded a return meanwhile.
-export function recordReturn(db, action, sheetId, key, r, cur, bumpStock) {
+export function recordReturn(db, action, sheetId, key, r, cur) {
   const out = int(cur.out), before = Math.min(int(cur.returned), out), back = Math.min(out, before + r);
   return move(db, action, "return", sheetId, { productKey: key, quantity: r },
-    { patch: { returned: back }, after: () => bumpStock(key, back - before), quantity: back - before, line: { out, returned: back } });
+    { patch: { returned: back }, partial: true, delta: back - before, quantity: back - before, line: { out, returned: back } });
 }
 // A receipt's lines for a client, added to a sheet that already exists (saveReceipt in
 // src/main.js). items: { [key]: line }, each as a new line would be ({ code, name, price, cost
@@ -113,7 +127,6 @@ export async function addLines(db, action, sheetId, items) {
     await ref.update({ items: patch });
   });
 }
-export const setStock = (db, key, stock) => db.doc("products/" + key).update({ stock });
 
 // Saving an item whose stock changes outside a sheet: the inventory form (someone counted
 // storage) and a receipt's general-inventory lines (stock bought in). body is the whole item,

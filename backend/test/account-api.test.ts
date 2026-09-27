@@ -13,7 +13,7 @@ import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
 import { authorizeTeam, createInvite, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS } from "../src/data/index.js";
 import type { Observability } from "../src/observability/index.js";
-import { REGION, accountPartitions, fakeMailer } from "./helpers.js";
+import { REGION, accountPartitions, fakeMailer, unusedDeleteUser } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const mails = fakeMailer();
@@ -99,7 +99,7 @@ beforeEach(() => {
       verifiedNow.add(token.replace(/^token-/, ""));
     },
   };
-  handler = createAccountHandler({ dbFor, userInfo, emailCodes, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, now: () => now });
+  handler = createAccountHandler({ dbFor, userInfo, emailCodes, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, deleteUser: unusedDeleteUser, now: () => now });
 });
 
 interface Request {
@@ -170,6 +170,8 @@ describe("POST /teams", () => {
       status: "trialing",
       trialEndsAt: new Date(now + TRIAL_DAYS * DAY).toISOString(),
       homeRegion: REGION,
+      closedAt: null,
+      deletesAt: null,
       comp: null,
     });
     const id = body.team.id as string;
@@ -232,7 +234,7 @@ describe("GET /me", () => {
     expect(body.user).toEqual({ id: PAT, email: "Pat@Example.com", emailVerified: true });
     expect(body.teams).toEqual([
       created,
-      { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION, comp: null },
+      { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION, closedAt: null, deletesAt: null, comp: null },
     ].map((t) => JSON.parse(JSON.stringify(t))));
     expect(body.invites).toEqual([]);
   });

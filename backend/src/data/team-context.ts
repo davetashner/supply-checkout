@@ -13,7 +13,7 @@
 import { randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactGetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
-import { ConflictError, ForbiddenError, LimitReachedError, NotFoundError, TeamFullError, conflictOnConditionFailure } from "./errors.js";
+import { ConflictError, ForbiddenError, LimitReachedError, NotFoundError, TeamClosedError, TeamFullError, conflictOnConditionFailure } from "./errors.js";
 import { gsi1, gsi3, id, keys, prefixes, strip } from "./keys.js";
 import {
   type Invite,
@@ -25,6 +25,7 @@ import {
   TEAMS_PER_USER_PER_DAY,
   TRIAL_DAYS,
   hashInviteToken,
+  isClosed,
   isMemberRole,
   normalizeEmail,
   teamCounts,
@@ -50,21 +51,28 @@ export class TeamContext {
   readonly role: Role;
   /** The team's home region (ADR 0010), from its META item. */
   readonly homeRegion: string;
+  /**
+   * The team was closed (closeTeam) when the context was issued: members may
+   * read it and leave, and nothing else (writable). Always false for system
+   * contexts, which writable doesn't hold to it.
+   */
+  readonly closed: boolean;
 
-  constructor(token: symbol, teamId: string, userId: string, role: Role, homeRegion: string) {
+  constructor(token: symbol, teamId: string, userId: string, role: Role, homeRegion: string, closed = false) {
     if (token !== ISSUE) throw new ForbiddenError("TeamContext can only be issued by the data layer");
     this.teamId = teamId;
     this.userId = userId;
     this.role = role;
     this.homeRegion = homeRegion;
+    this.closed = closed;
     Object.freeze(this);
     issued.add(this);
   }
 }
 
 // Not exported: only the issuers below can call it.
-function issue(teamId: string, userId: string, role: Role, homeRegion: string): TeamContext {
-  return new TeamContext(ISSUE, teamId, userId, role, homeRegion);
+function issue(teamId: string, userId: string, role: Role, homeRegion: string, closed = false): TeamContext {
+  return new TeamContext(ISSUE, teamId, userId, role, homeRegion, closed);
 }
 
 /** Throws unless `ctx` was issued by this file. */
@@ -84,16 +92,23 @@ export function readable(ctx: TeamContext): TeamContext {
  * A context allowed to write at `minimum` role, routed to the region that
  * takes this team's writes. The MVP has one region, so the route is always
  * local; phase 2 forwards to the home region here.
+ *
+ * A closed team is read-only (TeamClosedError), except for what `whileClosed`
+ * allows: leaving or removing a member, revoking invites, and closing it again.
+ * System processes (billing, email events) aren't held to it.
  */
-export function writable(db: Db, ctx: TeamContext, minimum: Role = "contributor"): TeamContext {
+export function writable(db: Db, ctx: TeamContext, minimum: Role = "contributor", options: { readonly whileClosed?: boolean } = {}): TeamContext {
   assertContext(ctx);
   // Fails closed: a role without a rank (which authorizeTeam never issues) can't write
   const rank = RANK[ctx.role] as number | undefined;
   if (rank === undefined || rank < RANK[minimum]) throw new ForbiddenError(`Needs the ${minimum} role`);
+  if (ctx.closed && ctx.role !== "system" && !options.whileClosed) throw new TeamClosedError(TEAM_CLOSED);
   const target = writeRegionFor(ctx, db.region);
   if (target !== db.region) throw new Error(`Writes for this team go to ${target}; forwarding is phase 2`);
   return ctx;
 }
+
+const TEAM_CLOSED = "This team was closed. It's read-only until its data is deleted.";
 
 /**
  * Builds the context for a verified user acting on a team. Call it from the
@@ -107,7 +122,7 @@ export async function authorizeTeam(db: Db, userId: string, teamId: string): Pro
   const result = await connection(db).doc.send(
     new TransactGetCommand({
       TransactItems: [
-        { Get: { TableName: db.tableName, Key: keys.team(teamId), ProjectionExpression: "homeRegion" } },
+        { Get: { TableName: db.tableName, Key: keys.team(teamId), ProjectionExpression: "homeRegion, closedAt" } },
         {
           Get: {
             TableName: db.tableName,
@@ -123,7 +138,7 @@ export async function authorizeTeam(db: Db, userId: string, teamId: string): Pro
   if (!meta || !membership) throw new ForbiddenError("Not a member of this team");
   // A MEMBER item with a missing or unknown role is treated as no membership
   if (!isMemberRole(membership.role)) throw new ForbiddenError("Not a member of this team");
-  return issue(teamId, userId, membership.role, meta.homeRegion as string);
+  return issue(teamId, userId, membership.role, meta.homeRegion as string, isClosed(meta));
 }
 
 /** The per-item reasons DynamoDB gave for cancelling a transaction, if it did. */
@@ -142,6 +157,17 @@ async function teamsOf(db: Db, userId: string): Promise<Set<string>> {
 const teamFull = (cap: number) => `This team is full: it can have ${cap} members. Ask an owner to make room.`;
 
 const TOO_MANY_TEAMS = `An account can be in at most ${MAX_TEAMS_PER_USER} teams; leave one first`;
+
+const BEING_DELETED = "This account is being deleted";
+
+/**
+ * A transaction item that fails while the user's account is being deleted
+ * (keys.accountDeletion), so no membership can be added after the deletion
+ * has listed their teams.
+ */
+function notBeingDeleted(db: Db, userId: string) {
+  return { ConditionCheck: { TableName: db.tableName, Key: keys.accountDeletion(userId), ConditionExpression: "attribute_not_exists(PK)" } };
+}
 
 /**
  * Creates a team with the verified caller as its owner, and returns the owner's
@@ -205,6 +231,7 @@ export async function createTeam(
               ExpressionAttributeValues: { ":one": 1, ":max": TEAMS_PER_USER_PER_DAY, ":type": "teamsCreated", ":expires": epoch + 2 * DAY_SECONDS },
             },
           },
+          notBeingDeleted(db, userId),
         ],
       }),
     );
@@ -220,6 +247,7 @@ export async function createTeam(
         await new Promise((resolve) => setTimeout(resolve, 25 * attempt));
         continue;
       }
+      if (codes?.[4] === "ConditionalCheckFailed") throw new ForbiddenError(BEING_DELETED);
       if (codes?.[0] === "ConditionalCheckFailed") break;
       if (codes?.[3] === "ConditionalCheckFailed") throw new LimitReachedError(`You can create up to ${TEAMS_PER_USER_PER_DAY} teams a day`);
       return conflictOnConditionFailure("Someone else changed this; try again")(error);
@@ -278,7 +306,9 @@ export async function findInvite(db: Db, token: string, now = new Date()): Promi
  * The team's member count moves in the same transaction, on the condition
  * that it's below memberCap, so a team never goes over its cap, even when two
  * people accept for its last place at once: one joins, the other gets
- * TeamFullError (and keeps the invite, for when a place frees up).
+ * TeamFullError (and keeps the invite, for when a place frees up). A closed
+ * team takes nobody (NotFoundError, as for an expired invite), and a user
+ * whose account is being deleted can't join (ForbiddenError).
  */
 export async function acceptInvite(
   db: Db,
@@ -295,7 +325,8 @@ export async function acceptInvite(
   if (mine.has(invite.teamId)) throw new ConflictError("You're already a member of this team");
   if (mine.size >= MAX_TEAMS_PER_USER) throw new LimitReachedError(TOO_MANY_TEAMS);
   const count = await memberCount(db, invite.teamId, now);
-  if (!count) throw new NotFoundError("This invite has expired or was already used");
+  // A closed team takes nobody new; its invites were deleted when it closed
+  if (!count || count.closed) throw new NotFoundError("This invite has expired or was already used");
   if (count.members >= count.cap) throw new TeamFullError(teamFull(count.cap));
   const member: Member = { type: "member", teamId: invite.teamId, userId, role: invite.role, email, joinedAt: now.toISOString() };
   const userTeam: UserTeam = { type: "userTeam", userId, teamId: invite.teamId, teamName: invite.teamName, role: invite.role };
@@ -328,11 +359,13 @@ export async function acceptInvite(
           },
           { Put: { TableName: db.tableName, Item: { ...keys.userTeam(userId, invite.teamId), ...userTeam } } },
           teamCounts(db.tableName, invite.teamId, { members: 1, cap: count.cap, counted: count.counted, ...(invite.role === "owner" ? { owners: 1 as const } : {}) }),
+          notBeingDeleted(db, userId),
         ],
       }),
     );
   } catch (error) {
     const codes = cancellationCodes(error);
+    if (codes?.[4] === "ConditionalCheckFailed") throw new ForbiddenError(BEING_DELETED);
     if (codes?.[0] === "ConditionalCheckFailed") throw new NotFoundError("This invite has expired or was already used");
     if (codes?.[1] === "ConditionalCheckFailed") throw new ConflictError("You're already a member of this team");
     // The count's condition: the team filled up meanwhile. (Not when this
