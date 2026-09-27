@@ -143,6 +143,26 @@ test("view-only users can't make changes", async ({ page }) => {
   await expect(page.getByRole("button", { name: "+ New sheet" })).toHaveCount(0);
 });
 
+test("a runtime that says why the page is read-only (a closed team) shows that instead of the role's notice", async ({ page }) => {
+  await openApp(page, { canWrite: false, viewOnlyNotice: "This team is closed, so nothing in it can be changed." });
+  await expect(page.locator("#notice")).toHaveText("This team is closed, so nothing in it can be changed.");
+});
+
+test("a runtime with nothing to say about it keeps the role's view-only notice", async ({ page }) => {
+  await openApp(page, { canWrite: false, viewOnlyNotice: null });
+  await expect(page.locator("#notice")).toHaveText("You have view-only access. Ask the owner to give you Contributor access to scan and edit.");
+});
+
+test("a refused write says why from the runtime when it can", async ({ page }) => {
+  await openApp(page, { writeError: "invalid_argument", viewOnlyNotice: "An owner closed this team." });
+  await expect(page.locator("#notice")).toBeHidden();
+  await page.getByRole("button", { name: "+ New sheet" }).click();
+  await page.getByLabel("Client", { exact: true }).fill("Hotel Group");
+  await page.getByRole("button", { name: "Create sheet" }).click();
+  await expect(page.locator("#toast")).toHaveText("An owner closed this team.");
+  await expect(page.locator("#notice")).toHaveText("An owner closed this team.");
+});
+
 test("returning the same item again adds to what's already been returned", async ({ page }) => {
   await openApp(page, {
     seed: {

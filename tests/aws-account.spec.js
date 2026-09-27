@@ -5,7 +5,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./helpers.js";
 import { currentBuild } from "../scripts/builds.mjs";
 import { usedState } from "./fixtures.js";
-import { FakeBackend, TEAM, USER, ORIGIN, AUTH, CONFIG, openAws, connected, lastSocket, sockets, emit } from "./fake-aws.js";
+import { FakeBackend, TEAM, USER, ORIGIN, AUTH, CONFIG, openAws, connected, lastSocket, sockets, emit, setVisible } from "./fake-aws.js";
 
 test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 
@@ -659,6 +659,84 @@ test.describe("first sign-in and teams", () => {
     await connected(page);
     await expect(page.getByLabel("Team")).toBeVisible();
     await expectNoSideways(page);
+  });
+
+  // Nothing tells the page when another of the user's teams removes them: /me, asked again
+  // when the data is re-listed (at most once a minute), does
+  test("drops a team the user was removed from when the data is next re-listed", async ({ page }) => {
+    const three = [...teams, { ...TEAM, id: "t3", name: "Charlie Ltd", role: "viewer" }];
+    const backend = new FakeBackend({ teams: three, docs: seeded() });
+    await page.clock.install();
+    await openAws(page, backend);
+    await connected(page);
+    const pick = page.getByLabel("Team");
+    await expect(pick.locator("option")).toHaveText(["Echo Cleaning", "Bravo Co", "Charlie Ltd"]);
+    const meCalls = () => backend.requests("GET", "/me").length;
+    expect(meCalls()).toBe(1);
+    backend.teams = backend.teams.filter((t) => t.id !== "t3");
+    // Within a minute of loading /me, a re-list doesn't ask again
+    await setVisible(page, true);
+    await expect.poll(() => backend.requests("GET", "/teams/t1/sheets").length).toBeGreaterThan(1);
+    expect(meCalls()).toBe(1);
+    await page.clock.fastForward(61e3);
+    await setVisible(page, true);
+    await expect(pick.locator("option")).toHaveText(["Echo Cleaning", "Bravo Co"]);
+    expect(meCalls()).toBe(2);
+    // A /me that fails leaves the switcher as it was
+    backend.teams = backend.teams.filter((t) => t.id !== "t2");
+    backend.on("GET", "/me", { abort: true });
+    await page.clock.fastForward(61e3);
+    await setVisible(page, true);
+    await expect.poll(meCalls).toBe(3);
+    await expect(pick.locator("option")).toHaveText(["Echo Cleaning", "Bravo Co"]);
+    // One team left: just its name
+    await page.clock.fastForward(61e3);
+    await setVisible(page, true);
+    await expect(page.locator(".teambar")).toContainText("Team: Echo Cleaning");
+    await expect(page.getByLabel("Team")).toHaveCount(0);
+    await expectAccessible(page);
+  });
+
+  test("while polling instead of a socket, /me is asked at most every 10 minutes", async ({ page }) => {
+    const backend = new FakeBackend({ teams, docs: seeded() });
+    await page.clock.install();
+    // The socket never opens, so after three tries the app polls every 15 seconds
+    await openAws(page, backend, { ws: { open: false } });
+    await connected(page);
+    const meCalls = () => backend.requests("GET", "/me").length;
+    const polls = () => backend.requests("GET", "/teams/t1/products").length;
+    for (let i = 0; i < 3; i++) await page.clock.fastForward(5e3);
+    await expect.poll(polls).toBeGreaterThan(1);
+    for (let i = 0; i < 8; i++) {
+      const before = polls();
+      await page.clock.fastForward(61e3);
+      await expect.poll(polls).toBeGreaterThan(before);
+    }
+    expect(meCalls()).toBe(1);
+    // Showing the tab again is not a poll: the usual minute applies
+    await setVisible(page, true);
+    await expect.poll(meCalls).toBe(2);
+    for (let i = 0; i < 9; i++) {
+      const before = polls();
+      await page.clock.fastForward(61e3);
+      await expect.poll(polls).toBeGreaterThan(before);
+    }
+    expect(meCalls()).toBe(2);
+    await page.clock.fastForward(61e3);
+    await expect.poll(meCalls).toBe(3);
+  });
+
+  test("a /me without the open team leaves the switcher to the removal notice", async ({ page }) => {
+    const backend = new FakeBackend({ teams, docs: seeded() });
+    await page.clock.install();
+    await openAws(page, backend);
+    await connected(page);
+    backend.teams = backend.teams.filter((t) => t.id !== "t1");
+    await page.clock.fastForward(61e3);
+    await setVisible(page, true);
+    await expect(page.getByRole("heading", { name: `You're no longer in ${TEAM.name}` })).toBeVisible();
+    await expect.poll(() => backend.requests("GET", "/me").length).toBe(2);
+    await expect(page.getByLabel("Team").locator("option")).toHaveText(["Echo Cleaning", "Bravo Co"]);
   });
 });
 

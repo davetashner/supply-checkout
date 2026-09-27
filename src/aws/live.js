@@ -59,7 +59,8 @@ export function createLive({ url, host, channel, token, onEvent, onResync }) {
   function startPolling() {
     if (polling) return;
     polling = true;
-    const poll = () => { onResync(); pollTimer = setTimeout(poll, document.hidden ? POLL_HIDDEN : POLL); };
+    // Says it's a poll, so what else runs on a re-list can run less often (account.js: /me)
+    const poll = () => { onResync("poll"); pollTimer = setTimeout(poll, document.hidden ? POLL_HIDDEN : POLL); };
     poll();
   }
   function stopPolling() { polling = false; clearTimeout(pollTimer); }
