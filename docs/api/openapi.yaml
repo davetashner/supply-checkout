@@ -705,14 +705,15 @@ paths:
         so it needs the `aws.cognito.signin.user.admin` scope). Only for an
         address that isn't verified yet: `emailVerified` is false in
         `GET /me`. A new code replaces the last one. A user can ask for 10
-        codes a UTC day, and Cognito limits them too (429 for either). No
-        request body, or an empty object.
+        codes a UTC day, and Cognito limits them too (429 for either). The
+        API records the address the code went to; a code verifies only that
+        address, within a day. No request body, or an empty object.
       responses:
         "204": { description: The code is on its way. }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "409":
-          description: "`aborted` with `reason: \"already_verified\"`: the address is already verified."
+          description: "`aborted`: with `reason: \"already_verified\"`, the address is already verified; with `reason: \"email_changed\"`, the address changed while the code was being sent, so the code won't verify anything: send another."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429":
           description: "`quota_exceeded`: too many codes asked for. Try again later."
@@ -727,9 +728,10 @@ paths:
       summary: Verify the caller's email address with the code from the email.
       description: |
         Checks the code with Cognito (VerifyUserAttribute), which marks the
-        address verified. Then refresh the tokens (`POST /auth/refresh`): for
-        a user with Google or Apple linked, the refresh is when the address
-        is recorded and starts to count (docs/infrastructure.md, Sign-in).
+        address verified, and records the address as the one the caller
+        proved. Then refresh the tokens (`POST /auth/refresh`): for a user
+        with Google or Apple linked, the refresh is when the address is
+        recorded and starts to count (docs/infrastructure.md, Sign-in).
         After that, `GET /me` shows `emailVerified: true` and the invites
         sent to the address. Cognito limits wrong tries (429).
       requestBody:
@@ -749,7 +751,7 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "409":
-          description: "`aborted`: with `reason: \"already_verified\"`, the address is already verified; with `reason: \"email_in_use\"`, another account has this address."
+          description: "`aborted`: with `reason: \"already_verified\"`, the address is already verified; with `reason: \"email_in_use\"`, another account has this address; with `reason: \"email_changed\"`, the address isn't the one the code was sent to through the API (or it changed while the code was checked, the code is over a day old, or Cognito didn't mark it verified), so nothing was recorded: send a new code."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429":
           description: "`quota_exceeded`: too many tries. Try again later."
@@ -1787,7 +1789,7 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, code_mismatch, code_expired, already_verified, email_in_use]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, code_mismatch, code_expired, already_verified, email_in_use, email_changed]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -1796,8 +1798,9 @@ components:
                 without an owner. `team_full`: the team is at its member cap.
                 `team_closed`: the team was closed and is read-only.
                 Verifying an email address: `code_mismatch` (the code isn't
-                right), `code_expired`, `already_verified`, and `email_in_use`
-                (another account has the address).
+                right), `code_expired`, `already_verified`, `email_in_use`
+                (another account has the address), and `email_changed` (the
+                address changed while the code was checked).
   responses:
     OperatorsOnly:
       description: "`permission_denied`: the token's user isn't in the `operators` group (now, according to Cognito)."

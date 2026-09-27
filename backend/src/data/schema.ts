@@ -196,3 +196,29 @@ export const OPS_INDEX_ATTRIBUTES = [
   "action",
   "operatorSub",
 ] as const;
+
+/**
+ * The sort key of the item in a user's own `USER#<sub>` partition that holds
+ * the address they last proved with a Cognito code through the account API
+ * (POST /me/email/verify, supply-checkout-ytr2): see verified-email.ts. Not a
+ * `LIMIT#` key, so deleting an account removes it with the user's other rows.
+ */
+export const VERIFIED_EMAIL_SK = "VERIFIED_EMAIL";
+
+/**
+ * The only attributes the pre token generation trigger may name or read: the
+ * keys, the proven address's hash and when it was proven (the trigger honours
+ * a proof only for VERIFIED_EMAIL_TTL_MS). Its IAM policy allows exactly these
+ * (dynamodb:Attributes), with GetItem only, in `USER#` partitions only, so it
+ * can't read a user's teams, names or emails. No other item has
+ * `verifiedEmailHash` or `verifiedAt`.
+ */
+export const VERIFIED_EMAIL_ATTRIBUTES = [PK, SK, "verifiedEmailHash", "verifiedAt"] as const;
+
+/**
+ * The sort key of the item in a user's own partition that holds the address
+ * the last verification code was sent to (POST /me/email/code): its hash and
+ * when. The verify route records a proof only for that address (see
+ * verified-email.ts). Not a `LIMIT#` key, so deleting an account removes it.
+ */
+export const EMAIL_CODE_SENT_SK = "EMAIL_CODE_SENT";

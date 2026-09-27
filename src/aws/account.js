@@ -67,7 +67,7 @@ export async function start(config) {
   document.querySelector(".top").after(box);
   let db = null;
   const session = createSession(config, {
-    onSignedOut: () => signIn(),
+    onSignedOut: () => { if (db) db.stop(); signIn(); },
     onRefreshed: () => { if (db) db.reconnect(); },
   });
 
@@ -97,7 +97,8 @@ export async function start(config) {
   async function signOut(e) {
     const button = e.currentTarget;
     button.disabled = true;
-    if (!(await session.signOut())) { button.disabled = false; toast("Couldn't sign out. Try again.", 5000); }
+    if (await session.signOut()) { if (db) db.stop(); }
+    else { button.disabled = false; toast("Couldn't sign out. Try again.", 5000); }
   }
 
   // The account is gone: forget everything here, stop live updates, and say so. Done signs

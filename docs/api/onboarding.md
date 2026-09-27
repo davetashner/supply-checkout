@@ -116,7 +116,9 @@ message and point owners at revoking an invite or removing a member. See
   stop. `/me` shows it with `closedAt` and `deletesAt`; show that it's
   closed, and when its data will be deleted, and open it read-only. 30 days
   after closing, all of it is deleted. Closing a closed team returns it as it
-  is. It can't be reopened.
+  is. It can't be reopened. Every owner is emailed that the team closed and
+  the day it will be deleted, so an owner who didn't close it finds out. The
+  email is best effort: the team is closed even if some owners weren't emailed.
 - **Deleting an account.** `DELETE /me` with `{"confirm": "DELETE"}` (typed by
   the user). 409 `last_owner` while they're the only owner of an open team
   other people are in: show the message (it names the teams); they make

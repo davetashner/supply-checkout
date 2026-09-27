@@ -240,3 +240,65 @@ describe("member cap", () => {
     expect(() => teamCounts("t", "team", { members: 1 })).toThrow("cap");
   });
 });
+
+describe("the proven email (supply-checkout-ytr2)", () => {
+  it("hashes the address trimmed and ASCII-lowercased only", () => {
+    expect(data.verifiedEmailHash(" Pat@Example.COM ")).toBe(data.verifiedEmailHash("pat@example.com"));
+    expect(data.verifiedEmailHash("pat@example.com")).toMatch(/^[0-9a-f]{64}$/);
+    expect(data.verifiedEmailHash("Kat@example.com")).not.toBe(data.verifiedEmailHash("kat@example.com"));
+  });
+
+  it("reads only the hash and its time, strongly consistent, with the timeout as an abort signal, and honours a proof for an hour", async () => {
+    const at = Date.parse("2026-09-26T12:00:00.000Z");
+    const hash = data.verifiedEmailHash("pat@example.com");
+    const sent: { input: Record<string, unknown>; options: unknown }[] = [];
+    let item: Record<string, unknown> | undefined = { verifiedEmailHash: "not-a-hash", verifiedAt: new Date(at).toISOString() };
+    const db = fakeDb(async (command, ...rest: unknown[]) => {
+      sent.push({ input: command.input, options: rest[0] });
+      return { Item: item };
+    });
+    const read = (now: number, timeoutMs?: number) => data.provenEmailHash(db, "u1", { now: () => now, ...(timeoutMs ? { timeoutMs } : {}) });
+    expect(await read(at, 1_200)).toBeUndefined();
+    expect(sent[0]?.input).toEqual({
+      TableName: "fake",
+      Key: { PK: "USER#u1", SK: "VERIFIED_EMAIL" },
+      ProjectionExpression: "#hash, #at",
+      ExpressionAttributeNames: { "#hash": "verifiedEmailHash", "#at": "verifiedAt" },
+      ConsistentRead: true,
+    });
+    expect((sent[0]?.options as { abortSignal?: unknown }).abortSignal).toBeInstanceOf(AbortSignal);
+    item = { verifiedEmailHash: 7, verifiedAt: new Date(at).toISOString() };
+    expect(await read(at)).toBeUndefined();
+    expect(sent[1]?.options).toBeUndefined();
+    item = { verifiedEmailHash: hash, verifiedAt: new Date(at).toISOString() };
+    expect(await read(at)).toBe(hash);
+    expect(await read(at + data.VERIFIED_EMAIL_TTL_MS)).toBe(hash);
+    expect(await read(at + data.VERIFIED_EMAIL_TTL_MS + 1)).toBeUndefined();
+    // A little clock skew between the functions, but not a time from the future
+    expect(await read(at - 60_000)).toBe(hash);
+    expect(await read(at - 60_001)).toBeUndefined();
+    item = { verifiedEmailHash: hash };
+    expect(await read(at)).toBeUndefined();
+    item = undefined;
+    expect(await data.provenEmailHash(db, "u1")).toBeUndefined();
+  });
+
+  it("honours a sent code's address for a day, and passes on errors other than a canceled transaction", async () => {
+    const at = Date.parse("2026-09-26T12:00:00.000Z");
+    const hash = data.verifiedEmailHash("pat@example.com");
+    let item: Record<string, unknown> | undefined = { sentEmailHash: hash, sentAt: new Date(at).toISOString() };
+    const reader = fakeDb(async () => ({ Item: item }));
+    expect(await data.codeSentHash(reader, "u1", new Date(at + data.CODE_SENT_TTL_MS))).toBe(hash);
+    expect(await data.codeSentHash(reader, "u1", new Date(at + data.CODE_SENT_TTL_MS + 1))).toBeUndefined();
+    expect(await data.codeSentHash(reader, "u1", new Date(at - 60_001))).toBeUndefined();
+    item = { sentEmailHash: "x", sentAt: new Date(at).toISOString() };
+    expect(await data.codeSentHash(reader, "u1", new Date(at))).toBeUndefined();
+    item = undefined;
+    expect(await data.codeSentHash(reader, "u1")).toBeUndefined();
+    const failing = fakeDb(async () => Promise.reject(Object.assign(new Error("throttled"), { name: "ProvisionedThroughputExceededException" })));
+    await expect(data.recordVerifiedEmail(failing, "u1", "pat@example.com")).rejects.toThrow("throttled");
+    const canceled = fakeDb(async () => Promise.reject(Object.assign(new Error("canceled"), { name: "TransactionCanceledException" })));
+    expect(await data.recordVerifiedEmail(canceled, "u1", "pat@example.com")).toBe(false);
+    await expect(data.recordCodeSent(canceled, "u1", " ")).rejects.toThrow("No address to record");
+  });
+});

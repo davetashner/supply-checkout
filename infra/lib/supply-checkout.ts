@@ -50,7 +50,8 @@ export interface SupplyCheckoutStacks {
  * (stateless, CloudFront and WAF; needs every region's data stack for its
  * origin buckets). Identity and web also wait for the domain stack in
  * GLOBAL_SERVICES_REGION, which holds their certificates. Identity waits for
- * web too (its apex record), and for the primary region's domain stack (SES).
+ * web too (its apex record), for the primary region's domain stack (SES), and
+ * for its data stack (the email_verified trigger reads the table).
  * Email (primary region only) waits for that region's data stack (the table)
  * and domain stack (the SES configuration set and its events topic).
  */
@@ -92,6 +93,8 @@ export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyChe
   }
   const backup = new BackupStack(app, config, config.primaryRegion);
   const primary = regions[config.primaryRegion] as RegionStacks;
+  // The email_verified trigger reads the app table (its key ARN from the data stack's SSM output)
+  identity.addStackDependency(primary.data);
   backup.addStackDependency(primary.data);
   // Its alarms notify the observability stack's P2 topic
   backup.addStackDependency(primary.observability);

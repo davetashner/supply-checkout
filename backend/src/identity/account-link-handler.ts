@@ -57,8 +57,8 @@
 //   mustn't capture that person's first sign-in. The email_verified trigger
 //   also unverifies such an address at that sign-in (supply-checkout-kgw), so
 //   it fails the check above too. When the person verifies a new address with
-//   a Cognito code, that trigger records it here, and another provider can be
-//   linked for it.
+//   a Cognito code in the app, that trigger records it here, and another
+//   provider can be linked for it.
 // - That user has no downgrade pending (`custom:downgrade_pending`): the
 //   email_verified trigger flagged a downgrade it couldn't finish, so its
 //   email may be a provider's rewrite even if it matches the record
@@ -88,8 +88,9 @@
 // keeps the user CONFIRMED, so the pre authentication guard lets them sign in
 // natively too (email code, password, passkey). The email_verified trigger
 // never promotes them; it unverifies an email that no longer matches
-// `custom:linked_email` and records one Cognito verified since
-// (supply-checkout-kgw, see email-verified-handler.ts).
+// `custom:linked_email` and records one the person proved with a code
+// through the account API (supply-checkout-kgw, supply-checkout-ytr2, see
+// email-verified-handler.ts).
 //
 // Logs carry the provider and the outcome, never the email, a username or the
 // provider's user ID.

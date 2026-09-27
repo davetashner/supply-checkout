@@ -1,5 +1,5 @@
 // The app's transactional email: an invite, and the billing and account
-// notices. Each renders to a subject, an HTML body and a plain-text body.
+// notices (including a team's closure, to every owner). Each renders to a subject, an HTML body and a plain-text body.
 //
 // Built for the mail clients people actually use (Gmail, Outlook including
 // Word-rendered desktop Outlook, iOS Mail):
@@ -35,7 +35,13 @@ export type EmailInput =
   | { readonly kind: "trialEnding"; readonly teamName: string; readonly trialEndsAt: string }
   | { readonly kind: "paymentFailed"; readonly teamName: string; readonly nextAttemptAt?: string }
   | { readonly kind: "readOnly"; readonly teamName: string }
-  | { readonly kind: "exportReady"; readonly teamName: string; readonly exportId: string; readonly expiresAt: string };
+  | { readonly kind: "exportReady"; readonly teamName: string; readonly exportId: string; readonly expiresAt: string }
+  | {
+      readonly kind: "teamClosed";
+      readonly teamName: string;
+      /** When the purge deletes the team: the team item's purgeAfter (ISO 8601). */
+      readonly purgeAfter: string;
+    };
 
 export interface RenderedEmail {
   readonly kind: EmailKind;
@@ -237,6 +243,20 @@ function content(input: EmailInput, appUrl: string): Content {
         paragraphs: [`The export of ${team}'s sheets and inventory is ready to download.`, "Sign in to download it. Only the team's owners can."],
         button: { label: "Download the export", url: appLink(appUrl, "/", { export: input.exportId }) },
         note: `The download is available until ${expires}.`,
+      };
+    }
+    case "teamClosed": {
+      const purge = formatDate(input.purgeAfter);
+      return {
+        subject: `${team} was closed on Supply Checkout`,
+        preheader: `It will be deleted for good on ${purge}.`,
+        heading: `${team} was closed`,
+        paragraphs: [
+          `An owner of ${team} closed the team. It's read-only now: its members can still see its sheets and inventory, but nobody can change them or join it, and its invites were cancelled.`,
+          `On ${purge}, the team, its sheets and its inventory will be deleted for good. Until then, owners can export its data in the app.`,
+          "You're getting this because you're an owner of the team. If you didn't expect it to close, check with its other owners, and make sure nobody else can sign in to your account.",
+        ],
+        button: { label: "Open Supply Checkout", url: appLink(appUrl, "/") },
       };
     }
   }

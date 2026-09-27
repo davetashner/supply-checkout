@@ -343,7 +343,8 @@ export function createDb({ api, config, teamId, userId, token, onRemoved }) {
     saveItem,
     // A new access token: reconnect live updates with it
     reconnect: () => live.reconnect(),
-    // The account was deleted: stop live updates, and don't report the team as lost
+    // The session ended (signed out, or it expired) or the account was deleted: no more
+    // live updates or re-lists, which need a token, and the team isn't reported as lost
     stop: () => { removed = true; live.stop(); },
   };
 }
