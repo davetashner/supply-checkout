@@ -3,7 +3,7 @@
 // into another key (for example, a sheet ID containing "#").
 
 import { InvalidInputError } from "./errors.js";
-import { COMMITTING_IMPORTS_PARTITION, INVITE_LIMIT_PREFIX, VERIFIED_EMAIL_SK } from "./schema.js";
+import { COMMITTING_IMPORTS_PARTITION, EMAIL_CODE_SENT_SK, INVITE_LIMIT_PREFIX, VERIFIED_EMAIL_SK } from "./schema.js";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
@@ -84,6 +84,8 @@ export const keys = {
   emailCodes: (userId: string, day: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: `LIMIT#EMAILCODES#${date(day)}` }),
   /** The address the user last proved with a Cognito code (verified-email.ts). */
   verifiedEmail: (userId: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: VERIFIED_EMAIL_SK }),
+  /** The address the user's last verification code was sent to (verified-email.ts). */
+  emailCodeSent: (userId: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: EMAIL_CODE_SENT_SK }),
   /** How many invites a team sent (created or re-sent) on a UTC day: the per-team invite limit. */
   invitesSent: (teamId: string, day: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `LIMIT#INVITES#${date(day)}` }),
   /**

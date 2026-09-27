@@ -422,6 +422,8 @@ describe("verifying the caller's email address", () => {
   it("passes on Cognito's refusals and fails on anything else", async () => {
     codeFailure = new ApiError(429, "quota_exceeded", "Too many attempts; try again later");
     expect(await call("POST", "/me/email/code", { user: UNVERIFIED })).toMatchObject({ status: 429, body: { error: { code: "quota_exceeded" } } });
+    codeFailure = undefined;
+    expect((await call("POST", "/me/email/code", { user: UNVERIFIED })).status).toBe(204);
     codeFailure = new Error("VerifyUserAttribute failed: 500 InternalErrorException");
     expect(await call("POST", "/me/email/verify", { user: UNVERIFIED, body: { code: "123456" } })).toMatchObject({ status: 500, body: { error: { code: "internal" } } });
     cognitoDown = true;
@@ -437,6 +439,34 @@ describe("verifying the caller's email address", () => {
     // The next day starts again
     now += DAY;
     expect((await call("POST", "/me/email/code", { user: UNVERIFIED })).status).toBe(204);
+  });
+
+  // supply-checkout-cjw7: a code proves only the address it was sent to
+  it("records the address the code went to, and a proof only for that address, once", async () => {
+    expect((await call("POST", "/me/email/code", { user: UNVERIFIED })).status).toBe(204);
+    expect(table.get(`USER#${UNVERIFIED}`, "EMAIL_CODE_SENT")).toEqual({
+      PK: `USER#${UNVERIFIED}`,
+      SK: "EMAIL_CODE_SENT",
+      type: "emailCodeSent",
+      sentEmailHash: verifiedEmailHash("pat@example.com"),
+      sentAt: new Date(now).toISOString(),
+      expiresAt: Math.floor(now / 1000) + 2 * DAY / 1000,
+    });
+    expect((await call("POST", "/me/email/verify", { user: UNVERIFIED, body: { code: "123456" } })).status).toBe(204);
+    // Used: gone, in the same transaction as the proof
+    expect(table.get(`USER#${UNVERIFIED}`, "EMAIL_CODE_SENT")).toBeUndefined();
+    expect(table.get(`USER#${UNVERIFIED}`, "VERIFIED_EMAIL")).toBeDefined();
+  });
+
+  it("refuses to check a code no code was sent for through the API, or one sent over a day ago, without asking Cognito", async () => {
+    expect(await call("POST", "/me/email/verify", { user: UNVERIFIED, body: { code: "123456" } })).toMatchObject({ status: 409, body: { error: { code: "aborted", reason: "email_changed" } } });
+    expect((await call("POST", "/me/email/code", { user: UNVERIFIED })).status).toBe(204);
+    now += DAY + 1;
+    expect(await call("POST", "/me/email/verify", { user: UNVERIFIED, body: { code: "123456" } })).toMatchObject({ status: 409, body: { error: { reason: "email_changed" } } });
+    expect(codesChecked).toEqual([]);
+    expect(table.get(`USER#${UNVERIFIED}`, "VERIFIED_EMAIL")).toBeUndefined();
+    // Neither the address nor the code is logged
+    expect(JSON.stringify(logs)).not.toMatch(/123456|pat@/);
   });
 
   it("only for the token's own user", async () => {

@@ -369,7 +369,7 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
       Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-staging-app"]] },
       Condition: {
         "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
-        "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "verifiedEmailHash"] },
+        "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "verifiedEmailHash", "verifiedAt"] },
         StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
       },
     };

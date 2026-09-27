@@ -73,10 +73,11 @@
 // - At any other token (a refresh, an API sign-in), the trigger records the
 //   email in `custom:linked_email` ("linked-recorded"), and clears a pending
 //   downgrade in the same write, only when it is the address the person last
-//   proved with a code: after POST /me/email/verify succeeds, the account
-//   function writes a hash of the address to a VERIFIED_EMAIL item in the
-//   user's own partition (data/verified-email.ts, supply-checkout-ytr2), and
-//   the trigger reads it (GetItem, only that attribute). Any other verified-
+//   proved with a code, less than an hour ago: after POST /me/email/verify
+//   succeeds for the address the code was sent to, the account function
+//   writes a hash of the address to a VERIFIED_EMAIL item in the user's own
+//   partition (data/verified-email.ts, supply-checkout-ytr2), and the
+//   trigger reads it (GetItem, only the hash and its time). Any other verified-
 //   looking email is left unrecorded ("linked-not-proven", or "linked-
 //   downgrade-pending" while the flag is set), so the API keeps treating it
 //   as unverified, and the person verifies it in the app. This is a positive
@@ -99,11 +100,16 @@
 // keepOriginal on, a native change of email keeps the old, verified address
 // in `email` until the new one's code is entered, so GetUser (and /me) show
 // the old address as verified meanwhile; the app has no change-of-email flow
-// yet, so there's no pending-address signal (docs/infrastructure.md). A code
-// sent to one address and entered after Cognito rewrote the email: the verify
-// route records nothing unless GetUser shows the same address before and
-// after the code (account-handler.ts); whether Cognito accepts a code for an
-// address it wasn't sent to is to be checked live (supply-checkout-3hh).
+// yet, so there's no pending-address signal (docs/infrastructure.md).
+//
+// A code proves only the address it was sent to (supply-checkout-cjw7): the
+// code route records that address, and the verify route records a proof only
+// when the email before and after Cognito took the code is that address. So a
+// provider's rewrite between sending and checking a code gets nothing
+// recorded, even if Cognito accepted the old code for the new address (which
+// it doesn't document either way). The trigger honours a proof for an hour
+// (VERIFIED_EMAIL_TTL_MS), since the app refreshes right after the code, so
+// an old proof can't be replayed for an address that comes back later.
 //
 // What it does: email_verified becomes "true" when the provider says the email
 // is verified (Google sends a boolean, Apple a boolean or the string

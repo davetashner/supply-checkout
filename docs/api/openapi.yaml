@@ -654,14 +654,15 @@ paths:
         so it needs the `aws.cognito.signin.user.admin` scope). Only for an
         address that isn't verified yet: `emailVerified` is false in
         `GET /me`. A new code replaces the last one. A user can ask for 10
-        codes a UTC day, and Cognito limits them too (429 for either). No
-        request body, or an empty object.
+        codes a UTC day, and Cognito limits them too (429 for either). The
+        API records the address the code went to; a code verifies only that
+        address, within a day. No request body, or an empty object.
       responses:
         "204": { description: The code is on its way. }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "409":
-          description: "`aborted` with `reason: \"already_verified\"`: the address is already verified."
+          description: "`aborted`: with `reason: \"already_verified\"`, the address is already verified; with `reason: \"email_changed\"`, the address changed while the code was being sent, so the code won't verify anything: send another."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429":
           description: "`quota_exceeded`: too many codes asked for. Try again later."
@@ -699,7 +700,7 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "409":
-          description: "`aborted`: with `reason: \"already_verified\"`, the address is already verified; with `reason: \"email_in_use\"`, another account has this address; with `reason: \"email_changed\"`, the address changed while the code was being checked (or Cognito didn't mark it verified), so nothing was recorded: send a new code."
+          description: "`aborted`: with `reason: \"already_verified\"`, the address is already verified; with `reason: \"email_in_use\"`, another account has this address; with `reason: \"email_changed\"`, the address isn't the one the code was sent to through the API (or it changed while the code was checked, the code is over a day old, or Cognito didn't mark it verified), so nothing was recorded: send a new code."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429":
           description: "`quota_exceeded`: too many tries. Try again later."

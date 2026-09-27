@@ -376,9 +376,9 @@ export class IdentityStack extends SupplyCheckoutStack {
     });
     // The address a linked user last proved with a code (supply-checkout-ytr2):
     // GetItem of the VERIFIED_EMAIL item in a user's partition, and only its
-    // hash (VERIFIED_EMAIL_ATTRIBUTES), which no other item has. IAM can't
+    // hash and time (VERIFIED_EMAIL_ATTRIBUTES), which no other item has. IAM can't
     // name the user (the trigger has no per-user session) or the sort key, so
-    // this is every USER# partition, but only that one attribute: it can't
+    // this is every USER# partition, but only those attributes: it can't
     // read teams, names or emails. The table's key only through DynamoDB,
     // decrypt only. The table and its key are in the primary region's data
     // stack, which deploys first (supply-checkout.ts).

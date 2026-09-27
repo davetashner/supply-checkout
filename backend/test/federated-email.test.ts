@@ -831,31 +831,111 @@ describe("invites for Google and Apple users", () => {
     expect((await call("POST", `/invites/${inviteId}/accept`, linked, linked, { token })).status).toBe(200);
   });
 
-  it("records nothing when the email changed between the code and GetUser, or Cognito didn't mark it verified", async () => {
+  // supply-checkout-cjw7. This fake Cognito accepts a code for whatever the email is when it's
+  // checked, even after a rewrite (undocumented either way): the API mustn't rely on it not doing so.
+  describe("a code proves only the address it was sent to", () => {
     const linked = "8f0e5b1c-0000-4000-8000-00000000000e";
-    const attributes: Record<string, string> = { sub: linked, email: "pat@example.com", email_verified: "false", identities: identities("Google", GOOGLE_ID), [LINKED_EMAIL_ATTRIBUTE]: "someone@example.net" };
-    users.set(linked, { sub: linked, attributes });
-    // A provider sign-in rewrites the email while the code is being checked
-    const verify = handlerCodes.verify;
-    handlerCodes.verify = async (token, code) => {
-      await verify(token, code);
-      attributes.email = "pat.other@example.com";
+    const MINE = "pat.own@example.com";
+    const VICTIM = "pat@example.com";
+    let attributes: Record<string, string>;
+    let checked: number;
+    beforeEach(() => {
+      attributes = { sub: linked, email: MINE, email_verified: "false", identities: identities("Google", GOOGLE_ID), [LINKED_EMAIL_ATTRIBUTE]: "someone@example.net" };
+      users.set(linked, { sub: linked, attributes });
+      checked = 0;
+      const verify = handlerCodes.verify;
+      handlerCodes.verify = async (token, code) => {
+        checked++;
+        await verify(token, code);
+      };
+    });
+    /** A Google sign-in rewrites the email; the downgrade leaves it unverified. */
+    const rewrite = (email = VICTIM) => Object.assign(attributes, { email, email_verified: "false" });
+    const proof = () => table.get(`USER#${linked}`, "VERIFIED_EMAIL");
+    const sentFor = () => table.get(`USER#${linked}`, "EMAIL_CODE_SENT");
+    const refresh = async () => {
+      const { handler: onToken, logs } = trigger(async (_pool, _user, update) => void Object.assign(attributes, update), {
+        provenEmailHash: (sub) => provenEmailHash(table.scoped([`USER#${sub}`]), sub, { now: () => now }),
+      });
+      const event = triggerEvent({ userName: linked, status: "CONFIRMED", claim: "true", identities: attributes.identities, triggerSource: "TokenGeneration_RefreshTokens" });
+      event.request.userAttributes = { ...attributes, "cognito:user_status": "CONFIRMED" };
+      await onToken(event);
+      return logs.at(-1)?.data.outcome;
     };
-    expect(await call("POST", "/me/email/verify", linked, linked, { code: "123456" })).toMatchObject({ status: 409, body: { error: { code: "aborted", reason: "email_changed" } } });
-    expect(table.get(`USER#${linked}`, "VERIFIED_EMAIL")).toBeUndefined();
-    // Cognito took the code but GetUser doesn't show the address verified
-    attributes.email = "pat@example.com";
-    attributes.email_verified = "false";
-    handlerCodes.verify = async () => {};
-    expect(await call("POST", "/me/email/verify", linked, linked, { code: "123456" })).toMatchObject({ status: 409, body: { error: { reason: "email_changed" } } });
-    expect(table.get(`USER#${linked}`, "VERIFIED_EMAIL")).toBeUndefined();
-    // The same address in another ASCII case is the same address
-    handlerCodes.verify = async () => {
-      attributes.email = "PAT@example.com";
+    const emailChanged = { status: 409, body: { error: { code: "aborted", reason: "email_changed" } } };
+
+    it("records nothing when a provider rewrites the email between sending the code and checking it", async () => {
+      expect((await call("POST", "/me/email/code", linked, linked)).status).toBe(204);
+      expect(sentFor()).toMatchObject({ sentEmailHash: verifiedEmailHash(MINE) });
+      rewrite();
+      expect(await call("POST", "/me/email/verify", linked, linked, { code: "123456" })).toMatchObject(emailChanged);
+      // Cognito wasn't even asked, so it hasn't marked the victim's address verified
+      expect(checked).toBe(0);
+      expect(attributes.email_verified).toBe("false");
+      expect(proof()).toBeUndefined();
+      // Even with Cognito showing it verified (say, an operator), nothing records it
       attributes.email_verified = "true";
-    };
-    expect((await call("POST", "/me/email/verify", linked, linked, { code: "123456" })).status).toBe(204);
-    expect(table.get(`USER#${linked}`, "VERIFIED_EMAIL")).toMatchObject({ verifiedEmailHash: verifiedEmailHash("pat@example.com") });
+      expect(await refresh()).toBe("linked-not-proven");
+      expect(attributes[LINKED_EMAIL_ATTRIBUTE]).toBe("someone@example.net");
+    });
+
+    it("records nothing when a provider rewrites the email between reading it and sending the code", async () => {
+      const send = handlerCodes.send;
+      handlerCodes.send = async (token) => {
+        rewrite();
+        await send(token);
+      };
+      expect(await call("POST", "/me/email/code", linked, linked)).toMatchObject(emailChanged);
+      expect(sentFor()).toBeUndefined();
+      expect(await call("POST", "/me/email/verify", linked, linked, { code: "123456" })).toMatchObject(emailChanged);
+      expect([checked, proof()]).toEqual([0, undefined]);
+    });
+
+    it("records nothing when the email changes while the code is checked, or Cognito doesn't mark it verified, and the code's record goes", async () => {
+      expect((await call("POST", "/me/email/code", linked, linked)).status).toBe(204);
+      const verify = handlerCodes.verify;
+      handlerCodes.verify = async (token, code) => {
+        await verify(token, code);
+        attributes.email = VICTIM;
+      };
+      expect(await call("POST", "/me/email/verify", linked, linked, { code: "123456" })).toMatchObject(emailChanged);
+      expect([proof(), sentFor()]).toEqual([undefined, undefined]);
+      // Cognito took the code but GetUser doesn't show the address verified
+      Object.assign(attributes, { email: MINE, email_verified: "false" });
+      expect((await call("POST", "/me/email/code", linked, linked)).status).toBe(204);
+      handlerCodes.verify = async () => {};
+      expect(await call("POST", "/me/email/verify", linked, linked, { code: "123456" })).toMatchObject(emailChanged);
+      expect([proof(), sentFor()]).toEqual([undefined, undefined]);
+    });
+
+    it("records nothing when a code for another address was sent meanwhile", async () => {
+      expect((await call("POST", "/me/email/code", linked, linked)).status).toBe(204);
+      const verify = handlerCodes.verify;
+      handlerCodes.verify = async (token, code) => {
+        await verify(token, code);
+        // Another session's POST /me/email/code, for another address, lands first
+        table.put({ ...(sentFor() as Record<string, unknown>), sentEmailHash: verifiedEmailHash(VICTIM) });
+      };
+      expect(await call("POST", "/me/email/verify", linked, linked, { code: "123456" })).toMatchObject(emailChanged);
+      expect(proof()).toBeUndefined();
+    });
+
+    it("counts the same address in another ASCII case, and honours the proof for an hour only", async () => {
+      expect((await call("POST", "/me/email/code", linked, linked)).status).toBe(204);
+      const verify = handlerCodes.verify;
+      handlerCodes.verify = async (token, code) => {
+        await verify(token, code);
+        attributes.email = "Pat.Own@Example.com";
+      };
+      expect((await call("POST", "/me/email/verify", linked, linked, { code: "123456" })).status).toBe(204);
+      expect(proof()).toMatchObject({ verifiedEmailHash: verifiedEmailHash(MINE) });
+      // A refresh more than an hour later doesn't record it; the person verifies again
+      now += 60 * 60 * 1000 + 1;
+      expect(await refresh()).toBe("linked-not-proven");
+      now -= 2;
+      expect(await refresh()).toBe("linked-recorded");
+      expect(attributes[LINKED_EMAIL_ATTRIBUTE]).toBe("pat.own@example.com");
+    });
   });
 
   it("lets a user whose downgrade is pending ask for a code: they don't count as verified (supply-checkout-0qr8)", async () => {
