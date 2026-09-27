@@ -8,8 +8,10 @@ name: CI
 # browser, so the full matrix still gates main.
 #
 # A pull request, merge queue group or push to main that changes only the beads
-# export (.beads/issues.jsonl) runs just the PR title check and the secret scan:
-# the export is public bead text, and nothing else reads it. The changes job
+# export (.beads/issues.jsonl) runs just the PR title check, the secret scan and
+# CodeQL: the export is public bead text, and nothing else reads it. CodeQL still
+# runs because main's ruleset has a code_scanning rule that blocks a merge until
+# the pull request has CodeQL results for every language main has. The changes job
 # decides this (beads_only); nightly, manual and called runs always run everything.
 on:
   pull_request:
@@ -163,10 +165,10 @@ jobs:
         with:
           fail-on-severity: moderate
 
+  # Runs on beads-only changes too: main's code_scanning rule needs CodeQL
+  # results for each language (javascript-typescript and actions) on every PR.
   codeql:
     name: CodeQL
-    needs: changes
-    if: needs.changes.outputs.beads_only != 'true'
     permissions:
       contents: read
       security-events: write
@@ -281,7 +283,7 @@ jobs:
           #
           # beads_only is true when the pull request, merge queue group or push
           # to main changes .beads/issues.jsonl and nothing else. Most jobs skip
-          # then. Nightly, manual and called runs always run everything.
+          # then (not the PR title check, the secret scan or CodeQL). Nightly, manual and called runs always run everything.
           full=false
           case "$EVENT" in
             pull_request) base="HEAD^1" ;;
