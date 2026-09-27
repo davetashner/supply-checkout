@@ -58,6 +58,7 @@ const ALARM_IDS = [
   "webhook-signature-failures",
   "deletion-overdue",
   "team-closed-notices-failing",
+  "team-reopened-notices-failing",
 ];
 
 describe("alarm topics", () => {
@@ -107,7 +108,8 @@ describe("alarm topics", () => {
       ]);
       for (const { topics, allow: all } of statements) {
         // The primary region's P1 topic also takes the operator-pool alert, from that one rule only (tested below)
-        const allow = all.filter((a) => a.Sid !== "AllowOperatorPoolAlertToPublish");
+        // (and the backup stack's change alerts, by rule name)
+        const allow = all.filter((a) => a.Sid !== "AllowOperatorPoolAlertToPublish" && a.Sid !== "AllowBackupChangeAlertsToPublish");
         if (all.length !== allow.length) expect([r, topics[0]]).toEqual([EAST, expect.stringMatching(/^AlarmTopicsP1/)]);
         expect(allow).toEqual([
           {
@@ -398,6 +400,18 @@ describe("alarms added with the email code routes, the live update budget, team 
       Threshold: 0,
       ComparisonOperator: "GreaterThanThreshold",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+    });
+  });
+
+  it("alarms on any owner not emailed that their team reopened (J11)", () => {
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-team-reopened-notices-failing",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.TeamReopenedNoticeFailures }), Stat: "Sum", Period: 900 }) })],
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      AlarmDescription: Match.stringLikeRegexp("^P2 Team reopened emails failing \\(J11"),
     });
   });
 
@@ -715,6 +729,8 @@ describe("operator pool alerts (ADR 0015)", () => {
     const statements = Object.values(t.findResources("AWS::SNS::TopicPolicy")).flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
     expect(statements.filter((st) => (st.Principal as { Service?: unknown } | undefined)?.Service === "events.amazonaws.com")).toEqual([
       expect.objectContaining({ Sid: "AllowOperatorPoolAlertToPublish", Condition: { ArnEquals: { "aws:SourceArn": [{ "Fn::GetAtt": [adminId, "Arn"] }, { "Fn::GetAtt": [selfId, "Arn"] }] } } }),
+      // The backup stack's two change-alert rules, by name (tested in backup.test.ts)
+      expect.objectContaining({ Sid: "AllowBackupChangeAlertsToPublish" }),
     ]);
   });
 });

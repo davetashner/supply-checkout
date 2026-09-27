@@ -4,6 +4,7 @@ import { PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import { tableName } from "../../../backend/src/data/schema.js";
+import { backupAlertRuleArns } from "../backup-alerts.js";
 import type { DeploymentConfig } from "../config.js";
 import { AlarmTopics, alarmContactsFromContext } from "../observability/alarm-topics.js";
 import { apiOutputParameters } from "./api-stack.js";
@@ -55,7 +56,8 @@ export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySo
  * - `operatorChanges`: primary region only, P1 alerts on changes to the
  *   operator pool's users, groups, passwords, MFA and settings, and on what
  *   an operator's own token can change (ADR 0015), from CloudTrail through
- *   EventBridge.
+ *   EventBridge. The P1 topic also takes the backup stack's alerts on
+ *   changes to its vault, plan and key (backup-alerts.ts).
  *
  * Log retention and X-Ray tracing for every function are set app-wide by
  * ObservabilityDefaults (observability/defaults.ts).
@@ -90,6 +92,18 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     if (this.isPrimaryRegion) {
       this.checks = new OpsChecks(this, "OpsChecks", { envName: config.envName, tableName: table, topics: this.topics });
       this.operatorChanges = this.alertOnOperatorChanges(config.envName);
+      // The backup stack (primary region, deployed after this one) alerts P1
+      // when its vault, plan or key is changed (backup-alerts.ts): only its
+      // two rules, by name, may publish
+      this.topics.topics.P1.addToResourcePolicy(
+        new PolicyStatement({
+          sid: "AllowBackupChangeAlertsToPublish",
+          principals: [new ServicePrincipal("events.amazonaws.com")],
+          actions: ["sns:Publish"],
+          resources: [this.topics.topics.P1.topicArn],
+          conditions: { ArnEquals: { "aws:SourceArn": backupAlertRuleArns(config.envName, "workload") } },
+        }),
+      );
       this.dashboard = new OpsDashboard(this, "Dashboard", {
         envName: config.envName,
         regions: config.regions,

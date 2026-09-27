@@ -12,7 +12,8 @@ import {
   backupParameters,
 } from "../lib/backup.js";
 import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
-import { ACCOUNT_ID_PATTERN, OPTIONAL_ACCOUNT_ID_PATTERN, ORGANIZATION_ID_PATTERN } from "../lib/stacks/backup-account-stack.js";
+import { BACKUP_CHANGE_EVENTS, BACKUP_KEY_EVENTS, backupAlertRuleNames } from "../lib/backup-alerts.js";
+import { ACCOUNT_ID_PATTERN, COPIES_MISSING_AFTER_HOURS, OPTIONAL_ACCOUNT_ID_PATTERN, ORGANIZATION_ID_PATTERN } from "../lib/stacks/backup-account-stack.js";
 import { addBackupAccount, addSupplyCheckout } from "../lib/supply-checkout.js";
 
 // Region names live only in lib/config.ts (ADR 0010); tests use its constants.
@@ -26,8 +27,8 @@ function workload(context: Record<string, unknown> = {}, overrides: Partial<Depl
   return { app, stacks, template: Template.fromStack(stacks.backup) };
 }
 
-function backupAccount(overrides: Partial<DeploymentConfig> = {}) {
-  const app = new App({ context: { "aws:cdk:version-reporting": false } });
+function backupAccount(overrides: Partial<DeploymentConfig> = {}, context: Record<string, unknown> = {}) {
+  const app = new App({ context: { "aws:cdk:version-reporting": false, ...context } });
   const stack = addBackupAccount(app, { ...config, ...overrides });
   return { app, stack, template: Template.fromStack(stack) };
 }
@@ -51,6 +52,58 @@ const policyStatements = (template: Template, rolePrefix: string) =>
     .filter((p) => (p.Properties.Roles as { Ref: string }[]).some((r) => r.Ref.startsWith(rolePrefix)))
     .flatMap((p) => p.Properties.PolicyDocument.Statement as Statement[]);
 const actions = (s: Statement) => [s.Action].flat();
+
+type Rule = { Properties: { Name: string; EventPattern: Record<string, unknown>; Targets: { Arn: unknown }[] } };
+const rules = (template: Template) => Object.values(template.findResources("AWS::Events::Rule")) as Rule[];
+const byName = (template: Template, name: string) => rules(template).find((r) => r.Properties.Name === name) as Rule;
+/** The ARN a topic policy uses for a rule of this name, in the stack's account and region. */
+const ruleArn = (name: string) => ({
+  "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":events:", { Ref: "AWS::Region" }, ":", { Ref: "AWS::AccountId" }, `:rule/${name}`]],
+});
+
+/** Both accounts' change rules: the same patterns, on that account's vault key, to that account's topic. */
+function expectChangeRules(template: Template, names: { changes: string; keyChanges: string }, topic: unknown, keyId: RegExp) {
+  expect(rules(template).map((r) => r.Properties.Name).sort()).toEqual([names.changes, names.keyChanges].sort());
+  expect(byName(template, names.changes).Properties.EventPattern).toEqual({
+    source: ["aws.backup"],
+    "detail-type": ["AWS API Call via CloudTrail"],
+    detail: { eventSource: ["backup.amazonaws.com"], eventName: [...BACKUP_CHANGE_EVENTS] },
+  });
+  expect(byName(template, names.keyChanges).Properties.EventPattern).toEqual({
+    source: ["aws.kms"],
+    "detail-type": ["AWS API Call via CloudTrail"],
+    detail: { eventSource: ["kms.amazonaws.com"], eventName: [...BACKUP_KEY_EVENTS], resources: { ARN: [{ "Fn::GetAtt": [expect.stringMatching(keyId), "Arn"] }] } },
+  });
+  for (const rule of rules(template)) {
+    expect(rule.Properties.Targets).toEqual([expect.objectContaining({ Arn: topic })]);
+    // Names the CloudTrail event, never the person
+    const target = JSON.stringify(rule.Properties.Targets);
+    expect(target).toContain("$.detail.eventID");
+    expect(target).toContain("When backups are tampered with");
+    expect(target).not.toContain("userIdentity");
+  }
+}
+
+describe("backup change events", () => {
+  it("cover a vault's access policy and lock, the plan, a selection and the vault key", () => {
+    for (const name of [
+      "PutBackupVaultAccessPolicy",
+      "DeleteBackupVaultAccessPolicy",
+      "PutBackupVaultLockConfiguration",
+      "DeleteBackupVaultLockConfiguration",
+      "DeleteBackupPlan",
+      "DeleteBackupSelection",
+    ]) {
+      expect(BACKUP_CHANGE_EVENTS, name).toContain(name);
+    }
+    expect([...BACKUP_KEY_EVENTS].sort()).toEqual(["DisableKey", "PutKeyPolicy", "ScheduleKeyDeletion"]);
+    expect(backupAlertRuleNames("prod", "workload")).toEqual({ changes: "supply-checkout-prod-backup-changes", keyChanges: "supply-checkout-prod-backup-key-changes" });
+    expect(backupAlertRuleNames("prod", "backup-account")).toEqual({
+      changes: "supply-checkout-prod-backup-vault-changes",
+      keyChanges: "supply-checkout-prod-backup-vault-key-changes",
+    });
+  });
+});
 
 describe("backupCopyFromContext", () => {
   const node = (value: unknown) => ({ tryGetContext: () => value });
@@ -280,6 +333,27 @@ describe("backup stack (workload account)", () => {
     });
   });
 
+  it("tells P1 when a vault policy or lock, the plan, a selection or the vault key changes, and P1 lets only those rules publish", () => {
+    const { template, stacks } = workload();
+    const names = backupAlertRuleNames("prod", "workload");
+    const topic = { Ref: ssmParameter(template, "/supply-checkout/prod/observability/alarm-topic-p1-arn") };
+    expectChangeRules(template, names, topic, /^VaultKey/);
+    // With no copy to the backup account, the alerts are still there
+    expect(rules(workload({ backupCopy: "false" }).template)).toHaveLength(2);
+    // The observability stack's P1 topic lets these two rule names publish, and nothing else from EventBridge but its own rules
+    const observability = Template.fromStack((stacks.regions[EAST] as (typeof stacks.regions)[string]).observability);
+    const allow = Object.values(observability.findResources("AWS::SNS::TopicPolicy"))
+      .flatMap((p) => (p.Properties.PolicyDocument as { Statement: Statement[] }).Statement)
+      .find((s) => s.Sid === "AllowBackupChangeAlertsToPublish");
+    expect(allow).toMatchObject({
+      Effect: "Allow",
+      Principal: { Service: "events.amazonaws.com" },
+      Action: "sns:Publish",
+      Resource: { Ref: expect.stringMatching(/^AlarmTopicsP1/) },
+      Condition: { ArnEquals: { "aws:SourceArn": [ruleArn(names.changes), ruleArn(names.keyChanges)] } },
+    });
+  });
+
   it("publishes the vault and restore role ARNs to SSM", () => {
     const { template } = workload();
     const names = backupParameters("prod");
@@ -370,7 +444,9 @@ describe("backup account vault stack", () => {
 
   it("shares its key only with the restore accounts", () => {
     const { template } = backupAccount();
-    const key = statements(template, "AWS::KMS::Key", (p) => p.KeyPolicy as { Statement: Statement[] });
+    const vaultKey = Object.entries(template.findResources("AWS::KMS::Key")).filter(([id]) => id.startsWith("VaultKey"));
+    expect(vaultKey).toHaveLength(1);
+    const key = vaultKey.flatMap(([, r]) => (r.Properties.KeyPolicy as { Statement: Statement[] }).Statement);
     const shared = key.filter((s) => s.Sid);
     expect(shared.map((s) => s.Sid).sort()).toEqual(["RestoreAccountsCopyRecoveryPoints", "RestoreAccountsGrantToAwsBackup"]);
     for (const s of shared) {
@@ -392,6 +468,85 @@ describe("backup account vault stack", () => {
     expect(policy.find((s) => s.Sid === "CopyFromThisVault")?.Action).toBe("backup:CopyFromBackupVault");
     expect(JSON.stringify(copy?.Resource)).toContain(":*:backup-vault:supply-checkout-*");
     template.hasOutput("CopyVaultArn", { Value: { "Fn::GetAtt": [Match.stringLikeRegexp("^Vault"), "BackupVaultArn"] } });
+  });
+
+  it("alarms on its own topic when no copy completes in the vault for 36 hours, and treats no data as no copy", () => {
+    const { template } = backupAccount();
+    expect(COPIES_MISSING_AFTER_HOURS).toBe(36);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 1);
+    const topic = { Ref: expect.stringMatching(/^AlertTopic/) };
+    const [alarm] = Object.values(template.findResources("AWS::CloudWatch::Alarm"));
+    expect(alarm?.Properties).toMatchObject({
+      AlarmName: "supply-checkout-prod-backup-copies-missing",
+      ComparisonOperator: "LessThanThreshold",
+      Threshold: 1,
+      EvaluationPeriods: 3,
+      DatapointsToAlarm: 3,
+      TreatMissingData: "breaching",
+      AlarmActions: [topic],
+      OKActions: [topic],
+    });
+    const metrics = alarm?.Properties.Metrics as { Id: string; Expression?: string; MetricStat?: { Metric: unknown; Period: number; Stat: string } }[];
+    expect(metrics.find((m) => m.Expression)?.Expression).toBe("FILL(vault, 0) + FILL(dynamodb, 0)");
+    const vault = { Name: "BackupVaultName", Value: "supply-checkout-prod-backup-copies" };
+    expect(metrics.filter((m) => m.MetricStat)).toEqual([
+      { Id: "vault", ReturnData: false, MetricStat: { Metric: { Namespace: "AWS/Backup", MetricName: "NumberOfRecoveryPointsCompleted", Dimensions: [vault] }, Period: 43200, Stat: "Sum" } },
+      {
+        Id: "dynamodb",
+        ReturnData: false,
+        MetricStat: {
+          Metric: { Namespace: "AWS/Backup", MetricName: "NumberOfRecoveryPointsCompleted", Dimensions: [vault, { Name: "ResourceType", Value: "DynamoDB" }] },
+          Period: 43200,
+          Stat: "Sum",
+        },
+      },
+    ]);
+    // 3 periods of 12 hours
+    expect(3 * 12).toBe(COPIES_MISSING_AFTER_HOURS);
+  });
+
+  it("alerts when a vault policy or lock, a plan, a selection or the vault key changes", () => {
+    const { template } = backupAccount();
+    expectChangeRules(template, backupAlertRuleNames("prod", "backup-account"), { Ref: expect.stringMatching(/^AlertTopic/) }, /^VaultKey/);
+  });
+
+  it("emails the alerts to the addresses in this account's SSM parameters, over an encrypted topic only its alarms and rules may use", () => {
+    const { template } = backupAccount();
+    template.hasResourceProperties("AWS::SNS::Topic", {
+      TopicName: "supply-checkout-prod-backup-alerts",
+      KmsMasterKeyId: { "Fn::GetAtt": [Match.stringLikeRegexp("^AlertKey"), "Arn"] },
+    });
+    template.resourceCountIs("AWS::SNS::Subscription", 1);
+    template.hasResourceProperties("AWS::SNS::Subscription", {
+      Protocol: "email",
+      Endpoint: { Ref: ssmParameter(template, "/supply-checkout/prod/alarms/email-1") },
+    });
+    expect(backupAccount({}, { alarmContacts: '{"email":2}' }).template.findResources("AWS::SNS::Subscription")).toSatisfy(
+      (subs: object) => Object.keys(subs).length === 2,
+    );
+    const policy = statements(template, "AWS::SNS::TopicPolicy", (p) => p.PolicyDocument as { Statement: Statement[] });
+    const allows = policy.filter((s) => s.Effect === "Allow");
+    expect(allows.map((s) => s.Sid).sort()).toEqual(["AllowBackupChangeAlertsToPublish", "AllowCloudWatchAlarmsToPublish"]);
+    const names = backupAlertRuleNames("prod", "backup-account");
+    expect(allows.find((s) => s.Sid === "AllowBackupChangeAlertsToPublish")).toMatchObject({
+      Principal: { Service: "events.amazonaws.com" },
+      Action: "sns:Publish",
+      Condition: { ArnEquals: { "aws:SourceArn": [ruleArn(names.changes), ruleArn(names.keyChanges)] } },
+    });
+    expect(allows.find((s) => s.Sid === "AllowCloudWatchAlarmsToPublish")?.Condition).toMatchObject({
+      StringEquals: { "aws:SourceAccount": { Ref: "AWS::AccountId" } },
+    });
+    expect(policy).toContainEqual(expect.objectContaining({ Effect: "Deny", Condition: { Bool: { "aws:SecureTransport": "false" } } }));
+    const alertKey = Object.entries(template.findResources("AWS::KMS::Key")).find(([id]) => id.startsWith("AlertKey"))?.[1];
+    expect(alertKey?.Properties.EnableKeyRotation).toBe(true);
+    const services = (alertKey?.Properties.KeyPolicy.Statement as Statement[]).find((s) => s.Sid === "AlarmsAndRulesPublishToTheTopic");
+    expect(services).toMatchObject({
+      Principal: { Service: ["cloudwatch.amazonaws.com", "events.amazonaws.com"] },
+      Action: ["kms:Decrypt", "kms:GenerateDataKey*"],
+      Condition: { StringEquals: { "aws:SourceAccount": { Ref: "AWS::AccountId" } } },
+    });
+    // Still no address or account ID in the template
+    expect(JSON.stringify(template.toJSON())).not.toMatch(/@|\d{12}/);
   });
 
   it("is cdk-nag clean in every approved region", () => {
