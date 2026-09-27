@@ -1,6 +1,6 @@
 // node --test scripts/ops.test.mjs (part of npm run test:scripts)
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { closeSync, fstatSync, mkdtempSync, openSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -75,9 +75,18 @@ test("makes an S256 PKCE pair, and reads a JWT's claims without trusting them", 
 test("caches only the access token, owner-only, and ignores it within a minute of expiry", () => {
   const home = mkdtempSync(path.join(tmpdir(), "ops-cache-"));
   const file = path.join(home, "sub", "ops-prod.json");
+  writeFileSync(path.join(home, "loose.json"), "{}", { mode: 0o644 });
+  writeCachedToken(path.join(home, "loose.json"), TOKEN);
   writeCachedToken(file, TOKEN);
-  assert.equal(statSync(file).mode & 0o777, 0o600);
-  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { accessToken: TOKEN });
+  for (const f of [file, path.join(home, "loose.json")]) {
+    const fd = openSync(f, "r");
+    try {
+      assert.equal(fstatSync(fd).mode & 0o777, 0o600);
+      assert.deepEqual(JSON.parse(readFileSync(fd, "utf8")), { accessToken: TOKEN });
+    } finally {
+      closeSync(fd);
+    }
+  }
   assert.equal(readCachedToken(file, NOW), TOKEN);
   assert.equal(readCachedToken(file, NOW + 841_000), undefined);
   assert.equal(readCachedToken(path.join(home, "missing.json"), NOW), undefined);
