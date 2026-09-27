@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
-import { acceptInvite, createInvite, createTeam, type Db, ForbiddenError, importProducts, listDocuments, listMovements, listStuckImports, MAX_IMPORT_ROWS, setDocument, type TeamContext } from "../src/data/index.js";
+import { acceptInvite, createInvite, createTeam, type Db, ForbiddenError, importProducts, TooLargeError, listDocuments, listMovements, listStuckImports, MAX_IMPORT_ROWS, setDocument, type TeamContext } from "../src/data/index.js";
 import { connection } from "../src/data/client.js";
 import { gsi1, keys } from "../src/data/keys.js";
 import { endpoint, newUser, rawItem, useTable } from "./helpers.js";
@@ -66,6 +66,33 @@ describe.skipIf(!endpoint)("inventory import (DynamoDB Local)", () => {
     expect(await importProducts(db, ctx, { importId: randomUUID(), csv })).toMatchObject({ status: "imported", summary: { updated: 30 } });
     const items = await allProducts(ctx);
     expect(items.every((d) => d.data.price === 2 && d.data.note === note)).toBe(true);
+  });
+
+  it("stops with TooLargeError when DynamoDB refuses a row's item as over 400 KB", async () => {
+    const ctx = await team();
+    // An item DynamoDB only just takes, but small as JSON (each number in a list takes more than its 2 bytes
+    // of JSON), so the import's own size check passes it and DynamoDB refuses the commit's put
+    const put = (n: number) =>
+      connection(db).doc.send(
+        new PutCommand({
+          TableName: db.tableName,
+          Item: { ...keys.product(ctx.teamId, "c1"), type: "product", key: "c1", version: 1, code: "c1", name: "Item 1", price: 1, counts: Array.from({ length: n }, () => 1) },
+        }),
+      );
+    let [fits, tooBig] = [100_000, 200_000];
+    while (tooBig - fits > 1) {
+      const mid = Math.floor((fits + tooBig) / 2);
+      try {
+        await put(mid);
+        fits = mid;
+      } catch {
+        tooBig = mid;
+      }
+    }
+    await put(fits);
+    const before = await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#c1");
+    await expect(importProducts(db, ctx, { importId: randomUUID(), csv: "name,barcode,price\nItem 1,c1,2\n" })).rejects.toThrow(new TooLargeError("The item on line 2 is too large to save"));
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#c1")).toEqual(before);
   });
 
   it("two imports of the same file at once make one item per row", async () => {
