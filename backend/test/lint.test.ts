@@ -139,3 +139,24 @@ describe("the backfill CLI (scripts/backfill.ts)", () => {
     expect(await ruleIds('import { runBackfill } from "../src/data/backfill.js";', "scripts/other.ts")).toContain("no-restricted-imports");
   });
 });
+
+describe("the artifact import CLI (scripts/import-artifact.ts)", () => {
+  const CLI = "scripts/import-artifact.ts";
+
+  it("may import the artifact import and the entry point", async () => {
+    expect(await ruleIds('import { parseArtifactExport } from "../src/data/artifact-import.js";\nimport { createDb } from "../src/data/index.js";', CLI)).toEqual([]);
+  });
+
+  it.each([
+    'import { GetCommand } from "@aws-sdk/lib-dynamodb";',
+    'import { connection } from "../src/data/client.js";',
+    'import { importProducts } from "../src/data/imports.js";',
+  ])("keeps the other rules: %s", async (code) => {
+    expect(await ruleIds(code, CLI)).toContain("no-restricted-imports");
+  });
+
+  it("gives no Lambda code the artifact import", async () => {
+    expect(await ruleIds('import { applyArtifactImport } from "../data/artifact-import.js";', HANDLER)).toContain("no-restricted-imports");
+    expect(await ruleIds('import { applyArtifactImport } from "../src/data/artifact-import.js";', "scripts/other.ts")).toContain("no-restricted-imports");
+  });
+});

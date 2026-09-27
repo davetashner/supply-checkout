@@ -1,0 +1,226 @@
+{
+  "app": "Supply Checkout",
+  "exportedAt": "2026-08-03T09:00:00.000Z",
+  "sheets": [
+    {
+      "id": "Sh7Qm2XkP1aB9cD3eF4g",
+      "client": "Harbor View Apartments",
+      "date": "2026-07-14",
+      "createdBy": "u_claude_1",
+      "createdAt": "2026-07-14T13:00:00.000Z",
+      "status": "closed",
+      "closedAt": "2026-07-14T21:00:00.000Z",
+      "items": {
+        "012345678905": {
+          "code": "012345678905",
+          "name": "All-purpose cleaner, 32 oz",
+          "price": 4.99,
+          "cost": 3.25,
+          "out": 4,
+          "returned": 1
+        },
+        "070382000181": {
+          "code": "070382000181",
+          "name": "Microfiber cloths, 12 pack",
+          "price": 2.499,
+          "out": 3,
+          "returned": 0
+        },
+        "p-mop-heads": {
+          "code": "",
+          "name": "Mop heads",
+          "price": 7.25,
+          "out": 2,
+          "returned": 2
+        }
+      },
+      "preparedBy": "Pat Example",
+      "totals": {
+        "taken": 9,
+        "returned": 3,
+        "used": 6,
+        "charge": 22.47
+      }
+    },
+    {
+      "id": "Rk3Lw8NnT5uV0yZ2aB6c",
+      "client": "Oak Lane Dental",
+      "date": "2026-07-20",
+      "createdBy": null,
+      "createdByName": "Jordan",
+      "createdAt": "2026-07-20T12:30:00.000Z",
+      "status": "open",
+      "items": {
+        "036000291452": {
+          "code": "036000291452",
+          "name": "Paper towels, 6 rolls",
+          "price": 11.97,
+          "out": 2,
+          "returned": 0
+        },
+        "constructor": {
+          "code": "constructor",
+          "name": "Glass cleaner, 1 gal",
+          "price": 18,
+          "out": 1,
+          "returned": 0
+        },
+        "HVAC-20x25": {
+          "code": "HVAC-20x25",
+          "name": "Furnace filter 20x25x1",
+          "price": 14.75,
+          "cost": 8.1,
+          "out": 6,
+          "returned": 1
+        }
+      },
+      "preparedBy": "Jordan",
+      "totals": {
+        "taken": 9,
+        "returned": 1,
+        "used": 8,
+        "charge": 115.69
+      }
+    },
+    {
+      "id": "Tq9Ps4MmC7dE1fG5hJ8k",
+      "client": "Hilltop Library",
+      "date": "2026-07-28",
+      "createdBy": "u_claude_2",
+      "createdAt": "2026-07-28T14:10:00.000Z",
+      "status": "open",
+      "source": {
+        "store": "Corner Hardware",
+        "receiptDate": "2026-07-27"
+      },
+      "items": {
+        "one-off-ladder-rental": {
+          "code": "",
+          "name": "Ladder rental",
+          "price": 35.005,
+          "out": 1,
+          "returned": 0
+        },
+        "041167066218": {
+          "code": "041167066218",
+          "name": "Trash bags, box of 45",
+          "price": 12.5,
+          "cost": 9.99,
+          "out": 3,
+          "returned": 0
+        }
+      },
+      "preparedBy": "Someone",
+      "totals": {
+        "taken": 4,
+        "returned": 0,
+        "used": 4,
+        "charge": 72.51
+      }
+    },
+    {
+      "id": "Vb2Nc6Xz0Aq4Ws8Ed1Rf",
+      "client": "Riverside Gym",
+      "date": "2026-08-02",
+      "createdBy": "u_claude_1",
+      "createdAt": "2026-08-02T11:00:00.000Z",
+      "status": "open",
+      "items": {},
+      "preparedBy": "Pat Example",
+      "totals": {
+        "taken": 0,
+        "returned": 0,
+        "used": 0,
+        "charge": 0
+      }
+    }
+  ],
+  "inventory": [
+    {
+      "key": "012345678905",
+      "code": "012345678905",
+      "name": "All-purpose cleaner, 32 oz",
+      "price": 4.99,
+      "cost": 3.25,
+      "stock": 18,
+      "updatedAt": "2026-08-01T15:04:05.000Z"
+    },
+    {
+      "key": "p-no-stock",
+      "code": "",
+      "name": "Degreaser, 1 qt",
+      "price": 6.5,
+      "cost": 4,
+      "updatedAt": "2026-08-01T15:04:05.000Z"
+    },
+    {
+      "key": "HVAC-20x25",
+      "code": "HVAC-20x25",
+      "name": "Furnace filter 20x25x1",
+      "price": 14.75,
+      "cost": 8.1,
+      "stock": 12,
+      "packSize": 12,
+      "updatedAt": "2026-08-01T15:04:05.000Z"
+    },
+    {
+      "key": "constructor",
+      "code": "constructor",
+      "name": "Glass cleaner, 1 gal",
+      "price": 18,
+      "stock": 2,
+      "updatedAt": "2026-08-01T15:04:05.000Z"
+    },
+    {
+      "key": "070382000181",
+      "code": "070382000181",
+      "name": "Microfiber cloths, 12 pack",
+      "price": 2.499,
+      "stock": 40,
+      "updatedAt": "2026-08-01T15:04:05.000Z"
+    },
+    {
+      "key": "p-mop-heads",
+      "code": "",
+      "name": "Mop heads",
+      "price": 7.25,
+      "updatedAt": "2026-08-01T15:04:05.000Z"
+    },
+    {
+      "key": "p-gloves-m",
+      "code": "",
+      "name": "Nitrile gloves (M), box",
+      "price": 9,
+      "cost": 6.4,
+      "stock": 3,
+      "updatedAt": "2026-08-01T15:04:05.000Z"
+    },
+    {
+      "key": "036000291452",
+      "code": "036000291452",
+      "name": "Paper towels, 6 rolls",
+      "price": 11.97,
+      "stock": 6,
+      "packSize": 6,
+      "updatedAt": "2026-08-01T15:04:05.000Z"
+    },
+    {
+      "key": "p-legacy-stock",
+      "code": "",
+      "name": "Sponges, 3 pack",
+      "price": 3.333,
+      "stock": "5",
+      "updatedAt": "2026-08-01T15:04:05.000Z"
+    },
+    {
+      "key": "041167066218",
+      "code": "041167066218",
+      "name": "Trash bags, box of 45",
+      "price": 12.5,
+      "cost": 9.989,
+      "packSize": 1,
+      "stock": 0,
+      "updatedAt": "2026-08-01T15:04:05.000Z"
+    }
+  ]
+}
