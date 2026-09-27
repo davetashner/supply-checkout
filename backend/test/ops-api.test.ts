@@ -3,7 +3,9 @@
 // GSI3 queries of the ops partitions only, comp attributes only on the tagged
 // team, and puts (never updates or deletes) of operator audit items.
 
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { createDataHandler } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
@@ -13,12 +15,15 @@ import {
   closeTeam,
   createTeam,
   latestCompEnd,
+  listOpsOwnersOf,
   listTeamsToPurge,
   liveComp,
   memberCap,
   MEMBERS_PER_TEAM,
   MEMBERS_PER_TRIAL_TEAM,
+  MAX_OPS_TEAMS_READ,
   OPS_REOPEN_CUTOFF_MINUTES,
+  OWNER_LOOKUPS_AT_ONCE,
   REOPEN_CUTOFF_MINUTES,
   reopenTeam,
   TeamDeletingError,
@@ -27,7 +32,8 @@ import { OWNER_OPERATOR_AUDIT_ATTRIBUTES } from "../src/data/schema.js";
 import type { Observability } from "../src/observability/index.js";
 import type { OperatorDirectory } from "../src/operator/cognito.js";
 import { createOpsHandler, groupsClaim, type OpsEvent } from "../src/operator/ops-handler.js";
-import { REGION } from "./helpers.js";
+import { fakeDb, REGION } from "./helpers.js";
+import { connection } from "../src/data/client.js";
 import { MemoryTable } from "./memory-table.js";
 import { createReopenHandler, type ReopenRequest } from "../src/operator/reopen-handler.js";
 import { opsPolicy, reopenPolicy } from "./ops-policy.js";
@@ -237,11 +243,12 @@ describe("who gets in", () => {
 });
 
 describe("teams", () => {
-  it("lists every team newest first with owners' emails, from the index only", async () => {
+  it("lists every team in team ID order with owners' emails, from the index only", async () => {
     const res = await call("GET", "/ops/teams");
     expect(res.status).toBe(200);
-    expect(res.body.teams.map((t: { name: string }) => t.name)).toEqual(["Bravo Janitorial", "Acme Cleaning"]);
-    const acme = res.body.teams[1];
+    const byId = [teamA, teamB].sort();
+    expect(res.body.teams.map((t: { id: string }) => t.id)).toEqual(byId);
+    const acme = res.body.teams.find((t: { id: string }) => t.id === teamA);
     expect(acme).toMatchObject({ id: teamA, plan: "trial", status: "trialing", seats: 1, ownerCount: 1, closedAt: null, version: 1, comp: null });
     expect(acme.owners).toEqual([{ userId: OWNER, email: OWNER_EMAIL, joinedAt: expect.any(String) }]);
     expect(JSON.stringify(res.body)).not.toContain("Secret client");
@@ -252,7 +259,7 @@ describe("teams", () => {
     expect(tags.every((t) => t.endsWith(" ."))).toBe(true);
     // Audited like one team's record: it shows owners' emails
     expect(auditItems("PLATFORM")).toEqual([
-      expect.objectContaining({ action: "ops.teams.list", operatorSub: OPERATOR, target: "teams", after: { q: null, cursor: null, teams: [teamB, teamA] }, GSI3PK: "OPS#AUDIT#2026-09" }),
+      expect.objectContaining({ action: "ops.teams.list", operatorSub: OPERATOR, target: "teams", after: { q: null, cursor: null, teams: byId }, GSI3PK: "OPS#AUDIT#2026-09" }),
     ]);
   });
 
@@ -265,16 +272,132 @@ describe("teams", () => {
   it("searches by name or ID, and pages", async () => {
     expect((await call("GET", "/ops/teams", { query: { q: "acme" } })).body.teams.map((t: { id: string }) => t.id)).toEqual([teamA]);
     expect((await call("GET", "/ops/teams", { query: { q: teamB } })).body.teams.map((t: { id: string }) => t.id)).toEqual([teamB]);
+    const [firstId, secondId] = [teamA, teamB].sort();
     const first = await call("GET", "/ops/teams", { query: { limit: "1" } });
-    expect(first.body.teams).toHaveLength(1);
-    expect(first.body.cursor).toBe(teamB);
+    expect(first.body.teams.map((t: { id: string }) => t.id)).toEqual([firstId]);
+    expect(first.body.cursor).toEqual(expect.any(String));
     const second = await call("GET", "/ops/teams", { query: { limit: "1", cursor: first.body.cursor } });
-    expect(second.body.teams.map((t: { id: string }) => t.id)).toEqual([teamA]);
+    expect(second.body.teams.map((t: { id: string }) => t.id)).toEqual([secondId]);
     expect(second.body.cursor).toBeUndefined();
+    expect(denied).toEqual([]);
   });
 
-  it.each<Record<string, string>>([{ limit: "0" }, { limit: "abc" }, { cursor: "no-such-team" }, { cursor: "bad cursor" }, { q: "x".repeat(201) }])("refuses %o", async (query) => {
+  it("lists the team whose ID is the search first, then names that match, never the same team twice", async () => {
+    table.put({ ...teamOf(teamA), PK: "TEAM#acme-id", GSI3SK: "acme-id", name: "Zed" });
+    table.put({ ...teamOf(teamA), PK: "TEAM#zz-named", GSI3SK: "zz-named", name: "Named acme-id too" });
+    // The ID fills a page of 1 on its own: the names come next, from the start of the walk
+    const first = await call("GET", "/ops/teams", { query: { q: "acme-id", limit: "1" } });
+    expect(first.body.teams.map((t: { id: string }) => t.id)).toEqual(["acme-id"]);
+    const second = await call("GET", "/ops/teams", { query: { q: "acme-id", limit: "1", cursor: first.body.cursor } });
+    expect(second.body.teams.map((t: { id: string }) => t.id)).toEqual(["zz-named"]);
+    expect(second.body.cursor).toBeUndefined();
+    const all = await call("GET", "/ops/teams", { query: { q: "acme-id" } });
+    expect(all.body.teams.map((t: { id: string }) => t.id)).toEqual(["acme-id", "zz-named"]);
+    // Not a valid ID: names only, no lookup
+    expect((await call("GET", "/ops/teams", { query: { q: "nothing here" } })).body).toEqual({ teams: [] });
+  });
+
+  const cursorOf = (key: Record<string, unknown>) => Buffer.from(JSON.stringify(key)).toString("base64url");
+  it.each<Record<string, string>>([
+    { limit: "0" },
+    { limit: "abc" },
+    { cursor: "no-such-team" },
+    { cursor: "bad cursor" },
+    { q: "x".repeat(201) },
+    // Another partition, a key with more or other attributes than a team's index entry, or not a META item
+    { cursor: cursorOf({ GSI3PK: "OPS#OWNERS#t1", GSI3SK: "t1", PK: "TEAM#t1", SK: "META" }) },
+    { cursor: cursorOf({ GSI3PK: "OPS#TEAMS", GSI3SK: "t1", PK: "TEAM#t1", SK: "META", extra: "x" }) },
+    { cursor: cursorOf({ GSI3PK: "OPS#TEAMS", GSI3SK: "t1", PK: "TEAM#t1", SK: "SHEET#s1" }) },
+    { cursor: cursorOf({ GSI3PK: "OPS#TEAMS", GSI3SK: "t2", PK: "TEAM#t1", SK: "META" }) },
+    { cursor: cursorOf({ GSI3PK: "OPS#TEAMS", GSI3SK: "t1", PK: "USER#t1", SK: "META" }) },
+  ])("refuses %o", async (query) => {
     expect((await call("GET", "/ops/teams", { query })).status).toBe(400);
+  });
+
+  describe("with more than 5,000 teams (supply-checkout-6uw.8)", () => {
+    const TEAMS = 5_300;
+    const id = (n: number) => `bulk-${String(n).padStart(5, "0")}`;
+    beforeEach(() => {
+      for (let n = 0; n < TEAMS; n++) {
+        const teamId = id(n);
+        table.put({ PK: `TEAM#${teamId}`, SK: "META", type: "team", teamId, name: n === TEAMS - 1 ? "Needle Supply" : `Bulk team ${n}`, plan: "trial", seats: 1, status: "trialing", owners: 1, createdAt: "2026-09-01T00:00:00.000Z", version: 1, GSI3PK: "OPS#TEAMS", GSI3SK: teamId });
+        table.put({ PK: `TEAM#${teamId}`, SK: `MEMBER#owner-${n}`, type: "member", role: "owner", email: `owner-${n}@example.com`, joinedAt: "2026-09-01T00:00:00.000Z", GSI3PK: `OPS#OWNERS#${teamId}`, GSI3SK: `owner-${n}` });
+      }
+    });
+
+    /** Index items each request read from the team list's partition. */
+    function readPerRequest(from: number): number {
+      return table.requests
+        .slice(from)
+        .filter((r) => r.command === "QueryCommand" && (r.input.ExpressionAttributeValues as Record<string, unknown>)[":pk"] === "OPS#TEAMS" && r.input.KeyConditionExpression === "GSI3PK = :pk")
+        .reduce((sum, r) => sum + (r.input.Limit as number), 0);
+    }
+
+    it("pages through every team exactly once, each request reading one bounded page and its owners", async () => {
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      let requests = 0;
+      do {
+        const from = table.requests.length;
+        const res = await call("GET", "/ops/teams", { query: { limit: "100", ...(cursor ? { cursor } : {}) } });
+        expect(res.status).toBe(200);
+        requests++;
+        // One read of at most the page size, and one owners query per team on the page
+        expect(readPerRequest(from)).toBeLessThanOrEqual(100);
+        const owners = table.requests.slice(from).filter((r) => String((r.input.ExpressionAttributeValues as Record<string, unknown>)?.[":pk"]).startsWith("OPS#OWNERS#"));
+        expect(owners).toHaveLength(res.body.teams.length);
+        for (const team of res.body.teams) expect(team.owners).toHaveLength(1);
+        seen.push(...res.body.teams.map((t: { id: string }) => t.id));
+        cursor = res.body.cursor;
+      } while (cursor);
+      expect(seen).toHaveLength(TEAMS + 2);
+      expect(new Set(seen).size).toBe(TEAMS + 2);
+      expect(seen).toEqual([...seen].sort());
+      expect(requests).toBe(Math.ceil((TEAMS + 2) / 100));
+      expect(denied).toEqual([]);
+    });
+
+    it("searches in bounded steps: a name near the end takes several requests, each reading at most MAX_OPS_TEAMS_READ items", async () => {
+      const found: string[] = [];
+      let cursor: string | undefined;
+      let requests = 0;
+      do {
+        const from = table.requests.length;
+        const res = await call("GET", "/ops/teams", { query: { q: "needle", ...(cursor ? { cursor } : {}) } });
+        expect(res.status).toBe(200);
+        requests++;
+        expect(readPerRequest(from)).toBeLessThanOrEqual(MAX_OPS_TEAMS_READ);
+        found.push(...res.body.teams.map((t: { id: string }) => t.id));
+        cursor = res.body.cursor;
+      } while (cursor);
+      expect(found).toEqual([id(TEAMS - 1)]);
+      expect(requests).toBe(Math.ceil((TEAMS + 2) / MAX_OPS_TEAMS_READ));
+      // Every step is audited, with what it returned
+      expect(auditItems("PLATFORM").filter((a) => a.action === "ops.teams.list")).toHaveLength(requests);
+      // A team ID is found at once, however far along it is
+      const direct = await call("GET", "/ops/teams", { query: { q: id(TEAMS - 2) } });
+      expect(direct.body.teams.map((t: { id: string }) => t.id)).toEqual([id(TEAMS - 2)]);
+    });
+
+    it("looks owners up at most OWNER_LOOKUPS_AT_ONCE at a time", async () => {
+      let inFlight = 0;
+      let most = 0;
+      const guarded = table.guarded(opsPolicy(".", denied));
+      const slow = fakeDb(async (command) => {
+        const owners = String((command.input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"]).startsWith("OPS#OWNERS#");
+        if (owners) most = Math.max(most, ++inFlight);
+        try {
+          await new Promise((r) => setTimeout(r, 1));
+          return await connection(guarded).doc.send(command as never);
+        } finally {
+          if (owners) inFlight--;
+        }
+      });
+      const owners = await listOpsOwnersOf(slow, { sub: OPERATOR }, Array.from({ length: 35 }, (_, n) => id(n)));
+      expect(owners.size).toBe(35);
+      expect(owners.get(id(34))).toEqual([{ userId: "owner-34", email: "owner-34@example.com", joinedAt: "2026-09-01T00:00:00.000Z" }]);
+      expect(most).toBe(OWNER_LOOKUPS_AT_ONCE);
+    });
   });
 
   it("shows one team, and audits the read before answering", async () => {
@@ -442,6 +565,26 @@ describe("the operator audit", () => {
     expect(denied).toEqual([]);
   });
 
+  it("records before and after in the shapes docs/api/openapi.yaml gives them (supply-checkout-6uw.9)", async () => {
+    const spec = parse(readFileSync(new URL("../../docs/api/openapi.yaml", import.meta.url), "utf8")) as { components: { schemas: Record<string, { oneOf?: { $ref?: string }[]; required?: string[] }> } };
+    const shapes = (spec.components.schemas.AuditRecord?.oneOf ?? []).flatMap((o) => (o.$ref ? [spec.components.schemas[o.$ref.split("/").pop() as string]?.required ?? []] : []));
+    const matches = (value: unknown) => (value === null ? 1 : shapes.filter((keys) => JSON.stringify(Object.keys(value as object).sort()) === JSON.stringify([...keys].sort())).length);
+    await call("GET", "/ops/teams", { query: { q: "acme" } });
+    await call("PUT", `/ops/teams/${teamA}/comp`, { body: { plan: "free", until: "2026-12-31", reason: "Pilot", expectedVersion: 1 }, key: "comp-key-0001" });
+    await call("DELETE", `/ops/teams/${teamA}/comp`, { body: { reason: "Over", expectedVersion: 2 }, key: "comp-key-0002" });
+    table.put({ PK: `TEAM#${teamB}`, SK: "IMPORT#imp-old", GSI1PK: "IMPORTS#COMMITTING", GSI1SK: "2026-09-26T09:00:00.000Z#imp-old", type: "import", status: "committing", committed: 1, total: 2 });
+    await call("POST", `/ops/teams/${teamB}/imports/imp-old/clear`, { body: { reason: "Owner re-imported it" }, key: "clear-key-0001" });
+    const made = await createTeam(table.db(), { userId: "user-e" }, { name: "Echo Clean" }, new Date(NOW - 2 * DAY));
+    await closeTeam(table.db(), made.context, { confirmName: "Echo Clean" }, new Date(NOW - DAY));
+    await call("POST", `/ops/teams/${made.team.teamId}/reopen`, { body: { reason: "Closed by mistake", expectedVersion: teamOf(made.team.teamId).version }, key: "reopen-key-0001" });
+    const items = [...table.items.values()].filter((i) => String(i.PK).startsWith("OPAUDIT#") && String(i.SK).startsWith("AUDIT#"));
+    expect(new Set(items.map((i) => i.action))).toEqual(new Set(["ops.teams.list", "ops.comp.set", "ops.comp.end", "ops.import.clear", "ops.team.reopen"]));
+    for (const item of items) {
+      expect(matches(item.before), `${String(item.action)} before`).toBe(1);
+      expect(matches(item.after), `${String(item.action)} after`).toBe(1);
+    }
+  });
+
   it.each([{ teamId: "TEAM_A", month: "2026-09" }, { month: "2026-9" }, { teamId: "bad id" }, { limit: "101" }])("refuses %o", async (query) => {
     const q = Object.fromEntries(Object.entries(query).map(([k, v]) => [k, v === "TEAM_A" ? teamA : v]));
     expect((await call("GET", "/ops/audit", { query: q })).status).toBe(400);
@@ -546,6 +689,30 @@ describe("stuck imports (supply-checkout-6uw.2)", () => {
 
   it("refuses a bad import ID", async () => {
     expect((await call("POST", `/ops/teams/${teamA}/imports/bad%20id/clear`, { body: { reason: "Clearing it" }, key: "clear-key-0007" })).status).toBe(400);
+  });
+
+  it("can't take a closed team out of the purge queue, or touch any other GSI1-keyed item (supply-checkout-6uw.9)", async () => {
+    const setup = table.db();
+    const made = await createTeam(setup, { userId: "user-d", email: "d@example.com" }, { name: "Delta Clean" }, new Date(NOW - 40 * DAY));
+    const teamD = made.team.teamId;
+    await closeTeam(setup, made.context, { confirmName: "Delta Clean" }, new Date(NOW - 35 * DAY));
+    const closed = teamOf(teamD);
+    expect(closed.GSI1PK).toBe("TEAMS#CLOSED");
+    const due = await listTeamsToPurge(table.db(), new Date(NOW + 60 * DAY));
+    expect(due.map((t) => t.teamId)).toContain(teamD);
+    // An item at an import's key, but in another GSI1 partition with an old sort key (as a closed team's META is)
+    table.put({ PK: `TEAM#${teamD}`, SK: "IMPORT#not-committing", GSI1PK: "TEAMS#CLOSED", GSI1SK: "2026-01-01T00:00:00.000Z", type: "import", status: "committing" });
+    const clear = (importId: string, key: string) => call("POST", `/ops/teams/${teamD}/imports/${importId}/clear`, { body: { reason: "Clearing it" }, key });
+    // The route only ever names IMPORT#<id>, so "META" is IMPORT#META, which doesn't exist; the condition refuses the rest
+    for (const [importId, key] of [["META", "clear-key-0010"], ["not-committing", "clear-key-0011"], ["x", "clear-key-0012"]] as const) {
+      expect((await clear(importId, key)).status).toBe(409);
+    }
+    expect(teamOf(teamD)).toEqual(closed);
+    expect(table.get(`TEAM#${teamD}`, "IMPORT#not-committing")).toMatchObject({ GSI1PK: "TEAMS#CLOSED", GSI1SK: "2026-01-01T00:00:00.000Z" });
+    expect(table.get(`TEAM#${teamD}`, "IMPORT#META")).toBeUndefined();
+    expect((await listTeamsToPurge(table.db(), new Date(NOW + 60 * DAY))).map((t) => t.teamId)).toEqual(due.map((t) => t.teamId));
+    expect(auditItems(teamD)).toEqual([]);
+    expect(denied).toEqual([]);
   });
 });
 

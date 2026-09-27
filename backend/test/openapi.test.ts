@@ -63,4 +63,38 @@ describe("OpenAPI description", () => {
   it("lists the server-owned fields the data layer refuses", () => {
     for (const field of RESERVED_FIELDS) expect(text).toContain(`\`${field}\``);
   });
+
+  it("describes an operator audit event's before and after as one of its recorded shapes (supply-checkout-6uw.9)", () => {
+    const schemas = (spec.components as unknown as { schemas: Record<string, { oneOf?: unknown[]; required?: string[]; properties?: Record<string, unknown>; additionalProperties?: unknown }> }).schemas;
+    const ref = { $ref: "#/components/schemas/AuditRecord" };
+    const eventItems = (path: string, list: string) =>
+      ((spec.paths[path]?.get?.responses?.["200"] as { content: Record<string, { schema: { properties: Record<string, { items: { properties: Record<string, unknown> } }> } }> }).content["application/json"]?.schema.properties[list]?.items.properties);
+    for (const [path, list] of [["/ops/audit", "events"], ["/teams/{teamId}/support-actions", "actions"]]) {
+      const props = eventItems(path as string, list as string);
+      expect(props?.before, path).toEqual(ref);
+      expect(props?.after, path).toEqual(ref);
+    }
+    expect(schemas.AuditRecord?.oneOf).toEqual([
+      { $ref: "#/components/schemas/CompRecord" },
+      { $ref: "#/components/schemas/ImportClearRecord" },
+      { $ref: "#/components/schemas/ReopenRecord" },
+      { $ref: "#/components/schemas/TeamsListRecord" },
+      { type: "null" },
+    ]);
+    // Each shape is closed and fully required, so exactly one matches any recorded value (backend/test/ops-api.test.ts checks real ones)
+    for (const [name, keys] of Object.entries(AUDIT_RECORD_SHAPES)) {
+      const schema = schemas[name];
+      expect(schema?.additionalProperties, name).toBe(false);
+      expect(schema?.required, name).toEqual(keys);
+      expect(Object.keys(schema?.properties ?? {}), name).toEqual(keys);
+    }
+  });
 });
+
+/** The operator audit's before and after shapes (data/operator.ts), by their docs/api/openapi.yaml schema name. */
+const AUDIT_RECORD_SHAPES: Record<string, string[]> = {
+  CompRecord: ["plan", "seats", "until", "reason"],
+  ImportClearRecord: ["importId", "committing"],
+  ReopenRecord: ["closedAt", "purgeAfter"],
+  TeamsListRecord: ["q", "cursor", "teams"],
+};

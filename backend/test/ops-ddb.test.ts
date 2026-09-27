@@ -29,10 +29,23 @@ describe.skipIf(!endpoint)("operators (ADR 0015) on DynamoDB Local", () => {
   const op = { sub: "op-sub-ddb" };
   const now = new Date();
 
+  /** Every page of a team list, following cursors: a search reads a bounded number of teams per request. */
+  async function allPages(options: { q?: string; limit?: number }) {
+    const pages: string[][] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await listOpsTeams(table.db, op, { ...options, cursor });
+      pages.push(page.teams.map((t) => t.teamId));
+      cursor = page.cursor;
+    } while (cursor);
+    return pages;
+  }
+
   it("lists and reads a team from the index only, comps it and ends the comp, audited", async () => {
     const ownerId = newUser();
     const { team } = await createTeam(table.db, { userId: ownerId, email: "owner@example.com" }, { name: `Ops Local ${ownerId}` }, now);
-    const listed = (await listOpsTeams(table.db, op, { q: ownerId.slice(5) })).teams;
+    expect((await allPages({ q: ownerId.slice(5) })).flat()).toEqual([team.teamId]);
+    const listed = (await listOpsTeams(table.db, op, { q: team.teamId })).teams;
     expect(listed.map((t) => t.teamId)).toEqual([team.teamId]);
     // Only what GSI3 projects: never homeRegion
     expect((listed[0] as unknown as Record<string, unknown>).homeRegion).toBeUndefined();
@@ -57,6 +70,22 @@ describe.skipIf(!endpoint)("operators (ADR 0015) on DynamoDB Local", () => {
     expect(audit.items.map((e) => e.action)).toEqual(["ops.comp.end", "ops.comp.set", "ops.team.read"]);
     const month = await listOperatorAudit(table.db, op, { month: now.toISOString().slice(0, 7), limit: 100 });
     expect(month.items.filter((e) => e.teamId === team.teamId)).toHaveLength(3);
+  });
+
+  it("pages the team list and a search with cursors made from the index's own keys (supply-checkout-6uw.8)", async () => {
+    const tag = newUser().slice(5);
+    const made: string[] = [];
+    for (let n = 0; n < 23; n++) made.push((await createTeam(table.db, { userId: newUser() }, { name: `Paging ${tag} ${n}` }, now)).team.teamId);
+    // Every team in the table, 7 a page: each exactly once, in ID order
+    const pages = await allPages({ limit: 7 });
+    const all = pages.flat();
+    expect(new Set(all).size).toBe(all.length);
+    expect(all).toEqual([...all].sort());
+    expect(all).toEqual(expect.arrayContaining(made));
+    expect(pages.slice(0, -1).every((p) => p.length === 7)).toBe(true);
+    // A search that stops part-way through a read goes on from the right team
+    const found = await allPages({ q: `paging ${tag}`, limit: 4 });
+    expect(found.flat().sort()).toEqual([...made].sort());
   });
 
   it("sees a closed team closed (no comps), and a reopened one open again (comps allowed)", async () => {

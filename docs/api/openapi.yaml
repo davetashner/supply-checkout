@@ -1105,8 +1105,8 @@ paths:
                         actor: { type: string, const: Supply Checkout support }
                         action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end, ops.import.clear, ops.team.reopen] }
                         reason: { type: string }
-                        before: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
-                        after: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
+                        before: { $ref: "#/components/schemas/AuditRecord" }
+                        after: { $ref: "#/components/schemas/AuditRecord" }
                   cursor: { type: string, description: Absent on the last page. }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
@@ -1115,7 +1115,13 @@ paths:
     get:
       tags: [ops]
       operationId: opsListTeams
-      summary: Teams, newest first, 50 a page, with their owners. Audited as `ops.teams.list` (with `q` and the teams returned).
+      summary: Teams in team ID order, 50 a page, with their owners. Audited as `ops.teams.list` (with `q` and the teams returned).
+      description: |
+        Each request reads at most 1,000 teams from the operators' index,
+        whatever the number of teams. A search (`q`) that hasn't filled its
+        page by then returns the teams it found, possibly none, with a
+        `cursor`: keep following it until there's none. A team whose ID is
+        `q` comes first, on the first page.
       security: [{ opsCognito: [] }]
       parameters:
         - { name: q, in: query, description: "A team ID, or part of a team's name (any case).", schema: { type: string, maxLength: 200 } }
@@ -1305,8 +1311,8 @@ paths:
                         action: { type: string, enum: [ops.teams.list, ops.team.read, ops.comp.set, ops.comp.end, ops.import.clear, ops.team.reopen] }
                         target: { type: string }
                         reason: { type: string }
-                        before: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
-                        after: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
+                        before: { $ref: "#/components/schemas/AuditRecord" }
+                        after: { $ref: "#/components/schemas/AuditRecord" }
                         idempotencyKey: { type: string }
                   cursor: { type: string, description: Absent on the last page. }
         "400": { $ref: "#/components/responses/BadRequest" }
@@ -1648,14 +1654,55 @@ components:
                   reason: { const: count }
                   count: { type: integer, minimum: 0, maximum: 1000000, description: The number counted in storage. }
   schemas:
+    AuditRecord:
+      description: |
+        What an operator action changed, before and after, by action:
+        `ops.comp.set` and `ops.comp.end` record a `CompRecord` (or null for
+        no comp), `ops.import.clear` an `ImportClearRecord`, `ops.team.reopen`
+        a `ReopenRecord` before (null after), and `ops.teams.list` (in the
+        operators' audit only) a `TeamsListRecord` after (null before).
+        `ops.team.read` records neither.
+      oneOf:
+        - { $ref: "#/components/schemas/CompRecord" }
+        - { $ref: "#/components/schemas/ImportClearRecord" }
+        - { $ref: "#/components/schemas/ReopenRecord" }
+        - { $ref: "#/components/schemas/TeamsListRecord" }
+        - type: "null"
     CompRecord:
       type: object
       description: A comp as the audit records it.
+      required: [plan, seats, until, reason]
+      additionalProperties: false
       properties:
         plan: { type: string }
         seats: { type: [integer, "null"] }
         until: { type: [string, "null"], format: date-time }
         reason: { type: [string, "null"] }
+    ImportClearRecord:
+      type: object
+      description: A stuck import, before (`committing` true) and after (false) an operator took it out of the "Imports stuck" check.
+      required: [importId, committing]
+      additionalProperties: false
+      properties:
+        importId: { type: string }
+        committing: { type: boolean }
+    ReopenRecord:
+      type: object
+      description: A closed team's closure, before an operator reopened it.
+      required: [closedAt, purgeAfter]
+      additionalProperties: false
+      properties:
+        closedAt: { type: string, format: date-time }
+        purgeAfter: { type: string, format: date-time, description: When it would have been deleted. }
+    TeamsListRecord:
+      type: object
+      description: A team list or search, and the teams it returned.
+      required: [q, cursor, teams]
+      additionalProperties: false
+      properties:
+        q: { type: [string, "null"] }
+        cursor: { type: [string, "null"] }
+        teams: { type: array, items: { type: string } }
     OpsTeam:
       type: object
       required: [id, name, plan, seats, status, ownerCount, createdAt, version, comp, owners]

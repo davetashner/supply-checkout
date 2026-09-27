@@ -45,11 +45,17 @@ export async function queryPage<T>(
   );
   return {
     items: (page.Items ?? []).map((item) => (options.keepKeys ? item : strip<T>(item)) as T),
-    cursor: page.LastEvaluatedKey ? Buffer.from(JSON.stringify(page.LastEvaluatedKey)).toString("base64url") : undefined,
+    cursor: page.LastEvaluatedKey ? encodeCursor(page.LastEvaluatedKey) : undefined,
   };
 }
 
-function decodeCursor(
+/** A query's last key as an opaque cursor. */
+export function encodeCursor(key: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(key)).toString("base64url");
+}
+
+/** A cursor back to a query's start key: InvalidInputError unless it's a key in `partition` whose values are all strings. */
+export function decodeCursor(
   cursor: string | undefined,
   partition: { readonly attribute: string; readonly value: string },
 ): Record<string, unknown> | undefined {
