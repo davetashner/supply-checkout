@@ -91,7 +91,9 @@ export interface AccountRoute {
     | "listInvites"
     | "createInvite"
     | "revokeInvite"
-    | "resendInvite";
+    | "resendInvite"
+    | "sendEmailCode"
+    | "verifyEmail";
   /**
    * API Gateway's throttle for this route across all callers (requests a
    * second, and burst), below the stage's. /me assumes a role per team, so it
@@ -106,7 +108,8 @@ export interface AccountRoute {
  * And a team's members: owners list them, change their roles and remove them,
  * and any member can leave. And a team's invites: owners invite people by
  * email, see each invite as pending, failed or expired, revoke it and re-send
- * it. Each needs a Cognito access token (the JWT
+ * it. And verifying the user's email address with a code Cognito emails them.
+ * Each needs a Cognito access token (the JWT
  * authorizer). They write the user's own `USER#` rows (or, for a member
  * change, that member's), which the team-scoped data function can't reach,
  * so they're served by the `account` function.
@@ -124,6 +127,9 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
   { method: "POST", path: "/teams/{teamId}/invites", action: "createInvite", throttle: { rate: 5, burst: 10 } },
   { method: "DELETE", path: "/teams/{teamId}/invites/{inviteId}", action: "revokeInvite", throttle: { rate: 10, burst: 20 } },
   { method: "POST", path: "/teams/{teamId}/invites/{inviteId}/resend", action: "resendInvite", throttle: { rate: 5, burst: 10 } },
+  // Cognito emails the code and limits codes and tries per user; these keep the total down too
+  { method: "POST", path: "/me/email/code", action: "sendEmailCode", throttle: { rate: 5, burst: 10 } },
+  { method: "POST", path: "/me/email/verify", action: "verifyEmail", throttle: { rate: 10, burst: 20 } },
 ];
 
 export interface OpsRoute {

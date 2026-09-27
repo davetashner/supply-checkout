@@ -11,7 +11,7 @@ import type { CognitoUser } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
-import { authorizeTeam, createInvite, hashEmail, MAX_TEAMS_PER_USER, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS } from "../src/data/index.js";
+import { authorizeTeam, createInvite, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS } from "../src/data/index.js";
 import type { Observability } from "../src/observability/index.js";
 import { REGION, accountPartitions, fakeMailer } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -41,13 +41,20 @@ let now: number;
 let counts: Record<string, number>;
 let scopes: AccountScope[];
 let cognitoDown: boolean;
+// Email codes: the tokens Cognito was asked to send a code for, the codes checked, which
+// users Cognito now has verified, and what the next Cognito code call fails with
+let codesSent: string[];
+let codesChecked: [string, string][];
+let verifiedNow: Set<string>;
+let codeFailure: Error | undefined;
+let logs: unknown[];
 let handler: ReturnType<typeof createAccountHandler>;
 
 function fakeObservability(): Observability {
   counts = {};
   return {
     region: REGION,
-    logger: { info: () => {}, warn: () => {}, error: () => {}, addContext: () => {} } as unknown as Observability["logger"],
+    logger: { info: (...a: unknown[]) => logs.push(a), warn: (...a: unknown[]) => logs.push(a), error: (...a: unknown[]) => logs.push(a), addContext: () => {} } as unknown as Observability["logger"],
     count: (metric, value = 1) => {
       counts[metric] = (counts[metric] ?? 0) + value;
     },
@@ -59,6 +66,11 @@ function fakeObservability(): Observability {
 beforeEach(() => {
   now = Date.now();
   cognitoDown = false;
+  codesSent = [];
+  codesChecked = [];
+  verifiedNow = new Set();
+  codeFailure = undefined;
+  logs = [];
   scopes = [];
   table = new MemoryTable();
   table.seedTeam("team-a", { [OWNER]: "owner", [PAT]: "contributor" });
@@ -73,9 +85,21 @@ beforeEach(() => {
     if (cognitoDown) throw new Error("GetUser failed: 500");
     const user = USERS[token.replace(/^token-/, "")];
     if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
-    return user;
+    return verifiedNow.has(user.sub) ? { ...user, emailVerified: true } : user;
   };
-  handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, now: () => now });
+  const emailCodes = {
+    async send(token: string) {
+      if (codeFailure) throw codeFailure;
+      codesSent.push(token);
+    },
+    async verify(token: string, code: string) {
+      if (codeFailure) throw codeFailure;
+      codesChecked.push([token, code]);
+      if (code !== "123456") throw new ApiError(400, "bad_request", "That code isn't right", "code_mismatch");
+      verifiedNow.add(token.replace(/^token-/, ""));
+    },
+  };
+  handler = createAccountHandler({ dbFor, userInfo, emailCodes, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, now: () => now });
 });
 
 interface Request {
@@ -350,6 +374,76 @@ describe("POST /invites/{inviteId}/accept", () => {
     }
     const busy = await invite("mallory@example.com");
     expect(await accept(MALLORY, busy.inviteId, busy.token)).toMatchObject({ status: 429, body: { error: { code: "quota_exceeded" } } });
+  });
+});
+
+describe("verifying the caller's email address", () => {
+  it("emails a code, checks it with the caller's own token, and then /me lists their invites", async () => {
+    await invite("pat@example.com");
+    expect((await call("GET", "/me", { user: UNVERIFIED })).body).toMatchObject({ user: { emailVerified: false }, invites: [] });
+    expect((await call("POST", "/me/email/code", { user: UNVERIFIED })).status).toBe(204);
+    expect(codesSent).toEqual([`token-${UNVERIFIED}`]);
+    expect(await call("POST", "/me/email/verify", { user: UNVERIFIED, body: { code: "654321" } })).toMatchObject({ status: 400, body: { error: { code: "bad_request", reason: "code_mismatch" } } });
+    expect((await call("POST", "/me/email/verify", { user: UNVERIFIED, body: { code: "123456" } })).status).toBe(204);
+    expect(codesChecked).toEqual([[`token-${UNVERIFIED}`, "654321"], [`token-${UNVERIFIED}`, "123456"]]);
+    const me = (await call("GET", "/me", { user: UNVERIFIED })).body;
+    expect(me.user).toEqual({ id: UNVERIFIED, email: "pat@example.com", emailVerified: true });
+    expect(me.invites).toHaveLength(1);
+    // Neither the code nor the token is logged
+    expect(JSON.stringify(logs)).not.toMatch(/123456|654321|token-|pat@/);
+  });
+
+  it("answers 409 already_verified to a verified address, sending and checking nothing", async () => {
+    for (const path of ["/me/email/code", "/me/email/verify"]) {
+      expect(await call("POST", path, { user: PAT, body: path.endsWith("verify") ? { code: "123456" } : undefined }), path).toMatchObject({ status: 409, body: { error: { code: "aborted", reason: "already_verified" } } });
+    }
+    expect(codesSent).toEqual([]);
+    expect(codesChecked).toEqual([]);
+  });
+
+  it("checks the request before calling Cognito", async () => {
+    for (const body of [undefined, {}, { code: 123456 }, { code: "12345" }, { code: "1234567" }, { code: "12a456" }, { code: "123456", email: "x@example.com" }]) {
+      expect((await call("POST", "/me/email/verify", { user: UNVERIFIED, body })).status, JSON.stringify(body)).toBe(400);
+    }
+    expect((await call("POST", "/me/email/code", { user: UNVERIFIED, body: { email: "someone@example.com" } })).status).toBe(400);
+    expect(codesSent).toEqual([]);
+    expect(codesChecked).toEqual([]);
+  });
+
+  it("has nothing to verify for a user with no email", async () => {
+    USERS["user-no-email"] = { sub: "user-no-email", emailVerified: false };
+    try {
+      expect(await call("POST", "/me/email/code", { user: "user-no-email" })).toMatchObject({ status: 400, body: { error: { code: "bad_request" } } });
+    } finally {
+      delete USERS["user-no-email"];
+    }
+    expect(codesSent).toEqual([]);
+  });
+
+  it("passes on Cognito's refusals and fails on anything else", async () => {
+    codeFailure = new ApiError(429, "quota_exceeded", "Too many attempts; try again later");
+    expect(await call("POST", "/me/email/code", { user: UNVERIFIED })).toMatchObject({ status: 429, body: { error: { code: "quota_exceeded" } } });
+    codeFailure = new Error("VerifyUserAttribute failed: 500 InternalErrorException");
+    expect(await call("POST", "/me/email/verify", { user: UNVERIFIED, body: { code: "123456" } })).toMatchObject({ status: 500, body: { error: { code: "internal" } } });
+    cognitoDown = true;
+    expect((await call("POST", "/me/email/code", { user: UNVERIFIED })).status).toBe(500);
+  });
+
+  it("limits how many codes a user asks for a day, in their own partition", async () => {
+    for (let i = 0; i < EMAIL_CODES_PER_USER_PER_DAY; i++) expect((await call("POST", "/me/email/code", { user: UNVERIFIED })).status).toBe(204);
+    expect(await call("POST", "/me/email/code", { user: UNVERIFIED })).toMatchObject({ status: 429, body: { error: { code: "quota_exceeded" } } });
+    expect(codesSent).toHaveLength(EMAIL_CODES_PER_USER_PER_DAY);
+    expect(table.get(`USER#${UNVERIFIED}`, `LIMIT#EMAILCODES#${new Date(now).toISOString().slice(0, 10)}`)).toMatchObject({ count: EMAIL_CODES_PER_USER_PER_DAY, type: "emailCodes" });
+    expect(scopes.at(-1)).toEqual({ userId: UNVERIFIED });
+    // The next day starts again
+    now += DAY;
+    expect((await call("POST", "/me/email/code", { user: UNVERIFIED })).status).toBe(204);
+  });
+
+  it("only for the token's own user", async () => {
+    // The authorizer's user and the token's user differ: something is badly wrong
+    expect((await call("POST", "/me/email/code", { user: UNVERIFIED, claims: { sub: PAT, token_use: "access", exp: String(Math.floor(now / 1000) + 600), iss: ISSUER } })).status).toBe(401);
+    expect(codesSent).toEqual([]);
   });
 });
 
