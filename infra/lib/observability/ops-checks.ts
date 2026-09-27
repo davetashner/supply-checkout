@@ -12,6 +12,7 @@ import { Construct } from "constructs";
 import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, GSI1, STUCK_IMPORT_ATTRIBUTES, TEAM_PURGE_ATTRIBUTES, TEAM_PURGE_MARK_ATTRIBUTES } from "../../../backend/src/data/schema.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import { CHECK_EVERY_MINUTES, OPS_ENV, opsResourceNames, PURGE_BUDGET_MS, PURGE_EVERY_HOURS, PURGE_SILENT_ALARM_HOURS } from "../../../backend/src/ops/names.js";
+import { grantPutDeletionRecords } from "../deletions.js";
 import { bundling } from "../stacks/api-stack.js";
 import type { AlarmTopics } from "./alarm-topics.js";
 import { LOG_RETENTION } from "./defaults.js";
@@ -57,6 +58,9 @@ export interface OpsChecksProps {
  *   whichever teams are due, which only the table's own index names; no
  *   request reaches it. `purgeNotRunning` alarms when its ClosedTeamsOverdue
  *   gauge stops arriving ("Deletion job not running", docs/journeys.md).
+ *   Once a team is marked, and before it deletes anything, it writes the
+ *   team's deletion record: s3:PutObject under `teams/` in the deletion
+ *   records bucket only.
  *
  * The checks run every CHECK_EVERY_MINUTES from an EventBridge rule, each with its own
  * log group and a role that writes only to it. A failed run shows in the
@@ -191,6 +195,8 @@ export class OpsChecks extends Construct {
         conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
       }),
     );
+    // The checks run in the primary region only, so this stack's region is the bucket's
+    grantPutDeletionRecords(this.teamPurge, { envName: props.envName, primaryRegion: Stack.of(this).region }, "team");
     Validations.of(this.teamPurge.role as Role).acknowledge({
       id: "AwsSolutions-IAM5[Resource::*]",
       reason: "The purge deletes whichever closed teams are due, named only by the table's own closed-teams index: the TEAM#, USER# and STRIPE# partition wildcards are in dynamodb:LeadingKeys, with dynamodb:Attributes limiting it to keys and closure fields",

@@ -14,7 +14,7 @@ import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
 import { authorizeTeam, createInvite, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS, verifiedEmailHash } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { connection } from "../src/data/client.js";
-import { REGION, accountPartitions, fakeDb, fakeMailer, unusedDeleteUser } from "./helpers.js";
+import { REGION, accountPartitions, fakeDb, fakeMailer, unusedDeleteUser, unusedDeletionLog } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const mails = fakeMailer();
@@ -100,7 +100,7 @@ beforeEach(() => {
       verifiedNow.add(token.replace(/^token-/, ""));
     },
   };
-  handler = createAccountHandler({ dbFor, userInfo, emailCodes, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, deleteUser: unusedDeleteUser, now: () => now });
+  handler = createAccountHandler({ dbFor, userInfo, emailCodes, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, now: () => now });
 });
 
 interface Request {

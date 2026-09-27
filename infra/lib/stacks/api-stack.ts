@@ -54,6 +54,7 @@ import {
 } from "../../../backend/src/data/schema.js";
 import type { DeploymentConfig } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
+import { grantPutDeletionRecords } from "../deletions.js";
 import { grantSendEmail } from "../email.js";
 import { cognitoJwtAuthorizer, identityOptionsFromContext, identityOutputParameters, LOCAL_DEV_ORIGIN, opsJwtAuthorizer } from "../identity.js";
 import { LOG_RETENTION } from "../observability/defaults.js";
@@ -333,6 +334,8 @@ export class ApiStack extends SupplyCheckoutStack {
     // Invite emails (supply-checkout-5tp): ses:SendEmail on the domain identity and the
     // configuration set only, from noreply@<env domain> only (lib/email.ts)
     grantSendEmail(this.accountFunction, config);
+    // A deleted account's record (user ID, time, teams it closed), in the primary region's bucket
+    grantPutDeletionRecords(this.accountFunction, config, "user");
 
     // The API
     this.api = new HttpApi(this, "HttpApi", {

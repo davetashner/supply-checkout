@@ -119,8 +119,13 @@ const CONCURRENCY = 10;
  * stopped part-way, and a no-op for a team that isn't closed or isn't due.
  * It first marks the team `purging`, conditioned on it still being closed and
  * due, so reopenTeam can't reopen it once anything may be gone.
+ *
+ * `beforeDelete` runs once the team is marked and before anything is deleted
+ * (the purge writes the team's deletion record there): after the mark, so a
+ * team reopened meanwhile never gets a record. If it fails, nothing is
+ * deleted and the next run tries again.
  */
-export async function purgeTeam(db: Db, teamId: string, now: Date): Promise<PurgeResult> {
+export async function purgeTeam(db: Db, teamId: string, now: Date, options: { readonly beforeDelete?: () => Promise<void> } = {}): Promise<PurgeResult> {
   const { doc } = connection(db);
   const pk = teamPartition(id(teamId, "team ID"));
   const { Item: meta } = await doc.send(
@@ -150,6 +155,7 @@ export async function purgeTeam(db: Db, teamId: string, now: Date): Promise<Purg
       },
     );
   if (!marked) return { deleted: 0, skipped: true };
+  await options.beforeDelete?.();
 
   const items: { PK: string; SK: string }[] = [];
   let ExclusiveStartKey: Record<string, unknown> | undefined;

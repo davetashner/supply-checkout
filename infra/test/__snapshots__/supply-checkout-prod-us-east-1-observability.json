@@ -3227,6 +3227,32 @@
                 "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
               },
               "Sid": "TableKeyThroughDynamoDb"
+            },
+            {
+              "Action": "s3:PutObject",
+              "Condition": {
+                "Null": {
+                  "s3:if-none-match": "false"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":s3:::supply-checkout-prod-deletions-us-east-1-",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    "/teams/*"
+                  ]
+                ]
+              },
+              "Sid": "PutTeamDeletionRecords"
             }
           ],
           "Version": "2012-10-17"
@@ -3256,6 +3282,18 @@
           "Variables": {
             "NODE_OPTIONS": "--enable-source-maps",
             "TABLE_NAME": "supply-checkout-prod-app",
+            "DELETIONS_BUCKET": {
+              "Fn::Join": [
+                "",
+                [
+                  "supply-checkout-prod-deletions-us-east-1-",
+                  {
+                    "Ref": "AWS::AccountId"
+                  }
+                ]
+              ]
+            },
+            "DELETIONS_REGION": "us-east-1",
             "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
             "SUPPLY_CHECKOUT_ENV": "prod"
           }
