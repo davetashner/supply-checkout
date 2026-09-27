@@ -97,6 +97,11 @@
             "AttributeDataType": "String",
             "Mutable": true,
             "Name": "linked_email"
+          },
+          {
+            "AttributeDataType": "String",
+            "Mutable": true,
+            "Name": "downgrade_pending"
           }
         ],
         "SmsVerificationMessage": "The verification code to your new account is {####}",
