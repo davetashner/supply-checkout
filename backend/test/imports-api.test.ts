@@ -538,15 +538,40 @@ describe("retries and resuming", () => {
     refuse("Item size has exceeded the maximum allowed size");
     expect(await post({ importId: id, csv: "name,barcode,price\nItem 0,c0,3\n" })).toMatchObject({ status: 413, body: { error: { message: "The item on line 2 is too large to save" } } });
     expect(warnings).toEqual([["Refused as too large", { cause: { name: "ValidationException", message: "Item size has exceeded the maximum allowed size" } }]]);
-    // Messages the old pattern (size, large, 4 MB) matched, which are bugs rather than a batch too large
-    for (const message of ["One or more parameter values were invalid: Size of hashkey has exceeded the maximum size limit of 2048 bytes", "Transaction request cannot include multiple operations on one item", "Request too large: 4 MB"]) {
+    // Matched from the start, so anything DynamoDB adds after its message still matches
+    id = randomUUID();
+    refuse("Item size has exceeded the maximum allowed size (400 KB)");
+    expect((await post({ importId: id, csv: "name,barcode,price\nItem 0,c0,3\n" })).status).toBe(413);
+    warnings.length = 0;
+    // Messages the old pattern (size, large, 4 MB) matched, which are bugs rather than a batch too large, and one that only contains DynamoDB's
+    for (const message of ["One or more parameter values were invalid: Size of hashkey has exceeded the maximum size limit of 2048 bytes", "Transaction request cannot include multiple operations on one item", "Request too large: 4 MB", "Not this: Item size has exceeded the maximum allowed size"]) {
       id = randomUUID();
       refuse(message);
       const res = await post({ importId: id, csv: "name,barcode,price\nItem 0,c0,3\n" });
       expect(res.status, message).toBe(500);
       expect(JSON.stringify(res.body)).not.toContain(message);
     }
-    expect(warnings).toHaveLength(1);
+    expect(warnings).toEqual([]);
+  });
+
+  it("treats a transaction cancelled for an item's size as too large, and only that ValidationError", async () => {
+    const cancel = (message: string) => {
+      table.beforeTransactWrite = () => {
+        if (table.get("TEAM#team-a", `IMPORT#${id}`)) {
+          throw Object.assign(new Error("Transaction cancelled"), { name: "TransactionCanceledException", CancellationReasons: [{ Code: "ValidationError", Message: message }, { Code: "None" }] });
+        }
+      };
+    };
+    let id = randomUUID();
+    cancel("Item size has exceeded the maximum allowed size");
+    expect(await post({ importId: id, csv: "name,barcode,price\nItem 0,c0,3\n" })).toMatchObject({ status: 413, body: { error: { message: "An item on line 2 or after is too large to save" } } });
+    for (const message of ["One or more parameter values were invalid: Size of hashkey has exceeded the maximum size limit of 2048 bytes", "Invalid size"]) {
+      id = randomUUID();
+      cancel(message);
+      const res = await post({ importId: id, csv: "name,barcode,price\nItem 0,c0,3\n" });
+      expect(res.status, message).toBe(500);
+      expect(JSON.stringify(res.body)).not.toContain(message);
+    }
   });
 
   it("the test table measures maps with a constructor key as DynamoDB gets them", () => {
