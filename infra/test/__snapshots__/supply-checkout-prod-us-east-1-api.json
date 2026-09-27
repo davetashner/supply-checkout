@@ -2687,6 +2687,114 @@
         }
       }
     },
+    "HttpApiPOSTmeemailcodeAccountIntegrationPermission93EBB796": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/me/email/code"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTmeemailcode157ED3EE": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /me/email/code",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTmeemailverifyAccountIntegrationPermission0E703411": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/me/email/verify"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTmeemailverify7BFB4943": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /me/email/verify",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiGETopsteamsOpsIntegrationD9495125": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -3362,6 +3470,14 @@
             "ThrottlingRateLimit": 5,
             "ThrottlingBurstLimit": 10
           },
+          "POST /me/email/code": {
+            "ThrottlingRateLimit": 5,
+            "ThrottlingBurstLimit": 10
+          },
+          "POST /me/email/verify": {
+            "ThrottlingRateLimit": 10,
+            "ThrottlingBurstLimit": 20
+          },
           "GET /ops/teams": {
             "ThrottlingRateLimit": 5,
             "ThrottlingBurstLimit": 10
@@ -3427,6 +3543,10 @@
         "HttpApiPATCHteamsteamIdmembersuserIdEF500EC2",
         "HttpApiPOSTinvitesinviteIdacceptAccountIntegrationPermission862E8450",
         "HttpApiPOSTinvitesinviteIdacceptD95AE303",
+        "HttpApiPOSTmeemailcodeAccountIntegrationPermission93EBB796",
+        "HttpApiPOSTmeemailcode157ED3EE",
+        "HttpApiPOSTmeemailverifyAccountIntegrationPermission0E703411",
+        "HttpApiPOSTmeemailverify7BFB4943",
         "HttpApiPOSTopsteamsteamIdimportsimportIdclearOpsIntegrationPermission461B2CE3",
         "HttpApiPOSTopsteamsteamIdimportsimportIdclear20755C3C",
         "HttpApiPOSTteamsteamIdimportsDataIntegrationPermission8AC0ABAB",

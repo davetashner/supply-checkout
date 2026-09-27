@@ -20,6 +20,12 @@
 //                                                      a role, and email it the link.
 //   DELETE /teams/{teamId}/invites/{inviteId}          Owners: revoke an invite.
 //   POST   /teams/{teamId}/invites/{inviteId}/resend   Owners: a new link and email.
+//   POST /me/email/code             Cognito emails the caller a code for their
+//                                   unverified address.
+//   POST /me/email/verify           Checks the code; Cognito marks the address
+//                                   verified. The app then refreshes its tokens,
+//                                   so the pre token generation trigger records
+//                                   a linked user's new address, and reloads /me.
 //
 // The team's last owner can't be removed, demoted or leave: the team item's
 // owner count moves in the same transaction as the membership, conditioned
@@ -56,6 +62,7 @@ import type { APIGatewayProxyStructuredResultV2, Context } from "aws-lambda";
 import {
   acceptInvite,
   authorizeTeam,
+  countEmailCode,
   createInvite,
   createTeam,
   findInviteForEmail,
@@ -91,7 +98,7 @@ import {
 import { EmailNotSentError, type Mailer, sendInviteEmail } from "../email/mailer.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import type { DbForAccount } from "./account-db.js";
-import type { CognitoUser, UserInfo } from "./cognito-user.js";
+import type { CognitoUser, EmailCodes, UserInfo } from "./cognito-user.js";
 import { callerId, type DataEvent, errorFor as dataErrorFor } from "./data-handler.js";
 import { ApiError, errorResponse, header, json, jsonBody, noContent, notMember } from "./http.js";
 import { requireRole } from "./roles.js";
@@ -100,6 +107,8 @@ import { ACCOUNT_ROUTES, type AccountRoute, IDEMPOTENCY_HEADER, routeKey } from 
 export interface AccountHandlerDeps {
   readonly dbFor: DbForAccount;
   readonly userInfo: UserInfo;
+  /** Emails the caller a verification code and checks it (cognito-user.ts). */
+  readonly emailCodes: EmailCodes;
   /** The user pool's issuer URL; tokens from anywhere else are refused. */
   readonly issuerUrl: string;
   readonly obs: Observability;
@@ -111,6 +120,8 @@ export interface AccountHandlerDeps {
 const ROUTES = new Map(ACCOUNT_ROUTES.map((r) => [routeKey(r), r.action]));
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const REQUEST_KEY = /^[A-Za-z0-9_-]{8,128}$/;
+/** Cognito's verification codes are 6 digits. */
+const EMAIL_CODE = /^[0-9]{6}$/;
 
 /** The data layer's errors, as the account routes answer them. */
 export function errorFor(error: unknown): ApiError {
@@ -184,12 +195,16 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
   const now = deps.now ?? Date.now;
   const { dbFor, obs } = deps;
 
-  /** The caller as Cognito sees them now, from their own access token. */
-  async function cognitoUser(event: DataEvent, userId: string): Promise<CognitoUser> {
-    // API Gateway accepts the token with or without the Bearer prefix
+  /** The caller's access token, as API Gateway verified it (with or without the Bearer prefix). */
+  function accessToken(event: DataEvent): string {
     const token = (header(event, "authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
     if (!token) throw new ApiError(401, "unauthenticated", "Sign in again");
-    const user = await deps.userInfo(token);
+    return token;
+  }
+
+  /** The caller as Cognito sees them now, from their own access token. */
+  async function cognitoUser(event: DataEvent, userId: string): Promise<CognitoUser> {
+    const user = await deps.userInfo(accessToken(event));
     // The same user API Gateway verified, or something is badly wrong
     if (user.sub !== userId) throw new ApiError(401, "unauthenticated", "Sign in again");
     return user;
@@ -375,6 +390,31 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     return json(201, { invite: teamInviteBody(await send(db, ctx, made.invite, made.token), now()) });
   }
 
+  /**
+   * Cognito emails the caller a code for their address. Only for an address
+   * that doesn't count as verified yet (for a linked user, one that isn't the
+   * recorded one), so it can't be used to send mail for nothing.
+   */
+  async function sendEmailCode(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    if (event.body) jsonBody(event, []);
+    const user = await cognitoUser(event, userId);
+    if (!user.email) throw new ApiError(400, "bad_request", "There's no email address to verify");
+    if (verifiedEmail(user)) throw new ApiError(409, "aborted", "Your email address is already verified", "already_verified");
+    await countEmailCode(dbFor({ userId }), userId, new Date(now()));
+    await deps.emailCodes.send(accessToken(event));
+    return noContent();
+  }
+
+  /** Checks the code from the email. Cognito's answer says whether it was right; the code is never logged. */
+  async function verifyEmail(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    const code = jsonBody(event, ["code"]).code;
+    if (typeof code !== "string" || !EMAIL_CODE.test(code)) throw new ApiError(400, "bad_request", "Enter the 6-digit code from the email", "code_mismatch");
+    const user = await cognitoUser(event, userId);
+    if (verifiedEmail(user)) throw new ApiError(409, "aborted", "Your email address is already verified", "already_verified");
+    await deps.emailCodes.verify(accessToken(event), code);
+    return noContent();
+  }
+
   const actions: Record<AccountRoute["action"], (event: DataEvent, userId: string) => Promise<APIGatewayProxyStructuredResultV2>> = {
     me,
     createTeam: newTeam,
@@ -386,6 +426,8 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     createInvite: invite,
     revokeInvite: revoke,
     resendInvite: resend,
+    sendEmailCode,
+    verifyEmail,
   };
 
   return async (event: DataEvent, context?: Context): Promise<APIGatewayProxyStructuredResultV2> => {

@@ -8,8 +8,12 @@ import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, forgetLocal, 
 import { createDb } from "./db.js";
 import { openImport } from "./import.js";
 import { openMembers } from "./members.js";
+import { openVerifyEmail } from "./verify-email.js";
 
 const ROLE = { owner: "an owner", contributor: "a contributor", viewer: "a viewer" };
+// A screen's promise resolves with this key after the user verifies their email: start the
+// screens again with the new /me it holds (its invites, and whether they're verified)
+const AGAIN = Symbol("again");
 
 // A plain circle for the signed-in user's avatar; the API has no pictures yet
 const AVATAR = "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><circle cx="1" cy="1" r="1" fill="#0E6B58"/></svg>');
@@ -21,9 +25,10 @@ function show(html, mount) {
   document.body.classList.add("account-open");
   box.innerHTML = html;
   if (mount) mount(box);
-  // data-autofocus rather than autofocus, as in openModal (src/dom.js)
+  // data-autofocus rather than autofocus, as in openModal (src/dom.js). Not under an open
+  // modal (verifying an email starts the screens again behind it): it keeps the focus.
   const f = box.querySelector("[data-autofocus]");
-  if (f) f.focus();
+  if (f && document.getElementById("overlay").hidden) f.focus();
 }
 const until = (fn) => new Promise(fn);
 const errorText = (m) => `<p class="error" role="alert" id="accountError"${m ? "" : " hidden"}>${esc(m)}</p>`;
@@ -95,6 +100,19 @@ export async function start(config) {
   const whoami = (me) => `<p class="whoami">Signed in as ${esc(me.user.email || "you")}. <button type="button" class="btn ghost" id="accountSignOut">Sign out</button></p>`;
   const wireWhoami = (el) => el.querySelector("#accountSignOut").addEventListener("click", signOut);
 
+  // The email isn't verified yet, so no invites are listed or can be accepted: offer to
+  // verify it. Hidden (but there, for a refused join to show) when it is verified; nothing
+  // when there's no address. Verifying starts the screens again with the new /me.
+  const unverified = (me) => !!me.user.email && !me.user.emailVerified;
+  const verifyPrompt = (me) => me.user.email ? `<div class="verify-prompt" id="verifyPrompt"${unverified(me) ? "" : " hidden"}>
+      <p>Your email address, <strong>${esc(me.user.email)}</strong>, isn't verified yet. Verify it to see and join teams that invite it.</p>
+      <div class="actions"><button type="button" class="btn" id="verifyEmail">Verify email</button></div>
+    </div>` : "";
+  const wireVerify = (el, me, resolve) => {
+    const button = el.querySelector("#verifyEmail");
+    if (button) button.addEventListener("click", () => openVerifyEmail(session, me.user.email, (fresh) => resolve({ [AGAIN]: fresh })));
+  };
+
   // Anything else that went wrong: say so, and try again from the start
   const failed = () => until((resolve) => show(`<h2>Couldn't connect</h2>
     <p>Supply Checkout didn't answer. Check your connection and try again.</p>
@@ -108,12 +126,13 @@ export async function start(config) {
     show(`<h2>Name your team</h2>
       <p>Your team shares one inventory and one set of sheets.</p>
       ${seen}
+      ${verifyPrompt(me)}
       <form id="teamForm">
         <div class="field"><label for="teamName">Team name</label><input type="text" id="teamName" required maxlength="200" autocomplete="organization" data-autofocus></div>
         ${errorText("")}
         <div class="actions"><button type="submit" class="btn primary" id="createTeam">Create team</button></div>
       </form>
-      ${whoami(me)}`, (el) => { wireWhoami(el); el.querySelector("#teamForm").addEventListener("submit", async (e) => {
+      ${whoami(me)}`, (el) => { wireWhoami(el); wireVerify(el, me, resolve); el.querySelector("#teamForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       const name = el.querySelector("#teamName").value.trim(), btn = el.querySelector("#createTeam");
       if (!name) return;
@@ -137,11 +156,13 @@ export async function start(config) {
     const hasTeams = me.teams.length > 0;
     show(`<h2>${known ? "Join " + esc(known.teamName) : "Join a team"}</h2>
       <p>${known ? `${esc(known.teamName)} invited you as ${ROLE[known.role]}.` : "You've been invited to join a team."}</p>
+      ${verifyPrompt(me)}
       ${errorText("")}
       <div class="actions"><button type="button" class="btn primary" id="join" data-autofocus>Join</button>
       <button type="button" class="btn" id="skip">${hasTeams ? "Not now" : "Create my own team instead"}</button></div>
       ${whoami(me)}`, (el) => {
       wireWhoami(el);
+      wireVerify(el, me, resolve);
       el.querySelector("#skip").addEventListener("click", () => { dropInvite(); resolve(null); });
       const join = el.querySelector("#join");
       join.addEventListener("click", async () => {
@@ -155,8 +176,10 @@ export async function start(config) {
           // Already a member: carry on to the team as usual
           if (err.code === "aborted") { dropInvite(); resolve(null); return; }
           if (err.code === "not_found") { dropInvite(); join.hidden = true; }
+          const prompt = el.querySelector("#verifyPrompt");
+          if (err.code === "permission_denied" && prompt) prompt.hidden = false;
           setError(err.code === "not_found" ? "This invite has expired, was already used, or was sent to a different email address. Ask the person who invited you for a new one."
-            : err.code === "permission_denied" ? "Your email address isn't verified yet. Verify it when you sign in, then open the invite link again."
+            : err.code === "permission_denied" ? "Your email address isn't verified yet. Verify it, then join."
             : err.reason === "team_full" ? "This team is full. Ask the person who invited you to make room, then try again."
             : err.code === "quota_exceeded" ? "You're already in as many teams as you can be. Leave one to join this one."
             : "Couldn't join the team. Check your connection and try again.");
@@ -165,6 +188,7 @@ export async function start(config) {
     });
   });
 
+  // A team to open, or { [AGAIN]: me } after the user verified their email
   async function chooseTeam(me) {
     const invite = takeInvite();
     const joined = invite && await joinInvite(me, invite);
@@ -197,12 +221,16 @@ export async function start(config) {
     bar.innerHTML = (me.teams.length > 1
       ? `<label for="teamSwitch">Team</label><select id="teamSwitch">${me.teams.map((t) => `<option value="${esc(t.id)}"${t.id === team.id ? " selected" : ""}>${esc(t.name)}</option>`).join("")}</select>`
       : `<span>Team: <strong>${esc(team.name)}</strong></span>`)
-      + `<span class="spacer"></span>${team.role === "owner" ? `<button type="button" class="btn ghost" id="members">Members</button><button type="button" class="btn ghost" id="importInventory">Import CSV</button>` : ""}<button type="button" class="btn ghost" id="signOut">Sign out</button>`;
+      + `<span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${team.role === "owner" ? `<button type="button" class="btn ghost" id="members">Members</button><button type="button" class="btn ghost" id="importInventory">Import CSV</button>` : ""}<button type="button" class="btn ghost" id="signOut">Sign out</button>`;
     box.after(bar);
     const pick = bar.querySelector("#teamSwitch");
     // Switching loads the page again for the other team: new data, role and live updates
     if (pick) pick.addEventListener("change", () => { local.set(TEAM_KEY, pick.value); location.reload(); });
     bar.querySelector("#signOut").addEventListener("click", signOut);
+    // Verifying here needs nothing else to change: the team is open, and invites only matter
+    // before one is. The button goes once it's done.
+    const verify = bar.querySelector("#verifyEmail");
+    if (verify) verify.addEventListener("click", () => openVerifyEmail(session, me.user.email, (fresh) => { me.user = fresh.user; verify.remove(); }));
     if (team.role === "owner") {
       bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed));
       bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id, download));
@@ -240,9 +268,13 @@ export async function start(config) {
     show(`<p class="muted" role="status">Signing in…</p>`);
     try {
       if (!await session.start()) return signIn();
-      const me = await session.api("GET", "/me");
+      let me = await session.api("GET", "/me");
       claim(me.user.id);
-      return open(me, await chooseTeam(me));
+      for (;;) {
+        const team = await chooseTeam(me);
+        if (!team[AGAIN]) return open(me, team);
+        me = team[AGAIN];
+      }
     } catch (e) {
       if (e.code === "unauthenticated") return signIn();
       await failed();
