@@ -25,6 +25,7 @@ const moment = (iso) => new Date(iso).toLocaleString("en-US", { month: "long", d
 const ME_EVERY = 60e3, ME_EVERY_POLLING = 600e3;
 // Why the app is read-only when the team is closed (src/main.js asks, user.viewOnlyNotice)
 const CLOSED_NOTICE = "This team is closed, so nothing in it can be changed.";
+// When /me can't say when it will be deleted (it didn't load, or doesn't list it closed yet)
 const CLOSED_MEANWHILE = "An owner closed this team, so nothing in it can be changed now. Reload the page to see when it will be deleted.";
 
 // A plain circle for the signed-in user's avatar; the API has no pictures yet
@@ -406,17 +407,35 @@ export async function start(config) {
     document.body.classList.remove("account-open");
     box.innerHTML = "";
     const fr = firstRun(me, team);
-    const bar = teamBar(me, team, fr);
+    let bar = teamBar(me, team, fr);
     // /me was just loaded
     meAt = Date.now();
     let viewOnly = team.closedAt ? CLOSED_NOTICE : null;
+    // A write was refused because another owner closed the team meanwhile: ask /me when it will
+    // be deleted, and draw the team bar again as a closed team's (its notice, no Import CSV).
+    // The view-only notice waits for it, and says to reload if /me couldn't say.
+    let closing = null;
+    const closedMeanwhile = () => { closing = (async () => {
+      viewOnly = CLOSED_MEANWHILE;
+      let teams;
+      try { teams = (await session.api("GET", "/me")).teams; } catch { return; }
+      const now = teams.find((t) => t.id === team.id);
+      if (!now || !now.closedAt) return;
+      me.teams = teams;
+      meAt = Date.now();
+      Object.assign(team, now);
+      const old = bar;
+      bar = teamBar(me, team, fr);
+      old.remove();
+      viewOnly = CLOSED_NOTICE;
+    })(); };
     const name = [claims.given_name, claims.family_name].filter(Boolean).join(" ") || claims.email;
     const profile = { id: me.user.id, name, avatarUrl: AVATAR, isMe: true };
     db = createDb({
       api: session.api, config, teamId: team.id, userId: me.user.id, token: session.token,
       onRemoved: () => removed(team),
       // A write refused because another owner closed the team meanwhile
-      onClosed: () => { viewOnly = CLOSED_MEANWHILE; },
+      onClosed: closedMeanwhile,
       onResync: (why) => refreshTeams(me, team, bar.querySelector(".team-pick"), why),
     });
     return {
@@ -428,7 +447,7 @@ export async function start(config) {
         // Team owners can export all the team's data (the app's "Export data")
         isOwner: async () => team.role === "owner",
         // Why it's read-only, when that's because the team is closed; null: the role says why
-        viewOnlyNotice: async () => viewOnly,
+        viewOnlyNotice: async () => { await closing; return viewOnly; },
         // Only the signed-in user's own profile: the API doesn't share other members' names yet
         profiles: async (ids) => Object.fromEntries([].concat(ids).filter((id) => id === me.user.id).map((id) => [id, profile])),
       },

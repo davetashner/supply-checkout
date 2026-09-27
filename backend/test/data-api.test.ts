@@ -318,6 +318,46 @@ describe("documents (the app's db contract)", () => {
     expect((await call("GET", "/teams/team-a/sheets/s1")).body.data.items["nb-1"]).toEqual(rags);
   });
 
+  it("checks a product's price and cost with the money rule, like a sheet line's (ADR 0014)", async () => {
+    for (const money of [{ price: 1.234 }, { price: -1 }, { price: "3" }, { price: null }, { price: 1_000_001 }, { cost: 0.001 }, { cost: -0.5 }, { cost: "2" }]) {
+      const res = await call("PUT", "/teams/team-a/products/p1", { body: { data: { ...product, ...money } } });
+      expect(res.body.error?.code, JSON.stringify(money)).toBe("bad_request");
+    }
+    expect(table.get("TEAM#team-a", "PRODUCT#p1")).toBeUndefined();
+    // Whole cents, and no price or cost at all, save
+    expect((await call("PUT", "/teams/team-a/products/p1", { body: { data: { ...product, price: 0, cost: 1_000_000 } } })).status).toBe(200);
+    expect((await call("PUT", "/teams/team-a/products/p2", { body: { data: { code: "p2", name: "Rags" } } })).status).toBe(200);
+    expect((await call("PATCH", "/teams/team-a/products/p1", { body: { data: { price: 2.5, cost: 1.25 } } })).body.data).toMatchObject({ price: 2.5, cost: 1.25 });
+    expect((await call("PATCH", "/teams/team-a/products/p1", { body: { data: { cost: 1.255 } } })).body.error.code).toBe("bad_request");
+  });
+
+  it("saves a product holding legacy money the write doesn't change, rounding it to cents (ADR 0014)", async () => {
+    // Written before the money rule: a price and cost with three decimals
+    const legacy = { ...product, price: 2.345, cost: 1.005 };
+    table.put({ PK: "TEAM#team-a", SK: "PRODUCT#p1", type: "product", key: "p1", version: 1, ...legacy });
+    // A PATCH to another field saves, rounding them
+    const patch = await call("PATCH", "/teams/team-a/products/p1", { body: { data: { name: "Gloves" } } });
+    expect(patch.status).toBe(200);
+    expect(patch.body.data).toMatchObject({ name: "Gloves", price: 2.35, cost: 1.01 });
+    expect(table.get("TEAM#team-a", "PRODUCT#p1")).toMatchObject({ version: 2, price: 2.35, cost: 1.01 });
+    // So does a PUT that repeats them as they were stored
+    table.put({ PK: "TEAM#team-a", SK: "PRODUCT#p1", type: "product", key: "p1", version: 3, ...legacy });
+    expect((await call("PUT", "/teams/team-a/products/p1", { body: { data: { ...legacy, name: "Gloves" } } })).status).toBe(200);
+    expect(table.get("TEAM#team-a", "PRODUCT#p1")).toMatchObject({ version: 4, name: "Gloves", price: 2.35, cost: 1.01 });
+    // One that isn't an amount at all is kept as it is
+    const odd = { ...product, price: "3", cost: -2 };
+    table.put({ PK: "TEAM#team-a", SK: "PRODUCT#p1", type: "product", key: "p1", version: 5, ...odd });
+    expect((await call("PATCH", "/teams/team-a/products/p1", { body: { data: { name: "Tape" } } })).body.data).toMatchObject({ name: "Tape", price: "3", cost: -2 });
+    // A write that changes the money must follow the rule, legacy or not
+    table.put({ PK: "TEAM#team-a", SK: "PRODUCT#p1", type: "product", key: "p1", version: 7, ...legacy });
+    for (const data of [{ price: 2.344 }, { cost: 1.006 }, { price: "4" }]) {
+      expect((await call("PATCH", "/teams/team-a/products/p1", { body: { data } })).body.error.code, JSON.stringify(data)).toBe("bad_request");
+    }
+    expect(table.get("TEAM#team-a", "PRODUCT#p1")).toMatchObject({ version: 7, price: 2.345, cost: 1.005 });
+    // Correcting it saves
+    expect((await call("PATCH", "/teams/team-a/products/p1", { body: { data: { price: 2.34 } } })).body.data).toMatchObject({ price: 2.34, cost: 1.01 });
+  });
+
   it("saves a sheet holding legacy money on a line the write doesn't change, rounding it to cents (ADR 0014)", async () => {
     // Written before the money rule: a price and cost with three decimals, and one that isn't an amount
     const legacy = { code: "A", name: "Gloves", price: 2.345, cost: 1.005, out: 2, returned: 0 };
@@ -552,6 +592,28 @@ describe("documents (the app's db contract)", () => {
     // Growing past the limit through updates is refused too
     await call("PUT", "/teams/team-a/sheets/s2", { body: { data: { a: "x".repeat(MAX_DOCUMENT_BYTES - 100) } } });
     expect((await call("PATCH", "/teams/team-a/sheets/s2", { body: { data: { b: "x".repeat(200) } } })).status).toBe(413);
+  });
+
+  it("treats only DynamoDB's item-size refusal as too large; any other ValidationException is a 500", async () => {
+    const refuse = (message: string) => {
+      table.beforePut = () => {
+        throw Object.assign(new Error(message), { name: "ValidationException" });
+      };
+    };
+    // DynamoDB's message, and the same with anything it adds after it
+    for (const message of ["Item size has exceeded the maximum allowed size", "Item size has exceeded the maximum allowed size (400 KB)"]) {
+      refuse(message);
+      expect(await call("PUT", "/teams/team-a/products/p1", { body: { data: product } }), message).toMatchObject({ status: 413, body: { error: { code: "quota_exceeded" } } });
+    }
+    // Messages the old pattern (any mention of size) matched, which are bugs rather than a document too large
+    for (const message of ["One or more parameter values were invalid: Size of hashkey has exceeded the maximum size limit of 2048 bytes", "Invalid size", "The item size is fine: Item size has exceeded the maximum allowed size"]) {
+      refuse(message);
+      const res = await call("PUT", "/teams/team-a/products/p1", { body: { data: product } });
+      expect(res.status, message).toBe(500);
+      expect(JSON.stringify(res.body)).not.toContain(message);
+    }
+    table.beforePut = undefined;
+    expect((await call("PUT", "/teams/team-a/products/p1", { body: { data: product } })).status).toBe(200);
   });
 
   it("reads a base64-encoded body", async () => {

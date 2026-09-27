@@ -92,6 +92,8 @@ export const BusinessMetric = {
   TeamsPurged: "TeamsPurged",
   /** Operator audit items (OPAUDIT#) changed or deleted other than by their TTL: the audit trail was tampered with (ADR 0015). From the operator audit watch (primary region). */
   OperatorAuditChanged: "OperatorAuditChanged",
+  /** Heartbeats the operator audit watch read from the table's stream (OPERATOR_AUDIT_HEARTBEAT): none for a while means it isn't reading the stream, or its metrics aren't arriving. */
+  OperatorAuditWatchHeartbeat: "OperatorAuditWatchHeartbeat",
 } as const;
 
 export type BusinessMetricName = (typeof BusinessMetric)[keyof typeof BusinessMetric];

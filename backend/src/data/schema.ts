@@ -138,6 +138,18 @@ export const OPS_AUDIT_INDEX_PREFIX = "OPS#AUDIT#";
 export const OPERATOR_AUDIT_PREFIX = "OPAUDIT#";
 
 /**
+ * The operator audit watch's heartbeat (supply-checkout-6uw.11): one item,
+ * rewritten every few minutes by an EventBridge Scheduler schedule with only
+ * its keys and `at` (the scheduled time). The watch reads it from the stream
+ * and counts it in OperatorAuditWatchHeartbeat, whose "Operator audit watch
+ * silent" alarm fires when it stops arriving, whatever stopped the watch
+ * reading the stream (its mapping, concurrency, role, log group, the stream,
+ * the table key). Its own partition: never a team's, never `OPAUDIT#`, and no
+ * sort key the live-update publisher reads.
+ */
+export const OPERATOR_AUDIT_HEARTBEAT = { PK: "OPWATCH#HEARTBEAT", SK: "HEARTBEAT", attributes: ["PK", "SK", "at"] } as const;
+
+/**
  * A comp (ADR 0015): a plan an operator grants a team for a while, whatever
  * Stripe says. Separate from `plan` and `status`, which only the billing code
  * writes (ADR 0009).
@@ -244,3 +256,21 @@ export const VERIFIED_EMAIL_ATTRIBUTES = [PK, SK, "verifiedEmailHash", "verified
  * verified-email.ts). Not a `LIMIT#` key, so deleting an account removes it.
  */
 export const EMAIL_CODE_SENT_SK = "EMAIL_CODE_SENT";
+
+/**
+ * The partition prefix of a Stripe customer's link to its team:
+ * `STRIPE#<customerId>`, sort key `TEAM` (linkStripeCustomer). Webhooks name a
+ * customer, not a team, and the link is how they find the team.
+ */
+export const STRIPE_LINK_PREFIX = "STRIPE#";
+
+/** The only attributes the billing function may put in a Stripe link item: its keys, type, customer and team. */
+export const STRIPE_LINK_ATTRIBUTES = [PK, SK, "type", "customerId", "teamId"] as const;
+
+/**
+ * The only attributes the billing function may name when it updates an item
+ * in its team's partition (dynamodb:Attributes): the META item's keys and the
+ * team's Stripe customer (linkStripeCustomer). So a checkout can't change the
+ * team's plan, status, closure or anything else.
+ */
+export const CUSTOMER_LINK_TEAM_ATTRIBUTES = [PK, SK, "stripeCustomerId"] as const;

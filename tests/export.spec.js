@@ -1,6 +1,7 @@
 // Exporting all of a team's data (supply-checkout-zuv): owners download every sheet and
 // the inventory as CSV, or everything as JSON, from what the app shows.
 import { test, expect, openApp, modal } from "./helpers.js";
+import { currentBuild } from "../scripts/builds.mjs";
 import { usedState } from "./fixtures.js";
 
 const seed = {
@@ -22,6 +23,9 @@ test("owners export every sheet and the inventory as CSV, and everything as JSON
   await openOwner(page);
   await page.getByRole("button", { name: "Export data" }).click();
   await expect(modal(page)).toContainText("3 sheets and 5 inventory items");
+  // Only the artifact says how to move to the web app (docs/moving-to-the-web-app.md)
+  if (currentBuild() === "artifact") await expect(page.locator("#moveHint")).toHaveText(/^Moving to the Supply Checkout web app\? Download Everything \(JSON\) and send that file to us\./);
+  else await expect(page.locator("#moveHint")).toHaveCount(0);
 
   await modal(page).getByRole("button", { name: "Sheets (CSV)" }).click();
   await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);

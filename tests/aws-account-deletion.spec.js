@@ -229,16 +229,64 @@ test.describe("a closed team", () => {
     await expect(bar(page).locator(".closed-note")).toBeVisible();
   });
 
-  test("closed by another owner meanwhile: a refused write switches the app to view-only", async ({ page }) => {
-    const backend = await open(page, new FakeBackend());
-    backend.on("PUT", /^\/teams\/t1\/sheets\//, error(403, "permission_denied", { reason: "team_closed" }));
-    await page.getByRole("button", { name: "+ New sheet" }).click();
-    await page.getByLabel("Client", { exact: true }).fill("Delta");
-    await page.getByRole("button", { name: "Create sheet" }).click();
-    const closed = "An owner closed this team, so nothing in it can be changed now. Reload the page to see when it will be deleted.";
-    await expect(page.locator("#toast")).toHaveText(closed);
-    await expect(page.locator("#notice")).toHaveText(closed);
-    await expect(page.getByRole("heading", { name: /no longer in/ })).toHaveCount(0);
+  test.describe("closed by another owner meanwhile", () => {
+    const MEANWHILE = "An owner closed this team, so nothing in it can be changed now. Reload the page to see when it will be deleted.";
+    // A write the API refuses because the team is closed now
+    async function refusedWrite(page, backend) {
+      backend.on("PUT", /^\/teams\/t1\/sheets\//, error(403, "permission_denied", { reason: "team_closed" }));
+      await page.getByRole("button", { name: "+ New sheet" }).click();
+      await page.getByLabel("Client", { exact: true }).fill("Delta");
+      await page.getByRole("button", { name: "Create sheet" }).click();
+    }
+
+    test("a refused write reloads /me and shows the team bar as a closed team's, without a page reload", async ({ page }) => {
+      const backend = await open(page, new FakeBackend({ members: { t1: [ME] } }));
+      await expect(bar(page).getByRole("button", { name: "Import CSV" })).toBeVisible();
+      await expect(bar(page).locator(".closed-note")).toHaveCount(0);
+      const before = backend.requests("GET", "/me").length;
+      backend.teams[0] = { ...backend.teams[0], ...CLOSED };
+      await refusedWrite(page, backend);
+      const closed = "This team is closed, so nothing in it can be changed.";
+      await expect(page.locator("#toast")).toHaveText(closed);
+      await expect(page.locator("#notice")).toHaveText(closed);
+      await expect(bar(page)).toHaveCount(1);
+      await expect(bar(page).locator(".closed-note")).toContainText("This team was closed on September 26, 2026. It's read-only, and everything in it will be deleted on October 26, 2026. Use Export data to keep a copy.");
+      await expect(bar(page).getByRole("button", { name: "Import CSV" })).toHaveCount(0);
+      await expect(bar(page).getByRole("button", { name: "Reopen team" })).toBeVisible();
+      await expect.poll(() => backend.requests("GET", "/me").length).toBe(before + 1);
+      expect(backend.pageLoads).toBe(1);
+      await expect(page.getByRole("heading", { name: /no longer in/ })).toHaveCount(0);
+      // The members screen is a closed team's now too (once the refused sheet's form is closed)
+      await page.keyboard.press("Escape");
+      await expect(page.locator("#overlay")).toBeHidden();
+      await bar(page).getByRole("button", { name: "Members" }).click();
+      await expect(dialog(page)).toContainText("This team is closed: you can remove people or leave it, but not invite anyone or change roles.");
+    });
+
+    test("if /me doesn't list the team as closed yet, says to reload", async ({ page }) => {
+      const backend = await open(page, new FakeBackend());
+      await refusedWrite(page, backend);
+      await expect(page.locator("#toast")).toHaveText(MEANWHILE);
+      await expect(page.locator("#notice")).toHaveText(MEANWHILE);
+      await expect(bar(page).getByRole("button", { name: "Import CSV" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: /no longer in/ })).toHaveCount(0);
+    });
+
+    test("if /me doesn't load, says to reload", async ({ page }) => {
+      const backend = await open(page, new FakeBackend());
+      backend.on("GET", "/me", { abort: true });
+      await refusedWrite(page, backend);
+      await expect(page.locator("#notice")).toHaveText(MEANWHILE);
+      await expect(bar(page).locator(".closed-note")).toHaveCount(0);
+    });
+
+    test("if /me no longer lists the team, says to reload", async ({ page }) => {
+      const backend = await open(page, new FakeBackend());
+      backend.on("GET", "/me", { status: 200, body: { user: USER, teams: [], invites: [] } });
+      await refusedWrite(page, backend);
+      await expect(page.locator("#notice")).toHaveText(MEANWHILE);
+      await expect(bar(page).locator(".closed-note")).toHaveCount(0);
+    });
   });
 });
 

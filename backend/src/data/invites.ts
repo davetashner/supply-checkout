@@ -17,6 +17,7 @@ import {
   INVITES_PER_ADDRESS_PER_DAY,
   INVITES_PER_TEAM_ADDRESS_PER_DAY,
   INVITES_PER_TEAM_PER_DAY,
+  INVITES_PER_USER_ADDRESS_PER_DAY,
   hashEmail,
   inviteLimitKey,
   mailAddress,
@@ -30,7 +31,7 @@ import { GSI2 } from "./schema.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
 export { hashEmail, hashInviteToken } from "./model.js";
-export { INVITES_PER_ADDRESS_PER_DAY, INVITES_PER_TEAM_ADDRESS_PER_DAY, INVITES_PER_TEAM_PER_DAY, inviteLimitKey, mailAddress } from "./model.js";
+export { INVITES_PER_ADDRESS_PER_DAY, INVITES_PER_TEAM_ADDRESS_PER_DAY, INVITES_PER_TEAM_PER_DAY, INVITES_PER_USER_ADDRESS_PER_DAY, inviteLimitKey, mailAddress } from "./model.js";
 
 const DAY = 24 * 60 * 60;
 export const INVITE_TTL_DAYS = { min: 1, max: 30, default: 7 } as const;
@@ -65,16 +66,22 @@ function cancellationCodes(error: unknown): (string | undefined)[] | undefined {
   return ((error as { CancellationReasons?: { Code?: string }[] }).CancellationReasons ?? []).map((r) => r.Code);
 }
 
+const ALREADY_INVITED = "They already have an invite to this team. Resend it instead.";
+
 /**
  * Writes a new invite, with a new ID and a new token, in one transaction with
- * the team's and the address's invite counters for the day (and `before`, a
- * write that must happen with it: re-sending deletes the old invite).
+ * the team's, the address's, the team's-for-that-address and the inviter's-
+ * for-that-address invite counters for the day, and the team's guard for the
+ * address (keys.inviteGuard), conditioned on naming `guardedBy` (the invite
+ * it last named) or being absent. `before` is a write that must happen with
+ * it: re-sending deletes the old invite.
  */
 async function writeInvite(
   db: Db,
   ctx: TeamContext,
   input: { readonly email: string; readonly role: MemberRole; readonly ttlDays: number },
   now: Date,
+  guardedBy: string | undefined,
   before: Record<string, unknown>[] = [],
 ): Promise<{ invite: Invite; token: string }> {
   const { doc } = connection(db);
@@ -98,6 +105,20 @@ async function writeInvite(
   };
   const emailHash = hashEmail(input.email);
   const limitKey = inviteLimitKey(input.email);
+  const guard = {
+    Put: {
+      TableName: db.tableName,
+      Item: { ...keys.inviteGuard(ctx.teamId, emailHash), type: "inviteGuard", inviteId: invite.inviteId, expiresAt: invite.expiresAt },
+      ...(guardedBy === undefined
+        ? { ConditionExpression: "attribute_not_exists(PK)" }
+        : { ConditionExpression: "attribute_not_exists(PK) OR inviteId = :last", ExpressionAttributeValues: { ":last": guardedBy } }),
+    },
+  };
+  const at = before.length;
+  // Each item's place in the transaction, for its cancellation reason
+  const COUNTERS = [at + 1, at + 2, at + 3, at + 4];
+  const TEAM_OPEN = at + 5;
+  const GUARD = at + 6;
   try {
     await doc.send(
       new TransactWriteCommand({
@@ -113,23 +134,35 @@ async function writeInvite(
           countOne(db.tableName, keys.invitesSent(ctx.teamId, day), INVITES_PER_TEAM_PER_DAY, epoch),
           countOne(db.tableName, keys.invitesToAddress(limitKey, day), INVITES_PER_ADDRESS_PER_DAY, epoch),
           countOne(db.tableName, keys.invitesFromTeamToAddress(ctx.teamId, limitKey, day), INVITES_PER_TEAM_ADDRESS_PER_DAY, epoch),
+          countOne(db.tableName, keys.invitesFromUserToAddress(ctx.userId, limitKey, day), INVITES_PER_USER_ADDRESS_PER_DAY, epoch),
           // Still open when it commits: closeTeam deletes the invites it finds, so one
           // written after that would outlive the closure
           { ConditionCheck: { TableName: db.tableName, Key: keys.team(ctx.teamId), ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(closedAt)" } },
+          guard,
         ],
       }),
     );
   } catch (error) {
     const codes = cancellationCodes(error);
-    const at = before.length;
-    // Either counter at its limit. One message for both, so an owner can't
-    // learn how many invites another team sent the address.
-    if (codes && [1, 2, 3].some((i) => codes[at + i] === "ConditionalCheckFailed")) throw new LimitReachedError(TOO_MANY_INVITES);
-    if (codes && codes[at + 4] === "ConditionalCheckFailed") throw new TeamClosedError("This team was closed. It's read-only until its data is deleted.");
-    if (codes && at > 0 && codes[0] === "ConditionalCheckFailed") throw new NotFoundError("This invite was accepted or revoked just now");
+    const failed = (i: number) => codes?.[i] === "ConditionalCheckFailed";
+    // Any counter at its limit. One message for all, so an owner can't
+    // learn how many invites another team or user sent the address.
+    if (COUNTERS.some(failed)) throw new LimitReachedError(TOO_MANY_INVITES);
+    if (failed(TEAM_OPEN)) throw new TeamClosedError("This team was closed. It's read-only until its data is deleted.");
+    if (at > 0 && failed(0)) throw new NotFoundError("This invite was accepted or revoked just now");
+    // Another invite to the address, made at the same moment, got there first
+    if (failed(GUARD)) throw new ConflictError(ALREADY_INVITED);
     return conflictOnConditionFailure("Someone else changed this team's invites just now; try again")(error);
   }
   return { invite, token };
+}
+
+/** The invite the team's guard for an address names (keys.inviteGuard), or undefined when there's no guard. */
+async function guardedInvite(db: Db, ctx: TeamContext, email: string): Promise<string | undefined> {
+  const { Item } = await connection(db).doc.send(
+    new GetCommand({ TableName: db.tableName, Key: keys.inviteGuard(ctx.teamId, hashEmail(email)), ConsistentRead: true, ProjectionExpression: "inviteId" }),
+  );
+  return typeof Item?.inviteId === "string" ? Item.inviteId : undefined;
 }
 
 /** An invite item as stored, or undefined for no invite. */
@@ -144,10 +177,15 @@ async function storedInvite(db: Db, ctx: TeamContext, inviteId: string): Promise
  * team item, never from the caller.
  *
  * Refused (ConflictError) when the address is already a member's, or already
- * has a live invite to this team (re-send that one instead). Each invite
- * counts against the team's, the address's and the team's-for-that-address
- * limits for the UTC day (INVITES_PER_TEAM_PER_DAY, INVITES_PER_ADDRESS_PER_DAY,
- * INVITES_PER_TEAM_ADDRESS_PER_DAY; LimitReachedError). The address must be a
+ * has a live invite to this team (re-send that one instead). Two creates for
+ * one address at the same moment can't both succeed: each writes the team's
+ * guard for the address (keys.inviteGuard) on the condition that it still
+ * names what it read. Each invite
+ * counts against the team's, the address's, the team's-for-that-address and
+ * the inviting user's-for-that-address limits for the UTC day
+ * (INVITES_PER_TEAM_PER_DAY, INVITES_PER_ADDRESS_PER_DAY,
+ * INVITES_PER_TEAM_ADDRESS_PER_DAY, INVITES_PER_USER_ADDRESS_PER_DAY;
+ * LimitReachedError). The address must be a
  * bare addr-spec (mailAddress), and the limits count it by inviteLimitKey.
  *
  * Refused (TeamFullError) when the team's members and live invites already
@@ -164,20 +202,25 @@ export async function createInvite(
   const email = mailAddress(input.email);
   const ttlDays = ttl(input.ttlDays);
   const role = memberRole(input.role);
+  // The guard first: an invite it names that the query below doesn't show was made since
+  const guarded = await guardedInvite(db, ctx, email);
   const [members, invites, count] = await Promise.all([
     queryAll<Member>(db, teamPartition(ctx.teamId), prefixes.member),
     queryAll<Invite>(db, teamPartition(ctx.teamId), prefixes.invite),
     memberCount(db, ctx.teamId, now),
   ]);
   if (!count) throw new ConflictError("This team no longer exists");
-  if (members.some((m) => m.email === email)) throw new ConflictError("They're already a member of this team");
+  if (members.some((m) => m.email === email)) throw new ConflictError(ALREADY_MEMBER);
   const pending = invites.filter((i) => live(i, now));
-  if (pending.some((i) => i.email === email)) throw new ConflictError("They already have an invite to this team. Resend it instead.");
+  if (pending.some((i) => i.email === email)) throw new ConflictError(ALREADY_INVITED);
+  if (guarded !== undefined && !invites.some((i) => i.inviteId === guarded) && live(await storedInvite(db, ctx, guarded), now)) throw new ConflictError(ALREADY_INVITED);
   if (members.length + pending.length >= count.cap) {
     throw new TeamFullError(`This team can have ${count.cap} members, counting pending invites. Remove someone or revoke an invite first.`);
   }
-  return writeInvite(db, ctx, { email, role, ttlDays }, now);
+  return writeInvite(db, ctx, { email, role, ttlDays }, now, guarded);
 }
+
+const ALREADY_MEMBER = "They're already a member of this team";
 
 /**
  * Owners re-send an invite: a new invite with a new ID and a new token (so
@@ -185,13 +228,17 @@ export async function createInvite(
  * no failure. The old one is deleted in the same transaction, which also
  * counts against the day's limits. A late bounce report for the old message
  * names the old ID, so it can't mark the new invite failed. Works for an
- * expired or failed invite; NotFoundError if it was accepted or revoked.
+ * expired or failed invite; NotFoundError if it was accepted or revoked, and
+ * ConflictError if the address has become a member's since (revoke it
+ * instead) or another invite to it was made meanwhile.
  */
 export async function resendInvite(db: Db, ctx: TeamContext, inviteId: string, input: { readonly ttlDays?: number } = {}, now = new Date()): Promise<{ invite: Invite; token: string }> {
   writable(db, ctx, "owner");
   const ttlDays = ttl(input.ttlDays);
   const old = await storedInvite(db, ctx, inviteId);
   if (!old) throw new NotFoundError("This invite was accepted or revoked");
+  const members = await queryAll<Member>(db, teamPartition(ctx.teamId), prefixes.member);
+  if (members.some((m) => m.email === normalizeEmail(old.email))) throw new ConflictError(ALREADY_MEMBER);
   const remove = {
     Delete: {
       TableName: db.tableName,
@@ -201,7 +248,11 @@ export async function resendInvite(db: Db, ctx: TeamContext, inviteId: string, i
       ExpressionAttributeValues: { ":token": old.GSI1PK },
     },
   };
-  return writeInvite(db, ctx, { email: mailAddress(old.email), role: memberRole(old.role), ttlDays }, now, [remove]);
+  // The guard names this invite, none (an invite from before guards), or
+  // another one: refused while that one is live, replaced once it's gone
+  const guarded = await guardedInvite(db, ctx, old.email);
+  if (guarded !== undefined && guarded !== old.inviteId && live(await storedInvite(db, ctx, guarded), now)) throw new ConflictError(ALREADY_INVITED);
+  return writeInvite(db, ctx, { email: mailAddress(old.email), role: memberRole(old.role), ttlDays }, now, guarded, [remove]);
 }
 
 /**

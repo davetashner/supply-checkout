@@ -1,3 +1,5 @@
+import { STRIPE_MODES, type StripeMode, stripeSecretName } from "../../backend/src/billing/names.js";
+
 // Where the app deploys. Nothing account-specific is committed: the account
 // comes from the CLI profile at synth time (CDK_DEFAULT_ACCOUNT), and the
 // environment comes from CDK context (cdk.json, or -c on the CLI).
@@ -45,6 +47,28 @@ export interface DeploymentConfig {
   readonly regions: readonly string[];
   /** Region for global pieces: Cognito, CloudFront, WAF, Route 53 (ADR 0007, 0010). */
   readonly primaryRegion: string;
+  /**
+   * Which Stripe key the billing functions use (ADR 0009): `test` (the
+   * sandbox) until the live account is ready (supply-checkout-dri), then
+   * `-c stripeMode=live`. Defaults to test.
+   */
+  readonly stripeMode?: StripeMode;
+}
+
+/** The Stripe mode an environment uses: test unless it's configured live. */
+export const stripeModeOf = (config: Pick<DeploymentConfig, "stripeMode">): StripeMode => config.stripeMode ?? "test";
+
+/**
+ * The IAM resource for an environment's Stripe secret key in Secrets Manager,
+ * in one region (the secret's name is stripeSecretName; a second region gets
+ * a replica with the same name, ADR 0010). Secrets Manager ends a secret's ARN
+ * with "-" and six random characters, which `??????` matches exactly, so the
+ * pattern names this one secret and no other. The account and partition are
+ * CloudFormation's (Aws.ACCOUNT_ID, Aws.PARTITION): no account ID is ever
+ * written down.
+ */
+export function stripeSecretArn(where: { readonly partition: string; readonly region: string; readonly account: string }, envName: string, mode: StripeMode): string {
+  return `arn:${where.partition}:secretsmanager:${where.region}:${where.account}:secret:${stripeSecretName(envName, mode)}-??????`;
 }
 
 interface ContextReader {
@@ -78,6 +102,9 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
   if (!config.regions.includes(config.primaryRegion)) {
     throw new Error(`primaryRegion ${config.primaryRegion} must be one of the regions`);
   }
+  if (config.stripeMode !== undefined && !STRIPE_MODES.includes(config.stripeMode)) {
+    throw new Error(`stripeMode must be test or live (got "${String(config.stripeMode)}")`);
+  }
   if (config.account !== undefined && !/^\d{12}$/.test(config.account)) {
     throw new Error("account must be a 12-digit AWS account ID");
   }
@@ -95,5 +122,6 @@ export function configFromContext(
     account: env.CDK_DEFAULT_ACCOUNT || undefined,
     regions,
     primaryRegion: String(node.tryGetContext("primaryRegion") ?? regions[0]),
+    stripeMode: String(node.tryGetContext("stripeMode") ?? "test") as StripeMode,
   });
 }

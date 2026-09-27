@@ -46,7 +46,7 @@ const ENV = /^[a-z][a-z0-9-]{0,20}$/;
 
 export const USAGE = `Usage: npm run ops -- <command> [options]
 
-  teams [--q <text>] [--limit N] [--cursor C]   List teams, newest first, or search by name or ID
+  teams [--q <text>] [--limit N] [--cursor C]   List teams in ID order, or search by name or ID (a page can be short: follow --cursor)
   team <teamId>                                 One team's account record and owners (audited)
   comp <teamId> --plan <plan> --until <date> --reason <text> [--seats N]
                                                 Comp a team or change or extend its comp (at most 12 months)
@@ -60,6 +60,8 @@ export const USAGE = `Usage: npm run ops -- <command> [options]
 
 Options: --env <env> (default prod), --json, --client-id <id>, --profile <aws profile>`;
 
+/** The most requests one `teams --q` makes while its pages come back empty: 20,000 teams read. */
+const SEARCH_REQUESTS = 20;
 const VALUE_FLAGS = new Set(["env", "q", "limit", "cursor", "plan", "until", "reason", "seats", "team", "month", "client-id", "profile"]);
 const BOOLEAN_FLAGS = new Set(["json", "help"]);
 
@@ -352,8 +354,13 @@ export async function main(argv, deps) {
   };
 
   if (command === "teams") {
-    const page = await call("GET", "/ops/teams", { query: { q: flags.q, limit: flags.limit, cursor: flags.cursor } });
-    print(page, (p) => [p.teams.length ? p.teams.map(teamLine).join("\n") : "No teams.", ...(p.cursor ? [`More: --cursor ${p.cursor}`] : [])].join("\n"));
+    // Each request reads a bounded number of teams, so a search's page can be empty with more to read: follow it for a while
+    let page = await call("GET", "/ops/teams", { query: { q: flags.q, limit: flags.limit, cursor: flags.cursor } });
+    for (let n = 1; flags.q !== undefined && !page.teams.length && page.cursor && n < SEARCH_REQUESTS; n++) {
+      page = await call("GET", "/ops/teams", { query: { q: flags.q, limit: flags.limit, cursor: page.cursor } });
+    }
+    const none = page.cursor ? "No teams yet (the search isn't finished)." : "No teams.";
+    print(page, (p) => [p.teams.length ? p.teams.map(teamLine).join("\n") : none, ...(p.cursor ? [`More: --cursor ${p.cursor}`] : [])].join("\n"));
   } else if (command === "team") {
     print(await call("GET", `/ops/teams/${teamId()}`), (r) => teamDetail(r.team));
   } else if (command === "comp" || command === "uncomp") {

@@ -2,9 +2,9 @@ import "./theme.js";
 import { use, help } from "./runtime.js";
 import { WEB } from "./build.js";
 import { checkOut, recordReturn, saveItem, addLines, markOf } from "./moves.js";
-import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, newKey, uid, round2, numOrNull } from "./format.js";
+import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, newKey, uid, round2, numOrNull, MAX_MONEY } from "./format.js";
 import { lines, lineCharge, totals } from "./sheet-math.js";
-import { $, toast, openModal, closeModal, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
+import { $, toast, openModal, closeModal, dismiss, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
 import { RECEIPT_PROMPT, sampleErr } from "./receipt-prompt.js";
 import { sheetCsv, sheetsCsv, inventoryCsv, allJson } from "./export.js";
@@ -79,6 +79,10 @@ async function readViewOnly() { try { viewOnly = (await userNs.viewOnlyNotice())
 const TRY = "Try again";
 // Wires a modal form's submit. Not while it's saving: the button is disabled then, so only a
 // submit that gets through anyway (a browser letting a very quick second tap through) is ignored.
+// A price or cost field (data-money) over the API's limit says so, and its form won't submit
+// until it's fixed: never a silent cap, and never a save the API refuses
+const MONEY_LIMIT = `Prices and costs go up to ${money(MAX_MONEY)}.`;
+$("#modal").addEventListener("input", e => { if (e.target.matches("[data-money]")) e.target.setCustomValidity(Number(e.target.value) > MAX_MONEY ? MONEY_LIMIT : ""); });
 const onSubmit = (form, fn) => form.addEventListener("submit", e => { e.preventDefault(); if (!form.hasAttribute("aria-busy")) fn(); });
 // Closes the modal once the write saved, and resolves to whether it did
 const closing = async saved => { const ok = await saved; if (ok) closeModal(); return ok; };
@@ -366,7 +370,7 @@ function checkoutModal(s, code, key = keyOf(code)) {
       ${prod ? `<div class="item-known"><strong>${esc(prod.name)}</strong><span class="num">${money(prod.price)} each</span></div>${hasStock(prod) ? `<div class="summary"><span>In storage</span><b>${prod.stock}</b></div>` : ""}`
              : `<p class="hint" style="margin-top:-4px">${code ? "New barcode. Name it and set a price, and it'll be saved to inventory." : "Name the item and set a price."}</p>
                 <div class="field"><label for="fName">Item name</label><input type="text" id="fName" required data-autofocus placeholder="${code ? "e.g. Nitrile gloves, box of 100" : "e.g. Leftover storage bins"}"></div>
-                <div class="field"><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" step="0.01" inputmode="decimal" placeholder="0.00"></div>
+                <div class="field"><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money placeholder="0.00"></div>
                 ${code ? "" : `<label class="check"><input type="checkbox" id="fSave" checked> Save to inventory for next time</label>`}`}
       ${line ? `<div class="summary"><span>Already on this sheet</span><b>${int(line.out)} taken</b></div>` : ""}
       <div class="field"><label for="fQty">How many are you taking?</label>${stepperHTML("fQty", 1)}</div>
@@ -497,7 +501,7 @@ function lineModal(s, key) {
     <h2>${esc(l.name || "Item")}</h2>
     <div class="code">${esc(codeText(l.code))}</div>
     <form id="f" style="display:grid;gap:14px">
-      <div class="field"><label for="fPrice">Price each on this sheet ($)</label><input type="number" id="fPrice" min="0" step="0.01" inputmode="decimal" value="${Number(l.price) || 0}"></div>
+      <div class="field"><label for="fPrice">Price each on this sheet ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${Number(l.price) || 0}"></div>
       <div class="row2">
         <div class="field"><label for="fOut">Taken</label><input type="number" id="fOut" min="0" inputmode="numeric" value="${int(l.out)}"></div>
         <div class="field"><label for="fRet">Returned</label><input type="number" id="fRet" min="0" inputmode="numeric" value="${int(l.returned)}"></div>
@@ -543,8 +547,8 @@ function productModal(key) {
             : `<div class="manual"><input type="text" id="fCode" inputmode="numeric" autocomplete="off" placeholder="Type, scan, or leave blank"><label class="btn" for="fScan">Scan</label></div><input class="vh" type="file" id="fScan" accept="image/*" capture="environment">`}
       </div>
       <div class="field"><label for="fName">Item name</label><input type="text" id="fName" required value="${esc(p ? p.name : "")}" ${p ? "data-autofocus" : ""}></div>
-      <div class="field"><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" step="0.01" inputmode="decimal" value="${p ? round2(p.price) : ""}" placeholder="0.00"></div>
-      <div class="field"><label for="fCost">Cost each ($)</label><input type="number" id="fCost" min="0" step="0.01" inputmode="decimal" value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="Leave blank if not known"></div>
+      <div class="field"><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p ? round2(p.price) : ""}" placeholder="0.00"></div>
+      <div class="field"><label for="fCost">Cost each ($)</label><input type="number" id="fCost" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="Leave blank if not known"></div>
       <div class="field"><label for="fStock">In storage now</label><input type="number" id="fStock" min="0" inputmode="numeric" value="${hasStock(p) ? p.stock : ""}" placeholder="Leave blank if not counted"></div>
       <div class="field"><label for="fPack">Comes in packs of</label><input type="number" id="fPack" min="1" max="${MAX_PACK}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.packSize) ? p.packSize : ""}" placeholder="1"></div>
       <p class="hint">Price is what a client is charged. Cost is what you paid each, before tax, and isn't shown on sheets. Storage counts single items, not packs.</p>
@@ -606,6 +610,7 @@ function exportAllModal() {
       <button type="button" class="btn" data-export="inventory">Inventory (CSV)</button>
       <button type="button" class="btn" data-export="json">Everything (JSON)</button>
     </div>
+    ${WEB ? "" : `<p class="hint" id="moveHint" style="margin-top:12px">Moving to the Supply Checkout web app? Download Everything (JSON) and send that file to us. We'll bring your items and sheets into your new team.</p>`}
     <div class="modal-actions"><button type="button" class="btn" id="cancel">Close</button></div>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     const day = todayISO();
@@ -621,6 +626,16 @@ function exportAllModal() {
 /* ---------- wiring ---------- */
 $("#tab-sheets").addEventListener("click", () => { ui.tab = "sheets"; ui.sheetId = null; ui.receipt = false; draw(); });
 $("#tab-prices").addEventListener("click", () => { ui.tab = "prices"; ui.receipt = false; draw(); });
+// The logo goes home: the sheet list on Out now, as the app opens, with no sheet or dialog
+// open. It's a link to the app's root, so in the web build a Ctrl/Cmd or Shift click opens
+// the app in a new tab or window. Not while a dialog is saving (dismiss); a receipt being
+// entered stays as its draft, which the sheet list offers to resume.
+$("#home").addEventListener("click", e => {
+  if (WEB && (e.ctrlKey || e.metaKey || e.shiftKey)) return;
+  e.preventDefault();
+  if (!dismiss()) return;
+  ui.tab = "sheets"; ui.sheetId = null; ui.receipt = false; ui.filter = "open"; draw(); window.scrollTo(0, 0);
+});
 /* ---------- receipts ---------- */
 // The artifact keeps one draft. The web build's runtime names a key per team (use("drafts"),
 // src/aws/account.js), so it's read once the team is known; its drafts are forgotten on

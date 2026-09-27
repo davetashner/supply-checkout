@@ -1291,6 +1291,71 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmsinvitesurge8CD79DA9": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Invite surge (J3, us-west-2). InvitesSent above 300 in an hour, across every team: far more than crews joining, so a bug resending invites, or free trial teams used to send mail. Per-team, per-address and per-inviter daily limits bound each sender; this is the account-wide watch (SES's own quota is the hard ceiling, see Near the sending limit). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-invite-surge",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "InvitesSent (us-west-2)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-west-2"
+                  }
+                ],
+                "MetricName": "InvitesSent",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 3600,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 300,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmsemailbouncing4BE2ED7E": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {

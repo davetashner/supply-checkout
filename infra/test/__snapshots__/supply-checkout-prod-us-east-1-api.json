@@ -1183,6 +1183,455 @@
         ]
       }
     },
+    "BillingFunctionLogs1EC10DD2": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "BillingFunctionRoleC295CDC5": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the billing function",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "BillingFunctionRoleDefaultPolicyCC823123": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "BillingFunctionLogs1EC10DD2",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": [
+                "sts:AssumeRole",
+                "sts:TagSession"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "BillingAccessRole4BCE0C1D",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "secretsmanager:GetSecretValue",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":secretsmanager:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":secret:supply-checkout/prod/stripe/test-secret-key-??????"
+                  ]
+                ]
+              },
+              "Sid": "ReadStripeSecretKey"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "BillingFunctionRoleDefaultPolicyCC823123",
+        "Roles": [
+          {
+            "Ref": "BillingFunctionRoleC295CDC5"
+          }
+        ]
+      }
+    },
+    "BillingFunctionEC8E7E61": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "Starts Stripe Checkout for a team's owner (ADR 0009)",
+        "Environment": {
+          "Variables": {
+            "APP_URL": "https://app.supplycheckout.com",
+            "BILLING_ROLE_ARN": {
+              "Fn::GetAtt": [
+                "BillingAccessRole4BCE0C1D",
+                "Arn"
+              ]
+            },
+            "ISSUER_URL": {
+              "Ref": "SsmParameterValuesupplycheckoutprodidentityissuerurlC96584B6F00A464EAD1953AFF4B05118Parameter"
+            },
+            "NODE_OPTIONS": "--enable-source-maps",
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "STRIPE_MODE": "test",
+            "STRIPE_SECRET_ID": "supply-checkout/prod/stripe/test-secret-key",
+            "SUPPLY_CHECKOUT_ENV": "prod",
+            "TABLE_NAME": "supply-checkout-prod-app"
+          }
+        },
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "BillingFunctionLogs1EC10DD2"
+          }
+        },
+        "MemorySize": 512,
+        "Role": {
+          "Fn::GetAtt": [
+            "BillingFunctionRoleC295CDC5",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 10,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "BillingFunctionRoleDefaultPolicyCC823123",
+        "BillingFunctionRoleC295CDC5"
+      ]
+    },
+    "BillingFunctionCurrentVersionC46B523A<code hash>": {
+      "Type": "AWS::Lambda::Version",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "BillingFunctionEC8E7E61"
+        }
+      },
+      "Metadata": {
+        "aws:cdk:do-not-refactor": true
+      }
+    },
+    "BillingFunctionXRayWrite254030CD": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTraceSegments",
+                "xray:PutTelemetryRecords"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "BillingFunctionXRayWrite254030CD",
+        "Roles": [
+          {
+            "Ref": "BillingFunctionRoleC295CDC5"
+          }
+        ]
+      }
+    },
+    "BillingAccessRole4BCE0C1D": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "sts:AssumeRole",
+                "sts:TagSession"
+              ],
+              "Condition": {
+                "StringLike": {
+                  "aws:RequestTag/teamId": "?*",
+                  "aws:RequestTag/stripeCustomer": "?*"
+                },
+                "ForAllValues:StringEquals": {
+                  "aws:TagKeys": [
+                    "teamId",
+                    "stripeCustomer"
+                  ]
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "BillingFunctionRoleC295CDC5",
+                    "Arn"
+                  ]
+                }
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Assumed by the billing function per request, tagged with the team and its Stripe customer: reads the team, and links the customer",
+        "MaxSessionDuration": 3600,
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": "dynamodb:GetItem",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "TEAM#${aws:PrincipalTag/teamId}"
+                      ]
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "TeamReadOnly"
+                },
+                {
+                  "Action": "dynamodb:UpdateItem",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "TEAM#${aws:PrincipalTag/teamId}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "stripeCustomerId"
+                      ]
+                    },
+                    "StringEqualsIfExists": {
+                      "dynamodb:ReturnValues": "NONE"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "TeamStripeCustomerOnly"
+                },
+                {
+                  "Action": "dynamodb:PutItem",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "STRIPE#${aws:PrincipalTag/stripeCustomer}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "type",
+                        "customerId",
+                        "teamId"
+                      ]
+                    },
+                    "StringEqualsIfExists": {
+                      "dynamodb:ReturnValues": "NONE"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "StripeLinkOnly"
+                },
+                {
+                  "Action": [
+                    "kms:Decrypt",
+                    "kms:DescribeKey",
+                    "kms:Encrypt",
+                    "kms:GenerateDataKey"
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "kms:ViaService": {
+                        "Fn::Join": [
+                          "",
+                          [
+                            "dynamodb.",
+                            {
+                              "Ref": "AWS::Region"
+                            },
+                            ".amazonaws.com"
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                  },
+                  "Sid": "TableKeyThroughDynamoDb"
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "TeamAndCustomerLinkOnly"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
     "HttpApiF5A9A8A7": {
       "Type": "AWS::ApiGatewayV2::Api",
       "Properties": {
@@ -2995,6 +3444,73 @@
         }
       }
     },
+    "HttpApiPOSTteamsteamIdbillingcheckoutBillingIntegration84D4E72C": {
+      "Type": "AWS::ApiGatewayV2::Integration",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "IntegrationType": "AWS_PROXY",
+        "IntegrationUri": {
+          "Ref": "BillingFunctionLive75F06840"
+        },
+        "PayloadFormatVersion": "2.0"
+      }
+    },
+    "HttpApiPOSTteamsteamIdbillingcheckoutBillingIntegrationPermissionA972843A": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "BillingFunctionLive75F06840"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/billing/checkout"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTteamsteamIdbillingcheckoutAA8688DD": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /teams/{teamId}/billing/checkout",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiPOSTteamsteamIdbillingcheckoutBillingIntegration84D4E72C"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiGETopsteamsOpsIntegrationD9495125": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -3744,6 +4260,10 @@
             "ThrottlingRateLimit": 10,
             "ThrottlingBurstLimit": 20
           },
+          "POST /teams/{teamId}/billing/checkout": {
+            "ThrottlingRateLimit": 2,
+            "ThrottlingBurstLimit": 5
+          },
           "GET /ops/teams": {
             "ThrottlingRateLimit": 5,
             "ThrottlingBurstLimit": 10
@@ -3823,6 +4343,9 @@
         "HttpApiPOSTopsteamsteamIdimportsimportIdclear20755C3C",
         "HttpApiPOSTopsteamsteamIdreopenOpsIntegrationPermissionAFD6BA42",
         "HttpApiPOSTopsteamsteamIdreopen05315197",
+        "HttpApiPOSTteamsteamIdbillingcheckoutBillingIntegrationPermissionA972843A",
+        "HttpApiPOSTteamsteamIdbillingcheckoutBillingIntegration84D4E72C",
+        "HttpApiPOSTteamsteamIdbillingcheckoutAA8688DD",
         "HttpApiPOSTteamsteamIdcloseAccountIntegrationPermission1183DF2C",
         "HttpApiPOSTteamsteamIdclose39531DA2",
         "HttpApiPOSTteamsteamIdimportsDataIntegrationPermission8AC0ABAB",
@@ -3863,6 +4386,21 @@
         "FunctionVersion": {
           "Fn::GetAtt": [
             "AccountFunctionCurrentVersionA48D76AD<code hash>",
+            "Version"
+          ]
+        },
+        "Name": "live"
+      }
+    },
+    "BillingFunctionLive75F06840": {
+      "Type": "AWS::Lambda::Alias",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "BillingFunctionEC8E7E61"
+        },
+        "FunctionVersion": {
+          "Fn::GetAtt": [
+            "BillingFunctionCurrentVersionC46B523A<code hash>",
             "Version"
           ]
         },

@@ -58,9 +58,11 @@ info:
       `GSI1SK`, `GSI2PK`, `GSI2SK`, `GSI3PK`, `GSI3SK` (and any `GSI<n>PK` or `GSI<n>SK`), `type`, `id`, `key`, `version`, `teamId`. For sheets, `date` must be a string
       and `items` an object. A barcode (`code`, on a product and on each line
       in a sheet's `items`) must be a string of at most 256 characters, the
-      product key limit; it's empty for an item without a barcode. A line's
-      `cost`, if present, must be a `Money` amount (0 to 1,000,000, at most
-      two decimals; ADR 0014).
+      product key limit; it's empty for an item without a barcode. A
+      product's `price` and `cost`, and a line's, if present, must be `Money`
+      amounts (0 to 1,000,000, at most two decimals; ADR 0014) where the write
+      changes them. A legacy value the document already had, carried over
+      unchanged, is rounded to cents instead of refused.
     - A product's `stock` changes only through the stock commands (the
       `commands` tag) and the CSV import, which record a movement for every
       change. A product `set` or `update` keeps the stored `stock`: leave it
@@ -140,6 +142,13 @@ tags:
       failed (its email bounced, drew a complaint or couldn't be sent) or
       expired, and can revoke or re-send it. Joining is
       `POST /invites/{inviteId}/accept` ([onboarding.md](onboarding.md)).
+  - name: billing
+    description: |
+      Subscriptions through Stripe (ADR 0009, ADR 0013). Owners start Stripe
+      Checkout for their team; Stripe's webhook, through a queue, turns what
+      they buy into the team's plan, seats and status, which `GET /me` shows.
+      The prices are provisional until the pricing decision
+      (supply-checkout-akz).
   - name: auth
     description: Sign-in sessions for the web app, with the refresh token in an HttpOnly cookie.
   - name: ops
@@ -970,6 +979,9 @@ paths:
         "404":
           description: "`not_found`: the invite was accepted or revoked."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: "`aborted`: the address has become a member's since the invite was made (revoke it instead), or another live invite to it was made meanwhile."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429": { $ref: "#/components/responses/TooManyInvites" }
   /teams/{teamId}/close:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
@@ -1100,17 +1112,96 @@ paths:
                         actor: { type: string, const: Supply Checkout support }
                         action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end, ops.import.clear, ops.team.reopen] }
                         reason: { type: string }
-                        before: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
-                        after: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
+                        before: { $ref: "#/components/schemas/AuditRecord" }
+                        after: { $ref: "#/components/schemas/AuditRecord" }
                   cursor: { type: string, description: Absent on the last page. }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /teams/{teamId}/billing/checkout:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    post:
+      tags: [billing]
+      operationId: createCheckout
+      summary: Start Stripe Checkout for the team's subscription. Owners only.
+      description: |
+        Answers the URL of a Stripe Checkout page for a subscription to `plan`,
+        billed every `interval`, for `seats` seats, linked to the team's Stripe
+        customer (made the first time). Send the owner there; Stripe sends
+        them back to the app with `?billing=success&team=<teamId>` (or
+        `billing=canceled`). The page expires after 24 hours (Stripe's default).
+
+        Plans: `starter` (`month` or `year`): $9 a month including 3 seats,
+        then $3 a seat; a year is 10 months' price. Provisional until
+        supply-checkout-akz. `seats` is at least the team's member count and
+        at most 100.
+
+        A team still in its free trial (with at least two days of it left)
+        keeps it: Checkout asks for no card, the subscription's trial ends
+        when the team's does (`trialEndsAt` in the answer), and if no card is
+        added by then Stripe cancels it. Otherwise Checkout asks for a card.
+
+        Nothing about the team changes here: the Stripe webhook sets its plan,
+        seats and status once the owner finishes on Stripe. Idempotent: the
+        same `Idempotency-Key` with the same choices answers the same page.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: A new random value per "continue to checkout", reused on retries and double-clicks.
+          schema: { type: string, pattern: "^[A-Za-z0-9_-]{8,128}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [plan, interval, seats]
+              properties:
+                plan: { type: string, enum: [starter] }
+                interval: { type: string, enum: [month, year] }
+                seats: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "201":
+          description: The Checkout page to send the owner to.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [checkout]
+                properties:
+                  checkout:
+                    type: object
+                    required: [url, expiresAt, trialEndsAt]
+                    properties:
+                      url: { type: string, format: uri, description: "Stripe's hosted Checkout page." }
+                      expiresAt: { type: string, format: date-time, description: When the page stops working. }
+                      trialEndsAt: { type: [string, "null"], format: date-time, description: "When the subscription's free trial ends, or `null` when Checkout asks for a card now." }
+        "400":
+          description: "`bad_request`: no or a malformed `Idempotency-Key`, a plan or interval we don't sell, or seats that aren't a whole number from the team's member count to 100."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403":
+          description: "`permission_denied`: `owners_only`, `not_member`, or `team_closed` (reopen the team first)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: "`aborted`: with `reason: \"already_subscribed\"`, the team has a subscription that hasn't ended (change it in the Customer Portal); otherwise the team changed meanwhile, try again."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "500":
+          description: "`internal`: Stripe couldn't be reached or refused the request. Nothing about the team changed; try again."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /ops/teams:
     get:
       tags: [ops]
       operationId: opsListTeams
-      summary: Teams, newest first, 50 a page, with their owners. Audited as `ops.teams.list` (with `q` and the teams returned).
+      summary: Teams in team ID order, 50 a page, with their owners. Audited as `ops.teams.list` (with `q` and the teams returned).
+      description: |
+        Each request reads at most 1,000 teams from the operators' index,
+        whatever the number of teams. A search (`q`) that hasn't filled its
+        page by then returns the teams it found, possibly none, with a
+        `cursor`: keep following it until there's none. A team whose ID is
+        `q` comes first, on the first page.
       security: [{ opsCognito: [] }]
       parameters:
         - { name: q, in: query, description: "A team ID, or part of a team's name (any case).", schema: { type: string, maxLength: 200 } }
@@ -1300,8 +1391,8 @@ paths:
                         action: { type: string, enum: [ops.teams.list, ops.team.read, ops.comp.set, ops.comp.end, ops.import.clear, ops.team.reopen] }
                         target: { type: string }
                         reason: { type: string }
-                        before: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
-                        after: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
+                        before: { $ref: "#/components/schemas/AuditRecord" }
+                        after: { $ref: "#/components/schemas/AuditRecord" }
                         idempotencyKey: { type: string }
                   cursor: { type: string, description: Absent on the last page. }
         "400": { $ref: "#/components/responses/BadRequest" }
@@ -1643,14 +1734,55 @@ components:
                   reason: { const: count }
                   count: { type: integer, minimum: 0, maximum: 1000000, description: The number counted in storage. }
   schemas:
+    AuditRecord:
+      description: |
+        What an operator action changed, before and after, by action:
+        `ops.comp.set` and `ops.comp.end` record a `CompRecord` (or null for
+        no comp), `ops.import.clear` an `ImportClearRecord`, `ops.team.reopen`
+        a `ReopenRecord` before (null after), and `ops.teams.list` (in the
+        operators' audit only) a `TeamsListRecord` after (null before).
+        `ops.team.read` records neither.
+      oneOf:
+        - { $ref: "#/components/schemas/CompRecord" }
+        - { $ref: "#/components/schemas/ImportClearRecord" }
+        - { $ref: "#/components/schemas/ReopenRecord" }
+        - { $ref: "#/components/schemas/TeamsListRecord" }
+        - type: "null"
     CompRecord:
       type: object
       description: A comp as the audit records it.
+      required: [plan, seats, until, reason]
+      additionalProperties: false
       properties:
         plan: { type: string }
         seats: { type: [integer, "null"] }
         until: { type: [string, "null"], format: date-time }
         reason: { type: [string, "null"] }
+    ImportClearRecord:
+      type: object
+      description: A stuck import, before (`committing` true) and after (false) an operator took it out of the "Imports stuck" check.
+      required: [importId, committing]
+      additionalProperties: false
+      properties:
+        importId: { type: string }
+        committing: { type: boolean }
+    ReopenRecord:
+      type: object
+      description: A closed team's closure, before an operator reopened it.
+      required: [closedAt, purgeAfter]
+      additionalProperties: false
+      properties:
+        closedAt: { type: string, format: date-time }
+        purgeAfter: { type: string, format: date-time, description: When it would have been deleted. }
+    TeamsListRecord:
+      type: object
+      description: A team list or search, and the teams it returned.
+      required: [q, cursor, teams]
+      additionalProperties: false
+      properties:
+        q: { type: [string, "null"] }
+        cursor: { type: [string, "null"] }
+        teams: { type: array, items: { type: string } }
     OpsTeam:
       type: object
       required: [id, name, plan, seats, status, ownerCount, createdAt, version, comp, owners]
@@ -1901,7 +2033,7 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, code_mismatch, code_expired, already_verified, email_in_use, email_changed]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -1915,6 +2047,8 @@ components:
                 right), `code_expired`, `already_verified`, `email_in_use`
                 (another account has the address), and `email_changed` (the
                 address changed while the code was checked).
+                `already_subscribed`: the team has a Stripe subscription that
+                hasn't ended, so it can't start another checkout.
   responses:
     OperatorsOnly:
       description: "`permission_denied`: the token's user isn't in the `operators` group (now, according to Cognito)."
@@ -2051,7 +2185,7 @@ components:
             properties:
               team: { $ref: "#/components/schemas/Team" }
     TooManyInvites:
-      description: "`quota_exceeded`: the team has sent 50 invites today (UTC) or 3 to this address, or the address has been sent 15 from all teams. Try again tomorrow. With `reason: \"team_full\"` (new invites only): the team's members and live invites fill its member cap."
+      description: "`quota_exceeded`: the team has sent 50 invites today (UTC) or 3 to this address, the caller has sent 3 to this address from all their teams, or the address has been sent 15 from all teams. Try again tomorrow. With `reason: \"team_full\"` (new invites only): the team's members and live invites fill its member cap."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     TooManyTeams:
       description: "`quota_exceeded`: the caller has created 5 teams today (UTC), or is already in 20 teams (the message says which)."

@@ -28,7 +28,8 @@ export function money(value: unknown, what: string): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > MAX_MONEY || !wholeCents(value)) {
     throw new InvalidInputError(`${what} must be an amount from 0 to ${MAX_MONEY} with at most two decimals`);
   }
-  return value;
+  // Within 1e-12 of whole cents (0.1 + 0.2, say): store the cents the person saw
+  return roundCents(value);
 }
 
 /**

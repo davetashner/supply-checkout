@@ -39,10 +39,11 @@
 //                                   their own partition). The app then refreshes
 //                                   its tokens, so the pre token generation
 //                                   trigger records a linked user's new address,
-//                                   and reloads /me. A verified address that
-//                                   changed is copied to the caller's MEMBER
-//                                   item in each team they're in, here and on
-//                                   /me (keepMemberEmail).
+//                                   and reloads /me. The proven address is
+//                                   copied to the caller's MEMBER item in each
+//                                   team they're in here, linked user or not,
+//                                   and a verified address that changed is
+//                                   copied again on /me (keepMemberEmail).
 //
 // The team's last owner can't be removed, demoted or leave: the team item's
 // owner count moves in the same transaction as the membership, conditioned
@@ -726,15 +727,18 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
       obs.logger.warn("Verified email not recorded", { outcome: after.emailVerifiedInCognito ? "email-changed" : "not-verified" });
       throw emailChanged();
     }
-    // A linked user's address counts once the trigger records it, at the token
-    // refresh after this; /me then brings their member items up to date
-    const email = verifiedEmail(after);
-    if (email) {
-      try {
-        await keepMemberEmails(userId, email);
-      } catch (error) {
-        obs.logger.warn("Member emails not updated", { code: (error as { name?: string } | null)?.name ?? "Unknown" });
-      }
+    // The address the code just proved, copied to the caller's member items
+    // now (supply-checkout-mcnv). For a linked user too: their address counts
+    // for invites only once the trigger records it at the next token refresh,
+    // but a client that refreshes without loading /me would otherwise leave
+    // the old one on their member items. It's the address the code was sent
+    // to and Cognito verified, the same proof the trigger records, and a
+    // member item's email only names the member (the members list, owner
+    // notices); it's never what entitles anyone to an invite.
+    try {
+      await keepMemberEmails(userId, normalizeEmail(before.email));
+    } catch (error) {
+      obs.logger.warn("Member emails not updated", { code: (error as { name?: string } | null)?.name ?? "Unknown" });
     }
     return noContent();
   }
