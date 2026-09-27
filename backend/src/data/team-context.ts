@@ -305,7 +305,9 @@ export async function findInvite(db: Db, token: string, now = new Date()): Promi
  * The team's member count moves in the same transaction, on the condition
  * that it's below memberCap, so a team never goes over its cap, even when two
  * people accept for its last place at once: one joins, the other gets
- * TeamFullError (and keeps the invite, for when a place frees up).
+ * TeamFullError (and keeps the invite, for when a place frees up). A closed
+ * team takes nobody (NotFoundError, as for an expired invite), and a user
+ * whose account is being deleted can't join (ForbiddenError).
  */
 export async function acceptInvite(
   db: Db,
