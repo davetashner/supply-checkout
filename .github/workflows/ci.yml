@@ -6,6 +6,11 @@ name: CI
 # Pull requests run the browser tests in desktop Chrome and iPhone Safari only.
 # The merge queue, pushes to main, manual runs and the nightly run use every
 # browser, so the full matrix still gates main.
+#
+# A pull request, merge queue group or push to main that changes only the beads
+# export (.beads/issues.jsonl) runs just the PR title check and the secret scan:
+# the export is public bead text, and nothing else reads it. The changes job
+# decides this (beads_only); nightly, manual and called runs always run everything.
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
@@ -19,6 +24,12 @@ on:
   # pull requests opened by GITHUB_TOKEN don't trigger workflows on their own.
   workflow_dispatch:
   workflow_call:
+    inputs:
+      # Only set on a called run (the release workflow), so the changes job can
+      # tell it apart from the push that started it and always run everything
+      called:
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -48,6 +59,8 @@ jobs:
 
   lint:
     name: Lint and validate HTML
+    needs: changes
+    if: needs.changes.outputs.beads_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -61,6 +74,8 @@ jobs:
 
   workflows:
     name: Lint GitHub workflows
+    needs: changes
+    if: needs.changes.outputs.beads_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -108,6 +123,8 @@ jobs:
 
   regions:
     name: No region names outside the config module
+    needs: changes
+    if: needs.changes.outputs.beads_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -118,6 +135,8 @@ jobs:
 
   scripts:
     name: Shell scripts (shellcheck, land-pr tests)
+    needs: changes
+    if: needs.changes.outputs.beads_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -127,6 +146,8 @@ jobs:
 
   dependencies:
     name: Dependency audit
+    needs: changes
+    if: needs.changes.outputs.beads_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -144,6 +165,8 @@ jobs:
 
   codeql:
     name: CodeQL
+    needs: changes
+    if: needs.changes.outputs.beads_only != 'true'
     permissions:
       contents: read
       security-events: write
@@ -152,6 +175,7 @@ jobs:
   test:
     name: Tests (${{ matrix.project }}, ${{ matrix.build }} build)
     needs: changes
+    if: needs.changes.outputs.beads_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -200,6 +224,7 @@ jobs:
     outputs:
       infra: ${{ steps.diff.outputs.infra }}
       backend: ${{ steps.diff.outputs.backend }}
+      beads_only: ${{ steps.diff.outputs.beads_only }}
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -244,6 +269,8 @@ jobs:
       - id: diff
         env:
           EVENT: ${{ github.event_name }}
+          # "true" only on a run called by another workflow (see workflow_call)
+          CALLED: ${{ inputs.called }}
           # The commit on main that the merge queue built this group on
           QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
         run: |
@@ -251,6 +278,11 @@ jobs:
           # nightly run, and on pull requests and merge queue groups that touch
           # their directory or this workflow. infra/ imports the table schema
           # from backend/src/data, so a backend change runs the infra checks too.
+          #
+          # beads_only is true when the pull request, merge queue group or push
+          # to main changes .beads/issues.jsonl and nothing else. Most jobs skip
+          # then. Nightly, manual and called runs always run everything.
+          full=false
           case "$EVENT" in
             pull_request) base="HEAD^1" ;;
             merge_group)
@@ -258,13 +290,29 @@ jobs:
               # commit it was built on rather than the parent commit
               git fetch -q --depth=1 origin "$QUEUE_BASE"
               base="$QUEUE_BASE" ;;
-            *)
-              echo "infra=true" >> "$GITHUB_OUTPUT"
-              echo "backend=true" >> "$GITHUB_OUTPUT"
-              exit 0 ;;
+            push)
+              # main takes squash merges only, so each push is one commit
+              base="HEAD^1"; full=true ;;
+            *) base=""; full=true ;;
           esac
-          changed=$(git diff --name-only "$base" HEAD)
-          echo "$changed"
+          if [[ "$CALLED" == "true" ]]; then base=""; fi
+          changed=""
+          if [[ -n "$base" ]]; then
+            changed=$(git diff --name-only "$base" HEAD)
+            echo "$changed"
+          fi
+          # An empty diff doesn't count
+          if [[ -n "$changed" ]] && ! grep -Ev '^\.beads/issues\.jsonl$' <<< "$changed" > /dev/null; then
+            echo "Only the beads export changed: skipping the jobs that don't read it"
+            echo "beads_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "beads_only=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ "$full" == "true" ]]; then
+            echo "infra=true" >> "$GITHUB_OUTPUT"
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if grep -Eq '^(infra/|backend/|\.github/workflows/ci\.yml$)' <<< "$changed"; then
             echo "infra=true" >> "$GITHUB_OUTPUT"
           else
@@ -280,7 +328,7 @@ jobs:
   infra:
     name: Infra (lint, test, cdk-nag synth, audit)
     needs: changes
-    if: needs.changes.outputs.infra == 'true'
+    if: needs.changes.outputs.infra == 'true' && needs.changes.outputs.beads_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -316,7 +364,7 @@ jobs:
   backend:
     name: Backend (lint, DynamoDB Local tests, audit)
     needs: changes
-    if: needs.changes.outputs.backend == 'true'
+    if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.beads_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     services:
