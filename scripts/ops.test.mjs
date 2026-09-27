@@ -39,7 +39,8 @@ function harness({ cached = TOKEN, routes = {}, env = {} } = {}) {
       const u = new URL(url);
       const request = { method: init.method ?? "GET", path: u.pathname, query: Object.fromEntries(u.searchParams), headers: init.headers ?? {}, body: init.body ? JSON.parse(init.body) : undefined, origin: u.origin };
       requests.push(request);
-      const answer = routes[`${request.method} ${request.path}`] ?? { status: 404, body: { error: { message: "No such route" } } };
+      const route = routes[`${request.method} ${request.path}`];
+      const answer = (typeof route === "function" ? route(request) : route) ?? { status: 404, body: { error: { message: "No such route" } } };
       const { status, body } = typeof answer === "function" ? answer(request) : answer;
       return new Response(JSON.stringify(body), { status });
     },
@@ -130,6 +131,24 @@ test("lists teams with the cached token", async () => {
   assert.deepEqual(requests[0], { method: "GET", path: "/ops/teams", query: { q: "acme" }, headers: { authorization: `Bearer ${TOKEN}` }, body: undefined, origin: "https://api.supplycheckout.com" });
   assert.match(logs[0], /team-a\s+Acme\s+trial\/trialing\s+created 2026-09-01\s+owners: owner@example.com/);
   assert.match(logs[0], /More: --cursor team-a/);
+});
+
+test("follows a search's empty pages until it finds teams or runs out, at most 20 requests (supply-checkout-6uw.8)", async () => {
+  const pages = { "": { teams: [], cursor: "c1" }, c1: { teams: [], cursor: "c2" }, c2: { teams: [TEAM], cursor: "c3" } };
+  const { deps, requests, logs } = harness({ routes: { "GET /ops/teams": (r) => ({ status: 200, body: pages[r.query.cursor ?? ""] }) } });
+  assert.equal(await main(["teams", "--q", "acme"], deps), 0);
+  assert.deepEqual(requests.map((r) => r.query), [{ q: "acme" }, { q: "acme", cursor: "c1" }, { q: "acme", cursor: "c2" }]);
+  assert.match(logs[0], /team-a\s+Acme/);
+  assert.match(logs[0], /More: --cursor c3/);
+  // Never searched all the way: says where to go on
+  const endless = harness({ routes: { "GET /ops/teams": (r) => ({ status: 200, body: { teams: [], cursor: `${r.query.cursor ?? ""}x` } }) } });
+  await main(["teams", "--q", "nobody"], endless.deps);
+  assert.equal(endless.requests.length, 20);
+  assert.match(endless.logs[0], /No teams yet[^\n]*\nMore: --cursor x{20}/);
+  // Without a search, one page as asked
+  const plain = harness({ routes: { "GET /ops/teams": { status: 200, body: { teams: [], cursor: "c1" } } } });
+  await main(["teams"], plain.deps);
+  assert.equal(plain.requests.length, 1);
 });
 
 test("signs in when there's no live token, with the client ID from SSM, and caches the new token", async () => {

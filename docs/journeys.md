@@ -307,6 +307,8 @@ Every other alarm on this page waits for the resource or code it watches, and is
 
    It refuses an import that isn't stuck: one that finished, was cleared already, or started less than an hour ago.
    Job records expire after 7 days anyway, which also clears the alarm.
+
+   A cleared job is out of the check for good: if the owner then presses **Try again** on it and it stalls again, this alarm won't see it (a retry doesn't put it back in the committing-imports index). So clear a job only once the owner has finished the import another way, and if they retry the old job instead, ask them to tell you whether it finished; otherwise check `committed` against `total` in the job with a direct read under an SSO role.
 4. If imports keep getting stuck, look at the data function's logs for the import route (`POST /teams/{teamId}/imports`): timeouts mean the batches need to be smaller or the function's timeout longer.
 
 ### J3. Invite the crew

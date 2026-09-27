@@ -26,7 +26,7 @@ import { type Db, connection } from "./client.js";
 import { ConflictError, InvalidInputError, NotFoundError, TeamDeletingError } from "./errors.js";
 import { gsi3, id, keys, month, operatorAuditPartition, operatorKeys, opsAuditIndexPartition, opsOwnersPartition, strip } from "./keys.js";
 import { type Comp, MEMBERS_PER_TEAM, liveComp } from "./model.js";
-import { type Page, queryPage } from "./query.js";
+import { type Page, decodeCursor, encodeCursor, queryPage } from "./query.js";
 import { type StuckImport, listStuckImports } from "./imports.js";
 import { COMMITTING_IMPORTS_PARTITION, GSI3, GSI3PK, OPERATOR_AUDIT_PREFIX, OPS_TEAMS_PARTITION, PK } from "./schema.js";
 
@@ -100,8 +100,12 @@ export const OPERATOR_AUDIT_RETENTION_DAYS = 730;
 export const OPERATOR_REQUEST_RETENTION_HOURS = 24;
 /** A comp ends at most this many months ahead, and can be extended. */
 export const MAX_COMP_MONTHS = 12;
-/** The most teams the list reads. Past it, the partition needs sharding (ADR 0015). */
-export const MAX_OPS_TEAMS = 5000;
+/** Index items one team list request reads at most: a search that hasn't filled its page by then returns what it has, with a cursor to go on. */
+export const MAX_OPS_TEAMS_READ = 1000;
+/** Index items one Query of the team list asks for while searching. */
+const OPS_TEAMS_SEARCH_PAGE = 250;
+/** How many teams' owners the list looks up at once. */
+export const OWNER_LOOKUPS_AT_ONCE = 10;
 
 const DAY_SECONDS = 24 * 60 * 60;
 /**
@@ -113,6 +117,7 @@ const DAY_SECONDS = 24 * 60 * 60;
 const CLOSED = "This team is closed: it's read-only until it's deleted, and can't be comped";
 const PLAN = /^[a-z][a-z0-9_-]{0,31}$/;
 const REQUEST_KEY = /^[A-Za-z0-9_-]{8,128}$/;
+const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 // eslint-disable-next-line no-control-regex -- rejecting control characters is the point
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
@@ -169,7 +174,7 @@ function compPlan(value: unknown): string {
   return value;
 }
 
-/** Every item in a GSI3 partition, newest first, projected attributes only. */
+/** Every item in a GSI3 partition (up to about `max`), newest first, projected attributes only. */
 async function indexPartition(db: Db, partition: string, max: number): Promise<Record<string, unknown>[]> {
   const out: Record<string, unknown>[] = [];
   let ExclusiveStartKey: Record<string, unknown> | undefined;
@@ -196,7 +201,7 @@ async function indexPartition(db: Db, partition: string, max: number): Promise<R
 function keyId(value: unknown, prefix: string): string | undefined {
   if (typeof value !== "string" || !value.startsWith(prefix)) return undefined;
   const rest = value.slice(prefix.length);
-  return /^[A-Za-z0-9_-]{1,128}$/.test(rest) ? rest : undefined;
+  return ID_PATTERN.test(rest) ? rest : undefined;
 }
 
 /** A team from its index item: the index projects the account record, and the team's ID is in its key. */
@@ -206,17 +211,34 @@ function toTeam(item: Record<string, unknown>): OpsTeam | undefined {
   return { ...strip<Omit<OpsTeam, "teamId">>(item), teamId } as OpsTeam;
 }
 
-/** Every team, newest first, as the operators' index holds them. */
-async function allTeams(db: Db): Promise<OpsTeam[]> {
-  return (await indexPartition(db, OPS_TEAMS_PARTITION, MAX_OPS_TEAMS))
-    .map(toTeam)
-    .filter((t): t is OpsTeam => t !== undefined)
-    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || a.teamId.localeCompare(b.teamId));
+/** The cursor of the team list: the index key of the last team it read, opaque to clients. */
+function teamsCursor(item: Record<string, unknown>): string {
+  return encodeCursor({ GSI3PK: item.GSI3PK, GSI3SK: item.GSI3SK, PK: item.PK, SK: item.SK });
+}
+
+/** The team list's cursor for "the walk from the start": after a first page that the ID lookup alone filled. */
+const FROM_START = { GSI3PK: OPS_TEAMS_PARTITION };
+
+/**
+ * A team list cursor back to an index key: exactly a team META item's key in
+ * the OPS#TEAMS partition, or FROM_START (undefined), or InvalidInputError.
+ */
+function teamsStartKey(cursor: string | undefined): Record<string, unknown> | undefined {
+  const key = decodeCursor(cursor, { attribute: GSI3PK, value: OPS_TEAMS_PARTITION });
+  if (key === undefined) return undefined;
+  const names = Object.keys(key).sort();
+  if (names.join() === "GSI3PK") return undefined;
+  if (names.join() !== "GSI3PK,GSI3SK,PK,SK" || key.SK !== "META" || keyId(key.PK, "TEAM#") !== key.GSI3SK) throw new InvalidInputError("Invalid cursor");
+  return key;
 }
 
 /**
- * Teams, newest first, 50 a page: every team, or those whose name contains
- * `q` (ignoring case) or whose ID is `q`. The cursor is the last team's ID.
+ * Teams, `limit` a page (50 by default, at most 100), in the index's order
+ * (by team ID): every team, or those whose name contains `q` (ignoring case),
+ * with the team whose ID is `q` first. Each request reads at most
+ * MAX_OPS_TEAMS_READ index items, whatever the number of teams, so a search
+ * may return fewer than `limit` teams (even none) with a cursor to read on.
+ * The cursor is opaque, and only for the same `q`.
  */
 export async function listOpsTeams(
   db: Db,
@@ -227,26 +249,71 @@ export async function listOpsTeams(
   operatorSub(operator);
   const raw = options.q?.trim();
   if (raw !== undefined && (raw.length > 200 || CONTROL.test(raw))) throw new InvalidInputError("Invalid search");
-  const q = raw?.toLowerCase();
+  const q = raw ? raw.toLowerCase() : undefined;
   const limit = options.limit ?? 50;
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new InvalidInputError("limit is a number from 1 to 100");
-  let teams = await allTeams(db);
-  if (q) teams = teams.filter((t) => t.teamId === raw || t.name.toLowerCase().includes(q));
-  if (options.cursor !== undefined) {
-    const at = teams.findIndex((t) => t.teamId === id(options.cursor, "cursor"));
-    if (at < 0) throw new InvalidInputError("Invalid cursor");
-    teams = teams.slice(at + 1);
+  let start = teamsStartKey(options.cursor);
+  const teams: OpsTeam[] = [];
+  // A team ID: one direct lookup, on the first page only (the walk below matches names, never the ID, so it isn't listed twice)
+  if (raw && options.cursor === undefined && ID_PATTERN.test(raw)) {
+    const team = await findTeam(db, raw);
+    if (team) teams.push(team);
   }
-  const page = teams.slice(0, limit);
+  let read = 0;
+  // A page of 1 that the ID filled: names come next, from the start
+  let cursor = teams.length === limit ? encodeCursor(FROM_START) : undefined;
+  walk: while (teams.length < limit && read < MAX_OPS_TEAMS_READ) {
+    const page = await connection(db).doc.send(
+      new QueryCommand({
+        TableName: db.tableName,
+        IndexName: GSI3,
+        KeyConditionExpression: "GSI3PK = :pk",
+        // The operator-access role requires it (dynamodb:Select): only what the index projects, never a fetch from the table
+        Select: "ALL_PROJECTED_ATTRIBUTES",
+        ExpressionAttributeValues: { ":pk": OPS_TEAMS_PARTITION },
+        Limit: q ? Math.min(OPS_TEAMS_SEARCH_PAGE, MAX_OPS_TEAMS_READ - read) : Math.min(limit - teams.length, MAX_OPS_TEAMS_READ - read),
+        ExclusiveStartKey: start,
+      }),
+    );
+    const items = page.Items ?? [];
+    for (const [i, item] of items.entries()) {
+      read++;
+      const team = toTeam(item);
+      if (team && (!q || (team.teamId !== raw && team.name.toLowerCase().includes(q)))) teams.push(team);
+      if (teams.length === limit || read === MAX_OPS_TEAMS_READ) {
+        // Stopped part-way: read on from here next time, unless this was the partition's last item
+        if (i < items.length - 1 || page.LastEvaluatedKey) cursor = teamsCursor(item);
+        break walk;
+      }
+    }
+    if (!page.LastEvaluatedKey) break;
+    start = page.LastEvaluatedKey;
+  }
   // The list shows owners' emails like one team's record does, so it's audited too, before anything is returned
   await connection(db).doc.send(
     new PutCommand({
       TableName: db.tableName,
-      Item: auditItem(operator, PLATFORM_AUDIT, { action: "ops.teams.list", before: null, after: { q: raw ?? null, cursor: options.cursor ?? null, teams: page.map((t) => t.teamId) } }, now),
+      Item: auditItem(operator, PLATFORM_AUDIT, { action: "ops.teams.list", before: null, after: { q: raw ?? null, cursor: options.cursor ?? null, teams: teams.map((t) => t.teamId) } }, now),
       ConditionExpression: "attribute_not_exists(PK)",
     }),
   );
-  return { teams: page, ...(teams.length > limit ? { cursor: page[page.length - 1]?.teamId } : {}) };
+  return { teams, ...(cursor ? { cursor } : {}) };
+}
+
+/**
+ * The owners of each of `teamIds`, from the operators' index: one query per
+ * team (each team's owners are their own GSI3 partition), OWNER_LOOKUPS_AT_ONCE
+ * at a time, so a page of 100 teams takes 10 rounds, never 100 calls at once.
+ */
+export async function listOpsOwnersOf(db: Db, operator: Operator, teamIds: readonly string[]): Promise<Map<string, OpsOwner[]>> {
+  operatorSub(operator);
+  const owners = new Map<string, OpsOwner[]>();
+  for (let i = 0; i < teamIds.length; i += OWNER_LOOKUPS_AT_ONCE) {
+    const batch = teamIds.slice(i, i + OWNER_LOOKUPS_AT_ONCE);
+    const found = await Promise.all(batch.map((teamId) => listOpsOwners(db, operator, teamId)));
+    batch.forEach((teamId, n) => owners.set(teamId, found[n] as OpsOwner[]));
+  }
+  return owners;
 }
 
 /** A team's owners, from the operators' index. */
