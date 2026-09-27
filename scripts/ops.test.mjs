@@ -248,3 +248,28 @@ test("takes the redirect's code only with the matching state, on a local port", 
 
   await assert.rejects(waitForCode("s4", { port, timeoutMs: 20 }), /timed out/);
 });
+
+test("lists stuck imports and clears one with a new Idempotency-Key", async () => {
+  const routes = {
+    "GET /ops/imports": { status: 200, body: { imports: [{ teamId: "team-a", importId: "imp-1", startedAt: "2026-09-26T09:00:00.000Z", committed: 49, total: 200 }], stuckAfterMinutes: 60 } },
+    "POST /ops/teams/team-a/imports/imp-1/clear": { status: 200, body: { eventId: "ev-3", replayed: false } },
+  };
+  const list = harness({ routes });
+  await main(["stuck-imports"], list.deps);
+  assert.equal(list.logs[0], "team team-a  import imp-1  started 2026-09-26T09:00:00.000Z  49 of 200 rows");
+  const none = harness({ routes: { "GET /ops/imports": { status: 200, body: { imports: [], stuckAfterMinutes: 60 } } } });
+  await main(["stuck-imports"], none.deps);
+  assert.equal(none.logs[0], "No imports stuck for more than 60 minutes.");
+  const clear = harness({ routes });
+  await main(["clear-import", "team-a", "imp-1", "--reason", "Owner re-imported it"], clear.deps);
+  assert.equal(clear.requests[0].method, "POST");
+  assert.deepEqual(clear.requests[0].body, { reason: "Owner re-imported it" });
+  assert.match(clear.requests[0].headers["idempotency-key"], /^[0-9a-f-]{36}$/);
+  assert.match(clear.logs[0], /Took import imp-1 of team team-a out of the stuck-import check. Audit event ev-3./);
+  for (const argv of [["clear-import", "team-a", "--reason", "x"], ["clear-import", "team-a", "bad id", "--reason", "x"], ["clear-import", "team-a", "imp-1"]]) {
+    await assert.rejects(main(argv, harness().deps), UsageError, argv.join(" "));
+  }
+  const audit = harness({ routes: { "GET /ops/audit": { status: 200, body: { events: [{ ts: "t", action: "ops.import.clear", teamId: "team-a", operatorSub: "op-1", after: { importId: "imp-1", committing: false } }] } } } });
+  await main(["audit"], audit.deps);
+  assert.match(audit.logs[0], /ops.import.clear team team-a {2}by op-1 import imp-1/);
+});

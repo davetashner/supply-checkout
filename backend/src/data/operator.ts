@@ -21,7 +21,8 @@ import { ConflictError, InvalidInputError, NotFoundError } from "./errors.js";
 import { gsi3, id, keys, month, operatorAuditPartition, operatorKeys, opsAuditIndexPartition, opsOwnersPartition, strip } from "./keys.js";
 import { type Comp, MEMBERS_PER_TEAM, liveComp } from "./model.js";
 import { type Page, queryPage } from "./query.js";
-import { GSI3, GSI3PK, OPERATOR_AUDIT_PREFIX, OPS_TEAMS_PARTITION, PK } from "./schema.js";
+import { type StuckImport, listStuckImports } from "./imports.js";
+import { COMMITTING_IMPORTS_PARTITION, GSI3, GSI3PK, OPERATOR_AUDIT_PREFIX, OPS_TEAMS_PARTITION, PK } from "./schema.js";
 
 /** A signed-in operator, verified by the ops function: their `sub` in the operator pool. */
 export interface Operator {
@@ -72,7 +73,7 @@ export interface OperatorAuditEvent {
   readonly expiresAt: number;
 }
 
-export type OperatorAction = "ops.team.read" | "ops.comp.set" | "ops.comp.end";
+export type OperatorAction = "ops.team.read" | "ops.comp.set" | "ops.comp.end" | "ops.import.clear";
 
 /** An audit event as a month's listing has it (the index projects only these). */
 export interface OperatorAuditSummary {
@@ -298,14 +299,23 @@ export interface CompOutcome {
   readonly version: number;
 }
 
+/** The one item an operator change updates, besides its audit and idempotency records. */
+interface OperatorUpdate {
+  readonly Key: Record<string, string>;
+  readonly UpdateExpression: string;
+  readonly ConditionExpression: string;
+  readonly ExpressionAttributeNames?: Record<string, string>;
+  readonly ExpressionAttributeValues: Record<string, unknown>;
+}
+
 /**
- * Runs one operator change: `update` on the team's META item (conditioned on
- * the item being a team at `expectedVersion`), its audit item and the
- * request's idempotency record, all in one transaction. A retry with the same
- * key and body replays the first result; the same key with another body is a
- * ConflictError.
+ * Runs one operator change: `update` on one item in the team's partition,
+ * its audit item and the request's idempotency record, all in one
+ * transaction. A retry with the same key and body replays the first result;
+ * the same key with another body is a ConflictError, and `update`'s own
+ * condition failing is ConflictError(`changed`).
  */
-async function change(
+async function auditedUpdate<T extends { readonly eventId: string; readonly replayed: boolean }>(
   db: Db,
   operator: Operator,
   teamId: string,
@@ -313,35 +323,25 @@ async function change(
     readonly action: OperatorAction;
     readonly key: string;
     readonly body: Record<string, unknown>;
-    readonly expectedVersion: number;
     readonly reason: string;
     readonly before: Record<string, unknown> | null;
     readonly after: Record<string, unknown> | null;
-    readonly update: { UpdateExpression: string; ExpressionAttributeNames: Record<string, string>; ExpressionAttributeValues: Record<string, unknown>; extraCondition?: string };
-    readonly comp: Comp | null;
+    readonly update: OperatorUpdate;
+    readonly outcome: (eventId: string) => T;
+    readonly changed: string;
   },
   now: Date,
-): Promise<CompOutcome> {
+): Promise<T> {
   const request = operatorKeys.request(teamId, keyHash(operator, teamId, input.action, input.key));
   const hash = bodyHash(input.body);
   const audit = auditItem(operator, teamId, { action: input.action, reason: input.reason, before: input.before, after: input.after, idempotencyKey: input.key }, now);
-  const outcome: CompOutcome = { eventId: audit.eventId, replayed: false, comp: input.comp, version: input.expectedVersion + 1 };
+  const outcome = input.outcome(audit.eventId);
   const epoch = Math.floor(now.getTime() / 1000);
   try {
     await connection(db).doc.send(
       new TransactWriteCommand({
         TransactItems: [
-          {
-            Update: {
-              TableName: db.tableName,
-              Key: keys.team(teamId),
-              UpdateExpression: input.update.UpdateExpression,
-              // Only the META item, only at the version the operator saw
-              ConditionExpression: ["#type = :team", "#version = :v", ...(input.update.extraCondition ? [input.update.extraCondition] : [])].join(" AND "),
-              ExpressionAttributeNames: { "#type": "type", "#version": "version", ...input.update.ExpressionAttributeNames },
-              ExpressionAttributeValues: { ":team": "team", ":v": input.expectedVersion, ":one": 1, ...input.update.ExpressionAttributeValues },
-            },
-          },
+          { Update: { TableName: db.tableName, ...input.update } },
           { Put: { TableName: db.tableName, Item: audit, ConditionExpression: "attribute_not_exists(PK)" } },
           {
             Put: {
@@ -364,13 +364,52 @@ async function change(
       );
       const done = Items?.[0];
       // The record can expire between the condition and this read; then the retry is just late
-      if (done && done.bodyHash === hash) return { ...(done.outcome as CompOutcome), replayed: true };
+      if (done && done.bodyHash === hash) return { ...(done.outcome as T), replayed: true };
       throw new ConflictError("This Idempotency-Key was already used for a different request");
     }
-    if (codes[0] === "ConditionalCheckFailed") throw new ConflictError("The team changed since you read it; read it again and retry");
-    if (codes.includes("TransactionConflict")) throw new ConflictError("The team is changing right now; try again");
+    if (codes[0] === "ConditionalCheckFailed") throw new ConflictError(input.changed);
+    if (codes.includes("TransactionConflict")) throw new ConflictError("It's changing right now; try again");
     throw error;
   }
+}
+
+/** A comp change on the team's META item, at the version the operator saw. */
+function change(
+  db: Db,
+  operator: Operator,
+  teamId: string,
+  input: {
+    readonly action: OperatorAction;
+    readonly key: string;
+    readonly body: Record<string, unknown>;
+    readonly expectedVersion: number;
+    readonly reason: string;
+    readonly before: Record<string, unknown> | null;
+    readonly after: Record<string, unknown> | null;
+    readonly update: { UpdateExpression: string; ExpressionAttributeNames: Record<string, string>; ExpressionAttributeValues: Record<string, unknown>; extraCondition?: string };
+    readonly comp: Comp | null;
+  },
+  now: Date,
+): Promise<CompOutcome> {
+  return auditedUpdate<CompOutcome>(
+    db,
+    operator,
+    teamId,
+    {
+      ...input,
+      update: {
+        Key: keys.team(teamId),
+        UpdateExpression: input.update.UpdateExpression,
+        // Only the META item, only at the version the operator saw
+        ConditionExpression: ["#type = :team", "#version = :v", ...(input.update.extraCondition ? [input.update.extraCondition] : [])].join(" AND "),
+        ExpressionAttributeNames: { "#type": "type", "#version": "version", ...input.update.ExpressionAttributeNames },
+        ExpressionAttributeValues: { ":team": "team", ":v": input.expectedVersion, ":one": 1, ...input.update.ExpressionAttributeValues },
+      },
+      outcome: (eventId) => ({ eventId, replayed: false, comp: input.comp, version: input.expectedVersion + 1 }),
+      changed: "The team changed since you read it; read it again and retry",
+    },
+    now,
+  );
 }
 
 /**
@@ -514,4 +553,66 @@ function auditSummary(item: Record<string, unknown>): OperatorAuditSummary | und
   const sk = /^AUDIT#(.+)#([A-Za-z0-9_-]{1,128})$/.exec(String(item.SK));
   if (!teamId || !sk) return undefined;
   return { eventId: sk[2] as string, ts: sk[1] as string, teamId, action: item.action as OperatorAction, operatorSub: String(item.operatorSub) };
+}
+
+/**
+ * Every team's imports still committing that started before `startedBefore`
+ * (by default STUCK_IMPORT_AFTER_MINUTES ago), oldest first: what the
+ * "Imports stuck" alarm counts. Only their keys and progress: the
+ * operator-access role may read nothing else there.
+ */
+export async function listStuckImportsForOps(db: Db, operator: Operator, startedBefore: Date): Promise<StuckImport[]> {
+  operatorSub(operator);
+  return listStuckImports(db, startedBefore);
+}
+
+/** The outcome of clearing a stuck import. */
+export interface ClearImportOutcome {
+  readonly eventId: string;
+  readonly replayed: boolean;
+}
+
+/**
+ * Takes a stuck import out of GSI1's committing-imports partition, so the
+ * "Imports stuck" alarm recovers (docs/journeys.md, J2), with an audit item
+ * (`ops.import.clear`) in the same transaction. Only the index keys change:
+ * the job and its staged plan stay, so a retry of it still works until it
+ * expires. The update's condition keeps it to an import job that's still in
+ * that partition and started before `startedBefore`, so it can't touch an
+ * import that's still running or any other item.
+ */
+export async function clearStuckImport(
+  db: Db,
+  operator: Operator,
+  teamId: string,
+  importId: string,
+  input: { readonly reason: unknown; readonly idempotencyKey: unknown; readonly startedBefore: Date },
+  now = new Date(),
+): Promise<ClearImportOutcome> {
+  operatorSub(operator);
+  const key = requestKey(input.idempotencyKey);
+  const reason = operatorReason(input.reason);
+  const jobKey = keys.importJob(teamId, importId);
+  return auditedUpdate<ClearImportOutcome>(
+    db,
+    operator,
+    teamId,
+    {
+      action: "ops.import.clear",
+      key,
+      body: { importId, reason },
+      reason,
+      before: { importId, committing: true },
+      after: { importId, committing: false },
+      update: {
+        Key: jobKey,
+        UpdateExpression: "REMOVE GSI1PK, GSI1SK",
+        ConditionExpression: "GSI1PK = :committing AND GSI1SK < :before",
+        ExpressionAttributeValues: { ":committing": COMMITTING_IMPORTS_PARTITION, ":before": input.startedBefore.toISOString() },
+      },
+      outcome: (eventId) => ({ eventId, replayed: false }),
+      changed: "That import isn't stuck: it finished, was cleared already, doesn't exist, or started too recently",
+    },
+    now,
+  );
 }

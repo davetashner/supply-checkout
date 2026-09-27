@@ -150,7 +150,8 @@ tags:
       user pool (`opsCognito`), whose user must be in the `operators` group;
       a customer's token is refused. Removing, disabling or signing out an
       operator takes effect on their next request. Operators never read a
-      team's sheets, inventory, invites or receipts. Every change, and every
+      team's sheets, inventory, invites or receipts. They can list imports
+      stuck part-way and take one out of the stuck-import check. Every change, and every
       read of one team's record, is audited, and the team's owners see it
       (`GET /teams/{teamId}/support-actions`). `npm run ops` is the client.
 paths:
@@ -892,10 +893,10 @@ paths:
                         eventId: { type: string }
                         ts: { type: string, format: date-time }
                         actor: { type: string, const: Supply Checkout support }
-                        action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end] }
+                        action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end, ops.import.clear] }
                         reason: { type: string }
-                        before: { oneOf: [{ $ref: "#/components/schemas/CompRecord" }, { type: "null" }] }
-                        after: { oneOf: [{ $ref: "#/components/schemas/CompRecord" }, { type: "null" }] }
+                        before: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
+                        after: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
                   cursor: { type: string, description: Absent on the last page. }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
@@ -1042,16 +1043,88 @@ paths:
                         ts: { type: string, format: date-time }
                         teamId: { type: string }
                         operatorSub: { type: string, description: The operator's `sub` in the operator pool. }
-                        action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end] }
+                        action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end, ops.import.clear] }
                         target: { type: string }
                         reason: { type: string }
-                        before: { oneOf: [{ $ref: "#/components/schemas/CompRecord" }, { type: "null" }] }
-                        after: { oneOf: [{ $ref: "#/components/schemas/CompRecord" }, { type: "null" }] }
+                        before: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
+                        after: { type: [object, "null"], description: "A comp: `CompRecord`. A cleared import: `{importId, committing}`." }
                         idempotencyKey: { type: string }
                   cursor: { type: string, description: Absent on the last page. }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/OperatorsOnly" }
+  /ops/imports:
+    get:
+      tags: [ops]
+      operationId: opsListStuckImports
+      summary: Imports still committing more than an hour after they started, oldest first (the "Imports stuck" alarm).
+      description: Only each job's team, ID, start and progress. See "Imports stuck" in docs/journeys.md.
+      security: [{ opsCognito: [] }]
+      responses:
+        "200":
+          description: The stuck imports.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [imports, stuckAfterMinutes]
+                properties:
+                  imports:
+                    type: array
+                    items:
+                      type: object
+                      required: [teamId, importId, startedAt, committed, total]
+                      properties:
+                        teamId: { type: string }
+                        importId: { type: string }
+                        startedAt: { type: string, format: date-time }
+                        committed: { type: integer, description: Rows committed so far. }
+                        total: { type: integer }
+                  stuckAfterMinutes: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/OperatorsOnly" }
+  /ops/teams/{teamId}/imports/{importId}/clear:
+    parameters:
+      - { $ref: "#/components/parameters/opsTeamId" }
+      - { name: importId, in: path, required: true, schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" } }
+    post:
+      tags: [ops]
+      operationId: opsClearStuckImport
+      summary: Take a stuck import out of the stuck-import check. Audited as `ops.import.clear`.
+      description: |
+        Only the job's index keys change: the job and its staged plan stay,
+        so a retry of it still works until it expires. Refused for an import
+        that isn't stuck (finished, still within the hour, cleared already or
+        unknown).
+      security: [{ opsCognito: [] }]
+      parameters: [{ $ref: "#/components/parameters/opsIdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 3, maxLength: 500, description: Why, on one line. The team's owners see it. }
+      responses:
+        "200":
+          description: Cleared, now or by an earlier request with the same Idempotency-Key (`replayed`).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [eventId, replayed]
+                properties:
+                  eventId: { type: string, description: The audit event. }
+                  replayed: { type: boolean }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/OperatorsOnly" }
+        "409":
+          description: "`aborted`, nothing changed: the import isn't stuck, or the Idempotency-Key was used for a different request."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /auth/session:
     post:
       tags: [auth]

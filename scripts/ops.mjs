@@ -6,6 +6,8 @@
 //   npm run ops -- comp <teamId> --plan free --until 2026-12-31 --reason "Pilot, 90 days" [--seats N]
 //   npm run ops -- uncomp <teamId> --reason "Pilot over"
 //   npm run ops -- audit [--team <teamId> | --month YYYY-MM]
+//   npm run ops -- stuck-imports
+//   npm run ops -- clear-import <teamId> <importId> --reason "Owner re-imported it"
 //   npm run ops -- sign-out
 //
 // Options: --env prod (default), --json (print the API's answers as they are),
@@ -49,6 +51,9 @@ export const USAGE = `Usage: npm run ops -- <command> [options]
                                                 Comp a team or change or extend its comp (at most 12 months)
   uncomp <teamId> --reason <text>               End a team's comp now
   audit [--team <teamId> | --month YYYY-MM]     The operator audit (default: this month)
+  stuck-imports                                 Imports stuck part-way for over an hour (the "Imports stuck" alarm)
+  clear-import <teamId> <importId> --reason <text>
+                                                Take a stuck import out of the check (the job itself stays)
   sign-out                                      Sign out everywhere and forget the cached token
 
 Options: --env <env> (default prod), --json, --client-id <id>, --profile <aws profile>`;
@@ -259,7 +264,7 @@ function teamDetail(team) {
 }
 
 function auditLine(e) {
-  const change = e.after ? ` -> ${e.after.plan} until ${date(e.after.until)}` : e.action === "ops.comp.end" ? " -> none" : "";
+  const change = e.action === "ops.import.clear" && e.after ? ` import ${e.after.importId}` : e.after ? ` -> ${e.after.plan} until ${date(e.after.until)}` : e.action === "ops.comp.end" ? " -> none" : "";
   return `${e.ts}  ${pad(e.action, 14)} team ${e.teamId}  by ${e.operatorSub}${change}${e.reason ? `  "${e.reason}"` : ""}`;
 }
 
@@ -288,7 +293,7 @@ export async function main(argv, deps) {
     if (!id || !ID.test(id)) throw new UsageError(`${command} needs a team ID`);
     return id;
   };
-  const known = { teams: true, team: true, comp: true, uncomp: true, audit: true };
+  const known = { teams: true, team: true, comp: true, uncomp: true, audit: true, "stuck-imports": true, "clear-import": true };
   if (!known[command]) throw new UsageError(`Unknown command ${command}`);
 
   let token = readCachedToken(cacheFile, deps.now());
@@ -327,6 +332,20 @@ export async function main(argv, deps) {
     const { team } = await call("GET", `/ops/teams/${id}`);
     const outcome = await call(command === "comp" ? "PUT" : "DELETE", `/ops/teams/${id}/comp`, { body: { ...body, expectedVersion: team.version }, idempotent: true });
     print(outcome, (o) => (o.comp ? `Comped ${team.name} (${id}): ${o.comp.plan} until ${o.comp.until}. Audit event ${o.eventId}.` : `Ended the comp of ${team.name} (${id}). Audit event ${o.eventId}.`));
+  } else if (command === "stuck-imports") {
+    const answer = await call("GET", "/ops/imports");
+    print(answer, (a) =>
+      a.imports.length
+        ? a.imports.map((j) => `team ${j.teamId}  import ${j.importId}  started ${j.startedAt}  ${j.committed} of ${j.total} rows`).join("\n")
+        : `No imports stuck for more than ${a.stuckAfterMinutes} minutes.`,
+    );
+  } else if (command === "clear-import") {
+    const id = teamId();
+    const importId = args[1];
+    if (!importId || !ID.test(importId)) throw new UsageError("clear-import needs a team ID and an import ID");
+    if (!flags.reason) throw new UsageError("clear-import needs --reason");
+    const outcome = await call("POST", `/ops/teams/${id}/imports/${importId}/clear`, { body: { reason: flags.reason }, idempotent: true });
+    print(outcome, (o) => `Took import ${importId} of team ${id} out of the stuck-import check. Audit event ${o.eventId}.`);
   } else {
     if (flags.team && flags.month) throw new UsageError("Give --team or --month, not both");
     const page = await call("GET", "/ops/audit", { query: { teamId: flags.team, month: flags.month, cursor: flags.cursor, limit: flags.limit } });

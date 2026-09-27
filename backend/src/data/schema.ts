@@ -125,6 +125,14 @@ export const COMP_FIELDS = ["compPlan", "compSeats", "compUntil", "compReason", 
 export const COMP_ATTRIBUTES = [PK, SK, "type", "version", ...COMP_FIELDS] as const;
 
 /**
+ * The only attributes the operator-access role may name when it takes a
+ * stuck import out of GSI1's committing-imports partition (dynamodb:Attributes):
+ * the table and GSI1 keys. The update's condition (GSI1PK is that partition)
+ * keeps it to an import job; IAM can't limit the sort key.
+ */
+export const IMPORT_INDEX_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK] as const;
+
+/**
  * What an operator audit item holds. Owners read their own team's items
  * through the data function (OWNER_OPERATOR_AUDIT_ATTRIBUTES); operators read
  * them all through the ops function.

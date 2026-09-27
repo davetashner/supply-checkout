@@ -2,7 +2,7 @@ import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { ACCOUNT_ROUTES, AUTH_ROUTES, DATA_ROUTES, OPS_ROUTES, routeKey } from "../../backend/src/api/routes.js";
-import { COMP_ATTRIBUTES, INVITE_LIMIT_ATTRIBUTES, MEMBER_ROW_ATTRIBUTES, OWNER_OPERATOR_AUDIT_ATTRIBUTES } from "../../backend/src/data/schema.js";
+import { COMP_ATTRIBUTES, IMPORT_INDEX_ATTRIBUTES, INVITE_LIMIT_ATTRIBUTES, MEMBER_ROW_ATTRIBUTES, OWNER_OPERATOR_AUDIT_ATTRIBUTES, STUCK_IMPORT_ATTRIBUTES } from "../../backend/src/data/schema.js";
 import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
 import { apiOutputParameters } from "../lib/stacks/api-stack.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
@@ -113,6 +113,8 @@ describe("HTTP API routes", () => {
       "PUT /ops/teams/{teamId}/comp": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "DELETE /ops/teams/{teamId}/comp": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "GET /ops/audit": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
+      "GET /ops/imports": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
+      "POST /ops/teams/{teamId}/imports/{importId}/clear": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
     });
     // Created after the routes it names
     expect((stage.DependsOn as string[]).filter((d) => d.startsWith("HttpApi")).length).toBeGreaterThanOrEqual(ACCOUNT_ROUTES.length + 1);
@@ -354,7 +356,31 @@ describe("operator-access role (ADR 0015)", () => {
   it("queries only the operators' index partitions, for projected attributes only; updates only comp attributes of the tagged team; and only appends operator audit", () => {
     const [policy, ...others] = role().Policies;
     expect(others).toEqual([]);
-    const [index, comp, audit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    const [index, comp, stuckList, stuckClear, audit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    // Stuck imports (supply-checkout-6uw.2): the check's partition, keys and progress only; and only a job's GSI1 keys
+    expect(stuckList).toEqual({
+      Sid: "StuckImportsListOnly",
+      Effect: "Allow",
+      Action: "dynamodb:Query",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["IMPORTS#COMMITTING"], "dynamodb:Attributes": [...STUCK_IMPORT_ATTRIBUTES] },
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
+    });
+    expect(JSON.stringify(stuckList?.Resource)).toContain("/index/GSI1");
+    expect(stuckClear).toEqual({
+      Sid: "StuckImportIndexKeysOnly",
+      Effect: "Allow",
+      Action: "dynamodb:UpdateItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": [...IMPORT_INDEX_ATTRIBUTES] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+      },
+    });
+    expect([...IMPORT_INDEX_ATTRIBUTES]).toEqual(["PK", "SK", "GSI1PK", "GSI1SK"]);
+    expect(JSON.stringify(stuckClear?.Resource)).not.toMatch(/index|\*/);
     expect(rest).toEqual([]);
     expect(index).toEqual({
       Sid: "OpsIndexProjectionOnly",
