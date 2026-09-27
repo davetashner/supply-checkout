@@ -44,16 +44,17 @@ const APP = "__APP_HOST__";
 const HSTS = "__HSTS__";
 const VERSION = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
-// On every response made here; a fresh copy each time, so none share an object
-const SECURITY_HEADERS = {
-  "strict-transport-security": HSTS,
-  "x-content-type-options": "nosniff",
-};
-
+// On every response made here; a fresh copy each time, so none share an object.
+// Plain loops and properties only: the CloudFront runtime rejects `for...of`
+// (a SyntaxError that stops every request), so test/router.test.ts bans it and
+// the other newer syntax this function doesn't need.
 function headers(extra) {
-  const all = Object.assign({}, SECURITY_HEADERS, extra);
-  const out = {};
-  for (const name of Object.keys(all)) out[name] = { value: all[name] };
+  const out = {
+    "strict-transport-security": { value: HSTS },
+    "x-content-type-options": { value: "nosniff" },
+  };
+  const names = Object.keys(extra);
+  for (let i = 0; i < names.length; i++) out[names[i]] = { value: extra[names[i]] };
   return out;
 }
 
@@ -61,7 +62,7 @@ function redirect(statusCode, location, cacheControl) {
   return {
     statusCode,
     statusDescription: statusCode === 301 ? "Moved Permanently" : "Found",
-    headers: headers({ location, "cache-control": cacheControl }),
+    headers: headers({ location: location, "cache-control": cacheControl }),
   };
 }
 
