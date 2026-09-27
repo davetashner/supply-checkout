@@ -19,6 +19,7 @@ import {
 } from "../src/identity/account-link-handler.js";
 import { cognitoLinking, type LinkProviderForUser, type ListUsersByEmail, type PoolUser, type UpdateUserAttributes } from "../src/identity/cognito-admin.js";
 import { emailVerifiedFrom } from "../src/api/cognito-user.js";
+import { verifiedEmailHash } from "../src/data/index.js";
 import { createEmailVerifiedHandler, LINKED_FAILED_ERROR } from "../src/identity/email-verified-handler.js";
 import { DOWNGRADE_PENDING_ATTRIBUTE, LINKED_EMAIL_ATTRIBUTE, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE, PROVIDER_HOSTED_DOMAIN_ATTRIBUTE } from "../src/identity/names.js";
 import { createSignInGuardHandler } from "../src/identity/sign-in-guard-handler.js";
@@ -506,6 +507,8 @@ describe("signing in with Google or Apple to an existing account", () => {
 
   function fakePool(initial: User[]) {
     const users = new Map(initial.map((u) => [u.username, u]));
+    /** The VERIFIED_EMAIL items: the hash of the address each user (by sub) last proved through POST /me/email/verify. */
+    const proven = new Map<string, string>();
     /** Set to make the next AdminUpdateUserAttributes calls fail (all, or those `writes` picks), as a throttled Cognito would. */
     const broken: { writes: boolean | ((attributes: Readonly<Record<string, string>>) => boolean) } = { writes: false };
     const listUsersByEmail: ListUsersByEmail = async (_pool, email) => ({ users: [...users.values()].filter((u) => u.attributes.email === email), more: false });
@@ -527,7 +530,7 @@ describe("signing in with Google or Apple to an existing account", () => {
     /** The pre token generation trigger, as Cognito runs it before issuing tokens: its outcome, or the error that fails the sign-in. */
     async function token(user: User, triggerSource: string): Promise<{ outcome?: unknown; error?: string }> {
       const logs: Logged[] = [];
-      const emailVerified = createEmailVerifiedHandler({ updateUserAttributes, obs: fakeObservability(logs), sleep: async () => {} });
+      const emailVerified = createEmailVerifiedHandler({ updateUserAttributes, provenEmailHash: async (sub) => proven.get(sub), obs: fakeObservability(logs), sleep: async () => {} });
       const event = { triggerSource, userPoolId: POOL, userName: user.username, request: { userAttributes: { ...user.attributes, "cognito:user_status": user.status } }, response: {} };
       try {
         await emailVerified(event as unknown as PreTokenGenerationTriggerEvent);
@@ -560,10 +563,15 @@ describe("signing in with Google or Apple to an existing account", () => {
       return { user, outcome };
     }
 
-    /** UpdateUserAttributes then VerifyUserAttribute with the emailed code: Cognito keeps the old address until the code, then marks the new one verified. */
-    function verifyWithCode(user: User, email: string) {
+    /**
+     * UpdateUserAttributes then VerifyUserAttribute with the emailed code: Cognito keeps the old
+     * address until the code, then marks the new one verified. Through the app (POST
+     * /me/email/verify, the default), the account API then records the address as proven.
+     */
+    function verifyWithCode(user: User, email: string, { throughApp = true } = {}) {
       user.attributes.email = email;
       user.attributes.email_verified = "true";
+      if (throughApp) proven.set(user.attributes.sub as string, verifiedEmailHash(email));
     }
     return { users, broken, token, providerSignIn, verifyWithCode };
   }
@@ -657,6 +665,65 @@ describe("signing in with Google or Apple to an existing account", () => {
     // The next provider sign-in unverifies it
     expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, GMAIL, "true")).outcome).toBe("linked-unverified");
     expect(user.attributes.email_verified).toBe("false");
+  });
+
+  // supply-checkout-ytr2: with every Cognito write throttled, neither the flag nor the downgrade
+  // goes through, and Cognito keeps the rewrite with email_verified "true". No refresh or API
+  // sign-in records it: only an address proven through POST /me/email/verify can be recorded.
+  it("never records a rewritten address that no code proved, even with Cognito's writes throttled throughout", async () => {
+    const attacker = "8f0e5b1c-0000-4000-8000-00000000000a";
+    const pool = fakePool([existing(ICLOUD, attacker)]);
+    await pool.providerSignIn("SignInWithApple", APPLE_ID, ICLOUD, "true");
+    const user = pool.users.get(attacker) as User;
+    pool.broken.writes = true;
+    expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, GMAIL, "true")).error).toBe(LINKED_FAILED_ERROR);
+    expect(user.attributes).toMatchObject({ email: GMAIL, email_verified: "true", [LINKED_EMAIL_ATTRIBUTE]: ICLOUD });
+    expect(user.attributes[DOWNGRADE_PENDING_ATTRIBUTE]).toBeUndefined();
+    // Refreshes and API sign-ins from other sessions, with Cognito throttled or working again
+    for (const writes of [true, false]) {
+      pool.broken.writes = writes;
+      for (const source of ["TokenGeneration_RefreshTokens", "TokenGeneration_Authentication", "TokenGeneration_NewPasswordChallenge", "TokenGeneration_AuthenticateDevice"]) {
+        expect(await pool.token(user, source), `${source} ${writes}`).toEqual({ outcome: "linked-not-proven" });
+      }
+    }
+    expect(user.attributes[LINKED_EMAIL_ATTRIBUTE]).toBe(ICLOUD);
+    expect(apiVerified(user)).toBe(false);
+    // An address the user proved earlier doesn't help another one
+    pool.verifyWithCode(user, ICLOUD);
+    user.attributes.email = GMAIL;
+    expect(await pool.token(user, "TokenGeneration_RefreshTokens")).toEqual({ outcome: "linked-not-proven" });
+    // Nor does Cognito verifying it outside the app (a client's own VerifyUserAttribute)
+    pool.verifyWithCode(user, "pat.other@example.com", { throughApp: false });
+    expect(await pool.token(user, "TokenGeneration_RefreshTokens")).toEqual({ outcome: "linked-not-proven" });
+    expect(user.attributes[LINKED_EMAIL_ATTRIBUTE]).toBe(ICLOUD);
+    // The victim's first Google sign-in still isn't linked into it
+    const victim = await pool.providerSignIn("Google", GOOGLE_ID, GMAIL, "true", null);
+    expect(victim.user?.username).toBe(`google_${GOOGLE_ID}`);
+  });
+
+  it("records a code-proven address at the next refresh and clears a pending downgrade, without a Managed Login sign-in", async () => {
+    const pool = fakePool([existing(ICLOUD)]);
+    await pool.providerSignIn("SignInWithApple", APPLE_ID, ICLOUD, "true");
+    const user = pool.users.get(NATIVE) as User;
+    // The flag went through, the downgrade didn't
+    pool.broken.writes = (attributes) => attributes.email_verified === "false";
+    expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, GMAIL, "true")).error).toBe(LINKED_FAILED_ERROR);
+    pool.broken.writes = false;
+    expect(await pool.token(user, "TokenGeneration_RefreshTokens")).toEqual({ outcome: "linked-downgrade-pending" });
+    // The person proves the rewritten address in the app (email_verified is still "true" in Cognito)
+    pool.verifyWithCode(user, GMAIL);
+    expect(apiVerified(user)).toBe(false);
+    // A failed write leaves both as they were, and the next refresh tries again
+    pool.broken.writes = true;
+    expect(await pool.token(user, "TokenGeneration_RefreshTokens")).toEqual({ outcome: "linked-record-failed" });
+    expect(user.attributes).toMatchObject({ [LINKED_EMAIL_ATTRIBUTE]: ICLOUD, [DOWNGRADE_PENDING_ATTRIBUTE]: "1" });
+    pool.broken.writes = false;
+    expect(await pool.token(user, "TokenGeneration_RefreshTokens")).toEqual({ outcome: "linked-recorded" });
+    expect(user.attributes).toMatchObject({ email: GMAIL, email_verified: "true", [LINKED_EMAIL_ATTRIBUTE]: GMAIL, [DOWNGRADE_PENDING_ATTRIBUTE]: "" });
+    expect(apiVerified(user)).toBe(true);
+    // Later refreshes and provider sign-ins with that address leave it alone
+    expect(await pool.token(user, "TokenGeneration_RefreshTokens")).toEqual({ outcome: "linked-unchanged" });
+    expect((await pool.providerSignIn("SignInWithApple", APPLE_ID, GMAIL, "true")).outcome).toBe("linked-unchanged");
   });
 
   // supply-checkout-0qr8: the flag went through, the downgrade didn't (twice)

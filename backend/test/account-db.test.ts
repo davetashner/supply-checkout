@@ -81,7 +81,7 @@ describe("cognitoUserInfo", () => {
         { Name: "email_verified", Value: "true" },
       ],
     });
-    expect(await cognitoUserInfo(ISSUER, fetch)("access-token")).toEqual({ sub: "user-1", email: "pat@example.com", emailVerified: true });
+    expect(await cognitoUserInfo(ISSUER, fetch)("access-token")).toEqual({ sub: "user-1", email: "pat@example.com", emailVerified: true, emailVerifiedInCognito: true });
     const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://cognito-idp.test-local-1.amazonaws.com/");
     expect(init.headers).toMatchObject({ "x-amz-target": "AWSCognitoIdentityProviderService.GetUser" });
@@ -90,8 +90,23 @@ describe("cognitoUserInfo", () => {
 
   it("treats an unverified or missing email as unverified", async () => {
     const unverified = reply(200, { UserAttributes: [{ Name: "sub", Value: "u" }, { Name: "email", Value: "a@example.com" }, { Name: "email_verified", Value: "false" }] });
-    expect(await cognitoUserInfo(ISSUER, unverified)("t")).toMatchObject({ emailVerified: false });
-    expect(await cognitoUserInfo(ISSUER, reply(200, {}))("t")).toEqual({ sub: "", email: undefined, emailVerified: false });
+    expect(await cognitoUserInfo(ISSUER, unverified)("t")).toMatchObject({ emailVerified: false, emailVerifiedInCognito: false });
+    expect(await cognitoUserInfo(ISSUER, reply(200, {}))("t")).toEqual({ sub: "", email: undefined, emailVerified: false, emailVerifiedInCognito: false });
+  });
+
+  it("says what Cognito says of email_verified apart from whether the API trusts the email", async () => {
+    // A linked user whose email isn't the recorded one: Cognito says verified, the API doesn't trust it
+    const rewritten = reply(200, {
+      Username: "u",
+      UserAttributes: [
+        { Name: "sub", Value: "u" },
+        { Name: "email", Value: "pat@example.com" },
+        { Name: "email_verified", Value: "true" },
+        { Name: "identities", Value: JSON.stringify([{ providerName: "Google", providerType: "Google", userId: "1" }]) },
+        { Name: "custom:linked_email", Value: "someone@example.net" },
+      ],
+    });
+    expect(await cognitoUserInfo(ISSUER, rewritten)("t")).toMatchObject({ emailVerified: false, emailVerifiedInCognito: true });
   });
 
   it("counts a linked user's email as verified only while it's the recorded one (supply-checkout-kgw)", async () => {

@@ -78,3 +78,20 @@ export const INVITE_LIMIT_PREFIX = "INVITELIMIT#";
 
 /** The only attributes a request may name in an `INVITELIMIT#` partition: the keys, the count, its item type and its expiry. */
 export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as const;
+
+/**
+ * The sort key of the item in a user's own `USER#<sub>` partition that holds
+ * the address they last proved with a Cognito code through the account API
+ * (POST /me/email/verify, supply-checkout-ytr2): see verified-email.ts. Not a
+ * `LIMIT#` key, so deleting an account removes it with the user's other rows.
+ */
+export const VERIFIED_EMAIL_SK = "VERIFIED_EMAIL";
+
+/**
+ * The only attributes the pre token generation trigger may name or read: the
+ * keys and the proven address's hash. Its IAM policy allows exactly these
+ * (dynamodb:Attributes), with GetItem only, in `USER#` partitions only, so it
+ * can't read a user's teams, names or emails. No other item has
+ * `verifiedEmailHash`.
+ */
+export const VERIFIED_EMAIL_ATTRIBUTES = [PK, SK, "verifiedEmailHash"] as const;

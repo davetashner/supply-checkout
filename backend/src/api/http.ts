@@ -26,7 +26,7 @@ export type ErrorCode =
  * verifying an email address: `code_mismatch` and `code_expired` (the code
  * entered), `already_verified` and `email_in_use` (another account has it).
  */
-export type ErrorReason = "view_only" | "owners_only" | "not_member" | "last_owner" | "team_full" | "code_mismatch" | "code_expired" | "already_verified" | "email_in_use";
+export type ErrorReason = "view_only" | "owners_only" | "not_member" | "last_owner" | "team_full" | "code_mismatch" | "code_expired" | "already_verified" | "email_in_use" | "email_changed";
 
 /** An error with the HTTP status and code the client sees. */
 export class ApiError extends Error {

@@ -23,9 +23,12 @@
 //   POST /me/email/code             Cognito emails the caller a code for their
 //                                   unverified address.
 //   POST /me/email/verify           Checks the code; Cognito marks the address
-//                                   verified. The app then refreshes its tokens,
-//                                   so the pre token generation trigger records
-//                                   a linked user's new address, and reloads /me.
+//                                   verified, and this records it as the address
+//                                   the caller proved (a VERIFIED_EMAIL item in
+//                                   their own partition). The app then refreshes
+//                                   its tokens, so the pre token generation
+//                                   trigger records a linked user's new address,
+//                                   and reloads /me.
 //
 // The team's last owner can't be removed, demoted or leave: the team item's
 // owner count moves in the same transaction as the membership, conditioned
@@ -86,6 +89,7 @@ import {
   mailAddress,
   markInviteNotSent,
   normalizeEmail,
+  recordVerifiedEmail,
   resendInvite,
   revokeInvite,
   type Role,
@@ -102,6 +106,7 @@ import { callerId, type DataEvent, errorFor as dataErrorFor } from "./data-handl
 import { ApiError, errorResponse, header, json, jsonBody, noContent, notMember } from "./http.js";
 import { requireRole } from "./roles.js";
 import { ACCOUNT_ROUTES, type AccountRoute, IDEMPOTENCY_HEADER, routeKey } from "./routes.js";
+import { asciiLower } from "../identity/email-verified-handler.js";
 
 export interface AccountHandlerDeps {
   readonly dbFor: DbForAccount;
@@ -398,13 +403,29 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     return noContent();
   }
 
-  /** Checks the code from the email. Cognito's answer says whether it was right; the code is never logged. */
+  /**
+   * Checks the code from the email. Cognito's answer says whether it was
+   * right; the code is never logged. Then records the address as the one the
+   * caller proved (data/verified-email.ts), which is what lets the pre token
+   * generation trigger record a linked user's address (supply-checkout-ytr2):
+   * only if GetUser, read again, shows Cognito verified it and it's the
+   * address GetUser showed before the code (so a provider's rewrite in
+   * between isn't recorded as proven). Otherwise 409 `email_changed`: send a
+   * new code.
+   */
   async function verifyEmail(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
     const code = jsonBody(event, ["code"]).code;
     if (typeof code !== "string" || !EMAIL_CODE.test(code)) throw new ApiError(400, "bad_request", "Enter the 6-digit code from the email", "code_mismatch");
-    const user = await cognitoUser(event, userId);
-    if (verifiedEmail(user)) throw new ApiError(409, "aborted", "Your email address is already verified", "already_verified");
+    const before = await cognitoUser(event, userId);
+    if (verifiedEmail(before)) throw new ApiError(409, "aborted", "Your email address is already verified", "already_verified");
     await deps.emailCodes.verify(accessToken(event), code);
+    const after = await cognitoUser(event, userId);
+    const same = (a?: string, b?: string) => !!a?.trim() && !!b && asciiLower(a.trim()) === asciiLower(b.trim());
+    if (!after.emailVerifiedInCognito || !same(before.email, after.email)) {
+      obs.logger.warn("Verified email not recorded", { outcome: after.emailVerifiedInCognito ? "email-changed" : "not-verified" });
+      throw new ApiError(409, "aborted", "Your email address changed while it was being verified; send a new code", "email_changed");
+    }
+    await recordVerifiedEmail(dbFor({ userId }), userId, after.email as string, new Date(now()));
     return noContent();
   }
 

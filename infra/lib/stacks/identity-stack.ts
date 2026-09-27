@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { Duration, RemovalPolicy, SecretValue, Validations } from "aws-cdk-lib";
+import { Aws, Duration, RemovalPolicy, SecretValue, Stack, Validations } from "aws-cdk-lib";
 import { Certificate } from "aws-cdk-lib/aws-certificatemanager";
 import {
   AccountRecovery,
@@ -40,6 +40,7 @@ import {
   PROVIDER_HOSTED_DOMAIN,
   PROVIDER_HOSTED_DOMAIN_ATTRIBUTE,
 } from "../../../backend/src/identity/names.js";
+import { tableName, VERIFIED_EMAIL_ATTRIBUTES } from "../../../backend/src/data/schema.js";
 import type { DeploymentConfig } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import {
@@ -321,9 +322,11 @@ export class IdentityStack extends SupplyCheckoutStack {
    *   guard: the attribute it reads is user-writable, and is fresh from the
    *   provider only at a provider sign-in. For a linked native user it
    *   unverifies an email that isn't custom:linked_email at a Managed Login
-   *   token, and records one Cognito verified since at a refresh
+   *   token, and records one the person proved with a code at a refresh
    *   (supply-checkout-kgw). Its role may also call AdminUpdateUserAttributes
-   *   on this pool.
+   *   on this pool, and read one attribute of the app table: the hash of the
+   *   address a user last proved with a code (supply-checkout-ytr2), which
+   *   is what lets it record an address.
    * - Pre sign-up (account-link-handler.ts) links a first Google or Apple
    *   sign-in whose provider says the email is verified to the one confirmed
    *   native user with that verified email, when the provider is
@@ -355,8 +358,10 @@ export class IdentityStack extends SupplyCheckoutStack {
       id: "AwsSolutions-SMG4",
       reason: "Only a log correlation key, not a credential: rotating it would only stop older logs' handles matching. Rotate by hand (replace the secret and redeploy) if it leaks.",
     });
+    const table = tableName(this.config.envName);
     const emailVerified = this.trigger("EmailVerified", "email-verified", "Sets email_verified for Google and Apple users from the provider's own claim", {
       [LOG_CORRELATION_KEY_ENV]: correlationKey.secretValue.unsafeUnwrap(),
+      TABLE_NAME: table,
     });
     this.userPool.addTrigger(UserPoolOperation.PRE_TOKEN_GENERATION, emailVerified);
     new Policy(this, "EmailVerifiedUpdateUser", {
@@ -366,6 +371,36 @@ export class IdentityStack extends SupplyCheckoutStack {
           sid: "SetEmailVerified",
           actions: ["cognito-idp:AdminUpdateUserAttributes"],
           resources: [this.userPool.userPoolArn],
+        }),
+      ],
+    });
+    // The address a linked user last proved with a code (supply-checkout-ytr2):
+    // GetItem of the VERIFIED_EMAIL item in a user's partition, and only its
+    // hash (VERIFIED_EMAIL_ATTRIBUTES), which no other item has. IAM can't
+    // name the user (the trigger has no per-user session) or the sort key, so
+    // this is every USER# partition, but only that one attribute: it can't
+    // read teams, names or emails. The table's key only through DynamoDB,
+    // decrypt only. The table and its key are in the primary region's data
+    // stack, which deploys first (supply-checkout.ts).
+    const tableArn = Stack.of(this).formatArn({ service: "dynamodb", resource: "table", resourceName: table });
+    new Policy(this, "EmailVerifiedProvenEmail", {
+      roles: [emailVerified.role as Role],
+      statements: [
+        new PolicyStatement({
+          sid: "ReadProvenEmailHash",
+          actions: ["dynamodb:GetItem"],
+          resources: [tableArn],
+          conditions: {
+            "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": [...VERIFIED_EMAIL_ATTRIBUTES] },
+            StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+          },
+        }),
+        new PolicyStatement({
+          sid: "TableKeyThroughDynamoDb",
+          actions: ["kms:Decrypt"],
+          resources: [StringParameter.valueForStringParameter(this, `/supply-checkout/${this.config.envName}/data/table-key-arn`)],
+          conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
         }),
       ],
     });

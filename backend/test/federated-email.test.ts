@@ -7,11 +7,11 @@ import type { PreTokenGenerationTriggerEvent } from "aws-lambda";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { DbForAccount } from "../src/api/account-db.js";
 import { createAccountHandler } from "../src/api/account-handler.js";
-import { type CognitoUser, emailVerifiedFrom } from "../src/api/cognito-user.js";
+import { type CognitoUser, type EmailCodes, emailVerifiedFrom } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
-import { authorizeTeam, createInvite } from "../src/data/index.js";
+import { authorizeTeam, createInvite, provenEmailHash, verifiedEmailHash } from "../src/data/index.js";
 import { cognitoAdmin, type UpdateUserAttributes } from "../src/identity/cognito-admin.js";
 import {
   CALL_TIMEOUT_MS,
@@ -88,7 +88,7 @@ function triggerEvent(options: {
   } as unknown as PreTokenGenerationTriggerEvent;
 }
 
-function trigger(update?: UpdateUserAttributes, options: { correlate?: (sub: string) => string; now?: () => number } = {}) {
+function trigger(update?: UpdateUserAttributes, options: { correlate?: (sub: string) => string; now?: () => number; provenEmailHash?: (sub: string) => Promise<string | undefined> } = {}) {
   const calls: { pool: string; user: string; attributes: Record<string, string> }[] = [];
   const logs: Logged[] = [];
   const counted: string[] = [];
@@ -103,6 +103,7 @@ function trigger(update?: UpdateUserAttributes, options: { correlate?: (sub: str
     sleep: async (ms) => {
       pauses.push(ms);
     },
+    provenEmailHash: async () => undefined,
     ...options,
   });
   return { handler, calls, logs, counted, pauses };
@@ -498,13 +499,84 @@ describe("pre token generation trigger for a linked user", () => {
     expect(logs[1]?.data.user).toBe("unavailable");
   });
 
-  it("records a verified new email at a token that can't follow a provider sign-in, in lower case", async () => {
+  /** A user whose VERIFIED_EMAIL item holds `email`'s hash (POST /me/email/verify), for `sub` only. */
+  const provenFor = (email: string, sub = NATIVE) => ({ provenEmailHash: async (s: string) => (s === sub ? verifiedEmailHash(email) : undefined) });
+
+  it("records a code-proven new email at a token that can't follow a provider sign-in, in lower case", async () => {
     for (const triggerSource of ["TokenGeneration_RefreshTokens", "TokenGeneration_Authentication", "TokenGeneration_NewPasswordChallenge", "TokenGeneration_AuthenticateDevice"]) {
-      const { handler, calls, logs } = trigger();
+      const { handler, calls, logs } = trigger(undefined, provenFor("pat.new@example.com"));
       await handler(linkedEvent({ email: " Pat.New@Example.com ", triggerSource }));
       expect(calls, triggerSource).toEqual([{ pool: POOL, user: NATIVE, attributes: { [LINKED_EMAIL_ATTRIBUTE]: "pat.new@example.com" } }]);
       expect(logs[0]?.data).toEqual({ triggerSource, outcome: "linked-recorded" });
     }
+  });
+
+  it("never records a verified-looking email that isn't the one the user last proved (supply-checkout-ytr2)", async () => {
+    const cases: [string, Parameters<typeof trigger>[1]][] = [
+      ["no item", {}],
+      ["another address", provenFor("pat.other@example.com")],
+      ["another user's item", provenFor("pat.new@example.com", "8f0e5b1c-0000-4000-8000-00000000ffff")],
+    ];
+    for (const [name, options] of cases) {
+      for (const triggerSource of ["TokenGeneration_RefreshTokens", "TokenGeneration_Authentication"]) {
+        const { handler, calls, logs } = trigger(undefined, options);
+        await handler(linkedEvent({ email: "pat.new@example.com", triggerSource }));
+        expect(calls, `${name} ${triggerSource}`).toEqual([]);
+        expect(logs[0]?.data).toEqual({ triggerSource, outcome: "linked-not-proven" });
+      }
+    }
+    // Case folding beyond ASCII doesn't make two addresses one (U+212A KELVIN SIGN)
+    const kelvin = trigger(undefined, provenFor("\u212Aat@example.com"));
+    await kelvin.handler(linkedEvent({ email: "kat@example.com", triggerSource: "TokenGeneration_RefreshTokens" }));
+    expect(kelvin.calls).toEqual([]);
+    // Nor for an event without a sub (it's never looked up)
+    let looked = 0;
+    const { handler, calls } = trigger(undefined, { provenEmailHash: async () => (looked++, verifiedEmailHash("pat.new@example.com")) });
+    const event = linkedEvent({ email: "pat.new@example.com", triggerSource: "TokenGeneration_RefreshTokens" });
+    delete event.request.userAttributes.sub;
+    await handler(event);
+    expect([calls, looked]).toEqual([[], 0]);
+  });
+
+  it("doesn't look anything up for the recorded email, or at a Managed Login token", async () => {
+    let looked = 0;
+    const provenEmailHash = async () => (looked++, undefined);
+    for (const triggerSource of ["TokenGeneration_RefreshTokens", "TokenGeneration_HostedAuth"]) {
+      const { handler } = trigger(undefined, { provenEmailHash });
+      await handler(linkedEvent({ triggerSource }));
+      await handler(linkedEvent({ email: "pat.new@example.com", triggerSource: "TokenGeneration_HostedAuth" }));
+    }
+    expect(looked).toBe(0);
+  });
+
+  it("clears a pending downgrade with the recording when the email is the proven one, and only then", async () => {
+    for (const email of ["pat.new@example.com", RECORDED]) {
+      const { handler, calls, logs } = trigger(undefined, provenFor(email));
+      await handler(linkedEvent({ email, pending: "1", triggerSource: "TokenGeneration_RefreshTokens" }));
+      expect(calls, email).toEqual([{ pool: POOL, user: NATIVE, attributes: { [LINKED_EMAIL_ATTRIBUTE]: email, [DOWNGRADE_PENDING_ATTRIBUTE]: "" } }]);
+      expect(logs[0]?.data.outcome).toBe("linked-recorded");
+    }
+    const { handler, calls, logs } = trigger(undefined, provenFor("pat.other@example.com"));
+    await handler(linkedEvent({ email: RECORDED, pending: "1", triggerSource: "TokenGeneration_RefreshTokens" }));
+    expect(calls).toEqual([]);
+    expect(logs[0]?.data.outcome).toBe("linked-downgrade-pending");
+  });
+
+  it("lets the token go ahead when the proven address can't be read, recording nothing", async () => {
+    const { handler, calls, logs, counted } = trigger(undefined, {
+      provenEmailHash: async () => {
+        throw new Error("ProvisionedThroughputExceededException");
+      },
+    });
+    const event = linkedEvent({ email: "pat.new@example.com", triggerSource: "TokenGeneration_RefreshTokens" });
+    expect(await handler(event)).toBe(event);
+    expect(calls).toEqual([]);
+    expect(logs.map((l) => [l.level, l.data.outcome])).toEqual([
+      ["error", "linked-lookup-failed"],
+      ["info", "linked-lookup-failed"],
+    ]);
+    expect(counted).toEqual([BusinessMetric.EmailVerifyFailures]);
+    expect(JSON.stringify(logs)).not.toContain("pat.new@example.com");
   });
 
   it("does nothing at a token source it doesn't know", async () => {
@@ -517,7 +589,7 @@ describe("pre token generation trigger for a linked user", () => {
   it("lets the token go ahead when recording fails, and the API keeps treating the email as unverified", async () => {
     const { handler, logs, counted } = trigger(async () => {
       throw new Error("AdminUpdateUserAttributes failed: 500 InternalErrorException");
-    });
+    }, provenFor("pat.new@example.com"));
     const event = linkedEvent({ email: "pat.new@example.com", triggerSource: "TokenGeneration_RefreshTokens" });
     expect(await handler(event)).toBe(event);
     expect(logs.map((l) => [l.level, l.data.outcome])).toEqual([
@@ -585,6 +657,7 @@ describe("invites for Google and Apple users", () => {
   let handler: ReturnType<typeof createAccountHandler>;
   let now: number;
   let codesSent: string[];
+  let handlerCodes: EmailCodes;
 
   beforeEach(() => {
     now = Date.now();
@@ -598,10 +671,32 @@ describe("invites for Google and Apple users", () => {
     const userInfo = async (token: string): Promise<CognitoUser> => {
       const user = users.get(token.replace(/^token-/, ""));
       if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
-      return { sub: user.sub, email: user.attributes.email, emailVerified: emailVerifiedFrom(token.replace(/^token-/, ""), user.attributes) };
+      return {
+        sub: user.sub,
+        email: user.attributes.email,
+        emailVerified: emailVerifiedFrom(token.replace(/^token-/, ""), user.attributes),
+        emailVerifiedInCognito: user.attributes.email_verified === "true",
+      };
     };
-    const emailCodes = { ...unusedEmailCodes, send: async (token: string) => void codesSent.push(token) };
-    handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, emailCodes, now: () => now });
+    const emailCodes = {
+      ...unusedEmailCodes,
+      send: async (token: string) => void codesSent.push(token),
+      // VerifyUserAttribute: the right code marks the current email verified
+      verify: async (token: string, code: string) => {
+        if (code !== "123456") throw new ApiError(400, "bad_request", "That code isn't right", "code_mismatch");
+        (users.get(token.replace(/^token-/, "")) as { attributes: Record<string, string> }).attributes.email_verified = "true";
+      },
+    };
+    handlerCodes = emailCodes;
+    handler = createAccountHandler({
+      dbFor,
+      userInfo,
+      issuerUrl: ISSUER,
+      obs: fakeObservability(),
+      mailer: mails.mailer,
+      emailCodes: { send: (t) => handlerCodes.send(t), verify: (t, c) => handlerCodes.verify(t, c) },
+      now: () => now,
+    });
   });
 
   /** A first sign-in through Managed Login: Cognito creates the user from the provider's claims, then runs the trigger. */
@@ -690,6 +785,77 @@ describe("invites for Google and Apple users", () => {
     await onToken(event);
     expect(users.get(linked)?.attributes.email_verified).toBe("false");
     expect((await call("POST", `/invites/${inviteId}/accept`, linked, linked, { token })).status).toBe(403);
+  });
+
+  // supply-checkout-ytr2: the whole journey, with the API and the trigger sharing the table
+  it("records a linked user's rewritten address only after they prove it with a code in the app, then lists its invites", async () => {
+    const { inviteId, token } = await invite();
+    const linked = "8f0e5b1c-0000-4000-8000-00000000000d";
+    // Cognito rewrote the email to the invitee's at a Google sign-in, and the flag and both downgrades were throttled
+    const attributes: Record<string, string> = { sub: linked, email: "pat@example.com", email_verified: "true", identities: identities("Google", GOOGLE_ID), [LINKED_EMAIL_ATTRIBUTE]: "someone@example.net" };
+    users.set(linked, { sub: linked, attributes });
+    let throttled = true;
+    const { handler: onToken, logs } = trigger(
+      async (_pool, username, update) => {
+        if (throttled) throw new Error("AdminUpdateUserAttributes failed: 400 TooManyRequestsException");
+        Object.assign((users.get(username) as { attributes: Record<string, string> }).attributes, update);
+      },
+      // The trigger's read: its own partition's VERIFIED_EMAIL item, as its role allows
+      { provenEmailHash: (sub) => provenEmailHash(table.scoped([`USER#${sub}`]), sub) },
+    );
+    const refresh = async () => {
+      const event = triggerEvent({ userName: linked, status: "CONFIRMED", claim: "true", identities: attributes.identities, triggerSource: "TokenGeneration_RefreshTokens" });
+      event.request.userAttributes = { ...attributes, "cognito:user_status": "CONFIRMED" };
+      await onToken(event);
+      return logs.at(-1)?.data.outcome;
+    };
+    // Refreshes record nothing, throttled or not, and the API doesn't trust it
+    expect(await refresh()).toBe("linked-not-proven");
+    throttled = false;
+    expect(await refresh()).toBe("linked-not-proven");
+    expect((await call("GET", "/me", linked, linked)).body).toMatchObject({ user: { emailVerified: false }, invites: [] });
+    // A wrong code records nothing either
+    expect((await call("POST", "/me/email/code", linked, linked)).status).toBe(204);
+    expect((await call("POST", "/me/email/verify", linked, linked, { code: "654321" })).status).toBe(400);
+    expect(table.get(`USER#${linked}`, "VERIFIED_EMAIL")).toBeUndefined();
+    expect(await refresh()).toBe("linked-not-proven");
+    // The right code: the API records the proven address's hash, never the address
+    expect((await call("POST", "/me/email/verify", linked, linked, { code: "123456" })).status).toBe(204);
+    const item = table.get(`USER#${linked}`, "VERIFIED_EMAIL");
+    expect(item).toMatchObject({ type: "verifiedEmail", verifiedEmailHash: verifiedEmailHash("pat@example.com"), verifiedAt: new Date(now).toISOString() });
+    expect(JSON.stringify(item)).not.toContain("pat@");
+    // The app's refresh records it, and from then it counts
+    expect(await refresh()).toBe("linked-recorded");
+    expect(attributes[LINKED_EMAIL_ATTRIBUTE]).toBe("pat@example.com");
+    expect((await call("GET", "/me", linked, linked)).body).toMatchObject({ user: { emailVerified: true }, invites: [expect.objectContaining({ id: inviteId })] });
+    expect((await call("POST", `/invites/${inviteId}/accept`, linked, linked, { token })).status).toBe(200);
+  });
+
+  it("records nothing when the email changed between the code and GetUser, or Cognito didn't mark it verified", async () => {
+    const linked = "8f0e5b1c-0000-4000-8000-00000000000e";
+    const attributes: Record<string, string> = { sub: linked, email: "pat@example.com", email_verified: "false", identities: identities("Google", GOOGLE_ID), [LINKED_EMAIL_ATTRIBUTE]: "someone@example.net" };
+    users.set(linked, { sub: linked, attributes });
+    // A provider sign-in rewrites the email while the code is being checked
+    const verify = handlerCodes.verify;
+    handlerCodes.verify = async (token, code) => {
+      await verify(token, code);
+      attributes.email = "pat.other@example.com";
+    };
+    expect(await call("POST", "/me/email/verify", linked, linked, { code: "123456" })).toMatchObject({ status: 409, body: { error: { code: "aborted", reason: "email_changed" } } });
+    expect(table.get(`USER#${linked}`, "VERIFIED_EMAIL")).toBeUndefined();
+    // Cognito took the code but GetUser doesn't show the address verified
+    attributes.email = "pat@example.com";
+    attributes.email_verified = "false";
+    handlerCodes.verify = async () => {};
+    expect(await call("POST", "/me/email/verify", linked, linked, { code: "123456" })).toMatchObject({ status: 409, body: { error: { reason: "email_changed" } } });
+    expect(table.get(`USER#${linked}`, "VERIFIED_EMAIL")).toBeUndefined();
+    // The same address in another ASCII case is the same address
+    handlerCodes.verify = async () => {
+      attributes.email = "PAT@example.com";
+      attributes.email_verified = "true";
+    };
+    expect((await call("POST", "/me/email/verify", linked, linked, { code: "123456" })).status).toBe(204);
+    expect(table.get(`USER#${linked}`, "VERIFIED_EMAIL")).toMatchObject({ verifiedEmailHash: verifiedEmailHash("pat@example.com") });
   });
 
   it("lets a user whose downgrade is pending ask for a code: they don't count as verified (supply-checkout-0qr8)", async () => {

@@ -11,7 +11,7 @@ import type { CognitoUser } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
-import { authorizeTeam, createInvite, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS } from "../src/data/index.js";
+import { authorizeTeam, createInvite, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS, verifiedEmailHash } from "../src/data/index.js";
 import type { Observability } from "../src/observability/index.js";
 import { REGION, accountPartitions, fakeMailer } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -28,12 +28,12 @@ const UNVERIFIED = "user-unverified";
 const IMPOSTOR = "user-impostor";
 
 const USERS: Record<string, CognitoUser> = {
-  [OWNER]: { sub: OWNER, email: "owner@example.com", emailVerified: true },
-  [PAT]: { sub: PAT, email: "Pat@Example.com", emailVerified: true },
-  [MALLORY]: { sub: MALLORY, email: "mallory@example.com", emailVerified: true },
+  [OWNER]: { sub: OWNER, email: "owner@example.com", emailVerified: true, emailVerifiedInCognito: true },
+  [PAT]: { sub: PAT, email: "Pat@Example.com", emailVerified: true, emailVerifiedInCognito: true },
+  [MALLORY]: { sub: MALLORY, email: "mallory@example.com", emailVerified: true, emailVerifiedInCognito: true },
   // Signed up with Pat's address but never confirmed it
-  [UNVERIFIED]: { sub: UNVERIFIED, email: "pat@example.com", emailVerified: false },
-  [IMPOSTOR]: { sub: IMPOSTOR, email: "pat@example.com", emailVerified: true },
+  [UNVERIFIED]: { sub: UNVERIFIED, email: "pat@example.com", emailVerified: false, emailVerifiedInCognito: false },
+  [IMPOSTOR]: { sub: IMPOSTOR, email: "pat@example.com", emailVerified: true, emailVerifiedInCognito: true },
 };
 
 let table: MemoryTable;
@@ -85,7 +85,7 @@ beforeEach(() => {
     if (cognitoDown) throw new Error("GetUser failed: 500");
     const user = USERS[token.replace(/^token-/, "")];
     if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
-    return verifiedNow.has(user.sub) ? { ...user, emailVerified: true } : user;
+    return verifiedNow.has(user.sub) ? { ...user, emailVerified: true, emailVerifiedInCognito: true } : user;
   };
   const emailCodes = {
     async send(token: string) {
@@ -350,7 +350,7 @@ describe("POST /invites/{inviteId}/accept", () => {
     await table.seedTeam("team-b", { [OWNER]: "owner" });
     // U+212A KELVIN SIGN: NFKC folds it to K on both sides
     const { inviteId, token } = await invite("\u212Aat@example.com", { team: "team-b" });
-    USERS["user-kat"] = { sub: "user-kat", email: "kat@example.com", emailVerified: true };
+    USERS["user-kat"] = { sub: "user-kat", email: "kat@example.com", emailVerified: true, emailVerifiedInCognito: true };
     expect((await call("GET", "/me", { user: "user-kat" })).body.invites).toHaveLength(1);
     expect((await accept("user-kat", inviteId, token)).status).toBe(200);
   });
@@ -377,6 +377,14 @@ describe("verifying the caller's email address", () => {
     expect(await call("POST", "/me/email/verify", { user: UNVERIFIED, body: { code: "654321" } })).toMatchObject({ status: 400, body: { error: { code: "bad_request", reason: "code_mismatch" } } });
     expect((await call("POST", "/me/email/verify", { user: UNVERIFIED, body: { code: "123456" } })).status).toBe(204);
     expect(codesChecked).toEqual([[`token-${UNVERIFIED}`, "654321"], [`token-${UNVERIFIED}`, "123456"]]);
+    // Recorded as the address the caller proved, in their own partition (supply-checkout-ytr2)
+    expect(table.get(`USER#${UNVERIFIED}`, "VERIFIED_EMAIL")).toEqual({
+      PK: `USER#${UNVERIFIED}`,
+      SK: "VERIFIED_EMAIL",
+      type: "verifiedEmail",
+      verifiedEmailHash: verifiedEmailHash("pat@example.com"),
+      verifiedAt: new Date(now).toISOString(),
+    });
     const me = (await call("GET", "/me", { user: UNVERIFIED })).body;
     expect(me.user).toEqual({ id: UNVERIFIED, email: "pat@example.com", emailVerified: true });
     expect(me.invites).toHaveLength(1);
@@ -402,7 +410,7 @@ describe("verifying the caller's email address", () => {
   });
 
   it("has nothing to verify for a user with no email", async () => {
-    USERS["user-no-email"] = { sub: "user-no-email", emailVerified: false };
+    USERS["user-no-email"] = { sub: "user-no-email", emailVerified: false, emailVerifiedInCognito: false };
     try {
       expect(await call("POST", "/me/email/code", { user: "user-no-email" })).toMatchObject({ status: 400, body: { error: { code: "bad_request" } } });
     } finally {

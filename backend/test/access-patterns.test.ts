@@ -9,6 +9,9 @@ import {
   authorizeTeam,
   ConflictError,
   countEmailCode,
+  provenEmailHash,
+  recordVerifiedEmail,
+  verifiedEmailHash,
   createInvite,
   createProduct,
   createSheet,
@@ -124,6 +127,27 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await expect(countEmailCode(db, userId, now)).rejects.toThrow(LimitReachedError);
       await countEmailCode(db, newUser(), now);
       await countEmailCode(db, userId, new Date("2026-09-27T00:00:00.000Z"));
+    });
+
+    it("keeps the hash of the address a user last proved, in their own partition, and reads back only that", async () => {
+      db = table.db;
+      const userId = newUser();
+      expect(await provenEmailHash(db, userId)).toBeUndefined();
+      await recordVerifiedEmail(db, userId, " Pat@Example.com ", new Date("2026-09-26T12:00:00.000Z"));
+      expect(await provenEmailHash(db, userId, { timeoutMs: 5_000 })).toBe(verifiedEmailHash("pat@example.com"));
+      expect(await rawItem(db, `USER#${userId}`, "VERIFIED_EMAIL")).toEqual({
+        PK: `USER#${userId}`,
+        SK: "VERIFIED_EMAIL",
+        type: "verifiedEmail",
+        verifiedEmailHash: verifiedEmailHash("pat@example.com"),
+        verifiedAt: "2026-09-26T12:00:00.000Z",
+      });
+      // A later proof replaces it; another user has none
+      await recordVerifiedEmail(db, userId, "pat.new@example.com");
+      expect(await provenEmailHash(db, userId)).toBe(verifiedEmailHash("pat.new@example.com"));
+      expect(await provenEmailHash(db, newUser())).toBeUndefined();
+      await expect(recordVerifiedEmail(db, userId, "  ")).rejects.toThrow("No address to record");
+      await expect(provenEmailHash(db, "USER#x")).rejects.toThrow(InvalidInputError);
     });
 
     it("starts a trial, and makes one team per request key however often it's sent", async () => {

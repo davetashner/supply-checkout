@@ -237,3 +237,34 @@ describe("member cap", () => {
     expect(() => teamCounts("t", "team", { members: 1 })).toThrow("cap");
   });
 });
+
+describe("the proven email (supply-checkout-ytr2)", () => {
+  it("hashes the address trimmed and ASCII-lowercased only", () => {
+    expect(data.verifiedEmailHash(" Pat@Example.COM ")).toBe(data.verifiedEmailHash("pat@example.com"));
+    expect(data.verifiedEmailHash("pat@example.com")).toMatch(/^[0-9a-f]{64}$/);
+    expect(data.verifiedEmailHash("Kat@example.com")).not.toBe(data.verifiedEmailHash("kat@example.com"));
+  });
+
+  it("reads only the hash, strongly consistent, with the timeout as an abort signal, and ignores anything that isn't a hash", async () => {
+    const sent: { input: Record<string, unknown>; options: unknown }[] = [];
+    let item: Record<string, unknown> | undefined = { verifiedEmailHash: "not-a-hash" };
+    const db = fakeDb(async (command, ...rest: unknown[]) => {
+      sent.push({ input: command.input, options: rest[0] });
+      return { Item: item };
+    });
+    expect(await data.provenEmailHash(db, "u1", { timeoutMs: 1_200 })).toBeUndefined();
+    expect(sent[0]?.input).toEqual({
+      TableName: "fake",
+      Key: { PK: "USER#u1", SK: "VERIFIED_EMAIL" },
+      ProjectionExpression: "#hash",
+      ExpressionAttributeNames: { "#hash": "verifiedEmailHash" },
+      ConsistentRead: true,
+    });
+    expect((sent[0]?.options as { abortSignal?: unknown }).abortSignal).toBeInstanceOf(AbortSignal);
+    item = { verifiedEmailHash: 7 };
+    expect(await data.provenEmailHash(db, "u1")).toBeUndefined();
+    expect(sent[1]?.options).toBeUndefined();
+    item = { verifiedEmailHash: data.verifiedEmailHash("pat@example.com") };
+    expect(await data.provenEmailHash(db, "u1")).toBe(data.verifiedEmailHash("pat@example.com"));
+  });
+});

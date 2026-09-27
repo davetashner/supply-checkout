@@ -30,11 +30,11 @@ const PAT = "user-pat";
 const OTHER_OWNER = "user-other-owner";
 
 const USERS: Record<string, CognitoUser> = {
-  [OWNER]: { sub: OWNER, email: "owner@example.com", emailVerified: true },
-  [CO_OWNER]: { sub: CO_OWNER, email: "co-owner@example.com", emailVerified: true },
-  [SAM]: { sub: SAM, email: "sam@example.com", emailVerified: true },
-  [PAT]: { sub: PAT, email: "Pat@Example.com", emailVerified: true },
-  [OTHER_OWNER]: { sub: OTHER_OWNER, email: "other@example.com", emailVerified: true },
+  [OWNER]: { sub: OWNER, email: "owner@example.com", emailVerified: true, emailVerifiedInCognito: true },
+  [CO_OWNER]: { sub: CO_OWNER, email: "co-owner@example.com", emailVerified: true, emailVerifiedInCognito: true },
+  [SAM]: { sub: SAM, email: "sam@example.com", emailVerified: true, emailVerifiedInCognito: true },
+  [PAT]: { sub: PAT, email: "Pat@Example.com", emailVerified: true, emailVerifiedInCognito: true },
+  [OTHER_OWNER]: { sub: OTHER_OWNER, email: "other@example.com", emailVerified: true, emailVerifiedInCognito: true },
 };
 
 let table: MemoryTable;
