@@ -106,7 +106,7 @@ function openParts(team) {
 
 // The invites half of the screen, while the team is open. Returns a way to drop the invites
 // for an address, which the server revoked when that member was removed.
-function wireInvites(api, team, m) {
+function wireInvites(api, team, m, invited) {
   const invitesPath = `/teams/${encodeURIComponent(team.id)}/invites`;
   const inviteList = m.querySelector("#invitesList"), inviteFail = m.querySelector("#invitesFail");
   const form = m.querySelector("#inviteForm"), email = m.querySelector("#inviteEmail"), role = m.querySelector("#inviteRole"), send = m.querySelector("#inviteSend");
@@ -127,6 +127,7 @@ function wireInvites(api, team, m) {
   function sent(invite, replacing) {
     invites = [invite, ...invites.filter((x) => x.id !== replacing && x.id !== invite.id)];
     drawInvites();
+    invited();
     toast(invite.inviteStatus === "failed" ? `Couldn't send the invite to ${invite.email}` : `Invite sent to ${invite.email}`);
   }
 
@@ -246,8 +247,9 @@ export function openReopen(api, team, done) {
 }
 
 // `leave` runs when the owner changes their own role, leaves or closes the team: their access
-// changed, so the page starts again (account.js)
-export function openMembers(api, team, me, leave) {
+// changed, so the page starts again (account.js). `invited` runs when an invite is sent or
+// re-sent (the first-run checklist's step).
+export function openMembers(api, team, me, leave, invited) {
   const path = `/teams/${encodeURIComponent(team.id)}/members`;
   const closed = !!team.closedAt;
   let members = [];
@@ -260,7 +262,7 @@ export function openMembers(api, team, me, leave) {
     const list = m.querySelector("#membersList"), fail = m.querySelector("#membersFail");
     const say = (text) => { fail.textContent = text; fail.hidden = !text; };
     m.querySelector("#membersClose").addEventListener("click", closeModal);
-    const invites = closed ? null : wireInvites(api, team, m);
+    const invites = closed ? null : wireInvites(api, team, m, invited);
     if (!closed) wireClose(api, team, m, leave);
 
     function draw() {
