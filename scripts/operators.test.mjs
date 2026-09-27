@@ -1,7 +1,6 @@
 // node --test scripts/operators.test.mjs (part of npm run test:scripts)
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -371,12 +370,12 @@ test("the alerted calls match the observability stack's OPERATOR_USER_EVENTS", (
 
 const FAKE_AWS = `#!/usr/bin/env node
 const { appendFileSync, readFileSync } = require("node:fs");
-const { createHash } = require("node:crypto");
 const args = process.argv.slice(2);
 let stdin;
 if (args.includes("file:///dev/stdin")) {
   const body = JSON.parse(readFileSync(0, "utf8"));
-  for (const k of ["TemporaryPassword", "Password"]) if (k in body) body[k] = "sha256:" + createHash("sha256").update(body[k]).digest("hex");
+  // Recorded base64-encoded, so the test can tell what arrived while a plain search of the disk for the password still means a leak
+  for (const k of ["TemporaryPassword", "Password"]) if (k in body) body[k] = "base64:" + Buffer.from(body[k]).toString("base64");
   stdin = body;
 }
 appendFileSync(process.env.FAKE_AWS_LOG, JSON.stringify({ args, stdin }) + "\\n");
@@ -421,7 +420,7 @@ test("the real script hands the password to the AWS CLI on stdin only, and leave
   assert.ok(password, result.stdout);
   assert.equal(result.stdout.split(password).length, 2, "printed once");
   const create = calls.find((c) => c.args[1] === "admin-create-user");
-  assert.equal(create.stdin.TemporaryPassword, `sha256:${createHash("sha256").update(password).digest("hex")}`, "the CLI got it on stdin");
+  assert.equal(create.stdin.TemporaryPassword, `base64:${Buffer.from(password).toString("base64")}`, "the CLI got it on stdin");
   for (const c of calls) assert.ok(!c.args.some((a) => a.includes(password)), "never in the CLI's argv");
   assert.deepEqual(calls.map((c) => c.args[1]), ["get", "get-parameter", "admin-create-user", "admin-add-user-to-group"]);
   for (const content of filesUnder(root)) assert.ok(!content.includes(password), "not in any file: HOME, TMPDIR or elsewhere");
