@@ -4,7 +4,7 @@ import { WEB } from "./build.js";
 import { checkOut, recordReturn, saveItem, addLines, markOf } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, newKey, uid, round2, numOrNull } from "./format.js";
 import { lines, lineCharge, totals } from "./sheet-math.js";
-import { $, toast, openModal, closeModal, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
+import { $, toast, openModal, closeModal, dismiss, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
 import { RECEIPT_PROMPT, sampleErr } from "./receipt-prompt.js";
 import { sheetCsv, sheetsCsv, inventoryCsv, allJson } from "./export.js";
@@ -618,6 +618,16 @@ function exportAllModal() {
 /* ---------- wiring ---------- */
 $("#tab-sheets").addEventListener("click", () => { ui.tab = "sheets"; ui.sheetId = null; ui.receipt = false; draw(); });
 $("#tab-prices").addEventListener("click", () => { ui.tab = "prices"; ui.receipt = false; draw(); });
+// The logo goes home: the sheet list on Out now, as the app opens, with no sheet or dialog
+// open. It's a link to the app's root, so in the web build a Ctrl/Cmd or Shift click opens
+// the app in a new tab or window. Not while a dialog is saving (dismiss); a receipt being
+// entered stays as its draft, which the sheet list offers to resume.
+$("#home").addEventListener("click", e => {
+  if (WEB && (e.ctrlKey || e.metaKey || e.shiftKey)) return;
+  e.preventDefault();
+  if (!dismiss()) return;
+  ui.tab = "sheets"; ui.sheetId = null; ui.receipt = false; ui.filter = "open"; draw(); window.scrollTo(0, 0);
+});
 /* ---------- receipts ---------- */
 // The artifact keeps one draft. The web build's runtime names a key per team (use("drafts"),
 // src/aws/account.js), so it's read once the team is known; its drafts are forgotten on

@@ -12,6 +12,12 @@ test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 const seeded = (team = "t1") => Object.fromEntries(Object.entries(usedState.seed).map(([k, v]) => [`${team}/${k}`, v]));
 const account = (page) => page.locator("#account");
 const alert = (page) => page.locator("#accountError");
+// Once connected, live updates subscribe and the app lists both collections again. Wait
+// for that re-list before changing the session or the user's teams, or on a slow runner it
+// can meet the change first: an expired token refreshed before the write under test, or a
+// removal shown before the tab comes back.
+const relisted = (backend, team = "t1") =>
+  expect.poll(() => ["products", "sheets"].map((c) => backend.requests("GET", `/teams/${team}/${c}`).length)).toEqual([2, 2]);
 
 async function expectAccessible(page) {
   const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
@@ -207,6 +213,7 @@ test.describe("sign-in", () => {
     await openAws(page, backend);
     await connected(page);
     expect(backend.requests("GET", "/me").map((c) => c.headers.authorization)).toEqual(["Bearer at-1", "Bearer at-2"]);
+    await relisted(backend);
 
     // Later, a write with an expired token
     backend.token = "expired";
@@ -224,9 +231,9 @@ test.describe("sign-in", () => {
     const backend = new FakeBackend({ docs: seeded() });
     await openAws(page, backend);
     await connected(page);
-    // Wait for the re-list after subscribing too, or it can meet the ended session
-    // first and show the sign-in screen before the click (seen in iPhone Safari)
-    await expect.poll(() => ["products", "sheets"].map((c) => backend.requests("GET", `/teams/t1/${c}`).length)).toEqual([2, 2]);
+    // Or the re-list can meet the ended session first and show the sign-in screen before
+    // the click (seen in iPhone Safari)
+    await relisted(backend);
     backend.token = "expired";
     backend.signedIn = false;
     await page.getByRole("button", { name: "+ New sheet" }).click();
@@ -724,6 +731,9 @@ test.describe("first sign-in and teams", () => {
     await page.clock.install();
     await openAws(page, backend);
     await connected(page);
+    // Or the re-list meets the removal first, and the removal notice ends the page before
+    // it's shown again, so /me isn't asked
+    await relisted(backend);
     backend.teams = backend.teams.filter((t) => t.id !== "t1");
     await page.clock.fastForward(61e3);
     await setVisible(page, true);
@@ -780,7 +790,7 @@ test.describe("saved on this device", () => {
     // Pat's session ends (it expired, or a sign-out timed out here but went through) and
     // the refresh's 401 shows the sign-in screen, with Pat's team and draft still saved
     await page.evaluate((d) => localStorage.setItem("supplyCheckout.receiptDraft.t2", d), draft("Home Depot"));
-    await expect.poll(() => ["products", "sheets"].map((c) => backend.requests("GET", `/teams/t2/${c}`).length)).toEqual([2, 2]);
+    await relisted(backend, "t2");
     backend.token = "expired";
     backend.signedIn = false;
     await page.getByRole("button", { name: "+ New sheet" }).click();
