@@ -160,6 +160,12 @@ jobs:
           BUILD: ${{ matrix.build }}
           # Fails the run below 98% coverage; see tests/coverage.js
           COVERAGE: ${{ matrix.coverage }}
+      # Temporary: repeats this PR's new timing tests to catch flakes; dropped before merge
+      - name: Repeat new tests
+        run: npx playwright test tests/save-states.spec.js tests/concurrent.spec.js --project=${{ matrix.project }} --repeat-each=25 -g "storage count|removed the line"
+        env:
+          CI: true
+          BUILD: ${{ matrix.build }}
       - name: Coverage summary
         if: always() && matrix.coverage && hashFiles(format('coverage/{0}/summary.json', matrix.build)) != ''
         run: node scripts/coverage-summary.mjs "$BUILD" >> "$GITHUB_STEP_SUMMARY"
