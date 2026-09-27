@@ -199,6 +199,51 @@ test.describe("seats", () => {
     await expect(seats(page)).toHaveText("2 of 10 members");
   });
 
+  test("asks /me for the cap each time the screen opens, so a plan change shows without a reload", async ({ page }) => {
+    const backend = new FakeBackend({ teams: [{ ...TEAM, members: 2, memberCap: 2 }], members: { t1: [ME, SAM] }, teamInvites: { t1: [] } });
+    await openMembers(page, backend);
+    await expect(seats(page)).toHaveText("2 of 2 members");
+    await expect(send(page)).toBeDisabled();
+    const before = backend.requests("GET", "/me").length;
+    await dialog(page).getByRole("button", { name: "Close", exact: true }).click();
+    // The plan changed: more seats
+    backend.teams[0].memberCap = 5;
+    await page.locator(".teambar").getByRole("button", { name: "Members" }).click();
+    await expect(seats(page)).toHaveText("2 of 5 members");
+    await expect(send(page)).toBeEnabled();
+    await expect(full(page)).toBeHidden();
+    await expect.poll(() => backend.requests("GET", "/me").length).toBe(before + 1);
+    expect(backend.pageLoads).toBe(1);
+    await dialog(page).getByRole("button", { name: "Close", exact: true }).click();
+    // A plan without a cap: no count
+    delete backend.teams[0].memberCap;
+    await page.locator(".teambar").getByRole("button", { name: "Members" }).click();
+    await expect(dialog(page).locator(".member")).toHaveCount(2);
+    await expect.poll(() => backend.requests("GET", "/me").length).toBe(before + 2);
+    await expect(seats(page)).toBeHidden();
+    await expect(send(page)).toBeEnabled();
+  });
+
+  test("keeps the cap it has when /me doesn't load or doesn't list the team", async ({ page }) => {
+    const backend = new FakeBackend({ teams: [{ ...TEAM, members: 2, memberCap: 4 }], members: { t1: [ME, SAM] }, teamInvites: { t1: [] } });
+    await openAws(page, backend);
+    await connected(page);
+    backend.teams[0].memberCap = 9;
+    let before = backend.requests("GET", "/me").length;
+    backend.on("GET", "/me", { abort: true });
+    await page.locator(".teambar").getByRole("button", { name: "Members" }).click();
+    await expect(seats(page)).toHaveText("2 of 4 members");
+    await expect.poll(() => backend.requests("GET", "/me").length).toBe(before + 1);
+    await expect(seats(page)).toHaveText("2 of 4 members");
+    await dialog(page).getByRole("button", { name: "Close", exact: true }).click();
+    before = backend.requests("GET", "/me").length;
+    backend.on("GET", "/me", { status: 200, body: { user: USER, teams: [], invites: [] } });
+    await page.locator(".teambar").getByRole("button", { name: "Members" }).click();
+    await expect.poll(() => backend.requests("GET", "/me").length).toBe(before + 1);
+    await expect(dialog(page).locator(".member")).toHaveCount(2);
+    await expect(seats(page)).toHaveText("2 of 4 members");
+  });
+
   test("an API without the cap shows no count and leaves inviting to the server", async ({ page }) => {
     await openMembers(page, new FakeBackend({ members: { t1: [ME, SAM] } }));
     await expect(dialog(page).locator(".member")).toHaveCount(2);
@@ -265,15 +310,36 @@ test.describe("support activity", () => {
     expect(backend.requests("GET", SUPPORT).map((c) => c.query.cursor)).toEqual([undefined, "20", "20", "40"]);
   });
 
-  test("says when support hasn't done anything, or when it doesn't load", async ({ page }) => {
+  test("says when support hasn't done anything, or when it doesn't load, with Try again", async ({ page }) => {
     const backend = new FakeBackend({ members: { t1: [ME] } });
     backend.on("GET", SUPPORT, error(500, "internal"));
     await openMembers(page, backend);
     await expect(dialog(page).locator("#supportFail")).toHaveText("Couldn't load what support did. Check your connection and try again.");
-    await expect(list(page)).toHaveText("");
-    await dialog(page).getByRole("button", { name: "Close", exact: true }).click();
-    await page.locator(".teambar").getByRole("button", { name: "Members" }).click();
+    const retry = list(page).getByRole("button", { name: "Try again" });
+    await expect(retry).toBeVisible();
+    await expect(dialog(page).getByRole("button", { name: "Show more" })).toBeHidden();
+    const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+    expect(violations.map((v) => v.id)).toEqual([]);
+    // Fails again: still offered
+    backend.on("GET", SUPPORT, { abort: true });
+    await retry.click();
+    await expect(retry).toBeVisible();
+    await expect.poll(() => backend.requests("GET", SUPPORT).length).toBe(2);
+    await list(page).getByRole("button", { name: "Try again" }).click();
     await expect(list(page)).toHaveText("Supply Checkout support hasn't done anything to this team.");
     await expect(dialog(page).locator("#supportFail")).toBeHidden();
+    await expect.poll(() => backend.requests("GET", SUPPORT).length).toBe(3);
+    expect(backend.pageLoads).toBe(1);
+  });
+
+  test("Try again loads the first page and then pages on from it", async ({ page }) => {
+    const backend = new FakeBackend({ members: { t1: [ME] }, supportActions: { t1: Array.from({ length: 25 }, (_, i) => action(i, "ops.team.read")) } });
+    backend.on("GET", SUPPORT, { abort: true });
+    await openMembers(page, backend);
+    await list(page).getByRole("button", { name: "Try again" }).click();
+    await expect(items(page)).toHaveCount(20);
+    await dialog(page).getByRole("button", { name: "Show more" }).click();
+    await expect(items(page)).toHaveCount(25);
+    await expect.poll(() => backend.requests("GET", SUPPORT).map((c) => c.query.cursor)).toEqual([undefined, undefined, "20"]);
   });
 });

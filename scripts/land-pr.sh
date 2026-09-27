@@ -16,6 +16,14 @@
 #   5. closes every bead named in a "Closes <bead-id>" line of the PR body
 #   6. if .beads/issues.jsonl is stale, suggests npm run beads:pr in one line
 #
+# Only one land runs at a time across every worktree and session: without a
+# merge queue, two lands at once keep pushing each other's PRs behind main. A
+# lock file in the shared .git directory holds the land's PID, PR number and
+# start time; a second land waits for it, and a lock whose land is no longer
+# running is taken over. A PR that's already merged (cleanup only) and the
+# merge-queue path skip the lock: the queue serializes merges itself. The merge
+# queue needs main's repo to be owned by an organization.
+#
 # Exits non-zero whenever the PR ends up not merged, and says why. A PR that
 # someone else already merged still gets steps 4 to 6.
 #
@@ -25,7 +33,8 @@ set -euo pipefail
 # Run from a temporary copy: this script removes worktrees and pulls main,
 # either of which can change or delete the file bash is still reading.
 if [ -z "${LAND_PR_COPY:-}" ]; then
-  copy="$(mktemp)"; cp "$0" "$copy"
+  # The land-pr name lets a waiting land recognize a running one by its command
+  copy="$(mktemp "${TMPDIR:-/tmp}/land-pr.XXXXXX")"; cp "$0" "$copy"
   LAND_PR_COPY="$copy" exec bash "$copy" "$@"
 fi
 
@@ -34,6 +43,7 @@ merged=""
 finish() {
   local rc=$?
   rm -f "$LAND_PR_COPY"
+  ! declare -F release_lock >/dev/null || release_lock
   if [ -z "$merged" ]; then
     printf '\nPR #%s was not merged.\n' "${pr:-?}"
     [ "$rc" -ne 0 ] || rc=1
@@ -41,12 +51,53 @@ finish() {
   exit "$rc"
 }
 trap finish EXIT
+# Run finish on Ctrl-C and kill too, so the lock is released
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 pr="${1:?usage: scripts/land-pr.sh <pr-number>}"
 main="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
 cd "$main"
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 fail() { printf '%s\n' "$@"; exit 1; }
+
+# The land lock (see the top). Waits while another land holds it.
+lock="$(git rev-parse --path-format=absolute --git-common-dir)/land-pr.lock"
+lock_poll=10 have_lock=""
+lock_field() { sed -n "s/^$1=//p" "$lock" 2>/dev/null | head -1; }
+# A PID only counts as a land if that process is still running this script
+land_running() { [ -n "$1" ] && ps -p "$1" -o command= 2>/dev/null | grep -q 'land-pr'; }
+take_lock() {
+  local pid mine="$lock.$$" waiting=""
+  printf 'pid=%s\npr=%s\nstarted=%s\n' "$$" "$pr" "$(date '+%Y-%m-%d %H:%M:%S')" > "$mine"
+  # ln fails if the lock exists, and never shows a half-written lock
+  until ln "$mine" "$lock" 2>/dev/null; do
+    pid="$(lock_field pid)"
+    [ -n "$pid" ] || continue   # released just now
+    if ! land_running "$pid"; then
+      # Look again right before removing it, in case another land just took it
+      if [ "$(lock_field pid)" = "$pid" ]; then
+        echo "Taking over the lock from the land of #$(lock_field pr) (pid $pid), which is no longer running."
+        rm -f "$lock"
+      fi
+      continue
+    fi
+    if [ "$pid" != "$waiting" ]; then
+      echo "Waiting for the land of #$(lock_field pr) (pid $pid, started $(lock_field started))"
+      waiting="$pid"
+    fi
+    sleep "$lock_poll"
+  done
+  rm -f "$mine"
+  have_lock=1
+  [ -z "$waiting" ] || echo "Took the lock for #$pr"
+}
+release_lock() {
+  rm -f "$lock.$$"
+  if [ -n "$have_lock" ] && [ "$(lock_field pid)" = "$$" ]; then rm -f "$lock"; fi
+  have_lock=""
+}
 
 view() { gh pr view "$pr" --json "$1" -q ".$1"; }
 branch="$(view headRefName)"
@@ -233,9 +284,11 @@ if [ "$state" = "OPEN" ] && has_merge_queue; then
     if git push -q origin --delete "$branch" 2>/dev/null; then echo "Deleted remote branch $branch"; fi
   fi
 elif [ "$state" = "OPEN" ]; then
+  take_lock
   # main can move while CI runs, so after each green run check again and, if
   # the branch has fallen behind, update it and wait for CI once more.
-  max_updates=3 updates=0
+  # Under the lock, main only moves when something merges outside this script.
+  max_updates=10 updates=0
   status="$(merge_state)"
   while [ "$status" != "MERGED" ]; do
     case "$status" in
