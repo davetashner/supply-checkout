@@ -23,6 +23,9 @@
 #   hold             while present, `gh pr checks --watch` blocks (it touches
 #                    `holding` first), to keep a land running
 #   real_sleep       if present, `sleep` really waits a moment
+#   ln_lost_race     if present, the next `ln` fails once without creating
+#                    anything, as if another land's lock was released just
+#                    after `ln` found it
 #   calls            every gh, bd and sleep call, appended by the fakes
 set -euo pipefail
 
@@ -112,6 +115,11 @@ cat > "$tmp/bin/sleep" <<'EOF'
 #!/usr/bin/env bash
 echo "sleep $*" >> "$FAKE/calls"
 [ ! -e "$FAKE/real_sleep" ] || /bin/sleep 0.1
+EOF
+cat > "$tmp/bin/ln" <<'EOF'
+#!/usr/bin/env bash
+if [ -n "${FAKE:-}" ] && [ -e "$FAKE/ln_lost_race" ]; then rm "$FAKE/ln_lost_race"; exit 1; fi
+exec /bin/ln "$@"
 EOF
 cat > "$tmp/bin/node" <<'EOF'
 #!/usr/bin/env bash
@@ -226,6 +234,16 @@ check "the second land merges" called_in "$fake_b" "gh pr merge 43 --squash --de
 check "says it's waiting once" [ "$(grep -c "Waiting for the land" "$fake_b/out")" -eq 1 ]
 check "releases the lock" unlocked
 out="$(cat "$fake_a/out" "$fake_b/out")" rc=0
+done_case
+
+echo "the other land's lock goes just after ln finds it"
+scenario lock-released-meanwhile
+touch "$FAKE/ln_lost_race"
+land
+check "exits 0" exits 0
+check "merges" called "gh pr merge 42"
+check "doesn't say it took a lock over" not_says "Taking over"
+check "releases the lock" unlocked
 done_case
 
 echo "a crashed land's lock"
