@@ -5,8 +5,8 @@
 import type { DynamoDBRecord } from "aws-lambda";
 import { describe, expect, it } from "vitest";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
-import { OPERATOR_AUDIT_RETENTION_DAYS } from "../src/data/index.js";
-import { createOperatorAuditWatchHandler, isExpiry, isShortLived, isTampering, SHORT_RETENTION_SLACK_DAYS } from "../src/ops/operator-audit-watch-handler.js";
+import { OPERATOR_AUDIT_HEARTBEAT, OPERATOR_AUDIT_RETENTION_DAYS } from "../src/data/index.js";
+import { createOperatorAuditWatchHandler, isExpiry, isHeartbeat, isShortLived, isTampering, SHORT_RETENTION_SLACK_DAYS } from "../src/ops/operator-audit-watch-handler.js";
 
 const NOW = Date.parse("2026-09-27T12:00:00.000Z");
 const LATER = Math.floor(NOW / 1000) + 3600;
@@ -120,7 +120,7 @@ describe("operator audit watch", () => {
     const result = await handler({
       Records: [record("MODIFY", "OPAUDIT#team-1", { expiresAt: LATER }), record("REMOVE", "OPAUDIT#team-1", { ...TTL, expiresAt: EARLIER }), record("INSERT", "OPAUDIT#team-1"), record("INSERT", "OPAUDIT#team-3", { expiresAt: LATER }), odd],
     });
-    expect(result).toEqual({ changed: 3 });
+    expect(result).toEqual({ changed: 3, heartbeats: 0 });
     expect(counts).toEqual([{ metric: BusinessMetric.OperatorAuditChanged, value: 3 }]);
     expect(logs).toEqual([
       { level: "error", message: "Operator audit item changed", data: { eventName: "MODIFY", pk: "OPAUDIT#team-1", sk: "AUDIT#2026-09-27T11:00:00.000Z#evt-1", eventId: "stream-event-1", region: "test-local-1" } },
@@ -133,9 +133,32 @@ describe("operator audit watch", () => {
   it("sends nothing for a batch with no tampering, and copes with an empty event", async () => {
     const { obs, logs, counts } = fakeObservability();
     const handler = createOperatorAuditWatchHandler({ obs });
-    expect(await handler({ Records: [record("REMOVE", "OPAUDIT#team-1", { ...TTL })] })).toEqual({ changed: 0 });
-    expect(await handler({} as never)).toEqual({ changed: 0 });
+    expect(await handler({ Records: [record("REMOVE", "OPAUDIT#team-1", { ...TTL })] })).toEqual({ changed: 0, heartbeats: 0 });
+    expect(await handler({} as never)).toEqual({ changed: 0, heartbeats: 0 });
     expect(counts).toEqual([]);
     expect(logs).toEqual([]);
+  });
+
+  it("counts each write of its heartbeat item in OperatorAuditWatchHeartbeat, and never as tampering (supply-checkout-6uw.11)", async () => {
+    const beat = (eventName: "INSERT" | "MODIFY" | "REMOVE", sk: string = OPERATOR_AUDIT_HEARTBEAT.SK): DynamoDBRecord => ({
+      eventName,
+      dynamodb: { Keys: { PK: { S: OPERATOR_AUDIT_HEARTBEAT.PK }, SK: { S: sk } }, NewImage: { at: { S: "2026-09-27T12:00:00Z" } } },
+    });
+    expect(OPERATOR_AUDIT_HEARTBEAT.PK.startsWith("OPAUDIT#")).toBe(false);
+    expect(isHeartbeat(beat("INSERT"))).toBe(true);
+    expect(isHeartbeat(beat("MODIFY"))).toBe(true);
+    expect(isHeartbeat(beat("REMOVE"))).toBe(false);
+    expect(isHeartbeat(beat("MODIFY", "OTHER"))).toBe(false);
+    expect(isHeartbeat(record("MODIFY", "OPAUDIT#team-1"))).toBe(false);
+    expect(isHeartbeat({ eventName: "MODIFY" } as DynamoDBRecord)).toBe(false);
+    expect(isTampering(beat("MODIFY"), NOW)).toBe(false);
+    const { obs, logs, counts } = fakeObservability();
+    const handler = createOperatorAuditWatchHandler({ obs, now: () => NOW });
+    expect(await handler({ Records: [beat("INSERT"), beat("MODIFY"), record("MODIFY", "OPAUDIT#team-1", { expiresAt: LATER })] })).toEqual({ changed: 1, heartbeats: 2 });
+    expect(counts).toEqual([
+      { metric: BusinessMetric.OperatorAuditChanged, value: 1 },
+      { metric: BusinessMetric.OperatorAuditWatchHeartbeat, value: 2 },
+    ]);
+    expect(logs).toHaveLength(1);
   });
 });

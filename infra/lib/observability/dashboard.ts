@@ -123,6 +123,8 @@ export class OpsDashboard extends Construct {
     this.dashboard.addWidgets(
       // The operator audit watch (primary region): any point here is a P1
       businessGraph("Operators: audit items changed or deleted (not by TTL)", [BusinessMetric.OperatorAuditChanged]),
+      // Its heartbeats: a gap means it isn't reading the stream ("Operator audit watch silent")
+      businessGraph("Operators: audit watch heartbeats", [BusinessMetric.OperatorAuditWatchHeartbeat]),
     );
   }
 }

@@ -25,14 +25,22 @@
 // "TTL expiry", which a REMOVE can't be told apart from. An item with no
 // `expiresAt` is kept forever, which hides nothing, so it isn't counted.
 //
+// And it counts each write of its heartbeat item (OPERATOR_AUDIT_HEARTBEAT,
+// rewritten every HEARTBEAT_EVERY_MINUTES by a schedule) in
+// OperatorAuditWatchHeartbeat. "Operator audit watch silent" fires when none
+// arrives for a while, so anything that stops this function reading the
+// stream or its metrics reaching CloudWatch (a disabled mapping, zero
+// concurrency, a stream or key policy, a deleted log group) is seen.
+//
 // The event source mapping only passes MODIFY and REMOVE records whose
-// partition key starts with OPAUDIT#, and INSERTs whose sort key also starts
-// with AUDIT# (infra/lib/observability/operator-audit-watch.ts), so this
-// function never sees team data. It logs each change with its keys'
+// partition key starts with OPAUDIT#, INSERTs whose sort key also starts
+// with AUDIT#, and writes of the heartbeat item
+// (infra/lib/observability/operator-audit-watch.ts), so this function never
+// sees team data. It logs each change with its keys'
 // IDs and the event name: never the item's attributes (reasons, operator subs).
 
 import type { DynamoDBRecord, DynamoDBStreamEvent } from "aws-lambda";
-import { OPERATOR_AUDIT_PREFIX, OPERATOR_AUDIT_RETENTION_DAYS } from "../data/index.js";
+import { OPERATOR_AUDIT_HEARTBEAT, OPERATOR_AUDIT_PREFIX, OPERATOR_AUDIT_RETENTION_DAYS } from "../data/index.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 
 export interface OperatorAuditWatchDeps {
@@ -82,6 +90,12 @@ export function isTampering(record: DynamoDBRecord, nowMs: number): boolean {
   return !isExpiry(record, nowMs);
 }
 
+/** A write of the watch's heartbeat item. */
+export function isHeartbeat(record: DynamoDBRecord): boolean {
+  const keys = record.dynamodb?.Keys;
+  return (record.eventName === "INSERT" || record.eventName === "MODIFY") && keys?.PK?.S === OPERATOR_AUDIT_HEARTBEAT.PK && keys?.SK?.S === OPERATOR_AUDIT_HEARTBEAT.SK;
+}
+
 /** A key for the log: as stored when it looks like one of ours, otherwise only that it was odd. */
 function loggable(value: unknown): string {
   return typeof value === "string" && KEY.test(value) ? value : "(unexpected key)";
@@ -90,10 +104,12 @@ function loggable(value: unknown): string {
 export function createOperatorAuditWatchHandler(deps: OperatorAuditWatchDeps) {
   const { obs } = deps;
   const now = deps.now ?? Date.now;
-  return async (event: DynamoDBStreamEvent): Promise<{ changed: number }> => {
+  return async (event: DynamoDBStreamEvent): Promise<{ changed: number; heartbeats: number }> => {
     const at = now();
     let changed = 0;
+    let heartbeats = 0;
     for (const record of event.Records ?? []) {
+      if (isHeartbeat(record)) heartbeats++;
       if (!isTampering(record, at)) continue;
       changed++;
       obs.logger.error(record.eventName === "INSERT" ? "Operator audit item written to expire early" : "Operator audit item changed", {
@@ -105,6 +121,7 @@ export function createOperatorAuditWatchHandler(deps: OperatorAuditWatchDeps) {
       });
     }
     if (changed > 0) obs.count(BusinessMetric.OperatorAuditChanged, changed);
-    return { changed };
+    if (heartbeats > 0) obs.count(BusinessMetric.OperatorAuditWatchHeartbeat, heartbeats);
+    return { changed, heartbeats };
   };
 }

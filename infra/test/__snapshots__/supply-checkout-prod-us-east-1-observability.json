@@ -230,6 +230,12 @@
                     },
                     {
                       "Fn::GetAtt": [
+                        "OperatorAuditWatchDataPathChanges20E06095",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
                         "OperatorAlarmChanges646DFF5B",
                         "Arn"
                       ]
@@ -3897,6 +3903,9 @@
             },
             {
               "Pattern": "{\"eventName\":[\"INSERT\"],\"dynamodb\":{\"Keys\":{\"PK\":{\"S\":[{\"prefix\":\"OPAUDIT#\"}]},\"SK\":{\"S\":[{\"prefix\":\"AUDIT#\"}]}}}}"
+            },
+            {
+              "Pattern": "{\"eventName\":[\"INSERT\",\"MODIFY\"],\"dynamodb\":{\"Keys\":{\"PK\":{\"S\":[\"OPWATCH#HEARTBEAT\"]},\"SK\":{\"S\":[\"HEARTBEAT\"]}}}}"
             }
           ]
         },
@@ -4105,6 +4114,222 @@
         ],
         "Threshold": 0,
         "TreatMissingData": "notBreaching"
+      }
+    },
+    "OperatorAuditWatchHeartbeatRole226DD5C1": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "scheduler.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Writes the operator audit watch's heartbeat item, and nothing else",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "OperatorAuditWatchHeartbeatRoleDefaultPolicy857AF091": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "dynamodb:PutItem",
+              "Condition": {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [
+                    "OPWATCH#HEARTBEAT"
+                  ],
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "at"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "dynamodb:ReturnValues": "NONE"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "HeartbeatItemOnly"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey",
+                "kms:Encrypt",
+                "kms:GenerateDataKey"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "dynamodb.",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ".amazonaws.com"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "Sid": "TableKeyThroughDynamoDb"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OperatorAuditWatchHeartbeatRoleDefaultPolicy857AF091",
+        "Roles": [
+          {
+            "Ref": "OperatorAuditWatchHeartbeatRole226DD5C1"
+          }
+        ]
+      }
+    },
+    "OperatorAuditWatchHeartbeatA74B1090": {
+      "Type": "AWS::Scheduler::Schedule",
+      "Properties": {
+        "Description": "Rewrites the operator audit watch's heartbeat item (supply-checkout-6uw.11)",
+        "FlexibleTimeWindow": {
+          "Mode": "OFF"
+        },
+        "ScheduleExpression": "rate(10 minutes)",
+        "Target": {
+          "Arn": "arn:aws:scheduler:::aws-sdk:dynamodb:putItem",
+          "Input": "{\"TableName\":\"supply-checkout-prod-app\",\"Item\":{\"PK\":{\"S\":\"OPWATCH#HEARTBEAT\"},\"SK\":{\"S\":\"HEARTBEAT\"},\"at\":{\"S\":\"<aws.scheduler.scheduled-time>\"}}}",
+          "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 300,
+            "MaximumRetryAttempts": 2
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "OperatorAuditWatchHeartbeatRole226DD5C1",
+              "Arn"
+            ]
+          }
+        }
+      }
+    },
+    "OperatorAuditWatchSilentC4B3F3F5": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2. Operator audit watch silent: no heartbeat from the operator audit watch for 30 minutes, so it isn't reading the table's stream or its metrics aren't arriving, and \"Operator audit changed\" can't fire. Check its event source mapping, concurrency, role, log group and log transformers, the table's stream and resource policy, the table key and the heartbeat schedule; follow \"Operators\" in docs/infrastructure.md.",
+        "AlarmName": "supply-checkout-prod-p2-operator-audit-watch-silent",
+        "ComparisonOperator": "LessThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "OperatorAuditWatchHeartbeat (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "OperatorAuditWatchHeartbeat",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 1800,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 1,
+        "TreatMissingData": "breaching"
       }
     },
     "OperatorPoolChangesD40F920E": {
@@ -4499,6 +4724,319 @@
         ]
       }
     },
+    "OperatorAuditWatchDataPathChanges20E06095": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The operator audit watch's log group, the table's stream or the table key was deleted or disabled, or changed outside a deploy (supply-checkout-6uw.11)",
+        "EventPattern": {
+          "source": [
+            "aws.logs",
+            "aws.dynamodb",
+            "aws.kms"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "$or": [
+              {
+                "eventName": [
+                  "DeleteLogGroup"
+                ],
+                "eventSource": [
+                  "logs.amazonaws.com"
+                ],
+                "requestParameters": {
+                  "logGroupName": [
+                    {
+                      "Ref": "OperatorAuditWatchLogsC88D29BF"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "PutTransformer",
+                  "DeleteTransformer",
+                  "PutDataProtectionPolicy"
+                ],
+                "eventSource": [
+                  "logs.amazonaws.com"
+                ],
+                "requestParameters": {
+                  "logGroupIdentifier": [
+                    {
+                      "Ref": "OperatorAuditWatchLogsC88D29BF"
+                    },
+                    {
+                      "wildcard": {
+                        "Fn::Join": [
+                          "",
+                          [
+                            "*:log-group:",
+                            {
+                              "Ref": "OperatorAuditWatchLogsC88D29BF"
+                            }
+                          ]
+                        ]
+                      }
+                    },
+                    {
+                      "wildcard": {
+                        "Fn::Join": [
+                          "",
+                          [
+                            "*:log-group:",
+                            {
+                              "Ref": "OperatorAuditWatchLogsC88D29BF"
+                            },
+                            ":*"
+                          ]
+                        ]
+                      }
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "PutAccountPolicy"
+                ],
+                "eventSource": [
+                  "logs.amazonaws.com"
+                ],
+                "requestParameters": {
+                  "policyType": [
+                    "TRANSFORMER_POLICY",
+                    "DATA_PROTECTION_POLICY"
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "PutResourcePolicy",
+                  "DeleteResourcePolicy"
+                ],
+                "eventSource": [
+                  "dynamodb.amazonaws.com"
+                ],
+                "requestParameters": {
+                  "resourceArn": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition"
+                          },
+                          ":dynamodb:us-east-1:",
+                          {
+                            "Ref": "AWS::AccountId"
+                          },
+                          ":table/supply-checkout-prod-app"
+                        ]
+                      ]
+                    },
+                    {
+                      "prefix": {
+                        "Fn::Join": [
+                          "",
+                          [
+                            "arn:",
+                            {
+                              "Ref": "AWS::Partition"
+                            },
+                            ":dynamodb:us-east-1:",
+                            {
+                              "Ref": "AWS::AccountId"
+                            },
+                            ":table/supply-checkout-prod-app/stream/"
+                          ]
+                        ]
+                      }
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "UpdateTable"
+                ],
+                "eventSource": [
+                  "dynamodb.amazonaws.com"
+                ],
+                "requestParameters": {
+                  "tableName": [
+                    "supply-checkout-prod-app",
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition"
+                          },
+                          ":dynamodb:us-east-1:",
+                          {
+                            "Ref": "AWS::AccountId"
+                          },
+                          ":table/supply-checkout-prod-app"
+                        ]
+                      ]
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "UpdateTable"
+                ],
+                "eventSource": [
+                  "dynamodb.amazonaws.com"
+                ],
+                "requestParameters": {
+                  "tableName": [
+                    "supply-checkout-prod-app",
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition"
+                          },
+                          ":dynamodb:us-east-1:",
+                          {
+                            "Ref": "AWS::AccountId"
+                          },
+                          ":table/supply-checkout-prod-app"
+                        ]
+                      ]
+                    }
+                  ],
+                  "streamSpecification": {
+                    "streamEnabled": [
+                      false
+                    ]
+                  }
+                }
+              },
+              {
+                "eventName": [
+                  "DisableKey",
+                  "ScheduleKeyDeletion"
+                ],
+                "eventSource": [
+                  "kms.amazonaws.com"
+                ],
+                "resources": {
+                  "ARN": [
+                    {
+                      "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "PutKeyPolicy"
+                ],
+                "eventSource": [
+                  "kms.amazonaws.com"
+                ],
+                "resources": {
+                  "ARN": [
+                    {
+                      "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the operator audit watch's log group, the table's stream or the table key at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
     "OperatorAlarmChanges646DFF5B": {
       "Type": "AWS::Events::Rule",
       "Properties": {
@@ -4530,6 +5068,9 @@
                     },
                     {
                       "Ref": "OperatorAuditWatchDropped22E7CA0E"
+                    },
+                    {
+                      "Ref": "OperatorAuditWatchSilentC4B3F3F5"
                     }
                   ]
                 }
@@ -4548,6 +5089,9 @@
                     },
                     {
                       "Ref": "OperatorAuditWatchDropped22E7CA0E"
+                    },
+                    {
+                      "Ref": "OperatorAuditWatchSilentC4B3F3F5"
                     }
                   ]
                 },
@@ -4664,6 +5208,24 @@
                     },
                     {
                       "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "PutDataProtectionPolicy"
+                ],
+                "eventSource": [
+                  "sns.amazonaws.com"
+                ],
+                "requestParameters": {
+                  "resourceArn": [
+                    {
+                      "Ref": "AlarmTopicsP1E7C597D3"
+                    },
+                    {
+                      "Ref": "AlarmTopicsP213C63151"
                     }
                   ]
                 }
@@ -4889,6 +5451,9 @@
                       "Ref": "OperatorAuditWatchChanges59EE8EE1"
                     },
                     {
+                      "Ref": "OperatorAuditWatchDataPathChanges20E06095"
+                    },
+                    {
                       "Ref": "OperatorAlarmChanges646DFF5B"
                     },
                     {
@@ -4914,6 +5479,9 @@
                       "Ref": "OperatorAuditWatchChanges59EE8EE1"
                     },
                     {
+                      "Ref": "OperatorAuditWatchDataPathChanges20E06095"
+                    },
+                    {
                       "Ref": "OperatorAlarmChanges646DFF5B"
                     },
                     {
@@ -4937,6 +5505,9 @@
                     },
                     {
                       "Ref": "OperatorAuditWatchChanges59EE8EE1"
+                    },
+                    {
+                      "Ref": "OperatorAuditWatchDataPathChanges20E06095"
                     },
                     {
                       "Ref": "OperatorAlarmChanges646DFF5B"
@@ -4972,6 +5543,9 @@
                     },
                     {
                       "Ref": "OperatorAuditWatchChanges59EE8EE1"
+                    },
+                    {
+                      "Ref": "OperatorAuditWatchDataPathChanges20E06095"
                     },
                     {
                       "Ref": "OperatorAlarmChanges646DFF5B"
@@ -5070,6 +5644,9 @@
                       "Ref": "OperatorAuditWatchChanges59EE8EE1"
                     },
                     {
+                      "Ref": "OperatorAuditWatchDataPathChanges20E06095"
+                    },
+                    {
                       "Ref": "OperatorAlarmChanges646DFF5B"
                     },
                     {
@@ -5097,6 +5674,9 @@
                       "Ref": "OperatorAuditWatchChanges59EE8EE1"
                     },
                     {
+                      "Ref": "OperatorAuditWatchDataPathChanges20E06095"
+                    },
+                    {
                       "Ref": "OperatorAlarmChanges646DFF5B"
                     },
                     {
@@ -5122,6 +5702,9 @@
                     },
                     {
                       "Ref": "OperatorAuditWatchChanges59EE8EE1"
+                    },
+                    {
+                      "Ref": "OperatorAuditWatchDataPathChanges20E06095"
                     },
                     {
                       "Ref": "OperatorAlarmChanges646DFF5B"
@@ -5159,6 +5742,9 @@
                     },
                     {
                       "Ref": "OperatorAuditWatchChanges59EE8EE1"
+                    },
+                    {
+                      "Ref": "OperatorAuditWatchDataPathChanges20E06095"
                     },
                     {
                       "Ref": "OperatorAlarmChanges646DFF5B"
@@ -5437,6 +6023,13 @@
                   "Arn"
                 ]
               },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "OperatorAuditWatchSilentC4B3F3F5",
+                  "Arn"
+                ]
+              },
               "\"]}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":7,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Traffic: API requests\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
@@ -5541,7 +6134,11 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorAuditChanged\",\"Region\",\"us-east-1\",{\"label\":\"OperatorAuditChanged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorAuditChanged\",\"Region\",\"us-west-2\",{\"label\":\"OperatorAuditChanged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
+              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorAuditChanged\",\"Region\",\"us-east-1\",{\"label\":\"OperatorAuditChanged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorAuditChanged\",\"Region\",\"us-west-2\",{\"label\":\"OperatorAuditChanged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":55,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: audit watch heartbeats\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorAuditWatchHeartbeat\",\"Region\",\"us-east-1\",{\"label\":\"OperatorAuditWatchHeartbeat (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorAuditWatchHeartbeat\",\"Region\",\"us-west-2\",{\"label\":\"OperatorAuditWatchHeartbeat (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
             ]
           ]
         },

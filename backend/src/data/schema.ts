@@ -138,6 +138,18 @@ export const OPS_AUDIT_INDEX_PREFIX = "OPS#AUDIT#";
 export const OPERATOR_AUDIT_PREFIX = "OPAUDIT#";
 
 /**
+ * The operator audit watch's heartbeat (supply-checkout-6uw.11): one item,
+ * rewritten every few minutes by an EventBridge Scheduler schedule with only
+ * its keys and `at` (the scheduled time). The watch reads it from the stream
+ * and counts it in OperatorAuditWatchHeartbeat, whose "Operator audit watch
+ * silent" alarm fires when it stops arriving, whatever stopped the watch
+ * reading the stream (its mapping, concurrency, role, log group, the stream,
+ * the table key). Its own partition: never a team's, never `OPAUDIT#`, and no
+ * sort key the live-update publisher reads.
+ */
+export const OPERATOR_AUDIT_HEARTBEAT = { PK: "OPWATCH#HEARTBEAT", SK: "HEARTBEAT", attributes: ["PK", "SK", "at"] } as const;
+
+/**
  * A comp (ADR 0015): a plan an operator grants a team for a while, whatever
  * Stripe says. Separate from `plan` and `status`, which only the billing code
  * writes (ADR 0009).

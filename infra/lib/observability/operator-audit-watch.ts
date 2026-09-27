@@ -1,17 +1,18 @@
 import { fileURLToPath } from "node:url";
-import { Aws, Duration, Validations } from "aws-cdk-lib";
+import { Aws, Duration, Stack, Validations } from "aws-cdk-lib";
 import { Alarm, ComparisonOperator, TreatMissingData } from "aws-cdk-lib/aws-cloudwatch";
 import { Policy, PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { Architecture, EventSourceMapping, FilterCriteria, FilterRule, Runtime, StartingPosition } from "aws-cdk-lib/aws-lambda";
 import { SqsDlq } from "aws-cdk-lib/aws-lambda-event-sources";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { LogGroup } from "aws-cdk-lib/aws-logs";
+import { CfnSchedule } from "aws-cdk-lib/aws-scheduler";
 import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
-import { OPERATOR_AUDIT_PREFIX } from "../../../backend/src/data/schema.js";
+import { OPERATOR_AUDIT_HEARTBEAT, OPERATOR_AUDIT_PREFIX } from "../../../backend/src/data/schema.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
-import { opsResourceNames } from "../../../backend/src/ops/names.js";
+import { HEARTBEAT_EVERY_MINUTES, HEARTBEAT_SILENT_ALARM_MINUTES, opsResourceNames } from "../../../backend/src/ops/names.js";
 import { bundling } from "../stacks/api-stack.js";
 import type { AlarmTopics } from "./alarm-topics.js";
 import { LOG_RETENTION } from "./defaults.js";
@@ -23,6 +24,8 @@ export interface OperatorAuditWatchProps {
   readonly envName: string;
   /** The primary region, where the ops function writes the audit. */
   readonly region: string;
+  /** The app table's name, for the heartbeat. */
+  readonly tableName: string;
   readonly topics: AlarmTopics;
 }
 
@@ -49,9 +52,23 @@ export interface OperatorAuditWatchProps {
  *   `dropped`: P2 when anything is in it ("Operator audit watch dropped
  *   records"). The records are still in the stream for 24 hours, and in the
  *   table's point-in-time recovery after that.
+ * - `heartbeat`: an EventBridge Scheduler schedule that rewrites one item,
+ *   OPERATOR_AUDIT_HEARTBEAT, every HEARTBEAT_EVERY_MINUTES with DynamoDB's
+ *   PutItem directly (no function), and `silent`: P2 when the watch hasn't
+ *   counted one in HEARTBEAT_SILENT_ALARM_MINUTES ("Operator audit watch
+ *   silent"; missing data breaches). Whatever stops the watch reading the
+ *   stream or its metric reaching CloudWatch shows here: the mapping disabled
+ *   or deleted, zero concurrency, the role, a stream resource policy, the
+ *   stream turned off, the table key disabled or its policy changed, the log
+ *   group deleted (the role can't recreate it) or transformed, or the
+ *   schedule itself stopped. An iterator-age alarm was the other choice, but
+ *   Lambda sends IteratorAge only when it invokes the function, and the
+ *   filter means it's rarely invoked: a stalled read would look like quiet.
+ *   The schedule's role may PutItem only that item's keys and `at`.
  *
  * The observability stack's EventBridge rules alert P1 when the mapping, the
- * function, its role or these alarms are changed outside a deploy.
+ * function, its role, its log group, the table's stream or key, or these
+ * alarms are changed outside a deploy.
  *
  * Its role may read only the stream (and decrypt through DynamoDB); it has no
  * table access at all.
@@ -64,10 +81,16 @@ export class OperatorAuditWatch extends Construct {
   readonly changed: Alarm;
   readonly failing: Alarm;
   readonly dropped: Alarm;
+  readonly silent: Alarm;
+  readonly logGroup: LogGroup;
+  readonly heartbeat: CfnSchedule;
+  /** The app table's ARN in this region, and its key's (from SSM), for the rules on its stream and key. */
+  readonly tableArn: string;
+  readonly tableKeyArn: string;
 
   constructor(scope: Construct, id: string, props: OperatorAuditWatchProps) {
     super(scope, id);
-    const logGroup = new LogGroup(this, "Logs", { retention: LOG_RETENTION });
+    const logGroup = (this.logGroup = new LogGroup(this, "Logs", { retention: LOG_RETENTION }));
     const role = (this.role = new Role(this, "Role", {
       assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
       description: "Execution role for the operator audit watch",
@@ -90,7 +113,7 @@ export class OperatorAuditWatch extends Construct {
     });
 
     const streamArn = StringParameter.valueForStringParameter(this, `/supply-checkout/${props.envName}/data/table-stream-arn`);
-    const tableKey = StringParameter.valueForStringParameter(this, `/supply-checkout/${props.envName}/data/table-key-arn`);
+    const tableKey = (this.tableKeyArn = StringParameter.valueForStringParameter(this, `/supply-checkout/${props.envName}/data/table-key-arn`));
     role.addToPolicy(
       new PolicyStatement({
         sid: "ReadTableStream",
@@ -147,6 +170,11 @@ export class OperatorAuditWatch extends Construct {
           eventName: FilterRule.isEqual("INSERT"),
           dynamodb: { Keys: { PK: { S: FilterRule.beginsWith(OPERATOR_AUDIT_PREFIX) }, SK: { S: FilterRule.beginsWith("AUDIT#") } } },
         }),
+        // Its heartbeat
+        FilterCriteria.filter({
+          eventName: FilterRule.or("INSERT", "MODIFY"),
+          dynamodb: { Keys: { PK: { S: FilterRule.isEqual(OPERATOR_AUDIT_HEARTBEAT.PK) }, SK: { S: FilterRule.isEqual(OPERATOR_AUDIT_HEARTBEAT.SK) } } },
+        }),
       ],
     });
 
@@ -184,5 +212,58 @@ export class OperatorAuditWatch extends Construct {
       treatMissingData: TreatMissingData.NOT_BREACHING,
     });
     props.topics.notify(this.dropped, "P2");
+
+    // The heartbeat: Scheduler writes the item itself, so nothing else can fail
+    const tableArn = (this.tableArn = Stack.of(this).formatArn({ service: "dynamodb", resource: "table", resourceName: props.tableName }));
+    const heartbeatRole = new Role(this, "HeartbeatRole", {
+      assumedBy: new ServicePrincipal("scheduler.amazonaws.com", { conditions: { StringEquals: { "aws:SourceAccount": Aws.ACCOUNT_ID } } }),
+      description: "Writes the operator audit watch's heartbeat item, and nothing else",
+    });
+    heartbeatRole.addToPolicy(
+      new PolicyStatement({
+        sid: "HeartbeatItemOnly",
+        actions: ["dynamodb:PutItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [OPERATOR_AUDIT_HEARTBEAT.PK], "dynamodb:Attributes": [...OPERATOR_AUDIT_HEARTBEAT.attributes] },
+          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        },
+      }),
+    );
+    heartbeatRole.addToPolicy(
+      new PolicyStatement({
+        sid: "TableKeyThroughDynamoDb",
+        actions: ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"],
+        resources: [tableKey],
+        conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
+      }),
+    );
+    this.heartbeat = new CfnSchedule(this, "Heartbeat", {
+      description: "Rewrites the operator audit watch's heartbeat item (supply-checkout-6uw.11)",
+      scheduleExpression: `rate(${HEARTBEAT_EVERY_MINUTES} minutes)`,
+      flexibleTimeWindow: { mode: "OFF" },
+      target: {
+        arn: "arn:aws:scheduler:::aws-sdk:dynamodb:putItem",
+        roleArn: heartbeatRole.roleArn,
+        // `at` changes each time, so every write is a stream record
+        input: Stack.of(this).toJsonString({
+          TableName: props.tableName,
+          Item: { PK: { S: OPERATOR_AUDIT_HEARTBEAT.PK }, SK: { S: OPERATOR_AUDIT_HEARTBEAT.SK }, at: { S: "<aws.scheduler.scheduled-time>" } },
+        }),
+        // A missed write shows in the alarm: no long retries
+        retryPolicy: { maximumRetryAttempts: 2, maximumEventAgeInSeconds: 300 },
+      },
+    });
+
+    this.silent = new Alarm(this, "Silent", {
+      alarmName: `supply-checkout-${props.envName}-p2-operator-audit-watch-silent`,
+      alarmDescription: `P2. Operator audit watch silent: no heartbeat from the operator audit watch for ${HEARTBEAT_SILENT_ALARM_MINUTES} minutes, so it isn't reading the table's stream or its metrics aren't arriving, and "Operator audit changed" can't fire. Check its event source mapping, concurrency, role, log group and log transformers, the table's stream and resource policy, the table key and the heartbeat schedule; follow "Operators" in docs/infrastructure.md.`,
+      metric: business(BusinessMetric.OperatorAuditWatchHeartbeat, props.region, Duration.minutes(HEARTBEAT_SILENT_ALARM_MINUTES)),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: ComparisonOperator.LESS_THAN_THRESHOLD,
+      treatMissingData: TreatMissingData.BREACHING,
+    });
+    props.topics.notify(this.silent, "P2");
   }
 }

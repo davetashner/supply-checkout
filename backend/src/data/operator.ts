@@ -238,7 +238,9 @@ function teamsStartKey(cursor: string | undefined): Record<string, unknown> | un
  * with the team whose ID is `q` first. Each request reads at most
  * MAX_OPS_TEAMS_READ index items, whatever the number of teams, so a search
  * may return fewer than `limit` teams (even none) with a cursor to read on.
- * The cursor is opaque, and only for the same `q`.
+ * The cursor is opaque: a position in the index, not tied to `q` (nothing
+ * checks it), so send it with the same `q`; with another, the search reads on
+ * from that position and misses teams before it.
  */
 export async function listOpsTeams(
   db: Db,
