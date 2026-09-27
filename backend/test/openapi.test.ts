@@ -4,8 +4,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { ACCOUNT_ROUTES, AUTH_ROUTES, DATA_ROUTES, OPS_ROUTES, REFRESH_COOKIE } from "../src/api/routes.js";
-import { RESERVED_FIELDS } from "../src/data/index.js";
+import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, REFRESH_COOKIE } from "../src/api/routes.js";
+import { BILLING_INTERVALS, CATALOG } from "../src/billing/catalog.js";
+import { MEMBERS_PER_TEAM, RESERVED_FIELDS } from "../src/data/index.js";
 
 const text = readFileSync(new URL("../../docs/api/openapi.yaml", import.meta.url), "utf8");
 const spec = parse(text) as {
@@ -26,13 +27,13 @@ describe("OpenAPI description", () => {
   });
 
   it("describes every route, and nothing else", () => {
-    const served = [...DATA_ROUTES, ...ACCOUNT_ROUTES, ...AUTH_ROUTES, ...OPS_ROUTES].map((r) => `${r.method} ${r.path}`).sort();
+    const served = [...DATA_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...AUTH_ROUTES, ...OPS_ROUTES].map((r) => `${r.method} ${r.path}`).sort();
     expect(described).toEqual(served);
   });
 
-  it("needs a bearer token on data and account routes and not on auth routes", () => {
+  it("needs a bearer token on data, account and billing routes and not on auth routes", () => {
     expect(spec.security).toEqual([{ cognito: [] }]);
-    for (const r of [...DATA_ROUTES, ...ACCOUNT_ROUTES]) expect(spec.paths[r.path]?.[r.method.toLowerCase()]?.security, r.path).toBeUndefined();
+    for (const r of [...DATA_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES]) expect(spec.paths[r.path]?.[r.method.toLowerCase()]?.security, r.path).toBeUndefined();
     for (const r of AUTH_ROUTES) expect(spec.paths[r.path]?.post?.security, r.path).not.toContainEqual({ cognito: [] });
     expect(spec.components.securitySchemes.refreshCookie?.name).toBe(REFRESH_COOKIE);
   });
@@ -58,6 +59,13 @@ describe("OpenAPI description", () => {
         }
       }
     }
+  });
+
+  it("offers exactly the catalog's plans and intervals at checkout", () => {
+    const body = (spec.paths["/teams/{teamId}/billing/checkout"]?.post as unknown as { requestBody: { content: { "application/json": { schema: { properties: Record<string, { enum?: string[]; maximum?: number }> } } } } }).requestBody.content["application/json"].schema.properties;
+    expect(body.plan?.enum).toEqual(CATALOG.plans.map((p) => p.plan));
+    expect(body.interval?.enum).toEqual([...BILLING_INTERVALS]);
+    expect(body.seats?.maximum).toBe(MEMBERS_PER_TEAM);
   });
 
   it("lists the server-owned fields the data layer refuses", () => {

@@ -143,6 +143,37 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
   { method: "POST", path: "/me/email/verify", action: "verifyEmail", throttle: { rate: 10, burst: 20 } },
 ];
 
+export interface BillingRoute {
+  readonly method: "POST";
+  readonly path: string;
+  readonly action: "createCheckout";
+  /** The least role that may call it (all owners: billing is theirs, ADR 0007). */
+  readonly minRole: TeamRole;
+  readonly throttle: { readonly rate: number; readonly burst: number };
+}
+
+/**
+ * Billing (ADR 0009): an owner starts Stripe Checkout for their team, with a
+ * plan, an interval and a seat count. Needs a Cognito access token (the JWT
+ * authorizer). Served by the `billing` function, the only one besides the
+ * webhook's that may read the Stripe secret key.
+ */
+export const BILLING_ROUTES: readonly BillingRoute[] = [
+  // Each makes a Stripe customer (once per team) and a Checkout Session: rare, and Stripe rate-limits us too
+  { method: "POST", path: "/teams/{teamId}/billing/checkout", action: "createCheckout", minRole: "owner", throttle: { rate: 2, burst: 5 } },
+];
+
+/**
+ * Session tags the billing function puts on its role session. The
+ * billing-access role may read items in `TEAM#<teamId>` (the membership check
+ * and the team), update only the META item's `stripeCustomerId` there, and
+ * put only the Stripe link `STRIPE#<stripeCustomer>`. `stripeCustomer` is
+ * BILLING_TAG_UNUSED until Stripe has made the team's customer, so a session
+ * can only ever link the customer Stripe returned.
+ */
+export const BILLING_SESSION_TAGS = { teamId: "teamId", stripeCustomer: "stripeCustomer" } as const;
+export const BILLING_TAG_UNUSED = ".";
+
 export interface OpsRoute {
   readonly method: "GET" | "PUT" | "DELETE" | "POST";
   readonly path: string;
@@ -223,6 +254,10 @@ export const API_ENV = {
   clientId: "CLIENT_ID",
   /** Comma-separated origins allowed to call the auth endpoints, e.g. `https://app.<env domain>`. */
   allowedOrigins: "ALLOWED_ORIGINS",
+  /** The role the billing function assumes, tagged with the team and its Stripe customer. */
+  billingRoleArn: "BILLING_ROLE_ARN",
+  /** `https://app.<env domain>`: where Stripe Checkout sends the owner back to. */
+  appUrl: "APP_URL",
   /** The role the ops function assumes (ADR 0015). */
   opsRoleArn: "OPS_ROLE_ARN",
   /** The operator pool's issuer URL: only its tokens reach the ops function. */

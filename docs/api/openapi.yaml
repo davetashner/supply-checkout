@@ -140,6 +140,13 @@ tags:
       failed (its email bounced, drew a complaint or couldn't be sent) or
       expired, and can revoke or re-send it. Joining is
       `POST /invites/{inviteId}/accept` ([onboarding.md](onboarding.md)).
+  - name: billing
+    description: |
+      Subscriptions through Stripe (ADR 0009, ADR 0013). Owners start Stripe
+      Checkout for their team; Stripe's webhook, through a queue, turns what
+      they buy into the team's plan, seats and status, which `GET /me` shows.
+      The prices are provisional until the pricing decision
+      (supply-checkout-akz).
   - name: auth
     description: Sign-in sessions for the web app, with the refresh token in an HttpOnly cookie.
   - name: ops
@@ -1106,6 +1113,79 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /teams/{teamId}/billing/checkout:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    post:
+      tags: [billing]
+      operationId: createCheckout
+      summary: Start Stripe Checkout for the team's subscription. Owners only.
+      description: |
+        Answers the URL of a Stripe Checkout page for a subscription to `plan`,
+        billed every `interval`, for `seats` seats, linked to the team's Stripe
+        customer (made the first time). Send the owner there; Stripe sends
+        them back to the app with `?billing=success&team=<teamId>` (or
+        `billing=canceled`). The page expires after 24 hours (Stripe's default).
+
+        Plans: `starter` (`month` or `year`): $9 a month including 3 seats,
+        then $3 a seat; a year is 10 months' price. Provisional until
+        supply-checkout-akz. `seats` is at least the team's member count and
+        at most 100.
+
+        A team still in its free trial (with at least two days of it left)
+        keeps it: Checkout asks for no card, the subscription's trial ends
+        when the team's does (`trialEndsAt` in the answer), and if no card is
+        added by then Stripe cancels it. Otherwise Checkout asks for a card.
+
+        Nothing about the team changes here: the Stripe webhook sets its plan,
+        seats and status once the owner finishes on Stripe. Idempotent: the
+        same `Idempotency-Key` with the same choices answers the same page.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: A new random value per "continue to checkout", reused on retries and double-clicks.
+          schema: { type: string, pattern: "^[A-Za-z0-9_-]{8,128}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [plan, interval, seats]
+              properties:
+                plan: { type: string, enum: [starter] }
+                interval: { type: string, enum: [month, year] }
+                seats: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "201":
+          description: The Checkout page to send the owner to.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [checkout]
+                properties:
+                  checkout:
+                    type: object
+                    required: [url, expiresAt, trialEndsAt]
+                    properties:
+                      url: { type: string, format: uri, description: "Stripe's hosted Checkout page." }
+                      expiresAt: { type: string, format: date-time, description: When the page stops working. }
+                      trialEndsAt: { type: [string, "null"], format: date-time, description: "When the subscription's free trial ends, or `null` when Checkout asks for a card now." }
+        "400":
+          description: "`bad_request`: no or a malformed `Idempotency-Key`, a plan or interval we don't sell, or seats that aren't a whole number from the team's member count to 100."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403":
+          description: "`permission_denied`: `owners_only`, `not_member`, or `team_closed` (reopen the team first)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: "`aborted`: with `reason: \"already_subscribed\"`, the team has a subscription that hasn't ended (change it in the Customer Portal); otherwise the team changed meanwhile, try again."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "500":
+          description: "`internal`: Stripe couldn't be reached or refused the request. Nothing about the team changed; try again."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /ops/teams:
     get:
       tags: [ops]
@@ -1901,7 +1981,7 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, code_mismatch, code_expired, already_verified, email_in_use, email_changed]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -1915,6 +1995,8 @@ components:
                 right), `code_expired`, `already_verified`, `email_in_use`
                 (another account has the address), and `email_changed` (the
                 address changed while the code was checked).
+                `already_subscribed`: the team has a Stripe subscription that
+                hasn't ended, so it can't start another checkout.
   responses:
     OperatorsOnly:
       description: "`permission_denied`: the token's user isn't in the `operators` group (now, according to Cognito)."
