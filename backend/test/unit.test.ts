@@ -183,6 +183,9 @@ describe("createDb", () => {
 
   it("ends a request that takes longer than requestTimeoutMs, so it's retried and fails instead of hanging", async () => {
     const { createServer } = await import("node:http");
+    // @smithy/node-http-handler only logs a warning on requestTimeout unless throwOnRequestTimeout is set
+    // (createDb passes both in the requestHandler options, which NodeHttpHandler.create takes as its config);
+    // without it this request hangs until the test times out.
     // Accepts requests and never answers them
     const server = createServer(() => {});
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

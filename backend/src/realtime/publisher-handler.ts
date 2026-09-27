@@ -232,7 +232,9 @@ function publishBudget(max: number, ms: number, now: () => number) {
       used++;
       return true;
     },
+    /** Whether the budget is used up, or its time is: checked before a chunk reads its members. */
     get spent() {
+      if (!spent && (used >= max || now() >= deadline)) spent = true;
       return spent;
     },
   };
@@ -298,6 +300,8 @@ async function publishTeam(
   for (let i = 0; i < events.length; i += EVENTS_PER_PUBLISH) {
     const chunk = events.slice(i, i + EVENTS_PER_PUBLISH);
     const first = (chunk[0] as Outgoing).index === firstIndex;
+    // Once the budget is spent, stop before reading: an uncached read could take AUDIENCE_READ_TIMEOUT_MS
+    if (budget.spent && !first) return { sent, publishes, firstFailed: chunk[0], deferred: true };
     // Read for every chunk, not once per team: the cache says how stale the list may be, not how long this invocation runs
     let users: readonly string[];
     try {
@@ -316,7 +320,6 @@ async function publishTeam(
         deps.obs.logger.warn("User ID can't be a channel name; not publishing to it", { teamId, userId: user });
       }
     }
-    if (budget.spent && channels.length && !first) return { sent, publishes, firstFailed: chunk[0], deferred: true };
     const failures = await Promise.all(channels.map((channel) => publishChunk(deps, run, budget, teamId, channel, chunk, first)));
     const failed = failures.filter((f) => f >= 0);
     const skipped = failures.filter((f) => f === SKIPPED).length;

@@ -719,6 +719,30 @@ describe("the stream handler", () => {
       expect(logs.at(-1)).toMatchObject({ message: "Batch", fields: { sent: 5, failed: 2 } });
     });
 
+    it("doesn't read the members for a chunk once the budget is spent, except the batch's first", async () => {
+      members[TEAM_C] = ["c0"];
+      const reads: string[] = [];
+      const counting: Audience = {
+        recipients: async (teamId) => {
+          reads.push(teamId);
+          return audience.recipients(teamId);
+        },
+        forget: () => {},
+      };
+      members[TEAM] = [A1];
+      // TEAM_C's record is first and goes outside the budget (counting 1 of 2); TEAM's first chunk takes the other
+      const records = [record("INSERT", product(TEAM_C, "c"), { new: productItem("c", 1) }), ...products(12).slice(1)];
+      const result = await createPublisherHandler({ publish, audience: counting, obs: fakeObservability(), collectionEventAfter: Infinity, maxPublishes: 2, concurrency: 1 })({
+        Records: records,
+      });
+      expect(result.batchItemFailures).toHaveLength(1);
+      expect(counts.LiveUpdatesDeferred).toBeGreaterThan(0);
+      // One read per team for the chunks that went; none for TEAM's second chunk, after the budget ran out
+      expect(byChannel()[`/users/${A1}`]).toHaveLength(EVENTS_PER_PUBLISH);
+      expect(reads.filter((t) => t === TEAM_C)).toEqual([TEAM_C]);
+      expect(reads.filter((t) => t === TEAM)).toEqual([TEAM]);
+    });
+
     it("keeps a read and the first chunk's publish inside the function's timeout", () => {
       expect(AUDIENCE_READ_TIMEOUT_MS + PUBLISH_TIMEOUT_MS).toBeLessThanOrEqual(CONSUMER_TIMEOUT_SECONDS * 1000 - 1_000);
       // A read that starts just before the budget ends publishes nothing after it
