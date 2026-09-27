@@ -11,7 +11,9 @@ export function toast(msg, ms = 3200) {
 export function openModal(html, mount) {
   const m = $("#modal"); m.innerHTML = html; $("#overlay").hidden = false;
   mount && mount(m);
-  const f = m.querySelector("[autofocus]") || m.querySelector("input,button"); f && f.focus();
+  // data-autofocus, not autofocus: WebKit focuses an inserted autofocus field again at the
+  // next frame, even after focus has moved on, so a quick tap into the next field typed into it
+  const f = m.querySelector("[data-autofocus]") || m.querySelector("input,button"); f && f.focus();
 }
 export function closeModal() { $("#overlay").hidden = true; $("#modal").innerHTML = ""; }
 // Not while the modal's form is saving (saving() in src/main.js): closing it would lose what

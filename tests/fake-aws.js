@@ -416,16 +416,29 @@ export function installFakeSocket(mode) {
       if (m.type === "connection_init" && window.__wsMode.ack) this.receive({ type: "connection_ack", connectionTimeoutMs: 300000 });
       if (m.type === "subscribe" && window.__wsMode.subscribe) this.receive({ type: "subscribe_" + window.__wsMode.subscribe, id: m.id });
     }
+    // A reply to something the app sent: later, on a timer, as a real socket never answers
+    // during send()
     receive(msg) {
-      setTimeout(() => { if (!this.closed) this.onmessage({ data: typeof msg === "string" ? msg : JSON.stringify(msg) }); }, 0);
+      setTimeout(() => this.deliver(msg), 0);
+    }
+    // A message from the server, delivered now. The test's helpers use this, so the message
+    // has arrived by the time they return, whatever the page's clock is doing.
+    deliver(msg) {
+      if (!this.closed) this.onmessage({ data: typeof msg === "string" ? msg : JSON.stringify(msg) });
     }
     event(ev) {
-      this.receive({ type: "data", id: this.sent.find((m) => m.type === "subscribe").id, event: typeof ev === "string" ? ev : JSON.stringify(ev) });
+      this.deliver({ type: "data", id: this.sent.find((m) => m.type === "subscribe").id, event: typeof ev === "string" ? ev : JSON.stringify(ev) });
     }
     close() {
       if (this.closed) return;
       this.closed = true;
       setTimeout(() => this.onclose({}), 0);
+    }
+    // The server closes the socket: the app hears of it now
+    drop() {
+      if (this.closed) return;
+      this.closed = true;
+      this.onclose({});
     }
     // The access token in the subprotocol header
     get token() {
@@ -463,12 +476,17 @@ export const connected = (page) => page.waitForFunction(() => {
 // The page's sockets: how many, and the latest one's state
 export const sockets = (page) => page.evaluate(() => window.__sockets.map((s) => ({ closed: s.closed, token: s.protocols[1] && s.token, sent: s.sent, url: s.url, protocols: s.protocols })));
 export const lastSocket = async (page) => (await sockets(page)).at(-1);
-// Sends a live event (an object, or raw text) on the latest socket
-// Live events are for team t1 unless they say otherwise
+// These three act as the server on the latest socket, and the app has handled what they send
+// by the time they return. Don't put them on a timer in the page: page.clock.fastForward()
+// runs every timer that falls due at the end of its jump, oldest first, so an older app
+// timer (the acknowledgement wait, the keep-alive) could close the socket before a message
+// on a newer timer arrived.
+// Sends a live event (an object, or raw text). Live events are for team t1 unless they say otherwise
 export const emit = (page, ev) => page.evaluate((e) => window.__sockets.at(-1).event(e), ev && typeof ev === "object" && !("teamId" in ev) ? { teamId: "t1", ...ev } : ev);
-// Any other message from AppSync on the latest socket
-export const receive = (page, msg) => page.evaluate((m) => window.__sockets.at(-1).receive(m), msg);
-export const dropSocket = (page) => page.evaluate(() => window.__sockets.at(-1).close());
+// Any other message from AppSync
+export const receive = (page, msg) => page.evaluate((m) => window.__sockets.at(-1).deliver(m), msg);
+// The server closes the socket
+export const dropSocket = (page) => page.evaluate(() => window.__sockets.at(-1).drop());
 export const setVisible = (page, visible) => page.evaluate((v) => {
   Object.defineProperty(document, "hidden", { value: !v, configurable: true });
   document.dispatchEvent(new Event("visibilitychange"));

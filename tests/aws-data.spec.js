@@ -653,12 +653,8 @@ test.describe("live updates", () => {
     await page.clock.pauseAt(new Date(Date.now() + 60e3));
     const productGets = () => backend.requests("GET", /^\/teams\/t1\/products\/./).length;
     let n = 0;
-    // The fake socket delivers each event on a timer, so the clock runs them now
-    const burst = async (count) => {
-      await page.evaluate((evs) => evs.forEach((e) => window.__sockets.at(-1).event(e)),
-        Array.from({ length: count }, () => ({ v: 1, teamId: "t1", collection: "products", id: `B${n++}`, op: "put", version: 1 })));
-      await page.clock.runFor(0);
-    };
+    const burst = (count) => page.evaluate((evs) => evs.forEach((e) => window.__sockets.at(-1).event(e)),
+      Array.from({ length: count }, () => ({ v: 1, teamId: "t1", collection: "products", id: `B${n++}`, op: "put", version: 1 })));
 
     // Ten are fetched; the eleventh is held
     await burst(11);
@@ -736,7 +732,7 @@ test.describe("live updates", () => {
     await page.clock.fastForward(200e3);
     await receive(page, { type: "ka" });
     await page.clock.fastForward(200e3);
-    expect(await sockets(page)).toHaveLength(2);
+    expect((await sockets(page)).map((s) => s.closed)).toEqual([true, false]);
     await page.clock.fastForward(100e3);
     await expect.poll(async () => (await sockets(page))[1].closed).toBe(true);
 
@@ -762,6 +758,7 @@ test.describe("live updates", () => {
     await page.clock.install();
     await open(page, undefined, { ws: { ack: false } });
     await receive(page, { type: "connection_ack" });
+    expect((await sockets(page))[0].sent.map((m) => m.type)).toEqual(["connection_init", "subscribe"]);
     await page.clock.fastForward(250e3);
     expect((await sockets(page))[0].closed).toBe(false);
     await page.clock.fastForward(60e3);
@@ -791,20 +788,27 @@ test.describe("live updates", () => {
     await expect.poll(() => lists(backend).products).toBe(start.products + 3);
     await page.clock.fastForward(15e3);
     expect(lists(backend).products).toBe(start.products + 3);
+    // Shown again: a re-list
     await setVisible(page, true);
+    await expect.poll(() => lists(backend).products).toBe(start.products + 4);
 
-    // The socket is tried again every 2 minutes; this time it closes before opening
+    // The socket is tried again every 2 minutes; this time it closes before opening. The
+    // hidden-tab poll is due too.
     await page.evaluate(() => { window.__wsMode = { open: false }; });
     await page.clock.fastForward(120e3);
-    await expect.poll(async () => (await sockets(page)).length).toBe(4);
-    // Then it works: polling stops after one re-list
+    await expect.poll(() => lists(backend).products).toBe(start.products + 5);
+    // Wait for it to close before the mode changes, then run its close handler, which
+    // schedules the next try, so the next fast-forward reaches that try
+    await expect.poll(async () => (await sockets(page)).map((s) => s.closed)).toEqual([true, true, true, true]);
+    await page.clock.runFor(1);
+    // Then it works: one more poll is due first, then polling stops after one re-list
     await page.evaluate(() => { window.__wsMode = { open: true, ack: true, subscribe: "success" }; });
     await page.clock.fastForward(120e3);
     await expect.poll(async () => (await sockets(page)).length).toBe(5);
     await expect.poll(async () => (await sockets(page))[4].sent.length).toBe(2);
-    const settled = lists(backend).products;
+    await expect.poll(() => lists(backend).products).toBe(start.products + 7);
     await page.clock.fastForward(60e3);
-    expect(lists(backend).products).toBe(settled);
+    expect(lists(backend).products).toBe(start.products + 7);
   });
 
   test("a member removed from the team is told, and stops getting updates", async ({ page }) => {
