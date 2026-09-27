@@ -56,6 +56,9 @@ async function write(fn, okMsg, sheetId) {
     // checkout and return commands, src/aws/db.js): the message says why. The latest is showing.
     // `refused` is that adapter's own code, so no other write shows a raw message.
     else if (e && e.code === "refused") { closeModal(); toast(e.message); }
+    // The web build's session ended (signed out, here or in another tab, or it expired): the
+    // connection isn't the problem, and trying again won't help until they sign in
+    else if (WEB && e && e.code === "unauthenticated") toast("You're signed out, so that wasn't saved. Sign in, then make your change again.");
     else { retryable = true; toast("That didn't save. Check your connection and try again."); }
     return false;
   }
@@ -638,13 +641,18 @@ $("#home").addEventListener("click", e => {
 /* ---------- receipts ---------- */
 // The artifact keeps one draft. The web build's runtime names a key per team (use("drafts"),
 // src/aws/account.js), so it's read once the team is known; its drafts are forgotten on
-// sign-out and when someone else signs in (src/aws/session.js).
-let DKEY = "supplyCheckout.receiptDraft";
+// sign-out and when someone else signs in (src/aws/session.js). The web build's key is read on
+// every load and save: it's null once the session has ended, and then nothing is read or kept,
+// so a save that fails as the session ends (someone else signed in in another tab, whose
+// sign-in forgot this user's drafts) can't write this user's draft back.
+const DKEY = "supplyCheckout.receiptDraft";
+let draftKeyNow = () => DKEY;
 // rSaving: a receipt is being saved (saveReceipt)
 let sampleFn = null, receiptOK = false, draft = null, rSaving = false;
-const loadDraft = () => { try { draft = JSON.parse(localStorage.getItem(DKEY) || "null"); } catch {} };
+const stored = fn => { const k = draftKeyNow(); if (WEB && !k) return; try { fn(k); } catch {} };
+const loadDraft = () => stored(k => { draft = JSON.parse(localStorage.getItem(k) || "null"); });
 if (!WEB) loadDraft();
-const saveDraft = () => { try { draft ? localStorage.setItem(DKEY, JSON.stringify(draft)) : localStorage.removeItem(DKEY); } catch {} };
+const saveDraft = () => stored(k => { draft ? localStorage.setItem(k, JSON.stringify(draft)) : localStorage.removeItem(k); });
 
 function receiptPrompt() {
   const inv = Object.entries(products).slice(0, 500);
@@ -1002,7 +1010,7 @@ draw();
 (async () => {
   [db, userNs, dl, sampleFn] = await Promise.all([use("db"), use("user"), use("downloads"), use("sample")]);
   if (WEB) {
-    const drafts = await use("drafts"); if (drafts) DKEY = drafts.key; loadDraft();
+    const drafts = await use("drafts"); if (drafts) draftKeyNow = () => drafts.key; loadDraft();
     const fr = await use("firstRun");
     if (fr) firstRun = createFirstRun(fr, { addItem: () => { ui.tab = "prices"; draw(); productModal(null); }, newSheet: () => { ui.tab = "sheets"; draw(); newSheetModal(); }, redraw: draw });
   }
