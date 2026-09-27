@@ -1,15 +1,19 @@
 // Getting a signed-in user into a team (docs/api/onboarding.md), and the screens for it:
 // sign-in, "name your team", joining from an invite link, and errors. They take the app's
 // place until a team is open; then a bar under the header shows the team (a switcher when
-// there are several), Members and Import CSV for owners, and Sign out.
+// there are several), Members and Import CSV for owners, Leave team for everyone else,
+// Account (deleting it) and Sign out. A team an owner closed is read-only, with a notice
+// saying when its data will be deleted.
 import { esc } from "../format.js";
-import { toast } from "../dom.js";
+import { armButton, toast } from "../dom.js";
 import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, forgetLocal, local, tab } from "./session.js";
 import { createDb } from "./db.js";
 import { openImport } from "./import.js";
 import { openMembers } from "./members.js";
+import { openDeleteAccount } from "./delete-account.js";
 
 const ROLE = { owner: "an owner", contributor: "a contributor", viewer: "a viewer" };
+const day = (iso) => new Date(iso).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
 
 // A plain circle for the signed-in user's avatar; the API has no pictures yet
 const AVATAR = "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><circle cx="1" cy="1" r="1" fill="#0E6B58"/></svg>');
@@ -91,9 +95,23 @@ export async function start(config) {
     if (!(await session.signOut())) { button.disabled = false; toast("Couldn't sign out. Try again.", 5000); }
   }
 
+  // The account is gone: forget everything here, stop live updates, and say so. Done signs
+  // out of Managed Login too.
+  async function deleted() {
+    if (db) db.stop();
+    const out = await session.forgetDeleted();
+    show(`<h2>Your account is deleted</h2>
+      <p>You've been removed from your teams and can't sign in with this account any more. Thanks for using Supply Checkout.</p>
+      <div class="actions"><a class="btn primary" href="${esc(out)}" id="deletedDone" autofocus>Done</a></div>`);
+  }
+  const account = (me) => openDeleteAccount(session.api, me.user.email, deleted);
+
   // Who's signed in, with a way out, on the screens before a team is open
-  const whoami = (me) => `<p class="whoami">Signed in as ${esc(me.user.email || "you")}. <button type="button" class="btn ghost" id="accountSignOut">Sign out</button></p>`;
-  const wireWhoami = (el) => el.querySelector("#accountSignOut").addEventListener("click", signOut);
+  const whoami = (me) => `<p class="whoami">Signed in as ${esc(me.user.email || "you")}. <button type="button" class="btn ghost" id="accountSignOut">Sign out</button> <button type="button" class="btn ghost" id="accountDelete">Delete account</button></p>`;
+  const wireWhoami = (el, me) => {
+    el.querySelector("#accountSignOut").addEventListener("click", signOut);
+    el.querySelector("#accountDelete").addEventListener("click", () => account(me));
+  };
 
   // Anything else that went wrong: say so, and try again from the start
   const failed = () => until((resolve) => show(`<h2>Couldn't connect</h2>
@@ -113,7 +131,7 @@ export async function start(config) {
         ${errorText("")}
         <div class="actions"><button type="submit" class="btn primary" id="createTeam">Create team</button></div>
       </form>
-      ${whoami(me)}`, (el) => { wireWhoami(el); el.querySelector("#teamForm").addEventListener("submit", async (e) => {
+      ${whoami(me)}`, (el) => { wireWhoami(el, me); el.querySelector("#teamForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       const name = el.querySelector("#teamName").value.trim(), btn = el.querySelector("#createTeam");
       if (!name) return;
@@ -141,7 +159,7 @@ export async function start(config) {
       <div class="actions"><button type="button" class="btn primary" id="join" data-autofocus>Join</button>
       <button type="button" class="btn" id="skip">${hasTeams ? "Not now" : "Create my own team instead"}</button></div>
       ${whoami(me)}`, (el) => {
-      wireWhoami(el);
+      wireWhoami(el, me);
       el.querySelector("#skip").addEventListener("click", () => { dropInvite(); resolve(null); });
       const join = el.querySelector("#join");
       join.addEventListener("click", async () => {
@@ -189,23 +207,45 @@ export async function start(config) {
     (el) => el.querySelector("#continue").addEventListener("click", () => location.reload()));
   };
 
+  // Leaving from the team bar (anyone but an owner, who leaves from Members): two taps, then
+  // their access changed. Only the server's answer says it happened.
+  async function leaveTeam(me, team, button) {
+    button.disabled = true;
+    try {
+      await session.api("DELETE", `/teams/${encodeURIComponent(team.id)}/members/${encodeURIComponent(me.user.id)}`);
+    } catch {
+      button.disabled = false;
+      toast("Couldn't leave the team. Check your connection and try again.", 5000);
+      return;
+    }
+    db.stop();
+    changed(`You left ${team.name}.`, true);
+  }
+
   // The team bar under the header: which team, a switcher, managing members and importing
-  // inventory (owners), and Sign out
+  // inventory (owners; importing only while the team is open), leaving (everyone else), the
+  // account, and Sign out. A closed team says when it will be deleted.
   function teamBar(me, team) {
     const bar = document.createElement("div");
     bar.className = "teambar";
+    const owner = team.role === "owner";
     bar.innerHTML = (me.teams.length > 1
       ? `<label for="teamSwitch">Team</label><select id="teamSwitch">${me.teams.map((t) => `<option value="${esc(t.id)}"${t.id === team.id ? " selected" : ""}>${esc(t.name)}</option>`).join("")}</select>`
       : `<span>Team: <strong>${esc(team.name)}</strong></span>`)
-      + `<span class="spacer"></span>${team.role === "owner" ? `<button type="button" class="btn ghost" id="members">Members</button><button type="button" class="btn ghost" id="importInventory">Import CSV</button>` : ""}<button type="button" class="btn ghost" id="signOut">Sign out</button>`;
+      + `<span class="spacer"></span>${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${team.closedAt ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}<button type="button" class="btn ghost" id="accountOpen">Account</button><button type="button" class="btn ghost" id="signOut">Sign out</button>`
+      + (team.closedAt ? `<p class="closed-note" role="status">This team was closed on ${esc(day(team.closedAt))}. It's read-only, and everything in it will be deleted on ${esc(day(team.deletesAt))}.${owner ? " Use Export data to keep a copy." : ""}</p>` : "");
     box.after(bar);
     const pick = bar.querySelector("#teamSwitch");
     // Switching loads the page again for the other team: new data, role and live updates
     if (pick) pick.addEventListener("change", () => { local.set(TEAM_KEY, pick.value); location.reload(); });
     bar.querySelector("#signOut").addEventListener("click", signOut);
-    if (team.role === "owner") {
+    bar.querySelector("#accountOpen").addEventListener("click", () => account(me));
+    if (owner) {
       bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed));
-      bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id, download));
+      if (!team.closedAt) bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id, download));
+    } else {
+      const leave = bar.querySelector("#leaveTeam");
+      armButton(leave, "Tap again to leave", () => leaveTeam(me, team, leave));
     }
   }
 
@@ -222,7 +262,8 @@ export async function start(config) {
       db,
       user: {
         id: async () => me.user.id,
-        can: async (what) => what === "data.write" && team.role !== "viewer",
+        // Viewers read; so does everyone once an owner has closed the team
+        can: async (what) => what === "data.write" && team.role !== "viewer" && !team.closedAt,
         // Team owners can export all the team's data (the app's "Export data")
         isOwner: async () => team.role === "owner",
         // Only the signed-in user's own profile: the API doesn't share other members' names yet

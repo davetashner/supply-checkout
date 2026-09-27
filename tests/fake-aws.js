@@ -158,6 +158,7 @@ export class FakeBackend {
     const bearer = call.headers.authorization || "";
     if (!this.token || (bearer !== "Bearer " + this.token && !(this.shareTokens && this.issued.has(bearer.slice(7))))) return [401, { message: "Unauthorized" }];
 
+    if (path === "/me" && method === "DELETE") return this.deleteAccount(call.body, err);
     if (path === "/me") return [200, { user: this.user, teams: this.teams, invites: this.invites }];
     if (path === "/teams" && method === "POST") {
       const team = { ...TEAM, id: "t-" + call.headers["idempotency-key"].slice(0, 8), name: call.body.name, role: "owner" };
@@ -175,6 +176,9 @@ export class FakeBackend {
       this.invites = this.invites.filter((i) => i !== invite);
       return [200, { team }];
     }
+
+    m = path.match(/^\/teams\/([^/]+)\/close$/);
+    if (m && method === "POST") return this.closeTeam(decodeURIComponent(m[1]), call.body, err);
 
     m = path.match(/^\/teams\/([^/]+)\/members(?:\/([^/]+))?$/);
     if (m) return this.member(decodeURIComponent(m[1]), m[2] && decodeURIComponent(m[2]), method, call.body, err);
@@ -243,7 +247,8 @@ export class FakeBackend {
     if (!target) return err(404, "not_found");
     const owners = list.filter((x) => x.role === "owner").length;
     const demoting = target.role === "owner" && (method === "DELETE" || body.role !== "owner");
-    if (demoting && owners === 1) return [409, { error: { code: "aborted", message: "A team needs at least one owner. Make someone else an owner first.", reason: "last_owner" } }];
+    // A closed team's last owner may leave it
+    if (demoting && owners === 1 && !(mine.closedAt && method === "DELETE")) return [409, { error: { code: "aborted", message: "A team needs at least one owner. Make someone else an owner first.", reason: "last_owner" } }];
     if (method === "DELETE") {
       this.members[team] = list.filter((x) => x !== target);
       // Their other invites to the team go too
@@ -252,6 +257,38 @@ export class FakeBackend {
     }
     target.role = body.role;
     return [200, { member: clone(target) }];
+  }
+
+  // Closing a team as the API runs it: owners, typing its name (any case, spaces around);
+  // closing it again returns it as it is
+  closeTeam(team, body, err) {
+    const mine = this.teams.find((t) => t.id === team);
+    if (!mine) return err(403, "permission_denied", "not_member");
+    if (mine.role !== "owner") return err(403, "permission_denied", "owners_only");
+    const typed = (v) => String(v).normalize("NFKC").trim().toLowerCase();
+    if (!mine.closedAt) {
+      if (typed(body.name) !== typed(mine.name)) return err(400, "bad_request");
+      const now = Date.now();
+      Object.assign(mine, { closedAt: new Date(now).toISOString(), deletesAt: new Date(now + 30 * 86400_000).toISOString() });
+      this.teamInvites[team] = [];
+    }
+    return [200, { team: clone(mine) }];
+  }
+
+  // Deleting the account as the API does it: refused while the user is the only owner of an
+  // open team with other members; otherwise they're out of every team and signed out for good
+  deleteAccount(body, err) {
+    if (!body || String(body.confirm).trim().toUpperCase() !== "DELETE") return err(400, "bad_request");
+    const stuck = this.teams.filter((t) => {
+      const list = this.members[t.id] || [];
+      return t.role === "owner" && !t.closedAt && list.filter((x) => x.role === "owner").length <= 1 && list.length > 1;
+    });
+    if (stuck.length) return [409, { error: { code: "aborted", reason: "last_owner", message: `You're the only owner of ${stuck.map((t) => t.name).join(", ")}. Make someone else an owner, or close the team, before you delete your account.` } }];
+    this.teams = [];
+    this.invites = [];
+    this.signedIn = false;
+    this.deleted = true;
+    return [204];
   }
 
   // A team's invites as the API runs them: owners list, invite (the server emails the
