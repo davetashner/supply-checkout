@@ -21,7 +21,8 @@ function show(html, mount) {
   document.body.classList.add("account-open");
   box.innerHTML = html;
   if (mount) mount(box);
-  const f = box.querySelector("[autofocus]");
+  // data-autofocus rather than autofocus, as in openModal (src/dom.js)
+  const f = box.querySelector("[data-autofocus]");
   if (f) f.focus();
 }
 const until = (fn) => new Promise(fn);
@@ -97,7 +98,7 @@ export async function start(config) {
   // Anything else that went wrong: say so, and try again from the start
   const failed = () => until((resolve) => show(`<h2>Couldn't connect</h2>
     <p>Supply Checkout didn't answer. Check your connection and try again.</p>
-    <div class="actions"><button type="button" class="btn primary" id="retry" autofocus>Try again</button></div>`,
+    <div class="actions"><button type="button" class="btn primary" id="retry" data-autofocus>Try again</button></div>`,
   (el) => el.querySelector("#retry").addEventListener("click", resolve)));
 
   // A new team, with an Idempotency-Key per name, so a retry or double tap makes one team
@@ -108,7 +109,7 @@ export async function start(config) {
       <p>Your team shares one inventory and one set of sheets.</p>
       ${seen}
       <form id="teamForm">
-        <div class="field"><label for="teamName">Team name</label><input type="text" id="teamName" required maxlength="200" autocomplete="organization" autofocus></div>
+        <div class="field"><label for="teamName">Team name</label><input type="text" id="teamName" required maxlength="200" autocomplete="organization" data-autofocus></div>
         ${errorText("")}
         <div class="actions"><button type="submit" class="btn primary" id="createTeam">Create team</button></div>
       </form>
@@ -137,7 +138,7 @@ export async function start(config) {
     show(`<h2>${known ? "Join " + esc(known.teamName) : "Join a team"}</h2>
       <p>${known ? `${esc(known.teamName)} invited you as ${ROLE[known.role]}.` : "You've been invited to join a team."}</p>
       ${errorText("")}
-      <div class="actions"><button type="button" class="btn primary" id="join" autofocus>Join</button>
+      <div class="actions"><button type="button" class="btn primary" id="join" data-autofocus>Join</button>
       <button type="button" class="btn" id="skip">${hasTeams ? "Not now" : "Create my own team instead"}</button></div>
       ${whoami(me)}`, (el) => {
       wireWhoami(el);
@@ -174,7 +175,7 @@ export async function start(config) {
   // Removed from the team while using it: start again with the teams they're still in
   const removed = (team) => show(`<h2>You're no longer in ${esc(team.name)}</h2>
     <p>You've been removed from this team, or it was closed. Ask one of its owners if that's a mistake.</p>
-    <div class="actions"><button type="button" class="btn primary" id="continue" autofocus>Continue</button></div>`,
+    <div class="actions"><button type="button" class="btn primary" id="continue" data-autofocus>Continue</button></div>`,
   (el) => el.querySelector("#continue").addEventListener("click", () => { local.remove(TEAM_KEY); location.reload(); }));
 
   // The owner changed their own role or left the team (the members screen): their access
@@ -183,7 +184,7 @@ export async function start(config) {
     if (left) local.remove(TEAM_KEY);
     show(`<h2>Your access changed</h2>
     <p>${esc(text)}</p>
-    <div class="actions"><button type="button" class="btn primary" id="continue" autofocus>Continue</button></div>`,
+    <div class="actions"><button type="button" class="btn primary" id="continue" data-autofocus>Continue</button></div>`,
     (el) => el.querySelector("#continue").addEventListener("click", () => location.reload()));
   };
 

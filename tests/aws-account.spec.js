@@ -475,6 +475,8 @@ test.describe("first sign-in and teams", () => {
     await expect(account(page).getByRole("heading", { name: "Name your team" })).toBeVisible();
     await expect(account(page)).toContainText("Signed in as pat@example.com.");
     await expect(page.getByLabel("Team name")).toBeFocused();
+    // Focused by the screen, with no autofocus attribute for WebKit to refocus a frame later
+    await expect(page.locator("[autofocus]")).toHaveCount(0);
     await expectAccessible(page);
 
     const create = async (name) => {
