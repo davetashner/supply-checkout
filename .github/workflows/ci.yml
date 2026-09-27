@@ -160,11 +160,6 @@ jobs:
           BUILD: ${{ matrix.build }}
           # Fails the run below 98% coverage; see tests/coverage.js
           COVERAGE: ${{ matrix.coverage }}
-      # TEMPORARY (supply-checkout-vi42, supply-checkout-2scm): the new timing tests 25 times over. Drop before merging.
-      - run: npx playwright test tests/save-states.spec.js --project=${{ matrix.project }} --repeat-each=25 -g "finishing and reopening|deleting a sheet sends|removing a line or deleting|20 seconds"
-        env:
-          CI: true
-          BUILD: ${{ matrix.build }}
       - name: Coverage summary
         if: always() && matrix.coverage && hashFiles(format('coverage/{0}/summary.json', matrix.build)) != ''
         run: node scripts/coverage-summary.mjs "$BUILD" >> "$GITHUB_STEP_SUMMARY"
