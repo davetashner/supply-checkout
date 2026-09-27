@@ -775,7 +775,9 @@
                     "SK",
                     "userId",
                     "role",
-                    "status"
+                    "status",
+                    "compPlan",
+                    "compUntil"
                   ]
                 },
                 "StringEqualsIfExists": {

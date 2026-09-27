@@ -2,6 +2,7 @@ import { Aws, Duration, RemovalPolicy, Validations } from "aws-cdk-lib";
 import {
   AttributeType,
   Billing,
+  ProjectionType,
   StreamViewType,
   TableEncryptionV2,
   TableV2,
@@ -11,7 +12,7 @@ import { Key } from "aws-cdk-lib/aws-kms";
 import { BlockPublicAccess, Bucket, BucketEncryption, ObjectOwnership } from "aws-cdk-lib/aws-s3";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
-import { GSI1, GSI1PK, GSI1SK, GSI2, GSI2PK, GSI2SK, PK, SK, TTL_ATTRIBUTE, tableName } from "../../../backend/src/data/schema.js";
+import { GSI1, GSI1PK, GSI1SK, GSI2, GSI2PK, GSI2SK, GSI3, GSI3PK, GSI3SK, OPS_INDEX_ATTRIBUTES, PK, SK, TTL_ATTRIBUTE, tableName } from "../../../backend/src/data/schema.js";
 import type { DeploymentConfig } from "../config.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
@@ -89,6 +90,16 @@ export class DataStack extends SupplyCheckoutStack {
           indexName: GSI2,
           partitionKey: { name: GSI2PK, type: AttributeType.STRING },
           sortKey: { name: GSI2SK, type: AttributeType.STRING },
+        },
+        // The operators' index (ADR 0015): team account records, owners and
+        // the operator audit, and only the attributes it projects. The ops
+        // role may query only this, so operators can't read a team's data
+        {
+          indexName: GSI3,
+          partitionKey: { name: GSI3PK, type: AttributeType.STRING },
+          sortKey: { name: GSI3SK, type: AttributeType.STRING },
+          projectionType: ProjectionType.INCLUDE,
+          nonKeyAttributes: [...OPS_INDEX_ATTRIBUTES],
         },
       ],
       // The stack's own region is always a replica; no others until phase 2.

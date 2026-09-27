@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { ACCOUNT_ROUTES, AUTH_ROUTES, DATA_ROUTES, REFRESH_COOKIE } from "../src/api/routes.js";
+import { ACCOUNT_ROUTES, AUTH_ROUTES, DATA_ROUTES, OPS_ROUTES, REFRESH_COOKIE } from "../src/api/routes.js";
 import { RESERVED_FIELDS } from "../src/data/index.js";
 
 const text = readFileSync(new URL("../../docs/api/openapi.yaml", import.meta.url), "utf8");
@@ -26,7 +26,7 @@ describe("OpenAPI description", () => {
   });
 
   it("describes every route, and nothing else", () => {
-    const served = [...DATA_ROUTES, ...ACCOUNT_ROUTES, ...AUTH_ROUTES].map((r) => `${r.method} ${r.path}`).sort();
+    const served = [...DATA_ROUTES, ...ACCOUNT_ROUTES, ...AUTH_ROUTES, ...OPS_ROUTES].map((r) => `${r.method} ${r.path}`).sort();
     expect(described).toEqual(served);
   });
 
@@ -35,6 +35,11 @@ describe("OpenAPI description", () => {
     for (const r of [...DATA_ROUTES, ...ACCOUNT_ROUTES]) expect(spec.paths[r.path]?.[r.method.toLowerCase()]?.security, r.path).toBeUndefined();
     for (const r of AUTH_ROUTES) expect(spec.paths[r.path]?.post?.security, r.path).not.toContainEqual({ cognito: [] });
     expect(spec.components.securitySchemes.refreshCookie?.name).toBe(REFRESH_COOKIE);
+  });
+
+  it("needs an operator-pool token, and only that, on every ops route", () => {
+    for (const r of OPS_ROUTES) expect(spec.paths[r.path]?.[r.method.toLowerCase()]?.security, r.path).toEqual([{ opsCognito: [] }]);
+    expect(spec.components.securitySchemes.opsCognito).toBeDefined();
   });
 
   it("gives every operation a unique ID", () => {

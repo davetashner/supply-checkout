@@ -43,19 +43,19 @@ async function countMemberItems(db: Db, teamId: string): Promise<number> {
 }
 
 /** The team's member count and cap, or undefined when the team doesn't exist. */
-export async function memberCount(db: Db, teamId: string): Promise<MemberCount | undefined> {
+export async function memberCount(db: Db, teamId: string, now = new Date()): Promise<MemberCount | undefined> {
   const { Item } = await connection(db).doc.send(
     new GetCommand({
       TableName: db.tableName,
       Key: keys.team(teamId),
       ConsistentRead: true,
       // MEMBERS and STATUS are DynamoDB reserved words
-      ProjectionExpression: "#members, owners, #status, seats",
+      ProjectionExpression: "#members, owners, #status, seats, compPlan, compUntil",
       ExpressionAttributeNames: { "#members": "members", "#status": "status" },
     }),
   );
   if (!Item) return undefined;
-  const cap = memberCap(Item);
+  const cap = memberCap(Item, now);
   const owners = typeof Item.owners === "number" ? Item.owners : 0;
   if (typeof Item.members === "number") return { members: Item.members, cap, owners };
   const counted = await countMemberItems(db, teamId);

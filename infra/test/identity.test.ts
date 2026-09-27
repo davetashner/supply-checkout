@@ -7,8 +7,10 @@ import { AwsSolutionsChecks } from "cdk-nag";
 import { describe, expect, it } from "vitest";
 import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { domainOutputParameters, dnsInputParameters } from "../lib/domain.js";
+import { OPERATORS_GROUP } from "../../backend/src/identity/names.js";
 import {
   cognitoJwtAuthorizer,
+  OPS_CLI_CALLBACK,
   identityOptionsFromContext,
   identityOutputParameters,
   identityProviderSecrets,
@@ -28,10 +30,17 @@ function build(overrides: Partial<DeploymentConfig> = {}, context: Record<string
 }
 
 const ssmParameter = (name: string) => ({ Type: Match.stringLikeRegexp("^AWS::SSM::Parameter::Value<"), Default: name });
+/** The customer pool's one resource of a type (the operator pool's, whose IDs start with Ops, are tested below). */
 const only = (template: Template, type: string) => {
-  const found = Object.values(template.findResources(type));
+  const found = Object.entries(template.findResources(type)).filter(([id]) => !id.startsWith("Ops")).map(([, r]) => r);
   expect(found, type).toHaveLength(1);
   return found[0];
+};
+/** The operator pool's one resource of a type. */
+const ops = (template: Template, type: string) => {
+  const found = Object.entries(template.findResources(type)).filter(([id]) => id.startsWith("Ops")).map(([, r]) => r);
+  expect(found, type).toHaveLength(1);
+  return found[0] as { Properties: Record<string, unknown>; DeletionPolicy?: string; UpdateReplacePolicy?: string };
 };
 
 describe("user pool (ADR 0007)", () => {
@@ -418,5 +427,70 @@ describe("cdk-nag", () => {
       const report = new AwsSolutionsChecks(app).validateScope(app);
       expect(report.violations).toEqual([]);
     }
+  });
+});
+
+describe("operator pool (ADR 0015)", () => {
+  it("is a second Essentials pool, protected from deletion and retained, in the primary region", () => {
+    const { template } = build();
+    const pool = ops(template, "AWS::Cognito::UserPool");
+    expect(pool.DeletionPolicy).toBe("Retain");
+    expect(pool.UpdateReplacePolicy).toBe("Retain");
+    expect(pool.Properties).toMatchObject({ UserPoolName: "supply-checkout-prod-ops", UserPoolTier: "ESSENTIALS", DeletionProtection: "ACTIVE" });
+  });
+
+  it("has no self sign-up, and signs in only with a password then TOTP, which is required", () => {
+    const pool = ops(build().template, "AWS::Cognito::UserPool").Properties;
+    expect(pool.AdminCreateUserConfig).toEqual({ AllowAdminCreateUserOnly: true });
+    expect(pool.MfaConfiguration).toBe("ON");
+    expect(pool.EnabledMfas).toEqual(["SOFTWARE_TOKEN_MFA"]);
+    expect((pool.Policies as { SignInPolicy: unknown }).SignInPolicy).toEqual({ AllowedFirstAuthFactors: ["PASSWORD"] });
+    expect((pool.Policies as { PasswordPolicy: { MinimumLength: number } }).PasswordPolicy.MinimumLength).toBeGreaterThanOrEqual(16);
+    // No email or phone: nothing to verify or send, no self-service recovery, no passkeys, no triggers
+    expect(pool.AccountRecoverySetting).toEqual({ RecoveryMechanisms: [{ Name: "admin_only", Priority: 1 }] });
+    for (const key of ["UsernameAttributes", "AliasAttributes", "AutoVerifiedAttributes", "EmailConfiguration", "SmsConfiguration", "WebAuthnRelyingPartyID", "LambdaConfig"]) expect(pool[key], key).toBeUndefined();
+  });
+
+  it("has the operators group, and no identity providers", () => {
+    const { template } = build();
+    const group = ops(template, "AWS::Cognito::UserPoolGroup").Properties;
+    expect(group).toMatchObject({ GroupName: OPERATORS_GROUP, UserPoolId: { Ref: expect.stringMatching(/^OpsUserPool/) } });
+    expect(group.RoleArn).toBeUndefined();
+    for (const [, idp] of Object.entries(template.findResources("AWS::Cognito::UserPoolIdentityProvider"))) {
+      expect(JSON.stringify(idp.Properties.UserPoolId)).not.toContain("OpsUserPool");
+    }
+  });
+
+  it("has one public ops client: code with PKCE to the CLI's localhost callback, 15-minute tokens, 8-hour refresh with rotation, no API sign-in", () => {
+    const client = ops(build().template, "AWS::Cognito::UserPoolClient").Properties;
+    expect(client).toMatchObject({
+      ClientName: "ops",
+      GenerateSecret: false,
+      AllowedOAuthFlows: ["code"],
+      AllowedOAuthScopes: ["openid", "aws.cognito.signin.user.admin"],
+      CallbackURLs: [OPS_CLI_CALLBACK],
+      LogoutURLs: [OPS_CLI_CALLBACK],
+      SupportedIdentityProviders: ["COGNITO"],
+      ExplicitAuthFlows: [],
+      AccessTokenValidity: 15,
+      IdTokenValidity: 15,
+      RefreshTokenValidity: 480,
+      TokenValidityUnits: { AccessToken: "minutes", IdToken: "minutes", RefreshToken: "minutes" },
+      EnableTokenRevocation: true,
+      PreventUserExistenceErrors: "ENABLED",
+      RefreshTokenRotation: { Feature: "ENABLED", RetryGracePeriodSeconds: 10 },
+    });
+    expect(client.WriteAttributes).toEqual(["family_name", "given_name"]);
+  });
+
+  it("serves Managed Login at ops-auth. with its own certificate, and publishes its settings", () => {
+    const { template } = build();
+    template.hasResourceProperties("AWS::Cognito::UserPoolDomain", { Domain: "ops-auth.supplycheckout.com", UserPoolId: { Ref: Match.stringLikeRegexp("^OpsUserPool") }, ManagedLoginVersion: 2 });
+    template.hasParameter("*", ssmParameter(domainOutputParameters("prod").opsAuthCertificateArn));
+    for (const type of ["A", "AAAA"]) template.hasResourceProperties("AWS::Route53::RecordSet", { Name: "ops-auth.supplycheckout.com.", Type: type });
+    expect(ops(template, "AWS::Cognito::ManagedLoginBranding").Properties).toMatchObject({ UseCognitoProvidedValues: true });
+    const out = identityOutputParameters("prod");
+    for (const name of [out.opsUserPoolId, out.opsUserPoolArn, out.opsClientId, out.opsIssuerUrl]) template.hasResourceProperties("AWS::SSM::Parameter", { Name: name });
+    template.hasResourceProperties("AWS::SSM::Parameter", { Name: out.opsAuthUrl, Value: "https://ops-auth.supplycheckout.com" });
   });
 });

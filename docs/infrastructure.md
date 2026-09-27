@@ -223,6 +223,8 @@ The `api` stack (`lib/stacks/api-stack.ts`, [ADR 0006](adr/0006-api-and-realtime
 | `GET /teams/{teamId}/members`, `PATCH` and `DELETE` `/teams/{teamId}/members/{userId}` (members and roles: owners only, except leaving) | Cognito access token | `account` |
 | `GET` and `POST /teams/{teamId}/invites`, `DELETE /teams/{teamId}/invites/{inviteId}`, `POST /teams/{teamId}/invites/{inviteId}/resend` (invites: owners only) | Cognito access token | `account` |
 | `POST /auth/session`, `/auth/refresh`, `/auth/sign-out` | Refresh-token cookie and `Origin` | `auth` |
+| `GET /teams/{teamId}/support-actions` (what Supply Checkout support did to the team; owners only) | Cognito access token | `data` |
+| `GET /ops/teams`, `GET /ops/teams/{teamId}`, `PUT` and `DELETE /ops/teams/{teamId}/comp`, `GET /ops/audit` (primary region only; see [Operators](#operators)) | Operator pool access token | `ops` |
 
 **Team isolation**, two layers:
 
@@ -294,6 +296,74 @@ filter routeKey like /teams/ | stats count(*), pct(latencyMs, 50), pct(latencyMs
 ```
 
 or the whole API's from CloudWatch: `aws cloudwatch get-metric-statistics $P --namespace AWS/ApiGateway --metric-name Latency --dimensions Name=ApiId,Value=<api id> --extended-statistics p95 --period 300 --start-time … --end-time …`. Cold starts show up in the first minute only; X-Ray traces break a slow request down by DynamoDB and STS call. Delete the test items afterwards.
+
+## Operators
+
+Platform operators ([ADR 0015](adr/0015-platform-operator-role.md), `supply-checkout-6uw.1`) list and search teams, read one team's account record, comp a team (a free plan for a pilot, say) and read the operator audit. They never read a team's sheets, inventory, invites or receipts: support access with an owner's approval is a later bead.
+
+**The operator pool.** The `identity` stack has a second user pool, `supply-checkout-<env>-ops`, next to the customers' one:
+
+- No self sign-up. Operators are created by an administrator with the AWS CLI under an SSO role (below). No Lambda role and no app client can create users or change groups; an `infra` test checks that no policy in any stack grants `AdminCreateUser`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup` or `CreateGroup`.
+- Username and password (16+ characters, mixed), then TOTP, which the pool requires: the first sign-in sets it up, and the pool can't issue a token without it, so every token it issues comes from a session that used MFA. No email codes, passkeys, SMS, Google or Apple, and no email at all: a forgotten password is reset by an administrator.
+- An `operators` group. Being in the pool isn't enough: the API checks the group.
+- Managed Login at `ops-auth.<env domain>` (its certificate is in the `domain` stack in `GLOBAL_SERVICES_REGION`).
+- One public client, `ops`: authorization code with PKCE, calling back only to `npm run ops` on `http://localhost:8765/` (`OPS_CLI_CALLBACK` in `lib/identity.ts`). Access and ID tokens last 15 minutes; refresh tokens last 8 hours, with rotation and revocation. It has the `aws.cognito.signin.user.admin` scope so the ops function can call `GetUser` with the operator's token.
+- It publishes `ops-user-pool-id`, `ops-user-pool-arn`, `ops-client-id`, `ops-issuer-url` and `ops-auth-url` under `/supply-checkout/<env>/identity/`.
+
+**The ops routes.** The `/ops/*` routes (`OPS_ROUTES` in `backend/src/api/routes.ts`) are on the same HTTP API, in the primary region only, behind their own JWT authorizer for the operator pool (its issuer and the `ops` client). A customer's token fails it, and an operator's token fails the customer authorizer; the team routes never read `cognito:groups`. The `ops` function (`backend/src/operator/`) then checks, on every request: an unexpired access token from the operator pool for the `ops` client whose `cognito:groups` names `operators`; `GetUser` with the token, which Cognito refuses once the token is revoked or the user disabled; and `AdminListGroupsForUser`, which must still list `operators`. So removing someone from the group, disabling them or signing them out globally takes effect on their next request, not when their token expires. Each route has its own throttle (2 to 5 requests a second).
+
+**The operator-access role.** The ops function's own role can reach no table: it may assume `OperatorAccessRole` (tagged with the team a comp changes, or `.`) and call `AdminListGroupsForUser` on the operator pool. The role may:
+
+- `Query` GSI3's `OPS#TEAMS`, `OPS#OWNERS#*` and `OPS#AUDIT#*` partitions, with `dynamodb:Select` limited to `ALL_PROJECTED_ATTRIBUTES` or `SPECIFIC_ATTRIBUTES`. GSI3 is sparse and projects only `OPS_INDEX_ATTRIBUTES` (`backend/src/data/schema.ts`): a team's account record (name, plan, seats, status, trial end, owner and member counts, creation time, Stripe customer, version and comp), an owner's email and join date, and an audit event's action and operator. Team `META` items and owners' `MEMBER#` items carry `GSI3PK`; sheets, products, movements, invites and imports never do.
+- `UpdateItem` in the tagged team's partition, naming only `COMP_ATTRIBUTES` (`PK`, `SK`, `type`, `version` and the `comp*` fields; `dynamodb:Attributes`), returning at most those. So it can't change a team's `plan` or `status` (ADR 0009), and it has no `GetItem`, `Query`, `PutItem` or `DeleteItem` on any `TEAM#` partition.
+- `PutItem` and `Query` in `OPAUDIT#*` partitions, never `UpdateItem` or `DeleteItem`.
+
+Residual risks, accepted: IAM can't require a condition expression, so a `PutItem` in `OPAUDIT#` could overwrite an item with the same key (the code conditions every put on `attribute_not_exists(PK)`, and keys hold a random ID); an `UpdateItem` could create an item in the tagged team's partition holding only comp attributes (the code's `#type = :team` condition prevents it); and `dynamodb:ReturnValues` doesn't cover `ReturnValuesOnConditionCheckFailure`, so code that asked for `ALL_OLD` on a failed condition could read the item it tried to update (the ops code never sets it). Each would take a change to the ops function's code, which only a deploy can make.
+
+**Comps and the audit.** `PUT /ops/teams/{teamId}/comp` writes `compPlan`, `compSeats`, `compUntil` (at most 12 months ahead), `compReason`, `compBy` (the operator's `sub`) and `compAt` on the team's `META` item, conditioned on the item being a team at the version the operator read, with an operator audit item (`OPAUDIT#<teamId>`, `AUDIT#<ts>#<eventId>`, also in GSI3's `OPS#AUDIT#<yyyy-mm>`) and a record of the `Idempotency-Key` in the same transaction; a retry replays. `DELETE` ends the comp the same way. Reading one team's record is audited too (`ops.team.read`). While a comp is live, the team counts as paying for the member cap, keeps getting live updates even if its Stripe status has ended, and `/me` shows it (`liveComp` in `backend/src/data/model.ts`). Audit items expire after 2 years. Owners read their team's operator audit at `GET /teams/{teamId}/support-actions`, attributed to "Supply Checkout support": the data-access role may `Query` its team's `OPAUDIT#` partition only for `OWNER_OPERATOR_AUDIT_ATTRIBUTES`, which don't include the operator's `sub`. The ops function logs one line per request with the route, team ID, operator `sub` and status, never emails or tokens.
+
+**The CLI.** `npm run ops` (`scripts/ops.mjs`) is the operators' client until the ops page (`supply-checkout-8jc.8`):
+
+```bash
+npm run ops -- teams --q acme                  # list or search teams, with owners' emails
+npm run ops -- team <teamId>                   # one team's record (audited)
+npm run ops -- comp <teamId> --plan free --until 2026-12-31 --reason "Pilot, 90 days"
+npm run ops -- uncomp <teamId> --reason "Pilot over"
+npm run ops -- audit --team <teamId>           # or --month 2026-09 for everyone's
+npm run ops -- sign-out                        # revokes every token (GlobalSignOut)
+```
+
+The first command opens `ops-auth.<env domain>` in the browser (username, password, TOTP) and takes the redirect on `http://localhost:8765/`, listening on the loopback addresses only. It keeps only the access token, for its 15 minutes, in `~/.config/supply-checkout/ops-<env>.json` (mode 600); no refresh token is stored. The ops client ID comes from `--client-id`, `SUPPLY_OPS_CLIENT_ID`, or SSM with the AWS CLI (`--profile`, default `supply-prod`). `--env staging` points it at another environment, `--json` prints the API's answers. `comp` reads the team first and sends its `version` with a new `Idempotency-Key`, so a comp never overwrites a change it didn't see.
+
+**The alert.** The primary region's `observability` stack has an EventBridge rule that sends the P1 topic a message whenever CloudTrail records `AdminCreateUser`, `AdminAddUserToGroup` or `AdminRemoveUserFromGroup` on the operator pool. It needs CloudTrail's management events, which every account has; the message names the CloudTrail event, not the person.
+
+**Deploying.** In order: the `domain` stack in `GLOBAL_SERVICES_REGION` (the `ops-auth.` certificate), `data` (adds GSI3; DynamoDB builds it in the background, and queries on it fail until it's `ACTIVE`), `identity` (the pool; its domain can take up to an hour, like `auth.`), then `api` and `observability`:
+
+```bash
+cd infra
+npx cdk deploy supply-checkout-prod-us-east-1-domain supply-checkout-prod-us-east-1-data --profile supply-prod
+aws dynamodb describe-table --profile supply-prod --region us-east-1 --table-name supply-checkout-prod-app \
+  --query "Table.GlobalSecondaryIndexes[?IndexName=='GSI3'].IndexStatus"   # ACTIVE
+npx cdk deploy supply-checkout-prod-us-east-1-identity supply-checkout-prod-us-east-1-api supply-checkout-prod-us-east-1-observability --profile supply-prod
+```
+
+Teams created before GSI3 existed have no `GSI3PK`, so the ops routes don't list them until they're backfilled.
+
+The role's IAM conditions (`dynamodb:Attributes`, `dynamodb:Select`, `dynamodb:LeadingKeys` patterns) aren't enforced by DynamoDB Local, so after the first deploy, and after any change to the role or to `backend/src/data/operator.ts`, list teams, read a test team, comp it and end the comp, and confirm `/aws/lambda/<ops function>` logs no `AccessDeniedException`.
+
+**Adding an operator.** Only with an SSO administrator role. The temporary password goes to the person out of band; they choose a new one and set up TOTP at their first sign-in. Keep the TOTP secret on a phone, not in the same password manager as the password.
+
+```bash
+P="--profile supply-prod --region us-east-1"
+POOL=$(aws ssm get-parameter $P --name /supply-checkout/prod/identity/ops-user-pool-id --query Parameter.Value --output text)
+aws cognito-idp admin-create-user $P --user-pool-id "$POOL" --username alex --message-action SUPPRESS \
+  --temporary-password "$(openssl rand -base64 18)Aa1!"   # note it, then hand it over in person
+aws cognito-idp admin-add-user-to-group $P --user-pool-id "$POOL" --username alex --group-name operators
+```
+
+The P1 alert fires for both calls. **Removing one:** `admin-remove-user-from-group` and `admin-disable-user` (which also revokes their tokens), then `admin-delete-user` when you're sure.
+
+**A stolen operator token or password.** Sign them out and disable them at once (`admin-user-global-sign-out`, `admin-disable-user`): both take effect on the next request. Then read what the account did: `GET /ops/audit` for the month, or CloudWatch Logs Insights on the ops function's log group, `filter operator = "<sub>"`. Comps it made can be ended with `DELETE /ops/teams/{teamId}/comp`; its audit items can't be changed or removed by the ops role, and CloudTrail has every Cognito admin call.
 
 ## Live updates
 

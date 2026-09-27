@@ -38,12 +38,13 @@ export async function queryPage<T>(
   input: Omit<QueryCommandInput, "TableName" | "ExclusiveStartKey">,
   partition: { readonly attribute: string; readonly value: string },
   cursor: string | undefined,
+  options: { readonly keepKeys?: boolean } = {},
 ): Promise<Page<T>> {
   const page = await connection(db).doc.send(
     new QueryCommand({ ...input, TableName: db.tableName, ExclusiveStartKey: decodeCursor(cursor, partition) }),
   );
   return {
-    items: (page.Items ?? []).map((item) => strip<T>(item) as T),
+    items: (page.Items ?? []).map((item) => (options.keepKeys ? item : strip<T>(item)) as T),
     cursor: page.LastEvaluatedKey ? Buffer.from(JSON.stringify(page.LastEvaluatedKey)).toString("base64url") : undefined,
   };
 }

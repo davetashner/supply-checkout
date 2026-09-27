@@ -38,3 +38,11 @@ export const PROVIDER_HOSTED_DOMAIN_ATTRIBUTE = `custom:${PROVIDER_HOSTED_DOMAIN
  */
 export const LINKED_EMAIL = "linked_email";
 export const LINKED_EMAIL_ATTRIBUTE = `custom:${LINKED_EMAIL}`;
+
+/**
+ * The group in the operator user pool whose members may call the /ops routes
+ * (ADR 0015). It's granted only with `aws cognito-idp admin-add-user-to-group`
+ * and an SSO role; no app client or Lambda role can change groups. Being in
+ * the pool isn't enough: the ops function checks this group on every request.
+ */
+export const OPERATORS_GROUP = "operators";

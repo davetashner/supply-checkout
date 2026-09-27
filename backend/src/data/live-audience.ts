@@ -8,15 +8,15 @@
 // dynamodb:Attributes), so the consumer can't read documents, emails or
 // anything else:
 //
-// - META: the subscription status. A team that doesn't exist or has ended
-//   (hasEnded) has no audience.
+// - META: the subscription status and comp. A team that doesn't exist, or
+//   has ended (hasEnded) with no live comp (ADR 0015), has no audience.
 // - MEMBER#<user>: the user ID and role. A MEMBER item with a missing or
 //   unknown role counts as no membership, as in authorizeTeam.
 
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { id, keys, prefixes, teamPartition } from "./keys.js";
-import { hasEnded, isMemberRole } from "./model.js";
+import { hasEnded, isMemberRole, liveComp } from "./model.js";
 
 function validUser(value: unknown): string | undefined {
   try {
@@ -31,19 +31,19 @@ function validUser(value: unknown): string | undefined {
  * exist or its subscription has ended. Strongly consistent, so a member
  * removed before the call is never in the answer.
  */
-export async function liveUpdateRecipients(db: Db, teamId: string): Promise<string[]> {
+export async function liveUpdateRecipients(db: Db, teamId: string, now = new Date()): Promise<string[]> {
   const pk = teamPartition(id(teamId, "team ID"));
   const { doc } = connection(db);
   const { Item: meta } = await doc.send(
     new GetCommand({
       TableName: db.tableName,
       Key: keys.team(teamId),
-      ProjectionExpression: "#status",
+      ProjectionExpression: "#status, compPlan, compUntil",
       ExpressionAttributeNames: { "#status": "status" },
       ConsistentRead: true,
     }),
   );
-  if (!meta || hasEnded(meta.status)) return [];
+  if (!meta || (hasEnded(meta.status) && !liveComp(meta, now))) return [];
 
   const users: string[] = [];
   let ExclusiveStartKey: Record<string, unknown> | undefined;

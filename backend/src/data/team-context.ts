@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactGetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { ConflictError, ForbiddenError, LimitReachedError, NotFoundError, TeamFullError, conflictOnConditionFailure } from "./errors.js";
-import { gsi1, id, keys, prefixes, strip } from "./keys.js";
+import { gsi1, gsi3, id, keys, prefixes, strip } from "./keys.js";
 import {
   type Invite,
   type Member,
@@ -191,8 +191,9 @@ export async function createTeam(
     connection(db).doc.send(
       new TransactWriteCommand({
         TransactItems: [
-          { Put: { TableName: db.tableName, Item: { ...keys.team(teamId), ...team }, ConditionExpression: "attribute_not_exists(PK)" } },
-          { Put: { TableName: db.tableName, Item: { ...keys.member(teamId, userId), ...member } } },
+          // Both in the operators' index (ADR 0015): the team's account record, and its owner
+          { Put: { TableName: db.tableName, Item: { ...keys.team(teamId), ...gsi3.team(createdAt, teamId), ...team }, ConditionExpression: "attribute_not_exists(PK)" } },
+          { Put: { TableName: db.tableName, Item: { ...keys.member(teamId, userId), ...gsi3.owner(teamId, userId), ...member } } },
           { Put: { TableName: db.tableName, Item: { ...keys.userTeam(userId, teamId), ...userTeam } } },
           {
             Update: {
@@ -293,7 +294,7 @@ export async function acceptInvite(
   const mine = await teamsOf(db, userId);
   if (mine.has(invite.teamId)) throw new ConflictError("You're already a member of this team");
   if (mine.size >= MAX_TEAMS_PER_USER) throw new LimitReachedError(TOO_MANY_TEAMS);
-  const count = await memberCount(db, invite.teamId);
+  const count = await memberCount(db, invite.teamId, now);
   if (!count) throw new NotFoundError("This invite has expired or was already used");
   if (count.members >= count.cap) throw new TeamFullError(teamFull(count.cap));
   const member: Member = { type: "member", teamId: invite.teamId, userId, role: invite.role, email, joinedAt: now.toISOString() };
@@ -317,7 +318,14 @@ export async function acceptInvite(
               },
             },
           },
-          { Put: { TableName: db.tableName, Item: { ...keys.member(invite.teamId, userId), ...member }, ConditionExpression: "attribute_not_exists(PK)" } },
+          {
+            Put: {
+              TableName: db.tableName,
+              // An owner is in the operators' index (ADR 0015)
+              Item: { ...keys.member(invite.teamId, userId), ...(invite.role === "owner" ? gsi3.owner(invite.teamId, userId) : {}), ...member },
+              ConditionExpression: "attribute_not_exists(PK)",
+            },
+          },
           { Put: { TableName: db.tableName, Item: { ...keys.userTeam(userId, invite.teamId), ...userTeam } } },
           teamCounts(db.tableName, invite.teamId, { members: 1, cap: count.cap, counted: count.counted, ...(invite.role === "owner" ? { owners: 1 as const } : {}) }),
         ],

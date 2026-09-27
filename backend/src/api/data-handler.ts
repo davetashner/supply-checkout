@@ -40,6 +40,7 @@ import {
   LimitReachedError,
   listDocuments,
   listMovements,
+  listSupportActions,
   NotFoundError,
   returnItems,
   setDocument,
@@ -230,11 +231,24 @@ async function runImport(deps: DataHandlerDeps, event: DataEvent, ctx: TeamConte
   return json(200, outcome);
 }
 
+/** What operators did to the team (ADR 0015), newest first. Owners only (the route's minRole). */
+async function supportActions(deps: DataHandlerDeps, event: DataEvent, ctx: TeamContext): Promise<APIGatewayProxyStructuredResultV2> {
+  const q = event.queryStringParameters ?? {};
+  let limit: number | undefined;
+  if (q.limit !== undefined) {
+    if (!/^\d{1,3}$/.test(q.limit) || Number(q.limit) < 1 || Number(q.limit) > 100) throw new ApiError(400, "bad_request", "limit is a number from 1 to 100");
+    limit = Number(q.limit);
+  }
+  const page = await listSupportActions(deps.dbForTeam(ctx.teamId), ctx, { limit, cursor: q.cursor });
+  return json(200, { actions: page.items, ...(page.cursor ? { cursor: page.cursor } : {}) });
+}
+
 async function run(deps: DataHandlerDeps, route: DataRoute, event: DataEvent, ctx: TeamContext): Promise<APIGatewayProxyStructuredResultV2> {
   if (route.operation === "importProducts") return runImport(deps, event, ctx);
+  if (route.operation === "supportActions") return supportActions(deps, event, ctx);
   if (COMMANDS.has(route.operation)) return runCommand(deps, route, event, ctx);
   const db = deps.dbForTeam(ctx.teamId);
-  const collection: Collection = route.collection;
+  const collection = route.collection as Collection;
   const metadata = { teamId: ctx.teamId };
 
   if (route.operation === "list") {

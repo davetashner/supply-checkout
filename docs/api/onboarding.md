@@ -20,7 +20,7 @@ After sign-in (and after every page load with a session), call `GET /me`:
 {
   "user": { "id": "<sub>", "email": "pat@example.com", "emailVerified": true },
   "teams": [
-    { "id": "…", "name": "Echo Cleaning", "role": "owner", "plan": "trial", "status": "trialing", "trialEndsAt": "2026-10-10T12:00:00.000Z", "homeRegion": "…" }
+    { "id": "…", "name": "Echo Cleaning", "role": "owner", "plan": "trial", "status": "trialing", "trialEndsAt": "2026-10-10T12:00:00.000Z", "homeRegion": "…", "comp": null }
   ],
   "invites": [
     { "id": "…", "teamName": "Bravo Co", "role": "contributor", "expiresAt": "2026-10-03T12:00:00.000Z" }

@@ -808,6 +808,47 @@
                   "Sid": "TeamItemsOnly"
                 },
                 {
+                  "Action": "dynamodb:Query",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "OPAUDIT#${aws:PrincipalTag/teamId}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "eventId",
+                        "ts",
+                        "action",
+                        "reason",
+                        "before",
+                        "after"
+                      ]
+                    },
+                    "StringEquals": {
+                      "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "OwnOperatorAuditReadOnly"
+                },
+                {
                   "Action": [
                     "kms:Decrypt",
                     "kms:DescribeKey",
@@ -1985,6 +2026,60 @@
         }
       }
     },
+    "HttpApiGETteamsteamIdsupportactionsDataIntegrationPermissionB53A05A1": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "DataFunctionLive5A545D6E"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/support-actions"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiGETteamsteamIdsupportactions885F86FC": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "GET /teams/{teamId}/support-actions",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETteamsteamIdproductsDataIntegration012ABD77"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiGETmeAccountIntegration0EFB5255": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -2538,6 +2633,312 @@
         }
       }
     },
+    "HttpApiGETopsteamsOpsIntegrationD9495125": {
+      "Type": "AWS::ApiGatewayV2::Integration",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "IntegrationType": "AWS_PROXY",
+        "IntegrationUri": {
+          "Ref": "OpsFunctionLive79C895FB"
+        },
+        "PayloadFormatVersion": "2.0"
+      }
+    },
+    "HttpApiGETopsteamsOpsIntegrationPermissionBE2F3BC1": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "OpsFunctionLive79C895FB"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/ops/teams"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiGETopsteamsA2B6B2AB": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiOpsCognitoJwtEE918F68"
+        },
+        "RouteKey": "GET /ops/teams",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETopsteamsOpsIntegrationD9495125"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiOpsCognitoJwtEE918F68": {
+      "Type": "AWS::ApiGatewayV2::Authorizer",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizerType": "JWT",
+        "IdentitySource": [
+          "$request.header.Authorization"
+        ],
+        "JwtConfiguration": {
+          "Audience": [
+            {
+              "Ref": "SsmParameterValuesupplycheckoutprodidentityopsclientidC96584B6F00A464EAD1953AFF4B05118Parameter"
+            }
+          ],
+          "Issuer": {
+            "Ref": "SsmParameterValuesupplycheckoutprodidentityopsissuerurlC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+        },
+        "Name": "ops-cognito-jwt"
+      }
+    },
+    "HttpApiGETopsteamsteamIdOpsIntegrationPermission824867CA": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "OpsFunctionLive79C895FB"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/ops/teams/{teamId}"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiGETopsteamsteamIdB43A1596": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiOpsCognitoJwtEE918F68"
+        },
+        "RouteKey": "GET /ops/teams/{teamId}",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETopsteamsOpsIntegrationD9495125"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPUTopsteamsteamIdcompOpsIntegrationPermissionE8BE1B52": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "OpsFunctionLive79C895FB"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/ops/teams/{teamId}/comp"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPUTopsteamsteamIdcomp5FBD7388": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiOpsCognitoJwtEE918F68"
+        },
+        "RouteKey": "PUT /ops/teams/{teamId}/comp",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETopsteamsOpsIntegrationD9495125"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiDELETEopsteamsteamIdcompOpsIntegrationPermission128F81C2": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "OpsFunctionLive79C895FB"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/ops/teams/{teamId}/comp"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiDELETEopsteamsteamIdcomp8D6C434B": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiOpsCognitoJwtEE918F68"
+        },
+        "RouteKey": "DELETE /ops/teams/{teamId}/comp",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETopsteamsOpsIntegrationD9495125"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiGETopsauditOpsIntegrationPermission0032A9FC": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "OpsFunctionLive79C895FB"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/ops/audit"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiGETopsauditC36D0EF3": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiOpsCognitoJwtEE918F68"
+        },
+        "RouteKey": "GET /ops/audit",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETopsteamsOpsIntegrationD9495125"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiPOSTauthsessionAuthIntegration113028DA": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -2798,6 +3199,26 @@
           "POST /teams/{teamId}/invites/{inviteId}/resend": {
             "ThrottlingRateLimit": 5,
             "ThrottlingBurstLimit": 10
+          },
+          "GET /ops/teams": {
+            "ThrottlingRateLimit": 5,
+            "ThrottlingBurstLimit": 10
+          },
+          "GET /ops/teams/{teamId}": {
+            "ThrottlingRateLimit": 5,
+            "ThrottlingBurstLimit": 10
+          },
+          "PUT /ops/teams/{teamId}/comp": {
+            "ThrottlingRateLimit": 2,
+            "ThrottlingBurstLimit": 5
+          },
+          "DELETE /ops/teams/{teamId}/comp": {
+            "ThrottlingRateLimit": 2,
+            "ThrottlingBurstLimit": 5
+          },
+          "GET /ops/audit": {
+            "ThrottlingRateLimit": 5,
+            "ThrottlingBurstLimit": 10
           }
         },
         "StageName": "$default",
@@ -2810,6 +3231,8 @@
         }
       },
       "DependsOn": [
+        "HttpApiDELETEopsteamsteamIdcompOpsIntegrationPermission128F81C2",
+        "HttpApiDELETEopsteamsteamIdcomp8D6C434B",
         "HttpApiDELETEteamsteamIdinvitesinviteIdAccountIntegrationPermission76ABDA4B",
         "HttpApiDELETEteamsteamIdinvitesinviteId6790595C",
         "HttpApiDELETEteamsteamIdmembersuserIdAccountIntegrationPermission2D5A21C0",
@@ -2817,6 +3240,13 @@
         "HttpApiGETmeAccountIntegrationPermission45713A73",
         "HttpApiGETmeAccountIntegration0EFB5255",
         "HttpApiGETme466879BE",
+        "HttpApiGETopsauditOpsIntegrationPermission0032A9FC",
+        "HttpApiGETopsauditC36D0EF3",
+        "HttpApiGETopsteamsteamIdOpsIntegrationPermission824867CA",
+        "HttpApiGETopsteamsteamIdB43A1596",
+        "HttpApiGETopsteamsOpsIntegrationPermissionBE2F3BC1",
+        "HttpApiGETopsteamsOpsIntegrationD9495125",
+        "HttpApiGETopsteamsA2B6B2AB",
         "HttpApiGETteamsteamIdinvitesAccountIntegrationPermissionB8124B59",
         "HttpApiGETteamsteamIdinvitesBB2E6828",
         "HttpApiGETteamsteamIdmembersAccountIntegrationPermission8330B349",
@@ -2832,7 +3262,9 @@
         "HttpApiPOSTteamsteamIdinvitesAccountIntegrationPermissionE1270C09",
         "HttpApiPOSTteamsteamIdinvites598792ED",
         "HttpApiPOSTteamsAccountIntegrationPermission37B4CDE2",
-        "HttpApiPOSTteams93EBE9A5"
+        "HttpApiPOSTteams93EBE9A5",
+        "HttpApiPUTopsteamsteamIdcompOpsIntegrationPermissionE8BE1B52",
+        "HttpApiPUTopsteamsteamIdcomp5FBD7388"
       ]
     },
     "DataFunctionLive5A545D6E": {
@@ -2859,6 +3291,469 @@
         "FunctionVersion": {
           "Fn::GetAtt": [
             "AccountFunctionCurrentVersionA48D76AD<code hash>",
+            "Version"
+          ]
+        },
+        "Name": "live"
+      }
+    },
+    "OpsFunctionLogs75B18833": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "OpsFunctionRole001C2BE9": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the ops function",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "OpsFunctionRoleDefaultPolicy73149DF8": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "OpsFunctionLogs75B18833",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": [
+                "sts:AssumeRole",
+                "sts:TagSession"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "OperatorAccessRoleC6717315",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "cognito-idp:AdminListGroupsForUser",
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutprodidentityopsuserpoolarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OpsFunctionRoleDefaultPolicy73149DF8",
+        "Roles": [
+          {
+            "Ref": "OpsFunctionRole001C2BE9"
+          }
+        ]
+      }
+    },
+    "OpsFunction09042971": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "Platform operators: teams, comps and the operator audit (ADR 0015)",
+        "Environment": {
+          "Variables": {
+            "NODE_OPTIONS": "--enable-source-maps",
+            "OPS_CLIENT_ID": {
+              "Ref": "SsmParameterValuesupplycheckoutprodidentityopsclientidC96584B6F00A464EAD1953AFF4B05118Parameter"
+            },
+            "OPS_ISSUER_URL": {
+              "Ref": "SsmParameterValuesupplycheckoutprodidentityopsissuerurlC96584B6F00A464EAD1953AFF4B05118Parameter"
+            },
+            "OPS_ROLE_ARN": {
+              "Fn::GetAtt": [
+                "OperatorAccessRoleC6717315",
+                "Arn"
+              ]
+            },
+            "OPS_USER_POOL_ID": {
+              "Ref": "SsmParameterValuesupplycheckoutprodidentityopsuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter"
+            },
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "SUPPLY_CHECKOUT_ENV": "prod",
+            "TABLE_NAME": "supply-checkout-prod-app"
+          }
+        },
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "OpsFunctionLogs75B18833"
+          }
+        },
+        "MemorySize": 512,
+        "Role": {
+          "Fn::GetAtt": [
+            "OpsFunctionRole001C2BE9",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 10,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "OpsFunctionRoleDefaultPolicy73149DF8",
+        "OpsFunctionRole001C2BE9"
+      ]
+    },
+    "OpsFunctionCurrentVersionD7948FF2<code hash>": {
+      "Type": "AWS::Lambda::Version",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "OpsFunction09042971"
+        }
+      },
+      "Metadata": {
+        "aws:cdk:do-not-refactor": true
+      }
+    },
+    "OpsFunctionXRayWrite5031D481": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTraceSegments",
+                "xray:PutTelemetryRecords"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OpsFunctionXRayWrite5031D481",
+        "Roles": [
+          {
+            "Ref": "OpsFunctionRole001C2BE9"
+          }
+        ]
+      }
+    },
+    "OperatorAccessRoleC6717315": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "sts:AssumeRole",
+                "sts:TagSession"
+              ],
+              "Condition": {
+                "StringLike": {
+                  "aws:RequestTag/teamId": "?*"
+                },
+                "ForAllValues:StringEquals": {
+                  "aws:TagKeys": [
+                    "teamId"
+                  ]
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "OpsFunctionRole001C2BE9",
+                    "Arn"
+                  ]
+                }
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Assumed by the ops function per request (ADR 0015): the operators' index, one team's comp attributes, and append-only operator audit",
+        "MaxSessionDuration": 3600,
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": "dynamodb:Query",
+                  "Condition": {
+                    "ForAllValues:StringLike": {
+                      "dynamodb:LeadingKeys": [
+                        "OPS#TEAMS",
+                        "OPS#OWNERS#*",
+                        "OPS#AUDIT#*"
+                      ]
+                    },
+                    "StringEquals": {
+                      "dynamodb:Select": [
+                        "ALL_PROJECTED_ATTRIBUTES",
+                        "SPECIFIC_ATTRIBUTES"
+                      ]
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app/index/GSI3"
+                      ]
+                    ]
+                  },
+                  "Sid": "OpsIndexProjectionOnly"
+                },
+                {
+                  "Action": "dynamodb:UpdateItem",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "TEAM#${aws:PrincipalTag/teamId}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "type",
+                        "version",
+                        "compPlan",
+                        "compSeats",
+                        "compUntil",
+                        "compReason",
+                        "compBy",
+                        "compAt"
+                      ]
+                    },
+                    "StringEqualsIfExists": {
+                      "dynamodb:ReturnValues": [
+                        "NONE",
+                        "UPDATED_OLD",
+                        "UPDATED_NEW"
+                      ]
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "CompAttributesOnly"
+                },
+                {
+                  "Action": [
+                    "dynamodb:PutItem",
+                    "dynamodb:Query"
+                  ],
+                  "Condition": {
+                    "ForAllValues:StringLike": {
+                      "dynamodb:LeadingKeys": [
+                        "OPAUDIT#*"
+                      ]
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "OperatorAuditAppendOnly"
+                },
+                {
+                  "Action": [
+                    "kms:Decrypt",
+                    "kms:DescribeKey",
+                    "kms:Encrypt",
+                    "kms:GenerateDataKey"
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "kms:ViaService": {
+                        "Fn::Join": [
+                          "",
+                          [
+                            "dynamodb.",
+                            {
+                              "Ref": "AWS::Region"
+                            },
+                            ".amazonaws.com"
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                  },
+                  "Sid": "TableKeyThroughDynamoDb"
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "OperatorScope"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "OpsFunctionLive79C895FB": {
+      "Type": "AWS::Lambda::Alias",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "OpsFunction09042971"
+        },
+        "FunctionVersion": {
+          "Fn::GetAtt": [
+            "OpsFunctionCurrentVersionD7948FF2<code hash>",
             "Version"
           ]
         },
@@ -3020,6 +3915,22 @@
     "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter": {
       "Type": "AWS::SSM::Parameter::Value<String>",
       "Default": "/supply-checkout/prod/data/table-key-arn"
+    },
+    "SsmParameterValuesupplycheckoutprodidentityopsissuerurlC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/identity/ops-issuer-url"
+    },
+    "SsmParameterValuesupplycheckoutprodidentityopsclientidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/identity/ops-client-id"
+    },
+    "SsmParameterValuesupplycheckoutprodidentityopsuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/identity/ops-user-pool-id"
+    },
+    "SsmParameterValuesupplycheckoutprodidentityopsuserpoolarnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/identity/ops-user-pool-arn"
     },
     "SsmParameterValuesupplycheckoutproddomainapicertificatearnC96584B6F00A464EAD1953AFF4B05118Parameter": {
       "Type": "AWS::SSM::Parameter::Value<String>",

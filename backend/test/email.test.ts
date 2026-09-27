@@ -441,10 +441,11 @@ describe("email events", () => {
   it("writes only names no other item in a team's partition has, so it can't change a team's billing status", () => {
     const team: Required<Team> = {
       type: "team", teamId: "t", name: "n", plan: "p", seats: 1, status: "active", homeRegion: "r", trialEndsAt: "d", owners: 1, members: 1, stripeCustomerId: "c", createdAt: "d", version: 1,
+      compPlan: "p", compSeats: 1, compUntil: "d", compReason: "r", compBy: "o", compAt: "d",
     };
     const member: Required<Member> = { type: "member", teamId: "t", userId: "u", role: "owner", email: "e", joinedAt: "d" };
     // Sheets and products carry status, type, version and their document fields
-    const others = [...Object.keys(team), ...Object.keys(member), "status", "type", "version", "GSI1PK", "GSI1SK", "GSI2SK", "expiresAt"];
+    const others = [...Object.keys(team), ...Object.keys(member), "status", "type", "version", "GSI1PK", "GSI1SK", "GSI2SK", "GSI3PK", "GSI3SK", "expiresAt"];
     const written = EMAIL_EVENTS_WRITES.filter((a) => !["PK", "SK", "GSI2PK"].includes(a));
     expect(written).toEqual(["inviteStatus", "failureReason", "failedAt"]);
     for (const a of written) expect(others).not.toContain(a);

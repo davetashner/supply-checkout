@@ -3,7 +3,7 @@
 // into another key (for example, a sheet ID containing "#").
 
 import { InvalidInputError } from "./errors.js";
-import { COMMITTING_IMPORTS_PARTITION, INVITE_LIMIT_PREFIX } from "./schema.js";
+import { COMMITTING_IMPORTS_PARTITION, INVITE_LIMIT_PREFIX, OPERATOR_AUDIT_PREFIX, OPS_AUDIT_INDEX_PREFIX, OPS_OWNERS_PREFIX, OPS_TEAMS_PARTITION } from "./schema.js";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
@@ -149,6 +149,42 @@ export const gsi1 = {
   }),
 };
 
+/** GSI3 keys: the operators' index (ADR 0015; schema.ts). */
+export const gsi3 = {
+  /** On a team's META item: every team in one index partition, oldest first. */
+  team: (createdAt: string, teamId: string) => ({ GSI3PK: OPS_TEAMS_PARTITION, GSI3SK: `${createdAt}#${id(teamId, "team ID")}` }),
+  /** On an owner's MEMBER item, while they're an owner. */
+  owner: (teamId: string, userId: string) => ({ GSI3PK: opsOwnersPartition(teamId), GSI3SK: id(userId, "user ID") }),
+  /** On an operator audit item: the audit by month. */
+  audit: (ts: string, eventId: string) => ({ GSI3PK: opsAuditIndexPartition(ts.slice(0, 7)), GSI3SK: `${ts}#${id(eventId, "event ID")}` }),
+};
+
+/** The GSI3 partition of a team's owners. */
+export function opsOwnersPartition(teamId: string): string {
+  return `${OPS_OWNERS_PREFIX}${id(teamId, "team ID")}`;
+}
+
+/** The GSI3 partition of a month's operator audit. */
+export function opsAuditIndexPartition(yearMonth: string): string {
+  return `${OPS_AUDIT_INDEX_PREFIX}${month(yearMonth)}`;
+}
+
+/** The operator audit partition of a team, or of the platform (`PLATFORM`, for campaigns). */
+export function operatorAuditPartition(teamId: string): string {
+  return `${OPERATOR_AUDIT_PREFIX}${id(teamId, "team ID")}`;
+}
+
+/** Operator audit items and idempotency records (ADR 0015). */
+export const operatorKeys = {
+  /** One operator action, newest last by time. */
+  audit: (teamId: string, ts: string, eventId: string) => ({ PK: operatorAuditPartition(teamId), SK: `AUDIT#${ts}#${id(eventId, "event ID")}` }),
+  /** A write's Idempotency-Key, so a retry replays rather than acting twice. */
+  request: (teamId: string, keyHash: string) => {
+    if (!HASH.test(keyHash)) throw new InvalidInputError("Invalid idempotency key");
+    return { PK: operatorAuditPartition(teamId), SK: `REQUEST#${keyHash}` };
+  },
+};
+
 /** GSI2 keys: invites by the invitee's hashed email. */
 export const gsi2 = {
   invitee: (emailHash: string, inviteId: string) => ({ GSI2PK: inviteePartition(emailHash), GSI2SK: `INVITE#${id(inviteId, "invite ID")}` }),
@@ -174,7 +210,7 @@ export function teamPartition(teamId: string): string {
 /** Removes key and index attributes before an item leaves the data layer. */
 export function strip<T>(item: Record<string, unknown> | undefined): T | undefined {
   if (!item) return undefined;
-  const { PK: _pk, SK: _sk, GSI1PK: _gpk, GSI1SK: _gsk, GSI2PK: _g2pk, GSI2SK: _g2sk, ...rest } = item;
-  void _pk; void _sk; void _gpk; void _gsk; void _g2pk; void _g2sk;
+  const { PK: _pk, SK: _sk, GSI1PK: _gpk, GSI1SK: _gsk, GSI2PK: _g2pk, GSI2SK: _g2sk, GSI3PK: _g3pk, GSI3SK: _g3sk, ...rest } = item;
+  void _pk; void _sk; void _gpk; void _gsk; void _g2pk; void _g2sk; void _g3pk; void _g3sk;
   return rest as T;
 }

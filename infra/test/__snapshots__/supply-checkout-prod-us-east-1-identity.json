@@ -590,6 +590,300 @@
         "Type": "String",
         "Value": "https://auth.supplycheckout.com"
       }
+    },
+    "OpsUserPoolD0D2361F": {
+      "Type": "AWS::Cognito::UserPool",
+      "Properties": {
+        "AccountRecoverySetting": {
+          "RecoveryMechanisms": [
+            {
+              "Name": "admin_only",
+              "Priority": 1
+            }
+          ]
+        },
+        "AdminCreateUserConfig": {
+          "AllowAdminCreateUserOnly": true
+        },
+        "DeletionProtection": "ACTIVE",
+        "EmailVerificationMessage": "The verification code to your new account is {####}",
+        "EmailVerificationSubject": "Verify your new account",
+        "EnabledMfas": [
+          "SOFTWARE_TOKEN_MFA"
+        ],
+        "MfaConfiguration": "ON",
+        "Policies": {
+          "PasswordPolicy": {
+            "MinimumLength": 16,
+            "RequireLowercase": true,
+            "RequireNumbers": true,
+            "RequireSymbols": true,
+            "RequireUppercase": true,
+            "TemporaryPasswordValidityDays": 1
+          },
+          "SignInPolicy": {
+            "AllowedFirstAuthFactors": [
+              "PASSWORD"
+            ]
+          }
+        },
+        "SmsVerificationMessage": "The verification code to your new account is {####}",
+        "UserPoolName": "supply-checkout-prod-ops",
+        "UserPoolTags": {
+          "app": "supply-checkout",
+          "component": "identity",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "UserPoolTier": "ESSENTIALS",
+        "UsernameConfiguration": {
+          "CaseSensitive": false
+        },
+        "VerificationMessageTemplate": {
+          "DefaultEmailOption": "CONFIRM_WITH_CODE",
+          "EmailMessage": "The verification code to your new account is {####}",
+          "EmailSubject": "Verify your new account",
+          "SmsMessage": "The verification code to your new account is {####}"
+        }
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "OpsUserPoolOpsDomain52D16D1C": {
+      "Type": "AWS::Cognito::UserPoolDomain",
+      "Properties": {
+        "CustomDomainConfig": {
+          "CertificateArn": {
+            "Ref": "SsmParameterValuesupplycheckoutproddomainopsauthcertificatearnC96584B6F00A464EAD1953AFF4B05118Parameter"
+          }
+        },
+        "Domain": "ops-auth.supplycheckout.com",
+        "ManagedLoginVersion": 2,
+        "UserPoolId": {
+          "Ref": "OpsUserPoolD0D2361F"
+        }
+      }
+    },
+    "OpsUserPoolOpsClient60A4450E": {
+      "Type": "AWS::Cognito::UserPoolClient",
+      "Properties": {
+        "AccessTokenValidity": 15,
+        "AllowedOAuthFlows": [
+          "code"
+        ],
+        "AllowedOAuthFlowsUserPoolClient": true,
+        "AllowedOAuthScopes": [
+          "openid",
+          "aws.cognito.signin.user.admin"
+        ],
+        "CallbackURLs": [
+          "http://localhost:8765/"
+        ],
+        "ClientName": "ops",
+        "EnableTokenRevocation": true,
+        "ExplicitAuthFlows": [],
+        "GenerateSecret": false,
+        "IdTokenValidity": 15,
+        "LogoutURLs": [
+          "http://localhost:8765/"
+        ],
+        "PreventUserExistenceErrors": "ENABLED",
+        "ReadAttributes": [
+          "family_name",
+          "given_name"
+        ],
+        "RefreshTokenRotation": {
+          "Feature": "ENABLED",
+          "RetryGracePeriodSeconds": 10
+        },
+        "RefreshTokenValidity": 480,
+        "SupportedIdentityProviders": [
+          "COGNITO"
+        ],
+        "TokenValidityUnits": {
+          "AccessToken": "minutes",
+          "IdToken": "minutes",
+          "RefreshToken": "minutes"
+        },
+        "UserPoolId": {
+          "Ref": "OpsUserPoolD0D2361F"
+        },
+        "WriteAttributes": [
+          "family_name",
+          "given_name"
+        ]
+      }
+    },
+    "OpsOperatorsGroup9E29E408": {
+      "Type": "AWS::Cognito::UserPoolGroup",
+      "Properties": {
+        "Description": "May call the /ops routes (ADR 0015). Granted only with admin-add-user-to-group under an SSO role.",
+        "GroupName": "operators",
+        "UserPoolId": {
+          "Ref": "OpsUserPoolD0D2361F"
+        }
+      }
+    },
+    "OpsAuthAlias82BFB5BF": {
+      "Type": "AWS::Route53::RecordSet",
+      "Properties": {
+        "AliasTarget": {
+          "DNSName": {
+            "Fn::GetAtt": [
+              "OpsUserPoolOpsDomain52D16D1C",
+              "CloudFrontDistribution"
+            ]
+          },
+          "HostedZoneId": {
+            "Fn::FindInMap": [
+              "AWSCloudFrontPartitionHostedZoneIdMap",
+              {
+                "Ref": "AWS::Partition"
+              },
+              "zoneId"
+            ]
+          }
+        },
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "Name": "ops-auth.supplycheckout.com.",
+        "Type": "A"
+      }
+    },
+    "OpsAuthAliasIpv6E1F390A8": {
+      "Type": "AWS::Route53::RecordSet",
+      "Properties": {
+        "AliasTarget": {
+          "DNSName": {
+            "Fn::GetAtt": [
+              "OpsUserPoolOpsDomain52D16D1C",
+              "CloudFrontDistribution"
+            ]
+          },
+          "HostedZoneId": {
+            "Fn::FindInMap": [
+              "AWSCloudFrontPartitionHostedZoneIdMap",
+              {
+                "Ref": "AWS::Partition"
+              },
+              "zoneId"
+            ]
+          }
+        },
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "Name": "ops-auth.supplycheckout.com.",
+        "Type": "AAAA"
+      }
+    },
+    "OpsBranding": {
+      "Type": "AWS::Cognito::ManagedLoginBranding",
+      "Properties": {
+        "ClientId": {
+          "Ref": "OpsUserPoolOpsClient60A4450E"
+        },
+        "UseCognitoProvidedValues": true,
+        "UserPoolId": {
+          "Ref": "OpsUserPoolD0D2361F"
+        }
+      }
+    },
+    "OpsUserPoolIdParam387AFA88": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Operator user pool ID (ADR 0015)",
+        "Name": "/supply-checkout/prod/identity/ops-user-pool-id",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "identity",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "OpsUserPoolD0D2361F"
+        }
+      }
+    },
+    "OpsUserPoolArnParamF8310DEB": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Operator user pool ARN (ADR 0015)",
+        "Name": "/supply-checkout/prod/identity/ops-user-pool-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "identity",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "OpsUserPoolD0D2361F",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "OpsClientIdParam934D7FF7": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Operator pool's ops client ID (public, PKCE): the ops authorizer's audience",
+        "Name": "/supply-checkout/prod/identity/ops-client-id",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "identity",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "OpsUserPoolOpsClient60A4450E"
+        }
+      }
+    },
+    "OpsIssuerUrlParam34595405": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "JWT issuer for the ops authorizer",
+        "Name": "/supply-checkout/prod/identity/ops-issuer-url",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "identity",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "OpsUserPoolD0D2361F",
+            "ProviderURL"
+          ]
+        }
+      }
+    },
+    "OpsAuthUrlParamDD05FB10": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Operator pool's Managed Login and OAuth endpoints",
+        "Name": "/supply-checkout/prod/identity/ops-auth-url",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "identity",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": "https://ops-auth.supplycheckout.com"
+      }
     }
   },
   "Parameters": {
@@ -600,6 +894,10 @@
     "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter": {
       "Type": "AWS::SSM::Parameter::Value<String>",
       "Default": "/supply-checkout/prod/dns/hosted-zone-id"
+    },
+    "SsmParameterValuesupplycheckoutproddomainopsauthcertificatearnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/domain/ops-auth-certificate-arn"
     },
     "BootstrapVersion": {
       "Type": "AWS::SSM::Parameter::Value<String>",

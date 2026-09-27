@@ -100,7 +100,10 @@ describe("alarm topics", () => {
         expect.stringMatching(/^AlarmTopicsP1/),
         expect.stringMatching(/^AlarmTopicsP2/),
       ]);
-      for (const { topics, allow } of statements) {
+      for (const { topics, allow: all } of statements) {
+        // The primary region's P1 topic also takes the operator-pool alert, from that one rule only (tested below)
+        const allow = all.filter((a) => a.Sid !== "AllowOperatorPoolAlertToPublish");
+        if (all.length !== allow.length) expect([r, topics[0]]).toEqual([EAST, expect.stringMatching(/^AlarmTopicsP1/)]);
         expect(allow).toEqual([
           {
             Sid: "AllowCloudWatchAlarmsToPublish",
@@ -366,7 +369,7 @@ describe("scheduled checks", () => {
     west.resourceCountIs("AWS::Events::Rule", 0);
     const t = observability();
     expect(functions(t).map((f) => f.FunctionName).sort()).toEqual(["supply-checkout-prod-email-quota", "supply-checkout-prod-stuck-imports"]);
-    const rules = Object.values(t.findResources("AWS::Events::Rule")).map((r) => r.Properties);
+    const rules = Object.values(t.findResources("AWS::Events::Rule")).map((r) => r.Properties).filter((r) => r.ScheduleExpression !== undefined);
     expect(rules).toHaveLength(2);
     for (const rule of rules) {
       expect(rule.ScheduleExpression).toBe(`rate(${CHECK_EVERY_MINUTES} minutes)`);
@@ -546,5 +549,32 @@ describe("defaults for every function and log group", () => {
       TracingConfig: { Mode: "Active" },
     });
     expect(fn.node.tryFindChild("XRayWrite")).toBeDefined();
+  });
+});
+
+describe("operator pool alert (ADR 0015)", () => {
+  it("tells P1 whenever a user is created in the operator pool or added to or removed from a group there, in the primary region only", () => {
+    const { region } = build();
+    const west = Template.fromStack(region(WEST).observability);
+    expect(Object.values(west.findResources("AWS::Events::Rule")).filter((r) => r.Properties.EventPattern)).toEqual([]);
+    const t = observability();
+    const [[ruleId, rule], ...others] = Object.entries(t.findResources("AWS::Events::Rule")).filter(([, r]) => r.Properties.EventPattern);
+    expect(others).toEqual([]);
+    expect(rule.Properties.EventPattern).toEqual({
+      source: ["aws.cognito-idp"],
+      "detail-type": ["AWS API Call via CloudTrail"],
+      detail: {
+        eventSource: ["cognito-idp.amazonaws.com"],
+        eventName: ["AdminCreateUser", "AdminAddUserToGroup", "AdminRemoveUserFromGroup"],
+        requestParameters: { userPoolId: [{ Ref: expect.stringMatching(/identityopsuserpoolid/i) }] },
+      },
+    });
+    expect(rule.Properties.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP1/) } })]);
+    // Only this rule may publish, and the message names no one
+    const statements = Object.values(t.findResources("AWS::SNS::TopicPolicy")).flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
+    expect(statements.filter((st) => JSON.stringify(st.Principal).includes("events.amazonaws.com"))).toEqual([
+      expect.objectContaining({ Sid: "AllowOperatorPoolAlertToPublish", Condition: { ArnEquals: { "aws:SourceArn": { "Fn::GetAtt": [ruleId, "Arn"] } } } }),
+    ]);
+    expect(JSON.stringify(rule.Properties.Targets)).not.toContain("userIdentity");
   });
 });

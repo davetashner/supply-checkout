@@ -142,6 +142,17 @@ tags:
       `POST /invites/{inviteId}/accept` ([onboarding.md](onboarding.md)).
   - name: auth
     description: Sign-in sessions for the web app, with the refresh token in an HttpOnly cookie.
+  - name: ops
+    description: |
+      Platform operators (ADR 0015), primary region only: list and search
+      teams, read one team's account record, comp a team, and read the
+      operator audit. Every route needs an access token from the **operator**
+      user pool (`opsCognito`), whose user must be in the `operators` group;
+      a customer's token is refused. Removing, disabling or signing out an
+      operator takes effect on their next request. Operators never read a
+      team's sheets, inventory, invites or receipts. Every change, and every
+      read of one team's record, is audited, and the team's owners see it
+      (`GET /teams/{teamId}/support-actions`). `npm run ops` is the client.
 paths:
   /teams/{teamId}/products:
     parameters: [{ $ref: "#/components/parameters/teamId" }]
@@ -824,6 +835,198 @@ paths:
           description: "`not_found`: the invite was accepted or revoked."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429": { $ref: "#/components/responses/TooManyInvites" }
+  /teams/{teamId}/support-actions:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    get:
+      tags: [members]
+      operationId: listSupportActions
+      summary: What Supply Checkout support did to this team (ADR 0015). Owners only.
+      description: |
+        Newest first: comps (`ops.comp.set`, `ops.comp.end`, with the comp
+        before and after) and each time support read the team's account
+        record (`ops.team.read`). The actor is always "Supply Checkout
+        support"; which operator it was is never shown.
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100 } }
+        - { $ref: "#/components/parameters/cursor" }
+      responses:
+        "200":
+          description: A page of support actions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [actions]
+                properties:
+                  actions:
+                    type: array
+                    items:
+                      type: object
+                      required: [eventId, ts, actor, action]
+                      properties:
+                        eventId: { type: string }
+                        ts: { type: string, format: date-time }
+                        actor: { type: string, const: Supply Checkout support }
+                        action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end] }
+                        reason: { type: string }
+                        before: { oneOf: [{ $ref: "#/components/schemas/CompRecord" }, { type: "null" }] }
+                        after: { oneOf: [{ $ref: "#/components/schemas/CompRecord" }, { type: "null" }] }
+                  cursor: { type: string, description: Absent on the last page. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /ops/teams:
+    get:
+      tags: [ops]
+      operationId: opsListTeams
+      summary: Teams, newest first, 50 a page, with their owners.
+      security: [{ opsCognito: [] }]
+      parameters:
+        - { name: q, in: query, description: "A team ID, or part of a team's name (any case).", schema: { type: string, maxLength: 200 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100 } }
+        - { name: cursor, in: query, description: The previous page's `cursor`, with the same `q`., schema: { type: string } }
+      responses:
+        "200":
+          description: A page of teams.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [teams]
+                properties:
+                  teams: { type: array, items: { $ref: "#/components/schemas/OpsTeam" } }
+                  cursor: { type: string, description: Absent on the last page. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/OperatorsOnly" }
+  /ops/teams/{teamId}:
+    parameters: [{ $ref: "#/components/parameters/opsTeamId" }]
+    get:
+      tags: [ops]
+      operationId: opsGetTeam
+      summary: One team's account record and owners. Audited as `ops.team.read`.
+      description: The record comes from the operators' index, which lags writes by up to a second or so.
+      security: [{ opsCognito: [] }]
+      responses:
+        "200":
+          description: The team.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [team]
+                properties:
+                  team: { $ref: "#/components/schemas/OpsTeam" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/OperatorsOnly" }
+        "404":
+          description: "`not_found`: no such team."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /ops/teams/{teamId}/comp:
+    parameters: [{ $ref: "#/components/parameters/opsTeamId" }]
+    put:
+      tags: [ops]
+      operationId: opsSetComp
+      summary: Comp the team, or change or extend its comp.
+      description: |
+        While a comp is live (`until` in the future) the team is active on
+        `plan` whatever Stripe says; after it, the Stripe status applies
+        again. It never changes the team's own `plan` or `status`. `until` is
+        at most 12 months ahead; extend by sending a later one. Send the
+        team's `version` from `GET /ops/teams/{teamId}` as `expectedVersion`.
+        Audited as `ops.comp.set` in the same transaction.
+      security: [{ opsCognito: [] }]
+      parameters: [{ $ref: "#/components/parameters/opsIdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [plan, until, reason, expectedVersion]
+              properties:
+                plan: { type: string, pattern: "^[a-z][a-z0-9_-]{0,31}$", examples: [free] }
+                seats: { type: integer, minimum: 1, maximum: 100 }
+                until: { type: string, description: "A date (YYYY-MM-DD, midnight UTC) or an ISO 8601 time with a zone, in the future and at most 12 months ahead." }
+                reason: { type: string, minLength: 3, maxLength: 500, description: Why, on one line. The team's owners see it. }
+                expectedVersion: { type: integer, minimum: 1 }
+      responses:
+        "200": { $ref: "#/components/responses/CompDone" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/OperatorsOnly" }
+        "404":
+          description: "`not_found`: no such team."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409": { $ref: "#/components/responses/CompConflict" }
+    delete:
+      tags: [ops]
+      operationId: opsEndComp
+      summary: End the team's comp now. Audited as `ops.comp.end`.
+      security: [{ opsCognito: [] }]
+      parameters: [{ $ref: "#/components/parameters/opsIdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason, expectedVersion]
+              properties:
+                reason: { type: string, minLength: 3, maxLength: 500 }
+                expectedVersion: { type: integer, minimum: 1 }
+      responses:
+        "200": { $ref: "#/components/responses/CompDone" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/OperatorsOnly" }
+        "404":
+          description: "`not_found`: no such team."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409": { $ref: "#/components/responses/CompConflict" }
+  /ops/audit:
+    get:
+      tags: [ops]
+      operationId: opsListAudit
+      summary: The operator audit, newest first, for one team or one month (default this month, UTC).
+      security: [{ opsCognito: [] }]
+      parameters:
+        - { name: teamId, in: query, schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" } }
+        - { name: month, in: query, description: YYYY-MM. Not with teamId., schema: { type: string, pattern: "^\\d{4}-(0[1-9]|1[0-2])$" } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100 } }
+        - { $ref: "#/components/parameters/cursor" }
+      responses:
+        "200":
+          description: A page of audit events.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      required: [eventId, ts, teamId, operatorSub, action, target]
+                      properties:
+                        eventId: { type: string }
+                        ts: { type: string, format: date-time }
+                        teamId: { type: string }
+                        operatorSub: { type: string, description: The operator's `sub` in the operator pool. }
+                        action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end] }
+                        target: { type: string }
+                        reason: { type: string }
+                        before: { oneOf: [{ $ref: "#/components/schemas/CompRecord" }, { type: "null" }] }
+                        after: { oneOf: [{ $ref: "#/components/schemas/CompRecord" }, { type: "null" }] }
+                        idempotencyKey: { type: string }
+                  cursor: { type: string, description: Absent on the last page. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/OperatorsOnly" }
   /auth/session:
     post:
       tags: [auth]
@@ -898,6 +1101,16 @@ components:
         app client (`Authorization: Bearer <token>`). API Gateway checks the
         signature, expiry, issuer and client; the Lambda also requires
         `token_use: access` and an unexpired `exp`. ID tokens are refused.
+    opsCognito:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        A Cognito **access token** from the operator user pool
+        (`supply-checkout-<env>-ops`, password plus TOTP required) and its
+        `ops` client, for a user in the `operators` group. 15 minutes. The
+        ops function also calls Cognito on every request, so a revoked token
+        or a removed or disabled operator is refused at once.
     refreshCookie:
       type: apiKey
       in: cookie
@@ -907,6 +1120,18 @@ components:
         `HttpOnly; Secure; SameSite=Strict; Path=/auth; Max-Age=2592000`.
         Requests must also carry an allowed `Origin` (CSRF protection).
   parameters:
+    opsTeamId:
+      name: teamId
+      in: path
+      required: true
+      description: Any team's ID.
+      schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
+    opsIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: New for each change. A retry with the same key and body replays the first result for 24 hours; the same key with another body is 409.
+      schema: { type: string, pattern: "^[A-Za-z0-9_-]{8,128}$" }
     teamId:
       name: teamId
       in: path
@@ -1037,6 +1262,49 @@ components:
                   reason: { const: count }
                   count: { type: integer, minimum: 0, maximum: 1000000, description: The number counted in storage. }
   schemas:
+    CompRecord:
+      type: object
+      description: A comp as the audit records it.
+      properties:
+        plan: { type: string }
+        seats: { type: [integer, "null"] }
+        until: { type: [string, "null"], format: date-time }
+        reason: { type: [string, "null"] }
+    OpsTeam:
+      type: object
+      required: [id, name, plan, seats, status, ownerCount, createdAt, version, comp, owners]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        plan: { type: string, description: From billing (ADR 0009). }
+        seats: { type: integer }
+        status: { type: string, description: The Stripe subscription status. }
+        trialEndsAt: { type: [string, "null"], format: date-time }
+        ownerCount: { type: integer }
+        members: { type: [integer, "null"] }
+        createdAt: { type: string, format: date-time }
+        stripeCustomerId: { type: [string, "null"] }
+        version: { type: integer, description: Send as `expectedVersion` to change the comp. }
+        comp:
+          oneOf:
+            - type: object
+              properties:
+                plan: { type: string }
+                seats: { type: [integer, "null"] }
+                until: { type: string, format: date-time }
+                reason: { type: string }
+                by: { type: string, description: The operator's `sub`. }
+                at: { type: string, format: date-time }
+                live: { type: boolean, description: "`until` is still ahead." }
+            - type: "null"
+        owners:
+          type: array
+          items:
+            type: object
+            properties:
+              userId: { type: string }
+              email: { type: [string, "null"] }
+              joinedAt: { type: [string, "null"], format: date-time }
     OperationId:
       type: string
       format: uuid
@@ -1188,6 +1456,15 @@ components:
         status: { type: string, description: "Subscription status (ADR 0009): `trialing`, `active`, `past_due`, `canceled`." }
         trialEndsAt: { type: [string, "null"], format: date-time, description: When the free trial ends. }
         homeRegion: { type: string, description: The region the team was created in (ADR 0010). }
+        comp:
+          description: A live comp from Supply Checkout support (ADR 0015). While it's set, the team is active on `plan` until `until`, whatever `status` says.
+          oneOf:
+            - type: object
+              required: [plan, until]
+              properties:
+                plan: { type: string }
+                until: { type: string, format: date-time }
+            - type: "null"
     Invite:
       type: object
       description: A pending invite, to show. Accepting it needs the token from the invite email.
@@ -1246,6 +1523,32 @@ components:
                 doesn't exist). `last_owner`: the change would leave the team
                 without an owner. `team_full`: the team is at its member cap.
   responses:
+    OperatorsOnly:
+      description: "`permission_denied`: the token's user isn't in the `operators` group (now, according to Cognito)."
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    CompDone:
+      description: Done, now or by an earlier request with the same Idempotency-Key (`replayed`).
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [eventId, replayed, comp, version]
+            properties:
+              eventId: { type: string, description: The audit event. }
+              replayed: { type: boolean }
+              comp:
+                oneOf:
+                  - type: object
+                    required: [plan, until]
+                    properties:
+                      plan: { type: string }
+                      seats: { type: integer }
+                      until: { type: string, format: date-time }
+                  - type: "null"
+              version: { type: integer, description: The team's version after the change. }
+    CompConflict:
+      description: "`aborted`, nothing changed: the team isn't at `expectedVersion` (read it again), it has no comp to end, or the Idempotency-Key was used for a different request."
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     Document:
       description: The document after the request.
       content:

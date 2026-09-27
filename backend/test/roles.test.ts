@@ -141,6 +141,7 @@ const DATA_CASES: Record<string, Omit<Case, "minRole">> = {
   "POST /teams/{teamId}/products/{key}/stock": { method: "POST", path: "/teams/team-a/products/0123/stock", body: { operationId: randomUUID(), reason: "count", count: 4 } },
   "GET /teams/{teamId}/products/{key}/movements": { method: "GET", path: "/teams/team-a/products/0123/movements" },
   "POST /teams/{teamId}/imports": { method: "POST", path: "/teams/team-a/imports", body: { importId: randomUUID(), csv: "name,price\nRags,1.5\n" } },
+  "GET /teams/{teamId}/support-actions": { method: "GET", path: "/teams/team-a/support-actions" },
 };
 
 /** The same for the team routes the account function serves. */
@@ -183,12 +184,13 @@ describe("the role matrix", () => {
     expect(Object.keys(MEMBER_CASES).sort()).toEqual(TEAM_ACCOUNT_ROUTES.map(routeKey).sort());
   });
 
-  it("needs at least contributor for every data route that isn't a read, and owner for the import", () => {
+  it("needs at least contributor for every data route that isn't a read, and owner for the import and support actions", () => {
     for (const route of DATA_ROUTES) {
       if (route.method !== "GET") expect(hasRole("viewer", route.minRole), routeKey(route)).toBe(false);
-      else expect(route.minRole, routeKey(route)).toBe("viewer");
+      else if (route.operation !== "supportActions") expect(route.minRole, routeKey(route)).toBe("viewer");
     }
     expect(DATA_ROUTES.find((r) => r.operation === "importProducts")?.minRole).toBe("owner");
+    expect(DATA_ROUTES.find((r) => r.operation === "supportActions")?.minRole).toBe("owner");
   });
 
   for (const [key, c, fn] of cases) {
