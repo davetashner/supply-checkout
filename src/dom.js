@@ -21,11 +21,18 @@ $("#overlay").addEventListener("click", e => { if (e.target.id === "overlay") di
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#overlay").hidden) dismiss(); });
 
 // Two-tap confirm, since the viewer can't show confirm() dialogs. arm() is one tap, for a
-// delegated handler; armButton wires it to a button.
+// delegated handler; armButton wires it to a button. The second tap disarms the button as it
+// runs the action, so a third tap arms it again rather than running the action twice.
+const disarms = new WeakMap();
 export function arm(btn, label, action) {
-  if (btn.classList.contains("armed")) { action(); return; }
-  btn.classList.add("armed"); const old = btn.textContent; btn.textContent = label;
-  setTimeout(() => { btn.classList.remove("armed"); btn.textContent = old; }, 3500);
+  // Not while its action is saving (a click some browsers still deliver to a disabled button)
+  if (btn.disabled) return;
+  if (btn.classList.contains("armed")) { disarms.get(btn)(); action(); return; }
+  const old = btn.textContent;
+  const disarm = () => { clearTimeout(timer); btn.classList.remove("armed"); btn.textContent = old; };
+  const timer = setTimeout(disarm, 3500);
+  disarms.set(btn, disarm);
+  btn.classList.add("armed"); btn.textContent = label;
 }
 export const armButton = (btn, label, action) => btn.addEventListener("click", () => arm(btn, label, action));
 

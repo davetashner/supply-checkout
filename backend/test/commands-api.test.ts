@@ -187,6 +187,137 @@ describe("checkout", () => {
   });
 });
 
+describe("add lines", () => {
+  const LINES = "/teams/team-a/sheets/s1/lines";
+  const tape = { productKey: "k-tape", quantity: 2, name: " Painter's tape ", price: 6.25, cost: 6.25 };
+  const items = () => table.get("TEAM#team-a", "SHEET#s1")?.items as Record<string, Record<string, unknown>> | undefined;
+
+  it("adds new lines with the request's copy and adds to existing ones, in one transaction, without moving stock", async () => {
+    seed({ sheet: { items: { "0123": { code: "0123", name: "Old name", price: 10, out: 2, returned: 1 } } } });
+    const id = op();
+    const res = await call("POST", LINES, { operationId: id, lines: [{ productKey: "0123", quantity: 4, name: "Ignored", price: 1, code: "0123" }, tape] });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      operationId: id,
+      replayed: false,
+      result: {
+        operationId: id,
+        command: "addLines",
+        sheetId: "s1",
+        lines: [
+          { productKey: "0123", quantity: 4, lineCreated: false },
+          { productKey: "k-tape", quantity: 2, lineCreated: true },
+        ],
+        userId: CONTRIBUTOR,
+        at: "2026-09-26T12:00:00.000Z",
+      },
+      sheet: { id: "s1", version: 2 },
+    });
+    expect(res.body.product).toBeUndefined();
+    expect(items()).toEqual({
+      "0123": { code: "0123", name: "Old name", price: 10, out: 6, returned: 1 },
+      "k-tape": { code: "", name: "Painter's tape", price: 6.25, cost: 6.25, out: 2, returned: 0 },
+    });
+    expect(res.body.sheet.data.items).toEqual(items());
+    expect(stock()).toBe(10);
+    expect(movements()).toEqual([]);
+    expect(table.transactions).toEqual([2]);
+    expect(operations()).toEqual([expect.objectContaining({ SK: `OP#${id}`, command: "addLines" })]);
+    expect(counts).toMatchObject({ Checkouts: 6, Writes: 1 });
+  });
+
+  it("changes nothing when replayed, and refuses the ID for a different request", async () => {
+    seed();
+    const id = op();
+    const first = await call("POST", LINES, { operationId: id, lines: [tape] });
+    const again = await call("POST", LINES, { operationId: id.toUpperCase(), lines: [tape] });
+    expect(again).toMatchObject({ status: 200, body: { ...first.body, replayed: true } });
+    expect(items()?.["k-tape"]).toMatchObject({ out: 2 });
+    expect(counts).toMatchObject({ Checkouts: 2, Writes: 1 });
+    expect((await call("POST", LINES, { operationId: id, lines: [{ ...tape, quantity: 3 }] })).status).toBe(400);
+    expect((await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: id, productKey: "k-tape", quantity: 2 })).status).toBe(400);
+    expect(items()?.["k-tape"]).toMatchObject({ out: 2 });
+  });
+
+  it("creates the items map on a sheet that has none, even for a line keyed constructor", async () => {
+    seed({ sheet: { items: undefined } });
+    await call("POST", LINES, { operationId: op(), lines: [{ ...tape, productKey: "constructor" }, { ...tape, productKey: "k-2" }] });
+    expect(Object.keys(items() ?? {})).toEqual(["constructor", "k-2"]);
+    expect(Object.hasOwn(items() ?? {}, "constructor")).toBe(true);
+  });
+
+  it("refuses a closed or missing sheet, and a malformed line, writing nothing", async () => {
+    seed({ sheet: { status: "closed" } });
+    expect(await call("POST", LINES, { operationId: op(), lines: [tape] })).toMatchObject({ status: 409, body: { error: { code: "aborted", message: expect.stringMatching(/closed/) } } });
+    expect((await call("POST", "/teams/team-a/sheets/nope/lines", { operationId: op(), lines: [tape] })).status).toBe(404);
+    seed({ sheet: { items: { "0123": { out: "2" } } } });
+    expect(await call("POST", LINES, { operationId: op(), lines: [{ ...tape, productKey: "0123" }] })).toMatchObject({ status: 400, body: { error: { message: expect.stringMatching(/whole numbers/) } } });
+    seed({ sheet: { items: { "0123": "junk" } } });
+    expect((await call("POST", LINES, { operationId: op(), lines: [{ ...tape, productKey: "0123" }] })).status).toBe(400);
+    expect(operations()).toEqual([]);
+  });
+
+  it("leaves nothing half-saved when another write lands between the read and the transaction, then adds to the fresh copy", async () => {
+    seed();
+    let once = false;
+    table.beforeTransactWrite = () => {
+      if (once) return;
+      once = true;
+      // Someone checks the same item out first: the line now exists
+      const s = table.get("TEAM#team-a", "SHEET#s1") as Record<string, unknown>;
+      table.put({ ...s, version: 2, items: { "k-tape": { code: "", name: "Tape", price: 5, out: 1, returned: 0 } } });
+    };
+    const res = await call("POST", LINES, { operationId: op(), lines: [tape] });
+    expect(res.body.result.lines).toEqual([{ productKey: "k-tape", quantity: 2, lineCreated: false }]);
+    expect(items()?.["k-tape"]).toEqual({ code: "", name: "Tape", price: 5, out: 3, returned: 0 });
+  });
+
+  it.each([
+    ["no lines", { lines: [] }],
+    ["too many lines", { lines: Array.from({ length: 41 }, (_, i) => ({ ...tape, productKey: `k-${i}` })) }],
+    ["lines that aren't a list", { lines: { a: tape } }],
+    ["a line that isn't an object", { lines: ["k-tape"] }],
+    ["an unexpected line field", { lines: [{ ...tape, stock: 1 }] }],
+    ["the same product twice", { lines: [tape, { ...tape, quantity: 1 }] }],
+    ["a missing name", { lines: [{ ...tape, name: undefined }] }],
+    ["a missing price", { lines: [{ ...tape, price: undefined }] }],
+    ["a price with more than two decimals", { lines: [{ ...tape, price: 1.001 }] }],
+    ["a bad cost", { lines: [{ ...tape, cost: -1 }] }],
+    ["a quantity of 0", { lines: [{ ...tape, quantity: 0 }] }],
+    ["a __proto__ key", { lines: [{ ...tape, productKey: "__proto__" }] }],
+    ["an unexpected body field", { lines: [tape], sheetId: "s2" }],
+  ])("refuses %s with 400", async (_, body) => {
+    seed();
+    expect((await call("POST", LINES, { operationId: op(), ...body })).status).toBe(400);
+    expect(operations()).toEqual([]);
+  });
+
+  it("takes 40 lines, all new or all existing, within DynamoDB's 4 KB expression limit", async () => {
+    const forty = Array.from({ length: 40 }, (_, i) => ({ ...tape, productKey: `k-${i}` }));
+    seed();
+    await call("POST", LINES, { operationId: op(), lines: forty });
+    await call("POST", LINES, { operationId: op(), lines: forty });
+    expect(Object.values(items() ?? {}).map((l) => l.out)).toEqual(Array(40).fill(4));
+    for (const { input } of table.requests.filter((r) => r.command === "TransactWriteCommand")) {
+      const update = ((input.TransactItems as Record<string, Record<string, string>>[])[1] as Record<string, Record<string, string>>).Update as Record<string, string>;
+      expect((update.UpdateExpression as string).length).toBeLessThan(4096);
+      expect((update.ConditionExpression as string).length).toBeLessThan(4096);
+    }
+  });
+
+  it("refuses lines that would take the sheet past the document limit, with 413", async () => {
+    seed({ sheet: { notes: "x".repeat(MAX_DOCUMENT_BYTES - 100) } });
+    expect((await call("POST", LINES, { operationId: op(), lines: [tape] })).status).toBe(413);
+  });
+
+  it("gives viewers view-only and keeps other teams out", async () => {
+    seed();
+    expect(await call("POST", LINES, { operationId: op(), lines: [tape] }, VIEWER)).toMatchObject({ status: 403, body: { error: { reason: "view_only" } } });
+    expect((await call("POST", LINES, { operationId: op(), lines: [tape] }, OUTSIDER)).status).toBe(403);
+    expect((await call("POST", LINES, { operationId: op(), lines: [tape] }, OWNER)).status).toBe(200);
+  });
+});
+
 describe("return", () => {
   beforeEach(() => seed({ sheet: { items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 5, returned: 1 } } } }));
 
