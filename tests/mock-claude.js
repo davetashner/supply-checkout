@@ -27,8 +27,10 @@ export function installMockClaude(opts) {
   const guard = (path) => {
     if (!canWrite) throw denied();
     if (writeError) throw { code: writeError, message: "simulated " + writeError };
-    // Set by a test while the page is open: writes fail with this code until it's cleared
-    if (mock.failWrites) throw { code: mock.failWrites, message: "simulated " + mock.failWrites };
+    // Set by a test while the page is open: writes fail with this code until it's cleared. Or
+    // { prefix, code }: only writes to paths starting with prefix ("products/") fail.
+    const fail = mock.failWrites && (typeof mock.failWrites === "string" ? { prefix: "", code: mock.failWrites } : mock.failWrites);
+    if (fail && path.startsWith(fail.prefix)) throw { code: fail.code, message: "simulated " + fail.code };
     if (writeErrorFor && path.startsWith(writeErrorFor.prefix)) throw { code: writeErrorFor.code, message: "simulated " + writeErrorFor.code };
   };
   const fire = () => listeners.forEach((l) => l());
@@ -39,9 +41,10 @@ export function installMockClaude(opts) {
   // mock.writes counts every write call, held or not.
   let held = null;
   mock.writes = 0;
-  mock.hold = () => { let release; held = { wait: new Promise((r) => { release = r; }), release }; };
+  // hold(prefix): only writes to paths starting with prefix ("products/") wait.
+  mock.hold = (prefix = "") => { let release; held = { wait: new Promise((r) => { release = r; }), release, prefix }; };
   mock.release = () => { const h = held; held = null; if (h) h.release(); };
-  const arrive = async () => { mock.writes++; if (held) await held.wait; };
+  const arrive = async (path) => { mock.writes++; if (held && path.startsWith(held.prefix)) await held.wait; };
   // Set by a test to a path prefix ("sheets/"): writes there are saved, but then reject as if
   // the answer was lost on the way back
   const lost = (path) => { if (mock.loseWrites !== null && path.startsWith(mock.loseWrites)) throw { code: "unavailable", message: "simulated lost answer" }; };
@@ -69,13 +72,13 @@ export function installMockClaude(opts) {
       id: path.split("/").pop(),
       path,
       get: async () => snap(path),
-      set: async (data) => { await arrive(); guard(path); docs.set(path, clone(data)); notify(); lost(path); },
+      set: async (data) => { await arrive(path); guard(path); docs.set(path, clone(data)); notify(); lost(path); },
       update: async (data) => {
-        await arrive(); guard(path);
+        await arrive(path); guard(path);
         if (!docs.has(path)) throw { code: "invalid_argument", message: "no such document" };
         merge(docs.get(path), data); notify(); lost(path);
       },
-      delete: async () => { await arrive(); guard(path); docs.delete(path); notify(); },
+      delete: async () => { await arrive(path); guard(path); docs.delete(path); notify(); },
       onSnapshot: (next) => listen(() => snap(path), next),
       collection: (sub) => collRef(path + "/" + sub),
     };
