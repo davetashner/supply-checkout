@@ -311,11 +311,14 @@ test.describe("sign-in", () => {
     const backend = new FakeBackend({ docs: seeded() });
     await openAws(page, backend);
     await connected(page);
-    const saved = () => page.evaluate(() => [sessionStorage.getItem("supplyCheckout.invite"), sessionStorage.getItem("supplyCheckout.signIn"), localStorage.getItem("supplyCheckout.team"), localStorage.getItem("supplyCheckout.receiptDraft")]);
+    const keys = ["supplyCheckout.team", "supplyCheckout.owner", "supplyCheckout.receiptDraft", "supplyCheckout.receiptDraft.t1", "supplyCheckout.receiptDraft.t2"];
+    const saved = () => page.evaluate((keys) => [sessionStorage.getItem("supplyCheckout.invite"), sessionStorage.getItem("supplyCheckout.signIn"), ...keys.map((k) => localStorage.getItem(k))], keys);
     await page.evaluate(() => {
       sessionStorage.setItem("supplyCheckout.invite", JSON.stringify({ id: "i1", token: "tok" }));
       sessionStorage.setItem("supplyCheckout.signIn", JSON.stringify({ verifier: "v", state: "s" }));
-      localStorage.setItem("supplyCheckout.receiptDraft", JSON.stringify({ vendor: "Costco", items: [{ name: "Paper towels", price: 8.5 }] }));
+      // Every team's draft, and an older build's one draft
+      for (const k of ["supplyCheckout.receiptDraft", "supplyCheckout.receiptDraft.t1", "supplyCheckout.receiptDraft.t2"]) localStorage.setItem(k, JSON.stringify({ vendor: "Costco", items: [{ name: "Paper towels", price: 8.5 }] }));
+      localStorage.setItem("supplyCheckout.theme", "dark");
     });
 
     // The API can't be reached: still signed in, and says so
@@ -329,9 +332,11 @@ test.describe("sign-in", () => {
     await page.locator(".teambar").getByRole("button", { name: "Sign out" }).click();
     await expect.poll(() => backend.authRequests).toEqual([`${AUTH}/logout?client_id=test-client&logout_uri=${encodeURIComponent(ORIGIN + "/")}`]);
     expect(backend.requests("POST", "/auth/sign-out")).toHaveLength(2);
-    // The chosen team and the receipt draft are forgotten too, so the next person to sign
-    // in here doesn't open the team or see the draft's items, prices and sheets
-    expect(await saved()).toEqual([null, null, null, null]);
+    // The chosen team and every receipt draft are forgotten too, so the next person to sign
+    // in here doesn't open the team or see the drafts' items, prices and sheets
+    expect(await saved()).toEqual([null, null, ...keys.map(() => null)]);
+    // Not the theme, which isn't anyone's data
+    expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.theme"))).toBe("dark");
   });
 
   test("a live update's 401 while signing out doesn't refresh, so it can't sign the user back in", async ({ page }) => {
@@ -412,6 +417,43 @@ test.describe("sign-in", () => {
     await page.getByRole("button", { name: "Create sheet" }).click();
     await expect(page.getByRole("heading", { name: "Still here" })).toBeVisible();
     expect(backend.requests("PUT", /^\/teams\/t1\/sheets\//).map((c) => c.headers.authorization)).toEqual(["Bearer at-1"]);
+    await expect(page.getByRole("link", { name: "Sign in" })).toHaveCount(0);
+  });
+
+  test("a key that can't be removed doesn't keep the others on sign-out", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded() });
+    await openAws(page, backend);
+    await connected(page);
+    await page.evaluate(() => {
+      const real = Storage.prototype.removeItem;
+      Storage.prototype.removeItem = function (k) { if (k === "supplyCheckout.team" || k === "supplyCheckout.signIn") throw new DOMException("Blocked", "SecurityError"); return real.call(this, k); };
+      localStorage.setItem("supplyCheckout.receiptDraft.t1", "{}");
+      localStorage.setItem("supplyCheckout.receiptDraft.t2", "{}");
+      sessionStorage.setItem("supplyCheckout.signIn", "{}");
+      sessionStorage.setItem("supplyCheckout.invite", "{}");
+    });
+    await page.locator(".teambar").getByRole("button", { name: "Sign out" }).click();
+    await expect.poll(() => backend.authRequests.length).toBe(1);
+    expect(await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith("supplyCheckout.")).sort())).toEqual(["supplyCheckout.team"]);
+    expect(await page.evaluate(() => [sessionStorage.getItem("supplyCheckout.signIn"), sessionStorage.getItem("supplyCheckout.invite")])).toEqual(["{}", null]);
+  });
+
+  test("a scheduled refresh that fails tries again a minute later", async ({ page }) => {
+    await page.clock.install();
+    const backend = new FakeBackend({ docs: seeded(), expiresIn: 360 });
+    await openAws(page, backend);
+    await connected(page);
+    // The API doesn't answer the scheduled refresh: still signed in with the token it had
+    backend.on("POST", "/auth/refresh", { abort: true });
+    await page.clock.fastForward(61e3);
+    await expect.poll(() => backend.requests("POST", "/auth/refresh").length).toBe(2);
+    expect((await lastSocket(page)).token).toBe("at-1");
+    await page.clock.fastForward(59e3);
+    expect(backend.requests("POST", "/auth/refresh")).toHaveLength(2);
+    // A minute on, it tries again, and live updates reconnect with the new token
+    await page.clock.fastForward(1e3);
+    await expect.poll(async () => (await lastSocket(page)).token).toBe("at-2");
+    expect(backend.requests("POST", "/auth/refresh")).toHaveLength(3);
     await expect(page.getByRole("link", { name: "Sign in" })).toHaveCount(0);
   });
 
@@ -504,10 +546,11 @@ test.describe("first sign-in and teams", () => {
     await expect(account(page).getByRole("heading", { name: "Name your team" })).toBeVisible();
   });
 
-  test("joining explains an unverified email, too many teams, and a lost connection", async ({ page }) => {
+  test("joining explains an unverified email, too many teams, a full team, and a lost connection", async ({ page }) => {
     const backend = new FakeBackend({ teams: [], invites: [invited] });
     backend.on("POST", "/invites/i1/accept", { status: 403, body: { error: { code: "permission_denied", message: "verify" } } });
     backend.on("POST", "/invites/i1/accept", { status: 429, body: { error: { code: "quota_exceeded", message: "20 teams" } } });
+    backend.on("POST", "/invites/i1/accept", { status: 429, body: { error: { code: "quota_exceeded", reason: "team_full", message: "full" } } });
     backend.on("POST", "/invites/i1/accept", { abort: true });
     await openAws(page, backend, { storage: inviteLink() });
     const join = page.getByRole("button", { name: "Join" });
@@ -515,6 +558,8 @@ test.describe("first sign-in and teams", () => {
     await expect(alert(page)).toContainText("Your email address isn't verified yet.");
     await join.click();
     await expect(alert(page)).toContainText("You're already in as many teams as you can be.");
+    await join.click();
+    await expect(alert(page)).toHaveText("This team is full. Ask the person who invited you to make room, then try again.");
     await join.click();
     await expect(alert(page)).toHaveText("Couldn't join the team. Check your connection and try again.");
     await join.click();
@@ -545,7 +590,7 @@ test.describe("first sign-in and teams", () => {
 
   test("with several teams, opens the last one used and switches between them", async ({ page }) => {
     const backend = new FakeBackend({ teams, docs: { ...seeded(), "t2/sheets/b1": { client: "Bravo job", date: "2026-09-20", status: "open", items: {} } } });
-    await openAws(page, backend, { storage: { local: { "supplyCheckout.team": "t2" } } });
+    await openAws(page, backend, { storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.team": "t2" } } });
     await connected(page);
     await expect(page.getByRole("button", { name: /Bravo job/ })).toBeVisible();
     await expect(page.getByRole("button", { name: /Echo Studio/ })).toHaveCount(0);
@@ -562,7 +607,7 @@ test.describe("first sign-in and teams", () => {
 
   test("a remembered team they've left falls back to the first", async ({ page }) => {
     const backend = new FakeBackend({ teams, docs: seeded() });
-    await openAws(page, backend, { storage: { local: { "supplyCheckout.team": "gone" } } });
+    await openAws(page, backend, { storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.team": "gone" } } });
     await connected(page);
     await expect(page.getByLabel("Team")).toHaveValue("t1");
   });
@@ -592,5 +637,113 @@ test.describe("first sign-in and teams", () => {
     await connected(page);
     await expect(page.getByLabel("Team")).toBeVisible();
     await expectNoSideways(page);
+  });
+});
+
+// The team choice and receipt drafts kept in localStorage, on a device people share
+// (supply-checkout-5nj, supply-checkout-i7h)
+test.describe("saved on this device", () => {
+  const teams = [TEAM, { ...TEAM, id: "t2", name: "Bravo Co", role: "contributor" }];
+  const SAM = { id: "u-sam", email: "sam@example.com", emailVerified: true };
+  const draft = (store) => JSON.stringify({ store, receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines: [{ id: "l1", name: "Paper towels", raw: "", qty: 1, price: 8, dest: "stock", code: "", match: "", suggested: false, useName: "inv", usePrice: "receipt" }] });
+  const resume = (page) => page.getByText("You have a receipt that hasn't been saved yet.");
+  const saved = (page) => page.evaluate(() => Object.fromEntries(Object.entries(localStorage).filter(([k]) => k.startsWith("supplyCheckout."))));
+  // The app in another tab of the same browser, with the same storage
+  async function reopen(page, backend) {
+    const again = await page.context().newPage();
+    backend.pageLoads = 0;
+    await openAws(again, backend);
+    return again;
+  }
+
+  test("each team has its own receipt draft", async ({ page }) => {
+    const backend = new FakeBackend({ teams, docs: seeded() });
+    await openAws(page, backend, { storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.team": "t2", "supplyCheckout.receiptDraft.t1": draft("Costco"), "supplyCheckout.receiptDraft.t2": draft("Home Depot") } } });
+    await connected(page);
+    await page.getByRole("button", { name: "Continue review" }).click();
+    await expect(page.locator("#rBody .meta")).toContainText("Home Depot");
+    await expect(page.locator("#rBody .meta")).not.toContainText("Costco");
+    // Discarding it leaves the other team's
+    await page.locator("#rDiscard").click();
+    await page.locator("#rDiscard").click();
+    await expect(resume(page)).toHaveCount(0);
+    expect(await saved(page)).toEqual({ "supplyCheckout.owner": USER.id, "supplyCheckout.team": "t2", "supplyCheckout.receiptDraft.t1": draft("Costco") });
+
+    // Switching teams shows the other team's draft
+    await page.getByLabel("Team").selectOption("t1");
+    await expect.poll(() => backend.pageLoads).toBe(2);
+    const again = await reopen(page, backend);
+    await connected(again);
+    await expect(again.getByLabel("Team")).toHaveValue("t1");
+    await again.getByRole("button", { name: "Continue review" }).click();
+    await expect(again.locator("#rBody .meta")).toContainText("Costco");
+    await again.close();
+  });
+
+  test("after a session ends without Sign out, someone else signing in doesn't get the last user's team or drafts", async ({ page }) => {
+    const backend = new FakeBackend({ teams, docs: seeded() });
+    await openAws(page, backend, { storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.team": "t2" } } });
+    await connected(page);
+    // Pat's session ends (it expired, or a sign-out timed out here but went through) and
+    // the refresh's 401 shows the sign-in screen, with Pat's team and draft still saved
+    await page.evaluate((d) => localStorage.setItem("supplyCheckout.receiptDraft.t2", d), draft("Home Depot"));
+    await expect.poll(() => ["products", "sheets"].map((c) => backend.requests("GET", `/teams/t2/${c}`).length)).toEqual([2, 2]);
+    backend.token = "expired";
+    backend.signedIn = false;
+    await page.getByRole("button", { name: "+ New sheet" }).click();
+    await page.getByLabel("Client", { exact: true }).fill("Too late");
+    await page.getByRole("button", { name: "Create sheet" }).click();
+    await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
+    expect(await saved(page)).toEqual({ "supplyCheckout.owner": USER.id, "supplyCheckout.team": "t2", "supplyCheckout.receiptDraft.t2": draft("Home Depot") });
+
+    // Sam, in both teams too, signs in on the same device
+    backend.user = SAM;
+    backend.signedIn = true;
+    const again = await reopen(page, backend);
+    await connected(again);
+    await expect(again.getByLabel("Team")).toHaveValue("t1");
+    await expect(resume(again)).toHaveCount(0);
+    expect(await saved(again)).toEqual({ "supplyCheckout.owner": SAM.id, "supplyCheckout.team": "t1" });
+    await again.close();
+  });
+
+  test("the same user signing in again keeps their team and drafts", async ({ page }) => {
+    const backend = new FakeBackend({ teams, docs: seeded() });
+    const local = { "supplyCheckout.owner": USER.id, "supplyCheckout.team": "t2", "supplyCheckout.receiptDraft.t2": draft("Home Depot") };
+    await openAws(page, backend, { storage: { local } });
+    await connected(page);
+    await expect(page.getByLabel("Team")).toHaveValue("t2");
+    await expect(resume(page)).toBeVisible();
+    expect(await saved(page)).toEqual(local);
+  });
+
+  test("a team and draft saved before they were marked with their user are forgotten", async ({ page }) => {
+    const backend = new FakeBackend({ teams, docs: seeded() });
+    await openAws(page, backend, { storage: { local: { "supplyCheckout.team": "t2", "supplyCheckout.receiptDraft": draft("Costco"), "supplyCheckout.receiptDraft.t1": draft("Home Depot") } } });
+    await connected(page);
+    await expect(page.getByLabel("Team")).toHaveValue("t1");
+    await expect(resume(page)).toHaveCount(0);
+    expect(await saved(page)).toEqual({ "supplyCheckout.owner": USER.id, "supplyCheckout.team": "t1" });
+  });
+
+  test("with storage blocked, sign-in, invites and teams still work", async ({ page }) => {
+    await page.addInitScript(() => {
+      for (const area of ["localStorage", "sessionStorage"]) Object.defineProperty(window, area, { get() { throw new DOMException("Blocked", "SecurityError"); } });
+    });
+    const backend = new FakeBackend({ teams, docs: seeded("t2"), invites: [{ id: "i1", teamName: "Bravo Co", role: "contributor", expiresAt: "2026-10-03T12:00:00.000Z" }] });
+    await openAws(page, backend, { path: "/?invite=i1&token=tok" });
+    // The invite couldn't be kept, so it isn't offered
+    await connected(page);
+    await expect(page.getByLabel("Team")).toHaveValue("t1");
+    await page.getByLabel("Team").selectOption("t2");
+    await expect.poll(() => backend.pageLoads).toBe(2);
+    await expect(page.getByRole("link", { name: "Sign in" })).toHaveCount(0);
+  });
+
+  test("an invite saved in a form it can't read is ignored", async ({ page }) => {
+    const backend = new FakeBackend({ teams, docs: seeded() });
+    await openAws(page, backend, { storage: { session: { "supplyCheckout.invite": "{not json" } } });
+    await connected(page);
+    expect(backend.requests("POST", "/invites/i1/accept")).toHaveLength(0);
   });
 });

@@ -4,7 +4,7 @@
 // there are several), Members and Import CSV for owners, and Sign out.
 import { esc } from "../format.js";
 import { toast } from "../dom.js";
-import { createSession, INVITE_KEY, TEAM_KEY } from "./session.js";
+import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, forgetLocal, local, tab } from "./session.js";
 import { createDb } from "./db.js";
 import { openImport } from "./import.js";
 import { openMembers } from "./members.js";
@@ -32,12 +32,22 @@ const setError = (m) => { const e = box.querySelector("#accountError"); e.textCo
 function takeInvite() {
   const q = new URLSearchParams(location.search);
   if (q.has("invite")) {
-    sessionStorage.setItem(INVITE_KEY, JSON.stringify({ id: q.get("invite"), token: q.get("token") }));
+    tab.set(INVITE_KEY, JSON.stringify({ id: q.get("invite"), token: q.get("token") }));
     history.replaceState(null, "", location.pathname);
   }
-  return JSON.parse(sessionStorage.getItem(INVITE_KEY));
+  return tab.json(INVITE_KEY);
 }
-const dropInvite = () => sessionStorage.removeItem(INVITE_KEY);
+const dropInvite = () => tab.remove(INVITE_KEY);
+
+// The saved team and receipt drafts are someone else's (or from before they were marked
+// with their user): forget them before anything reads them. Checked at every sign-in rather
+// than cleared when a session ends, because a session can end with nothing running (it
+// expires while the app is closed), and so the same user coming back keeps their drafts.
+function claim(userId) {
+  if (local.get(OWNER_KEY) === userId) return;
+  forgetLocal();
+  local.set(OWNER_KEY, userId);
+}
 
 export async function start(config) {
   box = document.createElement("section");
@@ -146,6 +156,7 @@ export async function start(config) {
           if (err.code === "not_found") { dropInvite(); join.hidden = true; }
           setError(err.code === "not_found" ? "This invite has expired, was already used, or was sent to a different email address. Ask the person who invited you for a new one."
             : err.code === "permission_denied" ? "Your email address isn't verified yet. Verify it when you sign in, then open the invite link again."
+            : err.reason === "team_full" ? "This team is full. Ask the person who invited you to make room, then try again."
             : err.code === "quota_exceeded" ? "You're already in as many teams as you can be. Leave one to join this one."
             : "Couldn't join the team. Check your connection and try again.");
         }
@@ -158,19 +169,19 @@ export async function start(config) {
     const joined = invite && await joinInvite(me, invite);
     if (joined) return joined;
     if (!me.teams.length) return newTeam(me);
-    return me.teams.find((t) => t.id === localStorage.getItem(TEAM_KEY)) || me.teams[0];
+    return me.teams.find((t) => t.id === local.get(TEAM_KEY)) || me.teams[0];
   }
 
   // Removed from the team while using it: start again with the teams they're still in
   const removed = (team) => show(`<h2>You're no longer in ${esc(team.name)}</h2>
     <p>You've been removed from this team, or it was closed. Ask one of its owners if that's a mistake.</p>
     <div class="actions"><button type="button" class="btn primary" id="continue" autofocus>Continue</button></div>`,
-  (el) => el.querySelector("#continue").addEventListener("click", () => { localStorage.removeItem(TEAM_KEY); location.reload(); }));
+  (el) => el.querySelector("#continue").addEventListener("click", () => { local.remove(TEAM_KEY); location.reload(); }));
 
   // The owner changed their own role or left the team (the members screen): their access
   // changed, so start again from /me. Leaving forgets the team, so another one opens.
   const changed = (text, left) => {
-    if (left) localStorage.removeItem(TEAM_KEY);
+    if (left) local.remove(TEAM_KEY);
     show(`<h2>Your access changed</h2>
     <p>${esc(text)}</p>
     <div class="actions"><button type="button" class="btn primary" id="continue" autofocus>Continue</button></div>`,
@@ -189,7 +200,7 @@ export async function start(config) {
     box.after(bar);
     const pick = bar.querySelector("#teamSwitch");
     // Switching loads the page again for the other team: new data, role and live updates
-    if (pick) pick.addEventListener("change", () => { localStorage.setItem(TEAM_KEY, pick.value); location.reload(); });
+    if (pick) pick.addEventListener("change", () => { local.set(TEAM_KEY, pick.value); location.reload(); });
     bar.querySelector("#signOut").addEventListener("click", signOut);
     if (team.role === "owner") {
       bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed));
@@ -198,7 +209,7 @@ export async function start(config) {
   }
 
   function open(me, team) {
-    localStorage.setItem(TEAM_KEY, team.id);
+    local.set(TEAM_KEY, team.id);
     document.body.classList.remove("account-open");
     box.innerHTML = "";
     teamBar(me, team);
@@ -217,6 +228,8 @@ export async function start(config) {
         profiles: async (ids) => Object.fromEntries([].concat(ids).filter((id) => id === me.user.id).map((id) => [id, profile])),
       },
       downloads: { save: download },
+      // Where src/main.js keeps this team's receipt draft
+      drafts: { key: draftKey(team.id) },
     };
   }
 
@@ -227,6 +240,7 @@ export async function start(config) {
     try {
       if (!await session.start()) return signIn();
       const me = await session.api("GET", "/me");
+      claim(me.user.id);
       return open(me, await chooseTeam(me));
     } catch (e) {
       if (e.code === "unauthenticated") return signIn();

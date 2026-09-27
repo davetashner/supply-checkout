@@ -77,7 +77,9 @@ export function createLive({ url, host, channel, token, onEvent, onResync }) {
     start() {
       connect();
       document.addEventListener("visibilitychange", () => { if (!document.hidden && !stopped) onResync(); });
-      window.addEventListener("online", () => { if (!ws) reconnect(); });
+      // The network is back: a socket that was open may have died without closing, and events
+      // sent meanwhile are gone, so connect again, which re-lists once subscribed
+      window.addEventListener("online", reconnect);
     },
     // AppSync checks the token only when connecting, so reconnect with each new one
     reconnect,
