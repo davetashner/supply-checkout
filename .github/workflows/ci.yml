@@ -173,6 +173,12 @@ jobs:
           BUILD: ${{ matrix.build }}
           # Fails the run below 98% coverage; see tests/coverage.js
           COVERAGE: ${{ matrix.coverage }}
+      # TEMPORARY (supply-checkout-k9et): repeat the deflaked tests 25 times
+      - if: matrix.project == 'iphone-safari' && matrix.build == 'web'
+        run: npx playwright test tests/aws-account.spec.js --project=iphone-safari -g "a /me without the open team|expired access token" --repeat-each=25
+        env:
+          CI: true
+          BUILD: web
       - name: Coverage summary
         if: always() && matrix.coverage && hashFiles(format('coverage/{0}/summary.json', matrix.build)) != ''
         run: node scripts/coverage-summary.mjs "$BUILD" >> "$GITHUB_STEP_SUMMARY"
