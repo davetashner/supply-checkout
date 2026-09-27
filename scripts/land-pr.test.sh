@@ -434,6 +434,67 @@ check "closes no beads" not_called "bd close"
 check "doesn't rebuild the backlog page" not_called "backlog-page"
 done_case
 
+# main's rules as they are: code scanning plus the unattributed-changes approval
+scanning_rules() {
+  cat > "$FAKE/rules.json" <<'EOF'
+[{"type": "pull_request", "parameters": {"required_approving_review_count": 0,
+   "require_extra_approval_for_unattributed_changes": true}},
+ {"type": "required_status_checks"},
+ {"type": "code_scanning", "parameters": {"code_scanning_tools": [{"tool": "CodeQL",
+   "security_alerts_threshold": "medium_or_higher", "alerts_threshold": "errors"}]}}]
+EOF
+}
+
+echo "blocked by code scanning: CodeQL skipped (a beads-only PR)"
+scenario blocked-codeql-skipped
+scanning_rules
+pr '.mergeStateStatus = "BLOCKED" | .statusCheckRollup = [
+  {"name": "CI passed", "conclusion": "SUCCESS"}, {"name": "CodeQL", "conclusion": "SKIPPED"}]'
+land
+check "exits non-zero" fails
+check "doesn't try to merge" not_called "gh pr merge"
+check "names the code_scanning rule" says "code_scanning: main needs CodeQL results"
+check "says the check was skipped" says "CodeQL check is skipped"
+check "says what to do" says "codeql job in .github/workflows/ci.yml"
+check "doesn't blame unattributed changes" not_says "require_extra_approval_for_unattributed_changes"
+check "doesn't ask for an approval" not_says "gh pr review 42 --approve"
+check "says an approval won't help" says "An approval won't help"
+done_case
+
+echo "blocked by code scanning: no CodeQL check at all"
+scenario blocked-codeql-missing
+scanning_rules
+pr '.mergeStateStatus = "BLOCKED" | .statusCheckRollup = [{"name": "CI passed", "conclusion": "SUCCESS"}]'
+land
+check "exits non-zero" fails
+check "says the check is missing" says "CodeQL check is missing"
+check "doesn't blame unattributed changes" not_says "require_extra_approval_for_unattributed_changes"
+done_case
+
+echo "blocked by code scanning: CodeQL found alerts"
+scenario blocked-codeql-failing
+scanning_rules
+pr '.mergeStateStatus = "BLOCKED" | .statusCheckRollup = [
+  {"name": "CodeQL / CodeQL (actions)", "conclusion": "SUCCESS"}, {"name": "CodeQL", "conclusion": "FAILURE"}]'
+land
+check "exits non-zero" fails
+check "says the check is failing" says "CodeQL check is failing"
+check "points at the checks" says "https://github.com/example/repo/pull/42/checks"
+done_case
+
+echo "blocked with CodeQL green and a commit by no linked user"
+scenario blocked-unattributed
+scanning_rules
+pr '.mergeStateStatus = "BLOCKED" | .commits = [{"authors": [{"login": "someone"}, {"login": "", "name": "test"}]}]
+  | .statusCheckRollup = [{"name": "CodeQL / CodeQL (javascript-typescript)", "conclusion": "SUCCESS"},
+                          {"name": "CodeQL", "conclusion": "SUCCESS"}]'
+land
+check "exits non-zero" fails
+check "names the unattributed-changes rule" says "require_extra_approval_for_unattributed_changes"
+check "doesn't name code scanning" not_says "code_scanning"
+check "gives the approve command" says "gh pr review 42 --approve"
+done_case
+
 echo "blocked with green CI and an approval"
 scenario blocked-approved
 pr '.mergeStateStatus = "BLOCKED" | .reviews = [{"state": "APPROVED"}]'

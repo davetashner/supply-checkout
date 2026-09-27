@@ -155,11 +155,52 @@ wait_for_ci() {
 }
 
 # BLOCKED with green CI means a ruleset rule other than the status check is
-# unmet, usually a missing approval. Name the rules and say how to approve.
+# unmet: a missing approval, or a code_scanning rule whose tool (CodeQL) hasn't
+# reported on the PR or found alerts. Name the rules that apply and say what to do.
 explain_blocked() {
-  local approvals rules authors
+  local approvals rules authors unattributed tools tool scan_state scan_blocked="" needs_approval=""
   approvals="$(gh pr view "$pr" --json reviews -q '[.reviews[] | select(.state == "APPROVED")] | length')"
   say "PR #$pr is blocked: CI passed, but main's ruleset won't let it merge yet."
+
+  # A code_scanning rule needs each tool's results on the PR. The code scanning
+  # check is named after the tool ("CodeQL"), and CI's jobs that produce them
+  # are "CodeQL" too, or "CodeQL / CodeQL (<language>)". A skipped CI job leaves
+  # no results, so a missing, skipped or failing check blocks the merge.
+  tools="$(gh api 'repos/{owner}/{repo}/rules/branches/main' --jq '
+      [.[] | select(.type == "code_scanning") | .parameters.code_scanning_tools[]?.tool] | unique | .[]' 2>/dev/null || true)"
+  while IFS= read -r tool; do
+    [ -n "$tool" ] || continue
+    scan_state="$(TOOL="$tool" gh pr view "$pr" --json statusCheckRollup -q '
+        [(.statusCheckRollup // [])[] | select((.name // "") == env.TOOL or ((.name // "") | startswith(env.TOOL + " / ")))
+         | (.conclusion // .state // "" | ascii_upcase)] |
+        if length == 0 then "missing"
+        elif any(.[]; . == "SKIPPED") then "skipped"
+        elif any(.[]; . == "" or . == "PENDING" or . == "QUEUED" or . == "IN_PROGRESS") then "pending"
+        elif all(.[]; . == "SUCCESS" or . == "NEUTRAL") then "ok"
+        else "failing" end' 2>/dev/null || echo unknown)"
+    case "$scan_state" in
+      ok) ;;
+      missing|skipped)
+        scan_blocked=1
+        echo "- code_scanning: main needs $tool results on every PR, and this PR's $tool check is $scan_state."
+        echo "  Make sure the codeql job in .github/workflows/ci.yml runs for this change (it must not skip),"
+        echo "  push the fix or rerun CI, and land again once $tool has reported." ;;
+      pending)
+        scan_blocked=1
+        echo "- code_scanning: main needs $tool results on every PR, and this PR's $tool check hasn't finished."
+        echo "  Wait for it, then run: npm run land -- $pr" ;;
+      *)
+        scan_blocked=1
+        echo "- code_scanning: main needs $tool results with no errors or medium-or-higher security alerts,"
+        echo "  and this PR's $tool check is $scan_state. See its alerts and logs on the PR's checks:"
+        echo "  $(view url)/checks" ;;
+    esac
+  done <<< "$tools"
+
+  # The unattributed-changes rule only bites when a commit's author isn't a
+  # linked GitHub user (no login) or is a bot, like release-please's commits.
+  unattributed="$(gh pr view "$pr" --json commits -q '
+      [.commits[].authors[] | select((.login // "") == "" or ((.login // "") | endswith("[bot]")))] | length > 0' 2>/dev/null || echo false)"
   if rules="$(gh api 'repos/{owner}/{repo}/rules/branches/main' --jq '
       .[] | select(.type == "pull_request") | .parameters |
       (if (.required_approving_review_count // 0) > 0 then "- required_approving_review_count: \(.required_approving_review_count) approving review(s) needed" else empty end),
@@ -168,20 +209,27 @@ explain_blocked() {
       (if .require_last_push_approval then "- require_last_push_approval: someone other than the last pusher must approve" else empty end),
       (if .required_review_thread_resolution then "- required_review_thread_resolution: every review conversation must be resolved" else empty end)
     ' 2>/dev/null)"; then
+    if [ "$unattributed" != "true" ]; then
+      rules="$(grep -v '^- require_extra_approval_for_unattributed_changes:' <<< "$rules" || true)"
+    fi
     if [ -n "$rules" ]; then
       echo "main's pull_request rule requires:"
       printf '%s\n' "$rules"
+      if grep -q 'approv' <<< "$rules"; then needs_approval=1; fi
     fi
   else
     echo "Couldn't read main's rules. See them with: gh api repos/{owner}/{repo}/rules/branches/main"
+    needs_approval=1
   fi
   authors="$(gh pr view "$pr" --json commits -q '[.commits[].authors[].login | select(. != "")] | unique | join(", ")' 2>/dev/null || true)"
   [ -z "$authors" ] || echo "Commit authors on this PR: $authors"
-  if [ "${approvals:-0}" -eq 0 ]; then
+  if [ -n "$scan_blocked" ] && [ -z "$needs_approval" ]; then
+    echo "An approval won't help: fix the code scanning results above."
+  elif [ "${approvals:-0}" -eq 0 ] && { [ -n "$needs_approval" ] || [ -z "$scan_blocked" ]; }; then
     echo "It has no approving review. Approve it (you can't approve your own PR), then run this again:"
     echo "  gh pr review $pr --approve"
     echo "  npm run land -- $pr"
-  else
+  elif [ -z "$scan_blocked" ]; then
     echo "It has $approvals approving review(s), so something else is blocking it. Check unresolved conversations and code scanning alerts on:"
     echo "  $(view url)"
   fi
