@@ -161,7 +161,7 @@ describe("parseArtifactExport", () => {
     ]);
     // Neither names nor clients appear
     expect(messages.join("\n")).not.toMatch(/Harbor|Oak Lane|Pat Example|Jordan|cleaner/);
-    expect(p.ignoredFields).toEqual({ "inventory.notes": 1 });
+    expect(p.ignoredFields).toEqual({ '"inventory.notes"': 1 });
     // Documents with problems aren't imported; the rest are
     expect(p.sheets.map((s) => s.id)).toEqual(["s-dup"]);
     expect(p.products.map((x) => x.key)).toEqual(["036000291452", "big"]);
@@ -184,9 +184,40 @@ describe("parseArtifactExport", () => {
       { id: "s1", client: "", date: "2026-01-02", status: "open", createdByName: "Sam", source: { store: "Shop", receiptDate: "" }, items: { k: { name: "", price: 1, out: 0, returned: 0 } } },
       { id: "s2", client: "", date: "2026-01-02", status: "open", items: {} },
     ]);
-    expect(p.ignoredFields).toEqual({ "inventory.unit": 1, "sheets.items.color": 1, "sheets.extra": 1 });
+    expect(p.ignoredFields).toEqual({ '"inventory.unit"': 1, '"sheets.items.color"': 1, '"sheets.extra"': 1 });
     expect(p.droppedCreatedBy).toBe(0);
     expect(p.sheetsWithoutTotals).toBe(2);
+  });
+
+  it("refuses two items with one barcode, as the CSV import does", () => {
+    const p = parseArtifactExport(
+      JSON.stringify({
+        app: "Supply Checkout",
+        inventory: [{ key: "a", code: "123", price: 1 }, { key: "b", code: " 123 ", price: 1 }, { key: "c", code: "", price: 1 }, { key: "d", code: "", price: 1 }],
+        sheets: [],
+      }),
+    );
+    expect(p.errors).toEqual([{ at: 'inventory[1] key "b"', message: "has the same barcode as inventory[0]" }]);
+    // Items without a barcode don't clash
+    expect(p.products.map((x) => x.key)).toEqual(["a", "c", "d"]);
+  });
+
+  it("escapes control characters from the file in everything it reports, so it can't put escape sequences on a terminal", () => {
+    const p = parseArtifactExport(
+      JSON.stringify({
+        app: "Supply Checkout",
+        inventory: [{ key: "k\u009b31m", price: -1, "x\u001b[2Jy": 1, "z\u009b0m": 2 }],
+        sheets: [{ id: "s1", date: "2026-01-01", createdAt: "2026-01-01\u009b" }],
+      }),
+    );
+    expect(p.errors).toEqual([
+      { at: 'inventory[0] key "k\\u009b31m"', message: "price must be an amount from 0 to 1000000" },
+      { at: 'sheets[0] id "s1"', message: "createdAt isn't a date and time" },
+    ]);
+    expect(Object.keys(p.ignoredFields)).toEqual(['"inventory.x\\u001b[2Jy"', '"inventory.z\\u009b0m"']);
+    // eslint-disable-next-line no-control-regex -- checking for control characters is the point
+    expect(JSON.stringify([p.errors, p.ignoredFields])).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+    expect(() => parseArtifactExport(JSON.stringify({ app: "Supply Checkout", inventory: [], sheets: [], exportedAt: "2026-01-01\u009b" }))).toThrow(/exportedAt/);
   });
 
   it("adds totals as sheet-math.js does: row charges in whole cents", () => {
@@ -330,6 +361,18 @@ describe.skipIf(!endpoint)("the artifact import (DynamoDB Local)", () => {
     expect(check).toMatchObject({ stockBefore: 81, stockAfter: 84 });
   });
 
+  it("stops writing when the team is closed part-way through, and leaves what it wrote", async () => {
+    const { ctx } = await team();
+    const plan = await planArtifactImport(db, ctx, parseArtifactExport(FIXTURE));
+    await applyArtifactImport(db, ctx, { ...plan, products: plan.products.slice(0, 2), sheets: [] });
+    await closeTeam(db, ctx, { confirmName: "Maple Street Cleaning" });
+    // The context was issued while the team was open, as for a run that was already going
+    await expect(applyArtifactImport(db, ctx, { ...plan, products: plan.products.slice(2) })).rejects.toBeInstanceOf(TeamClosedError);
+    await expect(applyArtifactImport(db, ctx, { ...plan, products: [] })).rejects.toThrow("The team was closed while importing");
+    expect((await listDocuments(db, ctx, "products")).items).toHaveLength(2);
+    expect((await listDocuments(db, ctx, "sheets")).items).toHaveLength(0);
+  });
+
   it("refuses a closed team", async () => {
     const { ctx, owner } = await team();
     await closeTeam(db, ctx, { confirmName: "Maple Street Cleaning" });
@@ -392,7 +435,7 @@ describe.skipIf(!endpoint)("the artifact import (DynamoDB Local)", () => {
       });
       const refused = await cli(args(ctx.teamId, owner, "--apply"), { "export.json": bad });
       expect(refused.code).toBe(1);
-      expect(refused.out).toContain("fields left out: inventory.unit (1)");
+      expect(refused.out).toContain('fields left out: "inventory.unit" (1)');
       expect(refused.err).toContain('Problems in the export: 1\n  inventory[0] key "012345678905": price must be an amount from 0 to 1000000\nNothing was written.');
 
       await setDocument(db, ctx, "products", "036000291452", { code: "036000291452", name: "Other", price: 1 });

@@ -29,7 +29,8 @@
 //    same barcode under another key, is a conflict, and nothing is written
 //    while there are any.
 // 3. Apply (applyArtifactImport), unless it's a dry run: each missing
-//    document, created only if its key is still free. A product that tracks
+//    document, created only if its key is still free and the team is still
+//    open (a condition check on its META item in the same transaction). A product that tracks
 //    stock is written in one transaction with an `import` movement from 0 to
 //    its count, so the stock history adds up. Then it reads everything back
 //    and checks every stock count and every sheet's totals against the file.
@@ -43,11 +44,11 @@
 // names, clients or user IDs.
 
 import { randomUUID } from "node:crypto";
-import { GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
 import type { Movement } from "./commands.js";
 import { MAX_DOCUMENT_BYTES } from "./documents.js";
-import { ConflictError, InvalidInputError } from "./errors.js";
+import { ConflictError, InvalidInputError, TeamClosedError } from "./errors.js";
 import { MAX_NAME_LENGTH, MAX_PACK_SIZE } from "./imports.js";
 import { MAX_CODE_LENGTH, gsi1, keys, prefixes, teamPartition } from "./keys.js";
 import { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
@@ -137,7 +138,16 @@ export interface ParsedExport {
 
 const isMap = (v: unknown): v is Item => typeof v === "object" && v !== null && !Array.isArray(v);
 /** A key or ID as a report shows it: quoted and escaped, and cut short. */
-const shown = (s: string) => JSON.stringify(s.length > 60 ? `${s.slice(0, 60)}…` : s);
+const shown = (s: string) => printable(JSON.stringify(s.length > 60 ? `${s.slice(0, 60)}…` : s));
+/**
+ * Text safe to print on a terminal: JSON.stringify escapes C0 controls, and
+ * this escapes DEL and the C1 controls (U+0080–U+009F, which include CSI)
+ * too, so a crafted export can't put escape sequences on the owner's screen.
+ */
+function printable(s: string): string {
+  // eslint-disable-next-line no-control-regex -- escaping control characters is the point
+  return s.replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
 /** Cent-safe cents of an amount (sheet-math.js's `cents`). */
 const cents = (n: number) => Math.round(Number((n * 100).toPrecision(12)));
 
@@ -170,7 +180,8 @@ function whole(value: unknown, field: string, min: number, max: number): number 
 
 function timestamp(value: unknown, field: string): string | undefined {
   if (value === undefined || value === null) return undefined;
-  if (typeof value !== "string" || value.length > MAX_TIMESTAMP_LENGTH || CONTROL.test(value) || Number.isNaN(Date.parse(value))) {
+  // Printable ASCII only: the report prints exportedAt
+  if (typeof value !== "string" || value.length > MAX_TIMESTAMP_LENGTH || !/^[\x20-\x7e]+$/.test(value) || Number.isNaN(Date.parse(value))) {
     throw new FieldError(`${field} isn't a date and time`);
   }
   return value;
@@ -329,7 +340,8 @@ export function parseArtifactExport(json: unknown): ParsedExport {
   const errors: ImportIssue[] = [];
   const ignoredFields: Record<string, number> = {};
   const ignored = (field: string) => {
-    const name = field.slice(0, 80);
+    // Field names come from the file: quoted and escaped, as reports print them
+    const name = shown(field.slice(0, 80));
     ignoredFields[name] = (ignoredFields[name] ?? 0) + 1;
   };
   // Only a sheet can pass the document size limit: a product's fields are all bounded
@@ -337,12 +349,18 @@ export function parseArtifactExport(json: unknown): ParsedExport {
 
   const products: ArtifactProduct[] = [];
   const productKeys = new Map<string, number>();
+  const productCodes = new Map<string, number>();
   doc.inventory.forEach((raw, i) => {
     const at = `inventory[${i}]${isMap(raw) && typeof raw.key === "string" ? ` key ${shown(raw.key)}` : ""}`;
     try {
       const p = product(raw, ignored);
       const earlier = productKeys.get(p.key);
       if (earlier !== undefined) throw new FieldError(`has the same key as inventory[${earlier}]`);
+      // As the CSV import refuses them: two items with one barcode would make a scan ambiguous
+      const code = p.code.trim();
+      const sameCode = code ? productCodes.get(code) : undefined;
+      if (sameCode !== undefined) throw new FieldError(`has the same barcode as inventory[${sameCode}]`);
+      if (code) productCodes.set(code, i);
       productKeys.set(p.key, i);
       products.push(p);
     } catch (error) {
@@ -472,10 +490,32 @@ export interface ApplyResult {
   readonly operationId: string;
 }
 
-const isConditionFailure = (error: unknown) => (error as { name?: string } | null)?.name === "ConditionalCheckFailedException";
-const isCancelledByCondition = (error: unknown) =>
-  (error as { name?: string } | null)?.name === "TransactionCanceledException" &&
-  ((error as { CancellationReasons?: { Code?: string }[] }).CancellationReasons ?? []).some((r) => r.Code === "ConditionalCheckFailed");
+/** The cancellation codes of a cancelled transaction, or undefined for any other error. */
+function cancellationCodes(error: unknown): (string | undefined)[] | undefined {
+  if ((error as { name?: string } | null)?.name !== "TransactionCanceledException") return undefined;
+  return ((error as { CancellationReasons?: { Code?: string }[] }).CancellationReasons ?? []).map((r) => r.Code);
+}
+
+const TEAM_CLOSED = "The team was closed while importing. Documents already written stay; nothing more was written.";
+
+/**
+ * Runs one document's writes with a check that the team still exists and is
+ * open, so a team closed part-way through isn't written to. Returns false
+ * when the document's key was taken (its create condition failed).
+ */
+async function createWithTeamOpen(db: Db, ctx: TeamContext, writes: Item[]): Promise<boolean> {
+  const teamOpen = { ConditionCheck: { TableName: db.tableName, Key: keys.team(ctx.teamId), ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(closedAt)" } };
+  try {
+    await connection(db).doc.send(new TransactWriteCommand({ TransactItems: [...writes, teamOpen] }));
+    return true;
+  } catch (error) {
+    const codes = cancellationCodes(error);
+    if (!codes) throw error;
+    if (codes[writes.length] === "ConditionalCheckFailed") throw new TeamClosedError(TEAM_CLOSED);
+    if (codes[0] === "ConditionalCheckFailed") return false;
+    throw error;
+  }
+}
 
 async function readItem(db: Db, key: Item): Promise<Item | undefined> {
   const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: key, ConsistentRead: true }));
@@ -510,12 +550,10 @@ export async function applyArtifactImport(db: Db, ctx: TeamContext, plan: Import
       const movement: Omit<Movement, "type"> = { productKey: p.key, reason: "import", delta: p.stock, tracked: true, count: p.stock, operationId, userId: ctx.userId, at };
       writes.push({ Put: { TableName: db.tableName, Item: { ...keys.movement(ctx.teamId, p.key, at, operationId), type: "movement", ...movement }, ConditionExpression: "attribute_not_exists(PK)" } });
     }
-    try {
-      await connection(db).doc.send(new TransactWriteCommand({ TransactItems: writes }));
+    if (await createWithTeamOpen(db, ctx, writes)) {
       productsCreated++;
       if (p.stock !== undefined) movements++;
-    } catch (error) {
-      if (!isCancelledByCondition(error)) throw error;
+    } else {
       const there = await readItem(db, key);
       if (!there || canonical(productContent(there)) !== canonical(productContent({ ...p }))) {
         throw new ConflictError(`Item key ${shown(p.key)} was added with other values while importing. Run the import again as a dry run to see what's left.`);
@@ -525,17 +563,15 @@ export async function applyArtifactImport(db: Db, ctx: TeamContext, plan: Import
   }
   for (const s of plan.sheets) {
     const key = keys.sheet(ctx.teamId, s.id);
-    try {
-      await connection(db).doc.send(
-        new PutCommand({
-          TableName: db.tableName,
-          Item: storable({ ...s, ...key, ...gsi1.sheetsByDate(ctx.teamId, s.date, s.id), type: "sheet", id: s.id, version: 1 }),
-          ConditionExpression: "attribute_not_exists(PK)",
-        }),
-      );
-      sheetsCreated++;
-    } catch (error) {
-      if (!isConditionFailure(error)) throw error;
+    const put = {
+      Put: {
+        TableName: db.tableName,
+        Item: storable({ ...s, ...key, ...gsi1.sheetsByDate(ctx.teamId, s.date, s.id), type: "sheet", id: s.id, version: 1 }),
+        ConditionExpression: "attribute_not_exists(PK)",
+      },
+    };
+    if (await createWithTeamOpen(db, ctx, [put])) sheetsCreated++;
+    else {
       const there = await readItem(db, key);
       if (!there || canonical(sheetContent(there)) !== canonical(sheetContent({ ...s }))) {
         throw new ConflictError(`Sheet id ${shown(s.id)} was added with other content while importing. Run the import again as a dry run to see what's left.`);
