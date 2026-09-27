@@ -77,8 +77,9 @@ export interface DeletionRecordsWatchProps {
  *   DELETIONS_BUCKET_CHANGE_EVENTS, from CloudTrail, CloudFormation's calls
  *   included: one such call (a one-day lifecycle rule, notifications off)
  *   would silence the watch. The P1 topic lets only this rule, by ARN,
- *   publish. The operator rule-tampering rule (observability-stack.ts) alerts
- *   when this rule or `rule` is deleted, disabled or retargeted.
+ *   publish. The deletions rule-tampering rule (observability-stack.ts),
+ *   which the operator rule-tampering rules watch in turn, alerts when this
+ *   rule or `rule` is deleted, disabled or retargeted.
  *
  * Why S3's events and not CloudTrail data events: neither says whether a
  * write replaced an object, so either needs the version check. S3's events to
