@@ -5,7 +5,7 @@
 // for teams a person has to look at, team IDs: never emails, names, user IDs
 // or item contents.
 //
-//   npm run restore -- deletions --table supply-checkout-prod-app-restore-<date> --region <region> --profile <profile> [--records-profile <backup account profile>] [--apply]
+//   npm run restore -- deletions --table supply-checkout-prod-app-restore-<date> --region <region> --profile <profile> [--records-profile <backup account profile>] [--records-before <ISO time>] [--accept-rewritten-records] [--apply]
 //   npm run restore -- copy-back --from supply-checkout-prod-app-restore-<date> --to supply-checkout-prod-app --region <region> --profile <profile> [--apply]
 //   npm run restore -- check     --table supply-checkout-prod-app --region <region> --profile <profile>
 //
@@ -35,7 +35,14 @@ Modes, in the order the runbook uses them (docs/backups.md):
                                          records with another profile: the backup account's, where they're
                                          replicated (by default its copy, supply-checkout-<env>-deletions-copy-
                                          <region>-<backup account>), for a restore after losing the workload
-                                         account. --live allows the live table instead, which the runbook never needs
+                                         account. It reads every version of every record, not only the current
+                                         one, and any valid version is a deletion. --records-before <ISO time>
+                                         leaves out versions S3 says were written at or after that time (a
+                                         suspected compromise of a writer). --live allows the live table instead,
+                                         which the runbook never needs. Exits 1 if any version isn't a valid record.
+                                         While a record has more than one version, or there's a delete marker, it
+                                         exits 1 and refuses --apply, unless --records-before is given or
+                                         --accept-rewritten-records says a person has looked at them
   copy-back  --from <restored table> --to <live table>
                                          make the live table's items the same as the restored table's
   check      --table <live table>       check the table has TTL, the stream, PITR, deletion protection,
@@ -51,6 +58,9 @@ if SUPPLY_CHECKOUT_EXPECTED_ACCOUNT is set (in your shell, never committed) to a
 /** The live table (tableName in src/data/schema.ts) and a restored one (the restore role's pattern, docs/backups.md). */
 export const LIVE_TABLE = /^supply-checkout-([a-z0-9-]+)-app$/;
 export const RESTORED_TABLE = /^supply-checkout-([a-z0-9-]+)-app-restore-[a-z0-9-]+$/;
+
+/** --records-before: an ISO 8601 time in UTC. */
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?Z$/;
 
 const MODES = ["deletions", "copy-back", "check"] as const;
 type Mode = (typeof MODES)[number];
@@ -110,9 +120,27 @@ const defaultDeps: Deps = {
 const dryRun = (apply: boolean) => (apply ? "" : " (dry run: would be)");
 const closing = (apply: boolean) => (apply ? "Done." : "Dry run: nothing was written. Run again with --apply to write.");
 
-export function formatDeletions(records: { users: number; teams: number; invalid: number }, report: DeletionReport): string[] {
+export interface RecordCounts {
+  readonly users: number;
+  readonly teams: number;
+  /** S3 version IDs of versions that aren't valid records: random, never contents or IDs from the app. */
+  readonly invalid: readonly string[];
+  readonly rewritten: number;
+  readonly deleteMarkers: number;
+  readonly ignored: number;
+  /** --records-before, when given. */
+  readonly before?: string;
+}
+
+export function formatDeletions(records: RecordCounts, report: DeletionReport): string[] {
   const lines = [`Deletion records: ${records.users} accounts, ${records.teams} teams`];
-  if (records.invalid) lines.push(`  records that aren't valid, skipped (look at them in the bucket): ${records.invalid}`);
+  if (records.before !== undefined) lines.push(`  record versions written at or after ${records.before}, left out: ${records.ignored}`);
+  if (records.invalid.length) {
+    lines.push(`  record versions that aren't valid, skipped (stop and look at them in the bucket, docs/backups.md): ${records.invalid.length}`);
+    for (const versionId of records.invalid) lines.push(`    version ${versionId}`);
+  }
+  if (records.rewritten) lines.push(`  records with more than one version (each is written once: look at them): ${records.rewritten}`);
+  if (records.deleteMarkers) lines.push(`  delete markers (no writer may delete a record: look at them): ${records.deleteMarkers}`);
   if (report.survivors) lines.push(`  accounts that outlived their record (still in the user pool, or joined or created a team after it), left alone: ${report.survivors}`);
   lines.push(`  teams purged: ${report.teamsPurged}${dryRun(report.apply)}${report.apply ? ` (${report.itemsPurged} items)` : ""}`);
   lines.push(`  memberships removed: ${report.membershipsRemoved}${dryRun(report.apply)}`);
@@ -158,6 +186,8 @@ export async function main(
         to: { type: "string" },
         bucket: { type: "string" },
         "records-profile": { type: "string" },
+        "records-before": { type: "string" },
+        "accept-rewritten-records": { type: "boolean", default: false },
         live: { type: "boolean", default: false },
         region: { type: "string" },
         profile: { type: "string" },
@@ -210,6 +240,15 @@ export async function main(
   if (values.bucket !== undefined && mode !== "deletions") return bad("--bucket is only for deletions");
   if (recordsProfile !== undefined && mode !== "deletions") return bad("--records-profile is only for deletions");
   if (recordsProfile !== undefined && local) return bad("--records-profile is for AWS, not --endpoint");
+  const recordsBefore = values["records-before"];
+  if (values["accept-rewritten-records"] && mode !== "deletions") return bad("--accept-rewritten-records is only for deletions");
+  let before: Date | undefined;
+  if (recordsBefore !== undefined) {
+    if (mode !== "deletions") return bad("--records-before is only for deletions");
+    before = new Date(recordsBefore);
+    // A day that doesn't exist (February 31) rolls over, so the date must come back the same
+    if (!ISO_TIME.test(recordsBefore) || Number.isNaN(before.getTime()) || before.toISOString().slice(0, 10) !== recordsBefore.slice(0, 10)) return bad(`--records-before must be an ISO time in UTC, like 2026-09-27T12:00:00Z: ${recordsBefore}`);
+  }
   if (values.live && mode !== "deletions") return bad("--live is only for deletions");
   if (mode === "deletions" && local && !values.bucket) return bad("--bucket is required with --endpoint");
   if (mode === "check" && values.apply) return bad("check doesn't write: leave out --apply");
@@ -259,8 +298,18 @@ export async function main(
       from = `${bucket} in account ${recordsAccount} (profile ${recordsProfile})`;
     }
     out(`deletions on ${table} in ${values.region} ${where}, from ${from}${suffix}`);
+    if (before) out(`Only record versions written before ${before.toISOString()}`);
     if (values.live) out("WARNING: this is the live table. Deleting there skips the check a restored table gets before it's copied back.");
-    const { records, invalid } = await readDeletionRecords(deps.s3(values.region, recordsCredentials), bucket);
+    const { records, invalid, rewritten, deleteMarkers, ignored } = await readDeletionRecords(deps.s3(values.region, recordsCredentials), bucket, { before });
+    // Rewritten records or delete markers mean a writer was used outside the app: nothing is written until a person has
+    // looked (docs/backups.md, step 2) and either left out the versions after the compromise or accepted them
+    const unaccepted = (rewritten > 0 || deleteMarkers > 0) && !before && !values["accept-rewritten-records"];
+    if (unaccepted && values.apply) {
+      err(
+        `Refusing --apply: ${rewritten} records with more than one version and ${deleteMarkers} delete markers. Stop and investigate (docs/backups.md, "Put a restored table back into service", step 2), then run again with --records-before <time> or --accept-rewritten-records. Nothing was written.`,
+      );
+      return 1;
+    }
     const userIds = records.filter((r) => r.kind === "user").map((r) => r.id);
     let inPool: Set<string> | undefined;
     if (credentials) {
@@ -273,8 +322,9 @@ export async function main(
     const db = connect(table);
     const plan = await planDeletions(db, records, { inPool });
     const report = await applyDeletions(db, plan, { apply: values.apply });
-    for (const line of formatDeletions({ ...plan.records, invalid: invalid.length }, report)) out(line);
-    return report.blockedTeams.length || report.unconfirmedTeams.length ? 1 : 0;
+    const counts: RecordCounts = { ...plan.records, invalid: invalid.map((v) => v.versionId), rewritten, deleteMarkers, ignored, ...(before ? { before: before.toISOString() } : {}) };
+    for (const line of formatDeletions(counts, report)) out(line);
+    return report.blockedTeams.length || report.unconfirmedTeams.length || invalid.length || unaccepted ? 1 : 0;
   } catch (e) {
     // The SDK's error name and message: no item contents
     err(`Failed: ${(e as Error).name}: ${(e as Error).message}`);
