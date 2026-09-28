@@ -159,7 +159,7 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Expected:** after 7 days without payment the team becomes read-only. Nothing is deleted. As soon as payment succeeds, full access returns within a minute.
 
-**Status:** planned. `supply-checkout-qdx` (access rules), `supply-checkout-2kl` (webhooks), `supply-checkout-5hx` (email).
+**Status:** partly built. The payment-failed email and the webhooks are built (`supply-checkout-2kl`), and owners fix the card in the Customer Portal from **Billing** in the team bar (`supply-checkout-121`); a paid invoice reaches the team within a minute. The 7-day grace period is still to come: `supply-checkout-qdx` (access rules), `supply-checkout-5hx` (email).
 
 ### J9. A viewer can see but not change
 
@@ -182,7 +182,7 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Expected:** access continues to the end of the paid period, then the team is read-only for 30 days with export available. After that the data is deleted, as the privacy policy says.
 
-**Status:** planned. `supply-checkout-121`, `supply-checkout-qdx`. Export is built (`supply-checkout-zuv`, see J6); it only reads, through the list routes, so read-only mode must keep those open to owners.
+**Status:** partly built. Cancelling in the Customer Portal is built (`supply-checkout-121`): the subscription runs to the end of the period, the team bar says when it ends, and then the team is read-only with export available. Deleting canceled teams is `supply-checkout-qdx`. Export is built (`supply-checkout-zuv`, see J6); it only reads, through the list routes, so read-only mode must keep those open to owners.
 
 ### J11. Delete an account
 
