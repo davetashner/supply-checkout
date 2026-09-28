@@ -1,13 +1,14 @@
-// The billing API (POST /teams/{teamId}/billing/checkout) against the
+// The billing API (POST /teams/{teamId}/billing/checkout and /billing/portal) against the
 // in-memory table and a fake Stripe. Each request's handles pass only the
 // calls the billing-access role allows for their session tags
 // (test/billing-policy.ts), so a call outside them fails as IAM would refuse it.
 
 import { beforeEach, describe, expect, it } from "vitest";
 import type { BillingScope, DbForBilling } from "../src/api/billing-db.js";
-import { type CheckoutSessionParams, type CheckoutStripe, createBillingHandler, idempotencyKey, trialEnd } from "../src/api/billing-handler.js";
+import { type BillingStripe, type CheckoutSessionParams, createBillingHandler, idempotencyKey, type PortalSessionParams, trialEnd } from "../src/api/billing-handler.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { BILLING_ROUTES, routeKey } from "../src/api/routes.js";
+import { PORTAL_METADATA, type PortalConfigurationLike, type PortalConfigurationLister, portalConfigurationResolver } from "../src/billing/portal.js";
 import { priceResolver, type StripePriceLike } from "../src/billing/prices.js";
 import { MEMBERS_PER_TEAM, TRIAL_DAYS } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
@@ -55,8 +56,32 @@ function fakeStripe() {
     noUrl: false,
     /** Runs after a customer is made, before it's linked: another request's link. */
     afterCustomer: undefined as (() => void) | undefined,
+    portalSessions: [] as PortalSessionParams[],
+    portalError: undefined as Error | undefined,
+    configurations: [
+      { id: "bpc_default", active: true, metadata: {} },
+      { id: "bpc_old", active: false, metadata: { ...PORTAL_METADATA } },
+      { id: "bpc_ours", active: true, metadata: { ...PORTAL_METADATA } },
+    ] as PortalConfigurationLike[],
+    configurationLists: 0,
   };
-  const client: CheckoutStripe = {
+  const client: BillingStripe & PortalConfigurationLister = {
+    billingPortal: {
+      configurations: {
+        async list(params) {
+          state.configurationLists++;
+          expect(params).toEqual({ active: true, limit: 100 });
+          return { data: state.configurations };
+        },
+      },
+      sessions: {
+        async create(params) {
+          if (state.portalError) throw state.portalError;
+          state.portalSessions.push(params);
+          return { id: `bps_test_${state.portalSessions.length}`, url: `https://billing.stripe.test/p/session/bps_test_${state.portalSessions.length}` };
+        },
+      },
+    },
     subscriptions: {
       async list(params) {
         state.subscriptionLists.push(params.customer);
@@ -113,7 +138,16 @@ function build(options: { stripeFails?: Error } = {}) {
     return table.guarded(billingPolicy(scope, denied));
   };
   const client = () => (options.stripeFails ? Promise.reject(options.stripeFails) : Promise.resolve(stripe.client));
-  handler = createBillingHandler({ dbFor, stripe: client, priceFor: priceResolver(client, { now: () => now }), issuerUrl: ISSUER, appUrl: APP, obs: fakeObservability(), now: () => now });
+  handler = createBillingHandler({
+    dbFor,
+    stripe: client,
+    priceFor: priceResolver(client, { now: () => now }),
+    portalConfiguration: portalConfigurationResolver(client, { now: () => now }),
+    issuerUrl: ISSUER,
+    appUrl: APP,
+    obs: fakeObservability(),
+    now: () => now,
+  });
 }
 
 beforeEach(() => {
@@ -429,12 +463,129 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
     expect((await checkout({ claims: { sub: OWNER, token_use: "access", exp, iss: "https://elsewhere.example" } })).status).toBe(401);
     expect((await checkout({ claims: { sub: OWNER, token_use: "id", exp, iss: ISSUER } })).status).toBe(401);
     expect((await checkout({ claims: { sub: OWNER, token_use: "access", exp: "1", iss: ISSUER } })).status).toBe(401);
-    expect((await checkout({ routeKey: "POST /teams/{teamId}/billing/portal" })).status).toBe(404);
+    expect((await checkout({ routeKey: "POST /teams/{teamId}/billing/refund" })).status).toBe(404);
     expect(scopes).toEqual([]);
     // No team ID to log for a request that never named a valid one
     const e = event();
     e.pathParameters = {};
     stripe.state.sessionError = new Error("boom");
     expect((await handler(e)).statusCode).toBe(400);
+  });
+});
+
+describe("POST /teams/{teamId}/billing/portal", () => {
+  const PORTAL_ROUTE = routeKey(BILLING_ROUTES.find((r) => r.action === "createPortalSession") as (typeof BILLING_ROUTES)[number]);
+  const portal = (request: Request = {}) => checkout({ routeKey: PORTAL_ROUTE, rawBody: "", ...request });
+
+  beforeEach(() => {
+    patchTeam({ stripeCustomerId: "cus_test_9", stripeSubscriptionId: "sub_test_1", status: "active", plan: "starter" });
+  });
+
+  it("opens the portal for the team's own Stripe customer, with our configuration and the app as the way back", async () => {
+    const { status, body } = await portal();
+    expect(status).toBe(201);
+    expect(body).toEqual({ portal: { url: "https://billing.stripe.test/p/session/bps_test_1" } });
+    expect(stripe.state.portalSessions).toEqual([{ customer: "cus_test_9", configuration: "bpc_ours", return_url: `${APP}/?billing=portal&team=${TEAM}` }]);
+    // Read-only: handles scoped to the path's team only, and nothing written
+    expect(scopes).toEqual([{ teamId: TEAM }, { teamId: TEAM }]);
+    expect(denied).toEqual([]);
+    expect(stripe.state.customers).toHaveLength(0);
+    expect(logs.find((l) => l[0] === "Billing portal opened")?.[1]).toEqual({ teamId: TEAM });
+    expect(JSON.stringify(logs)).not.toContain("cus_test_9");
+    // An empty object is a body too. The configuration is looked up once, then kept for a while
+    expect((await portal({ rawBody: "{}" })).status).toBe(201);
+    expect(stripe.state.configurationLists).toBe(1);
+    now += 11 * 60_000;
+    await portal();
+    expect(stripe.state.configurationLists).toBe(2);
+  });
+
+  it("opens it for a team whose subscription ended, for its invoices and card", async () => {
+    patchTeam({ status: "canceled" });
+    expect((await portal()).status).toBe(201);
+  });
+
+  it.each([
+    [CONTRIBUTOR, "owners_only"],
+    [VIEWER, "owners_only"],
+    [OUTSIDER, "not_member"],
+  ])("refuses %s (%s) before reading the body or calling Stripe", async (user, reason) => {
+    const { status, body } = await portal({ user, rawBody: "not json" });
+    expect(status).toBe(403);
+    expect(body.error).toMatchObject({ code: "permission_denied", reason });
+    expect(stripe.state.portalSessions).toHaveLength(0);
+    expect(stripe.state.configurationLists).toBe(0);
+  });
+
+  it("never opens another team's customer: the owner of team-b gets only team-b's", async () => {
+    patchTeam({ stripeCustomerId: "cus_test_b" }, "team-b");
+    expect((await portal({ user: OUTSIDER })).status).toBe(403);
+    expect((await portal({ user: OUTSIDER, teamId: "team-b" })).status).toBe(201);
+    expect(stripe.state.portalSessions.map((s) => s.customer)).toEqual(["cus_test_b"]);
+  });
+
+  it.each([["not json"], ['{"customer":"cus_test_b"}'], ['{"return_url":"https://evil.example"}'], ["[]"]])("refuses the body %s", async (rawBody) => {
+    const { status, body } = await portal({ rawBody });
+    expect(status).toBe(400);
+    expect(body.error.code).toBe("bad_request");
+    expect(stripe.state.portalSessions).toHaveLength(0);
+  });
+
+  it("answers no_billing_account for a team with no Stripe customer yet", async () => {
+    patchTeam({ stripeCustomerId: undefined, stripeSubscriptionId: undefined, status: "trialing" });
+    const { status, body } = await portal();
+    expect(status).toBe(409);
+    expect(body.error).toMatchObject({ code: "aborted", reason: "no_billing_account" });
+    expect(stripe.state.configurationLists).toBe(0);
+  });
+
+  it("answers no_billing_account for a customer ID that isn't one", async () => {
+    patchTeam({ stripeCustomerId: "cus bad/../x" });
+    expect((await portal()).body.error.reason).toBe("no_billing_account");
+    expect(stripe.state.portalSessions).toHaveLength(0);
+  });
+
+  it("refuses a closed team", async () => {
+    patchTeam({ closedAt: new Date(now - DAY).toISOString(), purgeAfter: new Date(now + 29 * DAY).toISOString() });
+    const { status, body } = await portal();
+    expect(status).toBe(403);
+    expect(body.error.reason).toBe("team_closed");
+    expect(stripe.state.portalSessions).toHaveLength(0);
+  });
+
+  it.each([
+    ["none of ours", [{ id: "bpc_default", active: true, metadata: {} }]],
+    ["only an archived one", [{ id: "bpc_old", active: false, metadata: { ...PORTAL_METADATA } }]],
+    [
+      "two of ours",
+      [
+        { id: "bpc_a", active: true, metadata: { ...PORTAL_METADATA } },
+        { id: "bpc_b", active: true, metadata: { ...PORTAL_METADATA } },
+      ],
+    ],
+    ["one with no metadata", [{ id: "bpc_c", active: true, metadata: null }]],
+  ])("fails with 500 and counts it when our configuration isn't there (%s), never falling back to the default", async (_, configurations) => {
+    stripe.state.configurations = configurations as PortalConfigurationLike[];
+    const { status } = await portal();
+    expect(status).toBe(500);
+    expect(stripe.state.portalSessions).toHaveLength(0);
+    expect(counts[BusinessMetric.BillingPortalErrors]).toBe(1);
+    expect(counts[BusinessMetric.CheckoutSessionErrors]).toBeUndefined();
+    expect(logs.find((l) => l[0] === "Billing portal failed")?.[1]).toEqual({ teamId: TEAM, code: "PortalConfigurationNotFoundError", reason: "portal_configuration_not_found" });
+  });
+
+  it("fails with 500, counts it and logs no Stripe message when Stripe fails", async () => {
+    stripe.state.portalError = new Stripe.errors.StripeInvalidRequestError({ type: "invalid_request_error", message: "No such customer: 'cus_test_9'", code: "resource_missing", statusCode: 400, requestId: "req_2" } as never);
+    const { status } = await portal();
+    expect(status).toBe(500);
+    expect(counts[BusinessMetric.BillingPortalErrors]).toBe(1);
+    expect(logs.find((l) => l[0] === "Billing portal failed")?.[1]).toEqual({ teamId: TEAM, type: "StripeInvalidRequestError", code: "resource_missing", status: 400, requestId: "req_2" });
+    expect(JSON.stringify(logs)).not.toContain("cus_test_9");
+  });
+
+  it("refuses tokens from another issuer before anything else", async () => {
+    const exp = String(Math.floor(now / 1000) + 600);
+    expect((await portal({ claims: { sub: OWNER, token_use: "access", exp, iss: "https://elsewhere.example" } })).status).toBe(401);
+    expect(scopes).toEqual([]);
   });
 });

@@ -3,6 +3,7 @@
 // (read from Secrets Manager on first use, billing/stripe.ts) are kept per
 // container, outside the handler.
 
+import { portalConfigurationResolver } from "../billing/portal.js";
 import { priceResolver } from "../billing/prices.js";
 import { cachedStripe, createStripe, secretsManagerReader, STRIPE_ENV, stripeModeFrom } from "../billing/stripe.js";
 import { createObservability, withObservability } from "../observability/index.js";
@@ -30,6 +31,7 @@ export const handler = withObservability(
     dbFor: billingScopedDbs({ roleArn: required(API_ENV.billingRoleArn) }),
     stripe,
     priceFor: priceResolver(stripe),
+    portalConfiguration: portalConfigurationResolver(stripe),
     issuerUrl: required(API_ENV.issuerUrl),
     appUrl: required(API_ENV.appUrl),
     obs,

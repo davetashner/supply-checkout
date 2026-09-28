@@ -1884,6 +1884,71 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmsbillingportalbrokenC19F5C0B": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "AlarmDescription": "P1 Billing portal broken (J7, J8, us-west-2). Any BillingPortalErrors for 5 minutes: owners can't open the Stripe Customer Portal to add or fix a card, change plans or cancel. Usually the portal configuration is missing in this Stripe mode (run the catalog script). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p1-billing-portal-broken",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "BillingPortalErrors (us-west-2)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-west-2"
+                  }
+                ],
+                "MetricName": "BillingPortalErrors",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmswebhooksignaturefailures49B70E3B": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {

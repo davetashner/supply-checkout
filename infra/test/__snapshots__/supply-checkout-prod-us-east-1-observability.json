@@ -2228,6 +2228,71 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmsbillingportalbrokenC19F5C0B": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "AlarmDescription": "P1 Billing portal broken (J7, J8, us-east-1). Any BillingPortalErrors for 5 minutes: owners can't open the Stripe Customer Portal to add or fix a card, change plans or cancel. Usually the portal configuration is missing in this Stripe mode (run the catalog script). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p1-billing-portal-broken",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "BillingPortalErrors (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "BillingPortalErrors",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmswebhooksignaturefailures49B70E3B": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -7199,6 +7264,13 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
+                  "JourneyAlarmsbillingportalbrokenC19F5C0B",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
                   "JourneyAlarmswebhooksignaturefailures49B70E3B",
                   "Arn"
                 ]
@@ -7397,7 +7469,7 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"CheckoutSessionErrors\",\"Region\",\"us-east-1\",{\"label\":\"CheckoutSessionErrors (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WebhookSignatureFailures\",\"Region\",\"us-east-1\",{\"label\":\"WebhookSignatureFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"CheckoutSessionErrors\",\"Region\",\"us-west-2\",{\"label\":\"CheckoutSessionErrors (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WebhookSignatureFailures\",\"Region\",\"us-west-2\",{\"label\":\"WebhookSignatureFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":37,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8: billing events and owner emails\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"CheckoutSessionErrors\",\"Region\",\"us-east-1\",{\"label\":\"CheckoutSessionErrors (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingPortalErrors\",\"Region\",\"us-east-1\",{\"label\":\"BillingPortalErrors (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WebhookSignatureFailures\",\"Region\",\"us-east-1\",{\"label\":\"WebhookSignatureFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"CheckoutSessionErrors\",\"Region\",\"us-west-2\",{\"label\":\"CheckoutSessionErrors (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"BillingPortalErrors\",\"Region\",\"us-west-2\",{\"label\":\"BillingPortalErrors (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WebhookSignatureFailures\",\"Region\",\"us-west-2\",{\"label\":\"WebhookSignatureFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":37,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8: billing events and owner emails\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },

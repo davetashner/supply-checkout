@@ -5,7 +5,9 @@
 // Account (deleting it) and Sign out. A team an owner closed is read-only, with a notice
 // saying when its data will be deleted, and for its owners a way to reopen it. So is a team
 // whose subscription ended (its trial ended without a card, or payments stopped), with a
-// notice, and for its owners a way to subscribe again on Stripe Checkout.
+// notice, and for its owners a way to subscribe again on Stripe Checkout. Owners of a team
+// with a Stripe customer get Billing, the Stripe Customer Portal (a card, plan changes,
+// invoices, cancelling), and a canceled subscription says when it ends.
 import { esc } from "../format.js";
 import { armButton, closeModal, toast } from "../dom.js";
 import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, firstRunKey, forgetLocal, local, tab } from "./session.js";
@@ -31,6 +33,9 @@ const CLOSED_NOTICE = "This team is closed, so nothing in it can be changed.";
 const CLOSED_MEANWHILE = "An owner closed this team, so nothing in it can be changed now. Reload the page to see when it will be deleted.";
 // Why it's read-only when its subscription ended, as the team opened or after a refused write
 const ENDED_NOTICE = "This team's subscription ended, so nothing in it can be changed until an owner subscribes.";
+// How long a Customer Portal link is offered before the button makes a new one: Stripe's
+// sessions are short-lived
+const PORTAL_LINK_MS = 4 * 60e3;
 const ENDED_MEANWHILE = "This team's subscription ended, so nothing in it can be changed now. An owner can subscribe again from the team bar.";
 
 // A plain circle for the signed-in user's avatar; the API has no pictures yet
@@ -358,8 +363,11 @@ export async function start(config) {
     const owner = team.role === "owner";
     const reopenBy = owner && team.reopenBy ? `<span id="reopenBy"> Reopen by ${esc(moment(team.reopenBy))} to keep it.</span>` : "";
     const ended = !team.closedAt && team.subscriptionEnded;
-    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}<button type="button" class="btn ghost" id="accountOpen">Account</button><button type="button" class="btn ghost" id="signOut">Sign out</button>`
+    // The Customer Portal: owners of an open team that has a Stripe customer
+    const billing = owner && !team.closedAt && team.billingAccount;
+    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">Billing</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}<button type="button" class="btn ghost" id="accountOpen">Account</button><button type="button" class="btn ghost" id="signOut">Sign out</button>`
       + (team.closedAt ? `<p class="closed-note" role="status">This team was closed on ${esc(day(team.closedAt))}. It's read-only, and everything in it will be deleted on ${esc(day(team.deletesAt))}.${owner ? " Use Export data to keep a copy." : ""}${reopenBy}</p>${owner ? `<button type="button" class="btn" id="reopenTeam">Reopen team</button>` : ""}` : "")
+      + (!team.closedAt && !ended && team.cancelsAt ? `<p class="closed-note" role="status" id="cancelNote">This team's subscription was canceled. Everything works until ${esc(day(team.cancelsAt))}; then the team becomes read-only.${billing ? " To keep it, renew it from Billing." : " Ask an owner to renew it to keep it."}</p>` : "")
       + (ended ? `<p class="closed-note" role="status">This team's subscription has ended, so it's read-only. Nothing has been deleted: everyone can still see it${owner ? ", and you can export it. Subscribe to make changes again." : ". Ask an owner to subscribe to make changes again."}</p>${owner ? `<button type="button" class="btn" id="subscribe">Subscribe</button>` : ""}` : "");
     box.after(bar);
     drawSwitcher(bar.querySelector(".team-pick"), me.teams, team);
@@ -371,6 +379,7 @@ export async function start(config) {
     if (verify) verify.addEventListener("click", () => openVerifyEmail(session, me.user.email, (fresh) => { me.user = fresh.user; verify.remove(); }));
     if (owner) {
       bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed, invited(fr)));
+      if (billing) bar.querySelector("#manageBilling").addEventListener("click", (e) => manageBilling(team, e.currentTarget));
       if (ended) bar.querySelector("#subscribe").addEventListener("click", (e) => subscribe(team, e.currentTarget));
       else if (!team.closedAt) bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id, download));
       else {
@@ -403,6 +412,28 @@ export async function start(config) {
     } catch (e) {
       button.disabled = false;
       toast(e.reason === "already_subscribed" ? "This team already has a subscription. Reload the page to see it." : "Couldn't start checkout. Check your connection and try again.", 5000);
+    }
+  }
+
+  // An owner opens the Stripe Customer Portal: the server makes a session for the team's own
+  // Stripe customer, and a link to it replaces the button, as for Checkout. A session soon
+  // expires, so after PORTAL_LINK_MS the button comes back to make a new one.
+  async function manageBilling(team, button) {
+    button.disabled = true;
+    try {
+      const { portal } = await session.api("POST", `/teams/${encodeURIComponent(team.id)}/billing/portal`);
+      const link = document.createElement("a");
+      link.className = "btn primary";
+      link.id = "billingLink";
+      link.href = portal.url;
+      link.textContent = "Continue to billing";
+      button.disabled = false;
+      button.replaceWith(link);
+      link.focus();
+      setTimeout(() => link.replaceWith(button), PORTAL_LINK_MS);
+    } catch (e) {
+      button.disabled = false;
+      toast(e.reason === "no_billing_account" ? "This team has no billing account yet. Reload the page, then subscribe." : "Couldn't open billing. Check your connection and try again.", 5000);
     }
   }
 

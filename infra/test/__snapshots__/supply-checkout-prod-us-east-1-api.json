@@ -4508,6 +4508,60 @@
         }
       }
     },
+    "HttpApiPOSTteamsteamIdbillingportalBillingIntegrationPermission1010FFB8": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "BillingFunctionLive75F06840"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/billing/portal"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTteamsteamIdbillingportal978A9346": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /teams/{teamId}/billing/portal",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiPOSTteamsteamIdbillingcheckoutBillingIntegration84D4E72C"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiGETopsteamsOpsIntegrationD9495125": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -5325,6 +5379,10 @@
             "ThrottlingRateLimit": 2,
             "ThrottlingBurstLimit": 5
           },
+          "POST /teams/{teamId}/billing/portal": {
+            "ThrottlingRateLimit": 2,
+            "ThrottlingBurstLimit": 5
+          },
           "GET /ops/teams": {
             "ThrottlingRateLimit": 5,
             "ThrottlingBurstLimit": 10
@@ -5414,6 +5472,8 @@
         "HttpApiPOSTteamsteamIdbillingcheckoutBillingIntegrationPermissionA972843A",
         "HttpApiPOSTteamsteamIdbillingcheckoutBillingIntegration84D4E72C",
         "HttpApiPOSTteamsteamIdbillingcheckoutAA8688DD",
+        "HttpApiPOSTteamsteamIdbillingportalBillingIntegrationPermission1010FFB8",
+        "HttpApiPOSTteamsteamIdbillingportal978A9346",
         "HttpApiPOSTteamsteamIdcloseAccountIntegrationPermission1183DF2C",
         "HttpApiPOSTteamsteamIdclose39531DA2",
         "HttpApiPOSTteamsteamIdimportsDataIntegrationPermission8AC0ABAB",

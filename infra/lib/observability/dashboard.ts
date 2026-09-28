@@ -118,7 +118,7 @@ export class OpsDashboard extends Construct {
     this.dashboard.addWidgets(
       businessGraph("J1: sign-ups", [BusinessMetric.SignUps]),
       businessGraph("J3: invites", [BusinessMetric.InvitesSent, BusinessMetric.InvitesAccepted, BusinessMetric.InvitesFailed]),
-      businessGraph("J7: billing errors", [BusinessMetric.CheckoutSessionErrors, BusinessMetric.WebhookSignatureFailures]),
+      businessGraph("J7: billing errors", [BusinessMetric.CheckoutSessionErrors, BusinessMetric.BillingPortalErrors, BusinessMetric.WebhookSignatureFailures]),
       businessGraph("J7, J8: billing events and owner emails", [BusinessMetric.BillingEventsApplied, BusinessMetric.BillingNotices, BusinessMetric.BillingNoticeFailures]),
       businessGraph("J4: live updates, failed and deferred", [BusinessMetric.LiveUpdates, BusinessMetric.LiveUpdateFailures, BusinessMetric.LiveUpdatesDeferred]),
     );

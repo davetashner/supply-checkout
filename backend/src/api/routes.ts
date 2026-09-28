@@ -146,7 +146,7 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
 export interface BillingRoute {
   readonly method: "POST";
   readonly path: string;
-  readonly action: "createCheckout";
+  readonly action: "createCheckout" | "createPortalSession";
   /** The least role that may call it (all owners: billing is theirs, ADR 0007). */
   readonly minRole: TeamRole;
   readonly throttle: { readonly rate: number; readonly burst: number };
@@ -154,13 +154,16 @@ export interface BillingRoute {
 
 /**
  * Billing (ADR 0009): an owner starts Stripe Checkout for their team, with a
- * plan, an interval and a seat count. Needs a Cognito access token (the JWT
+ * plan, an interval and a seat count, or opens the Stripe Customer Portal for
+ * the team's Stripe customer (supply-checkout-121). Needs a Cognito access token (the JWT
  * authorizer). Served by the `billing` function, the only one besides the
  * webhook's that may read the Stripe secret key.
  */
 export const BILLING_ROUTES: readonly BillingRoute[] = [
   // Each makes a Stripe customer (once per team) and a Checkout Session: rare, and Stripe rate-limits us too
   { method: "POST", path: "/teams/{teamId}/billing/checkout", action: "createCheckout", minRole: "owner", throttle: { rate: 2, burst: 5 } },
+  // A Customer Portal session each: rare too
+  { method: "POST", path: "/teams/{teamId}/billing/portal", action: "createPortalSession", minRole: "owner", throttle: { rate: 2, burst: 5 } },
 ];
 
 export interface WebhookRoute {

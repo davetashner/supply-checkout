@@ -120,6 +120,7 @@ import {
   listInvites,
   listInvitesForEmail,
   listTeamsForUser,
+  hasEnded,
   isReadOnlyForBilling,
   liveComp,
   mailAddress,
@@ -202,7 +203,10 @@ export function errorFor(error: unknown): ApiError {
  * (`members` is null on a team from before the count), and `reopenBy` is when
  * a closed team stops being reopenable (REOPEN_CUTOFF_MINUTES before it's
  * deleted). `subscriptionEnded` says the team is read-only because its
- * subscription ended (isReadOnlyForBilling).
+ * subscription ended (isReadOnlyForBilling). `billingAccount` says the team
+ * has a Stripe customer, so its owners can open the Customer Portal, and
+ * `cancelsAt` when a subscription that was canceled (in the portal) ends: its
+ * current period's end, until then.
  */
 export function teamBody(team: Team, role: Role, now = new Date()) {
   const comp = liveComp(team, now);
@@ -224,6 +228,10 @@ export function teamBody(team: Team, role: Role, now = new Date()) {
     comp: comp ? { plan: comp.plan, until: comp.until } : null,
     // Read-only because the subscription ended (and no comp keeps it going): an owner subscribes again
     subscriptionEnded: isReadOnlyForBilling(team, now),
+    // The Customer Portal needs the team's Stripe customer (made by its first checkout)
+    billingAccount: typeof team.stripeCustomerId === "string",
+    // Canceled but not ended yet: it ends with the current period
+    cancelsAt: team.cancelAtPeriodEnd === true && !hasEnded(team.status) && typeof team.currentPeriodEnd === "string" ? team.currentPeriodEnd : null,
     members: typeof team.members === "number" ? team.members : null,
     memberCap: memberCap(team, now),
   };

@@ -128,6 +128,7 @@ describe("HTTP API routes", () => {
       "POST /me/email/code": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /me/email/verify": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
       "POST /teams/{teamId}/billing/checkout": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "POST /teams/{teamId}/billing/portal": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
       "POST /billing/webhook": { ThrottlingRateLimit: 20, ThrottlingBurstLimit: 50 },
       "GET /ops/teams": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "GET /ops/teams/{teamId}": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },

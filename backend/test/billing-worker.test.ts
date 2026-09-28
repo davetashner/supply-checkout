@@ -377,6 +377,44 @@ describe("what the API says about an ended subscription", () => {
   });
 });
 
+describe("canceling in the Customer Portal", () => {
+  const periodEnd = new Date(NOW + 20 * DAY_S * 1000).toISOString();
+  const body = () => teamBody(meta() as never, "owner", new Date(NOW));
+
+  it("records a cancellation at the period's end, shows when it ends on /me, and clears it when the owner renews", async () => {
+    subs.set("sub_test_1", subscription({ status: "active", trial_end: null, cancel_at_period_end: true, cancel_at: NOW / 1000 + 20 * DAY_S, items: { data: [{ quantity: 3, current_period_end: NOW / 1000 + 20 * DAY_S, price: { lookup_key: "supply_checkout_starter_monthly", recurring: { interval: "month" } } }] } }));
+    expect(await worker(message("customer.subscription.updated"))).toBe("applied");
+    expect(meta()).toMatchObject({ status: "active", cancelAtPeriodEnd: true, currentPeriodEnd: periodEnd });
+    expect(body()).toMatchObject({ billingAccount: true, cancelsAt: periodEnd, subscriptionEnded: false });
+    // Still paying until then: no read-only email
+    expect(mails.sent).toEqual([]);
+    // Renewed ("Don't cancel" in the portal)
+    subs.set("sub_test_1", { ...(subs.get("sub_test_1") as SubscriptionLike), cancel_at_period_end: false, cancel_at: null });
+    await worker(message("customer.subscription.updated", { eventId: "evt_test_2", created: NOW / 1000 + 1 }));
+    expect(meta().cancelAtPeriodEnd).toBe(false);
+    expect(body().cancelsAt).toBeNull();
+  });
+
+  it("counts a cancellation Stripe schedules by date alone as not renewing", async () => {
+    subs.set("sub_test_1", subscription({ status: "active", cancel_at_period_end: false, cancel_at: NOW / 1000 + 13 * DAY_S }));
+    await worker(message("customer.subscription.updated"));
+    expect(meta().cancelAtPeriodEnd).toBe(true);
+  });
+
+  it("makes the team read-only when the period ends, and /me stops saying when it ends", async () => {
+    subs.set("sub_test_1", subscription({ status: "canceled", cancel_at_period_end: true }));
+    await worker(message("customer.subscription.deleted"));
+    expect(meta()).toMatchObject({ status: "canceled", cancelAtPeriodEnd: true });
+    expect(body()).toMatchObject({ subscriptionEnded: true, cancelsAt: null, billingAccount: true });
+    expect(mails.sent.length).toBeGreaterThan(0);
+  });
+
+  it("says nothing on /me without a Stripe customer or a period end", () => {
+    const team = { ...(meta() as object), cancelAtPeriodEnd: true, currentPeriodEnd: undefined, stripeCustomerId: undefined, status: "active" } as never;
+    expect(teamBody(team, "owner", new Date(NOW))).toMatchObject({ billingAccount: false, cancelsAt: null });
+  });
+});
+
 describe("a team whose subscription ended", () => {
   it("still lets a member keep their email current and an owner link the customer to subscribe again, and nothing else", async () => {
     patchTeam({ status: "canceled" });
