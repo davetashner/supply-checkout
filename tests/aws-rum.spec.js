@@ -20,7 +20,7 @@ test("reports an error with the release version, signed with the pool's guest cr
   await expect(page.locator("#account")).toContainText("Sign in with the email address your invite was sent to");
   // What the browser dispatches for an uncaught error, with a URL and an address in it
   await page.evaluate(() => {
-    const error = new Error("Couldn't load https://supply-checkout.test/?invite=i1&token=invite-secret#frag for pat@example.com");
+    const error = new Error("Couldn't load https://supply-checkout.test/?invite=i1&token=invite-secret#frag and /teams/t1/sheets?cursor=page-secret for pat@example.com with eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1LXBhdCJ9.sig-part");
     window.dispatchEvent(new ErrorEvent("error", { message: error.message, filename: "https://supply-checkout.test/?code=sign-in-code", lineno: 3, colno: 7, error }));
   });
 
@@ -29,7 +29,7 @@ test("reports an error with the release version, signed with the pool's guest cr
   const error = rum.events().find((e) => e.type === "com.amazon.rum.js_error_event");
   expect(error.details).toMatchObject({
     type: "Error",
-    message: "Couldn't load https://supply-checkout.test/ for [email]",
+    message: "Couldn't load https://supply-checkout.test/ and /teams/t1/sheets for [email] with [token]",
     filename: "https://supply-checkout.test/",
     lineno: 3,
     colno: 7,
@@ -53,7 +53,58 @@ test("reports an error with the release version, signed with the pool's guest cr
   // The landing page view, and nothing from a URL's query string or fragment
   const sent = rum.batches.map((b) => b.text).join("\n");
   expect(rum.events().find((e) => e.type === "com.amazon.rum.page_view_event").details.pageId).toBe("/");
-  for (const secret of ["invite-secret", "sign-in-code", "invite=", "pat@example.com", "#frag"]) expect(sent).not.toContain(secret);
+  for (const secret of ["invite-secret", "sign-in-code", "invite=", "pat@example.com", "#frag", "page-secret", "eyJ"]) expect(sent).not.toContain(secret);
+});
+
+test("scrubbing fails closed: details it can't read aren't recorded, and a client event it can't clean stops the client", async ({ page }) => {
+  const rum = new FakeRum();
+  await rum.install(page);
+  await openAws(page, withRum());
+  await connected(page);
+  // The RUM client's own chunk, as the app loaded it
+  const chunk = await page.waitForFunction(() => performance.getEntriesByType("resource").map((e) => e.name).find((u) => u.includes("/assets/rum-")));
+  const results = await page.evaluate(async (url) => {
+    const { scrub, scrubbedRecorder, scrubInPlace, scrubOrStop } = await import(url);
+    const unreadable = () => Object.defineProperty({}, "message", { enumerable: true, get() { throw new Error("no"); } });
+
+    // Copies, at any depth, with paths' queries, tokens and addresses taken out
+    const details = { version: "1.0.0", n: 3, none: null, targetUrl: "./assets/app.js?v=2#x", list: ["/teams/t1?cursor=c1", { note: "pat@example.com eyJa.eyJb.c" }] };
+    const copy = scrub(details);
+
+    // A plugin's record: a scrubbed copy, or nothing when the details can't be read
+    const recorded = [];
+    const record = scrubbedRecorder((type, d, meta) => recorded.push([type, d, meta]));
+    record("ok", { message: "see /x?token=t" }, { m: 1 });
+    record("unreadable", unreadable());
+
+    // The client's own events, cleaned in place
+    const plain = { referrer: "https://supply-checkout.test/?code=c" };
+    const locked = Object.defineProperty({ keep: "x" }, "referrer", { enumerable: true, configurable: true, writable: false, value: "https://a.test/?code=c" });
+    const frozen = Object.freeze({ referrer: "https://a.test/?code=c" });
+    const inPlace = [scrubInPlace(plain), plain, scrubInPlace(locked), locked, scrubInPlace(frozen), scrubInPlace(unreadable())];
+
+    // The hook stops the client when an event can't be cleaned, and only then
+    let stopped = 0;
+    const hook = scrubOrStop({ disable: () => stopped++ });
+    hook("page", { referrer: "/?code=c" });
+    const afterClean = stopped;
+    hook("page", Object.freeze({ referrer: "/?code=c" }));
+    return { details, copy, recorded, inPlace, afterClean, stopped };
+  }, await chunk.jsonValue());
+
+  expect(results.copy).toEqual({ version: "1.0.0", n: 3, none: null, targetUrl: "./assets/app.js", list: ["/teams/t1", { note: "[email] [token]" }] });
+  // The original is left as it was
+  expect(results.details.targetUrl).toBe("./assets/app.js?v=2#x");
+  expect(results.recorded).toEqual([["ok", { message: "see /x" }, { m: 1 }]]);
+  expect(results.inPlace).toEqual([
+    true, { referrer: "https://supply-checkout.test/" },
+    // A read-only field is removed rather than kept
+    true, { keep: "x" },
+    // A frozen object or one that can't be read can't be cleaned
+    false, false,
+  ]);
+  expect(results.afterClean).toBe(0);
+  expect(results.stopped).toBe(1);
 });
 
 test("sends page performance: the page's navigation timing", async ({ page }) => {

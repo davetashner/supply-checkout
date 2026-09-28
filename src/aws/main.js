@@ -38,8 +38,9 @@ const RUM_FIELDS = ["rumAppMonitorId", "rumIdentityPoolId", "rumRegion"];
 export function startMonitoring(config) {
   const configured = RUM_FIELDS.every((k) => typeof config[k] === "string" && config[k]) && config.rumIdentityPoolId.startsWith(config.rumRegion + ":");
   if (!configured) return null;
-  // A monitor that can't load or start must not stop the app
-  return import("./rum.js").then((rum) => rum.startRum(config, version)).catch(() => null);
+  // A monitor that can't load or start must not stop the app. It resolves to the module
+  // itself, so the build keeps its scrubbing exported, where tests/aws-rum.spec.js reaches it
+  return import("./rum.js").then((rum) => (rum.startRum(config, version), rum)).catch(() => null);
 }
 
 if (!window.claude) {
