@@ -26,6 +26,8 @@ git status && git worktree list && gh pr list
 
 Beads are labeled `mvp` or `phase-2` (native mobile apps, full active-active failover). The `MVP live in AWS` milestone bead depends on every `mvp` bead.
 
+**Agents read the backlog with `bd`, not the backlog page.** The backlog page (`dist/backlog/index.html`) and `.beads/issues.jsonl` are for people and machines. Don't read either to get a sense of the backlog: they hold every bead's full text. Start from the one-line listings (`bd ready`, `bd list --status …`, `bd blocked`, `bd children <epic>`, `bd search <text>`), and run `bd show <id>` only for the beads that matter to your current task.
+
 ## Beads
 
 - The database is a local Dolt database in the **main checkout's** `.beads/` (gitignored). `bd` finds it from any worktree. `.beads/issues.jsonl` is only an export, not a sync mechanism.
