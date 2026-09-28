@@ -1041,6 +1041,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     const subscriptions = topics.map((ref) => ({ prefix: { "Fn::Join": ["", [ref, ":"]] } }));
     const keyArn = { "Fn::GetAtt": [expect.stringMatching(/^AlarmTopicsKey/), "Arn"] };
     const key = [{ Ref: expect.stringMatching(/^AlarmTopicsKey/) }, keyArn];
+    const trailKeyArn = { Ref: expect.stringMatching(/^SsmParameterValuesupplycheckoutprodaudittrailkeyarn/) };
     // The topics and the key and trails in two rules, so each pattern stays well inside EventBridge's limit (supply-checkout-pbp.17)
     expect(routeChanges.props.EventPattern).toEqual({
       source: ["aws.sns"],
@@ -1062,8 +1063,9 @@ describe("operator pool alerts (ADR 0015)", () => {
       detail: {
         $or: [
           // By the key's ARN in `resources`, so a call through an alias (or an alias ARN) still matches
-          { eventName: ["DisableKey", "ScheduleKeyDeletion"], eventSource: ["kms.amazonaws.com"], resources: { ARN: [keyArn] } },
-          { eventName: ["PutKeyPolicy"], eventSource: ["kms.amazonaws.com"], resources: { ARN: [keyArn] }, userIdentity: NOT_CLOUDFORMATION },
+          // ...and the trail's key, from the audit stack's SSM parameter (supply-checkout-3sv.3)
+          { eventName: ["DisableKey", "ScheduleKeyDeletion"], eventSource: ["kms.amazonaws.com"], resources: { ARN: [keyArn, trailKeyArn] } },
+          { eventName: ["PutKeyPolicy"], eventSource: ["kms.amazonaws.com"], resources: { ARN: [keyArn, trailKeyArn] }, userIdentity: NOT_CLOUDFORMATION },
           // Any alias pointed at the key, whoever makes it
           { eventName: ["CreateAlias", "UpdateAlias"], eventSource: ["kms.amazonaws.com"], requestParameters: { targetKeyId: key } },
           { eventSource: ["cloudtrail.amazonaws.com"], eventName: [...TRAIL_EVENTS] },

@@ -472,6 +472,52 @@
                   ]
                 }
               ]
+            },
+            {
+              "Action": "s3:PutObject",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":s3:::supply-checkout-prod-trail-us-east-1-",
+                        {
+                          "Ref": "AWS::AccountId"
+                        }
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "logging.s3.amazonaws.com"
+              },
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    {
+                      "Fn::GetAtt": [
+                        "LogsBucket9C4D8843",
+                        "Arn"
+                      ]
+                    },
+                    "/s3/trail/*"
+                  ]
+                ]
+              },
+              "Sid": "TrailBucketAccessLogs"
             }
           ],
           "Version": "2012-10-17"

@@ -6244,7 +6244,7 @@
     "OperatorAlertKeyAndTrailChanges56EDD652": {
       "Type": "AWS::Events::Rule",
       "Properties": {
-        "Description": "The alarm topics' key was disabled, scheduled for deletion, given an alias or changed outside a deploy, or a CloudTrail trail was stopped or changed (supply-checkout-6uw.11)",
+        "Description": "The alarm topics' or trail's key was disabled, scheduled for deletion or changed outside a deploy, an alias pointed at the topics' key, or a CloudTrail trail was stopped or changed (supply-checkout-6uw.11)",
         "EventPattern": {
           "source": [
             "aws.kms",
@@ -6270,6 +6270,9 @@
                         "AlarmTopicsKey1622932D",
                         "Arn"
                       ]
+                    },
+                    {
+                      "Ref": "SsmParameterValuesupplycheckoutprodaudittrailkeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
                     }
                   ]
                 }
@@ -6288,6 +6291,9 @@
                         "AlarmTopicsKey1622932D",
                         "Arn"
                       ]
+                    },
+                    {
+                      "Ref": "SsmParameterValuesupplycheckoutprodaudittrailkeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
                     }
                   ]
                 },
@@ -7227,6 +7233,10 @@
     "SsmParameterValuesupplycheckoutprodidentityopsuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter": {
       "Type": "AWS::SSM::Parameter::Value<String>",
       "Default": "/supply-checkout/prod/identity/ops-user-pool-id"
+    },
+    "SsmParameterValuesupplycheckoutprodaudittrailkeyarnC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/audit/trail-key-arn"
     },
     "BootstrapVersion": {
       "Type": "AWS::SSM::Parameter::Value<String>",

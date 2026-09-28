@@ -17,6 +17,7 @@ import { DELETION_RECORD_RETENTION_DAYS, deletionsBucketName } from "../../../ba
 import { backupCopyFromContext, backupParameters } from "../backup.js";
 import type { DeploymentConfig } from "../config.js";
 import { backupAccountFromCopyVaultArn, replicateDeletionRecords } from "../deletions.js";
+import { trailBucketName } from "./audit-stack.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
 /**
@@ -148,6 +149,22 @@ export class DataStack extends SupplyCheckoutStack {
       id: "AwsSolutions-S1",
       reason: "This is the access-log bucket; logging it to itself would loop.",
     });
+    // The audit stack's trail bucket logs here too. It's another stack's bucket,
+    // so its access-log grant is written out here, as CDK writes the ones for
+    // this stack's buckets: S3's log delivery, from that bucket only, under
+    // s3/trail/. Like the audit stack, this is the primary region only (the
+    // early return above).
+    const trailBucketArn = `arn:${Aws.PARTITION}:s3:::${trailBucketName(config.envName, region)}`;
+    this.logsBucket.addToResourcePolicy(
+      new PolicyStatement({
+        sid: "TrailBucketAccessLogs",
+        effect: Effect.ALLOW,
+        principals: [new ServicePrincipal("logging.s3.amazonaws.com")],
+        actions: ["s3:PutObject"],
+        resources: [this.logsBucket.arnForObjects("s3/trail/*")],
+        conditions: { StringEquals: { "aws:SourceAccount": Aws.ACCOUNT_ID }, ArnLike: { "aws:SourceArn": trailBucketArn } },
+      }),
+    );
 
     // Releases are immutable prefixes, rewritten into by the CloudFront Function
     // (web/router.js). Readable only by CloudFront distributions in this

@@ -9,6 +9,7 @@ import { backupAlertRuleArns } from "../backup-alerts.js";
 import type { DeploymentConfig } from "../config.js";
 import { AlarmTopics, alarmContactsFromContext } from "../observability/alarm-topics.js";
 import { apiOutputParameters } from "./api-stack.js";
+import { auditOutputParameters } from "./audit-stack.js";
 import { identityOutputParameters } from "../identity.js";
 import { OpsDashboard } from "../observability/dashboard.js";
 import { JourneyAlarms } from "../observability/journey-alarms.js";
@@ -153,7 +154,10 @@ export const ALARM_SUBSCRIPTION_EVENTS = { outsideDeploys: ["Unsubscribe", "SetS
 export const ALARM_KEY_EVENTS = { always: ["DisableKey", "ScheduleKeyDeletion"], outsideDeploys: ["PutKeyPolicy"] } as const;
 /** KMS calls that point an alias at the topics' key: none is ever made for it, so each alerts, and a call through an alias still names the key in `resources`. */
 export const ALARM_KEY_ALIAS_EVENTS = { always: ["CreateAlias", "UpdateAlias"] } as const;
-/** CloudTrail calls that stop or narrow a trail in this account: without CloudTrail, none of these rules sees anything. */
+/**
+ * CloudTrail calls that stop or narrow a trail in this account: without a
+ * trail logging (the audit stack's), none of these rules sees anything.
+ */
 export const TRAIL_EVENTS = ["StopLogging", "DeleteTrail", "UpdateTrail", "PutEventSelectors", "PutAdvancedEventSelectors"] as const;
 
 /**
@@ -303,9 +307,11 @@ export class ObservabilityStack extends SupplyCheckoutStack {
    *   outside a deploy; and a data protection policy on either topic,
    *   whoever sets it.
    * - `OperatorAlertKeyAndTrailChanges`: disabling or scheduling the
-   *   deletion of the topics' key whoever does it, changing its policy
-   *   outside a deploy, or pointing an alias at it; and stopping, deleting or
-   *   narrowing any CloudTrail trail in the account.
+   *   deletion of the topics' key or the audit stack's trail key whoever does
+   *   it, changing either's policy outside a deploy, or pointing an alias at
+   *   the topics' key; and stopping, deleting or narrowing any CloudTrail
+   *   trail in the account (the audit stack's trail is the one these rules
+   *   need, supply-checkout-3sv.3).
    *   Both route rules tell both topics, so deleting one still reaches the other.
    * - `OperatorRuleTampering` and `OperatorRuleTamperingWatch`: deleting or
    *   disabling any rule whose name starts with operatorRulePrefix (every
@@ -435,13 +441,16 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         ],
       },
     });
-    const keyAndTrailChanges = operatorRule("OperatorAlertKeyAndTrailChanges", "The alarm topics' key was disabled, scheduled for deletion, given an alias or changed outside a deploy, or a CloudTrail trail was stopped or changed (supply-checkout-6uw.11)", {
+    // The audit stack deploys first and publishes its trail's key ARN in this region
+    const trailKeyArn = StringParameter.valueForStringParameter(this, auditOutputParameters(envName).trailKeyArn);
+    const keyAndTrailChanges = operatorRule("OperatorAlertKeyAndTrailChanges", "The alarm topics' or trail's key was disabled, scheduled for deletion or changed outside a deploy, an alias pointed at the topics' key, or a CloudTrail trail was stopped or changed (supply-checkout-6uw.11)", {
       source: ["aws.kms", "aws.cloudtrail"],
       ...cloudTrail,
       detail: {
         $or: [
-          // KMS takes a key ID, key ARN, alias name or alias ARN; CloudTrail names the key's ARN in `resources` whichever was used
-          ...calls(ALARM_KEY_EVENTS, { eventSource: ["kms.amazonaws.com"], resources: { ARN: [this.topics.key.keyArn] } }),
+          // KMS takes a key ID, key ARN, alias name or alias ARN; CloudTrail names the key's ARN in `resources` whichever was used.
+          // The trail's key too: disabling it stops the trail's log files (supply-checkout-3sv.3)
+          ...calls(ALARM_KEY_EVENTS, { eventSource: ["kms.amazonaws.com"], resources: { ARN: [this.topics.key.keyArn, trailKeyArn] } }),
           // An alias made or moved to point at the key (the key ID or ARN in `targetKeyId`)
           ...calls(ALARM_KEY_ALIAS_EVENTS, { eventSource: ["kms.amazonaws.com"], requestParameters: { targetKeyId: [this.topics.key.keyId, this.topics.key.keyArn] } }),
           { eventSource: ["cloudtrail.amazonaws.com"], eventName: [...TRAIL_EVENTS] },
