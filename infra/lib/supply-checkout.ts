@@ -60,6 +60,8 @@ export interface SupplyCheckoutStacks {
  * Audit (primary region only, stateful: the CloudTrail trail) waits for that
  * region's data stack (its logs bucket), and that region's observability
  * stack waits for it: its rules need the trail, and one watches its key.
+ * The observability stack in GLOBAL_SERVICES_REGION waits for web, whose
+ * distribution and router its web alarms watch.
  */
 export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyCheckoutStacks {
   Tags.of(app).add("app", "supply-checkout");
@@ -118,6 +120,9 @@ export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyChe
   // Cognito won't create auth.<domain> until the apex resolves, and the web
   // stack's alias records are what make it resolve.
   identity.addStackDependency(web);
+  // The web alarms (supply-checkout-3sv.2) read the distribution's and the
+  // router's names from the web stack's SSM outputs, in its region
+  regions[GLOBAL_SERVICES_REGION]?.observability.addStackDependency(web);
 
   const all = [
     ...Object.values(domain),
