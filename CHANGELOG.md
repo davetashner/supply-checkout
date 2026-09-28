@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3.0](https://github.com/davetashner/supply-checkout/compare/v1.2.0...v1.3.0) (2026-09-28)
+
+
+### Features
+
+* add an operator admin CLI and skill ([#174](https://github.com/davetashner/supply-checkout/issues/174)) ([5808189](https://github.com/davetashner/supply-checkout/commit/580818994c3a4e7fc4b6667dab15d58c9d8b28e0))
+
+
+### Bug Fixes
+
+* add a CloudTrail trail so the CloudTrail alert rules receive events ([#184](https://github.com/davetashner/supply-checkout/issues/184)) ([acc258c](https://github.com/davetashner/supply-checkout/commit/acc258cae7483f5efa552415c99c5db2992194a6))
+* pass operator passwords to the AWS CLI in a temp file, not /dev/stdin ([#179](https://github.com/davetashner/supply-checkout/issues/179)) ([776f1ae](https://github.com/davetashner/supply-checkout/commit/776f1ae68ce29e6daa0a556248e75e192803351d))
+* rewrite the edge router's headers without for...of, which CloudFront rejects ([#169](https://github.com/davetashner/supply-checkout/issues/169)) ([4b313ee](https://github.com/davetashner/supply-checkout/commit/4b313eef018ddfbc2ab02dd14bd48f039730be74))
+* split the operator alert rules to fit EventBridge's 2,048-character pattern limit ([#166](https://github.com/davetashner/supply-checkout/issues/166)) ([c83ae15](https://github.com/davetashner/supply-checkout/commit/c83ae1501be6a767033b5a96ae11f00a0235161a))
+
 ## [1.2.0](https://github.com/davetashner/supply-checkout/compare/v1.1.0...v1.2.0) (2026-09-27)
 
 
