@@ -6,13 +6,64 @@
 //
 // The API is served from the app's own origin (under /_api), so the tests need no CORS.
 // tests/content-security-policy.spec.js covers the real cross-origin setup.
+import { gunzipSync } from "node:zlib";
 import { builtFiles } from "../scripts/builds.mjs";
+import { GLOBAL_SERVICES_REGION } from "../infra/lib/config.ts";
 
 export const ORIGIN = "https://supply-checkout.test";
 export const API = ORIGIN + "/_api";
 export const AUTH = "https://auth.supply-checkout.test";
 export const REALTIME_HOST = "realtime.supply-checkout.test";
 export const CONFIG = { apiUrl: API, authUrl: AUTH, clientId: "test-client", realtimeUrl: `wss://${REALTIME_HOST}/event/realtime`, realtimeHost: REALTIME_HOST };
+// CloudWatch RUM (src/aws/rum.js): config.json's app monitor, and Cognito's and the RUM data
+// plane's endpoints in its region. Not in CONFIG, so the other suites never load the client.
+export const RUM_REGION = GLOBAL_SERVICES_REGION;
+export const RUM = { rumAppMonitorId: "monitor-1", rumIdentityPoolId: `${RUM_REGION}:pool-1`, rumRegion: RUM_REGION };
+const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "POST" };
+const AWS = /^https:\/\/[^/]+\.amazonaws\.com\//;
+
+// Cognito's GetId and GetCredentialsForIdentity, and the data plane's PutRumEvents
+export class FakeRum {
+  constructor() {
+    this.cognito = [];
+    this.batches = [];
+    this.other = [];
+  }
+
+  async install(page) {
+    await page.route(AWS, (route) => {
+      const req = route.request(), url = new URL(req.url());
+      if (req.method() === "OPTIONS") return route.fulfill({ status: 204, headers: CORS });
+      if (url.host === `cognito-identity.${RUM_REGION}.amazonaws.com`) return this.answerCognito(route, req);
+      if (url.host === `dataplane.rum.${RUM_REGION}.amazonaws.com` && url.pathname === `/appmonitors/${RUM.rumAppMonitorId}`) {
+        const raw = req.postDataBuffer();
+        const headers = req.headers();
+        const body = JSON.parse((headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw).toString("utf8"));
+        this.batches.push({ headers, text: JSON.stringify(body), body });
+        return route.fulfill({ status: 200, headers: CORS, contentType: "application/json", body: "{}" });
+      }
+      this.other.push(req.url());
+      return route.fulfill({ status: 404, headers: CORS });
+    });
+  }
+
+  answerCognito(route, req) {
+    const target = req.headers()["x-amz-target"], body = req.postDataJSON();
+    this.cognito.push({ target, body });
+    const reply = (json) => route.fulfill({ status: 200, headers: CORS, contentType: "application/x-amz-json-1.1", body: JSON.stringify(json) });
+    if (target === "AWSCognitoIdentityService.GetId") return reply({ IdentityId: `${RUM_REGION}:identity-1` });
+    return reply({
+      IdentityId: body.IdentityId,
+      Credentials: { AccessKeyId: "AKIDGUEST", SecretKey: "guest-secret", SessionToken: "guest-session", Expiration: Math.floor(Date.now() / 1000) + 3600 },
+    });
+  }
+
+  // Every event sent so far, with its details and metadata parsed
+  events() {
+    return this.batches.flatMap((b) => b.body.RumEvents.map((e) => ({ ...e, details: JSON.parse(e.details), metadata: JSON.parse(e.metadata) })));
+  }
+}
+
 const ABORTED = /^https:\/\/fonts\.(googleapis|gstatic)\.com\//;
 let files;
 

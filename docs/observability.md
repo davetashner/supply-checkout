@@ -20,6 +20,17 @@
 
 Logging and business metrics in the Lambda code are in [Backend](backend.md).
 
+## Front-end errors (CloudWatch RUM)
+
+`supply-checkout-al0`. The `web` stack (`lib/web/rum.ts`, in `GLOBAL_SERVICES_REGION` with the distribution) has the CloudWatch RUM app monitor `supply-checkout-<env>-app` for `app.<env domain>`, which the web build reports to ([The web app on AWS](web-app.md#the-web-app-on-aws)): JavaScript errors and page performance from real users, each event tagged with the release version. Telemetries are `errors` and `performance` only (no `http`, whose URLs carry team and document IDs, no clicks, no session replay), with cookies, X-Ray and custom events off, and every session sampled (`RUM_SESSION_SAMPLE_RATE`, lower it when traffic grows: RUM costs $1 per 100,000 events and the app's client sends at most 200 a session, in batches of at most 100). Events stay in RUM for 30 days; nothing goes to CloudWatch Logs. Source maps aren't uploaded, so stack traces point into the minified assets of that release.
+
+- **Identity pool** `supply-checkout-<env>-rum`: guest (unauthenticated) identities only, no identity providers, the classic flow off. In the enhanced flow Cognito adds its own session policies on top of the role.
+- **Guest role** `supply-checkout-<env>-rum-guest`: trusts only `cognito-identity.amazonaws.com` with `aud` this pool and `amr` `unauthenticated`, and has one statement, `rum:PutRumEvents` on this app monitor's ARN. cdk-nag's AwsSolutions-COG7 (guest identities) is acknowledged on the pool for that reason.
+- **Abuse and cost.** The sample rate, the 200-events-a-session limit and the batch limit are the RUM client's settings, so they only bound honest clients. The pool's ID is in `config.json` by design, so anyone can get guest credentials and send events to the app monitor directly, as many as RUM's and Cognito's own throttling allow, and each is billed. They can't read anything or reach any other resource. A guard on that cost (a budget or alarm on RUM usage) is tracked in its own bead.
+- **Outputs** under `/supply-checkout/<env>/web/`: `rum-app-monitor-id`, `rum-identity-pool-id` and `rum-region`, which `scripts/publish-web.mjs` copies into the app's `config.json`.
+
+To see a release's errors, open the app monitor in the CloudWatch console (**Application Signals → RUM**) and filter **Errors** by version. To check it after a deploy, publish the app, open it, and run `setTimeout(() => { throw new Error("rum-verify") })` in the browser console; the error shows within a minute or two.
+
 ## Alarm recipients
 
 **Alarm recipients.** The addresses and phone numbers aren't in this repository. Each one is an SSM parameter in the account, in every region with an `observability` stack (today, us-east-1), which CloudFormation reads at deploy time: `/supply-checkout/<env>/alarms/email-<n>` and `/supply-checkout/<env>/alarms/sms-<n>`, numbered from 1. Email recipients get P1 and P2 alarms; SMS recipients get P1 only. By default there is one of each; for more, pass `-c alarmContacts='{"email":2,"sms":2}'` (or set `alarmContacts` in `cdk.json`: it holds counts, nothing personal). Create the parameters before the first deploy of the stack, or the deploy fails:

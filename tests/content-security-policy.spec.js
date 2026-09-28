@@ -7,11 +7,11 @@ import { DEMO, builtFiles, currentBuild } from "../scripts/builds.mjs";
 import { installMockClaude } from "./mock-claude.js";
 import { fakeImage } from "./fixtures.js";
 import { contentSecurityPolicy } from "../infra/lib/web/content-security-policy.ts";
-import { FakeBackend, installFakeSocket, TEAM } from "./fake-aws.js";
+import { FakeBackend, FakeRum, RUM, RUM_REGION, installFakeSocket, TEAM } from "./fake-aws.js";
 
 test.skip(currentBuild() !== "web", "CloudFront serves the web and demo builds; the artifact runs under claude.ai's own policy");
 
-const CSP = contentSecurityPolicy({ api: "api.supplycheckout.com", realtime: "realtime.supplycheckout.com", auth: "auth.supplycheckout.com" });
+const CSP = contentSecurityPolicy({ api: "api.supplycheckout.com", realtime: "realtime.supplycheckout.com", auth: "auth.supplycheckout.com", rumRegion: RUM_REGION });
 // Their own origins, so coverage of the other suites isn't affected
 const APP = "https://csp-app.supply-checkout.test";
 const DEMO_SITE = "https://csp-demo.supply-checkout.test";
@@ -83,9 +83,12 @@ test("the web app runs under the policy", async ({ page }) => {
   expect(await violations(page)).toEqual([]);
 });
 
-test("the web app signs in and loads its data from the API under the policy", async ({ page }) => {
+test("the web app signs in, loads its data from the API and reports to RUM under the policy", async ({ page }) => {
   // The API on its own origin, as deployed: cross-origin requests with credentials
-  const config = { apiUrl: "https://api.supplycheckout.com/_api", authUrl: "https://auth.supplycheckout.com", clientId: "c", realtimeUrl: "wss://realtime.supplycheckout.com/event/realtime", realtimeHost: "realtime.supplycheckout.com" };
+  const config = { apiUrl: "https://api.supplycheckout.com/_api", authUrl: "https://auth.supplycheckout.com", clientId: "c", realtimeUrl: "wss://realtime.supplycheckout.com/event/realtime", realtimeHost: "realtime.supplycheckout.com", ...RUM };
+  // The RUM client's Cognito guest credentials and its events, from their AWS hosts
+  const rum = new FakeRum();
+  await rum.install(page);
   const backend = new FakeBackend({ config, docs: { "t1/sheets/s1": { client: "Policy Co", date: "2026-09-26", status: "open", items: {} } } });
   backend.cors = APP;
   await serve(page, APP, builtFiles("web"));
@@ -96,6 +99,9 @@ test("the web app signs in and loads its data from the API under the policy", as
   await expect(page.getByRole("button", { name: /Policy Co/ })).toBeVisible();
   await expect(page.locator(".teambar")).toContainText(TEAM.name);
   expect(backend.requests("POST", "/auth/refresh")[0].headers.origin).toBe(APP);
+  // The RUM client is its own chunk from the app's origin, and sends every 5 seconds
+  await expect.poll(() => rum.batches.length, { timeout: 20_000 }).toBeGreaterThan(0);
+  expect(rum.cognito.length).toBe(2);
   expect(await violations(page)).toEqual([]);
 });
 

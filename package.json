@@ -54,6 +54,13 @@
     "vite-plugin-singlefile": "^2.3.3"
   },
   "dependencies": {
+    "@aws-rum/web-core": "^3.2.1",
+    "@aws-rum/web-slim": "^3.2.1",
     "@zxing/library": "^0.21.3"
+  },
+  "overrides": {
+    "@aws-rum/web-core": {
+      "uuid": "^11.1.1"
+    }
   }
 }

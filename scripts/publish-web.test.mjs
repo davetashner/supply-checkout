@@ -13,6 +13,9 @@ const APP_CONFIG = {
   clientId: "client-1",
   realtimeUrl: "wss://realtime.example.test/event/realtime",
   realtimeHost: "realtime.example.test",
+  rumAppMonitorId: "monitor-1",
+  rumIdentityPoolId: "rum-region-1:pool-1",
+  rumRegion: "rum-region-1",
 };
 const PARAMS = {
   "/supply-checkout/prod/web/bucket-name": "releases-bucket",
@@ -108,7 +111,7 @@ test("config prints the app's config.json, and needs the stacks deployed", () =>
   main(["config"], aws.deps);
   assert.deepEqual(JSON.parse(aws.log[0]), APP_CONFIG);
   const bare = fakeAws({ params: {} });
-  assert.throws(() => main(["config", "--env", "staging"], bare.deps), /realtime stacks first\): \/supply-checkout\/staging\/api\/url/);
+  assert.throws(() => main(["config", "--env", "staging"], bare.deps), /realtime and web stacks first\): \/supply-checkout\/staging\/api\/url/);
 });
 
 test("publish needs a built folder", () => {

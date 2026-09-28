@@ -122,6 +122,184 @@
         ]
       }
     },
+    "RumIdentityPool49E349E1": {
+      "Type": "AWS::Cognito::IdentityPool",
+      "Properties": {
+        "AllowClassicFlow": false,
+        "AllowUnauthenticatedIdentities": true,
+        "IdentityPoolName": "supply-checkout-prod-rum",
+        "IdentityPoolTags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "web"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "RumGuestRole629DC19D": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRoleWithWebIdentity",
+              "Condition": {
+                "StringEquals": {
+                  "cognito-identity.amazonaws.com:aud": {
+                    "Ref": "RumIdentityPool49E349E1"
+                  }
+                },
+                "ForAnyValue:StringLike": {
+                  "cognito-identity.amazonaws.com:amr": "unauthenticated"
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Federated": "cognito-identity.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Guest identities of the RUM identity pool: send events to the web app's RUM app monitor only",
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": "rum:PutRumEvents",
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":rum:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":appmonitor/supply-checkout-prod-app"
+                      ]
+                    ]
+                  }
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "PutRumEvents"
+          }
+        ],
+        "RoleName": "supply-checkout-prod-rum-guest",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "web"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "RumRoles479E9B50": {
+      "Type": "AWS::Cognito::IdentityPoolRoleAttachment",
+      "Properties": {
+        "IdentityPoolId": {
+          "Ref": "RumIdentityPool49E349E1"
+        },
+        "Roles": {
+          "unauthenticated": {
+            "Fn::GetAtt": [
+              "RumGuestRole629DC19D",
+              "Arn"
+            ]
+          }
+        }
+      }
+    },
+    "RumAppMonitor98D47DAB": {
+      "Type": "AWS::RUM::AppMonitor",
+      "Properties": {
+        "AppMonitorConfiguration": {
+          "AllowCookies": false,
+          "EnableXRay": false,
+          "GuestRoleArn": {
+            "Fn::GetAtt": [
+              "RumGuestRole629DC19D",
+              "Arn"
+            ]
+          },
+          "IdentityPoolId": {
+            "Ref": "RumIdentityPool49E349E1"
+          },
+          "SessionSampleRate": 1,
+          "Telemetries": [
+            "errors",
+            "performance"
+          ]
+        },
+        "CustomEvents": {
+          "Status": "DISABLED"
+        },
+        "CwLogEnabled": false,
+        "Domain": "app.supplycheckout.com",
+        "Name": "supply-checkout-prod-app",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "web"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
     "SecurityHeadersE66B69D3": {
       "Type": "AWS::CloudFront::ResponseHeadersPolicy",
       "Properties": {
@@ -144,7 +322,7 @@
           "Name": "supplycheckoutproduseast1webSecurityHeadersE7D0AE58",
           "SecurityHeadersConfig": {
             "ContentSecurityPolicy": {
-              "ContentSecurityPolicy": "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.supplycheckout.com https://realtime.supplycheckout.com wss://realtime.supplycheckout.com https://auth.supplycheckout.com; manifest-src 'self'; worker-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests",
+              "ContentSecurityPolicy": "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.supplycheckout.com https://realtime.supplycheckout.com wss://realtime.supplycheckout.com https://auth.supplycheckout.com https://cognito-identity.us-east-1.amazonaws.com https://dataplane.rum.us-east-1.amazonaws.com; manifest-src 'self'; worker-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests",
               "Override": true
             },
             "ContentTypeOptions": {
@@ -654,6 +832,61 @@
       "Properties": {
         "Description": "Region of the web releases bucket",
         "Name": "/supply-checkout/prod/web/bucket-region",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "web",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": "us-east-1"
+      }
+    },
+    "RumAppMonitorIdParamB0CF9993": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "CloudWatch RUM app monitor ID (the web app's config.json)",
+        "Name": "/supply-checkout/prod/web/rum-app-monitor-id",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "web",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "RumAppMonitor98D47DAB",
+            "Id"
+          ]
+        }
+      }
+    },
+    "RumIdentityPoolIdParam523E8DB3": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Cognito identity pool the web app sends RUM events with",
+        "Name": "/supply-checkout/prod/web/rum-identity-pool-id",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "web",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "RumIdentityPool49E349E1"
+        }
+      }
+    },
+    "RumRegionParamD1890DA5": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Region of the RUM app monitor",
+        "Name": "/supply-checkout/prod/web/rum-region",
         "Tags": {
           "app": "supply-checkout",
           "component": "web",

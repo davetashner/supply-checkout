@@ -9,12 +9,15 @@ import { webBucketName } from "../lib/stacks/data-stack.js";
 import { DELETIONS_REPLICATION_RULE_ID, deletionsReplicationRoleName } from "../lib/deletions.js";
 import { MANAGED_RULE_GROUPS, RATE_LIMIT_PER_5_MINUTES, RELEASE_CHANNELS, webOutputParameters } from "../lib/stacks/web-stack.js";
 import { contentSecurityPolicy, cspDirectives } from "../lib/web/content-security-policy.js";
+import { RUM_SESSION_SAMPLE_RATE, RUM_TELEMETRIES, rumAppMonitorName } from "../lib/web/rum.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
 
 // Region names live only in lib/config.ts (ADR 0010); tests use its constants.
 const [EAST, WEST] = APPROVED_REGIONS;
 const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.com", regions: [EAST, WEST], primaryRegion: EAST };
 const names = hostNames(config);
+// The CSP's hosts: the web stack's RUM app monitor is in GLOBAL_SERVICES_REGION
+const cspHosts = { ...names, rumRegion: GLOBAL_SERVICES_REGION };
 
 function build(overrides: Partial<DeploymentConfig> = {}) {
   const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [] } });
@@ -285,7 +288,7 @@ describe("web stack", () => {
     web.hasResourceProperties("AWS::CloudFront::ResponseHeadersPolicy", {
       ResponseHeadersPolicyConfig: Match.objectLike({
         SecurityHeadersConfig: {
-          ContentSecurityPolicy: { ContentSecurityPolicy: contentSecurityPolicy(names), Override: true },
+          ContentSecurityPolicy: { ContentSecurityPolicy: contentSecurityPolicy(cspHosts), Override: true },
           StrictTransportSecurity: { AccessControlMaxAgeSec: 63072000, IncludeSubdomains: true, Override: true },
           ContentTypeOptions: { Override: true },
           FrameOptions: { FrameOption: "DENY", Override: true },
@@ -345,7 +348,7 @@ describe("web stack", () => {
 describe("content security policy", () => {
   // Every external URL src/index.html loads, by the directive that governs it
   const html = readFileSync(new URL("../../src/index.html", import.meta.url), "utf8");
-  const directives = cspDirectives(names);
+  const directives = cspDirectives(cspHosts);
   const origin = (url: string) => new URL(url).origin;
 
   it("allows the scripts and stylesheets src/index.html loads", () => {
@@ -378,12 +381,124 @@ describe("content security policy", () => {
     expect(directives["connect-src"]).toEqual(
       expect.arrayContaining([`https://${names.api}`, `wss://${names.realtime}`, `https://${names.auth}`]),
     );
-    expect(contentSecurityPolicy(hostNames({ envName: "staging", domainName: "supplycheckout.com" }))).toContain(
+    expect(contentSecurityPolicy({ ...hostNames({ envName: "staging", domainName: "supplycheckout.com" }), rumRegion: GLOBAL_SERVICES_REGION })).toContain(
       "https://api.staging.supplycheckout.com",
     );
   });
 
+  it("allows the RUM client's Cognito and data plane hosts in the app monitor's region, and nothing else of AWS's", () => {
+    const aws = directives["connect-src"]?.filter((h) => h.endsWith(".amazonaws.com"));
+    expect(aws).toEqual([
+      `https://cognito-identity.${GLOBAL_SERVICES_REGION}.amazonaws.com`,
+      `https://dataplane.rum.${GLOBAL_SERVICES_REGION}.amazonaws.com`,
+    ]);
+    // The RUM client is bundled: no script host
+    expect(directives["script-src"]).toEqual(["'self'"]);
+    expect(() => cspDirectives({ ...names, rumRegion: "${Token[AWS.Region.1]}" })).toThrow(/isn't a region name/);
+  });
+
   it("fits CloudFront's header limit", () => {
-    expect(contentSecurityPolicy(names).length).toBeLessThan(1783);
+    expect(contentSecurityPolicy(cspHosts).length).toBeLessThan(1783);
+  });
+});
+
+describe("CloudWatch RUM (web stack)", () => {
+  const poolRef = { Ref: Match.stringLikeRegexp("^RumIdentityPool") };
+  const guestRoleArn = { "Fn::GetAtt": [Match.stringLikeRegexp("^RumGuestRole"), "Arn"] };
+
+  it("has an app monitor for app. that collects errors and performance only, without cookies, X-Ray or custom events", () => {
+    const { web } = build();
+    web.resourceCountIs("AWS::RUM::AppMonitor", 1);
+    web.hasResourceProperties("AWS::RUM::AppMonitor", {
+      Name: rumAppMonitorName("prod"),
+      Domain: names.app,
+      CwLogEnabled: false,
+      CustomEvents: { Status: "DISABLED" },
+      AppMonitorConfiguration: {
+        AllowCookies: false,
+        EnableXRay: false,
+        SessionSampleRate: RUM_SESSION_SAMPLE_RATE,
+        Telemetries: ["errors", "performance"],
+        IdentityPoolId: poolRef,
+        GuestRoleArn: guestRoleArn,
+      },
+    });
+    // No http telemetry: it would record API URLs, which carry team and document IDs
+    expect(RUM_TELEMETRIES).not.toContain("http");
+    expect(RUM_SESSION_SAMPLE_RATE).toBeGreaterThan(0);
+    expect(RUM_SESSION_SAMPLE_RATE).toBeLessThanOrEqual(1);
+  });
+
+  it("has an identity pool with guest identities only, enhanced flow only", () => {
+    const { web } = build();
+    web.resourceCountIs("AWS::Cognito::IdentityPool", 1);
+    const [pool] = Object.values(web.findResources("AWS::Cognito::IdentityPool"));
+    const { IdentityPoolTags, ...properties } = pool?.Properties ?? {};
+    expect(IdentityPoolTags).toEqual(expect.arrayContaining([{ Key: "app", Value: "supply-checkout" }]));
+    // No sign-in providers of any kind: guests only
+    expect(properties).toEqual({
+      IdentityPoolName: "supply-checkout-prod-rum",
+      AllowUnauthenticatedIdentities: true,
+      AllowClassicFlow: false,
+    });
+    web.resourceCountIs("AWS::Cognito::IdentityPoolRoleAttachment", 1);
+    web.hasResourceProperties("AWS::Cognito::IdentityPoolRoleAttachment", {
+      IdentityPoolId: poolRef,
+      Roles: Match.exact({ unauthenticated: guestRoleArn }),
+    });
+  });
+
+  it("lets only the pool's guest identities assume the guest role, which may only send events to this app monitor", () => {
+    const { web } = build();
+    const roles = Object.entries(web.findResources("AWS::IAM::Role")).filter(([, r]) => r.Properties.RoleName === "supply-checkout-prod-rum-guest");
+    expect(roles).toHaveLength(1);
+    const [[logicalId, role]] = roles as [[string, { Properties: Record<string, unknown> }]];
+    web.hasResourceProperties("AWS::IAM::Role", {
+      RoleName: "supply-checkout-prod-rum-guest",
+      AssumeRolePolicyDocument: {
+        Version: "2012-10-17",
+        Statement: Match.exact([
+          {
+            Effect: "Allow",
+            Principal: { Federated: "cognito-identity.amazonaws.com" },
+            Action: "sts:AssumeRoleWithWebIdentity",
+            Condition: {
+              StringEquals: { "cognito-identity.amazonaws.com:aud": poolRef },
+              "ForAnyValue:StringLike": { "cognito-identity.amazonaws.com:amr": "unauthenticated" },
+            },
+          },
+        ]),
+      },
+    });
+    expect(role.Properties.ManagedPolicyArns).toBeUndefined();
+    expect(role.Properties.Policies).toEqual([
+      {
+        PolicyName: "PutRumEvents",
+        PolicyDocument: {
+          Version: "2012-10-17",
+          Statement: [
+            {
+              Effect: "Allow",
+              Action: "rum:PutRumEvents",
+              Resource: {
+                "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:rum:${GLOBAL_SERVICES_REGION}:`, { Ref: "AWS::AccountId" }, `:appmonitor/${rumAppMonitorName("prod")}`]],
+              },
+            },
+          ],
+        },
+      },
+    ]);
+    // No other policy in the stack grants the guest role anything
+    for (const policy of Object.values(web.findResources("AWS::IAM::Policy"))) {
+      expect(JSON.stringify(policy.Properties.Roles)).not.toContain(logicalId);
+    }
+  });
+
+  it("publishes what config.json needs", () => {
+    const { web } = build();
+    const out = webOutputParameters("prod");
+    web.hasResourceProperties("AWS::SSM::Parameter", { Name: out.rumAppMonitorId, Value: { "Fn::GetAtt": [Match.stringLikeRegexp("^RumAppMonitor"), "Id"] } });
+    web.hasResourceProperties("AWS::SSM::Parameter", { Name: out.rumIdentityPoolId, Value: poolRef });
+    web.hasResourceProperties("AWS::SSM::Parameter", { Name: out.rumRegion, Value: GLOBAL_SERVICES_REGION });
   });
 });

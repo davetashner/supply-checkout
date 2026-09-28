@@ -8,6 +8,9 @@
 // (the tests' mock), this does nothing, and the app behaves as it always has.
 import "./account.css";
 import { start } from "./account.js";
+// The release version RUM tags every event with (release-please sets it); only this field
+// of package.json is bundled
+import { version } from "../../package.json";
 
 // Receipt reading (use("sample")) needs the receipt endpoint, supply-checkout-kx8. Until
 // it's built, sample is null and the app hides "Scan receipt". Switch this on when that
@@ -26,8 +29,22 @@ export async function loadConfig() {
   }
 }
 
+// CloudWatch RUM (src/aws/rum.js): where to report errors and page performance. Optional, so
+// a config.json without them still runs the app, just unmonitored. The identity pool's ID
+// starts with its region, which must be the app monitor's.
+const RUM_FIELDS = ["rumAppMonitorId", "rumIdentityPoolId", "rumRegion"];
+
+/** Loads the RUM client, in its own chunk, when config.json names an app monitor. Never throws. */
+export function startMonitoring(config) {
+  const configured = RUM_FIELDS.every((k) => typeof config[k] === "string" && config[k]) && config.rumIdentityPoolId.startsWith(config.rumRegion + ":");
+  if (!configured) return null;
+  // A monitor that can't load or start must not stop the app. It resolves to the module
+  // itself, so the build keeps its scrubbing exported, where tests/aws-rum.spec.js reaches it
+  return import("./rum.js").then((rum) => (rum.startRum(config, version), rum)).catch(() => null);
+}
+
 if (!window.claude) {
-  const ready = loadConfig().then((config) => config && start(config));
+  const ready = loadConfig().then((config) => config && (startMonitoring(config), start(config)));
   window.claude = {
     use: async (name) => {
       const caps = await ready;

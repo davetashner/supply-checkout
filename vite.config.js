@@ -172,8 +172,9 @@ export default defineConfig(({ mode }) => {
       sourcemap: "hidden",
       // Also the CSS target (build.cssTarget defaults to this)
       target: browserTargets(),
-      // No polyfill: every supported browser has modulepreload. The only dynamic import
-      // is ZXing (src/barcode.js), its own chunk in the web build, inlined in the artifact.
+      // No polyfill: every supported browser has modulepreload. The dynamic imports are
+      // the RUM client (src/aws/rum.js, web build only, its own chunk) and
+      // ZXing (src/barcode.js), its own chunk in the web build, inlined in the artifact.
       modulePreload: { polyfill: false },
       // The artifact stays readable, like the hand-written file it replaces
       minify: !artifact,
