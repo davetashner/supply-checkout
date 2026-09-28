@@ -1191,6 +1191,61 @@ paths:
         "500":
           description: "`internal`: Stripe couldn't be reached or refused the request. Nothing about the team changed; try again."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /teams/{teamId}/billing/portal:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    post:
+      tags: [billing]
+      operationId: createPortalSession
+      summary: Open the Stripe Customer Portal for the team. Owners only.
+      description: |
+        Answers the URL of a Stripe Customer Portal session for the team's
+        Stripe customer (made by its first checkout), where the owner updates
+        the card and billing details, switches between monthly and annual,
+        sees and downloads invoices, and cancels (at the end of the period).
+        Send the owner there; Stripe sends them back to the app with
+        `?billing=portal&team=<teamId>`. The session is short-lived: ask for a
+        new one each time.
+
+        The customer is always the path's team's own, and the portal's
+        configuration and the return URL are the server's; nothing in the
+        request reaches Stripe. Changes the owner makes there reach the team
+        through the Stripe webhook within a minute: a cancellation shows as
+        `cancelsAt` on the team, and when the period ends the team turns
+        read-only (`subscriptionEnded`). A team whose subscription ended can
+        still open it, for its invoices and details.
+      requestBody:
+        required: false
+        description: Nothing, or an empty object.
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        "201":
+          description: The portal session to send the owner to.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [portal]
+                properties:
+                  portal:
+                    type: object
+                    required: [url]
+                    properties:
+                      url: { type: string, format: uri, description: "Stripe's hosted Customer Portal session." }
+        "400":
+          description: "`bad_request`: a body that isn't empty or `{}`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403":
+          description: "`permission_denied`: `owners_only`, `not_member`, or `team_closed` (reopen the team first)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: "`aborted` with `reason: \"no_billing_account\"`: the team has no Stripe customer yet. Subscribe first (`createCheckout`)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "500":
+          description: "`internal`: Stripe couldn't be reached or refused the request, or the portal isn't set up in this Stripe mode. Try again."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /billing/webhook:
     post:
       tags: [billing]
@@ -2025,6 +2080,8 @@ components:
         members: { type: [integer, "null"], description: "How many members the team has, or `null` for a team from before the count (the members list has them)." }
         memberCap: { type: integer, description: "How many members the team may have. Pending invites count against it when inviting (429 `team_full`)." }
         subscriptionEnded: { type: boolean, description: "The team's subscription ended (`canceled`, `unpaid` or `incomplete_expired`: for example its trial ended without a card) and no comp keeps it going, so it's read-only: a write is 403 `permission_denied` with `reason: \"subscription_ended\"`. Members can still read and export it, and leave; an owner can subscribe again (`createCheckout`)." }
+        billingAccount: { type: boolean, description: "The team has a Stripe customer (made by its first checkout), so its owners can open the Customer Portal (`createPortalSession`)." }
+        cancelsAt: { type: [string, "null"], format: date-time, description: "When a subscription that was canceled (in the Customer Portal) ends: the end of its current period. It keeps working until then. `null` when it renews, or has already ended." }
     Invite:
       type: object
       description: A pending invite, to show. Accepting it needs the token from the invite email.
@@ -2075,7 +2132,7 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -2093,6 +2150,8 @@ components:
                 hasn't ended, so it can't start another checkout.
                 `subscription_ended`: the team's subscription ended, so it's
                 read-only until an owner subscribes again.
+                `no_billing_account`: the team has no Stripe customer yet, so
+                there's no Customer Portal to open.
   responses:
     OperatorsOnly:
       description: "`permission_denied`: the token's user isn't in the `operators` group (now, according to Cognito)."

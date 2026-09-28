@@ -340,6 +340,15 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       threshold: 0,
     },
     {
+      id: "billing-portal-broken",
+      title: "Billing portal broken",
+      journeys: "J7, J8",
+      severity: "P1",
+      rule: "Any BillingPortalErrors for 5 minutes: owners can't open the Stripe Customer Portal to add or fix a card, change plans or cancel. Usually the portal configuration is missing in this Stripe mode (run the catalog script).",
+      metric: business(BusinessMetric.BillingPortalErrors, region, FIVE_MINUTES),
+      threshold: 0,
+    },
+    {
       id: "webhook-signature-failures",
       title: "Webhook signature failures",
       journeys: "J7",

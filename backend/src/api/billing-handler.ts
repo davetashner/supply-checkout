@@ -4,6 +4,10 @@
 //                                          the team, with a plan, an interval
 //                                          and a seat count. Answers the
 //                                          Checkout page's URL.
+//   POST /teams/{teamId}/billing/portal    Owners: open the Stripe Customer
+//                                          Portal for the team's Stripe
+//                                          customer (supply-checkout-121).
+//                                          Answers the portal's URL.
 //
 // The team's Stripe customer is made the first time (and linked to the team
 // with linkStripeCustomer), and the Checkout Session is for that customer, so
@@ -12,8 +16,12 @@
 // does (`trialEndsAt`, TRIAL_DAYS after it was made) and Checkout asks for no
 // card (payment_method_collection `if_required`); if no card is added by then,
 // Stripe cancels the subscription. After the trial, Checkout asks for a card.
-// The webhook (supply-checkout-2kl) turns what Stripe records into the team's
-// plan, seats and status; nothing here changes them.
+// The portal is only ever for the customer linked to the path's team
+// (`stripeCustomerId`, which only linkStripeCustomer writes), with our own
+// portal configuration (billing/portal.ts) and a return URL on the app's own
+// origin. The webhook (supply-checkout-2kl) turns what Stripe records, from
+// Checkout or the portal, into the team's plan, seats and status; nothing
+// here changes them.
 //
 // Isolation, in order:
 // 1. API Gateway's JWT authorizer checks the Cognito access token; this
@@ -26,8 +34,8 @@
 //    that team and, when linking, the customer Stripe returned (billing-db.ts):
 //    IAM refuses any other partition, and any attribute but the link's.
 // 4. Nothing from the request reaches Stripe except the validated plan,
-//    interval and seat count; the customer, the price and the return URLs are
-//    the server's own.
+//    interval and seat count; the customer, the price, the portal
+//    configuration and the return URLs are the server's own.
 //
 // Logged: the route, status and duration, and on a failure the team ID and
 // Stripe's error type, code, status and request ID. Never the key, a customer
@@ -36,6 +44,7 @@
 import { createHash } from "node:crypto";
 import type { APIGatewayProxyStructuredResultV2, Context } from "aws-lambda";
 import { type CatalogPlan, type CatalogPrice, catalogPrice } from "../billing/catalog.js";
+import { PortalConfigurationNotFoundError } from "../billing/portal.js";
 import { type PriceLister, PriceNotFoundError } from "../billing/prices.js";
 import { stripeErrorFields } from "../billing/stripe.js";
 import {
@@ -73,6 +82,25 @@ export interface CheckoutStripe extends PriceLister {
   };
 }
 
+/** What opening the Customer Portal needs from the Stripe client. */
+export interface PortalStripe {
+  readonly billingPortal: {
+    readonly sessions: {
+      create(params: PortalSessionParams): PromiseLike<{ readonly id: string; readonly url: string }>;
+    };
+  };
+}
+
+/** The Customer Portal session this handler creates: a subset of Stripe's parameters. */
+export interface PortalSessionParams {
+  readonly customer: string;
+  readonly configuration: string;
+  readonly return_url: string;
+}
+
+/** Everything the billing function calls on Stripe. */
+export type BillingStripe = CheckoutStripe & PortalStripe;
+
 /** The Checkout Session this handler creates: a subset of Stripe's parameters. */
 export interface CheckoutSessionParams {
   readonly mode: "subscription";
@@ -95,12 +123,14 @@ export interface CheckoutSessionParams {
 export interface BillingHandlerDeps {
   readonly dbFor: DbForBilling;
   /** The Stripe client, read from Secrets Manager on first use (billing/stripe.ts). */
-  readonly stripe: () => Promise<CheckoutStripe>;
+  readonly stripe: () => Promise<BillingStripe>;
   /** The price ID for a catalog price, by its lookup key (billing/prices.ts). */
   readonly priceFor: (plan: CatalogPlan, price: CatalogPrice) => Promise<string>;
+  /** Our Customer Portal configuration's ID, by its metadata (billing/portal.ts). */
+  readonly portalConfiguration: () => Promise<string>;
   /** The user pool's issuer URL; tokens from anywhere else are refused. */
   readonly issuerUrl: string;
-  /** `https://app.<env domain>`: where Checkout sends the owner back to. */
+  /** `https://app.<env domain>`: where Checkout and the portal send the owner back to. Never from the request. */
   readonly appUrl: string;
   readonly obs: Observability;
   readonly now?: () => number;
@@ -239,8 +269,31 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
     return json(201, { checkout: { url: session.url, expiresAt: new Date(session.expires_at * 1000).toISOString(), trialEndsAt: trial ? new Date(trialEndsMs).toISOString() : null } });
   }
 
+  /**
+   * A Customer Portal session for the team's Stripe customer, with our portal
+   * configuration. Owners only, checked before anything else; the body must
+   * be none, or `{}`. A closed team (403 `team_closed`) or one with
+   * no Stripe customer yet (409 `no_billing_account`) gets none. A team whose
+   * subscription ended does: its owners can still see invoices and details.
+   */
+  async function createPortalSession(event: DataEvent, userId: string, route: BillingRoute): Promise<APIGatewayProxyStructuredResultV2> {
+    const ctx = await ownerContext(event, userId, route);
+    // Nothing to send: a body, if any, must be an empty object
+    if (event.body) jsonBody(event, []);
+    if (ctx.closed) throw new TeamClosedError("This team was closed. Reopen it before managing billing.");
+    const team = await getTeam(dbFor({ teamId: ctx.teamId }), ctx);
+    const customer = team.stripeCustomerId;
+    if (!customer || !ID.test(customer)) throw new ApiError(409, "aborted", "This team has no billing account yet. Subscribe first.", "no_billing_account");
+    const stripe = await deps.stripe();
+    const configuration = await deps.portalConfiguration();
+    const session = await stripe.billingPortal.sessions.create({ customer, configuration, return_url: `${deps.appUrl}/?billing=portal&team=${encodeURIComponent(ctx.teamId)}` });
+    obs.logger.info("Billing portal opened", { teamId: ctx.teamId });
+    return json(201, { portal: { url: session.url } });
+  }
+
   const actions: Record<BillingRoute["action"], (event: DataEvent, userId: string, route: BillingRoute) => Promise<APIGatewayProxyStructuredResultV2>> = {
     createCheckout,
+    createPortalSession,
   };
 
   return async (event: DataEvent, context?: Context): Promise<APIGatewayProxyStructuredResultV2> => {
@@ -261,8 +314,10 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
       if (apiError.status >= 500) {
         const teamId = event.pathParameters?.teamId;
         // Stripe's error fields only: never its message, which can echo what was sent
-        obs.logger.error("Checkout failed", { ...(typeof teamId === "string" && ID.test(teamId) ? { teamId } : {}), ...stripeErrorFields(error), ...(error instanceof PriceNotFoundError ? { reason: "price_not_found" } : {}) });
-        obs.count(BusinessMetric.CheckoutSessionErrors);
+        const portal = route?.action === "createPortalSession";
+        const reason = error instanceof PriceNotFoundError ? "price_not_found" : error instanceof PortalConfigurationNotFoundError ? "portal_configuration_not_found" : undefined;
+        obs.logger.error(portal ? "Billing portal failed" : "Checkout failed", { ...(typeof teamId === "string" && ID.test(teamId) ? { teamId } : {}), ...stripeErrorFields(error), ...(reason ? { reason } : {}) });
+        obs.count(portal ? BusinessMetric.BillingPortalErrors : BusinessMetric.CheckoutSessionErrors);
       }
       return errorResponse(apiError);
     } finally {

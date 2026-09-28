@@ -53,6 +53,8 @@ export interface SubscriptionLike {
   readonly customer: string | { readonly id: string };
   readonly status: string;
   readonly cancel_at_period_end: boolean;
+  /** When it's set to cancel, if it is: set with `cancel_at_period_end`, or alone (a cancellation Stripe schedules by date). */
+  readonly cancel_at?: number | null;
   readonly trial_end: number | null;
   readonly default_payment_method: string | { readonly id: string } | null;
   readonly items: {
@@ -118,7 +120,8 @@ export function subscriptionState(sub: SubscriptionLike, customerId: string, rep
     seats: items.reduce((sum, item) => sum + (item.quantity ?? 0), 0),
     status: sub.status,
     ...(end !== undefined ? { currentPeriodEnd: end } : {}),
-    cancelAtPeriodEnd: sub.cancel_at_period_end,
+    // Canceled in the Customer Portal (at the period's end), or set to cancel on a date: either way it won't renew
+    cancelAtPeriodEnd: sub.cancel_at_period_end || typeof sub.cancel_at === "number",
   };
 }
 

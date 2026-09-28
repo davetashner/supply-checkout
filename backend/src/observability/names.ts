@@ -56,6 +56,8 @@ export const BusinessMetric = {
   EmailComplaints: "EmailComplaints",
   /** Our API failing to create a Stripe Checkout session (J7). */
   CheckoutSessionErrors: "CheckoutSessionErrors",
+  /** Our API failing to open the Stripe Customer Portal for an owner (J7, J8). */
+  BillingPortalErrors: "BillingPortalErrors",
   /** Stripe webhooks rejected for a bad signature (J7). */
   WebhookSignatureFailures: "WebhookSignatureFailures",
   /** Stripe events the billing worker applied to a team's plan, seats and status (J7, J8). */

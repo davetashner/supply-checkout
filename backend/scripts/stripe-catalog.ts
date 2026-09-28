@@ -17,18 +17,25 @@
 // price that takes over the lookup key, and the old one is archived. So
 // running it twice leaves one product per plan and one active price per plan
 // and interval. Every create carries an idempotency key.
+//
+// Then the Customer Portal's configuration (src/billing/portal.ts,
+// supply-checkout-121), found by its metadata: created if there's none,
+// updated (and reactivated) if it differs from portal.ts or names other
+// prices, and otherwise left alone. The billing function finds it the same way.
 
 import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { type Catalog, CATALOG, type CatalogPlan, type CatalogPrice } from "../src/billing/catalog.js";
+import { isOurPortal, PORTAL_METADATA, portalConfiguration, type PortalConfigurationParams } from "../src/billing/portal.js";
 import { createStripe, keyFromSecret, requireMode, type SecretReader, secretsManagerReader, stripeErrorFields, type StripeMode, stripeSecretName } from "../src/billing/stripe.js";
 
 export const USAGE = `Usage: npm run stripe-catalog -- --profile <profile> --region <region> [--env prod] [--live] [--apply]
 
 Creates or updates the Stripe products and prices in backend/src/billing/catalog.ts, found by
-product ID and price lookup key. Without --apply it's a dry run: it reads Stripe and says what it
+product ID and price lookup key, then the Customer Portal configuration in
+backend/src/billing/portal.ts, found by its metadata. Without --apply it's a dry run: it reads Stripe and says what it
 would change. It reads the Stripe secret key from Secrets Manager, supply-checkout/<env>/stripe/test-secret-key
 (live-secret-key with --live), and refuses a key that isn't of that mode: without --live it only
 ever uses a test-mode key.`;
@@ -79,6 +86,15 @@ export interface ProductParams {
   readonly metadata: Record<string, string>;
 }
 
+/** A Stripe Customer Portal configuration, as far as the script reads it. */
+export interface PortalConfigLike {
+  readonly id: string;
+  readonly active: boolean;
+  readonly name: string | null;
+  readonly metadata: Record<string, string> | null;
+  readonly features: unknown;
+}
+
 /** What the script needs from the Stripe client (the `stripe` package's, or a fake in tests). */
 export interface CatalogStripe {
   readonly products: {
@@ -91,16 +107,25 @@ export interface CatalogStripe {
     create(params: PriceParams, options: { idempotencyKey: string }): PromiseLike<TieredPriceLike>;
     update(id: string, params: { readonly active?: boolean; readonly nickname?: string; readonly metadata?: Record<string, string> }): PromiseLike<TieredPriceLike>;
   };
+  readonly billingPortal: {
+    readonly configurations: {
+      list(params: { limit: number }): PromiseLike<{ readonly data: readonly PortalConfigLike[] }>;
+      create(params: PortalConfigurationParams, options: { idempotencyKey: string }): PromiseLike<PortalConfigLike>;
+      update(id: string, params: PortalConfigurationParams & { readonly active: true }): PromiseLike<PortalConfigLike>;
+    };
+  };
 }
 
 /** One thing the script did, or would do in a dry run. */
 export interface Change {
-  readonly kind: "product" | "price";
-  /** The product ID or the price's lookup key. */
+  readonly kind: "product" | "price" | "portal";
+  /** The product ID, the price's lookup key, or the portal configuration's `portal` metadata. */
   readonly name: string;
   readonly action: "unchanged" | "create" | "update" | "replace";
   /** The Stripe price the lookup key points at afterwards (not in a dry run's create or replace). */
   readonly priceId?: string;
+  /** The portal configuration's ID afterwards (not in a dry run's create). */
+  readonly configurationId?: string;
 }
 
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 32);
@@ -186,6 +211,64 @@ async function syncPrice(stripe: CatalogStripe, plan: CatalogPlan, price: Catalo
   return { ...base, action, priceId: created.id };
 }
 
+/**
+ * True if `actual` has everything `wanted` has: the same values for its keys
+ * (Stripe returns more), and arrays with the same members in any order.
+ */
+export function contains(actual: unknown, wanted: unknown): boolean {
+  if (Array.isArray(wanted)) {
+    if (!Array.isArray(actual) || actual.length !== wanted.length) return false;
+    const left: unknown[] = [...actual];
+    // Each wanted member matches a different actual one
+    return wanted.every((w) => {
+      const i = left.findIndex((a) => contains(a, w));
+      if (i < 0) return false;
+      left.splice(i, 1);
+      return true;
+    });
+  }
+  if (typeof wanted === "object" && wanted !== null) {
+    if (typeof actual !== "object" || actual === null || Array.isArray(actual)) return false;
+    return Object.entries(wanted).every(([k, v]) => contains((actual as Record<string, unknown>)[k], v));
+  }
+  return actual === wanted;
+}
+
+/** True if an existing portal configuration is active and has what portal.ts wants. */
+export function portalMatches(existing: PortalConfigLike, wanted: PortalConfigurationParams): boolean {
+  return existing.active && existing.name === wanted.name && contains(existing.metadata ?? {}, wanted.metadata) && contains(existing.features, wanted.features);
+}
+
+/**
+ * Brings the Customer Portal configuration in line with portal.ts, naming the
+ * catalog's prices by the IDs `changes` found or made. In a dry run where a
+ * price isn't in Stripe yet, it can only say the configuration will change.
+ */
+export async function syncPortal(stripe: CatalogStripe, catalog: Catalog, changes: readonly Change[], apply: boolean): Promise<Change> {
+  const base = { kind: "portal" as const, name: PORTAL_METADATA.portal };
+  const priceIds = new Map(changes.filter((c) => c.kind === "price" && c.priceId).map((c) => [c.name, c.priceId as string]));
+  const { data } = await stripe.billingPortal.configurations.list({ limit: 100 });
+  const ours = data.filter(isOurPortal);
+  // An active one first: an archived one is only brought back when it's all there is
+  const existing = ours.find((c) => c.active) ?? ours[0];
+  let wanted: PortalConfigurationParams;
+  try {
+    wanted = portalConfiguration(catalog, priceIds);
+  } catch (error) {
+    // Only a dry run gets here: an applied sync always has every price's ID
+    if (apply) throw error;
+    return existing ? { ...base, action: "update", configurationId: existing.id } : { ...base, action: "create" };
+  }
+  if (existing && portalMatches(existing, wanted)) return { ...base, action: "unchanged", configurationId: existing.id };
+  if (existing) {
+    if (apply) await stripe.billingPortal.configurations.update(existing.id, { ...wanted, active: true });
+    return { ...base, action: "update", configurationId: existing.id };
+  }
+  if (!apply) return { ...base, action: "create" };
+  const created = await stripe.billingPortal.configurations.create(wanted, { idempotencyKey: `catalog-portal-${hash(wanted)}` });
+  return { ...base, action: "create", configurationId: created.id };
+}
+
 /** Brings Stripe in line with the catalog (or, without `apply`, says what that would change). Products first: a price needs its product. */
 export async function syncCatalog(stripe: CatalogStripe, catalog: Catalog, apply: boolean): Promise<Change[]> {
   const changes: Change[] = [];
@@ -262,7 +345,8 @@ export async function main(argv: string[], out: (line: string) => void = console
   out(catalog.status);
   try {
     const changes = await syncCatalog(stripe, catalog, values.apply);
-    for (const c of changes) out(`${c.kind} ${c.name}: ${values.apply || c.action === "unchanged" ? c.action : `would ${c.action}`}${c.priceId ? ` (${c.priceId})` : ""}`);
+    changes.push(await syncPortal(stripe, catalog, changes, values.apply));
+    for (const c of changes) out(`${c.kind} ${c.name}: ${values.apply || c.action === "unchanged" ? c.action : `would ${c.action}`}${c.priceId ? ` (${c.priceId})` : ""}${c.configurationId ? ` (${c.configurationId})` : ""}`);
     const pending = changes.filter((c) => c.action !== "unchanged").length;
     if (!values.apply) out(pending ? `Dry run: ${pending} to change. Run again with --apply to change them.` : "Dry run: Stripe matches the catalog.");
     else out(pending ? `Done: ${pending} changed.` : "Done: Stripe already matched the catalog.");
