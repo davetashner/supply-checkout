@@ -29,6 +29,7 @@ import type { Construct } from "constructs";
 import type { DeploymentConfig } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import { contentSecurityPolicy } from "../web/content-security-policy.js";
+import { RealUserMonitoring } from "../web/rum.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 import { logsBucketName, webBucketName } from "./data-stack.js";
 
@@ -54,6 +55,9 @@ export const webOutputParameters = (envName: string) => {
     liveVersionStoreArn: `${prefix}/live-version-store-arn`,
     bucketName: `${prefix}/bucket-name`,
     bucketRegion: `${prefix}/bucket-region`,
+    rumAppMonitorId: `${prefix}/rum-app-monitor-id`,
+    rumIdentityPoolId: `${prefix}/rum-identity-pool-id`,
+    rumRegion: `${prefix}/rum-region`,
   };
 };
 
@@ -107,12 +111,16 @@ export function routerCode(values: { kvsId: string; apex: string; www: string; a
  *   HSTS, nosniff, frame DENY, a strict referrer policy and Permissions-Policy.
  * - WAF: a per-IP rate limit and AWS managed rules (IP reputation, common
  *   rule set, known bad inputs).
+ * - CloudWatch RUM (web/rum.ts): the app's JavaScript errors and page
+ *   performance, sent by the browser with a guest identity that may only
+ *   call rum:PutRumEvents on the app monitor.
  * - The bucket's origin failover to a second region is phase 2 (supply-checkout-d79).
  */
 export class WebStack extends SupplyCheckoutStack {
   readonly distribution: Distribution;
   readonly liveVersions: KeyValueStore;
   readonly webAcl: CfnWebACL;
+  readonly rum: RealUserMonitoring;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "web", layer: "stateless" });
@@ -153,11 +161,15 @@ export class WebStack extends SupplyCheckoutStack {
       ),
     });
 
+    // In this stack's region, next to the distribution, like the app itself a
+    // single copy (it isn't per data region)
+    this.rum = new RealUserMonitoring(this, "Rum", { envName: config.envName, appHost: names.app });
+
     const headers = new ResponseHeadersPolicy(this, "SecurityHeaders", {
       comment: "CSP, HSTS and the other security headers for the web app",
       securityHeadersBehavior: {
         contentSecurityPolicy: {
-          contentSecurityPolicy: contentSecurityPolicy(names),
+          contentSecurityPolicy: contentSecurityPolicy({ ...names, rumRegion: this.region }),
           override: true,
         },
         strictTransportSecurity: {
@@ -257,5 +269,8 @@ export class WebStack extends SupplyCheckoutStack {
     publish("LiveVersionStoreParam", out.liveVersionStoreArn, this.liveVersions.keyValueStoreArn, "KeyValueStore holding the live release per channel");
     publish("BucketNameParam", out.bucketName, bucket.bucketName, "Bucket holding web releases");
     publish("BucketRegionParam", out.bucketRegion, bucketRegion, "Region of the web releases bucket");
+    publish("RumAppMonitorIdParam", out.rumAppMonitorId, this.rum.appMonitor.attrId, "CloudWatch RUM app monitor ID (the web app's config.json)");
+    publish("RumIdentityPoolIdParam", out.rumIdentityPoolId, this.rum.identityPool.ref, "Cognito identity pool the web app sends RUM events with");
+    publish("RumRegionParam", out.rumRegion, this.region, "Region of the RUM app monitor");
   }
 }

@@ -16,14 +16,22 @@
 //   worker-src is 'none'.
 // The API, realtime and sign-in hosts are allowed for connections ahead of the
 // real app (ADR 0006, 0007).
+// CloudWatch RUM (web/rum.ts, src/aws/rum.js): the RUM client is bundled from npm,
+// so no script host; it gets guest credentials from Cognito identity pools
+// (cognito-identity.<region>) and sends events to the RUM data plane
+// (dataplane.rum.<region>), both in the app monitor's region.
 
 export interface CspHosts {
   readonly api: string;
   readonly realtime: string;
   readonly auth: string;
+  /** The RUM app monitor's region (the web stack's). */
+  readonly rumRegion: string;
 }
 
 export function cspDirectives(hosts: CspHosts): Record<string, string[]> {
+  // A literal region name, never an unresolved CDK token
+  if (!/^[a-z]{2}(-[a-z]+)+-\d+$/.test(hosts.rumRegion)) throw new Error(`CSP: "${hosts.rumRegion}" isn't a region name`);
   return {
     "default-src": ["'self'"],
     "script-src": ["'self'"],
@@ -31,7 +39,15 @@ export function cspDirectives(hosts: CspHosts): Record<string, string[]> {
     "style-src-attr": ["'unsafe-inline'"],
     "font-src": ["'self'", "https://fonts.gstatic.com"],
     "img-src": ["'self'", "data:", "blob:"],
-    "connect-src": ["'self'", `https://${hosts.api}`, `https://${hosts.realtime}`, `wss://${hosts.realtime}`, `https://${hosts.auth}`],
+    "connect-src": [
+      "'self'",
+      `https://${hosts.api}`,
+      `https://${hosts.realtime}`,
+      `wss://${hosts.realtime}`,
+      `https://${hosts.auth}`,
+      `https://cognito-identity.${hosts.rumRegion}.amazonaws.com`,
+      `https://dataplane.rum.${hosts.rumRegion}.amazonaws.com`,
+    ],
     "manifest-src": ["'self'"],
     "worker-src": ["'none'"],
     "object-src": ["'none'"],

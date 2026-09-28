@@ -20,8 +20,8 @@
 //
 // The app channel's release also gets config.json, which tells the web build where the
 // environment's API, sign-in and live updates are (src/aws/main.js). It's written into
-// --dir before the upload, from the SSM parameters the api, identity and realtime stacks
-// publish, so one build works in every environment and no IDs are in the repository.
+// --dir before the upload, from the SSM parameters the api, identity, realtime and web
+// stacks publish, so one build works in every environment and no IDs are in the repository.
 // config.json is also how a release's channel is told: app releases have it and demo
 // releases don't (publishing the demo refuses a folder that has one), and `activate`
 // refuses a release from the other channel, so the app build and its config.json are
@@ -124,13 +124,20 @@ export function uploadCommands({ dir, version, bucket, bucketRegion, profile }) 
   ];
 }
 
-/** Where the app's config.json values come from: the api, identity and realtime stacks' outputs. */
+/**
+ * Where the app's config.json values come from: the api, identity, realtime and web stacks'
+ * outputs. The rum* values tell the app where to report its errors and page performance
+ * (CloudWatch RUM, src/aws/rum.js); `ssm get-parameters` takes at most 10 names.
+ */
 export const configParameterNames = (envName) => ({
   apiUrl: `/supply-checkout/${envName}/api/url`,
   authUrl: `/supply-checkout/${envName}/identity/auth-url`,
   clientId: `/supply-checkout/${envName}/identity/web-client-id`,
   realtimeUrl: `/supply-checkout/${envName}/realtime/websocket-url`,
   realtimeHost: `/supply-checkout/${envName}/realtime/host`,
+  rumAppMonitorId: `/supply-checkout/${envName}/web/rum-app-monitor-id`,
+  rumIdentityPoolId: `/supply-checkout/${envName}/web/rum-identity-pool-id`,
+  rumRegion: `/supply-checkout/${envName}/web/rum-region`,
 });
 
 /** The web build's config.json for an environment (src/aws/main.js reads it). */
@@ -140,7 +147,7 @@ export function appConfig(aws, envName) {
   const values = Object.fromEntries((res?.Parameters ?? []).map((p) => [p.Name, p.Value]));
   const missing = Object.values(names).filter((n) => !values[n]);
   if (missing.length) {
-    throw new Error(`Missing SSM parameters (deploy the api, identity and realtime stacks first): ${missing.join(", ")}`);
+    throw new Error(`Missing SSM parameters (deploy the api, identity, realtime and web stacks first): ${missing.join(", ")}`);
   }
   return Object.fromEntries(Object.entries(names).map(([key, name]) => [key, values[name]]));
 }
