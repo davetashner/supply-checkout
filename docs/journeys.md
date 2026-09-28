@@ -243,6 +243,7 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | API slow | Every journey | P2 | API Gateway `Latency` p95 for the HTTP API over 10 minutes |
 | Database errors | Every journey | P1 | DynamoDB `SystemErrors` on the app table, summed over the operations the data module uses |
 | Database throttled | Every journey | P2 | DynamoDB `ReadThrottleEvents` + `WriteThrottleEvents` on the app table |
+| Site down, Web router failing | Every journey | P1 | CloudFront's `5xxErrorRate` on the web distribution (at least 50 requests), and the router function's execution and validation errors and throttles (5 or more in 5 minutes), in us-east-1 only, where CloudFront's metrics are (`supply-checkout-3sv.2`). Runbook: [When the web app is down](observability.md#when-the-web-app-is-down). |
 | Sign-out not revoking | J0 | P2 | As below |
 | Imports stuck | J2 | P2 | As below, from the stuck-import check. In the primary region only, where the check runs. |
 | Email verification not saved, Email codes failing, Near the sending limit | J3 | P2 | As below. Near the sending limit reads the SES quota check's gauge, and is in the primary region only, where the check runs. |
@@ -256,14 +257,15 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Billing events late | J7, J8 | P2 | The billing events queue's `ApproximateAgeOfOldestMessage` above 5 minutes |
 | Deletion overdue, Deletion job not running, Team closure emails failing, Team reopened emails failing | J11 | P2 | As below. Deletion overdue and Deletion job not running read the closed-team purge's gauge, and are in the primary region only, with the purge. |
 
-Every other alarm on this page waits for the resource or code it watches, and is added by the bead that builds it (the alarm goes in that region's `observability` stack, with `topics.notify(alarm, severity)`): the canaries (`supply-checkout-pkt`); Site down and Firewall blocking customers (CloudFront and WAF, `supply-checkout-qk1`); API unhealthy (it needs a `/health` route and a Route 53 health check, which the API doesn't have yet); Cognito alarms (`supply-checkout-zsm`); Bedrock alarms and Receipt cost spike (the receipt function); the reconciliation alarms (Seat counts drifting, Paid but not active, `supply-checkout-8jc.9`); and Checkouts stopped, which compares with the same hour last week, and so needs something other than one CloudWatch alarm. The remaining P3 trends (No sign-ups, Invites not accepted, Failed payments rising, App checkouts abandoned) are read from the dashboard at the weekly review.
+Every other alarm on this page waits for the resource or code it watches, and is added by the bead that builds it (the alarm goes in that region's `observability` stack, with `topics.notify(alarm, severity)`): the canaries (`supply-checkout-pkt`); Firewall blocking customers (WAF, `supply-checkout-qk1`); API unhealthy (it needs a `/health` route and a Route 53 health check, which the API doesn't have yet); Cognito alarms (`supply-checkout-zsm`); Bedrock alarms and Receipt cost spike (the receipt function); the reconciliation alarms (Seat counts drifting, Paid but not active, `supply-checkout-8jc.9`); and Checkouts stopped, which compares with the same hour last week, and so needs something other than one CloudWatch alarm. The remaining P3 trends (No sign-ups, Invites not accepted, Failed payments rising, App checkouts abandoned) are read from the dashboard at the weekly review.
 
 ### Every journey
 
 | Alarm | Signal | Starting threshold | Severity |
 | --- | --- | --- | --- |
 | **Core journey canary failing** | CloudWatch Synthetics canary in us-east-1, every 5 minutes from 8am to 8pm Eastern: sign in as a test crew member, open the test sheet, check out and return one item, confirm the live update arrives | 2 failed runs out of 3 | P1 |
-| **Site down** | CloudFront `5xxErrorRate` | above 1% for 5 minutes | P1 |
+| **Site down** | CloudFront `5xxErrorRate` on the web distribution | above 1% for 5 minutes (at least 50 requests) | P1 |
+| **Web router failing** | CloudFront `FunctionExecutionErrors`, `FunctionValidationErrors` and `FunctionThrottles` of the router function | 5 or more in 5 minutes | P1 |
 | **API errors** | API Gateway `5xx` per route | above 2% of requests for 5 minutes (at least 20 requests) | P1 |
 | **API slow** | API Gateway `Latency` p95 | above 2 seconds for 10 minutes | P2 |
 | **API unhealthy** | Route 53 health check on `/health` in us-east-1 | unhealthy for 2 minutes | P1 |

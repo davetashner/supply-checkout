@@ -6,16 +6,18 @@ import type { Construct } from "constructs";
 import { tableName } from "../../../backend/src/data/schema.js";
 import { opsResourceNames } from "../../../backend/src/ops/names.js";
 import { backupAlertRuleArns } from "../backup-alerts.js";
-import type { DeploymentConfig } from "../config.js";
+import { type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../config.js";
 import { AlarmTopics, alarmContactsFromContext } from "../observability/alarm-topics.js";
 import { apiOutputParameters } from "./api-stack.js";
 import { auditOutputParameters } from "./audit-stack.js";
+import { webOutputParameters } from "./web-stack.js";
 import { identityOutputParameters } from "../identity.js";
 import { OpsDashboard } from "../observability/dashboard.js";
 import { JourneyAlarms } from "../observability/journey-alarms.js";
 import { DeletionRecordsWatch } from "../observability/deletion-records-watch.js";
 import { OperatorAuditWatch } from "../observability/operator-audit-watch.js";
 import { OpsChecks } from "../observability/ops-checks.js";
+import { WebAlarms } from "../observability/web-alarms.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
 /**
@@ -180,8 +182,11 @@ export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySo
  *   (see alarm-topics.ts); nothing personal is in this repository.
  * - `alarms`: the journey alarms whose metrics exist in this region,
  *   including the API's (its ID comes from the api stack's SSM parameter).
- *   Alarms for resources other stacks add later (Cognito, CloudFront) go
- *   here too, with `topics.notify(alarm, severity)`.
+ *   Alarms for resources other stacks add later (Cognito) go here too, with
+ *   `topics.notify(alarm, severity)`.
+ * - `web`: GLOBAL_SERVICES_REGION only, where CloudFront's metrics are: the
+ *   P1 alarms on the web distribution's 5xx rate and the router function's
+ *   errors (web-alarms.ts), from the web stack's SSM outputs.
  * - `dashboard`: primary region only, drawing every region's metrics.
  * - `checks`: primary region only, the scheduled checks that send the
  *   StuckImports and EmailQuotaUsedPercent gauges, and the closed-team purge
@@ -210,6 +215,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
   readonly operatorChanges?: Rule[];
   readonly operatorAudit?: OperatorAuditWatch;
   readonly deletionRecords?: DeletionRecordsWatch;
+  readonly web?: WebAlarms;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "observability", layer: "stateless" });
@@ -222,6 +228,15 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     // The api stack deploys first and publishes its ID in this region
     const apiId = StringParameter.valueForStringParameter(this, apiOutputParameters(config.envName).apiId);
     this.alarms = new JourneyAlarms(this, "JourneyAlarms", { envName: config.envName, region, primary: this.isPrimaryRegion, tableName: table, apiId, topics: this.topics });
+
+    // CloudFront publishes its metrics in GLOBAL_SERVICES_REGION only; the web stack deploys first and publishes these there
+    const webIds = region === GLOBAL_SERVICES_REGION
+      ? {
+          distributionId: StringParameter.valueForStringParameter(this, webOutputParameters(config.envName).distributionId),
+          routerFunctionName: StringParameter.valueForStringParameter(this, webOutputParameters(config.envName).routerFunctionName),
+        }
+      : undefined;
+    if (webIds) this.web = new WebAlarms(this, "WebAlarms", { envName: config.envName, ...webIds, topics: this.topics });
 
     for (const [severity, topic] of Object.entries(this.topics.topics)) {
       new StringParameter(this, `AlarmTopic${severity}Param`, {
@@ -253,7 +268,8 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         envName: config.envName,
         regions: config.regions,
         tableName: table,
-        alarms: [...this.alarms.alarms, this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing, this.operatorAudit.dropped, this.operatorAudit.silent, this.deletionRecords.rewritten, this.deletionRecords.failing],
+        web: webIds,
+        alarms: [...this.alarms.alarms, ...(this.web?.alarms ?? []), this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing, this.operatorAudit.dropped, this.operatorAudit.silent, this.deletionRecords.rewritten, this.deletionRecords.failing],
       });
     }
   }

@@ -5,6 +5,7 @@
 //   node scripts/publish-web.mjs activate --channel app --version V     switch (or roll back) the live release
 //   node scripts/publish-web.mjs status                                  live versions and uploaded releases
 //   node scripts/publish-web.mjs config                                  print the app's config.json
+//   node scripts/publish-web.mjs check-router                            run the live router on test requests
 //
 // Common options: --env prod (default), --profile supply-prod (default: $AWS_PROFILE, else
 // supply-prod), --region <the web stack's region> (default: GLOBAL_SERVICES_REGION in
@@ -26,9 +27,15 @@
 // refuses a release from the other channel, so the app build and its config.json are
 // never served at the apex's /demo/, nor the demo at app.
 //
+// check-router runs the router CloudFront Function's LIVE stage (`aws cloudfront
+// test-function`) on a request to each host, and fails if it throws or answers wrong. Run it
+// after every deploy of the web stack: a router that doesn't run answers 503 to every request
+// (supply-checkout-3sv.2, docs/observability.md "When the web app is down").
+//
 // Needs the AWS CLI v2 (the KeyValueStore API uses SigV4A, which v2 includes).
 import { execFileSync } from "node:child_process";
-import { existsSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -75,8 +82,8 @@ export function parseArgs(argv, env = process.env) {
     else if (arg === "--dry-run") opts.dryRun = true;
     else throw new Error(`Unknown option ${arg}`);
   }
-  if (!["publish", "activate", "status", "config"].includes(command)) throw new Error("Usage: publish-web.mjs publish|activate|status|config [options]");
-  if (!["status", "config"].includes(command) && !CHANNELS.includes(opts.channel)) throw new Error(`--channel must be one of ${CHANNELS.join(", ")}`);
+  if (!["publish", "activate", "status", "config", "check-router"].includes(command)) throw new Error("Usage: publish-web.mjs publish|activate|status|config|check-router [options]");
+  if (!["status", "config", "check-router"].includes(command) && !CHANNELS.includes(opts.channel)) throw new Error(`--channel must be one of ${CHANNELS.join(", ")}`);
   if (command === "publish" && !opts.dir) throw new Error("--dir is required (the built folder, e.g. dist/demo)");
   if (command === "activate" && !opts.version) throw new Error("--version is required");
   if (opts.version !== undefined && !VERSION.test(opts.version)) {
@@ -138,6 +145,86 @@ export function appConfig(aws, envName) {
   return Object.fromEntries(Object.entries(names).map(([key, name]) => [key, values[name]]));
 }
 
+/** Where check-router finds the router and the distribution's hosts: the web stack's outputs. */
+export const routerParameterNames = (envName) => ({
+  functionName: `/supply-checkout/${envName}/web/router-function-name`,
+  distributionId: `/supply-checkout/${envName}/web/distribution-id`,
+});
+
+/** A viewer-request event for `aws cloudfront test-function`. */
+export function routerTestEvent(host, uri) {
+  return {
+    version: "1.0",
+    context: { eventType: "viewer-request" },
+    viewer: { ip: "198.51.100.10" },
+    request: { method: "GET", uri, querystring: {}, headers: { host: { value: host } }, cookies: {} },
+  };
+}
+
+/**
+ * The requests check-router makes, and what each must get: a channel is served (the path
+ * rewritten into releases/) or, with nothing live, a 503; the apex home page and www.
+ * redirect. Hosts are the distribution's aliases: app.<domain>, www.<domain> and <domain>.
+ */
+export function routerChecks(aliases) {
+  const app = aliases.find((a) => a.startsWith("app."));
+  const www = aliases.find((a) => a.startsWith("www."));
+  const apex = aliases.find((a) => a !== app && a !== www);
+  if (!app || !www || !apex) throw new Error(`Expected app., www. and apex aliases on the distribution (got ${aliases.join(", ") || "none"})`);
+  return [
+    { host: app, uri: "/", expect: "serve" },
+    { host: apex, uri: "/demo/", expect: "serve" },
+    { host: apex, uri: "/", expect: 302 },
+    { host: www, uri: "/", expect: 301 },
+  ];
+}
+
+/** Checks one test-function result against what the request must get; returns a line for the log. */
+export function checkRouterResult(check, result) {
+  const where = `${check.host}${check.uri}`;
+  const error = result?.FunctionErrorMessage;
+  if (error) throw new Error(`The router failed on ${where}: ${error}`);
+  let output;
+  try {
+    output = JSON.parse(result?.FunctionOutput ?? "");
+  } catch {
+    throw new Error(`The router gave no readable output for ${where}: ${String(result?.FunctionOutput)}`);
+  }
+  const status = output?.response?.statusCode;
+  const uri = output?.request?.uri;
+  if (check.expect === "serve") {
+    if (typeof uri === "string" && uri.startsWith("/releases/")) return `ok  ${where} -> ${uri}`;
+    if (status === 503) return `ok  ${where} -> 503 (nothing live on this channel)`;
+  } else if (status === check.expect) {
+    return `ok  ${where} -> ${status}`;
+  }
+  throw new Error(`The router answered ${where} with ${status ?? uri ?? "nothing"}, not ${check.expect === "serve" ? "a release" : check.expect}`);
+}
+
+function checkRouter(aws, envName) {
+  const names = routerParameterNames(envName);
+  const res = aws.read(["ssm", "get-parameters", "--names", names.functionName, names.distributionId]);
+  const values = Object.fromEntries((res?.Parameters ?? []).map((p) => [p.Name, p.Value]));
+  const missing = Object.values(names).filter((n) => !values[n]);
+  if (missing.length) throw new Error(`Missing SSM parameters (deploy the web stack first): ${missing.join(", ")}`);
+  const name = values[names.functionName];
+  const aliases = aws.read(["cloudfront", "get-distribution-config", "--id", values[names.distributionId]])?.DistributionConfig?.Aliases?.Items ?? [];
+  const checks = routerChecks(aliases);
+  const etag = aws.read(["cloudfront", "describe-function", "--name", name, "--stage", "LIVE"])?.ETag;
+  const dir = mkdtempSync(path.join(tmpdir(), "check-router-"));
+  try {
+    checks.forEach((check, i) => {
+      const file = path.join(dir, `event-${i}.json`);
+      writeFileSync(file, JSON.stringify(routerTestEvent(check.host, check.uri)));
+      const out = aws.read(["cloudfront", "test-function", "--name", name, "--if-match", etag, "--stage", "LIVE", "--event-object", `fileb://${file}`]);
+      aws.log(checkRouterResult(check, out?.TestResult));
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  aws.log(`The live router (${name}) works.`);
+}
+
 export const releaseIndexKey = (version) => `releases/${version}/index.html`;
 export const releaseConfigKey = (version) => `releases/${version}/config.json`;
 
@@ -193,6 +280,10 @@ export function main(argv, deps = {}) {
   const aws = new Aws({ ...opts, ...deps });
   if (opts.command === "config") {
     aws.log(JSON.stringify(appConfig(aws, opts.env), null, 2));
+    return;
+  }
+  if (opts.command === "check-router") {
+    checkRouter(aws, opts.env);
     return;
   }
   const { bucket, bucketRegion, store } = lookup(aws, opts.env);

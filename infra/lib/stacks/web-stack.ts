@@ -49,6 +49,8 @@ export const webOutputParameters = (envName: string) => {
   const prefix = `/supply-checkout/${envName}/web`;
   return {
     distributionId: `${prefix}/distribution-id`,
+    /** The router CloudFront Function's name: its metrics' FunctionName (the web alarms, supply-checkout-3sv.2). */
+    routerFunctionName: `${prefix}/router-function-name`,
     liveVersionStoreArn: `${prefix}/live-version-store-arn`,
     bucketName: `${prefix}/bucket-name`,
     bucketRegion: `${prefix}/bucket-region`,
@@ -251,6 +253,7 @@ export class WebStack extends SupplyCheckoutStack {
     const publish = (id: string, name: string, value: string, description: string) =>
       new StringParameter(this, id, { parameterName: name, stringValue: value, description });
     publish("DistributionIdParam", out.distributionId, this.distribution.distributionId, "Web distribution ID");
+    publish("RouterFunctionNameParam", out.routerFunctionName, router.functionName, "Router CloudFront Function name");
     publish("LiveVersionStoreParam", out.liveVersionStoreArn, this.liveVersions.keyValueStoreArn, "KeyValueStore holding the live release per channel");
     publish("BucketNameParam", out.bucketName, bucket.bucketName, "Bucket holding web releases");
     publish("BucketRegionParam", out.bucketRegion, bucketRegion, "Region of the web releases bucket");

@@ -7,10 +7,12 @@ import { AwsSolutionsChecks } from "cdk-nag";
 import type { Construct } from "constructs";
 import { describe, expect, it } from "vitest";
 import { BusinessMetric } from "../../backend/src/observability/names.js";
-import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
+import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { alarmContactParameter, alarmContactsFromContext } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
 import { journeyAlarmSpecs } from "../lib/observability/journey-alarms.js";
+import { ROUTER_FAILING_ABOVE, SITE_DOWN_MIN_REQUESTS, SITE_DOWN_PERCENT } from "../lib/observability/web-alarms.js";
+import { webOutputParameters } from "../lib/stacks/web-stack.js";
 import { OPERATOR_AUDIT_HEARTBEAT } from "../../backend/src/data/schema.js";
 import { DELETION_PREFIXES, LIFECYCLE_EXPIRATION } from "../../backend/src/deletions/names.js";
 import { CHECK_EVERY_MINUTES, HEARTBEAT_EVERY_MINUTES, HEARTBEAT_SILENT_ALARM_MINUTES, PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS, PURGE_SILENT_ALARM_HOURS, STUCK_IMPORT_AFTER_MINUTES } from "../../backend/src/ops/names.js";
@@ -257,7 +259,7 @@ describe("journey alarms (docs/journeys.md)", () => {
       // The purge's own alarm is with the purge, and the operator audit watch's two are with the watch, in the primary region only (tested below)
       const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm"))
         .map((a) => a.Properties)
-        .filter((a) => a.AlarmName !== "supply-checkout-prod-p2-deletion-not-running" && !/operator-audit|deletion-record/.test(String(a.AlarmName)));
+        .filter((a) => a.AlarmName !== "supply-checkout-prod-p2-deletion-not-running" && !/operator-audit|deletion-record|site-down|web-router/.test(String(a.AlarmName)));
       const specs = journeyAlarmSpecs(r, "t", "api", "prod").filter((s) => r === config.primaryRegion || !s.primaryOnly);
       expect(alarms.map((a) => a.AlarmName).sort()).toEqual(
         specs.map((s) => `supply-checkout-prod-${s.severity.toLowerCase()}-${s.id}`).sort(),
@@ -335,6 +337,79 @@ describe("journey alarms (docs/journeys.md)", () => {
     expect(metrics.length).toBeLessThanOrEqual(9); // an alarm takes at most 10 metrics
     for (const m of metrics) {
       expect(m.MetricStat.Metric.Dimensions).toContainEqual({ Name: "TableName", Value: "supply-checkout-prod-app" });
+    }
+  });
+});
+
+describe("web app down alarms (supply-checkout-3sv.2)", () => {
+  const webAlarm = (t: Template, id: string) => {
+    const [alarm] = Object.values(t.findResources("AWS::CloudWatch::Alarm", { Properties: { AlarmName: `supply-checkout-prod-p1-${id}` } }));
+    return alarm?.Properties;
+  };
+  const ssmRef = (t: Template, name: string) => {
+    const [id] = Object.entries(t.findParameters("*", { Type: "AWS::SSM::Parameter::Value<String>", Default: name })).map(([k]) => k);
+    expect(id).toBeDefined();
+    return { Ref: id };
+  };
+
+  it("are in the global services region's observability stack only, reading the web stack's outputs", () => {
+    expect(EAST).toBe(GLOBAL_SERVICES_REGION);
+    const { stacks, region } = build();
+    const east = Template.fromStack(region(EAST).observability);
+    for (const id of ["site-down", "web-router-failing"]) {
+      const a = webAlarm(east, id);
+      expect(a).toBeDefined();
+      expect(a.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP1/);
+      expect(a.OKActions).toEqual(a.AlarmActions);
+      expect(a.TreatMissingData).toBe("notBreaching");
+      expect(a.EvaluationPeriods).toBe(1);
+      expect(a.AlarmDescription).toContain("docs/observability.md, When the web app is down");
+    }
+    const west = Template.fromStack(region(WEST).observability);
+    expect(webAlarm(west, "site-down")).toBeUndefined();
+    expect(webAlarm(west, "web-router-failing")).toBeUndefined();
+    expect(stacks.regions[EAST]?.observability.dependencies).toContain(stacks.web);
+    // A deployment without the global services region has no stack there to hold them
+    const solo = Template.fromStack(build({}, { regions: [WEST], primaryRegion: WEST }).region(WEST).observability);
+    expect(webAlarm(solo, "site-down")).toBeUndefined();
+  });
+
+  it("Site down: the distribution's 5xx rate above 1%, only once there are enough requests", () => {
+    const t = observability(EAST);
+    const distribution = ssmRef(t, webOutputParameters("prod").distributionId);
+    const a = webAlarm(t, "site-down");
+    expect(a.Threshold).toBe(SITE_DOWN_PERCENT);
+    expect(SITE_DOWN_PERCENT).toBe(1);
+    expect(a.ComparisonOperator).toBe("GreaterThanThreshold");
+    const [expr, ...metrics] = a.Metrics;
+    expect(expr).toMatchObject({ Expression: `IF(r >= ${SITE_DOWN_MIN_REQUESTS}, FILL(e, 0), 0)`, ReturnData: true });
+    expect(SITE_DOWN_MIN_REQUESTS).toBeGreaterThanOrEqual(20);
+    const byId = Object.fromEntries(metrics.map((m: { Id: string }) => [m.Id, m]));
+    expect(byId.e.MetricStat).toEqual({
+      Metric: { Namespace: "AWS/CloudFront", MetricName: "5xxErrorRate", Dimensions: [{ Name: "DistributionId", Value: distribution }, { Name: "Region", Value: "Global" }] },
+      Period: 300,
+      Stat: "Average",
+    });
+    expect(byId.r.MetricStat).toEqual({
+      Metric: { Namespace: "AWS/CloudFront", MetricName: "Requests", Dimensions: [{ Name: "DistributionId", Value: distribution }, { Name: "Region", Value: "Global" }] },
+      Period: 300,
+      Stat: "Sum",
+    });
+  });
+
+  it("Web router failing: the router function's errors and throttles, added up", () => {
+    const t = observability(EAST);
+    const fn = ssmRef(t, webOutputParameters("prod").routerFunctionName);
+    const a = webAlarm(t, "web-router-failing");
+    expect(a.Threshold).toBe(ROUTER_FAILING_ABOVE);
+    const [expr, ...metrics] = a.Metrics;
+    expect(expr.Expression).toBe("FILL(x, 0) + FILL(v, 0) + FILL(t, 0)");
+    expect(metrics.map((m: { MetricStat: { Metric: { MetricName: string } } }) => m.MetricStat.Metric.MetricName).sort()).toEqual(
+      ["FunctionExecutionErrors", "FunctionThrottles", "FunctionValidationErrors"],
+    );
+    for (const m of metrics) {
+      expect(m.MetricStat).toMatchObject({ Stat: "Sum", Period: 300 });
+      expect(m.MetricStat.Metric).toMatchObject({ Namespace: "AWS/CloudFront", Dimensions: [{ Name: "FunctionName", Value: fn }, { Name: "Region", Value: "Global" }] });
     }
   });
 });
@@ -663,6 +738,17 @@ describe("dashboard", () => {
       expect(text).toContain(`API requests (${r})`);
       expect(text).toContain(`Lambda Duration (${r})`);
     }
+  });
+
+  it("shows the web app's alarms and a row of CloudFront graphs", () => {
+    const t = observability();
+    const [dash] = Object.values(t.findResources("AWS::CloudWatch::Dashboard"));
+    const all = JSON.stringify(dash.Properties.DashboardBody);
+    for (const id of ["sitedown", "webrouterfailing"]) expect(all).toMatch(new RegExp(`"WebAlarms${id}[0-9A-F]{8}","Arn"`));
+    const text = body(t);
+    for (const title of ["Web: CloudFront requests", "Web: CloudFront 5xx rate %", "Web: router errors and throttles"]) expect(text).toContain(title);
+    expect(text).toContain('"AWS/CloudFront","5xxErrorRate","DistributionId"');
+    expect(text).toContain('"AWS/CloudFront","FunctionExecutionErrors","FunctionName"');
   });
 
   it("follows the configured regions", () => {

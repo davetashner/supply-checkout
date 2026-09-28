@@ -33,7 +33,10 @@ npm run publish:web -- publish --channel app --dir dist/web     # after npm run 
 npm run publish:web -- publish --channel app --dir dist/web --version 1.3.0 --no-activate   # upload only
 npm run publish:web -- activate --channel app --version 1.3.0  # switch, or roll back to any uploaded version
 npm run publish:web -- status                                   # live versions and every uploaded release
+npm run publish:web -- check-router                             # run the live router on a request to each host
 ```
+
+**After every deploy of the web stack**, run `npm run publish:web -- check-router`. It runs the router function's LIVE stage with `aws cloudfront test-function` on `app.`, the apex's `/demo/` and `/`, and `www.`, and fails if CloudFront can't run it or it answers wrong (a channel with nothing live may answer 503). A router CloudFront can't run fails every request; the Site down and Web router failing alarms page for it, and [When the web app is down](observability.md#when-the-web-app-is-down) says how to roll back.
 
 Options: `--env` (default `prod`), `--profile` (default `$AWS_PROFILE`, else `supply-prod`), `--dry-run` (print the writes instead of running them). Publishing a version that already exists fails. Publishing to the `app` channel first writes `config.json` into the folder from the api, identity and realtime stacks' SSM outputs, so those must be deployed; `npm run publish:web -- config` prints it. That `config.json` also marks a release's channel: publishing the demo refuses a folder that has one, and `activate` refuses a release from the other channel, so the app build is never served at `/demo/` or the demo at `app.`.
 
@@ -55,6 +58,7 @@ aws route53 list-resource-record-sets --profile supply-prod --hosted-zone-id "$Z
 cd infra && npm ci
 npx cdk deploy supply-checkout-prod-us-east-1-web --profile supply-prod   # also deploys the domain and data stacks it needs
 cd .. && npm ci
+npm run publish:web -- check-router                                        # the router runs (503s until something is live)
 npm run publish:demo
 curl -sI https://supplycheckout.com/demo/ | head -20                       # 200, with the security headers
 curl -sI https://supplycheckout.com/ | grep -i '^location\|^cache-control'  # 302 to https://app.supplycheckout.com/, no-store

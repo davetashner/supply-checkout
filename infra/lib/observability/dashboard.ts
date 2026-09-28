@@ -18,6 +18,7 @@ import {
   FIVE_MINUTES,
   lambda,
 } from "./metrics.js";
+import { cloudFront, routerFailures, SITE_DOWN_MIN_REQUESTS, siteErrorRate } from "./web-alarms.js";
 
 export interface OpsDashboardProps {
   readonly envName: string;
@@ -26,6 +27,11 @@ export interface OpsDashboardProps {
   readonly tableName: string;
   /** This region's alarms, shown at the top. */
   readonly alarms: readonly IAlarm[];
+  /**
+   * The web distribution and its router, when this stack has their alarms
+   * (the primary region is GLOBAL_SERVICES_REGION): a row of CloudFront graphs.
+   */
+  readonly web?: { readonly distributionId: string; readonly routerFunctionName: string };
 }
 
 const WIDTH = 24;
@@ -91,6 +97,16 @@ export class OpsDashboard extends Construct {
       graph("Latency: API p95 (ms)", each((r) => apiLatencySearch(r)), WIDTH / 2),
       graph("Latency: Lambda duration p95 (ms)", each((r) => lambda("Duration", r, "p95")), WIDTH / 2),
     );
+
+    // The web app on CloudFront (GLOBAL_SERVICES_REGION only): Site down and Web router failing
+    if (props.web) {
+      const { distributionId, routerFunctionName } = props.web;
+      this.dashboard.addWidgets(
+        graph("Web: CloudFront requests", [cloudFront("Requests", { DistributionId: distributionId }, "Sum", "Requests (CloudFront)")]),
+        graph(`Web: CloudFront 5xx rate % (at least ${SITE_DOWN_MIN_REQUESTS} requests)`, [siteErrorRate(distributionId)]),
+        graph("Web: router errors and throttles", [routerFailures(routerFunctionName)]),
+      );
+    }
 
     // Business metrics (docs/journeys.md, "Business metrics the app must publish")
     this.dashboard.addWidgets(

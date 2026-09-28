@@ -586,6 +586,22 @@
         }
       }
     },
+    "RouterFunctionNameParam3C7F3C00": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Router CloudFront Function name",
+        "Name": "/supply-checkout/prod/web/router-function-name",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "web",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": "us-east-1supply-checkout-east-1-webRouter4298395D"
+      }
+    },
     "LiveVersionStoreParam7C9D5B16": {
       "Type": "AWS::SSM::Parameter",
       "Properties": {
