@@ -18,9 +18,16 @@
 //
 // Temporary passwords (add, reset):
 // - Made here with node:crypto (24 characters, every class the pool's policy requires).
-// - Given to the AWS CLI on its standard input, as `--cli-input-json file:///dev/stdin`,
-//   never as an argument: arguments show in `ps` to every user on the machine, stdin
-//   doesn't. No temporary file, no environment variable.
+// - Given to the AWS CLI in a request file, `--cli-input-json file://<path>`, never as an
+//   argument (arguments show in `ps` to every user on the machine) or in the environment.
+//   The file is created owner-only (0600, O_EXCL, no symlinks) in its own mkdtemp folder
+//   (0700) and removed as soon as the call returns, whether it worked or not; on SIGINT,
+//   SIGTERM or any other exit too. (Standard input doesn't work: the CLI can't open
+//   /dev/stdin when it's the socket Node gives a child on macOS, supply-checkout-6uw.17.)
+// - With --send-email the script makes no password for `add`: Cognito generates the
+//   temporary password and emails it (its default sender), so it never passes through
+//   here. `reset --send-email` still sets a throwaway one first (never shown), since
+//   Cognito's RESEND only works for a user who must change their password.
 // - Printed once, to stdout, and only when stdout is a terminal: not into a pipe, a file
 //   or Claude Code's `!` (which keeps output in the session transcript). --print-password
 //   overrides that for when you know where stdout goes. With --send-email nothing is
@@ -29,6 +36,8 @@
 //   request, password included, in ~/.aws/cli/history.
 import { execFileSync } from "node:child_process";
 import { randomInt } from "node:crypto";
+import { chmodSync, closeSync, constants, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,7 +57,42 @@ export const TEMP_PASSWORD_DAYS = 1;
 /** The operator pool's name (userPoolName in infra/lib/stacks/identity-stack.ts). */
 export const opsPoolName = (envName) => `supply-checkout-${envName}-ops`;
 export const REDACTED = "<redacted>";
-const STDIN = "file:///dev/stdin";
+
+/** Request files not yet removed; the exit and signal handlers remove any left. */
+const pendingSecretDirs = new Set();
+
+/** Removes every request file still on disk. Safe to call more than once. */
+export function removeSecretFiles() {
+  for (const dir of pendingSecretDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {}
+    pendingSecretDirs.delete(dir);
+  }
+}
+
+/**
+ * Writes `body` to an owner-only request file in a fresh owner-only folder, calls
+ * `fn(file:// URL)`, and removes the folder afterwards, whatever happens.
+ */
+export function withSecretFile(body, fn, base = tmpdir()) {
+  const dir = mkdtempSync(path.join(base, "supply-operators-"));
+  pendingSecretDirs.add(dir);
+  try {
+    chmodSync(dir, 0o700);
+    const file = path.join(dir, "request.json");
+    const fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try {
+      writeFileSync(fd, JSON.stringify(body));
+    } finally {
+      closeSync(fd);
+    }
+    return fn(`file://${file}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    pendingSecretDirs.delete(dir);
+  }
+}
 
 /**
  * The admin calls on the operator pool that alert the P1 topic (OperatorPoolChanges).
@@ -176,7 +220,7 @@ export function generatePassword(length = 24, pick = randomInt) {
 /** Quotes one shell word for printing. */
 const shellWord = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`);
 
-/** Runs the AWS CLI, or prints what it would run in a dry run. Passwords only ever go on stdin. */
+/** Runs the AWS CLI, or prints what it would run in a dry run. Passwords only ever go in an owner-only request file, removed after the call. */
 class Aws {
   constructor(settings, deps) {
     Object.assign(this, { settings, deps, pool: settings.flags["pool-id"] });
@@ -234,7 +278,7 @@ class Aws {
   }
 
   show(args, input) {
-    this.deps.log(`  aws ${args.map(shellWord).join(" ")}${input ? ` <<'JSON'\n${JSON.stringify(input, null, 2).replace(/^/gm, "    ")}\n    JSON` : ""}`);
+    this.deps.log(`  aws ${args.map(shellWord).join(" ")}${input ? `\n    with that file holding:\n${JSON.stringify(input, null, 2).replace(/^/gm, "      ")}` : ""}`);
   }
 
   /** A read: runs in a real run only, and returns the parsed answer. */
@@ -248,13 +292,16 @@ class Aws {
     return out ? JSON.parse(out) : {};
   }
 
-  /** A change. `secret` names the one parameter in `input` that must never be shown or put in argv. */
+  /**
+   * A change. With `input`, the request goes in an owner-only file that's removed after the
+   * call; `secret` names the one parameter in it that must never be shown or put in argv.
+   */
   write(op, params, { input, secret } = {}) {
     if (input) {
       const body = { UserPoolId: this.poolId(), ...input };
-      const args = ["cognito-idp", op, "--cli-input-json", STDIN, ...this.common()];
-      if (this.settings.dryRun) this.show(args, { ...body, [secret]: REDACTED });
-      else this.deps.run("aws", args, JSON.stringify(body));
+      const argsFor = (url) => ["cognito-idp", op, "--cli-input-json", url, ...this.common()];
+      if (this.settings.dryRun) this.show(argsFor("file://<owner-only temporary file, removed after the call>"), { ...body, [secret]: REDACTED });
+      else withSecretFile(body, (url) => this.deps.run("aws", argsFor(url)), this.deps.tmpdir);
       return;
     }
     const args = this.argv(op, params);
@@ -341,26 +388,29 @@ function add(aws, settings, deps) {
   const email = flags.email;
   const sendEmail = Boolean(flags["send-email"]);
   checkPasswordOutput(settings, deps);
-  aws.refuseCliHistory();
+  // With --send-email no password passes through here: Cognito generates and emails it
+  if (!sendEmail) aws.refuseCliHistory();
   aws.resolvePool();
-  const password = generatePassword();
-  const input = {
-    Username: username,
-    TemporaryPassword: password,
-    ...(email ? { UserAttributes: [{ Name: "email", Value: email }, { Name: "email_verified", Value: "true" }] } : {}),
-    ...(sendEmail ? { DesiredDeliveryMediums: ["EMAIL"] } : { MessageAction: "SUPPRESS" }),
-  };
+  const attributes = email ? [{ Name: "email", Value: email }, { Name: "email_verified", Value: "true" }] : undefined;
+  const password = sendEmail ? undefined : generatePassword();
+  const create = sendEmail
+    ? () => aws.write("admin-create-user", { username, "user-attributes": JSON.stringify(attributes), "desired-delivery-mediums": "EMAIL" })
+    : () =>
+        aws.write("admin-create-user", undefined, {
+          input: { Username: username, TemporaryPassword: password, ...(attributes ? { UserAttributes: attributes } : {}), MessageAction: "SUPPRESS" },
+          secret: "TemporaryPassword",
+        });
   const group = ["admin-add-user-to-group", { username, "group-name": OPERATORS_GROUP }];
   runSteps(
     [
-      { what: `create ${username} in the operator pool`, run: () => aws.write("admin-create-user", undefined, { input, secret: "TemporaryPassword" }) },
+      { what: `create ${username} in the operator pool`, run: create },
       { what: `add ${username} to the ${OPERATORS_GROUP} group`, run: () => aws.write(...group) },
     ],
     settings,
     (doneCount) =>
       doneCount === 1
         ? [
-            `${username} now exists in the pool with a temporary password nobody has seen${sendEmail ? " (unless the email went out)" : ""}, but isn't in ${OPERATORS_GROUP}, so the /ops routes refuse them. Either:`,
+            `${username} now exists in the pool ${sendEmail ? "(Cognito has emailed them a temporary password)" : "with a temporary password nobody has seen"}, but isn't in ${OPERATORS_GROUP}, so the /ops routes refuse them. Either:`,
             `  finish:  aws ${aws.argv(...group).map(shellWord).join(" ")}`,
             `           then npm run operators -- reset ${username} for a password to hand over`,
             `  undo:    aws ${aws.argv("admin-delete-user", { username }).map(shellWord).join(" ")}`,
@@ -460,10 +510,12 @@ function reset(aws, settings, deps) {
   ];
   if (!keepDisabled) steps.push({ what: `enable ${username}`, run: () => aws.write("admin-enable-user", { username }) });
   if (sendEmail) {
-    // AdminSetUserPassword left them in FORCE_CHANGE_PASSWORD, which RESEND needs; it emails the invitation with this password
+    // AdminSetUserPassword left them in FORCE_CHANGE_PASSWORD, which RESEND needs (Cognito refuses it
+    // for a confirmed user). RESEND makes a new temporary password and emails it, replacing the
+    // throwaway one above, which nobody sees.
     steps.push({
-      what: `email ${username} the temporary password`,
-      run: () => aws.write("admin-create-user", undefined, { input: { Username: username, TemporaryPassword: password, MessageAction: "RESEND", DesiredDeliveryMediums: ["EMAIL"] }, secret: "TemporaryPassword" }),
+      what: `email ${username} a new temporary password`,
+      run: () => aws.write("admin-create-user", { username, "message-action": "RESEND", "desired-delivery-mediums": "EMAIL" }),
     });
   }
   runSteps(steps, settings, (doneCount) =>
@@ -524,9 +576,19 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     isTTY: Boolean(process.stdout.isTTY),
     log: (m) => console.log(m),
     out: (m) => process.stdout.write(`${m}\n`),
-    // stdin carries a request only when it holds a password; stderr (the CLI's errors) goes to the terminal
-    run: (cmd, args, input) => execFileSync(cmd, args, { encoding: "utf8", input, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "inherit"] }),
+    // stderr (the CLI's errors) goes to the terminal
+    run: (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }),
   };
+  // A request file is removed in a finally as soon as its call returns. These catch the rest:
+  // Ctrl-C or a kill while the AWS CLI runs (the call returns first, since it's synchronous,
+  // and these handlers keep Node from dying before its finally), and any other way out.
+  process.on("exit", removeSecretFiles);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.on(signal, () => {
+      removeSecretFiles();
+      process.exit(128 + (signal === "SIGINT" ? 2 : signal === "SIGTERM" ? 15 : 1));
+    });
+  }
   try {
     process.exitCode = main(process.argv.slice(2), deps);
   } catch (error) {

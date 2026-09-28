@@ -22,6 +22,10 @@ Before touching any user, every command checks the pool is named `supply-checkou
 
 Usernames: 1 to 64 lowercase letters, digits, `.`, `_` or `-`, for example `alex`. Use example names (alex, alex@example.com) in anything committed: this repo is public.
 
+## Where the password goes
+
+The script never puts a password on a command line or in the environment. `add` and `reset` without `--send-email` write the request to an owner-only file (mode 600, in a fresh owner-only temporary folder), pass it as `--cli-input-json file://<path>`, and remove it as soon as the AWS CLI returns, or on Ctrl-C or any other exit. `add --send-email` makes no password at all: Cognito generates and emails it. `reset --send-email` sets a throwaway one nobody sees (in the same kind of file), then Cognito's `RESEND` emails a new one it generates.
+
 ## These are the owner's prod admin actions
 
 Every command except `--dry-run` changes, or reads, the production operator pool under the owner's SSO administrator role. Claude never runs them. Claude:
