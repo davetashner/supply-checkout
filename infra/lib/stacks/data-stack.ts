@@ -151,7 +151,9 @@ export class DataStack extends SupplyCheckoutStack {
     });
     // The audit stack's trail bucket logs here too. It's another stack's bucket,
     // so its access-log grant is written out here, as CDK writes the ones for
-    // this stack's buckets: S3's log delivery, from that bucket only, under s3/trail/
+    // this stack's buckets: S3's log delivery, from that bucket only, under
+    // s3/trail/. Like the audit stack, this is the primary region only (the
+    // early return above).
     const trailBucketArn = `arn:${Aws.PARTITION}:s3:::${trailBucketName(config.envName, region)}`;
     this.logsBucket.addToResourcePolicy(
       new PolicyStatement({

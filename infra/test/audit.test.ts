@@ -87,6 +87,11 @@ describe("CloudTrail trail (supply-checkout-3sv.3)", () => {
         ArnLike: { "aws:SourceArn": { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:s3:::supply-checkout-prod-trail-${EAST}-`, { Ref: "AWS::AccountId" }]] } },
       },
     });
+    // Only in the primary region, where the trail bucket is
+    const west = Template.fromStack(build().regions[WEST]?.data as never);
+    expect(JSON.stringify(west.toJSON())).not.toContain("TrailBucketAccessLogs");
+    const westPrimary = Template.fromStack(build({ regions: [EAST, WEST], primaryRegion: WEST }).regions[EAST]?.data as never);
+    expect(JSON.stringify(westPrimary.toJSON())).not.toContain("TrailBucketAccessLogs");
   });
 
   it("lets only this trail, in this account, write to the bucket, and refuses requests without TLS", () => {

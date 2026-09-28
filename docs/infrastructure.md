@@ -46,17 +46,22 @@ npx cdk deploy --all --profile supply-prod
 - It publishes `trail-name`, `trail-bucket-name` and `trail-key-arn` under `/supply-checkout/<env>/audit/`. It deploys after the data stack (the logs bucket) and before the primary region's observability stack, whose `OperatorAlertKeyAndTrailChanges` rule also watches the trail's key.
 - Cost: the first copy of management events is free. The rest is the key ($1 a month), its requests (CloudTrail asks for a data key for each log file, a few thousand a day across regions: well under $1 a month) and S3 storage of compressed logs (cents).
 
-To deploy it on its own (`cdk deploy` of the observability stack also deploys it first):
+To deploy it on its own (`cdk deploy` without `--exclusively` also deploys the stacks a named stack depends on, so deploying the observability stack deploys the data and audit stacks first):
 
 ```bash
-npx cdk deploy supply-checkout-prod-us-east-1-data supply-checkout-prod-us-east-1-audit supply-checkout-prod-us-east-1-observability --profile supply-prod
+npx cdk diff supply-checkout-prod-us-east-1-data supply-checkout-prod-us-east-1-audit supply-checkout-prod-us-east-1-observability --profile supply-prod -c backupCopy=false
+npx cdk deploy supply-checkout-prod-us-east-1-data supply-checkout-prod-us-east-1-audit supply-checkout-prod-us-east-1-observability --profile supply-prod -c backupCopy=false
 ```
+
+Keep `-c backupCopy=false` on every such command, `diff` included, until [step 4 of the backup setup](backups.md#setting-it-up) has created `/supply-checkout/<env>/backup/copy-vault-arn` and `organization-id`: the data stack reads them at deploy time otherwise, and the deploy fails while they don't exist. Drop the flag once step 4 is done (then deploying the data stack adds the deletion records' replication).
 
 Then check it:
 
-1. `aws cloudtrail get-trail-status --name supply-checkout-prod-trail --profile supply-prod --region us-east-1` shows `"IsLogging": true`, and after about 15 minutes a `LatestDeliveryTime` with no `LatestDeliveryError`. `aws cloudtrail describe-trails --profile supply-prod --region us-east-1` shows it multi-region with a `KmsKeyId` and `LogFileValidationEnabled`.
+1. `aws cloudtrail get-trail-status --name supply-checkout-prod-trail --profile supply-prod --region us-east-1` shows `"IsLogging": true`, and after about 15 minutes a `LatestDeliveryTime` with no `LatestDeliveryError`. After about an hour it should also show a `LatestDigestDeliveryTime` with no `LatestDigestDeliveryError`: the hourly digest files (for log file validation) are delivered separately, and a problem with them, such as the key or bucket encryption, shows only there. `aws cloudtrail describe-trails --profile supply-prod --region us-east-1` shows it multi-region with a `KmsKeyId` and `LogFileValidationEnabled`.
 2. The alerts now arrive: add a test operator (`npm run operators -- add <username>`, as the `operators` skill hands it over) and a P1 message from `supply-checkout-prod-operator-pool-changes` should arrive within about 5 to 15 minutes (CloudTrail's usual delay). Remove the test operator afterwards (that alerts too). If nothing comes, look the `AdminCreateUser` event up in CloudTrail's event history and compare it with the rule's pattern (`aws events test-event-pattern`).
 3. Record it in the [Drill log](backups.md#drill-log) with the other alert checks.
+
+**Recreating it.** The trail and bucket have fixed names and, like the key, are retained if the stack is deleted, so a deleted `audit` stack can't simply be deployed again: the trail and bucket names are still taken, the old key is left behind without its alias (aliases aren't retained), and the new stack would fail to create them. Bring the retained trail, bucket and key back into a new stack with `cdk import`, or delete or rename the old trail and give the bucket a new name. Termination protection makes deleting the stack a deliberate step.
 
 An **organization trail** from the management account (`supply-mgmt`), delivering to a log archive account ([ADR 0003](adr/0003-aws-account-structure.md)), is a stronger later step: nobody in this account could stop it. That's the owner's decision; this trail stays useful beside it (the rules here watch it).
 
