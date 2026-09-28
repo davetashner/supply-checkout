@@ -1,7 +1,7 @@
 // node --test scripts/operators.test.mjs (part of npm run test:scripts)
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -29,9 +29,15 @@ function readRequest(args) {
   if (url === "file:///dev/stdin") throw new Error("Unable to load paramfile file:///dev/stdin: [Errno 13] Permission denied: '/dev/stdin'");
   assert.match(url, /^file:\/\//);
   const file = url.slice("file://".length);
-  assert.equal(statSync(file).mode & 0o777, 0o600, "the request file is owner-only");
   assert.equal(statSync(path.dirname(file)).mode & 0o777, 0o700, "in an owner-only folder");
-  return { file, body: JSON.parse(readFileSync(file, "utf8")) };
+  // One open: its mode and contents come from the same file
+  const fd = openSync(file, "r");
+  try {
+    assert.equal(fstatSync(fd).mode & 0o777, 0o600, "the request file is owner-only");
+    return { file, body: JSON.parse(readFileSync(fd, "utf8")) };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** Fakes for main(): an AWS CLI that records each call and its request file, and fails `fail` ops. */
@@ -416,7 +422,7 @@ test("the alerted calls match the observability stack's OPERATOR_USER_EVENTS", (
 // The real script, with a fake `aws` on PATH: what reaches the AWS CLI's argv, and what's on disk afterwards
 
 const FAKE_AWS = `#!/usr/bin/env node
-const { appendFileSync, readFileSync, statSync } = require("node:fs");
+const { appendFileSync, closeSync, fstatSync, openSync, readFileSync } = require("node:fs");
 const args = process.argv.slice(2);
 let request;
 const at = args.indexOf("--cli-input-json");
@@ -428,10 +434,13 @@ if (at >= 0) {
     process.exit(252);
   }
   const file = url.slice("file://".length);
-  const body = JSON.parse(readFileSync(file, "utf8"));
+  const fd = openSync(file, "r");
+  const body = JSON.parse(readFileSync(fd, "utf8"));
+  const mode = (fstatSync(fd).mode & 0o777).toString(8);
+  closeSync(fd);
   // Recorded base64-encoded, so the test can tell what arrived while a plain search of the disk for the password still means a leak
   for (const k of ["TemporaryPassword", "Password"]) if (k in body) body[k] = "base64:" + Buffer.from(body[k]).toString("base64");
-  request = { file, mode: (statSync(file).mode & 0o777).toString(8), body };
+  request = { file, mode, body };
 }
 appendFileSync(process.env.FAKE_AWS_LOG, JSON.stringify({ args, request }) + "\\n");
 if (request && process.env.FAKE_AWS_SLOW) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_AWS_SLOW));
