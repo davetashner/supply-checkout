@@ -3,6 +3,7 @@ import { AwsSolutionsChecks } from "cdk-nag";
 import { type DeploymentConfig, GLOBAL_SERVICES_REGION } from "./config.js";
 import { ObservabilityDefaults } from "./observability/defaults.js";
 import { ApiStack } from "./stacks/api-stack.js";
+import { AuditStack } from "./stacks/audit-stack.js";
 import { BackupAccountStack } from "./stacks/backup-account-stack.js";
 import { BackupStack } from "./stacks/backup-stack.js";
 import type { SupplyCheckoutStack } from "./stacks/base-stack.js";
@@ -35,6 +36,8 @@ export interface SupplyCheckoutStacks {
   readonly backup: BackupStack;
   /** Primary region only: SES bounce and complaint handling. */
   readonly email: EmailStack;
+  /** Primary region only: the account's multi-region CloudTrail trail, which every CloudTrail alert rule needs. */
+  readonly audit: AuditStack;
   /** GLOBAL_SERVICES_REGION only (CloudFront's web ACL and certificate). */
   readonly web: WebStack;
   readonly all: SupplyCheckoutStack[];
@@ -54,6 +57,9 @@ export interface SupplyCheckoutStacks {
  * for its data stack (the email_verified trigger reads the table).
  * Email (primary region only) waits for that region's data stack (the table)
  * and domain stack (the SES configuration set and its events topic).
+ * Audit (primary region only, stateful: the CloudTrail trail) waits for that
+ * region's data stack (its logs bucket), and that region's observability
+ * stack waits for it: its rules need the trail, and one watches its key.
  */
 export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyCheckoutStacks {
   Tags.of(app).add("app", "supply-checkout");
@@ -98,6 +104,10 @@ export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyChe
   backup.addStackDependency(primary.data);
   // Its alarms notify the observability stack's P2 topic
   backup.addStackDependency(primary.observability);
+  // The trail every CloudTrail alert rule needs (supply-checkout-3sv.3)
+  const audit = new AuditStack(app, config, config.primaryRegion);
+  audit.addStackDependency(primary.data);
+  primary.observability.addStackDependency(audit);
   const email = new EmailStack(app, config, config.primaryRegion);
   email.addStackDependency(regions[config.primaryRegion]?.data as DataStack);
   email.addStackDependency(domain[config.primaryRegion] as DomainStack);
@@ -113,11 +123,12 @@ export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyChe
     ...Object.values(domain),
     identity,
     backup,
+    audit,
     web,
     email,
     ...Object.values(regions).flatMap((r) => [r.data, r.api, r.realtime, r.observability]),
   ];
-  return { regions, domain, identity, backup, web, email, all };
+  return { regions, domain, identity, backup, email, audit, web, all };
 }
 
 /**
