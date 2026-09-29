@@ -5035,6 +5035,60 @@
         }
       }
     },
+    "HttpApiGETteamsteamIdbillinginvoicesBillingIntegrationPermission1BA23EFA": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "BillingFunctionLive75F06840"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/billing/invoices"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiGETteamsteamIdbillinginvoicesF169B9A2": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "GET /teams/{teamId}/billing/invoices",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiPOSTteamsteamIdbillingcheckoutBillingIntegration84D4E72C"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiGETopsteamsOpsIntegrationD9495125": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -5872,6 +5926,10 @@
             "ThrottlingRateLimit": 2,
             "ThrottlingBurstLimit": 5
           },
+          "GET /teams/{teamId}/billing/invoices": {
+            "ThrottlingRateLimit": 2,
+            "ThrottlingBurstLimit": 5
+          },
           "GET /ops/teams": {
             "ThrottlingRateLimit": 5,
             "ThrottlingBurstLimit": 10
@@ -5939,6 +5997,8 @@
         "HttpApiGETopsteamsOpsIntegrationPermissionBE2F3BC1",
         "HttpApiGETopsteamsOpsIntegrationD9495125",
         "HttpApiGETopsteamsA2B6B2AB",
+        "HttpApiGETteamsteamIdbillinginvoicesBillingIntegrationPermission1BA23EFA",
+        "HttpApiGETteamsteamIdbillinginvoicesF169B9A2",
         "HttpApiGETteamsteamIdinvitesAccountIntegrationPermissionB8124B59",
         "HttpApiGETteamsteamIdinvitesBB2E6828",
         "HttpApiGETteamsteamIdmembersAccountIntegrationPermission8330B349",

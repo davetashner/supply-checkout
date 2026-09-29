@@ -145,6 +145,7 @@ test("an owner of a team with no Stripe customer has no Billing", async ({ page 
   await open(page, new FakeBackend({ teams: [{ ...TEAM, billingAccount: false, cancelsAt: null }] }));
   await expect(bar(page).getByRole("button", { name: "Members" })).toBeVisible();
   await expect(bar(page).getByRole("button", { name: "Billing" })).toHaveCount(0);
+  await expect(bar(page).getByRole("button", { name: "Invoices" })).toHaveCount(0);
 });
 
 test("an owner of a team whose subscription ended can subscribe again or open Billing, and no cancellation shows", async ({ page }) => {
@@ -158,5 +159,88 @@ test("a closed team has no Billing and no cancellation note", async ({ page }) =
   await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING, cancelsAt: "2026-10-27T12:00:00.000Z", closedAt: "2026-09-26T12:00:00.000Z", deletesAt: "2026-10-26T12:00:00.000Z" }] }));
   await expect(bar(page).locator(".closed-note")).toHaveCount(1);
   await expect(bar(page).getByRole("button", { name: "Billing" })).toHaveCount(0);
+  await expect(bar(page).getByRole("button", { name: "Invoices" })).toHaveCount(0);
   await expect(bar(page).locator("#cancelNote")).toHaveCount(0);
+});
+
+// Invoices (supply-checkout-eja): the team's latest invoices as Stripe has them, with links to Stripe
+const INVOICES = "/teams/t1/billing/invoices";
+const dialog = (page) => page.locator("#modal");
+const invoice = (n, fields = {}) => ({
+  id: `in_test_${n}`,
+  number: `ABCD-000${n}`,
+  status: "paid",
+  createdAt: `2026-0${n}-01T12:00:00.000Z`,
+  currency: "usd",
+  total: 1200 + n,
+  amountDue: 1200 + n,
+  amountPaid: 1200 + n,
+  hostedUrl: `https://invoice.stripe.com/i/test_${n}`,
+  pdfUrl: `https://pay.stripe.com/invoice/test_${n}/pdf`,
+  ...fields,
+});
+
+test("an owner sees the team's invoices, with Stripe's page and PDF for each", async ({ page }) => {
+  const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING }] }));
+  // The first try fails and offers another
+  backend.on("GET", INVOICES, { abort: true });
+  backend.on("GET", INVOICES, {
+    status: 200,
+    body: {
+      invoices: [
+        invoice(3, { status: "open", amountPaid: 0 }),
+        invoice(2, { number: null, pdfUrl: null }),
+        invoice(1, { status: "void", hostedUrl: null }),
+        invoice(4, { status: "something_new" }),
+      ],
+      hasMore: true,
+    },
+  });
+  await bar(page).getByRole("button", { name: "Invoices" }).click();
+  await expect(dialog(page).locator("#invoicesFail")).toHaveText("Couldn't load invoices. Check your connection and try again.");
+  await dialog(page).getByRole("button", { name: "Try again" }).click();
+  await expect(dialog(page).locator("#invoicesFail")).toBeHidden();
+  const rows = dialog(page).locator(".invoice");
+  await expect(rows).toHaveText([
+    /Mar 1, 2026\s+Invoice ABCD-0003\s+\$12\.03\s+Due: \$12\.03\s+View\s+PDF/,
+    /Feb 1, 2026\s+Invoice\s+\$12\.02\s+Paid\s+View/,
+    /Jan 1, 2026\s+Invoice ABCD-0001\s+\$12\.01\s+Void\s+PDF/,
+    /Apr 1, 2026\s+Invoice ABCD-0004\s+\$12\.04\s+something_new/,
+  ]);
+  const view = rows.first().getByRole("link", { name: "View Invoice ABCD-0003" });
+  await expect(view).toHaveAttribute("href", "https://invoice.stripe.com/i/test_3");
+  await expect(view).toHaveAttribute("target", "_blank");
+  await expect(rows.first().getByRole("link", { name: "Invoice ABCD-0003 as a PDF" })).toHaveAttribute("href", "https://pay.stripe.com/invoice/test_3/pdf");
+  await expect(rows.nth(1).getByRole("link")).toHaveCount(1);
+  await expect(dialog(page).locator("#olderInvoices")).toHaveText("Older invoices are in Billing.");
+  // Nothing is sent but the path's team
+  expect(backend.requests("GET", INVOICES)).toHaveLength(2);
+  const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(violations.map((v) => v.id)).toEqual([]);
+  await dialog(page).getByRole("button", { name: "Close" }).click();
+  await expect(page.locator("#overlay")).toBeHidden();
+});
+
+test("an owner whose team has no invoices yet is told so", async ({ page }) => {
+  const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING }] }));
+  backend.on("GET", INVOICES, { status: 200, body: { invoices: [], hasMore: false } });
+  await bar(page).getByRole("button", { name: "Invoices" }).click();
+  await expect(dialog(page).locator("#invoiceList")).toHaveText("No invoices yet.");
+  await expect(dialog(page).locator("#olderInvoices")).toHaveCount(0);
+});
+
+test("an owner whose team has no billing account yet is told there are no invoices", async ({ page }) => {
+  const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING }] }));
+  backend.on("GET", INVOICES, error(409, "aborted", { reason: "no_billing_account" }));
+  await bar(page).getByRole("button", { name: "Invoices" }).click();
+  await expect(dialog(page).locator("#invoicesFail")).toHaveText("This team has no billing account yet, so it has no invoices.");
+  await expect(dialog(page).getByRole("button", { name: "Try again" })).toHaveCount(0);
+});
+
+test("invoices refused for want of two-step sign-in open the setup, saying why", async ({ page }) => {
+  const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING }] }));
+  backend.on("GET", INVOICES, error(403, "permission_denied", { reason: "mfa_required" }));
+  await bar(page).getByRole("button", { name: "Invoices" }).click();
+  await expect(dialog(page).locator(".two-step-why")).toHaveText("To manage billing, turn on two-step sign-in first. It keeps someone who gets hold of your email from changing how your team pays.");
+  await expect(dialog(page).locator("#invoiceList")).toHaveCount(0);
 });

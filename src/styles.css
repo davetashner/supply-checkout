@@ -198,6 +198,10 @@ td.charge{color:var(--ink);font-weight:500}
 .summary b{font-family:var(--mono);font-weight:500}
 .modal-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
 .modal-actions .spacer{flex:1}
+.invoices{list-style:none;margin:0;padding:0}
+.invoice{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline;padding:8px 0;border-bottom:1px solid var(--line)}
+.invoice-what{flex:1 1 12em}
+.invoice-links{display:flex;gap:12px}
 .save-failed{margin:0;padding:10px 12px;border-radius:10px;border:1px solid var(--danger);background:var(--danger-soft);color:var(--ink);font-weight:500}
 .item-known{display:flex;justify-content:space-between;gap:12px;align-items:baseline;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
 .item-known strong{font-size:16px}

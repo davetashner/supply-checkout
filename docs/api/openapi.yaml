@@ -1387,6 +1387,59 @@ paths:
         "500":
           description: "`internal`: Stripe couldn't be reached or refused the request, or the portal isn't set up in this Stripe mode. Try again."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /teams/{teamId}/billing/invoices:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    get:
+      tags: [billing]
+      operationId: listInvoices
+      summary: List the team's latest invoices, as Stripe has them. Owners only.
+      description: |
+        The latest invoices (up to 24, newest first) of the team's Stripe
+        customer (made by its first checkout), read from Stripe on each
+        request, so the list is Stripe's. Drafts aren't listed: Stripe hasn't
+        sent them yet. `hasMore` means there are older ones, which the Customer
+        Portal lists (`createPortalSession`). Each invoice links to Stripe's
+        hosted invoice page and its PDF, which carry the billing name, address
+        and tax ID on the customer (collected by Checkout, changed in the
+        portal). A link is null unless it's an https page on stripe.com.
+        Stripe emails invoices and receipts itself. A team whose subscription
+        ended still lists its invoices.
+      responses:
+        "200":
+          description: The team's latest invoices.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invoices, hasMore]
+                properties:
+                  invoices:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, number, status, createdAt, currency, total, amountDue, amountPaid, hostedUrl, pdfUrl]
+                      properties:
+                        id: { type: string, description: "Stripe's invoice ID." }
+                        number: { type: [string, "null"], description: "The number printed on the invoice." }
+                        status: { type: string, enum: [open, paid, uncollectible, void], description: "Stripe's invoice status." }
+                        createdAt: { type: string, format: date-time }
+                        currency: { type: string, description: "Three-letter ISO code, lowercase." }
+                        total: { type: integer, description: In the currency's smallest unit (cents). }
+                        amountDue: { type: integer, description: In the currency's smallest unit. }
+                        amountPaid: { type: integer, description: In the currency's smallest unit. }
+                        hostedUrl: { type: [string, "null"], format: uri, description: "Stripe's hosted invoice page, to view and pay it." }
+                        pdfUrl: { type: [string, "null"], format: uri, description: "The invoice's PDF, on Stripe." }
+                  hasMore: { type: boolean, description: "There are older invoices; the Customer Portal lists them all." }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403":
+          description: "`permission_denied`: `owners_only`, `not_member`, `mfa_required` (checked after membership and role, as for `createPortalSession`), or `team_closed` (reopen the team first)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: "`aborted` with `reason: \"no_billing_account\"`: the team has no Stripe customer yet, so no invoices."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "500":
+          description: "`internal`: Stripe couldn't be reached or refused the request. Try again."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /billing/webhook:
     post:
       tags: [billing]

@@ -8,6 +8,10 @@
 //                                          Portal for the team's Stripe
 //                                          customer (supply-checkout-121).
 //                                          Answers the portal's URL.
+//   GET  /teams/{teamId}/billing/invoices  Owners: the team's latest invoices
+//                                          from Stripe (supply-checkout-eja),
+//                                          with links to Stripe's hosted
+//                                          invoice page and PDF.
 //
 // The team's Stripe customer is made the first time (and linked to the team
 // with linkStripeCustomer), and the Checkout Session is for that customer, so
@@ -26,7 +30,12 @@
 // portal configuration (billing/portal.ts) and a return URL on the app's own
 // origin. The webhook (supply-checkout-2kl) turns what Stripe records, from
 // Checkout or the portal, into the team's plan, seats and status; nothing
-// here changes them.
+// here changes them. Checkout collects the billing address and, for a
+// business, its name and tax ID, which Stripe keeps on the customer and prints
+// on every invoice; owners change them in the portal. Stripe itself emails the
+// invoices and receipts (its Dashboard's customer email settings), so nothing
+// here sends mail. The invoice list is read-only, for the same customer as the
+// portal, and passes on only Stripe's own https links.
 //
 // Isolation, in order:
 // 1. API Gateway's JWT authorizer checks the Cognito access token; this
@@ -74,7 +83,7 @@ import {
   type TeamContext,
   TRIAL_DAYS,
 } from "../data/index.js";
-import { BusinessMetric, type Observability } from "../observability/index.js";
+import { BusinessMetric, type BusinessMetricName, type Observability } from "../observability/index.js";
 import type { DbForBilling } from "./billing-db.js";
 import { callerId, type DataEvent, errorFor as dataErrorFor } from "./data-handler.js";
 import type { UserInfo } from "./cognito-user.js";
@@ -113,8 +122,43 @@ export interface PortalSessionParams {
   readonly return_url: string;
 }
 
+/** The fields of a Stripe invoice the list reads. */
+export interface InvoiceLike {
+  readonly id: string;
+  readonly number: string | null;
+  readonly status: string | null;
+  readonly created: number;
+  readonly currency: string;
+  readonly total: number;
+  readonly amount_due: number;
+  readonly amount_paid: number;
+  readonly hosted_invoice_url?: string | null;
+  readonly invoice_pdf?: string | null;
+}
+
+/** What listing invoices needs from the Stripe client. */
+export interface InvoiceStripe {
+  readonly invoices: {
+    list(params: { customer: string; limit: number }): PromiseLike<{ readonly data: readonly InvoiceLike[]; readonly has_more: boolean }>;
+  };
+}
+
 /** Everything the billing function calls on Stripe. */
-export type BillingStripe = CheckoutStripe & PortalStripe;
+export type BillingStripe = CheckoutStripe & PortalStripe & InvoiceStripe;
+
+/** How many of the latest invoices the list asks Stripe for; older ones are in the Customer Portal. */
+export const INVOICE_PAGE = 24;
+
+/** A link from Stripe, if it's an https page on stripe.com (the hosted invoice page, its PDF); otherwise null. */
+export function stripeLink(url: string | null | undefined): string | null {
+  if (typeof url !== "string") return null;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" && (parsed.hostname === "stripe.com" || parsed.hostname.endsWith(".stripe.com")) ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
 
 /** The Checkout Session this handler creates: a subset of Stripe's parameters. */
 export interface CheckoutSessionParams {
@@ -126,7 +170,8 @@ export interface CheckoutSessionParams {
   readonly cancel_url: string;
   readonly metadata: Record<string, string>;
   readonly payment_method_collection: "always" | "if_required";
-  readonly billing_address_collection: "auto";
+  readonly billing_address_collection: "required";
+  readonly tax_id_collection: { readonly enabled: true };
   readonly customer_update: { readonly address: "auto"; readonly name: "auto" };
   readonly subscription_data: {
     readonly metadata: Record<string, string>;
@@ -160,6 +205,13 @@ class MfaCheckError extends Error {
     super("The two-step sign-in check failed", { cause });
   }
 }
+
+/** How each route's failures on our side or Stripe's are logged and counted. */
+const FAILURES: Record<BillingRoute["action"], { readonly message: string; readonly metric: BusinessMetricName }> = {
+  createCheckout: { message: "Checkout failed", metric: BusinessMetric.CheckoutSessionErrors },
+  createPortalSession: { message: "Billing portal failed", metric: BusinessMetric.BillingPortalErrors },
+  listInvoices: { message: "Invoices failed", metric: BusinessMetric.InvoiceListErrors },
+};
 
 const ROUTES = new Map(BILLING_ROUTES.map((r) => [routeKey(r), r]));
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -285,7 +337,9 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
       metadata: { teamId: ctx.teamId },
       // Still in the free trial: no card now, and Stripe cancels the subscription if none is added by its end
       payment_method_collection: trial ? "if_required" : "always",
-      billing_address_collection: "auto",
+      // The address, and a business's name and tax ID, go on the customer and so on every invoice
+      billing_address_collection: "required",
+      tax_id_collection: { enabled: true },
       customer_update: { address: "auto", name: "auto" },
       subscription_data: {
         metadata: { teamId: ctx.teamId, plan: input.plan.plan },
@@ -316,10 +370,7 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
     const ctx = await ownerContext(event, userId, route);
     // Nothing to send: a body, if any, must be an empty object
     if (event.body) jsonBody(event, []);
-    if (ctx.closed) throw new TeamClosedError("This team was closed. Reopen it before managing billing.");
-    const team = await getTeam(dbFor({ teamId: ctx.teamId }), ctx);
-    const customer = team.stripeCustomerId;
-    if (!customer || !ID.test(customer)) throw new ApiError(409, "aborted", "This team has no billing account yet. Subscribe first.", "no_billing_account");
+    const customer = await linkedCustomer(ctx);
     const stripe = await deps.stripe();
     const configuration = await deps.portalConfiguration();
     const session = await stripe.billingPortal.sessions.create({ customer, configuration, return_url: `${deps.appUrl}/?billing=portal&team=${encodeURIComponent(ctx.teamId)}` });
@@ -327,9 +378,48 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
     return json(201, { portal: { url: session.url } });
   }
 
+  /**
+   * The team's latest invoices, newest first, as Stripe has them for the
+   * team's own customer: the same owners-only checks and refusals as the
+   * portal. Drafts (not sent yet, no page) are left out; `hasMore` says older
+   * ones are in the portal. Nothing from the request reaches Stripe.
+   */
+  async function listInvoices(event: DataEvent, userId: string, route: BillingRoute): Promise<APIGatewayProxyStructuredResultV2> {
+    const ctx = await ownerContext(event, userId, route);
+    const customer = await linkedCustomer(ctx);
+    const stripe = await deps.stripe();
+    const page = await stripe.invoices.list({ customer, limit: INVOICE_PAGE });
+    const invoices = page.data
+      .filter((i) => i.status && i.status !== "draft")
+      .map((i) => ({
+        id: i.id,
+        number: i.number,
+        status: i.status,
+        createdAt: new Date(i.created * 1000).toISOString(),
+        currency: i.currency,
+        total: i.total,
+        amountDue: i.amount_due,
+        amountPaid: i.amount_paid,
+        hostedUrl: stripeLink(i.hosted_invoice_url),
+        pdfUrl: stripeLink(i.invoice_pdf),
+      }));
+    obs.logger.info("Invoices listed", { teamId: ctx.teamId, count: invoices.length });
+    return json(200, { invoices, hasMore: page.has_more });
+  }
+
+  /** The Stripe customer linked to the caller's team: 403 `team_closed` for a closed team, 409 `no_billing_account` for none. */
+  async function linkedCustomer(ctx: TeamContext): Promise<string> {
+    if (ctx.closed) throw new TeamClosedError("This team was closed. Reopen it before managing billing.");
+    const team = await getTeam(dbFor({ teamId: ctx.teamId }), ctx);
+    const customer = team.stripeCustomerId;
+    if (!customer || !ID.test(customer)) throw new ApiError(409, "aborted", "This team has no billing account yet. Subscribe first.", "no_billing_account");
+    return customer;
+  }
+
   const actions: Record<BillingRoute["action"], (event: DataEvent, userId: string, route: BillingRoute) => Promise<APIGatewayProxyStructuredResultV2>> = {
     createCheckout,
     createPortalSession,
+    listInvoices,
   };
 
   return async (event: DataEvent, context?: Context): Promise<APIGatewayProxyStructuredResultV2> => {
@@ -353,10 +443,10 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
       } else if (apiError.status >= 500) {
         const teamId = event.pathParameters?.teamId;
         // Stripe's error fields only: never its message, which can echo what was sent
-        const portal = route?.action === "createPortalSession";
+        const failed = FAILURES[route?.action ?? "createCheckout"];
         const reason = error instanceof PriceNotFoundError ? "price_not_found" : error instanceof PortalConfigurationNotFoundError ? "portal_configuration_not_found" : undefined;
-        obs.logger.error(portal ? "Billing portal failed" : "Checkout failed", { ...(typeof teamId === "string" && ID.test(teamId) ? { teamId } : {}), ...stripeErrorFields(error), ...(reason ? { reason } : {}) });
-        obs.count(portal ? BusinessMetric.BillingPortalErrors : BusinessMetric.CheckoutSessionErrors);
+        obs.logger.error(failed.message, { ...(typeof teamId === "string" && ID.test(teamId) ? { teamId } : {}), ...stripeErrorFields(error), ...(reason ? { reason } : {}) });
+        obs.count(failed.metric);
       }
       return errorResponse(apiError);
     } finally {
