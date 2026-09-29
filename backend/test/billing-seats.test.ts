@@ -142,7 +142,7 @@ describe("who is billed", () => {
 describe("a seat sync after a membership change", () => {
   it("sets the seat item's quantity to the billed members, with proration and an idempotency key, inside the worker role", async () => {
     expect(await worker(seats())).toBe("updated");
-    expect(updates).toEqual([{ item: ITEM, quantity: 3, proration: "create_prorations", key: seatUpdateKey(TEAM, "seats-1", ITEM, 3) }]);
+    expect(updates).toEqual([{ item: ITEM, quantity: 3, proration: "create_prorations", key: seatUpdateKey(TEAM, "seats-1", ITEM, 5, 3) }]);
     expect(quantity()).toBe(3);
     expect(counts).toEqual([[BusinessMetric.SeatQuantityUpdates, 1, { teamId: TEAM, reason: "membership" }]]);
     // Not drift: the change is what the sync is for
@@ -182,16 +182,16 @@ describe("a seat sync after a membership change", () => {
     await expect(worker(seats())).rejects.toThrow("Stripe is down");
     stripeDown = false;
     expect(await worker(seats())).toBe("updated");
-    expect(updates[0]?.key).toBe(seatUpdateKey(TEAM, "seats-1", ITEM, 3));
+    expect(updates[0]?.key).toBe(seatUpdateKey(TEAM, "seats-1", ITEM, 5, 3));
     // Once Stripe has it, a repeat finds nothing to do
     expect(await worker(seats())).toBe("in_sync");
     expect(updates).toHaveLength(1);
   });
 
-  it("makes different keys for different messages, items and quantities", () => {
-    const key = seatUpdateKey(TEAM, "m1", ITEM, 3);
+  it("makes different keys for different messages, items, and current and target quantities", () => {
+    const key = seatUpdateKey(TEAM, "m1", ITEM, 5, 3);
     expect(key).toMatch(/^seats-team-a-[0-9a-f]{64}$/);
-    expect(new Set([key, seatUpdateKey(TEAM, "m2", ITEM, 3), seatUpdateKey(TEAM, "m1", "si_2", 3), seatUpdateKey(TEAM, "m1", ITEM, 4)]).size).toBe(4);
+    expect(new Set([key, seatUpdateKey(TEAM, "m2", ITEM, 5, 3), seatUpdateKey(TEAM, "m1", "si_2", 5, 3), seatUpdateKey(TEAM, "m1", ITEM, 5, 4), seatUpdateKey(TEAM, "m1", ITEM, 4, 3)]).size).toBe(5);
   });
 });
 
@@ -276,7 +276,7 @@ describe("after a Stripe event", () => {
     patchTeam({ stripeSubscriptionId: undefined, status: "trialing", plan: "trial" });
     subs.set(SUB, subscription(5, { status: "trialing" }));
     expect(await worker(event())).toBe("applied");
-    expect(updates).toEqual([{ item: ITEM, quantity: 3, proration: "create_prorations", key: seatUpdateKey(TEAM, "evt_1", ITEM, 3) }]);
+    expect(updates).toEqual([{ item: ITEM, quantity: 3, proration: "create_prorations", key: seatUpdateKey(TEAM, "evt_1", ITEM, 5, 3) }]);
     expect(counts).toContainEqual([BusinessMetric.SeatQuantityUpdates, 1, { teamId: TEAM, reason: "subscription" }]);
     // The event is recorded before the seats: a retry (after the update failed) is a duplicate, and still checks them
     subs.set(SUB, subscription(5, { status: "trialing" }));

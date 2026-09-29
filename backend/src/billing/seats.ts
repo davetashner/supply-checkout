@@ -40,8 +40,8 @@
 // the billed members as soon as the subscription exists.
 //
 // Idempotency: the update's Stripe idempotency key is made from the team,
-// the message (a queue retry sends the same one), the subscription item and
-// the target quantity. A retry after Stripe applied the update finds the
+// the message (a queue retry sends the same one), the subscription item, and
+// the current and target quantities. A retry after Stripe applied the update finds the
 // quantity already right and sends nothing.
 //
 // The nightly reconciliation (ops/seat-reconcile-handler.ts) queues a message with
@@ -99,9 +99,14 @@ export function seatQuantity(billedMembers: number): number {
   return Math.max(1, billedMembers);
 }
 
-/** The Stripe idempotency key for one seat update: the same message, item and quantity give the same key. */
-export function seatUpdateKey(teamId: string, messageId: string, itemId: string, quantity: number): string {
-  return `seats-${teamId}-${createHash("sha256").update(JSON.stringify([messageId, itemId, quantity])).digest("hex")}`;
+/**
+ * The Stripe idempotency key for one seat update: the same message, item,
+ * current quantity and target give the same key. The current quantity is in
+ * it so a later change back to the same target (within Stripe's 24 hours of
+ * keeping keys) is a new request, not a replay of the old one.
+ */
+export function seatUpdateKey(teamId: string, messageId: string, itemId: string, from: number, quantity: number): string {
+  return `seats-${teamId}-${createHash("sha256").update(JSON.stringify([messageId, itemId, from, quantity])).digest("hex")}`;
 }
 
 /** The fields of a Stripe subscription a seat sync reads. */
@@ -173,7 +178,7 @@ export function createSeatSync(deps: SeatSyncDeps) {
       obs.count(BusinessMetric.SeatQuantityDrift, 1, { teamId });
       obs.logger.warn("Seat quantity drift", { teamId, subscriptionId: sub.id, stripeQuantity: current, billedMembers: billed });
     }
-    await stripe.subscriptionItems.update(item.id, { quantity, proration_behavior: "create_prorations" }, { idempotencyKey: seatUpdateKey(teamId, id, item.id, quantity) });
+    await stripe.subscriptionItems.update(item.id, { quantity, proration_behavior: "create_prorations" }, { idempotencyKey: seatUpdateKey(teamId, id, item.id, current, quantity) });
     obs.count(BusinessMetric.SeatQuantityUpdates, 1, { teamId, reason: message.reason });
     obs.logger.info("Seat quantity updated", { teamId, subscriptionId: sub.id, from: current, to: quantity, reason: message.reason });
     return "updated";

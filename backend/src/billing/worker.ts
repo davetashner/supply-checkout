@@ -60,7 +60,7 @@ import type { EmailInput } from "../email/templates.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import { BILLING_EVENTS, type BillingEventType } from "./names.js";
 import type { BillingMessage } from "./webhook-handler.js";
-import { createSeatSync, type SeatOutcome, type SeatStripe, type SeatSyncMessage } from "./seats.js";
+import { createSeatSync, parseSeatSync, type SeatOutcome, type SeatStripe, type SeatSyncMessage } from "./seats.js";
 import type { DbForWorker } from "./worker-db.js";
 
 /** The fields of a Stripe subscription the worker reads. */
@@ -272,7 +272,8 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
   const seats = createSeatSync({ dbFor: deps.dbFor, stripe: deps.stripe, obs, now: deps.now });
 
   return async (message: QueueMessage): Promise<Outcome | SeatOutcome> => {
-    if ("kind" in message) return seats(message);
+    // Checked again here, whatever handed it over: only a well-formed seat sync goes to the seat sync
+    if ("kind" in message) return seats(parseSeatSync(JSON.stringify(message)));
     const outcome = await process(message);
     obs.logger.info("Billing event", { eventId: message.eventId, type: message.type, outcome });
     // 6: after the event is recorded, so a failure here retries only this (the event is a duplicate then)
