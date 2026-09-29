@@ -46,6 +46,8 @@ let counts: [string, number, Record<string, unknown> | undefined][];
 let logs: unknown[];
 let cognitoDown: boolean;
 let handler: ReturnType<typeof createAccountHandler>;
+// Seat syncs queued after a membership change (billing/seats.ts)
+let queued: [string, string][];
 
 function member(teamId: string, userId: string, role: string) {
   const email = USERS[userId]?.email?.toLowerCase();
@@ -67,6 +69,7 @@ beforeEach(() => {
   counts = [];
   logs = [];
   mails = fakeMailer();
+  queued = [];
   team("team-a", "Echo Cleaning", { [OWNER]: "owner", [CO_OWNER]: "owner", [SAM]: "contributor" });
   team("team-b", "Bravo Co", { [OTHER_OWNER]: "owner" });
   const dbFor: DbForAccount = (scope) => {
@@ -86,7 +89,9 @@ beforeEach(() => {
     if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
     return user;
   };
-  handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, emailCodes: unusedEmailCodes, totp: unusedTotp, now: () => now });
+  handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, emailCodes: unusedEmailCodes, totp: unusedTotp, now: () => now, seats: async (customer, reason) => {
+    queued.push([customer, reason]);
+  } });
 });
 
 function event(method: string, path: string, user: string, body?: unknown): DataEvent {
@@ -779,5 +784,30 @@ describe("expiry", () => {
     expect((await accept(link.id, link.token)).status).toBe(404);
     now = START + 7 * DAY - 1000;
     expect((await accept(link.id, link.token)).status).toBe(200);
+  });
+});
+
+describe("seats after an invite is accepted (supply-checkout-l50)", () => {
+  it("queues a seat sync for the team's Stripe customer once the new member has joined, and none for a team without one", async () => {
+    await invite("pat@example.com", "viewer");
+    const first = lastLink();
+    expect((await accept(first.id, first.token)).status).toBe(200);
+    // No Stripe customer yet: nothing to bill
+    expect(queued).toEqual([]);
+    table.put({ ...(table.get("TEAM#team-a", "META") as Record<string, unknown>), stripeCustomerId: "cus_a" });
+    await call("DELETE", `/teams/team-a/members/${PAT}`, PAT);
+    queued = [];
+    await invite("pat@example.com", "contributor");
+    const second = lastLink();
+    expect((await accept(second.id, second.token)).status).toBe(200);
+    expect(queued).toEqual([["cus_a", "membership"]]);
+  });
+
+  it("queues nothing when the invite doesn't work", async () => {
+    table.put({ ...(table.get("TEAM#team-a", "META") as Record<string, unknown>), stripeCustomerId: "cus_a" });
+    await invite("pat@example.com");
+    const link = lastLink();
+    expect((await accept(link.id, "x".repeat(link.token.length))).status).toBe(404);
+    expect(queued).toEqual([]);
   });
 });

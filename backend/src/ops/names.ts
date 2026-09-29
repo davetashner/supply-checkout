@@ -46,6 +46,21 @@ export const PURGE_SILENT_ALARM_HOURS = 3;
 export const HEARTBEAT_EVERY_MINUTES = 10;
 export const HEARTBEAT_SILENT_ALARM_MINUTES = 30;
 
+/**
+ * When the nightly seat reconciliation runs (supply-checkout-l50): 07:00 UTC,
+ * the small hours in the US. It queues one seat sync per open team with a
+ * Stripe customer on the seat sync queue (billing/seats.ts), in batches of
+ * SEAT_RECONCILE_BATCH, the most SQS takes in one call.
+ */
+export const SEAT_RECONCILE_HOUR_UTC = 7;
+export const SEAT_RECONCILE_BATCH = 10;
+
+/**
+ * No SeatReconcileTeams sample for this many days alarms ("Seat
+ * reconciliation not running"): two nightly runs missed.
+ */
+export const SEAT_RECONCILE_SILENT_ALARM_DAYS = 2;
+
 /** Functions the observability stack names. */
 export const opsResourceNames = (envName: string) => ({
   stuckImportsFunction: `supply-checkout-${envName}-stuck-imports`,
@@ -53,10 +68,13 @@ export const opsResourceNames = (envName: string) => ({
   teamPurgeFunction: `supply-checkout-${envName}-team-purge`,
   operatorAuditWatchFunction: `supply-checkout-${envName}-operator-audit-watch`,
   deletionRecordsWatchFunction: `supply-checkout-${envName}-deletion-records-watch`,
+  seatReconcileFunction: `supply-checkout-${envName}-seat-reconcile`,
 });
 
 /** Environment variables the checks read. */
 export const OPS_ENV = {
   /** The app table (the stuck-import check and the team purge). */
   tableName: "TABLE_NAME",
+  /** The seat sync queue's URL (the seat reconciliation). */
+  seatQueueUrl: "SEAT_QUEUE_URL",
 } as const;

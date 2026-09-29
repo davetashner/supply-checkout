@@ -9,6 +9,7 @@ import {
   CLOSED_TEAM_RETENTION_DAYS,
   clearStuckImport,
   closeTeam,
+  countBilledMembers,
   createTeam,
   endComp,
   getOpsTeam,
@@ -17,6 +18,8 @@ import {
   listStuckImportsForOps,
   listSupportActions,
   listTeamsToPurge,
+  listTeamsToReconcile,
+  linkStripeCustomer,
   reopenOpsTeam,
   reopenTeam,
   setComp,
@@ -146,5 +149,27 @@ describe.skipIf(!endpoint)("operators (ADR 0015) on DynamoDB Local", () => {
     expect((await rawItem(table.db, `TEAM#${teamId}`, "IMPORT#imp-1"))?.GSI1PK).toBeUndefined();
     expect((await listStuckImportsForOps(table.db, op, cutoff)).filter((j) => j.teamId === teamId)).toEqual([]);
     expect((await listOperatorAudit(table.db, op, { teamId })).items.map((e) => e.action)).toEqual(["ops.import.clear"]);
+  });
+
+  it("lists the open teams with a Stripe customer for the seat reconciliation, from the index alone, and counts billed members (supply-checkout-l50)", async () => {
+    const make = async (label: string) => {
+      const ownerId = newUser();
+      return { ownerId, ...(await createTeam(table.db, { userId: ownerId, email: "owner@example.com" }, { name: `Seats ${label} ${ownerId}` }, now)) };
+    };
+    const linked = await make("linked");
+    const unlinked = await make("unlinked");
+    const closed = await make("closed");
+    await linkStripeCustomer(table.db, linked.context, `cus_${linked.team.teamId.slice(0, 20).replace(/[^A-Za-z0-9]/g, "")}`);
+    await linkStripeCustomer(table.db, closed.context, `cus_${closed.team.teamId.slice(0, 20).replace(/[^A-Za-z0-9]/g, "")}c`);
+    await closeTeam(table.db, closed.context, { confirmName: closed.team.name }, now);
+    const ours = new Set([linked.team.teamId, unlinked.team.teamId, closed.team.teamId]);
+    const listed = (await listTeamsToReconcile(table.db)).filter((t) => ours.has(t.teamId));
+    expect(listed).toEqual([{ teamId: linked.team.teamId, stripeCustomerId: `cus_${linked.team.teamId.slice(0, 20).replace(/[^A-Za-z0-9]/g, "")}` }]);
+    // Two viewers don't count; the owner and an editor do
+    const put = (userId: string, role: string) => connection(table.db).doc.send(new PutCommand({ TableName: table.db.tableName, Item: { PK: `TEAM#${linked.team.teamId}`, SK: `MEMBER#${userId}`, type: "member", teamId: linked.team.teamId, userId, role } }));
+    await put(newUser(), "viewer");
+    await put(newUser(), "viewer");
+    await put(newUser(), "contributor");
+    expect(await countBilledMembers(table.db, linked.context)).toBe(2);
   });
 });

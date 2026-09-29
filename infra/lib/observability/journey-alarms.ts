@@ -389,6 +389,32 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       }),
       threshold: 300,
     },
+    {
+      id: "seat-syncs-stuck",
+      title: "Seat syncs stuck",
+      journeys: "J7",
+      severity: "P2",
+      rule: "Any message in the seat syncs dead-letter queue: a seat sync the billing worker couldn't apply after 5 tries (Stripe or DynamoDB failing), so a team may be billed for the wrong number of seats until the nightly reconciliation fixes it. The message holds the Stripe customer's ID.",
+      metric: new Metric({
+        namespace: "AWS/SQS",
+        metricName: "ApproximateNumberOfMessagesVisible",
+        dimensionsMap: { QueueName: billing.seatDeadLetterQueue },
+        statistic: "Maximum",
+        period: FIVE_MINUTES,
+        region,
+      }),
+      threshold: 0,
+    },
+    {
+      id: "seat-counts-drifting",
+      title: "Seat counts drifting",
+      journeys: "J7",
+      severity: "P2",
+      rule: "Any SeatQuantityDrift over an hour: the nightly seat reconciliation (primary region) found a team billed for a different number of seats than it has billed members (owners and editors), so the sync after a membership change missed it. The billing worker has already set the quantity right; the log line \"Seat quantity drift\" has the team and subscription IDs and both numbers. Look for a seat sync that couldn't be queued (SeatSyncQueueFailures) or went to the seat syncs dead-letter queue.",
+      metric: business(BusinessMetric.SeatQuantityDrift, region, Duration.hours(1)),
+      threshold: 0,
+      primaryOnly: true,
+    },
     // J11. Delete an account
     {
       id: "deletion-overdue",
