@@ -60,6 +60,9 @@
 // finds the quantity wrong it's drift: counted in SeatQuantityDrift (the
 // "Seat counts drifting" alarm) and logged with the IDs and both numbers, then
 // fixed.
+// Before the seat sync, the worker runs the entitlement check on such a
+// message (entitlements.ts): the team's subscription, status, plan and seats
+// against Stripe's.
 //
 // Logged: team, subscription and message IDs, quantities and reasons. Never a
 // name, an email or the Stripe key.

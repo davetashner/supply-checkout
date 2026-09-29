@@ -32,13 +32,13 @@
 //
 // The worker also takes seat syncs (seats.ts) from their own queue: the
 // account function queues one after a membership change, and the nightly
-// reconciliation one per team. Only the webhook can send to the billing
+// reconciliation one per team, for which the worker first checks the team's
+// status, plan and seats against Stripe (entitlements.ts). Only the webhook can send to the billing
 // queue, so only a verified Stripe event reaches step 1.
 //
 // Logged: event, team and subscription IDs, statuses, counts and SES error
 // names. Never an owner's email or a name.
 
-import { planForLookupKey } from "./catalog.js";
 import { type ClosingStripe, customerOf, endSubscriptionForClosedTeam } from "./closing.js";
 import {
   applySubscription,
@@ -51,7 +51,6 @@ import {
   listOwnerContacts,
   markWebhookProcessed,
   stripeCustomerTeam,
-  type SubscriptionState,
   type TeamContext,
   teamContextForStripeCustomer,
 } from "../data/index.js";
@@ -60,36 +59,19 @@ import type { EmailInput } from "../email/templates.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import { BILLING_EVENTS, type BillingEventType } from "./names.js";
 import type { BillingMessage } from "./webhook-handler.js";
+import { createEntitlementCheck, type EntitlementOutcome, type EntitlementStripe } from "./entitlements.js";
 import { createSeatSync, parseSeatSync, type SeatOutcome, type SeatStripe, type SeatSyncMessage } from "./seats.js";
+import { iso, type SubscriptionLike, subscriptionState } from "./subscription.js";
 import type { DbForWorker } from "./worker-db.js";
 
-/** The fields of a Stripe subscription the worker reads. */
-export interface SubscriptionLike {
-  readonly id: string;
-  readonly customer: string | { readonly id: string };
-  readonly status: string;
-  readonly cancel_at_period_end: boolean;
-  /** When it's set to cancel, if it is: set with `cancel_at_period_end`, or alone (a cancellation Stripe schedules by date). */
-  readonly cancel_at?: number | null;
-  readonly trial_end: number | null;
-  readonly default_payment_method: string | { readonly id: string } | null;
-  readonly items: {
-    readonly data: readonly {
-      readonly quantity?: number;
-      /** When the period began: the purge warns of one that began after the team closed (a renewal to refund). */
-      readonly current_period_start?: number;
-      readonly current_period_end: number;
-      readonly price: { readonly lookup_key: string | null; readonly recurring: { readonly interval: string } | null };
-    }[];
-  };
-}
+export { type SubscriptionLike, subscriptionState } from "./subscription.js";
 
 /** What the worker needs from the Stripe client: reading a subscription, cancelling a second one, and ending a closed team's (closing.ts). */
 export type WorkerStripe = ClosingStripe;
 
 export interface BillingWorkerDeps {
   readonly dbFor: DbForWorker;
-  readonly stripe: () => Promise<WorkerStripe & SeatStripe>;
+  readonly stripe: () => Promise<WorkerStripe & SeatStripe & EntitlementStripe>;
   readonly mailer: Mailer;
   readonly obs: Observability;
   readonly now?: () => number;
@@ -99,7 +81,6 @@ export interface BillingWorkerDeps {
 export type Outcome = "applied" | "duplicate" | "unknown_customer" | "team_gone" | "team_closed" | "second_subscription_canceled" | "ignored";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
-const iso = (seconds: number | null | undefined) => (typeof seconds === "number" && Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString() : undefined);
 
 const optional = (value: unknown, type: "string" | "number") => value === undefined || typeof value === type;
 
@@ -135,25 +116,6 @@ export function parseMessage(body: string): BillingMessage {
 
 /** What the worker takes: a verified Stripe event from the billing queue, or a seat sync from the seat sync queue (seats.ts). */
 export type QueueMessage = BillingMessage | SeatSyncMessage;
-
-/** Our view of a subscription: what applySubscription writes. */
-export function subscriptionState(sub: SubscriptionLike, customerId: string, replaces?: string): SubscriptionState {
-  const items = sub.items.data;
-  const first = items[0];
-  const known = planForLookupKey(first?.price.lookup_key);
-  const end = first ? iso(first.current_period_end) : undefined;
-  return {
-    customerId,
-    subscriptionId: sub.id,
-    ...(replaces !== undefined ? { replaces } : {}),
-    ...(known ? { plan: known.plan, interval: known.interval } : {}),
-    seats: items.reduce((sum, item) => sum + (item.quantity ?? 0), 0),
-    status: sub.status,
-    ...(end !== undefined ? { currentPeriodEnd: end } : {}),
-    // Canceled in the Customer Portal (at the period's end), or set to cancel on a date: either way it won't renew
-    cancelAtPeriodEnd: sub.cancel_at_period_end || typeof sub.cancel_at === "number",
-  };
-}
 
 /** Statuses after which the team is read-only (ENDED_STATUSES) or on hold: an owner is told when it gets there. */
 const readOnlyStatus = (status: string | undefined) => hasEnded(status) || status === "paused";
@@ -285,11 +247,18 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
   }
 
   const seats = createSeatSync({ dbFor: deps.dbFor, stripe: deps.stripe, obs, now: deps.now });
+  const entitlements = createEntitlementCheck({ dbFor: deps.dbFor, stripe: deps.stripe, obs, now: deps.now });
 
   /** `delivery` is the SQS message ID that delivered it, when a queue did: part of a seat update's idempotency key (seats.ts). */
-  return async (message: QueueMessage, delivery?: string): Promise<Outcome | SeatOutcome> => {
+  return async (message: QueueMessage, delivery?: string): Promise<Outcome | SeatOutcome | EntitlementOutcome> => {
     // Checked again here, whatever handed it over: only a well-formed seat sync goes to the seat sync
-    if ("kind" in message) return seats(parseSeatSync(JSON.stringify(message)), delivery);
+    if ("kind" in message) {
+      const sync = parseSeatSync(JSON.stringify(message));
+      // The nightly reconciliation: the team's status, plan and seats against Stripe's first (entitlements.ts), then the quantity.
+      // A recorded subscription or customer Stripe no longer has is counted there; the seat sync would only fail on it
+      if (sync.reason === "reconcile" && (await entitlements(sync)) === "missing") return "missing";
+      return seats(sync, delivery);
+    }
     const outcome = await process(message);
     obs.logger.info("Billing event", { eventId: message.eventId, type: message.type, outcome });
     // 6: after the event is recorded, so a failure here retries only this (the event is a duplicate then)

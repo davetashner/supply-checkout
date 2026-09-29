@@ -2597,6 +2597,71 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmsentitlementsdrifting1F92AAE5": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Entitlements drifting (J7, J8, us-east-1). Any EntitlementDrift over an hour: the nightly entitlement check (primary region, with the seat reconciliation) found a team whose subscription, status, plan or seats weren't what Stripe has, so a Stripe event was lost or is stuck. The billing worker has already applied Stripe's state (a missing subscription it can't fix); the log line \"Entitlement drift\" has the team and subscription IDs, the fields and both values. Owners weren't emailed about it. See docs/runbooks/billing-dlq-replay.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-entitlements-drifting",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "EntitlementDrift (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "EntitlementDrift",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 3600,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmsdeletionoverdueB544DD17": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -8738,6 +8803,13 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
+                  "JourneyAlarmsentitlementsdrifting1F92AAE5",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
                   "JourneyAlarmsdeletionoverdueB544DD17",
                   "Arn"
                 ]
@@ -8937,11 +9009,11 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdates (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdateFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdatesDeferred\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdatesDeferred (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdates (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdateFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdatesDeferred\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdatesDeferred (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: seat quantity updates, drift and sync failures\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdates (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdateFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdatesDeferred\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdatesDeferred (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdates (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdateFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdatesDeferred\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdatesDeferred (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: seat updates, seat and entitlement drift, sync failures\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"SeatQuantityUpdates\",\"Region\",\"us-east-1\",{\"label\":\"SeatQuantityUpdates (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatQuantityDrift\",\"Region\",\"us-east-1\",{\"label\":\"SeatQuantityDrift (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatSyncQueueFailures\",\"Region\",\"us-east-1\",{\"label\":\"SeatSyncQueueFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatQuantityUpdates\",\"Region\",\"us-west-2\",{\"label\":\"SeatQuantityUpdates (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatQuantityDrift\",\"Region\",\"us-west-2\",{\"label\":\"SeatQuantityDrift (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatSyncQueueFailures\",\"Region\",\"us-west-2\",{\"label\":\"SeatSyncQueueFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: teams the nightly seat reconciliation checked\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"SeatQuantityUpdates\",\"Region\",\"us-east-1\",{\"label\":\"SeatQuantityUpdates (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatQuantityDrift\",\"Region\",\"us-east-1\",{\"label\":\"SeatQuantityDrift (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EntitlementDrift\",\"Region\",\"us-east-1\",{\"label\":\"EntitlementDrift (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatSyncQueueFailures\",\"Region\",\"us-east-1\",{\"label\":\"SeatSyncQueueFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatQuantityUpdates\",\"Region\",\"us-west-2\",{\"label\":\"SeatQuantityUpdates (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatQuantityDrift\",\"Region\",\"us-west-2\",{\"label\":\"SeatQuantityDrift (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EntitlementDrift\",\"Region\",\"us-west-2\",{\"label\":\"EntitlementDrift (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatSyncQueueFailures\",\"Region\",\"us-west-2\",{\"label\":\"SeatSyncQueueFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: teams the nightly seat reconciliation checked\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },

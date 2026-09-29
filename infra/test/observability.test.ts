@@ -112,13 +112,14 @@ const ALARM_IDS = [
   "billing-events-late",
   "seat-syncs-stuck",
   "seat-counts-drifting",
+  "entitlements-drifting",
   "deletion-overdue",
   "team-closed-notices-failing",
   "team-reopened-notices-failing",
 ];
 
 /** Alarms on gauges that only the primary region's scheduled checks and purge send (ops-checks.ts). */
-const PRIMARY_ONLY_ALARM_IDS = ["imports-stuck", "near-sending-limit", "seat-counts-drifting", "deletion-overdue"];
+const PRIMARY_ONLY_ALARM_IDS = ["imports-stuck", "near-sending-limit", "seat-counts-drifting", "entitlements-drifting", "deletion-overdue"];
 
 describe("alarm topics", () => {
   it("has a P1 and a P2 topic, encrypted with a rotating key that CloudWatch may use, refusing plain HTTP", () => {

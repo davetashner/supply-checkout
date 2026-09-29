@@ -81,6 +81,24 @@ describe.skipIf(!endpoint)("billing on DynamoDB Local", () => {
     expect(await getBillingTeam(table.db, ctx, now)).toMatchObject({ status: "trialing", stripeSubscriptionId: "sub_test_1", closed: false, purging: false, readOnly: false });
   });
 
+  it("with asRead (the nightly entitlement check), applies only while the team is as it was read (supply-checkout-8jc.9)", async () => {
+    const { team, customer, ctx } = await linkedTeam();
+    // A new team: trialing on the trial plan, one seat, no subscription
+    const read = await getBillingTeam(table.db, ctx, now);
+    expect(read).toMatchObject({ status: "trialing", plan: "trial", seats: 1 });
+    const asRead = { status: "trialing", plan: "trial", seats: 1 };
+    // An event applied meanwhile: the check's older state must not overwrite it
+    expect(await applySubscription(table.db, ctx, state(customer, { status: "active" }), now)).toBe("applied");
+    await expect(applySubscription(table.db, ctx, state(customer), now, asRead)).rejects.toBeInstanceOf(ConflictError);
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ status: "active" });
+    // Read again, it applies
+    const now2 = { status: "active", plan: "starter", seats: 3, subscriptionId: "sub_test_1" };
+    expect(await applySubscription(table.db, ctx, state(customer, { status: "past_due" }), now, now2)).toBe("applied");
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ status: "past_due", stripeSubscriptionId: "sub_test_1" });
+    // A read that found no subscription, when there is one now
+    await expect(applySubscription(table.db, ctx, state(customer), now, { status: "past_due", plan: "starter", seats: 3 })).rejects.toBeInstanceOf(ConflictError);
+  });
+
   it("never touches a closed team", async () => {
     const { team, owner, customer, ctx } = await linkedTeam();
     await closeTeam(table.db, owner, { confirmName: team.name }, now);

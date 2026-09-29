@@ -72,6 +72,8 @@ export const BusinessMetric = {
   SeatQuantityUpdates: "SeatQuantityUpdates",
   /** Teams the nightly seat reconciliation found billed for a different number of seats than they have billed members: the event-driven sync missed them (J7). */
   SeatQuantityDrift: "SeatQuantityDrift",
+  /** Teams the nightly entitlement check found recorded with a different subscription, status, plan or seats than Stripe has: a Stripe event was lost or stuck (supply-checkout-8jc.9, J7, J8). */
+  EntitlementDrift: "EntitlementDrift",
   /** Membership changes whose seat sync couldn't be queued; the nightly reconciliation fixes the quantity (J7). */
   SeatSyncQueueFailures: "SeatSyncQueueFailures",
   /** Sign-outs whose refresh token Cognito didn't revoke: it stays valid until it expires (J0). */

@@ -132,7 +132,7 @@ describe("nightly seat reconciliation (supply-checkout-l50)", () => {
     };
   }
 
-  it("queues a seat check for each open team with a Stripe customer, read from the operators' index by keys, customer, closure and status only", async () => {
+  it("queues a seat and entitlement check for each open team with a Stripe customer, ended or not, read from the operators' index by keys, customer, closure and status only", async () => {
     const queries: Record<string, unknown>[] = [];
     const first = Array.from({ length: 11 }, (_, i) => teamItem(i + 1));
     const pages = [
@@ -145,7 +145,7 @@ describe("nightly seat reconciliation (supply-checkout-l50)", () => {
     });
     const { obs, logs, gauges } = fakeObservability();
     const { sqs, batches } = fakeSqs();
-    expect(await createSeatReconcileHandler({ db, queueUrl: "https://sqs.example/billing.fifo", sqs, obs, now: () => NOW })()).toEqual({ queued: 12 });
+    expect(await createSeatReconcileHandler({ db, queueUrl: "https://sqs.example/billing.fifo", sqs, obs, now: () => NOW })()).toEqual({ queued: 13 });
 
     const [query, second] = queries;
     expect(query).toMatchObject({ IndexName: "GSI3", Select: "SPECIFIC_ATTRIBUTES", ExpressionAttributeValues: { ":pk": "OPS#TEAMS" } });
@@ -155,7 +155,7 @@ describe("nightly seat reconciliation (supply-checkout-l50)", () => {
     expect(second?.ExclusiveStartKey).toEqual({ PK: "TEAM#team-91" });
 
     // Ten a batch, grouped by customer, one message per customer per day
-    expect(batches.map((b) => b.Entries?.length)).toEqual([10, 2]);
+    expect(batches.map((b) => b.Entries?.length)).toEqual([10, 3]);
     expect(batches[0]?.QueueUrl).toBe("https://sqs.example/billing.fifo");
     const entry = batches[0]?.Entries?.[0];
     expect(entry).toEqual({
@@ -165,8 +165,10 @@ describe("nightly seat reconciliation (supply-checkout-l50)", () => {
       MessageDeduplicationId: "reconcile-2026-09-26-cus_1",
     });
     expect(batches.flatMap((b) => b.Entries ?? []).map((e) => e.MessageGroupId)).not.toContain("cus_90");
-    expect(gauges).toEqual([{ metric: BusinessMetric.SeatReconcileTeams, value: 12, unit: undefined }]);
-    expect(logs).toEqual([{ level: "info", message: "Seat reconciliation queued", data: { teams: 12, queued: 12, failed: 0 } }]);
+    // An ended team is checked too: the entitlement check looks for a resubscription we missed
+    expect(batches.flatMap((b) => b.Entries ?? []).map((e) => e.MessageGroupId)).toContain("cus_92");
+    expect(gauges).toEqual([{ metric: BusinessMetric.SeatReconcileTeams, value: 13, unit: undefined }]);
+    expect(logs).toEqual([{ level: "info", message: "Seat reconciliation queued", data: { teams: 13, queued: 13, failed: 0 } }]);
   });
 
   it("sends zero when there's nothing to check, so the not-running alarm still sees it ran", async () => {

@@ -184,6 +184,14 @@ export async function listOwnerContacts(db: Db, ctx: TeamContext): Promise<{ rea
   return out;
 }
 
+/** The billing fields of a team as they were read (getBillingTeam), for applySubscription's `asRead`. */
+export interface BillingAsRead {
+  readonly status: string;
+  readonly plan: string;
+  readonly seats: number;
+  readonly subscriptionId?: string;
+}
+
 /** A subscription as the billing worker applies it to its team (ADR 0009). */
 export interface SubscriptionState {
   readonly customerId: string;
@@ -209,12 +217,20 @@ export interface SubscriptionState {
  * being the team's (or none yet, or the one it replaces). Applying the same
  * state twice changes nothing but `stripeSyncedAt` and the version.
  *
+ * With `asRead` (the nightly entitlement check, billing/entitlements.ts),
+ * also conditioned on the team's status, plan, seats and subscription being
+ * as they were read, so a Stripe event applied meanwhile is almost never
+ * overwritten with the older state the check fetched. It compares values,
+ * not a version: a change and back (A to B to A) between the read and the
+ * write, or a change only to `cancelAtPeriodEnd` or `currentPeriodEnd`, isn't
+ * seen, and the next event or night corrects it.
+ *
  * Returns "applied", or "ignored" when the team is gone, closed, being purged
  * or belongs to another customer by the time of the write. Any other failed
- * condition (the team took another subscription meanwhile) is a ConflictError,
- * so the event is retried and sees the new state.
+ * condition (the team took another subscription, or changed, meanwhile) is a
+ * ConflictError, so the event is retried and sees the new state.
  */
-export async function applySubscription(db: Db, ctx: TeamContext, state: SubscriptionState, now = new Date()): Promise<"applied" | "ignored"> {
+export async function applySubscription(db: Db, ctx: TeamContext, state: SubscriptionState, now = new Date(), asRead?: BillingAsRead): Promise<"applied" | "ignored"> {
   writable(db, ctx, "system");
   if (ctx.role !== "system") throw new ForbiddenError("Only billing applies a subscription");
   id(state.customerId, "Stripe customer ID");
@@ -243,6 +259,19 @@ export async function applySubscription(db: Db, ctx: TeamContext, state: Subscri
     sets.push("currentPeriodEnd = :end");
     values[":end"] = state.currentPeriodEnd;
   }
+  const unchanged: string[] = [];
+  if (asRead) {
+    // Every team is created with a status, plan and seats (createTeam); an absent one reads as "" or 0
+    const same = (path: string, key: string, value: string | number, absent: string | number) => {
+      values[key] = value;
+      unchanged.push(value === absent ? `(${path} = ${key} OR attribute_not_exists(${path}))` : `${path} = ${key}`);
+    };
+    same("#status", ":readStatus", asRead.status, "");
+    same("#plan", ":readPlan", asRead.plan, "");
+    same("seats", ":readSeats", asRead.seats, 0);
+    if (asRead.subscriptionId === undefined) unchanged.push("attribute_not_exists(stripeSubscriptionId)");
+    else same("stripeSubscriptionId", ":readSub", id(asRead.subscriptionId, "Stripe subscription ID"), "");
+  }
   const subscription = state.replaces !== undefined ? "(attribute_not_exists(stripeSubscriptionId) OR stripeSubscriptionId = :sub OR stripeSubscriptionId = :replaces)" : "(attribute_not_exists(stripeSubscriptionId) OR stripeSubscriptionId = :sub)";
   if (state.replaces !== undefined) values[":replaces"] = state.replaces;
   try {
@@ -252,8 +281,8 @@ export async function applySubscription(db: Db, ctx: TeamContext, state: Subscri
         Key: keys.team(ctx.teamId),
         UpdateExpression: `SET ${sets.join(", ")}`,
         // Never recreates a purged team, never touches a closed or purging one
-        ConditionExpression: `attribute_exists(PK) AND stripeCustomerId = :customer AND attribute_not_exists(closedAt) AND attribute_not_exists(purging) AND ${subscription}`,
-        ExpressionAttributeNames: { "#status": "status", "#version": "version", ...(state.plan !== undefined ? { "#plan": "plan" } : {}) },
+        ConditionExpression: [`attribute_exists(PK) AND stripeCustomerId = :customer AND attribute_not_exists(closedAt) AND attribute_not_exists(purging) AND ${subscription}`, ...unchanged].join(" AND "),
+        ExpressionAttributeNames: { "#status": "status", "#version": "version", ...(state.plan !== undefined || asRead ? { "#plan": "plan" } : {}) },
         ExpressionAttributeValues: values,
       }),
     );

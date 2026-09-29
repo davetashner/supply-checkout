@@ -5,6 +5,7 @@
 
 import { SendMessageCommand } from "@aws-sdk/client-sqs";
 import { beforeEach, describe, expect, it } from "vitest";
+import { entitlementDrift, type EntitlementStripe, UNRECORDED_GRACE_SECONDS } from "../src/billing/entitlements.js";
 import { parseSeatSync, seatQuantity, type SeatStripe, type SeatSubscription, type SeatSyncMessage, seatUpdateKey, sqsSeatSyncQueue } from "../src/billing/seats.js";
 import type { SQSEvent } from "aws-lambda";
 import { createBillingWorker, type QueueMessage, type SubscriptionLike, type WorkerStripe } from "../src/billing/worker.js";
@@ -31,6 +32,10 @@ let table: MemoryTable;
 let subs: Map<string, Sub>;
 let updates: { item: string; quantity: number; proration: string; key: string }[];
 let stripeDown: boolean;
+let listed: string[];
+let customerGone: boolean;
+let listFails: boolean;
+let onRetrieve: (() => void) | undefined;
 let denied: { command: string; input: Record<string, unknown> }[];
 let scopes: WorkerScope[];
 let counts: [string, number, unknown][];
@@ -84,17 +89,30 @@ beforeEach(() => {
   subs = new Map([[SUB, subscription(5)]]);
   updates = [];
   stripeDown = false;
+  listed = [];
+  customerGone = false;
+  listFails = false;
+  onRetrieve = undefined;
   denied = [];
   scopes = [];
   counts = [];
   logs = [];
-  const stripe: WorkerStripe & SeatStripe = {
+  const stripe: WorkerStripe & SeatStripe & EntitlementStripe = {
     subscriptions: {
       async retrieve(id: string) {
         if (stripeDown) throw Object.assign(new Error("Stripe is down"), { name: "StripeConnectionError" });
+        onRetrieve?.();
         const found = subs.get(id);
-        if (!found) throw new Error(`No such subscription ${id}`);
+        // As Stripe answers for an ID it doesn't have
+        if (!found) throw Object.assign(new Error(`No such subscription: '${id}'`), { type: "StripeInvalidRequestError", code: "resource_missing" });
         return typed(found);
+      },
+      async list({ customer, status, limit }) {
+        listed.push(`${customer} ${status} ${limit}`);
+        if (listFails) throw Object.assign(new Error("Stripe is busy"), { type: "StripeRateLimitError", code: "rate_limit" });
+        if (customerGone) throw Object.assign(new Error(`No such customer: '${customer}'`), { type: "StripeInvalidRequestError", code: "resource_missing" });
+        // Every customer's, newest first: the check must pick out the customer's own itself
+        return { data: [...subs.values()].sort((a, b) => (b.created ?? 0) - (a.created ?? 0)).map(typed) };
       },
       async update() {
         throw new Error("not used");
@@ -313,8 +331,189 @@ describe("the nightly reconciliation's check", () => {
 
   it("counts nothing when the seats are right", async () => {
     subs.set(SUB, subscription(3));
+    patchTeam({ seats: 3 });
     expect(await worker(seats("reconcile"))).toBe("in_sync");
     expect(counts).toEqual([]);
+  });
+});
+
+describe("the nightly entitlement check (supply-checkout-8jc.9)", () => {
+  const RECONCILE = "reconcile-2026-09-28-cus_test_1";
+  const nightly = () => worker(seats("reconcile", RECONCILE));
+  const meta = () => table.get(`TEAM#${TEAM}`, "META") as Record<string, unknown>;
+  const drift = () => counts.filter(([m]) => m === BusinessMetric.EntitlementDrift);
+  const OLD = NOW / 1000 - UNRECORDED_GRACE_SECONDS - 1;
+
+  beforeEach(() => {
+    // Seats already right, so only the entitlements are in question
+    subs.set(SUB, subscription(3));
+    patchTeam({ seats: 3 });
+  });
+
+  it("finds nothing to fix when the team matches Stripe, and lists nothing", async () => {
+    expect(await nightly()).toBe("in_sync");
+    expect(counts).toEqual([]);
+    expect(listed).toEqual([]);
+    expect(logs).toContainEqual(["info", "Entitlement check", { messageId: RECONCILE, outcome: "in_sync" }]);
+  });
+
+  it("alarms on a status change we missed (a forced mismatch), fixes it inside the worker role, and logs no name or email", async () => {
+    subs.set(SUB, subscription(3, { status: "past_due" }));
+    expect(await nightly()).toBe("in_sync");
+    expect(drift()).toEqual([[BusinessMetric.EntitlementDrift, 1, { teamId: TEAM }]]);
+    expect(logs).toContainEqual([
+      "warn",
+      "Entitlement drift",
+      { teamId: TEAM, fields: "status", ours: { subscriptionId: SUB, status: "active", plan: "starter", seats: 3 }, stripe: { subscriptionId: SUB, status: "past_due", plan: "starter", seats: 3 } },
+    ]);
+    expect(meta()).toMatchObject({ status: "past_due", stripeSubscriptionId: SUB });
+    expect(denied).toEqual([]);
+    expect(JSON.stringify(logs)).not.toMatch(/example\.com|Echo Plumbing/);
+    // Fixed: the next night finds nothing
+    counts = [];
+    expect(await worker(seats("reconcile", "reconcile-2026-09-29-cus_test_1"))).toBe("in_sync");
+    expect(counts).toEqual([]);
+  });
+
+  it("alarms on a plan change we missed, and records it", async () => {
+    patchTeam({ plan: "trial" });
+    expect(await nightly()).toBe("in_sync");
+    expect(drift()).toHaveLength(1);
+    expect(logs.find(([, message]) => message === "Entitlement drift")?.[2]).toMatchObject({ fields: "plan" });
+    expect(meta()).toMatchObject({ plan: "starter", billingInterval: "month" });
+  });
+
+  it("turns a team read-only whose subscription ended without us hearing, after looking for a newer one", async () => {
+    subs.set(SUB, subscription(3, { status: "canceled" }));
+    expect(await nightly()).toBe("subscription_ended");
+    expect(listed).toEqual([`${CUSTOMER} all 10`]);
+    expect(logs.find(([, message]) => message === "Entitlement drift")?.[2]).toMatchObject({ fields: "status" });
+    expect(meta()).toMatchObject({ status: "canceled" });
+    expect(updates).toEqual([]);
+  });
+
+  it("records a subscription whose checkout we never heard about, once it's past the grace period", async () => {
+    patchTeam({ stripeSubscriptionId: undefined, status: "trialing", plan: "trial", seats: 1 });
+    subs.set(SUB, subscription(3, { status: "trialing", created: NOW / 1000 - 60 }));
+    // Minutes old: its events may still be on the way
+    expect(await nightly()).toBe("no_subscription");
+    expect(counts).toEqual([]);
+    expect(meta().stripeSubscriptionId).toBeUndefined();
+    subs.set(SUB, subscription(3, { status: "trialing", created: OLD }));
+    expect(await worker(seats("reconcile", "reconcile-2026-09-29-cus_test_1"))).toBe("in_sync");
+    expect(logs.find(([, message]) => message === "Entitlement drift")?.[2]).toMatchObject({ fields: "subscription,plan,seats" });
+    expect(meta()).toMatchObject({ stripeSubscriptionId: SUB, status: "trialing", plan: "starter", seats: 3 });
+    expect(denied).toEqual([]);
+  });
+
+  it("records a resubscription we never heard about, in place of the ended one", async () => {
+    subs.set(SUB, subscription(3, { status: "canceled", created: OLD - 86400 }));
+    patchTeam({ status: "canceled" });
+    subs.set("sub_test_2", subscription(3, { id: "sub_test_2", created: OLD }));
+    expect(await nightly()).toBe("in_sync");
+    expect(logs.find(([, message]) => message === "Entitlement drift")?.[2]).toMatchObject({ fields: "subscription,status" });
+    expect(meta()).toMatchObject({ stripeSubscriptionId: "sub_test_2", status: "active" });
+  });
+
+  it("ignores another customer's subscription in the listing, and changes nothing for an ended team with no newer one", async () => {
+    subs.set(SUB, subscription(3, { status: "canceled" }));
+    patchTeam({ status: "canceled" });
+    subs.set("sub_other", subscription(3, { id: "sub_other", created: OLD, customer: { id: "cus_other" } }));
+    expect(await nightly()).toBe("subscription_ended");
+    expect(counts).toEqual([]);
+    expect(meta()).toMatchObject({ stripeSubscriptionId: SUB, status: "canceled" });
+  });
+
+  it("counts an ended team whose customer Stripe doesn't have, and stops there instead of failing every night", async () => {
+    subs.set(SUB, subscription(3, { status: "canceled" }));
+    patchTeam({ status: "canceled" });
+    customerGone = true;
+    expect(await nightly()).toBe("missing");
+    expect(drift()).toHaveLength(1);
+    expect(logs).toContainEqual(["warn", "Entitlement drift: customer missing in Stripe", { teamId: TEAM, status: "canceled" }]);
+    expect(meta()).toMatchObject({ stripeSubscriptionId: SUB, status: "canceled" });
+  });
+
+  it("throws when listing the customer's subscriptions fails for another reason", async () => {
+    patchTeam({ stripeSubscriptionId: undefined });
+    subs.clear();
+    listFails = true;
+    await expect(nightly()).rejects.toThrow("Stripe is busy");
+    expect(counts).toEqual([]);
+  });
+
+  it("doesn't take an incomplete subscription (its first payment hasn't gone through) as unrecorded", async () => {
+    patchTeam({ stripeSubscriptionId: undefined, status: "trialing", plan: "trial", seats: 1 });
+    subs.set(SUB, subscription(3, { status: "incomplete", created: OLD }));
+    expect(await nightly()).toBe("no_subscription");
+    expect(counts).toEqual([]);
+    expect(meta().stripeSubscriptionId).toBeUndefined();
+  });
+
+  it("counts a recorded subscription Stripe doesn't have, and stops there", async () => {
+    patchTeam({ stripeSubscriptionId: "sub_gone" });
+    expect(await nightly()).toBe("missing");
+    expect(drift()).toHaveLength(1);
+    expect(logs).toContainEqual(["warn", "Entitlement drift: subscription missing in Stripe", { teamId: TEAM, subscriptionId: "sub_gone", status: "active" }]);
+    expect(meta()).toMatchObject({ stripeSubscriptionId: "sub_gone", status: "active" });
+  });
+
+  it("throws when Stripe can't be reached, so the message is retried", async () => {
+    stripeDown = true;
+    await expect(nightly()).rejects.toThrow("Stripe is down");
+    expect(counts).toEqual([]);
+  });
+
+  it("never overwrites an event applied meanwhile: it throws, and the retry finds the team in sync", async () => {
+    subs.set(SUB, subscription(3, { status: "past_due" }));
+    // The billing worker applies the same change between the check's read and its write
+    onRetrieve = () => {
+      onRetrieve = undefined;
+      patchTeam({ status: "past_due" });
+    };
+    await expect(nightly()).rejects.toThrow("The team's subscription changed meanwhile");
+    expect(counts).toEqual([]);
+    expect(await nightly()).toBe("in_sync");
+    expect(counts).toEqual([]);
+  });
+
+  it("skips an unknown customer, a closed, purging or gone team, and a subscription that isn't the customer's", async () => {
+    expect(await worker(seats("reconcile", RECONCILE, "cus_unknown"))).toBe("unknown_customer");
+    patchTeam({ closedAt: "2026-09-27T00:00:00.000Z" });
+    expect(await nightly()).toBe("team_closed");
+    patchTeam({ closedAt: undefined, purging: "2026-09-27T00:00:00.000Z" });
+    expect(await nightly()).toBe("team_closed");
+    patchTeam({ purging: undefined });
+    subs.set(SUB, subscription(3, { status: "past_due", customer: { id: "cus_other" } }));
+    expect(await nightly()).toBe("not_ours");
+    expect(logs).toContainEqual(["warn", "Entitlement check skipped: subscription isn't the customer's", { teamId: TEAM, subscriptionId: SUB }]);
+    subs.set(SUB, subscription(3, { status: "past_due" }));
+    patchTeam({ stripeCustomerId: "cus_other" });
+    expect(await nightly()).toBe("not_ours");
+    expect(logs).toContainEqual(["warn", "Entitlement check skipped: the team has another Stripe customer", { teamId: TEAM }]);
+    patchTeam({ stripeCustomerId: CUSTOMER });
+    table.put({ PK: `STRIPE#${CUSTOMER}`, SK: "TEAM", type: "stripeLink", customerId: CUSTOMER, teamId: "team-other" });
+    expect(await nightly()).toBe("team_gone");
+    table.put({ PK: `STRIPE#${CUSTOMER}`, SK: "TEAM", type: "stripeLink", customerId: CUSTOMER, teamId: TEAM });
+    remove(`TEAM#${TEAM}`, "META");
+    expect(await nightly()).toBe("team_gone");
+    expect(counts).toEqual([]);
+    expect(listed).toEqual([]);
+  });
+
+  it("runs only for the nightly reconciliation, not after a membership change", async () => {
+    subs.set(SUB, subscription(3, { status: "past_due" }));
+    expect(await worker(seats("membership"))).toBe("in_sync");
+    expect(counts).toEqual([]);
+    expect(meta()).toMatchObject({ status: "active" });
+  });
+
+  it("compares the subscription, status, plan and seats, and leaves the plan of a price we don't sell alone", () => {
+    const team = { stripeSubscriptionId: SUB, status: "active", plan: "starter", seats: 3 };
+    const state = { customerId: CUSTOMER, subscriptionId: SUB, status: "active", plan: "starter", seats: 3, cancelAtPeriodEnd: false };
+    expect(entitlementDrift(team, state)).toEqual([]);
+    expect(entitlementDrift({ ...team, plan: "trial" }, { ...state, plan: undefined })).toEqual([]);
+    expect(entitlementDrift({ stripeSubscriptionId: undefined, status: "trialing", plan: "trial", seats: 1 }, state)).toEqual(["subscription", "status", "plan", "seats"]);
   });
 });
 
