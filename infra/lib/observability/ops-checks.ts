@@ -9,10 +9,29 @@ import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import { LogGroup } from "aws-cdk-lib/aws-logs";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
-import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, GSI1, STUCK_IMPORT_ATTRIBUTES, TEAM_PURGE_ATTRIBUTES, TEAM_PURGE_MARK_ATTRIBUTES } from "../../../backend/src/data/schema.js";
-import { STRIPE_ENV, stripeSecretName, type StripeMode } from "../../../backend/src/billing/names.js";
+import { billingResourceNames, STRIPE_ENV, stripeSecretName, type StripeMode } from "../../../backend/src/billing/names.js";
+import {
+  CLOSED_TEAMS_PARTITION,
+  COMMITTING_IMPORTS_PARTITION,
+  GSI1,
+  GSI3,
+  OPS_TEAMS_PARTITION,
+  SEAT_RECONCILE_ATTRIBUTES,
+  STUCK_IMPORT_ATTRIBUTES,
+  TEAM_PURGE_ATTRIBUTES,
+  TEAM_PURGE_MARK_ATTRIBUTES,
+} from "../../../backend/src/data/schema.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
-import { CHECK_EVERY_MINUTES, OPS_ENV, opsResourceNames, PURGE_BUDGET_MS, PURGE_EVERY_HOURS, PURGE_SILENT_ALARM_HOURS } from "../../../backend/src/ops/names.js";
+import {
+  CHECK_EVERY_MINUTES,
+  OPS_ENV,
+  opsResourceNames,
+  PURGE_BUDGET_MS,
+  PURGE_EVERY_HOURS,
+  PURGE_SILENT_ALARM_HOURS,
+  SEAT_RECONCILE_HOUR_UTC,
+  SEAT_RECONCILE_SILENT_ALARM_DAYS,
+} from "../../../backend/src/ops/names.js";
 import { stripeSecretArn } from "../config.js";
 import { grantPutDeletionRecords } from "../deletions.js";
 import { bundling } from "../stacks/api-stack.js";
@@ -73,6 +92,16 @@ export interface OpsChecksProps {
  *   `closedAt`), and may read the one Stripe secret key for this
  *   environment and mode (secretsmanager:GetSecretValue on its ARN only).
  *
+ * - `seatReconcile` (supply-checkout-l50): nightly at SEAT_RECONCILE_HOUR_UTC,
+ *   it queues a seat check on the seat sync queue for every open team with a
+ *   Stripe customer (backend/src/ops/seat-reconcile-handler.ts); the billing
+ *   worker compares and alarms on drift ("Seat counts drifting"). It may Query
+ *   only GSI3's OPS#TEAMS partition, naming and reading only
+ *   SEAT_RECONCILE_ATTRIBUTES (keys, Stripe customer, closure, status), and
+ *   sqs:SendMessage on the seat sync queue (by its name, from the api stack).
+ *   No team partition, no Stripe key. `seatReconcileNotRunning` alarms when
+ *   its SeatReconcileTeams gauge stops arriving.
+ *
  * The checks run every CHECK_EVERY_MINUTES from an EventBridge rule, each with its own
  * log group and a role that writes only to it. A failed run shows in the
  * Lambda errors alarm; the gauge alarms treat missing data as not breaching.
@@ -83,6 +112,9 @@ export class OpsChecks extends Construct {
   readonly teamPurge: NodejsFunction;
   /** "Deletion job not running": no ClosedTeamsOverdue sample for PURGE_SILENT_ALARM_HOURS (J11). */
   readonly purgeNotRunning: Alarm;
+  readonly seatReconcile: NodejsFunction;
+  /** "Seat reconciliation not running": no SeatReconcileTeams sample for SEAT_RECONCILE_SILENT_ALARM_DAYS (J7). */
+  readonly seatReconcileNotRunning: Alarm;
 
   constructor(scope: Construct, id: string, props: OpsChecksProps) {
     super(scope, id);
@@ -240,6 +272,64 @@ export class OpsChecks extends Construct {
       treatMissingData: TreatMissingData.BREACHING,
     });
     props.topics.notify(this.purgeNotRunning, "P2");
+
+    // The nightly seat reconciliation: lists teams from the operators' index, queues checks for the billing worker on the seat sync queue
+    const seatQueue = billingResourceNames(props.envName).seatQueue;
+    this.seatReconcile = this.check(
+      "SeatReconcile",
+      "seat-reconcile",
+      {
+        functionName: names.seatReconcileFunction,
+        description: "Queues a nightly seat quantity check for every open team with a Stripe customer",
+        environment: {
+          [OPS_ENV.tableName]: props.tableName,
+          [OPS_ENV.seatQueueUrl]: `https://sqs.${Aws.REGION}.${Aws.URL_SUFFIX}/${Aws.ACCOUNT_ID}/${seatQueue}`,
+        },
+      },
+      { schedule: Schedule.cron({ minute: "0", hour: String(SEAT_RECONCILE_HOUR_UTC) }), timeout: Duration.minutes(5) },
+    );
+    this.seatReconcile.addToRolePolicy(
+      new PolicyStatement({
+        sid: "TeamsIndexOnly",
+        actions: ["dynamodb:Query"],
+        resources: [`${tableArn}/index/${GSI3}`],
+        conditions: {
+          "ForAllValues:StringEquals": {
+            "dynamodb:LeadingKeys": [OPS_TEAMS_PARTITION],
+            "dynamodb:Attributes": [...SEAT_RECONCILE_ATTRIBUTES],
+          },
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
+    this.seatReconcile.addToRolePolicy(
+      new PolicyStatement({
+        sid: "TableKeyThroughDynamoDb",
+        actions: ["kms:Decrypt", "kms:DescribeKey"],
+        resources: [tableKey],
+        conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
+      }),
+    );
+    // SendMessageBatch is authorized as sqs:SendMessage
+    this.seatReconcile.addToRolePolicy(new PolicyStatement({ sid: "QueueSeatChecks", actions: ["sqs:SendMessage"], resources: [Stack.of(this).formatArn({ service: "sqs", resource: seatQueue })] }));
+
+    // The run sends its gauge every night. Two days without one means the schedule is off or
+    // every run fails before it can count: missing data breaches, and drift would go unseen.
+    this.seatReconcileNotRunning = new Alarm(this, "SeatReconcileNotRunning", {
+      alarmName: `supply-checkout-${props.envName}-p2-seat-reconcile-not-running`,
+      alarmDescription: [
+        `P2 Seat reconciliation not running (J7, ${Stack.of(this).region}).`,
+        `No SeatReconcileTeams sample from the nightly seat reconciliation for ${SEAT_RECONCILE_SILENT_ALARM_DAYS} days: its schedule is disabled or deleted, or every run fails before it lists the teams. Seat drift isn't being caught, and Seat counts drifting can't see it.`,
+        "Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+      ].join(" "),
+      metric: business(BusinessMetric.SeatReconcileTeams, Stack.of(this).region, Duration.days(1), "SampleCount"),
+      threshold: 1,
+      comparisonOperator: ComparisonOperator.LESS_THAN_THRESHOLD,
+      evaluationPeriods: SEAT_RECONCILE_SILENT_ALARM_DAYS,
+      datapointsToAlarm: SEAT_RECONCILE_SILENT_ALARM_DAYS,
+      treatMissingData: TreatMissingData.BREACHING,
+    });
+    props.topics.notify(this.seatReconcileNotRunning, "P2");
   }
 
   /** A function from backend/src/ops/<name>.ts, run on the schedule (every CHECK_EVERY_MINUTES unless `every` says). */
@@ -247,9 +337,10 @@ export class OpsChecks extends Construct {
     id: string,
     name: string,
     props: { functionName: string; description: string; environment: Record<string, string> },
-    options: { every?: Duration; timeout?: Duration } = {},
+    options: { every?: Duration; schedule?: Schedule; timeout?: Duration } = {},
   ): NodejsFunction {
     const every = options.every ?? Duration.minutes(CHECK_EVERY_MINUTES);
+    const schedule = options.schedule ?? Schedule.rate(every);
     const logGroup = new LogGroup(this, `${id}Logs`, { retention: LOG_RETENTION });
     const role = new Role(this, `${id}Role`, {
       assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
@@ -272,8 +363,8 @@ export class OpsChecks extends Construct {
       bundling,
     });
     new Rule(this, `${id}Schedule`, {
-      description: `Runs the ${name} function every ${every.toHumanString()}`,
-      schedule: Schedule.rate(every),
+      description: options.schedule ? `Runs the ${name} function on ${schedule.expressionString}` : `Runs the ${name} function every ${every.toHumanString()}`,
+      schedule,
       // The next run is soon; a retry would only double the gauge (or the purge's work)
       targets: [new LambdaFunction(fn, { retryAttempts: 0 })],
     });

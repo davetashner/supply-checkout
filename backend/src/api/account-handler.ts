@@ -108,6 +108,16 @@
 // linked signs in through it (docs/infrastructure.md, Sign-in). Passwords,
 // secrets and codes are never logged.
 //
+// Seats (supply-checkout-l50): after a membership change commits (an invite
+// accepted, a role changed, a member removed or leaving, an account deleted,
+// a team reopened), a seat sync for the team's Stripe customer goes on the
+// seat sync queue (billing/seats.ts), and the billing worker sets the
+// subscription's quantity to the billed members. Only for a team with a
+// Stripe customer that isn't closed, and best effort: the change stands, and
+// one that couldn't be queued is logged and counted (SeatSyncQueueFailures)
+// for the nightly reconciliation to fix. The customer comes from the team's
+// own item, never the request.
+//
 // Invite emails: the invite is written first, then sent (email/mailer.ts). If
 // SES won't take it, the invite stays, marked failed (`not_sent`), so the
 // owner sees "Couldn't deliver" and can re-send or revoke it. Addresses,
@@ -171,6 +181,7 @@ import {
 import { EmailNotSentError, type Mailer, sendInviteEmail, sendTeamNotice } from "../email/mailer.js";
 import type { EmailInput } from "../email/templates.js";
 import type { DeletionLog } from "../deletions/records.js";
+import type { SeatSyncQueue } from "../billing/seats.js";
 import { BusinessMetric, type BusinessMetricName, type Observability } from "../observability/index.js";
 import type { DbForAccount } from "./account-db.js";
 import type { CognitoUser, DeleteUser, EmailCodes, TotpSetup, UserInfo } from "./cognito-user.js";
@@ -195,6 +206,8 @@ export interface AccountHandlerDeps {
   readonly deleteUser: DeleteUser;
   /** Where a deleted account's record goes (deletions/records.ts). */
   readonly deletions: DeletionLog;
+  /** Queues a seat sync on the seat sync queue after a membership change (billing/seats.ts). Absent, nothing is queued. */
+  readonly seats?: SeatSyncQueue;
   readonly now?: () => number;
 }
 
@@ -452,7 +465,9 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const db = dbFor({ userId, teamId: invite.teamId });
     const ctx = await acceptInvite(db, { userId, verifiedEmail: email }, invite, token, at);
     obs.count(BusinessMetric.InvitesAccepted, 1, { teamId: ctx.teamId });
-    return json(200, { team: teamBody(await getTeam(db, ctx), ctx.role) });
+    const team = await getTeam(db, ctx);
+    await queueSeatSync(ctx.teamId, team);
+    return json(200, { team: teamBody(team, ctx.role) });
   }
 
   /** A path parameter that must be an ID, or 400. */
@@ -499,6 +514,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const role = memberRole(jsonBody(event, ["role"]).role);
     const { target, db } = await targetMember(event, userId, teamId, ctx);
     await setMemberRole(db, ctx, target, role);
+    await seatsAfterChange(db, ctx);
     const member = await getMember(db, ctx, target);
     if (!member) throw new ApiError(409, "aborted", "That person was removed from the team just now");
     return json(200, { member: memberBody(member) });
@@ -521,7 +537,34 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
           })
       : undefined;
     await removeMember(db, ctx, target, email ? { verifiedEmail: email } : {});
+    await seatsAfterChange(db, ctx);
     return noContent();
+  }
+
+  /**
+   * Queues a seat sync for the team's Stripe customer (see "Seats" at the
+   * top), if it has one and isn't closed. Never throws: a failure is logged
+   * (the error's name only) and counted.
+   */
+  async function queueSeatSync(teamId: string, team: Pick<Team, "stripeCustomerId" | "closedAt">): Promise<void> {
+    if (!deps.seats || !team.stripeCustomerId || team.closedAt) return;
+    try {
+      await deps.seats(team.stripeCustomerId, "membership");
+    } catch (error) {
+      obs.logger.warn("Seat sync not queued", { teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      obs.count(BusinessMetric.SeatSyncQueueFailures, 1, { teamId });
+    }
+  }
+
+  /** queueSeatSync after a change to the team's members, reading the team as it is now. Never throws. */
+  async function seatsAfterChange(db: ReturnType<DbForAccount>, ctx: TeamContext): Promise<void> {
+    if (!deps.seats) return;
+    const team = await getTeam(db, ctx).catch((error: unknown) => {
+      obs.logger.warn("Seat sync not queued", { teamId: ctx.teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      obs.count(BusinessMetric.SeatSyncQueueFailures, 1, { teamId: ctx.teamId });
+      return undefined;
+    });
+    if (team) await queueSeatSync(ctx.teamId, team);
   }
 
   /** An owner's context for the path's team, or 403. */
@@ -617,6 +660,8 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     if (reopenedNow) {
       obs.count(BusinessMetric.TeamsReopened, 1, { teamId });
       obs.logger.info("Team reopened", { teamId });
+      // Members may have left while it was closed
+      await queueSeatSync(teamId, team);
       await noticeOwners(db, ctx, { kind: "teamReopened", teamName: team.name }, REOPENED_NOTICES);
     }
     return json(200, { team: teamBody(team, ctx.role) });
@@ -696,6 +741,8 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
           if (closedNow) obs.count(BusinessMetric.TeamsClosed, 1, { teamId: ctx.teamId });
         }
         await removeMember(db, ctx, userId, { reason: "account_deleted" }, at);
+        // A team it closed has nothing left to bill
+        if (!alone) await queueSeatSync(ctx.teamId, team);
       }),
     );
     const failed = left.find((r) => r.status === "rejected");

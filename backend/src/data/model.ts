@@ -275,11 +275,10 @@ export const PAID_STATUSES: readonly string[] = ["active", "past_due"];
  * owner invites someone (createInvite), and acceptInvite enforces it
  * atomically with the team's `members` count.
  *
- * This is the one place the cap is decided. Seat billing (bead
- * supply-checkout-l50) plugs in here: when a paid team's members must fit its
- * paid seats, return `Math.min(MEMBERS_PER_TEAM, team.seats)` for paying
- * teams. Until then seats aren't enforced. A team with a live comp
- * (liveComp) counts as paying.
+ * This is the one place the cap is decided. Paid seats don't cap it: the
+ * subscription's seat quantity follows the team's billed members instead
+ * (supply-checkout-l50, data/seats.ts and billing/seats.ts). A team with a
+ * live comp (liveComp) counts as paying.
  */
 export function memberCap(team: { readonly status?: unknown; readonly seats?: unknown; readonly compPlan?: unknown; readonly compUntil?: unknown }, now = new Date()): number {
   // A live comp counts as paying (ADR 0015)

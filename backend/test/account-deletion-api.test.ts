@@ -57,6 +57,8 @@ let refuse: Set<string>;
 // The owners of a team that just closed can't be listed
 let memberListFails: boolean;
 let accountHandler: ReturnType<typeof createAccountHandler>;
+// Seat syncs queued after a membership change (billing/seats.ts)
+let queued: [string, string][];
 let dataHandler: ReturnType<typeof createDataHandler>;
 
 function observability(): Observability {
@@ -117,6 +119,7 @@ beforeEach(() => {
   notices = [];
   refuse = new Set();
   memberListFails = false;
+  queued = [];
   table = new MemoryTable();
   // team-a: an owner, a contributor and a viewer; team-b: two owners and Pat
   team("team-a", { [OWNER]: "owner", [PAT]: "contributor", [VIEWER]: "viewer" });
@@ -152,7 +155,9 @@ beforeEach(() => {
       return { messageId: `notice-${notices.length}` };
     },
   };
-  accountHandler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer, emailCodes: unusedEmailCodes, totp: unusedTotp, deleteUser, deletions: deletions.log, now: () => now });
+  accountHandler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer, emailCodes: unusedEmailCodes, totp: unusedTotp, deleteUser, deletions: deletions.log, now: () => now, seats: async (customer, reason) => {
+    queued.push([customer, reason]);
+  } });
   dataHandler = createDataHandler({ dbForTeam: (teamId) => table.db(teamId), obs, now: () => now });
 });
 
@@ -1137,5 +1142,29 @@ describe("purging closed teams", () => {
     expect(await purgeTeam(table.db(undefined), "team-a", new Date(NOW + 31 * DAY))).toEqual({ deleted: 0, skipped: true });
     expect(partition("TEAM#team-a")).toHaveLength(before);
     expect(meta("team-a")?.purging).toBeUndefined();
+  });
+});
+
+describe("seats (supply-checkout-l50)", () => {
+  const withCustomer = (teamId: string) => table.put({ ...(meta(teamId) as Record<string, unknown>), stripeCustomerId: `cus_${teamId.slice(5)}` });
+
+  it("queues a seat sync for each team a deleted account left, but not one it closed", async () => {
+    withCustomer("team-a");
+    withCustomer("team-b");
+    team("team-solo", { [SOLO]: "owner" }, { stripeCustomerId: "cus_solo" });
+    team("team-pat", { [PAT]: "owner" }, { stripeCustomerId: "cus_pat" });
+    expect((await deleteAccount(PAT)).status).toBe(204);
+    expect(queued.sort()).toEqual([["cus_a", "membership"], ["cus_b", "membership"]]);
+  });
+
+  it("queues one when a team is reopened (members may have left while it was closed), and none when it closes", async () => {
+    withCustomer("team-a");
+    expect((await close()).status).toBe(200);
+    expect(queued).toEqual([]);
+    expect((await reopen()).status).toBe(200);
+    expect(queued).toEqual([["cus_a", "membership"]]);
+    // Reopening an open team changes nothing, and queues nothing
+    expect((await reopen()).status).toBe(200);
+    expect(queued).toHaveLength(1);
   });
 });

@@ -10,8 +10,9 @@ import { createAccountHandler } from "../src/api/account-handler.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
 import { MEMBER_ROW_ATTRIBUTES } from "../src/data/schema.js";
-import type { Observability } from "../src/observability/index.js";
-import { accountPartitions, fakeMailer, unusedDeleteUser, unusedDeletionLog, unusedEmailCodes, unusedTotp } from "./helpers.js";
+import { connection } from "../src/data/client.js";
+import { BusinessMetric, type Observability } from "../src/observability/index.js";
+import { accountPartitions, fakeDb, fakeMailer, unusedDeleteUser, unusedDeletionLog, unusedEmailCodes, unusedTotp } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const mails = fakeMailer();
@@ -26,6 +27,11 @@ let table: MemoryTable;
 let scopes: AccountScope[];
 let handler: ReturnType<typeof createAccountHandler>;
 let errors: unknown[];
+// Seat syncs queued (billing/seats.ts), and the switches that make queueing or the team read after a change fail
+let queued: [string, string][];
+let counted: [string, number, unknown][];
+let queueFails: boolean;
+let teamReadFails: boolean;
 
 function member(teamId: string, userId: string, role: string, email?: string) {
   table.put({ PK: `TEAM#${teamId}`, SK: `MEMBER#${userId}`, type: "member", teamId, userId, role, ...(email ? { email } : {}), joinedAt: "2026-09-01T00:00:00.000Z" });
@@ -42,16 +48,27 @@ beforeEach(() => {
   table = new MemoryTable();
   scopes = [];
   errors = [];
+  queued = [];
+  counted = [];
+  queueFails = false;
+  teamReadFails = false;
   team("team-a", { [OWNER]: "owner", [CONTRIBUTOR]: "contributor", [VIEWER]: "viewer" });
   team("team-b", { [OUTSIDER]: "owner" });
   const dbFor: DbForAccount = (scope) => {
     scopes.push(scope);
-    return table.scoped(accountPartitions(scope));
+    const db = table.scoped(accountPartitions(scope));
+    if (!teamReadFails) return db;
+    // The whole team item (getTeam) can't be read; everything else can
+    return fakeDb(async (command) => {
+      const input = command.input as { Key?: { SK?: string }; ProjectionExpression?: string };
+      if (command.constructor.name === "GetCommand" && input.Key?.SK === "META" && !input.ProjectionExpression) throw Object.assign(new Error("Throttled"), { name: "ThrottlingException" });
+      return connection(db).doc.send(command as never);
+    });
   };
   const obs = {
     region: "test-local-1",
     logger: { info: () => {}, warn: () => {}, error: (_m: string, e: unknown) => errors.push(e), addContext: () => {} },
-    count: () => {},
+    count: (metric: string, n: number, meta: unknown) => counted.push([metric, n, meta]),
     flush: () => {},
   } as unknown as Observability;
   // Leaving reads the caller's verified address from Cognito (their pending invites to it go too)
@@ -59,7 +76,10 @@ beforeEach(() => {
     const sub = token.replace(/^token-/, "");
     return { sub, email: `${sub.slice(5)}@example.com`, emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false };
   };
-  handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, emailCodes: unusedEmailCodes, totp: unusedTotp, now: () => NOW });
+  handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, emailCodes: unusedEmailCodes, totp: unusedTotp, now: () => NOW, seats: async (customer, reason) => {
+    if (queueFails) throw Object.assign(new Error("SQS is down"), { name: "ServiceUnavailable" });
+    queued.push([customer, reason]);
+  } });
 });
 
 function event(method: string, path: string, user: string, body?: unknown, rawBody?: string): DataEvent {
@@ -306,5 +326,48 @@ describe("DELETE /teams/{teamId}/members/{userId}", () => {
     };
     expect(await remove(VIEWER)).toMatchObject({ status: 500, body: { error: { code: "internal", message: "Something went wrong" } } });
     expect(errors).toHaveLength(1);
+  });
+});
+
+describe("seats (supply-checkout-l50)", () => {
+  const withCustomer = (teamId = "team-a", extra: Record<string, unknown> = {}) => table.put({ ...(table.get(`TEAM#${teamId}`, "META") as Record<string, unknown>), stripeCustomerId: `cus_${teamId.slice(5)}`, ...extra });
+
+  it("queues a seat sync for the team's Stripe customer after a role change, a removal and a leave", async () => {
+    withCustomer();
+    expect((await setRole(VIEWER, "contributor")).status).toBe(200);
+    expect(queued).toEqual([["cus_a", "membership"]]);
+    expect((await remove(CONTRIBUTOR)).status).toBe(204);
+    expect((await remove(VIEWER, VIEWER)).status).toBe(204);
+    expect(queued).toEqual([["cus_a", "membership"], ["cus_a", "membership"], ["cus_a", "membership"]]);
+  });
+
+  it("queues nothing for a team without a Stripe customer, or a closed one", async () => {
+    expect((await setRole(VIEWER, "contributor")).status).toBe(200);
+    withCustomer("team-a", { closedAt: "2026-09-25T00:00:00.000Z" });
+    expect((await remove(VIEWER, VIEWER)).status).toBe(204);
+    expect(queued).toEqual([]);
+  });
+
+  it("keeps the change when the sync can't be queued, or the team can't be read after it, and counts each", async () => {
+    withCustomer();
+    queueFails = true;
+    expect((await setRole(VIEWER, "contributor")).status).toBe(200);
+    expect(roleOf(VIEWER)).toBe("contributor");
+    queueFails = false;
+    teamReadFails = true;
+    expect((await setRole(VIEWER, "viewer")).status).toBe(200);
+    expect(roleOf(VIEWER)).toBe("viewer");
+    expect(queued).toEqual([]);
+    expect(counted.filter(([m]) => m === BusinessMetric.SeatSyncQueueFailures)).toEqual([
+      [BusinessMetric.SeatSyncQueueFailures, 1, { teamId: "team-a" }],
+      [BusinessMetric.SeatSyncQueueFailures, 1, { teamId: "team-a" }],
+    ]);
+  });
+
+  it("queues nothing when the role change or removal is refused", async () => {
+    withCustomer();
+    expect((await setRole(OWNER, "viewer")).status).toBe(409);
+    expect((await remove(OWNER, CONTRIBUTOR)).status).toBe(403);
+    expect(queued).toEqual([]);
   });
 });

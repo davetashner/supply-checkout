@@ -344,3 +344,12 @@ export const BILLING_UPDATE_ATTRIBUTES = [
  * deleted.
  */
 export const CUSTOMER_LINK_TEAM_ATTRIBUTES = [PK, SK, "stripeCustomerId", "closedAt"] as const;
+
+/**
+ * The only attributes the nightly seat reconciliation (ops/seat-reconcile.ts)
+ * may name or read, in GSI3's OPS#TEAMS partition only: the keys, the team's
+ * Stripe customer, whether it's closed, and its status. Its IAM policy allows
+ * exactly these (dynamodb:Attributes, with Select SPECIFIC_ATTRIBUTES), so it
+ * lists which teams to check without reading names, emails or team data.
+ */
+export const SEAT_RECONCILE_ATTRIBUTES = [PK, SK, GSI3PK, GSI3SK, "stripeCustomerId", "closedAt", "status"] as const;

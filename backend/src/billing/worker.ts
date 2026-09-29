@@ -26,6 +26,15 @@
 // queue (the "Billing events stuck" alarm). An email that fails doesn't: the
 // claim stands, so it's never sent twice, and it's counted instead.
 //
+// 6. Then keep the seat quantity equal to the team's billed members
+//    (seats.ts), for an event about a subscription that applied, or had
+//    been: so the seats chosen at Checkout follow the members from the start.
+//
+// The worker also takes seat syncs (seats.ts) from their own queue: the
+// account function queues one after a membership change, and the nightly
+// reconciliation one per team. Only the webhook can send to the billing
+// queue, so only a verified Stripe event reaches step 1.
+//
 // Logged: event, team and subscription IDs, statuses, counts and SES error
 // names. Never an owner's email or a name.
 
@@ -51,6 +60,7 @@ import type { EmailInput } from "../email/templates.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import { BILLING_EVENTS, type BillingEventType } from "./names.js";
 import type { BillingMessage } from "./webhook-handler.js";
+import { createSeatSync, type SeatOutcome, type SeatStripe, type SeatSyncMessage } from "./seats.js";
 import type { DbForWorker } from "./worker-db.js";
 
 /** The fields of a Stripe subscription the worker reads. */
@@ -79,7 +89,7 @@ export type WorkerStripe = ClosingStripe;
 
 export interface BillingWorkerDeps {
   readonly dbFor: DbForWorker;
-  readonly stripe: () => Promise<WorkerStripe>;
+  readonly stripe: () => Promise<WorkerStripe & SeatStripe>;
   readonly mailer: Mailer;
   readonly obs: Observability;
   readonly now?: () => number;
@@ -107,6 +117,9 @@ export function parseMessage(body: string): BillingMessage {
   if (!ok) throw new Error("Not a billing message");
   return m as BillingMessage;
 }
+
+/** What the worker takes: a verified Stripe event from the billing queue, or a seat sync from the seat sync queue (seats.ts). */
+export type QueueMessage = BillingMessage | SeatSyncMessage;
 
 /** Our view of a subscription: what applySubscription writes. */
 export function subscriptionState(sub: SubscriptionLike, customerId: string, replaces?: string): SubscriptionState {
@@ -256,9 +269,16 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     return done("applied");
   }
 
-  return async (message: BillingMessage): Promise<Outcome> => {
+  const seats = createSeatSync({ dbFor: deps.dbFor, stripe: deps.stripe, obs, now: deps.now });
+
+  return async (message: QueueMessage): Promise<Outcome | SeatOutcome> => {
+    if ("kind" in message) return seats(message);
     const outcome = await process(message);
     obs.logger.info("Billing event", { eventId: message.eventId, type: message.type, outcome });
+    // 6: after the event is recorded, so a failure here retries only this (the event is a duplicate then)
+    if (message.subscription && (outcome === "applied" || outcome === "duplicate")) {
+      await seats({ kind: "seats", id: message.eventId, customer: message.customer, reason: "subscription", created: message.created });
+    }
     return outcome;
   };
 }

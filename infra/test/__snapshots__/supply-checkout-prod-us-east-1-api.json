@@ -613,6 +613,17 @@
                 ]
               },
               "Sid": "PutAccountDeletionRecords"
+            },
+            {
+              "Action": "sqs:SendMessage",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "SeatSyncsQueue518F74A6",
+                  "Arn"
+                ]
+              },
+              "Sid": "QueueSeatSyncs"
             }
           ],
           "Version": "2012-10-17"
@@ -667,6 +678,9 @@
             },
             "NODE_OPTIONS": "--enable-source-maps",
             "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "SEAT_QUEUE_URL": {
+              "Ref": "SeatSyncsQueue518F74A6"
+            },
             "SUPPLY_CHECKOUT_ENV": "prod",
             "TABLE_NAME": "supply-checkout-prod-app"
           }
@@ -1775,6 +1789,148 @@
         ]
       }
     },
+    "SeatSyncsDeadLetterQueueF8D0800C": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "FifoQueue": true,
+        "MessageRetentionPeriod": 1209600,
+        "QueueName": "supply-checkout-prod-seat-syncs-dlq.fifo",
+        "SqsManagedSseEnabled": true,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
+    },
+    "SeatSyncsDeadLetterQueuePolicy1CF1D814": {
+      "Type": "AWS::SQS::QueuePolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sqs:*",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              },
+              "Effect": "Deny",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Resource": {
+                "Fn::GetAtt": [
+                  "SeatSyncsDeadLetterQueueF8D0800C",
+                  "Arn"
+                ]
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Queues": [
+          {
+            "Ref": "SeatSyncsDeadLetterQueueF8D0800C"
+          }
+        ]
+      }
+    },
+    "SeatSyncsQueue518F74A6": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "FifoQueue": true,
+        "MessageRetentionPeriod": 345600,
+        "QueueName": "supply-checkout-prod-seat-syncs.fifo",
+        "RedrivePolicy": {
+          "deadLetterTargetArn": {
+            "Fn::GetAtt": [
+              "SeatSyncsDeadLetterQueueF8D0800C",
+              "Arn"
+            ]
+          },
+          "maxReceiveCount": 5
+        },
+        "SqsManagedSseEnabled": true,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "VisibilityTimeout": 180
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
+    },
+    "SeatSyncsQueuePolicy0F48BBAF": {
+      "Type": "AWS::SQS::QueuePolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sqs:*",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              },
+              "Effect": "Deny",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Resource": {
+                "Fn::GetAtt": [
+                  "SeatSyncsQueue518F74A6",
+                  "Arn"
+                ]
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Queues": [
+          {
+            "Ref": "SeatSyncsQueue518F74A6"
+          }
+        ]
+      }
+    },
     "BillingWebhookFunctionLogsC65A3767": {
       "Type": "AWS::Logs::LogGroup",
       "Properties": {
@@ -2117,6 +2273,22 @@
               }
             },
             {
+              "Action": [
+                "sqs:ReceiveMessage",
+                "sqs:ChangeMessageVisibility",
+                "sqs:GetQueueUrl",
+                "sqs:DeleteMessage",
+                "sqs:GetQueueAttributes"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "SeatSyncsQueue518F74A6",
+                  "Arn"
+                ]
+              }
+            },
+            {
               "Action": "secretsmanager:GetSecretValue",
               "Effect": "Allow",
               "Resource": {
@@ -2224,6 +2396,12 @@
             "TABLE_NAME": "supply-checkout-prod-app",
             "STRIPE_SECRET_ID": "supply-checkout/prod/stripe/test-secret-key",
             "STRIPE_MODE": "test",
+            "SEAT_QUEUE_ARN": {
+              "Fn::GetAtt": [
+                "SeatSyncsQueue518F74A6",
+                "Arn"
+              ]
+            },
             "EMAIL_FROM_ADDRESS": "noreply@supplycheckout.com",
             "EMAIL_CONFIGURATION_SET": "supply-checkout-prod-transactional",
             "EMAIL_REGION": "us-east-1",
@@ -2291,6 +2469,46 @@
         "EventSourceArn": {
           "Fn::GetAtt": [
             "BillingEventsQueueFF17F8F8",
+            "Arn"
+          ]
+        },
+        "FunctionName": {
+          "Ref": "BillingWorkerFunction5E1B818E"
+        },
+        "FunctionResponseTypes": [
+          "ReportBatchItemFailures"
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "BillingWorkerFunctionSqsEventSourcesupplycheckoutproduseast1apiSeatSyncsQueue5730DCB2B0838846": {
+      "Type": "AWS::Lambda::EventSourceMapping",
+      "Properties": {
+        "BatchSize": 1,
+        "EventSourceArn": {
+          "Fn::GetAtt": [
+            "SeatSyncsQueue518F74A6",
             "Arn"
           ]
         },

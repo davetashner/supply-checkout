@@ -4,14 +4,19 @@
 // The worker's own role can't reach the table. For each event it assumes the
 // billing-worker role tagged with:
 //
-//   eventId         the event's ID                          WEBHOOK#<eventId> (its records)
+//   eventId         the event's ID (or a seat sync's,       WEBHOOK#<eventId> (its records)
+//                   seats.ts)
 //   stripeCustomer  the event's customer                    STRIPE#<customer> (read the link)
 //   teamId          the team that customer is linked to,    TEAM#<teamId> (read billing and
 //                   once the link is read; "." before         owners, update billing only)
 //
 // All three come from an event whose Stripe signature the webhook checked
-// before it was queued, and only the webhook function may send to the queue.
-// The team comes from our own link, never from the event.
+// before it was queued (only the webhook function may send to the billing
+// queue), or from a seat sync (seats.ts) on its own queue, which the account
+// function or the nightly reconciliation sent with a customer taken from the
+// team's own item: a seat sync can only make the worker recompute a quantity
+// from the team's members. The team comes from our own link, never from the
+// message.
 
 import { STSClient } from "@aws-sdk/client-sts";
 import { dbCache, roleSession, type Sts } from "../api/team-db.js";

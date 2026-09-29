@@ -24,4 +24,4 @@ const worker = createBillingWorker({
   mailer: mailerFromEnv(),
   obs,
 });
-export const handler = withObservability(obs, createWorkerHandler(worker, obs));
+export const handler = withObservability(obs, createWorkerHandler(worker, obs, required(BILLING_ENV.seatQueueArn)));

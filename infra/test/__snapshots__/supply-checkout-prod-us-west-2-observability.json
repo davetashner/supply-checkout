@@ -2122,6 +2122,60 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmsseatsyncsstuck9F9CFEF3": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Seat syncs stuck (J7, us-west-2). Any message in the seat syncs dead-letter queue: a seat sync the billing worker couldn't apply after 5 tries (Stripe or DynamoDB failing), so a team may be billed for the wrong number of seats until the nightly reconciliation fixes it. The message holds the Stripe customer's ID. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-seat-syncs-stuck",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "Dimensions": [
+          {
+            "Name": "QueueName",
+            "Value": "supply-checkout-prod-seat-syncs-dlq.fifo"
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Namespace": "AWS/SQS",
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Period": 300,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmsteamclosednoticesfailingA94DEEDE": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {

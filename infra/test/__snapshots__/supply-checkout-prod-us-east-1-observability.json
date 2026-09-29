@@ -2466,6 +2466,125 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmsseatsyncsstuck9F9CFEF3": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Seat syncs stuck (J7, us-east-1). Any message in the seat syncs dead-letter queue: a seat sync the billing worker couldn't apply after 5 tries (Stripe or DynamoDB failing), so a team may be billed for the wrong number of seats until the nightly reconciliation fixes it. The message holds the Stripe customer's ID. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-seat-syncs-stuck",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "Dimensions": [
+          {
+            "Name": "QueueName",
+            "Value": "supply-checkout-prod-seat-syncs-dlq.fifo"
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Namespace": "AWS/SQS",
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Period": 300,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsseatcountsdrifting21584CD6": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Seat counts drifting (J7, us-east-1). Any SeatQuantityDrift over an hour: the nightly seat reconciliation (primary region) found a team billed for a different number of seats than it has billed members (owners and editors), so the sync after a membership change missed it. The billing worker has already set the quantity right; the log line \"Seat quantity drift\" has the team and subscription IDs and both numbers. Look for a seat sync that couldn't be queued (SeatSyncQueueFailures) or went to the seat syncs dead-letter queue. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-seat-counts-drifting",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "SeatQuantityDrift (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "SeatQuantityDrift",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 3600,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmsdeletionoverdueB544DD17": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -4057,6 +4176,433 @@
                 "Namespace": "SupplyCheckout"
               },
               "Period": 10800,
+              "Stat": "SampleCount"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 1,
+        "TreatMissingData": "breaching"
+      }
+    },
+    "OpsChecksSeatReconcileLogsE7D71923": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "OpsChecksSeatReconcileRoleAD6F5B69": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the seat-reconcile check",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "OpsChecksSeatReconcileRoleDefaultPolicyA125BEAE": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "OpsChecksSeatReconcileLogsE7D71923",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "dynamodb:Query",
+              "Condition": {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [
+                    "OPS#TEAMS"
+                  ],
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "GSI3PK",
+                    "GSI3SK",
+                    "stripeCustomerId",
+                    "closedAt",
+                    "status"
+                  ]
+                },
+                "StringEquals": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app/index/GSI3"
+                  ]
+                ]
+              },
+              "Sid": "TeamsIndexOnly"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "dynamodb.",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ".amazonaws.com"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "Sid": "TableKeyThroughDynamoDb"
+            },
+            {
+              "Action": "sqs:SendMessage",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":sqs:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":supply-checkout-prod-seat-syncs.fifo"
+                  ]
+                ]
+              },
+              "Sid": "QueueSeatChecks"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OpsChecksSeatReconcileRoleDefaultPolicyA125BEAE",
+        "Roles": [
+          {
+            "Ref": "OpsChecksSeatReconcileRoleAD6F5B69"
+          }
+        ]
+      }
+    },
+    "OpsChecksSeatReconcile8DFFEBB4": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "Queues a nightly seat quantity check for every open team with a Stripe customer",
+        "Environment": {
+          "Variables": {
+            "NODE_OPTIONS": "--enable-source-maps",
+            "TABLE_NAME": "supply-checkout-prod-app",
+            "SEAT_QUEUE_URL": {
+              "Fn::Join": [
+                "",
+                [
+                  "https://sqs.",
+                  {
+                    "Ref": "AWS::Region"
+                  },
+                  ".",
+                  {
+                    "Ref": "AWS::URLSuffix"
+                  },
+                  "/",
+                  {
+                    "Ref": "AWS::AccountId"
+                  },
+                  "/supply-checkout-prod-seat-syncs.fifo"
+                ]
+              ]
+            },
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "SUPPLY_CHECKOUT_ENV": "prod"
+          }
+        },
+        "FunctionName": "supply-checkout-prod-seat-reconcile",
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "OpsChecksSeatReconcileLogsE7D71923"
+          }
+        },
+        "MemorySize": 256,
+        "Role": {
+          "Fn::GetAtt": [
+            "OpsChecksSeatReconcileRoleAD6F5B69",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 300,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "OpsChecksSeatReconcileRoleDefaultPolicyA125BEAE",
+        "OpsChecksSeatReconcileRoleAD6F5B69"
+      ]
+    },
+    "OpsChecksSeatReconcileXRayWriteD808FD29": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTraceSegments",
+                "xray:PutTelemetryRecords"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OpsChecksSeatReconcileXRayWriteD808FD29",
+        "Roles": [
+          {
+            "Ref": "OpsChecksSeatReconcileRoleAD6F5B69"
+          }
+        ]
+      }
+    },
+    "OpsChecksSeatReconcileSchedule3E905D97": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Runs the seat-reconcile function on cron(0 7 * * ? *)",
+        "ScheduleExpression": "cron(0 7 * * ? *)",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Fn::GetAtt": [
+                "OpsChecksSeatReconcile8DFFEBB4",
+                "Arn"
+              ]
+            },
+            "Id": "Target0",
+            "RetryPolicy": {
+              "MaximumRetryAttempts": 0
+            }
+          }
+        ]
+      }
+    },
+    "OpsChecksSeatReconcileScheduleAllowEventRulesupplycheckoutproduseast1observabilityOpsChecksSeatReconcile4ABCCB2571C38D4D": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "OpsChecksSeatReconcile8DFFEBB4",
+            "Arn"
+          ]
+        },
+        "Principal": "events.amazonaws.com",
+        "SourceArn": {
+          "Fn::GetAtt": [
+            "OpsChecksSeatReconcileSchedule3E905D97",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "OpsChecksSeatReconcileNotRunningA40103AE": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Seat reconciliation not running (J7, us-east-1). No SeatReconcileTeams sample from the nightly seat reconciliation for 2 days: its schedule is disabled or deleted, or every run fails before it lists the teams. Seat drift isn't being caught, and Seat counts drifting can't see it. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-seat-reconcile-not-running",
+        "ComparisonOperator": "LessThanThreshold",
+        "DatapointsToAlarm": 2,
+        "EvaluationPeriods": 2,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "SeatReconcileTeams (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "SeatReconcileTeams",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 86400,
               "Stat": "SampleCount"
             },
             "ReturnData": true
@@ -7322,6 +7868,20 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
+                  "JourneyAlarmsseatsyncsstuck9F9CFEF3",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmsseatcountsdrifting21584CD6",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
                   "JourneyAlarmsdeletionoverdueB544DD17",
                   "Arn"
                 ]
@@ -7507,55 +8067,63 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdates (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdateFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdatesDeferred\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdatesDeferred (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdates (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdateFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdatesDeferred\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdatesDeferred (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email bounces and complaints\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdates (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdateFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdatesDeferred\",\"Region\",\"us-east-1\",{\"label\":\"LiveUpdatesDeferred (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdates\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdates (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdateFailures\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdateFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LiveUpdatesDeferred\",\"Region\",\"us-west-2\",{\"label\":\"LiveUpdatesDeferred (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: seat quantity updates, drift and sync failures\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailBounces\",\"Region\",\"us-east-1\",{\"label\":\"EmailBounces (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailComplaints\",\"Region\",\"us-east-1\",{\"label\":\"EmailComplaints (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailBounces\",\"Region\",\"us-west-2\",{\"label\":\"EmailBounces (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailComplaints\",\"Region\",\"us-west-2\",{\"label\":\"EmailComplaints (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email verification not saved\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"SeatQuantityUpdates\",\"Region\",\"us-east-1\",{\"label\":\"SeatQuantityUpdates (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatQuantityDrift\",\"Region\",\"us-east-1\",{\"label\":\"SeatQuantityDrift (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatSyncQueueFailures\",\"Region\",\"us-east-1\",{\"label\":\"SeatSyncQueueFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatQuantityUpdates\",\"Region\",\"us-west-2\",{\"label\":\"SeatQuantityUpdates (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatQuantityDrift\",\"Region\",\"us-west-2\",{\"label\":\"SeatQuantityDrift (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SeatSyncQueueFailures\",\"Region\",\"us-west-2\",{\"label\":\"SeatSyncQueueFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: teams the nightly seat reconciliation checked\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailVerifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailVerifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailUnverifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailUnverifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailVerifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailVerifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailUnverifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailUnverifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J0: sign-outs not revoked\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"SeatReconcileTeams\",\"Region\",\"us-east-1\",{\"label\":\"SeatReconcileTeams (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"SeatReconcileTeams\",\"Region\",\"us-west-2\",{\"label\":\"SeatReconcileTeams (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":55,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email bounces and complaints\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"SignOutRevokeFailures\",\"Region\",\"us-east-1\",{\"label\":\"SignOutRevokeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SignOutRevokeFailures\",\"Region\",\"us-west-2\",{\"label\":\"SignOutRevokeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":49,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J2: stuck imports; J3: SES quota used %\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailBounces\",\"Region\",\"us-east-1\",{\"label\":\"EmailBounces (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailComplaints\",\"Region\",\"us-east-1\",{\"label\":\"EmailComplaints (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailBounces\",\"Region\",\"us-west-2\",{\"label\":\"EmailBounces (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailComplaints\",\"Region\",\"us-west-2\",{\"label\":\"EmailComplaints (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":55,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email verification not saved\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"StuckImports\",\"Region\",\"us-east-1\",{\"label\":\"StuckImports (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"EmailQuotaUsedPercent\",\"Region\",\"us-east-1\",{\"label\":\"EmailQuotaUsedPercent (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"StuckImports\",\"Region\",\"us-west-2\",{\"label\":\"StuckImports (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"EmailQuotaUsedPercent\",\"Region\",\"us-west-2\",{\"label\":\"EmailQuotaUsedPercent (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":55,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Accounts: teams closed, accounts deleted, teams purged\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailVerifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailVerifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailUnverifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailUnverifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailVerifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailVerifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailUnverifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailUnverifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":55,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J0: sign-outs not revoked\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamsClosed\",\"Region\",\"us-east-1\",{\"label\":\"TeamsClosed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"AccountsDeleted\",\"Region\",\"us-east-1\",{\"label\":\"AccountsDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsPurged\",\"Region\",\"us-east-1\",{\"label\":\"TeamsPurged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsClosed\",\"Region\",\"us-west-2\",{\"label\":\"TeamsClosed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"AccountsDeleted\",\"Region\",\"us-west-2\",{\"label\":\"AccountsDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsPurged\",\"Region\",\"us-west-2\",{\"label\":\"TeamsPurged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":55,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Accounts: owners emailed that their team closed, and not\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"SignOutRevokeFailures\",\"Region\",\"us-east-1\",{\"label\":\"SignOutRevokeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SignOutRevokeFailures\",\"Region\",\"us-west-2\",{\"label\":\"SignOutRevokeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":55,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J2: stuck imports; J3: SES quota used %\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamClosedNotices\",\"Region\",\"us-east-1\",{\"label\":\"TeamClosedNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamClosedNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"TeamClosedNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamClosedNotices\",\"Region\",\"us-west-2\",{\"label\":\"TeamClosedNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamClosedNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"TeamClosedNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":55,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Accounts: teams reopened, owners emailed about it, and not\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"StuckImports\",\"Region\",\"us-east-1\",{\"label\":\"StuckImports (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"EmailQuotaUsedPercent\",\"Region\",\"us-east-1\",{\"label\":\"EmailQuotaUsedPercent (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"StuckImports\",\"Region\",\"us-west-2\",{\"label\":\"StuckImports (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"EmailQuotaUsedPercent\",\"Region\",\"us-west-2\",{\"label\":\"EmailQuotaUsedPercent (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":61,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Accounts: teams closed, accounts deleted, teams purged\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamsReopened\",\"Region\",\"us-east-1\",{\"label\":\"TeamsReopened (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNotices\",\"Region\",\"us-east-1\",{\"label\":\"TeamReopenedNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"TeamReopenedNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsReopened\",\"Region\",\"us-west-2\",{\"label\":\"TeamsReopened (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNotices\",\"Region\",\"us-west-2\",{\"label\":\"TeamReopenedNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"TeamReopenedNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":55,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J11: closed teams overdue for deletion\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamsClosed\",\"Region\",\"us-east-1\",{\"label\":\"TeamsClosed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"AccountsDeleted\",\"Region\",\"us-east-1\",{\"label\":\"AccountsDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsPurged\",\"Region\",\"us-east-1\",{\"label\":\"TeamsPurged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsClosed\",\"Region\",\"us-west-2\",{\"label\":\"TeamsClosed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"AccountsDeleted\",\"Region\",\"us-west-2\",{\"label\":\"AccountsDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsPurged\",\"Region\",\"us-west-2\",{\"label\":\"TeamsPurged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":61,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Accounts: owners emailed that their team closed, and not\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"ClosedTeamsOverdue\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamsOverdue (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"ClosedTeamsOverdue\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamsOverdue (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":61,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email codes not sent or checked (5xx)\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamClosedNotices\",\"Region\",\"us-east-1\",{\"label\":\"TeamClosedNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamClosedNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"TeamClosedNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamClosedNotices\",\"Region\",\"us-west-2\",{\"label\":\"TeamClosedNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamClosedNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"TeamClosedNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":61,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Accounts: teams reopened, owners emailed about it, and not\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailCodeSendFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailCodeSendFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeVerifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailCodeVerifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeSendFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailCodeSendFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeVerifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailCodeVerifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":67,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: audit items changed or deleted (not by TTL)\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamsReopened\",\"Region\",\"us-east-1\",{\"label\":\"TeamsReopened (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNotices\",\"Region\",\"us-east-1\",{\"label\":\"TeamReopenedNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"TeamReopenedNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsReopened\",\"Region\",\"us-west-2\",{\"label\":\"TeamsReopened (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNotices\",\"Region\",\"us-west-2\",{\"label\":\"TeamReopenedNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"TeamReopenedNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":61,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J11: closed teams overdue for deletion\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorAuditChanged\",\"Region\",\"us-east-1\",{\"label\":\"OperatorAuditChanged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorAuditChanged\",\"Region\",\"us-west-2\",{\"label\":\"OperatorAuditChanged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":67,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: audit watch heartbeats\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"ClosedTeamsOverdue\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamsOverdue (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"ClosedTeamsOverdue\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamsOverdue (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":67,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email codes not sent or checked (5xx)\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorAuditWatchHeartbeat\",\"Region\",\"us-east-1\",{\"label\":\"OperatorAuditWatchHeartbeat (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorAuditWatchHeartbeat\",\"Region\",\"us-west-2\",{\"label\":\"OperatorAuditWatchHeartbeat (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":67,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Backups: deletion records rewritten or deleted\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"EmailCodeSendFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailCodeSendFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeVerifyFailures\",\"Region\",\"us-east-1\",{\"label\":\"EmailCodeVerifyFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeSendFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailCodeSendFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"EmailCodeVerifyFailures\",\"Region\",\"us-west-2\",{\"label\":\"EmailCodeVerifyFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":73,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: audit items changed or deleted (not by TTL)\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-east-1\",{\"label\":\"DeletionRecordRewrites (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-west-2\",{\"label\":\"DeletionRecordRewrites (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":67,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: closed teams' subscriptions ended, Stripe customers deleted\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorAuditChanged\",\"Region\",\"us-east-1\",{\"label\":\"OperatorAuditChanged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorAuditChanged\",\"Region\",\"us-west-2\",{\"label\":\"OperatorAuditChanged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":73,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: audit watch heartbeats\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorAuditWatchHeartbeat\",\"Region\",\"us-east-1\",{\"label\":\"OperatorAuditWatchHeartbeat (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorAuditWatchHeartbeat\",\"Region\",\"us-west-2\",{\"label\":\"OperatorAuditWatchHeartbeat (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":73,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Backups: deletion records rewritten or deleted\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-east-1\",{\"label\":\"DeletionRecordRewrites (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-west-2\",{\"label\":\"DeletionRecordRewrites (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":73,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: closed teams' subscriptions ended, Stripe customers deleted\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
