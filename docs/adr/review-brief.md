@@ -1,6 +1,6 @@
 # ADR review brief (0002–0013)
 
-This brief helps the owner accept, change or reject ADRs 0002–0013 (bead `supply-checkout-y94`) in about 15 minutes. It changes no ADR status. That is the owner's call.
+This brief helps the owner accept, change or reject ADRs 0002–0013 (bead `supply-checkout-y94`) in about 15 minutes. The owner accepted all of them on 2026-09-28; each ADR's note records what changed. 0003 went further than this brief suggests: the MVP uses the prod account only.
 
 Sources: the ADRs, [`docs/architecture/README.md`](../architecture/README.md), [`docs/journeys.md`](../journeys.md), the open beads, and what already exists in AWS. Prices are rough US list prices as of this writing. Check them before relying on them.
 

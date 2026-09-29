@@ -1,7 +1,8 @@
 # 0002. Serverless on AWS, defined with the AWS CDK in TypeScript
 
-- Status: Proposed
-- Date: 2026-09-25
+- Status: Accepted
+- Date: 2026-09-28 (proposed 2026-09-25)
+- Note: The owner accepted this on 2026-09-28. Lambdas run on Node.js 24, not 22. The context's "one AWS account" is out of date (see 0003). The Route 53 hosted zone for supplycheckout.com was made by hand in `supply-checkout-prod`, like the account bootstrap, and is the one other thing not made by the CDK.
 
 ## Context
 

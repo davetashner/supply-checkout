@@ -1,7 +1,8 @@
 # 0011. Native iOS and Android apps wrap the web app with Capacitor
 
-- Status: Proposed
-- Date: 2026-09-25
+- Status: Accepted
+- Date: 2026-09-28 (proposed 2026-09-25)
+- Note: The owner accepted this on 2026-09-28. It's phase 2. Stripe opens in the system browser (Safari View Controller or a Chrome Custom Tab), as 0013 says.
 
 ## Context
 

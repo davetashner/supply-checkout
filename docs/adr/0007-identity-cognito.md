@@ -1,7 +1,8 @@
 # 0007. Cognito for sign-in; teams and roles stored in our own data
 
-- Status: Proposed
-- Date: 2026-09-25
+- Status: Accepted
+- Date: 2026-09-28 (proposed 2026-09-25)
+- Note: The owner accepted this with changes on 2026-09-28. **Sign in with Apple is built but stays off in prod until the Apple Developer account exists** (it needs the business entity); it isn't part of the MVP. Email, passkeys and Google are. **MFA for billing:** billing routes require TOTP for users with a password; users who sign in only with Google or Apple rely on the provider's own MFA, and that is the accepted policy. Roles inside a team are enforced by the application, not IAM: any session tagged with a team can write anywhere in that team's partition, and the handlers check the role.
 
 ## Context
 

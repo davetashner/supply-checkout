@@ -1,7 +1,8 @@
 # 0005. Multi-tenant data in one DynamoDB table, partitioned by team
 
-- Status: Proposed
-- Date: 2026-09-25
+- Status: Accepted
+- Date: 2026-09-28 (proposed 2026-09-25)
+- Note: The owner accepted this on 2026-09-28, as built. A sheet's sort key is `SHEET#<id>`, not `SHEET#<date>#<id>`, because a sheet's date can be edited and the app reads sheets by ID. `dynamodb:LeadingKeys` is enforced with a per-request session tagged with the team ID, so a session can't reach another team's partition. Roles inside a team (owner, contributor, viewer) are enforced by the application only (see 0007).
 
 ## Context
 

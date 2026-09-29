@@ -1,7 +1,8 @@
 # 0012. CI/CD with GitHub Actions, canary deploys and automatic rollback
 
-- Status: Proposed
-- Date: 2026-09-25
+- Status: Accepted
+- Date: 2026-09-28 (proposed 2026-09-25)
+- Note: The owner accepted this with changes on 2026-09-28: **there is no staging for the MVP** (one account; see 0003). A merge is checked by CI; a release deploys to prod, runs the core journey canary once on demand whatever the hour, and rolls back on the alarms. Journey tests run against prod with test teams. Per-PR preview stacks are phase 2. Humans have administrator access to prod until separate accounts come back.
 
 ## Context
 

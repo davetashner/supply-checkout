@@ -1,5 +1,7 @@
 # Backups and restores
 
+> **The MVP has no backup account.** The owner decided on 2026-09-28 ([ADR 0003](adr/0003-aws-account-structure.md)) that the MVP uses the prod account only. Prod deploys with `-c backupCopy=false`: point-in-time recovery, the local vault's daily backups (35 days) and the deletion records all stay in prod, with no copy and no replication. The backup account's stack and the steps below stay for when separate accounts come back after launch.
+
 How the `app` table and the S3 buckets are protected, how to set up the copy to a separate backup account, what to do when a backup fails, the restore drill (bead `supply-checkout-8x1`), the deletion records, and putting a restored table back into service (beads `supply-checkout-72d.4` and `supply-checkout-0ic7`).
 
 The CDK is in `infra/lib/stacks/backup-stack.ts` (workload account), `infra/lib/stacks/backup-account-stack.ts` (backup account), `infra/lib/backup.ts` (names and retention), `infra/lib/backup-alerts.ts` (the alerts on changes, in both accounts) and `infra/lib/deletions.ts` (the deletion records' grants and their replication to the backup account). The tests in `infra/test/backup.test.ts` check the plan, the retention, the copy rule, both vault locks, the IAM roles, the alerts and the deletion records' replica; `infra/test/web.test.ts` checks the deletion records bucket and its replication.

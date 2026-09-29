@@ -18,7 +18,7 @@ These terms are an agreement between you and **[COMPANY LEGAL NAME]**, a [STATE]
 
 ## 2. Who can use the Service
 
-- The Service is for business use. You must be at least 18.
+- The Service is for businesses in the United States. You must use it for a business, not for personal, family or household purposes, and your team's billing address must be in the United States. You must be at least 18.
 - You must give accurate sign-up and billing details and keep them current.
 - You are responsible for everything done under your team's accounts. Keep sign-in methods secure. Tell us at [SUPPORT EMAIL] if you think an account has been compromised.
 
@@ -89,7 +89,7 @@ If a payment fails, we email the owner and show a banner in the app. The team ke
 ## 7. Refunds
 
 - **Monthly plans**: we don't refund partial months. Cancel at any time to stop future charges.
-- **Yearly plans**: if you cancel within [14] days of a yearly charge (including a renewal), we refund that charge in full. After that, we don't refund the rest of the year, but access continues until the year ends.
+- **Yearly plans**: if you cancel within 14 days of a yearly charge (including a renewal), we refund that charge in full. After that, we don't refund the rest of the year, but access continues until the year ends.
 - If we end your subscription without cause (section 12), or we can't provide the Service for a long time because of something within our control, we refund the unused part of any prepaid period.
 - If you think you were charged by mistake, email [SUPPORT EMAIL] within 60 days. We will look into it and refund charges made in error.
 - These rules don't limit any refund rights the law gives you.
@@ -100,7 +100,7 @@ If a payment fails, we email the owner and show a banner in the app. The team ke
 - You give us permission to store, copy, process and display your data only as needed to run, secure, back up and support the Service for you, and as the Privacy Policy describes. We don't sell your data. We don't use it to train AI models.
 - **Export**: owners can export the team's data as CSV and JSON at any time, including during the 30-day read-only period after cancellation.
 - **Deletion**: owners can close the team and delete its data. A closed team's data is deleted 30 days after it's closed. When a member deletes their own account, we delete it straight away; what they added to a team stays with the team.
-- **Backups**: we keep backups so we can recover from mistakes and outages. Deleted data stays in them for up to **90 days** after we delete it (up to 35 days in our main backups, and up to 90 days in a separate backup copy), then the backups holding it expire. We don't use backups for anything but recovery. If we ever restore from a backup, we delete again every account and team that was deleted after that backup was taken, so they don't come back.
+- **Backups**: we keep backups so we can recover from mistakes and outages. Deleted data stays in them for up to **35 days** after we delete it, then the backups holding it expire. We don't use backups for anything but recovery. If we ever restore from a backup, we delete again every account and team that was deleted after that backup was taken, so they don't come back.
 - You are responsible for having the right to put your data into the Service, including any information about your clients.
 - We may use anonymous, combined usage figures (for example, how many receipts are read each month in total) to run and improve the Service. These can't identify you, your team or your clients.
 
@@ -113,7 +113,7 @@ If a payment fails, we email the owner and show a banner in the app. The team ke
 
 ## 10. Service levels
 
-- At launch we provide the Service on a **best-effort** basis. We run it in two AWS regions, monitor it, and aim to fix problems quickly, but we don't promise a specific uptime percentage and don't give service credits.
+- At launch we provide the Service on a **best-effort** basis. We run it on Amazon Web Services, monitor it, and aim to fix problems quickly, but we don't promise a specific uptime percentage and don't give service credits.
 - We may pause the Service for maintenance. We try to do this outside US business hours and to give notice for planned work.
 - Support is by email at [SUPPORT EMAIL]. We aim to reply within [2] business days.
 - We may change features. If we remove a major feature you pay for, we will tell you at least 30 days before. You can cancel and get a refund of any unused prepaid period.
@@ -152,7 +152,7 @@ You will defend and indemnify us against third-party claims arising from your da
 
 - These terms are governed by the laws of the State of **[STATE]**, and US federal law, without regard to conflict-of-law rules.
 - Before filing a claim, each party agrees to try to resolve the dispute informally for 30 days, starting when one party emails the other a description of it.
-- [PLACEHOLDER: courts in [COUNTY], [STATE], or arbitration. See open questions.]
+- If the dispute isn't resolved, it goes to the state or federal courts in [COUNTY], [STATE], and both parties agree to those courts' jurisdiction. Neither party has to arbitrate.
 - Nothing here stops either party from bringing a claim in small claims court.
 
 ## 17. General
@@ -174,16 +174,18 @@ You will defend and indemnify us against third-party claims arising from your da
 
 ## Open questions for the owner / lawyer
 
+*Decided by the owner on 2026-09-28: 2 (courts in the home state, no arbitration), 3 (US businesses only), 4 (yearly: 14-day refund; monthly: none), 10 (35 days: the MVP keeps backups in the prod account only, per ADR 0003) and 13 (US only). They're struck through below. The rest are still open.*
+
 1. **Legal entity.** Name, type (LLC or other) and state of formation. The entity isn't formed yet (bead `supply-checkout-ar0`).
-2. **Governing law and venue.** Which state? Courts or binding arbitration? If arbitration, a class-action waiver and an opt-out window?
-3. **B2B only, or consumers too?** State auto-renewal laws mainly protect consumers. This draft follows California's rules (clear disclosure, separate consent, confirmation email, online cancellation, annual and pre-renewal reminders, price-change notice) anyway. Confirm that is the right standard and check the latest California amendments and other states (for example New York, Colorado, Virginia). Confirm the status of the FTC's negative option ("click to cancel") rule.
-4. **Refunds on yearly plans.** Is a 14-day full refund window right? Should monthly plans get any refund window?
+2. ~~**Governing law and venue.** Which state? Courts or binding arbitration? If arbitration, a class-action waiver and an opt-out window?~~
+3. ~~**B2B only, or consumers too?** State auto-renewal laws mainly protect consumers. This draft follows California's rules (clear disclosure, separate consent, confirmation email, online cancellation, annual and pre-renewal reminders, price-change notice) anyway. Confirm that is the right standard and check the latest California amendments and other states (for example New York, Colorado, Virginia). Confirm the status of the FTC's negative option ("click to cancel") rule.~~
+4. ~~**Refunds on yearly plans.** Is a 14-day full refund window right? Should monthly plans get any refund window?~~
 5. **Viewer seats.** Free or paid? Depends on the subscription tiers decision (bead `supply-checkout-akz`).
 6. **Seat removals.** Credit now or lower price from the next period? Depends on the Stripe configuration.
 7. **Unpaid accounts.** How long after the grace period before we cancel and delete data? This draft says 30 days.
 8. **Liability cap.** Is "12 months of fees or $100, whichever is greater" acceptable? Should we carry errors-and-omissions or cyber insurance to back it?
 9. **AI results.** Is the receipt-reading disclaimer (section 9) strong enough, given that results may end up on a client's bill?
-10. **Backup deletion window.** Section 8 matches the backup design as built (`docs/backups.md`): point-in-time recovery and daily backups keep 35 days, the copy in the separate backup account keeps 90, and a restore re-applies recorded account and team deletions. Is 90 days acceptable, and should the wording allow a few days' margin for AWS to remove an expired backup? The Privacy Policy, when written, must say the same.
+10. ~~**Backup deletion window.** Section 8 matches the backup design as built (`docs/backups.md`): point-in-time recovery and daily backups keep 35 days, the copy in the separate backup account keeps 90, and a restore re-applies recorded account and team deletions. Is 90 days acceptable, and should the wording allow a few days' margin for AWS to remove an expired backup? The Privacy Policy, when written, must say the same.~~
 11. **Support response target.** Is 2 business days realistic for a small team?
 12. **Mobile apps.** Do the Apple and Google store terms require extra wording (for example, Apple's standard end-user license terms)?
-13. **Outside the US.** Do we block sign-ups from outside the US at launch, or add terms for other countries?
+13. ~~**Outside the US.** Do we block sign-ups from outside the US at launch, or add terms for other countries?~~

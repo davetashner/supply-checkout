@@ -1,7 +1,8 @@
 # 0008. Read receipts with Claude on Amazon Bedrock
 
-- Status: Proposed
-- Date: 2026-09-25
+- Status: Accepted
+- Date: 2026-09-28 (proposed 2026-09-25)
+- Note: The owner accepted this with changes on 2026-09-28, before it was built. An HTTP API stops waiting after 30 seconds, so the model call times out at about 25 seconds, not 60. Claude Haiku 4.5 only caches a prefix of 4,096 tokens or more, so the cache breakpoint goes after the inventory list, not after the instructions. The monthly receipt limit follows from the model the eval picks.
 
 ## Context
 
