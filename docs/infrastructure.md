@@ -26,7 +26,20 @@ npm run test:update # accept template snapshot changes after reviewing them
 Validations.of(bucket).acknowledge({ id: "AwsSolutions-S1", reason: "…why this is safe…" });
 ```
 
-**Deploying** (until the pipeline in [ADR 0012](adr/0012-cicd-releases-rollbacks.md) takes over). Before the first deploy, create the SSM parameters the stacks read: the hosted zone and DMARC report address ([Domain and email](#domain-and-email)), the alarm recipients ([Observability](observability.md#alarm-recipients)) and the backup account's vault ARN ([Setting it up](backups.md#setting-it-up)).
+## Deploying
+
+For the everyday deploys, from the main checkout on an up-to-date, clean `main`:
+
+```bash
+npm run deploy -- api      # the api and observability stacks (new routes, Lambda code, alarms)
+npm run deploy -- web      # the web stack, then check-router
+npm run deploy -- app      # build the web app, publish it to app., make it live, check-router
+npm run deploy -- all      # web, then api, then app
+```
+
+`scripts/deploy.sh` refuses any branch but `main`, uncommitted changes, and a `main` that isn't `origin/main`, so what goes out is what's merged. It runs `aws sso login` if the session has expired, installs the backend's and infra's dependencies (the synth bundles the Lambda code), shows `cdk diff` for each group of stacks and asks before deploying it, and deploys only those stacks (`--exclusively`, chosen by kind, `supply-checkout-<env>-*-api`); CDK still asks about IAM and security group changes. It passes `-c backupCopy=false` until the backup copy vault's parameter exists (below). Options: `--env`, `--profile` (default `supply-prod`), and `--yes` to skip its own questions. Other stacks (domain, identity, data, email, audit, backup) and a first deploy use the commands below.
+
+Until the pipeline in [ADR 0012](adr/0012-cicd-releases-rollbacks.md) takes over: before the first deploy, create the SSM parameters the stacks read: the hosted zone and DMARC report address ([Domain and email](#domain-and-email)), the alarm recipients ([Observability](observability.md#alarm-recipients)) and the backup account's vault ARN ([Setting it up](backups.md#setting-it-up)).
 
 ```bash
 aws sso login --profile supply-prod
