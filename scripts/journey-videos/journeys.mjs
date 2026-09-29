@@ -191,9 +191,8 @@ export const JOURNEYS = [
       const docs = teamDocs("t1", { [`products/${TOWELS}`]: PRODUCTS[`products/${TOWELS}`], "products/nb-bins": PRODUCTS["products/nb-bins"] });
       const backend = await openTeam(d, { docs });
       await connected(page);
-      await d.say("The owner opens Inventory.");
+      await d.say("The owner opens Inventory, then + Add item.");
       await d.click(page.getByRole("button", { name: "Inventory" }));
-      await d.say("Tap + Add item.");
       await d.click(page.getByRole("button", { name: "+ Add item" }));
       await d.say("Scan the barcode with the phone camera (Scan), or type it. Here it's typed.");
       await d.type(modal(page).getByPlaceholder("Type, scan, or leave blank"), GLOVES);
@@ -215,12 +214,11 @@ export const JOURNEYS = [
       await d.click(itemRow(page, "Microfiber cloths"));
       await d.type(modal(page).getByLabel("In storage now"), "7");
       await d.click(modal(page).getByRole("button", { name: "Save" }));
-      await d.check("The new count is saved.");
 
       await d.say("A whole inventory can come from a spreadsheet instead: Import CSV in the team bar.");
       await d.click(bar(page).getByRole("button", { name: "Import CSV" }));
-      const template = await download(d, modal(page).getByRole("button", { name: "Download a template" }));
-      await showFile(d, template, "The template names the columns: name and price, and if you have them barcode, cost, stock and pack_size.", 4);
+      await download(d, modal(page).getByRole("button", { name: "Download a template" }));
+      await d.say("Download a template to fill in, then choose the filled-in file.");
       const csv = "name,barcode,price,stock\nGlass cleaner 32 oz,041167066218,4.25,12\nMop heads,,3,14\nNitrile gloves box of 100,075020036541,13,10\n";
       backend.on("POST", "/teams/t1/imports", {
         status: 200,
@@ -234,7 +232,6 @@ export const JOURNEYS = [
           errors: [], errorCount: 0, ignoredColumns: [], summary: { rows: 3, created: 2, updated: 1, unchanged: 0 },
         },
       });
-      await d.say("Choose the filled-in file.");
       await d.chooseFile(modal(page).getByLabel("CSV file"), { name: "inventory.csv", mimeType: "text/csv", buffer: Buffer.from(csv) });
       await d.moveTo(page.locator("#importResult"));
       await d.check("A preview first: what's new, what changes, and any problems, before anything is saved.");
@@ -309,8 +306,7 @@ export const JOURNEYS = [
       const { page } = d;
       const backend = await openTeam(d, { teams: [{ ...TEAM, role: "contributor" }], user: SAM, claims: SAM_CLAIMS });
       await connected(page);
-      await d.say("Early morning: Sam opens the app. Open sheets show what's out at each client.");
-      await d.say("Create a sheet for today's client.");
+      await d.say("Early morning: Sam opens the app and creates a sheet for today's client.");
       await d.click(page.getByRole("button", { name: "+ New sheet" }));
       await d.type(page.getByLabel("Client", { exact: true }), "Pine Street Offices");
       await d.click(page.getByRole("button", { name: "Create sheet" }));
@@ -321,8 +317,8 @@ export const JOURNEYS = [
       await d.check("The item is found in inventory, with how many are in storage. Choose how many.");
       await d.type(modal(page).locator("#fQty"), "3");
       await d.click(modal(page).getByRole("button", { name: "Add 3 to sheet" }));
-      await d.say("An item with no barcode: pick it from the inventory by name.");
       await d.click(page.getByRole("button", { name: "Add item without a barcode" }));
+      await d.show("An item with no barcode: pick it from the inventory by name.");
       await d.type(modal(page).getByLabel("Or pick from inventory"), "mop");
       await d.click(modal(page).locator("#pick").getByRole("button", { name: /Mop heads/ }));
       await d.type(modal(page).locator("#fQty"), "4");
@@ -347,7 +343,8 @@ export const JOURNEYS = [
       await d.check("The sheet shows taken, returned, used, and the charge for what was used.");
       await d.click(page.getByRole("button", { name: "Finished Return" }));
       await d.moveTo(page.locator(".sheet-head .pill"));
-      await d.check("The sheet is marked Returned.");
+      await d.show("The sheet is marked Returned.", "check");
+      await d.pause(1500);
       await d.click(page.getByRole("button", { name: "Inventory" }));
       await d.moveTo(itemRow(page, "Paper towels"));
       await d.check("Storage counts follow: paper towels went from 10 to 7 on checkout, and back up to 8 on return.");
@@ -443,14 +440,12 @@ export const JOURNEYS = [
       const { page } = d;
       const backend = await openTeam(d, { members: { t1: [ME, SAM_MEMBER] }, teamInvites: { t1: [] } });
       await connected(page);
-      await d.say("Echo Cleaning is on its free trial.");
-      await d.planned("Choosing a plan in the app before the trial ends isn't built yet (supply-checkout-8jc.5). Today an owner subscribes when the trial ends.");
+      await d.planned("On the free trial, choosing a plan in the app isn't built yet (supply-checkout-8jc.5). Today an owner subscribes when the trial ends.");
       backend.teams[0] = { ...TEAM, ...ENDED };
-      await d.say("The trial has ended without a card…");
       await reload(d, backend);
       await connected(page);
       await d.moveTo(bar(page).locator(".closed-note"));
-      await d.check("The team is read-only, nothing is deleted, and the owner can subscribe.");
+      await d.check("Once the trial ends without a card, the team is read-only, nothing is deleted, and the owner can subscribe.");
       backend.on("POST", "/teams/t1/billing/checkout", { status: 201, body: { checkout: { url: STRIPE_CHECKOUT, expiresAt: "2026-09-30T12:00:00.000Z", trialEndsAt: null } } });
       await d.click(bar(page).getByRole("button", { name: "Subscribe" }));
       await d.check("No seat count to pick: the subscription covers the team's owners and contributors. Viewers are free.");
@@ -479,7 +474,6 @@ export const JOURNEYS = [
           ],
         },
       });
-      await d.say("Past invoices: Invoices in the team bar.");
       await d.click(bar(page).getByRole("button", { name: "Invoices" }));
       await d.moveTo(modal(page).locator(".invoice").first());
       await d.check("The latest invoices from Stripe, each with Stripe's page and a PDF. Stripe also emails them.");

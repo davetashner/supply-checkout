@@ -161,7 +161,7 @@ export class Director {
   async click(locator) {
     await this.moveTo(locator);
     await locator.click();
-    await this.pause(700);
+    await this.pause(550);
   }
 
   // Types as a person would, a key at a time, replacing what was there
@@ -169,7 +169,7 @@ export class Director {
     await this.moveTo(locator);
     await locator.click();
     await locator.fill("");
-    await locator.pressSequentially(text, { delay: Math.max(20, Math.round(65 * this.pace)) });
+    await locator.pressSequentially(text, { delay: Math.max(20, Math.round(45 * this.pace)) });
     if (enter) await locator.press("Enter");
     await this.pause(500);
   }
@@ -212,7 +212,7 @@ export class Director {
     await this.ready();
     await this.card(`<div class="jv-id">${esc(j.id)}</div><div class="jv-big">${esc(j.title)}</div>
       <div class="jv-meta">Persona: ${esc(j.persona)}${j.critical ? " · Critical journey" : ""} · Status: ${esc(j.status)}</div>
-      <div class="jv-small">Supply Checkout customer journey (docs/journeys.md). Recorded against the web build with the test suite's fakes: no real AWS, Stripe or email. Captions marked Simulated stand in for an outside service; Not built yet marks what's still planned.</div>`, 5000);
+      <div class="jv-small">Supply Checkout customer journey (docs/journeys.md). Recorded against the web build with the test suite's fakes: no real AWS, Stripe or email. Captions marked Simulated stand in for an outside service; Not built yet marks what's still planned.</div>`, 4500);
   }
 
   async endCard() {
@@ -223,6 +223,6 @@ export class Director {
     await this.card(`<div class="jv-id">${esc(j.id)}</div><div class="jv-big" style="font-size:44px">End of ${esc(j.title)}</div>
       <div><div class="jv-meta">Shown</div><ul>${shown}</ul></div>
       ${simulated ? `<div><div class="jv-meta">Simulated in this recording</div><ul>${simulated}</ul></div>` : ""}
-      ${planned ? `<div><div class="jv-meta">Not built yet</div><ul>${planned}</ul></div>` : ""}`, 7000);
+      ${planned ? `<div><div class="jv-meta">Not built yet</div><ul>${planned}</ul></div>` : ""}`, 6000);
   }
 }
