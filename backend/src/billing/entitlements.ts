@@ -134,6 +134,11 @@ export function createEntitlementCheck(deps: EntitlementCheckDeps) {
     const team = await getBillingTeam(db, ctx, now);
     if (!team) return "team_gone";
     if (team.closed || team.purging) return "team_closed";
+    // The link and the team must agree on the customer, as for a seat sync
+    if (team.stripeCustomerId !== customer) {
+      obs.logger.warn("Entitlement check skipped: the team has another Stripe customer", { teamId });
+      return "not_ours";
+    }
     const stripe = await deps.stripe();
 
     let sub: SubscriptionLike | undefined;

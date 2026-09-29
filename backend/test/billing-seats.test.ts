@@ -487,6 +487,11 @@ describe("the nightly entitlement check (supply-checkout-8jc.9)", () => {
     subs.set(SUB, subscription(3, { status: "past_due", customer: { id: "cus_other" } }));
     expect(await nightly()).toBe("not_ours");
     expect(logs).toContainEqual(["warn", "Entitlement check skipped: subscription isn't the customer's", { teamId: TEAM, subscriptionId: SUB }]);
+    subs.set(SUB, subscription(3, { status: "past_due" }));
+    patchTeam({ stripeCustomerId: "cus_other" });
+    expect(await nightly()).toBe("not_ours");
+    expect(logs).toContainEqual(["warn", "Entitlement check skipped: the team has another Stripe customer", { teamId: TEAM }]);
+    patchTeam({ stripeCustomerId: CUSTOMER });
     table.put({ PK: `STRIPE#${CUSTOMER}`, SK: "TEAM", type: "stripeLink", customerId: CUSTOMER, teamId: "team-other" });
     expect(await nightly()).toBe("team_gone");
     table.put({ PK: `STRIPE#${CUSTOMER}`, SK: "TEAM", type: "stripeLink", customerId: CUSTOMER, teamId: TEAM });
