@@ -219,8 +219,11 @@ export interface SubscriptionState {
  *
  * With `asRead` (the nightly entitlement check, billing/entitlements.ts),
  * also conditioned on the team's status, plan, seats and subscription being
- * as they were read, so a Stripe event applied meanwhile is never
- * overwritten with the older state the check fetched.
+ * as they were read, so a Stripe event applied meanwhile is almost never
+ * overwritten with the older state the check fetched. It compares values,
+ * not a version: a change and back (A to B to A) between the read and the
+ * write, or a change only to `cancelAtPeriodEnd` or `currentPeriodEnd`, isn't
+ * seen, and the next event or night corrects it.
  *
  * Returns "applied", or "ignored" when the team is gone, closed, being purged
  * or belongs to another customer by the time of the write. Any other failed

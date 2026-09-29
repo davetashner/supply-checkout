@@ -33,6 +33,8 @@ let subs: Map<string, Sub>;
 let updates: { item: string; quantity: number; proration: string; key: string }[];
 let stripeDown: boolean;
 let listed: string[];
+let customerGone: boolean;
+let listFails: boolean;
 let onRetrieve: (() => void) | undefined;
 let denied: { command: string; input: Record<string, unknown> }[];
 let scopes: WorkerScope[];
@@ -88,6 +90,8 @@ beforeEach(() => {
   updates = [];
   stripeDown = false;
   listed = [];
+  customerGone = false;
+  listFails = false;
   onRetrieve = undefined;
   denied = [];
   scopes = [];
@@ -105,9 +109,10 @@ beforeEach(() => {
       },
       async list({ customer, status, limit }) {
         listed.push(`${customer} ${status} ${limit}`);
-        const all = [...subs.values()].filter((sub) => (typeof sub.customer === "string" ? sub.customer : sub.customer.id) === customer);
-        // Newest first, as Stripe lists them
-        return { data: all.sort((a, b) => (b.created ?? 0) - (a.created ?? 0)).map(typed) };
+        if (listFails) throw Object.assign(new Error("Stripe is busy"), { type: "StripeRateLimitError", code: "rate_limit" });
+        if (customerGone) throw Object.assign(new Error(`No such customer: '${customer}'`), { type: "StripeInvalidRequestError", code: "resource_missing" });
+        // Every customer's, newest first: the check must pick out the customer's own itself
+        return { data: [...subs.values()].sort((a, b) => (b.created ?? 0) - (a.created ?? 0)).map(typed) };
       },
       async update() {
         throw new Error("not used");
@@ -417,6 +422,32 @@ describe("the nightly entitlement check (supply-checkout-8jc.9)", () => {
     expect(await nightly()).toBe("subscription_ended");
     expect(counts).toEqual([]);
     expect(meta()).toMatchObject({ stripeSubscriptionId: SUB, status: "canceled" });
+  });
+
+  it("counts an ended team whose customer Stripe doesn't have, and stops there instead of failing every night", async () => {
+    subs.set(SUB, subscription(3, { status: "canceled" }));
+    patchTeam({ status: "canceled" });
+    customerGone = true;
+    expect(await nightly()).toBe("missing");
+    expect(drift()).toHaveLength(1);
+    expect(logs).toContainEqual(["warn", "Entitlement drift: customer missing in Stripe", { teamId: TEAM, status: "canceled" }]);
+    expect(meta()).toMatchObject({ stripeSubscriptionId: SUB, status: "canceled" });
+  });
+
+  it("throws when listing the customer's subscriptions fails for another reason", async () => {
+    patchTeam({ stripeSubscriptionId: undefined });
+    subs.clear();
+    listFails = true;
+    await expect(nightly()).rejects.toThrow("Stripe is busy");
+    expect(counts).toEqual([]);
+  });
+
+  it("doesn't take an incomplete subscription (its first payment hasn't gone through) as unrecorded", async () => {
+    patchTeam({ stripeSubscriptionId: undefined, status: "trialing", plan: "trial", seats: 1 });
+    subs.set(SUB, subscription(3, { status: "incomplete", created: OLD }));
+    expect(await nightly()).toBe("no_subscription");
+    expect(counts).toEqual([]);
+    expect(meta().stripeSubscriptionId).toBeUndefined();
   });
 
   it("counts a recorded subscription Stripe doesn't have, and stops there", async () => {

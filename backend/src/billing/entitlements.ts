@@ -23,16 +23,23 @@
 // 2. Compare Stripe's subscription, status, plan and seat quantity with the
 //    team's (entitlementDrift). Any difference is drift.
 // 3. Fix it: apply Stripe's state with applySubscription, conditioned on the
-//    team being as it was read (`asRead`), so an event applied meanwhile is
-//    never overwritten with older state; that conflict throws, and the
-//    message's retry finds the team in sync. Only once the fix is written is
+//    team's status, plan, seats and subscription being as they were read
+//    (`asRead`), so an event applied meanwhile is almost never overwritten
+//    with older state: that conflict throws, and the message's retry finds
+//    the team in sync. The condition compares values, not a version, so an
+//    event that changed a field and changed it back (A to B to A) between the
+//    read and the write slips through, and `cancelAtPeriodEnd` and
+//    `currentPeriodEnd` aren't compared at all. Then the older state can win
+//    for a while; the next event for the subscription, or the next night,
+//    puts it right. Only once the fix is written is
 //    the drift counted in EntitlementDrift (the "Entitlements drifting"
 //    alarm) and logged with the team and subscription IDs, the fields, and
 //    both values (statuses, plan names and numbers only), so an event that
 //    was merely in flight doesn't alarm.
 //
-// A recorded subscription Stripe no longer has is drift that can't be fixed
-// here (`missing`): counted and logged for a person to look at.
+// A recorded subscription, or a customer, Stripe no longer has is drift that
+// can't be fixed here (`missing`): counted and logged for a person to look at,
+// and the team's seat sync is skipped, so it doesn't fail every night.
 //
 // No owner email is sent for a fix: the event that would have sent one was
 // lost, and the runbook (docs/runbooks/billing-dlq-replay.md) says how to
@@ -97,11 +104,21 @@ export function createEntitlementCheck(deps: EntitlementCheckDeps) {
   const { obs } = deps;
   const nowMs = deps.now ?? Date.now;
 
-  /** The newest live subscription of the customer's that isn't `recorded`, once past the grace period. */
-  async function unrecorded(stripe: EntitlementStripe, customer: string, recorded: string | undefined): Promise<SubscriptionLike | undefined> {
+  /**
+   * The newest live subscription of the customer's that isn't `recorded`, once past the grace period, or
+   * "customer_missing" when Stripe doesn't have the customer. `incomplete` doesn't count: its first
+   * payment hasn't gone through, and it expires by itself.
+   */
+  async function unrecorded(stripe: EntitlementStripe, customer: string, recorded: string | undefined): Promise<SubscriptionLike | "customer_missing" | undefined> {
     const cutoff = Math.floor(nowMs() / 1000) - UNRECORDED_GRACE_SECONDS;
-    const { data } = await stripe.subscriptions.list({ customer, status: "all", limit: SUBSCRIPTIONS_LISTED });
-    const live = data.filter((s) => s.id !== recorded && customerOf(s) === customer && !hasEnded(s.status) && (s.created ?? 0) <= cutoff);
+    let data: readonly SubscriptionLike[];
+    try {
+      ({ data } = await stripe.subscriptions.list({ customer, status: "all", limit: SUBSCRIPTIONS_LISTED }));
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+      return "customer_missing";
+    }
+    const live = data.filter((s) => s.id !== recorded && customerOf(s) === customer && !hasEnded(s.status) && s.status !== "incomplete" && (s.created ?? 0) <= cutoff);
     return live[0];
   }
 
@@ -137,6 +154,12 @@ export function createEntitlementCheck(deps: EntitlementCheckDeps) {
     let replaces: string | undefined;
     if (!sub || hasEnded(sub.status)) {
       const newer = await unrecorded(stripe, customer, team.stripeSubscriptionId);
+      if (newer === "customer_missing") {
+        // Deleted in Stripe (by hand, or the wrong mode's): nothing here can fix it, and retrying won't help
+        obs.count(BusinessMetric.EntitlementDrift, 1, { teamId });
+        obs.logger.warn("Entitlement drift: customer missing in Stripe", { teamId, status: team.status });
+        return "missing";
+      }
       if (newer) {
         replaces = sub ? team.stripeSubscriptionId : undefined;
         sub = newer;

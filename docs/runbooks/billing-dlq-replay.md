@@ -71,12 +71,23 @@ The billing worker's log has `Entitlement drift` for each team, with the fields 
 
 - Look for its events in the dead-letter queue (step 2) or in Stripe's failed deliveries (step 3), and replay them so the owner gets any email that was missed.
 - `subscription` in the fields means a checkout or resubscription we never recorded. If the team also had another live subscription, check in Stripe that the customer isn't paying twice.
-- `Entitlement drift: subscription missing in Stripe` means the team records a subscription Stripe doesn't have (deleted by hand, or a test-mode object in live mode). Nothing was changed. Find out in the Dashboard what the customer has before doing anything to the team.
+- `Entitlement drift: subscription missing in Stripe` means the team records a subscription Stripe doesn't have (deleted by hand, or a test-mode object in live mode). Nothing was changed. Open the team's customer in the Dashboard and check for a live subscription. If there is one, attach it to the team by replaying one of its events (a `customer.subscription.updated` or `.created`, step 3's Resend): the worker applies it in place of the missing one. If there's none, the customer isn't paying, and the team stays as it is until someone decides what it should have.
+- `Entitlement drift: customer missing in Stripe` means the team's Stripe customer is gone (deleted by hand, or the wrong mode's). Nothing was changed. The team can subscribe again only once that's sorted out: check in the Dashboard which customer, if any, is the team's now.
 - A drift for a team whose own event was in flight at 07:00 UTC fixes itself: ignore it if that event shows up in the log minutes later.
+- The fix is conditioned on the team's status, plan, seats and subscription being as the check read them, compared by value. A change and back between the read and the write, or a change only to the cancellation or period end, isn't seen, so the check's older state can win for a while. The next event for the subscription, or the next night, corrects it.
 
 ## Dry runs in test mode
 
-Run both against the Stripe sandbox after the first deploy of this change, and again after any change to the billing queue, the worker or its role. Use a test team you own, never a customer's. Record each run in the log below.
+**Only where Stripe is in test mode.** Run them in an environment whose Stripe is the sandbox: prod until go-live, then staging (or another non-live environment), never prod after it switches to live mode. Never disable a live-mode event destination: live customers' events would be lost. Run both after the first deploy of this change, and again after any change to the billing queue, the worker or its role. Use a test team you own, never a customer's. Record each run in the log below.
+
+**First, confirm the mode.** The worker must be on the test key, and the Dashboard in test mode (the sandbox's banner):
+
+```bash
+# The api stack's BillingWorkerFunction (CloudFormation names it; check there if this finds none or two)
+WORKER=$(aws lambda list-functions --query "Functions[?contains(FunctionName, 'BillingWorker')].FunctionName" --output text)
+aws lambda get-function-configuration --function-name "$WORKER" --query 'Environment.Variables.[STRIPE_MODE,STRIPE_SECRET_ID]' --output text
+# Expect: test   supply-checkout/<env>/stripe/test-secret-key. Anything with "live" in it: stop here.
+```
 
 **Dry run 1: replay a message from the dead-letter queue.** Put a message for the test team straight onto the dead-letter queue, as if the worker had given up on it, then replay it:
 
@@ -87,11 +98,11 @@ BODY=$(printf '{"eventId":"evt_dryrun_%s","type":"customer.subscription.updated"
 aws sqs send-message --queue-url "$DLQ_URL" --message-body "$BODY" --message-group-id "$CUSTOMER" --message-deduplication-id "dryrun-$(date +%s)"
 ```
 
-Billing events stuck fires within 10 minutes (P1: tell whoever's on call first). Then follow step 2. Expect `Billing event` with this `eventId` and outcome `applied` in the worker's log, an empty dead-letter queue, and the alarm back to OK. Replaying the same body again (step 2's single-message way) gives `duplicate`.
+This fires a **real P1**: Billing events stuck goes to the P1 topic within 10 minutes, paging whoever's on call, so tell them first. Then follow step 2. Expect `Billing event` with this `eventId` and outcome `applied` in the worker's log, an empty dead-letter queue, and the alarm back to OK. Replaying the same body again (step 2's single-message way) gives `duplicate`.
 
 **Dry run 2: a lost event caught by the nightly check (a forced mismatch).**
 
-1. In the Stripe Dashboard (test mode), disable the event destination `supply-checkout-<env>-billing`.
+1. In the Stripe Dashboard, in **test mode** (checked above), disable the test-mode event destination `supply-checkout-<env>-billing`. Never the live one.
 2. On the test team's subscription, make a change the team should see: cancel it immediately (status `canceled`), or switch its price between monthly and annual.
 3. Enable the destination again. The event for step 2 was never delivered.
 4. Run the check now rather than waiting for 07:00 UTC: `aws lambda invoke --function-name supply-checkout-$ENV-seat-reconcile /dev/null`.
