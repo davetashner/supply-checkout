@@ -50,6 +50,7 @@ import {
   OPERATOR_GROUP_WATCH_RULE_SUFFIX,
   OPERATOR_POOL_RULE_STATE,
   GROUP_SNAPSHOT_EVENTS,
+  GROUP_WATCH_ROLE_FUNCTION_EVENTS,
   deletionsRuleTamperingName,
   operatorRuleName,
   operatorRulePrefix,
@@ -771,6 +772,15 @@ describe("operator group watch (supply-checkout-3sv.5)", () => {
       "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:cognito-idp:${EAST}:`, { Ref: "AWS::AccountId" }, ":userpool/", { Ref: expect.stringMatching(poolParam) }]],
     });
     expect(JSON.stringify(found[2]?.Resource)).toContain("OperatorGroupWatchSnapshot");
+    // Both only from the watch function itself: another function given this role gets neither (lambda:SourceFunctionArn)
+    const onlyThisFunction = {
+      ArnEquals: {
+        "lambda:SourceFunctionArn": { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:lambda:${EAST}:`, { Ref: "AWS::AccountId" }, ":function:supply-checkout-prod-operator-group-watch"]] },
+      },
+    };
+    expect(found[0]?.Condition).toBeUndefined();
+    expect(found[1]?.Condition).toEqual(onlyThisFunction);
+    expect(found[2]?.Condition).toEqual(onlyThisFunction);
     expect(JSON.stringify(found)).not.toContain('"*"');
   });
 
@@ -1182,7 +1192,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     const role = Object.keys(t.findResources("AWS::IAM::Role")).find((id) => id.startsWith("OperatorAuditWatchRole"));
     // The operator group watch's function and role too (supply-checkout-3sv.5)
     const groupRole = Object.keys(t.findResources("AWS::IAM::Role")).find((id) => id.startsWith("OperatorGroupWatchRole"));
-    const names = ["supply-checkout-prod-operator-audit-watch", "supply-checkout-prod-operator-group-watch"].flatMap((fn) => [fn, { wildcard: `*:function:${fn}` }, { wildcard: `*:function:${fn}:*` }]);
+    const names = ["supply-checkout-prod-operator-audit-watch", "supply-checkout-prod-operator-group-watch"].flatMap((fn) => [fn, { wildcard: `*:function:${fn}*` }]);
     const prefixed = (list: readonly string[]) => list.map((prefix) => ({ prefix }));
     expect(watchChanges.props.EventPattern).toEqual({
       source: ["aws.lambda"],
@@ -1199,16 +1209,23 @@ describe("operator pool alerts (ADR 0015)", () => {
     });
     // The role's calls, in a rule of their own so each pattern stays well inside EventBridge's limit (supply-checkout-pbp.17)
     expect(roleChanges.props.EventPattern).toEqual({
-      source: ["aws.iam"],
+      source: ["aws.iam", "aws.lambda"],
       "detail-type": ["AWS API Call via CloudTrail"],
       detail: {
-        eventSource: ["iam.amazonaws.com"],
         $or: [
-          { eventName: [...AUDIT_WATCH_ROLE_EVENTS.always], requestParameters: { roleName: [{ Ref: role }, { Ref: groupRole }] } },
-          { eventName: [...AUDIT_WATCH_ROLE_EVENTS.outsideDeploys], requestParameters: { roleName: [{ Ref: role }, { Ref: groupRole }] }, userIdentity: NOT_CLOUDFORMATION },
+          { eventName: [...AUDIT_WATCH_ROLE_EVENTS.always], eventSource: ["iam.amazonaws.com"], requestParameters: { roleName: [{ Ref: role }, { Ref: groupRole }] } },
+          { eventName: [...AUDIT_WATCH_ROLE_EVENTS.outsideDeploys], eventSource: ["iam.amazonaws.com"], requestParameters: { roleName: [{ Ref: role }, { Ref: groupRole }] }, userIdentity: NOT_CLOUDFORMATION },
+          // Another function given the group watch's role, outside a deploy (supply-checkout-3sv.5); Lambda's event names carry a version, so by prefix
+          {
+            eventName: [{ prefix: "CreateFunction" }, { prefix: "UpdateFunctionConfiguration" }],
+            eventSource: ["lambda.amazonaws.com"],
+            requestParameters: { role: [{ "Fn::GetAtt": [groupRole, "Arn"] }] },
+            userIdentity: NOT_CLOUDFORMATION,
+          },
         ],
       },
     });
+    expect(GROUP_WATCH_ROLE_FUNCTION_EVENTS.outsideDeploys).toEqual(["CreateFunction", "UpdateFunctionConfiguration"]);
     // Zero concurrency, a disabled mapping and new code are each covered
     expect(AUDIT_WATCH_FUNCTION_EVENTS.outsideDeploys).toEqual(expect.arrayContaining(["PutFunctionConcurrency", "UpdateFunctionCode", "UpdateFunctionConfiguration"]));
     expect(AUDIT_WATCH_MAPPING_EVENTS.outsideDeploys).toEqual(["UpdateEventSourceMapping"]);
@@ -1652,15 +1669,17 @@ describe("EventBridge pattern sizes (supply-checkout-pbp.17)", () => {
     );
   }
 
-  it("keeps every rule's pattern in every stack well inside EventBridge's 2,048 characters, with and without the backup copy, and in the backup account", () => {
+  it("keeps every rule's pattern in every stack well inside EventBridge's 2,048 characters, with and without the backup copy, with the longest environment name, and in the backup account", () => {
     expect(EVENT_PATTERN_LIMIT).toBe(2048);
     const all = [
       ...patterns(build().stacks.all),
       ...patterns(build({ backupCopy: "false" }).stacks.all),
+      // The longest environment name, since the patterns hold names built from it
+      ...patterns(build({}, { envName: "a".repeat(16) }).stacks.all),
       ...patterns([addBackupAccount(new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [] } }), config)]),
     ];
     // The operator and deletion records rules, the backup change rules, and the backup account's
-    expect(all.length).toBeGreaterThanOrEqual(2 * 16 + 3);
+    expect(all.length).toBeGreaterThanOrEqual(3 * 16 + 3);
     for (const { where, size } of all) expect(size, where).toBeLessThan(MAX);
   });
 

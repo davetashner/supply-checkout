@@ -4993,6 +4993,26 @@
             },
             {
               "Action": "cognito-idp:ListUsersInGroup",
+              "Condition": {
+                "ArnEquals": {
+                  "lambda:SourceFunctionArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":lambda:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":function:supply-checkout-prod-operator-group-watch"
+                      ]
+                    ]
+                  }
+                }
+              },
               "Effect": "Allow",
               "Resource": {
                 "Fn::Join": [
@@ -5020,6 +5040,26 @@
                 "ssm:GetParameter",
                 "ssm:PutParameter"
               ],
+              "Condition": {
+                "ArnEquals": {
+                  "lambda:SourceFunctionArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":lambda:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":function:supply-checkout-prod-operator-group-watch"
+                      ]
+                    ]
+                  }
+                }
+              },
               "Effect": "Allow",
               "Resource": {
                 "Fn::Join": [
@@ -6209,17 +6249,11 @@
                   "functionName": [
                     "supply-checkout-prod-operator-audit-watch",
                     {
-                      "wildcard": "*:function:supply-checkout-prod-operator-audit-watch"
-                    },
-                    {
-                      "wildcard": "*:function:supply-checkout-prod-operator-audit-watch:*"
+                      "wildcard": "*:function:supply-checkout-prod-operator-audit-watch*"
                     },
                     "supply-checkout-prod-operator-group-watch",
                     {
-                      "wildcard": "*:function:supply-checkout-prod-operator-group-watch"
-                    },
-                    {
-                      "wildcard": "*:function:supply-checkout-prod-operator-group-watch:*"
+                      "wildcard": "*:function:supply-checkout-prod-operator-group-watch*"
                     }
                   ]
                 }
@@ -6240,17 +6274,11 @@
                   "functionName": [
                     "supply-checkout-prod-operator-audit-watch",
                     {
-                      "wildcard": "*:function:supply-checkout-prod-operator-audit-watch"
-                    },
-                    {
-                      "wildcard": "*:function:supply-checkout-prod-operator-audit-watch:*"
+                      "wildcard": "*:function:supply-checkout-prod-operator-audit-watch*"
                     },
                     "supply-checkout-prod-operator-group-watch",
                     {
-                      "wildcard": "*:function:supply-checkout-prod-operator-group-watch"
-                    },
-                    {
-                      "wildcard": "*:function:supply-checkout-prod-operator-group-watch:*"
+                      "wildcard": "*:function:supply-checkout-prod-operator-group-watch*"
                     }
                   ]
                 },
@@ -6313,24 +6341,25 @@
     "OperatorAuditWatchRoleChangesFCFE9D73": {
       "Type": "AWS::Events::Rule",
       "Properties": {
-        "Description": "The operator audit or group watch's role or its policies were deleted, or changed outside a deploy (supply-checkout-6uw.11)",
+        "Description": "The operator audit or group watch's role or its policies were deleted or changed outside a deploy, or a function given the group watch's role outside a deploy (supply-checkout-6uw.11)",
         "EventPattern": {
           "source": [
-            "aws.iam"
+            "aws.iam",
+            "aws.lambda"
           ],
           "detail-type": [
             "AWS API Call via CloudTrail"
           ],
           "detail": {
-            "eventSource": [
-              "iam.amazonaws.com"
-            ],
             "$or": [
               {
                 "eventName": [
                   "DeleteRole",
                   "DeleteRolePolicy",
                   "DetachRolePolicy"
+                ],
+                "eventSource": [
+                  "iam.amazonaws.com"
                 ],
                 "requestParameters": {
                   "roleName": [
@@ -6350,6 +6379,9 @@
                   "UpdateAssumeRolePolicy",
                   "PutRolePermissionsBoundary"
                 ],
+                "eventSource": [
+                  "iam.amazonaws.com"
+                ],
                 "requestParameters": {
                   "roleName": [
                     {
@@ -6357,6 +6389,39 @@
                     },
                     {
                       "Ref": "OperatorGroupWatchRole9830274D"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  {
+                    "prefix": "CreateFunction"
+                  },
+                  {
+                    "prefix": "UpdateFunctionConfiguration"
+                  }
+                ],
+                "eventSource": [
+                  "lambda.amazonaws.com"
+                ],
+                "requestParameters": {
+                  "role": [
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorGroupWatchRole9830274D",
+                        "Arn"
+                      ]
                     }
                   ]
                 },

@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { Duration, Stack } from "aws-cdk-lib";
+import { ArnFormat, Duration, Stack } from "aws-cdk-lib";
 import { Alarm, ComparisonOperator, MathExpression, TreatMissingData } from "aws-cdk-lib/aws-cloudwatch";
 import { Rule, Schedule } from "aws-cdk-lib/aws-events";
 import { LambdaFunction } from "aws-cdk-lib/aws-events-targets";
@@ -53,7 +53,8 @@ export interface OperatorGroupWatchProps {
  * The schedule rule's name starts with the operator rules' prefix, so
  * disabling or deleting it, or changing its target, alerts through the
  * rule-tampering rules. Its role may only list the operator pool's users in a
- * group (never change one), and read and write its own parameter.
+ * group (never change one), and read and write its own parameter, both only
+ * from this function (lambda:SourceFunctionArn).
  */
 export class OperatorGroupWatch extends Construct {
   readonly fn: NodejsFunction;
@@ -69,7 +70,8 @@ export class OperatorGroupWatch extends Construct {
     const logGroup = (this.logGroup = new LogGroup(this, "Logs", { retention: LOG_RETENTION }));
     this.snapshot = new StringParameter(this, "Snapshot", {
       parameterName: operatorGroupSnapshotParameter(props.envName),
-      // The first run replaces this without alerting; a deploy doesn't change it again
+      // The first run finds this, counts a reset and pages once. A deploy writes it again only when it changes this
+      // parameter's properties, which pages again; one that leaves it alone doesn't
       stringValue: INITIAL_GROUP_SNAPSHOT,
       description: "The operators group as the operator group watch last saw it: each member's sub and whether they're enabled (supply-checkout-3sv.5)",
     });
@@ -78,11 +80,20 @@ export class OperatorGroupWatch extends Construct {
       description: "Execution role for the operator group watch",
     }));
     role.addToPolicy(new PolicyStatement({ actions: ["logs:CreateLogStream", "logs:PutLogEvents"], resources: [logGroup.logGroupArn] }));
+    // Only from this function: another function given this role (iam:PassRole, lambda:CreateFunction) could
+    // otherwise write the snapshot as the watch, which OperatorGroupSnapshotChanges doesn't alert on. Built from
+    // the fixed name, not the function's own ARN, so the role doesn't depend on the function it runs.
+    const onlyThisFunction = {
+      ArnEquals: {
+        "lambda:SourceFunctionArn": Stack.of(this).formatArn({ service: "lambda", resource: "function", resourceName: opsResourceNames(props.envName).operatorGroupWatchFunction, arnFormat: ArnFormat.COLON_RESOURCE_NAME }),
+      },
+    };
     role.addToPolicy(
       new PolicyStatement({
         sid: "ListOperatorGroup",
         actions: ["cognito-idp:ListUsersInGroup"],
         resources: [Stack.of(this).formatArn({ service: "cognito-idp", resource: "userpool", resourceName: props.userPoolId })],
+        conditions: onlyThisFunction,
       }),
     );
     role.addToPolicy(
@@ -90,6 +101,7 @@ export class OperatorGroupWatch extends Construct {
         sid: "OwnSnapshot",
         actions: ["ssm:GetParameter", "ssm:PutParameter"],
         resources: [this.snapshot.parameterArn],
+        conditions: onlyThisFunction,
       }),
     );
     this.fn = new NodejsFunction(this, "Function", {

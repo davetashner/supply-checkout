@@ -115,6 +115,13 @@ export const OPERATOR_RULE_SUFFIXES = {
 export const OPERATOR_GROUP_WATCH_RULE_SUFFIX = "group-watch";
 
 /**
+ * SSM calls that change or remove the operator group watch's snapshot
+ * parameter (supply-checkout-3sv.5): P1 unless the watch's own role or
+ * CloudFormation made them. DeleteParameters names it in a list.
+ */
+export const GROUP_SNAPSHOT_EVENTS = ["PutParameter", "DeleteParameter", "LabelParameterVersion", "UnlabelParameterVersion"] as const;
+
+/**
  * The state of OperatorPoolChanges: EventBridge also matches CloudTrail
  * management events it counts as read-only. Its pattern names only calls that
  * change something, so this adds no other events; it's there in case
@@ -122,13 +129,6 @@ export const OPERATOR_GROUP_WATCH_RULE_SUFFIX = "group-watch";
  * `readOnly: false`, which would explain AdminAddUserToGroup and
  * AdminRemoveUserFromGroup never reaching the rule (supply-checkout-3sv.5).
  */
-/**
- * SSM calls that change or remove the operator group watch's snapshot
- * parameter (supply-checkout-3sv.5): P1 unless the watch's own role or
- * CloudFormation made them. DeleteParameters names it in a list.
- */
-export const GROUP_SNAPSHOT_EVENTS = ["PutParameter", "DeleteParameter", "LabelParameterVersion", "UnlabelParameterVersion"] as const;
-
 export const OPERATOR_POOL_RULE_STATE = "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS";
 
 /**
@@ -148,6 +148,8 @@ export const tamperingWatchRuleName = (envName: string) => operatorRuleName(envN
  * (Delete) or outside a deploy (Update); the function's outside a deploy.
  */
 export const AUDIT_WATCH_MAPPING_EVENTS = { always: ["DeleteEventSourceMapping"], outsideDeploys: ["UpdateEventSourceMapping"] } as const;
+/** Lambda calls that give a function the operator group watch's role, outside a deploy (supply-checkout-3sv.5), by prefix like the others. */
+export const GROUP_WATCH_ROLE_FUNCTION_EVENTS = { outsideDeploys: ["CreateFunction", "UpdateFunctionConfiguration"] } as const;
 export const AUDIT_WATCH_FUNCTION_EVENTS = { always: ["DeleteFunction"], outsideDeploys: ["PutFunctionConcurrency", "UpdateFunctionCode", "UpdateFunctionConfiguration"] } as const;
 /** IAM calls on the watch's role that could take away its stream access. */
 export const AUDIT_WATCH_ROLE_EVENTS = {
@@ -429,7 +431,9 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     // The name as a string (the template knows it), so the patterns hold no references
     // The operator group watch's function, role and log group too (supply-checkout-3sv.5)
     const watchFunctions = [opsResourceNames(envName).operatorAuditWatchFunction, opsResourceNames(envName).operatorGroupWatchFunction];
-    const functionNames = watchFunctions.flatMap((name) => [name, { wildcard: `*:function:${name}` }, { wildcard: `*:function:${name}:*` }]);
+    // A name, or an ARN with or without a qualifier; one wildcard for both ARNs keeps the pattern inside the limit with the
+    // longest envName (it also matches a longer name that starts with this one, which only over-alerts)
+    const functionNames = watchFunctions.flatMap((name) => [name, { wildcard: `*:function:${name}*` }]);
     const logGroups = [watch.logGroup.logGroupName, groupWatch.logGroup.logGroupName];
     const table = tableName(envName);
     const watchChanges = operatorRule("OperatorAuditWatchChanges", "The operator audit watch's stream mapping, or its or the operator group watch's function, was deleted, or changed outside a deploy (supply-checkout-6uw.11)", {
@@ -444,12 +448,15 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         ],
       },
     });
-    const roleChanges = operatorRule("OperatorAuditWatchRoleChanges", "The operator audit or group watch's role or its policies were deleted, or changed outside a deploy (supply-checkout-6uw.11)", {
-      source: ["aws.iam"],
+    const roleChanges = operatorRule("OperatorAuditWatchRoleChanges", "The operator audit or group watch's role or its policies were deleted or changed outside a deploy, or a function given the group watch's role outside a deploy (supply-checkout-6uw.11)", {
+      source: ["aws.iam", "aws.lambda"],
       ...cloudTrail,
       detail: {
-        eventSource: ["iam.amazonaws.com"],
-        $or: calls(AUDIT_WATCH_ROLE_EVENTS, { requestParameters: { roleName: [watch.role.roleName, groupWatch.role.roleName] } }),
+        $or: [
+          ...calls(AUDIT_WATCH_ROLE_EVENTS, { eventSource: ["iam.amazonaws.com"], requestParameters: { roleName: [watch.role.roleName, groupWatch.role.roleName] } }),
+          // Any other function given the operator group watch's role (supply-checkout-3sv.5); its grants also need lambda:SourceFunctionArn
+          ...calls(GROUP_WATCH_ROLE_FUNCTION_EVENTS, { eventSource: ["lambda.amazonaws.com"], requestParameters: { role: [groupWatch.role.roleArn] } }, true),
+        ],
       },
     });
     const logChanges = operatorRule("OperatorAuditWatchLogChanges", "The operator audit or group watch's log group was deleted, or given a transformer or data protection policy outside a deploy, or one was set for the account (supply-checkout-6uw.11)", {
