@@ -146,6 +146,12 @@ export class OpsDashboard extends Construct {
       businessGraph("Backups: deletion records rewritten or deleted", [BusinessMetric.DeletionRecordRewrites]),
       // Closed teams' subscriptions ended, and purged teams' Stripe customers deleted (supply-checkout-t0en)
       businessGraph("J7: closed teams' subscriptions ended, Stripe customers deleted", [BusinessMetric.ClosedTeamSubscriptionsEnded, BusinessMetric.StripeCustomersDeleted]),
+      // The operator group watch (primary region): a change is a P1; a gap in the size means it isn't running ("Operator group watch silent")
+      graph(
+        "Operators: group changes and size",
+        each((r) => [business(BusinessMetric.OperatorGroupChanged, r), business(BusinessMetric.OperatorGroupMembers, r, FIVE_MINUTES, "Maximum")]),
+        WIDTH / 4,
+      ),
     );
   }
 }

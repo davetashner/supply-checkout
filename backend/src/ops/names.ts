@@ -46,6 +46,20 @@ export const PURGE_SILENT_ALARM_HOURS = 3;
 export const HEARTBEAT_EVERY_MINUTES = 10;
 export const HEARTBEAT_SILENT_ALARM_MINUTES = 30;
 
+/**
+ * How often the operator group watch compares the operators group with what
+ * it saw last (supply-checkout-3sv.5), and how long without a finished run
+ * before "Operator group watch silent" fires: three missed runs.
+ */
+export const GROUP_WATCH_EVERY_MINUTES = 5;
+export const GROUP_WATCH_SILENT_ALARM_MINUTES = 15;
+
+/** The SSM parameter where the operator group watch keeps the group as it last saw it. */
+export const operatorGroupSnapshotParameter = (envName: string) => `/supply-checkout/${envName}/observability/operator-group-snapshot`;
+
+/** What the CDK app puts in that parameter; the watch's first run replaces it without counting anything. */
+export const INITIAL_GROUP_SNAPSHOT = "none";
+
 /** Functions the observability stack names. */
 export const opsResourceNames = (envName: string) => ({
   stuckImportsFunction: `supply-checkout-${envName}-stuck-imports`,
@@ -53,10 +67,15 @@ export const opsResourceNames = (envName: string) => ({
   teamPurgeFunction: `supply-checkout-${envName}-team-purge`,
   operatorAuditWatchFunction: `supply-checkout-${envName}-operator-audit-watch`,
   deletionRecordsWatchFunction: `supply-checkout-${envName}-deletion-records-watch`,
+  operatorGroupWatchFunction: `supply-checkout-${envName}-operator-group-watch`,
 });
 
 /** Environment variables the checks read. */
 export const OPS_ENV = {
   /** The app table (the stuck-import check and the team purge). */
   tableName: "TABLE_NAME",
+  /** The operator pool (the operator group watch). */
+  opsUserPoolId: "OPS_USER_POOL_ID",
+  /** The operator group watch's SSM parameter. */
+  groupSnapshotParameter: "GROUP_SNAPSHOT_PARAMETER",
 } as const;

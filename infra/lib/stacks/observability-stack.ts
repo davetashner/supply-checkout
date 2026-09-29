@@ -1,5 +1,5 @@
 import { Aws } from "aws-cdk-lib";
-import { EventField, type EventPattern, Rule, RuleTargetInput } from "aws-cdk-lib/aws-events";
+import { CfnRule, EventField, type EventPattern, Rule, RuleTargetInput } from "aws-cdk-lib/aws-events";
 import { PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
@@ -16,6 +16,7 @@ import { OpsDashboard } from "../observability/dashboard.js";
 import { JourneyAlarms } from "../observability/journey-alarms.js";
 import { DeletionRecordsWatch } from "../observability/deletion-records-watch.js";
 import { OperatorAuditWatch } from "../observability/operator-audit-watch.js";
+import { OperatorGroupWatch } from "../observability/operator-group-watch.js";
 import { OpsChecks } from "../observability/ops-checks.js";
 import { WebAlarms } from "../observability/web-alarms.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
@@ -102,6 +103,24 @@ export const OPERATOR_RULE_SUFFIXES = {
   OperatorRuleTampering: "rule-tampering",
   OperatorRuleTamperingWatch: "rule-tampering-watch",
 } as const;
+
+/**
+ * The operator group watch's schedule rule (supply-checkout-3sv.5): under the
+ * operator prefix, so the rule-tampering rules alert when it's disabled,
+ * deleted or retargeted. It has no event pattern, so it isn't one of
+ * OPERATOR_RULE_SUFFIXES.
+ */
+export const OPERATOR_GROUP_WATCH_RULE_SUFFIX = "group-watch";
+
+/**
+ * The state of OperatorPoolChanges: EventBridge also matches CloudTrail
+ * management events it counts as read-only. Its pattern names only calls that
+ * change something, so this adds no other events; it's there in case
+ * EventBridge counts a Cognito call as read-only that CloudTrail records with
+ * `readOnly: false`, which would explain AdminAddUserToGroup and
+ * AdminRemoveUserFromGroup never reaching the rule (supply-checkout-3sv.5).
+ */
+export const OPERATOR_POOL_RULE_STATE = "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS";
 
 /**
  * The rule that watches the deletion records watch's two rules: fixed, so
@@ -200,6 +219,9 @@ export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySo
  * - `operatorAudit`: primary region only, the P1 alarm on any change or
  *   deletion of an operator audit item other than its TTL expiry, from the
  *   table's stream (operator-audit-watch.ts).
+ * - `operatorGroup`: primary region only, the scheduled check on who is in
+ *   the operators group, P1 on any change, which doesn't depend on CloudTrail
+ *   reaching EventBridge (operator-group-watch.ts, supply-checkout-3sv.5).
  * - `deletionRecords`: primary region only, the P2 alarm on a deletion
  *   record written over or deleted, from the bucket's S3 events, and the P1
  *   rule on changes to the bucket (deletion-records-watch.ts).
@@ -214,6 +236,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
   readonly checks?: OpsChecks;
   readonly operatorChanges?: Rule[];
   readonly operatorAudit?: OperatorAuditWatch;
+  readonly operatorGroup?: OperatorGroupWatch;
   readonly deletionRecords?: DeletionRecordsWatch;
   readonly web?: WebAlarms;
 
@@ -249,6 +272,13 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     if (this.isPrimaryRegion) {
       this.checks = new OpsChecks(this, "OpsChecks", { envName: config.envName, tableName: table, topics: this.topics, stripeMode: stripeModeOf(config) });
       this.operatorAudit = new OperatorAuditWatch(this, "OperatorAuditWatch", { envName: config.envName, region, tableName: table, topics: this.topics });
+      this.operatorGroup = new OperatorGroupWatch(this, "OperatorGroupWatch", {
+        envName: config.envName,
+        region,
+        userPoolId: StringParameter.valueForStringParameter(this, identityOutputParameters(config.envName).opsUserPoolId),
+        ruleName: operatorRuleName(config.envName, OPERATOR_GROUP_WATCH_RULE_SUFFIX),
+        topics: this.topics,
+      });
       this.deletionRecords = new DeletionRecordsWatch(this, "DeletionRecordsWatch", { envName: config.envName, region, topics: this.topics });
       // The tampering rules also watch the deletion records watch's two rules (supply-checkout-72d.17)
       this.operatorChanges = this.alertOnOperatorChanges(config.envName, this.operatorAudit, [this.deletionRecords.rule, this.deletionRecords.bucketChanges]);
@@ -269,7 +299,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         regions: config.regions,
         tableName: table,
         web: webIds,
-        alarms: [...this.alarms.alarms, ...(this.web?.alarms ?? []), this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing, this.operatorAudit.dropped, this.operatorAudit.silent, this.deletionRecords.rewritten, this.deletionRecords.failing],
+        alarms: [...this.alarms.alarms, ...(this.web?.alarms ?? []), this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing, this.operatorAudit.dropped, this.operatorAudit.silent, this.operatorGroup.changed, this.operatorGroup.silent, this.deletionRecords.rewritten, this.deletionRecords.failing],
       });
     }
   }
@@ -364,6 +394,8 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         },
       },
     );
+    // Read-only management events too (OPERATOR_POOL_RULE_STATE)
+    (admin.node.defaultChild as CfnRule).state = OPERATOR_POOL_RULE_STATE;
     const selfService = operatorRule("OperatorSelfServiceChanges", "Operator pool: an operator's token replaced TOTP, changed MFA or attributes, or deleted the user (ADR 0015)", {
       ...base,
       detail: {
