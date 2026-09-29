@@ -1,7 +1,8 @@
 # 0009. Stripe Billing for subscriptions, invoices and payments
 
-- Status: Proposed
-- Date: 2026-09-25
+- Status: Accepted
+- Date: 2026-09-28 (proposed 2026-09-25)
+- Note: The owner accepted this with changes on 2026-09-28. Fees are about 7% of a monthly $9 charge (2.9% + $0.30, plus Stripe Billing and Tax), and about 4.5% of a yearly one. One-time payments and scheduled payments are phase 2. The MVP serves webhooks from us-east-1 only. The webhook handler queues each event first and the worker records it once applied.
 
 ## Context
 

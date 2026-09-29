@@ -1,7 +1,8 @@
 # 0003. Separate AWS accounts for each environment under AWS Organizations
 
-- Status: Proposed
-- Date: 2026-09-25
+- Status: Accepted
+- Date: 2026-09-28 (proposed 2026-09-25)
+- Note: The owner accepted this with changes on 2026-09-28: **the MVP uses one account, `supply-checkout-prod`**, in the owner's existing AWS Organization and its existing IAM Identity Center instance. There is no dev, staging, log-archive, security or backup account for the MVP. Development runs locally against mocks and DynamoDB Local, and releases go straight to prod (see 0012). Backups stay in the prod account (point-in-time recovery and AWS Backup, 35 days); the separate backup account's stack stays in the code, off (`-c backupCopy=false`). The organization also holds unrelated accounts, so any SCP goes on a Supply Checkout OU, never the root. Profiles are `supply-mgmt` and `supply-prod`, written by hand (`aws configure sso` needs a real terminal). Revisit separate accounts after launch.
 
 ## Context
 
