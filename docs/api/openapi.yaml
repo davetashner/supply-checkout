@@ -906,11 +906,8 @@ paths:
         "204": { description: Every session has ended. }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
-        "429":
-          description: "`quota_exceeded`: too many tries. Try again later."
-          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "503":
-          description: "`internal` with `reason: \"signout_failed\"`: Cognito couldn't do it. Try again."
+          description: "`internal` with `reason: \"signout_failed\"`: Cognito couldn't do it, or throttled it, after three tries. Try again."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /teams/{teamId}/members:
     parameters: [{ $ref: "#/components/parameters/teamId" }]

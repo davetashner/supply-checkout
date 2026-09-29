@@ -610,9 +610,13 @@ describe("two-step sign-in", () => {
     expect((await call("POST", "/me/sign-out-everywhere", { body: { all: true } })).status).toBe(400);
   });
 
-  it("doesn't try a refused sign-out everywhere again", async () => {
+  it("tries a throttled sign-out everywhere again, but not one refused for a revoked token", async () => {
     signOutRefusal = new ApiError(429, "quota_exceeded", "Too many attempts; try again later");
-    expect((await call("POST", "/me/sign-out-everywhere")).status).toBe(429);
+    expect(await call("POST", "/me/sign-out-everywhere")).toMatchObject({ status: 503, body: { error: { reason: "signout_failed" } } });
+    expect(totpCalls).toHaveLength(3);
+    totpCalls = [];
+    signOutRefusal = new ApiError(401, "unauthenticated", "Sign in again");
+    expect((await call("POST", "/me/sign-out-everywhere")).status).toBe(401);
     expect(totpCalls).toEqual([["signOutEverywhere", `token-${OWNER}`]]);
   });
 

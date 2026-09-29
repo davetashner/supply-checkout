@@ -213,6 +213,8 @@ const EMAIL_CODE = /^[0-9]{6}$/;
 const MAX_PASSWORD = 256;
 /** How many times turning TOTP on tries to sign the user out everywhere. */
 const SIGN_OUT_ATTEMPTS = 3;
+/** The wait before each try after the first, times the tries so far. */
+const SIGN_OUT_BACKOFF_MS = 100;
 
 /** The data layer's errors, as the account routes answer them. */
 export function errorFor(error: unknown): ApiError {
@@ -837,11 +839,14 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
         await deps.totp.signOutEverywhere(token);
         return;
       } catch (error) {
-        if (error instanceof ApiError && error.status < 500) throw error;
+        // A revoked token: every session has ended already. Anything else, throttling
+        // included, is tried again, and then the app is told to finish it
+        if (error instanceof ApiError && error.status === 401) throw error;
         if (attempt >= SIGN_OUT_ATTEMPTS) {
           obs.logger.error("Sign-out everywhere failed", { userId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
           throw new ApiError(503, "internal", "Two-step sign-in is on, but your other sessions weren't signed out yet. Try again.", "signout_failed");
         }
+        await new Promise((resolve) => setTimeout(resolve, SIGN_OUT_BACKOFF_MS * attempt));
       }
     }
   }
