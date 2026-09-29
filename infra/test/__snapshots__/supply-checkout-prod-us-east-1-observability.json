@@ -7142,21 +7142,8 @@
                             "*:log-group:",
                             {
                               "Ref": "OperatorAuditWatchLogsC88D29BF"
-                            }
-                          ]
-                        ]
-                      }
-                    },
-                    {
-                      "wildcard": {
-                        "Fn::Join": [
-                          "",
-                          [
-                            "*:log-group:",
-                            {
-                              "Ref": "OperatorAuditWatchLogsC88D29BF"
                             },
-                            ":*"
+                            "*"
                           ]
                         ]
                       }
@@ -7172,21 +7159,8 @@
                             "*:log-group:",
                             {
                               "Ref": "OperatorGroupWatchLogs7309A89A"
-                            }
-                          ]
-                        ]
-                      }
-                    },
-                    {
-                      "wildcard": {
-                        "Fn::Join": [
-                          "",
-                          [
-                            "*:log-group:",
-                            {
-                              "Ref": "OperatorGroupWatchLogs7309A89A"
                             },
-                            ":*"
+                            "*"
                           ]
                         ]
                       }
