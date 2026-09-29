@@ -10,7 +10,7 @@ import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { id, prefixes, teamPartition } from "./keys.js";
 import { hasEnded, type MemberRole } from "./model.js";
-import { GSI3, GSI3PK, OPS_TEAMS_PARTITION, SEAT_RECONCILE_ATTRIBUTES } from "./schema.js";
+import { GSI3, GSI3PK, MEMBER_SEAT_ATTRIBUTES, OPS_TEAMS_PARTITION, SEAT_RECONCILE_ATTRIBUTES } from "./schema.js";
 import { type TeamContext, readable } from "./team-context.js";
 
 /** The roles that take a paid seat. Every other role is free. */
@@ -26,6 +26,9 @@ export function isBilledRole(role: unknown): boolean {
  * they are now (strongly consistent), reading only their keys and role. Not a
  * stored count: the quantity sent to Stripe is always computed from the
  * membership itself, so changes that race converge on the same answer.
+ * Names only MEMBER_SEAT_ATTRIBUTES, with Select SPECIFIC_ATTRIBUTES: the
+ * billing worker's and the billing-access role's policies both allow that
+ * (Checkout's quantity uses it too).
  */
 export async function countBilledMembers(db: Db, ctx: TeamContext): Promise<number> {
   readable(ctx);
@@ -36,8 +39,10 @@ export async function countBilledMembers(db: Db, ctx: TeamContext): Promise<numb
       new QueryCommand({
         TableName: db.tableName,
         KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
+        // SK and role (MEMBER_SEAT_ATTRIBUTES, with the PK of the key condition)
+        Select: "SPECIFIC_ATTRIBUTES",
         ProjectionExpression: "SK, #role",
-        ExpressionAttributeNames: { "#role": "role" },
+        ExpressionAttributeNames: { "#role": MEMBER_SEAT_ATTRIBUTES[2] },
         ExpressionAttributeValues: { ":pk": teamPartition(ctx.teamId), ":prefix": prefixes.member },
         ConsistentRead: true,
         ExclusiveStartKey,

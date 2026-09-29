@@ -1,9 +1,9 @@
 // The billing API (ADR 0009, docs/api/openapi.yaml):
 //
 //   POST /teams/{teamId}/billing/checkout  Owners: start Stripe Checkout for
-//                                          the team, with a plan, an interval
-//                                          and a seat count. Answers the
-//                                          Checkout page's URL.
+//                                          the team, with a plan and an
+//                                          interval. Answers the Checkout
+//                                          page's URL.
 //   POST /teams/{teamId}/billing/portal    Owners: open the Stripe Customer
 //                                          Portal for the team's Stripe
 //                                          customer (supply-checkout-121).
@@ -16,6 +16,11 @@
 // does (`trialEndsAt`, TRIAL_DAYS after it was made) and Checkout asks for no
 // card (payment_method_collection `if_required`); if no card is added by then,
 // Stripe cancels the subscription. After the trial, Checkout asks for a card.
+// The seat quantity isn't the owner's to choose (supply-checkout-8jc.20): it's
+// the team's billed members as they are now (countBilledMembers, at least 1),
+// the same number the seat sync keeps the subscription at afterwards
+// (billing/seats.ts), so a team with viewers isn't billed for them and its
+// first invoice isn't prorated down right after Checkout.
 // The portal is only ever for the customer linked to the path's team
 // (`stripeCustomerId`, which only linkStripeCustomer writes), with our own
 // portal configuration (billing/portal.ts) and a return URL on the app's own
@@ -39,9 +44,11 @@
 //    can't pass: every one that does began with the authenticator's code.
 // 3. Every DynamoDB call runs on a billing-access role session tagged with
 //    that team and, when linking, the customer Stripe returned (billing-db.ts):
-//    IAM refuses any other partition, and any attribute but the link's.
-// 4. Nothing from the request reaches Stripe except the validated plan,
-//    interval and seat count; the customer, the price, the portal
+//    IAM refuses any other partition, and any attribute but the link's. The
+//    member count reads only the team's MEMBER items' keys and roles
+//    (MEMBER_SEAT_ATTRIBUTES).
+// 4. Nothing from the request reaches Stripe except the validated plan and
+//    interval; the customer, the price, the seat quantity, the portal
 //    configuration and the return URLs are the server's own.
 //
 // Logged: the route, status and duration, and on a failure the team ID and
@@ -57,11 +64,11 @@ import { stripeErrorFields } from "../billing/stripe.js";
 import {
   authorizeTeam,
   ConflictError,
+  countBilledMembers,
   ForbiddenError,
   getTeam,
   hasEnded,
   linkStripeCustomer,
-  MEMBERS_PER_TEAM,
   type Team,
   TeamClosedError,
   type TeamContext,
@@ -214,16 +221,12 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
     throw new ApiError(403, "permission_denied", "Turn on two-step sign-in with an authenticator app (Account, in the team bar) before managing billing", "mfa_required");
   }
 
-  /** The body's plan, interval and seats, checked against the catalog and the member cap. */
+  /** The body's plan and interval, checked against the catalog. Nothing else: the seat quantity is the server's. */
   function checkoutInput(event: DataEvent) {
-    const body = jsonBody(event, ["plan", "interval", "seats"]);
+    const body = jsonBody(event, ["plan", "interval"]);
     const found = typeof body.plan === "string" && typeof body.interval === "string" ? catalogPrice(body.plan, body.interval) : undefined;
     if (!found) throw new ApiError(400, "bad_request", "Choose a plan and an interval we sell (see the API description)");
-    const seats = body.seats;
-    if (typeof seats !== "number" || !Number.isInteger(seats) || seats < 1 || seats > MEMBERS_PER_TEAM) {
-      throw new ApiError(400, "bad_request", `Seats must be a whole number from 1 to ${MEMBERS_PER_TEAM}`);
-    }
-    return { ...found, seats };
+    return found;
   }
 
   /**
@@ -254,13 +257,13 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
     if (!key || !REQUEST_KEY.test(key)) throw new ApiError(400, "bad_request", "Send an Idempotency-Key header: 8 to 128 letters, digits, - or _, new for each checkout");
     const input = checkoutInput(event);
     if (ctx.closed) throw new TeamClosedError("This team was closed. Reopen it before choosing a plan.");
-    const team = await getTeam(dbFor({ teamId: ctx.teamId }), ctx);
+    const db = dbFor({ teamId: ctx.teamId });
+    const team = await getTeam(db, ctx);
     if (team.stripeSubscriptionId && !hasEnded(team.status)) {
       throw new ApiError(409, "aborted", "This team already has a subscription. Change it from Manage billing.", "already_subscribed");
     }
-    if (typeof team.members === "number" && input.seats < team.members) {
-      throw new ApiError(400, "bad_request", `Choose at least ${team.members} seats: the team has ${team.members} members`);
-    }
+    // A seat for each billed member (owners and editors; viewers are free), at least one
+    const seats = Math.max(1, await countBilledMembers(db, ctx));
     const stripe = await deps.stripe();
     // A subscription the webhook hasn't recorded yet (another checkout just finished): one per team
     if (team.stripeCustomerId && (await stripe.subscriptions.list({ customer: team.stripeCustomerId, status: "all", limit: 10 })).data.some((s) => !hasEnded(s.status))) {
@@ -276,7 +279,7 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
       mode: "subscription",
       customer,
       client_reference_id: ctx.teamId,
-      line_items: [{ price: priceId, quantity: input.seats }],
+      line_items: [{ price: priceId, quantity: seats }],
       success_url: back("success"),
       cancel_url: back("canceled"),
       metadata: { teamId: ctx.teamId },
@@ -292,11 +295,13 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
     // A retry with the same Idempotency-Key and the same choices sends the same
     // parameters under the same key, so Stripe answers with the same session. (So
     // nothing in them may move with the clock: the page expires after Stripe's 24 hours.)
+    // The seats are in the key too: if the billed members changed between tries, the
+    // retry gets a new session rather than Stripe refusing a reused key.
     const session = await stripe.checkout.sessions.create(params, {
-      idempotencyKey: idempotencyKey("checkout", ctx.teamId, { key, customer, priceId, seats: input.seats, trial: params.subscription_data.trial_end ?? null }),
+      idempotencyKey: idempotencyKey("checkout", ctx.teamId, { key, customer, priceId, seats, trial: params.subscription_data.trial_end ?? null }),
     });
     if (!session.url) throw new Error("Stripe returned a Checkout Session without a URL");
-    obs.logger.info("Checkout started", { teamId: ctx.teamId, plan: input.plan.plan, interval: input.price.interval, seats: input.seats, trial });
+    obs.logger.info("Checkout started", { teamId: ctx.teamId, plan: input.plan.plan, interval: input.price.interval, seats, trial });
     return json(201, { checkout: { url: session.url, expiresAt: new Date(session.expires_at * 1000).toISOString(), trialEndsAt: trial ? new Date(trialEndsMs).toISOString() : null } });
   }
 

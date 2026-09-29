@@ -10,6 +10,7 @@ import {
   IMPORT_INDEX_ATTRIBUTES,
   INVITE_LIMIT_ATTRIBUTES,
   MEMBER_ROW_ATTRIBUTES,
+  MEMBER_SEAT_ATTRIBUTES,
   OWNER_OPERATOR_AUDIT_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
   STRIPE_LINK_ATTRIBUTES,
@@ -452,10 +453,10 @@ describe("billing function and billing-access role (ADR 0009)", () => {
     });
   });
 
-  it("reads only the tagged team, updates only its Stripe customer, and puts only the tagged customer's link", () => {
+  it("reads only the tagged team, counts only its members' roles, updates only its Stripe customer, and puts only the tagged customer's link", () => {
     const [policy, ...others] = role().Policies;
     expect(others).toEqual([]);
-    const [read, update, link, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    const [read, members, update, link, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
     expect(rest).toEqual([]);
     expect(read).toEqual({
       Sid: "TeamReadOnly",
@@ -463,6 +464,17 @@ describe("billing function and billing-access role (ADR 0009)", () => {
       Action: "dynamodb:GetItem",
       Resource: expect.anything(),
       Condition: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"] } },
+    });
+    // Checkout's seat quantity (supply-checkout-8jc.20): keys and roles only, and the request must name them
+    expect(members).toEqual({
+      Sid: "TeamMemberRolesOnly",
+      Effect: "Allow",
+      Action: "dynamodb:Query",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": ["PK", "SK", "role"] },
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
     });
     expect(update).toEqual({
       Sid: "TeamStripeCustomerOnly",
@@ -487,7 +499,8 @@ describe("billing function and billing-access role (ADR 0009)", () => {
     // The same lists the handler's requests are tested against (backend/test/billing-policy.ts)
     expect([...CUSTOMER_LINK_TEAM_ATTRIBUTES]).toEqual(["PK", "SK", "stripeCustomerId", "closedAt"]);
     expect([...STRIPE_LINK_ATTRIBUTES]).toEqual(["PK", "SK", "type", "customerId", "teamId"]);
-    for (const s of [read, update, link]) {
+    expect([...MEMBER_SEAT_ATTRIBUTES]).toEqual(["PK", "SK", "role"]);
+    for (const s of [read, members, update, link]) {
       expect(JSON.stringify(s?.Resource)).toContain(":table/supply-checkout-prod-app");
       expect(JSON.stringify(s?.Resource)).not.toMatch(/index|\*/);
     }

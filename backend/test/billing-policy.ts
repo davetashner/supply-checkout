@@ -2,7 +2,7 @@
 // the in-memory table runs before each call. The infra tests check the real
 // policy; this keeps the billing handler's and worker's requests inside them.
 
-import { BILLING_READ_ATTRIBUTES, BILLING_UPDATE_ATTRIBUTES, CUSTOMER_LINK_TEAM_ATTRIBUTES, STRIPE_LINK_ATTRIBUTES, STRIPE_LINK_READ_ATTRIBUTES, WEBHOOK_RECORD_ATTRIBUTES } from "../src/data/schema.js";
+import { BILLING_READ_ATTRIBUTES, BILLING_UPDATE_ATTRIBUTES, CUSTOMER_LINK_TEAM_ATTRIBUTES, MEMBER_SEAT_ATTRIBUTES, STRIPE_LINK_ATTRIBUTES, STRIPE_LINK_READ_ATTRIBUTES, WEBHOOK_RECORD_ATTRIBUTES } from "../src/data/schema.js";
 import type { BillingScope } from "../src/api/billing-db.js";
 import { namedAttributes } from "./helpers.js";
 
@@ -13,6 +13,7 @@ const partitionKey = (input: Input) => ((input.Item ?? input.Key) as Record<stri
 const attributes = (input: Input) => [...namedAttributes(input), ...Object.keys((input.Item ?? {}) as object)];
 const only = (input: Input, allowed: readonly string[]) => attributes(input).every((a) => allowed.includes(a));
 const returnsNothing = (input: Input) => input.ReturnValues === undefined || input.ReturnValues === "NONE";
+const queryPartition = (input: Input) => (input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"];
 
 /** The calls the billing-access role allows for a session with these tags. */
 export function billingPolicy(scope: BillingScope, denied: { command: string; input: Input }[] = []) {
@@ -33,8 +34,11 @@ export function billingPolicy(scope: BillingScope, denied: { command: string; in
           return put(input);
         case "TransactWriteCommand":
           return (input.TransactItems as Record<string, Input>[]).every((op) => (op.Put ? put(op.Put) : op.Update ? update(op.Update) : false));
+        case "QueryCommand":
+          // Counting the team's billed members for Checkout's seat quantity: keys and role only, on the table
+          return input.IndexName === undefined && queryPartition(input) === team && input.Select === "SPECIFIC_ATTRIBUTES" && only(input, MEMBER_SEAT_ATTRIBUTES);
         default:
-          // No Query, Scan, DeleteItem or batch calls
+          // No Scan, DeleteItem or batch calls
           return false;
       }
     })();
@@ -54,7 +58,6 @@ export function workerPolicy(scope: { eventId: string; stripeCustomer: string; t
   const link = `STRIPE#${scope.stripeCustomer}`;
   const team = `TEAM#${scope.teamId ?? "."}`;
   const projected = (input: Input) => typeof input.ProjectionExpression === "string" && (input.Select === undefined || input.Select === "SPECIFIC_ATTRIBUTES");
-  const queryPartition = (input: Input) => (input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"];
   return (command: string, input: Input): boolean => {
     const ok = (() => {
       switch (command) {

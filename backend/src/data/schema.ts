@@ -346,6 +346,16 @@ export const BILLING_UPDATE_ATTRIBUTES = [
 export const CUSTOMER_LINK_TEAM_ATTRIBUTES = [PK, SK, "stripeCustomerId", "closedAt"] as const;
 
 /**
+ * The only attributes the billing function may name when it counts a team's
+ * billed members for Checkout's seat quantity (countBilledMembers, in
+ * data/seats.ts): the MEMBER items' keys and role. Its IAM policy allows a
+ * Query in the tagged team's partition naming exactly these (dynamodb:Attributes,
+ * with Select SPECIFIC_ATTRIBUTES), so the count reads no names, emails or
+ * team data.
+ */
+export const MEMBER_SEAT_ATTRIBUTES = [PK, SK, "role"] as const;
+
+/**
  * The only attributes the nightly seat reconciliation (ops/seat-reconcile.ts)
  * may name or read, in GSI3's OPS#TEAMS partition only: the keys, the team's
  * Stripe customer, whether it's closed, and its status. Its IAM policy allows

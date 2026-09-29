@@ -1265,15 +1265,17 @@ paths:
       summary: Start Stripe Checkout for the team's subscription. Owners only.
       description: |
         Answers the URL of a Stripe Checkout page for a subscription to `plan`,
-        billed every `interval`, for `seats` seats, linked to the team's Stripe
-        customer (made the first time). Send the owner there; Stripe sends
+        billed every `interval`, linked to the team's Stripe customer (made
+        the first time). Send the owner there; Stripe sends
         them back to the app with `?billing=success&team=<teamId>` (or
         `billing=canceled`). The page expires after 24 hours (Stripe's default).
 
         Plans: `starter` (`month` or `year`): $9 a month including 3 seats,
         then $3 a seat; a year is 10 months' price. Provisional until
-        supply-checkout-akz. `seats` is at least the team's member count and
-        at most 100.
+        supply-checkout-akz. The seat quantity isn't sent: it's the team's
+        billed members when the page is made (owners and editors; viewers
+        are free), at least 1, and the billing worker keeps it in step with
+        the members afterwards.
 
         A team still in its free trial (with at least two days of it left)
         keeps it: Checkout asks for no card, the subscription's trial ends
@@ -1282,7 +1284,8 @@ paths:
 
         Nothing about the team changes here: the Stripe webhook sets its plan,
         seats and status once the owner finishes on Stripe. Idempotent: the
-        same `Idempotency-Key` with the same choices answers the same page.
+        same `Idempotency-Key` with the same choices answers the same page
+        (a new one if the billed members changed in between).
       parameters:
         - name: Idempotency-Key
           in: header
@@ -1296,11 +1299,10 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [plan, interval, seats]
+              required: [plan, interval]
               properties:
                 plan: { type: string, enum: [starter] }
                 interval: { type: string, enum: [month, year] }
-                seats: { type: integer, minimum: 1, maximum: 100 }
       responses:
         "201":
           description: The Checkout page to send the owner to.
@@ -1318,7 +1320,7 @@ paths:
                       expiresAt: { type: string, format: date-time, description: When the page stops working. }
                       trialEndsAt: { type: [string, "null"], format: date-time, description: "When the subscription's free trial ends, or `null` when Checkout asks for a card now." }
         "400":
-          description: "`bad_request`: no or a malformed `Idempotency-Key`, a plan or interval we don't sell, or seats that aren't a whole number from the team's member count to 100."
+          description: "`bad_request`: no or a malformed `Idempotency-Key`, a plan or interval we don't sell, or any other field (such as `seats`)."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403":

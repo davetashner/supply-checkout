@@ -409,8 +409,9 @@ export async function start(config) {
   }
 
   // An owner subscribes a team whose subscription ended: Stripe Checkout for the Starter plan,
-  // monthly, with a seat for each member. The server makes the page; a link to it replaces
-  // the button, so the owner goes to Stripe with one more tap (and a retry gets the same page).
+  // monthly. The server sets the seats from the team's billed members (viewers are free) and
+  // makes the page; a link to it replaces the button, so the owner goes to Stripe with one
+  // more tap (and a retry gets the same page).
   let checkoutKey = null;
   // Billing refused for want of two-step sign-in: set it up, saying why
   const needsTwoStep = (me, e) => {
@@ -422,7 +423,7 @@ export async function start(config) {
     checkoutKey ||= crypto.randomUUID();
     button.disabled = true;
     try {
-      const { checkout } = await session.api("POST", `/teams/${encodeURIComponent(team.id)}/billing/checkout`, { plan: "starter", interval: "month", seats: Math.max(team.members || 1, 1) }, { "Idempotency-Key": checkoutKey });
+      const { checkout } = await session.api("POST", `/teams/${encodeURIComponent(team.id)}/billing/checkout`, { plan: "starter", interval: "month" }, { "Idempotency-Key": checkoutKey });
       const link = document.createElement("a");
       link.className = "btn primary";
       link.id = "checkoutLink";

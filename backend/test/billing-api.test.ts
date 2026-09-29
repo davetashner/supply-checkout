@@ -138,10 +138,11 @@ function fakeObservability(): Observability {
   };
 }
 
-function build(options: { stripeFails?: Error } = {}) {
+function build(options: { stripeFails?: Error; refuse?: string } = {}) {
   const dbFor: DbForBilling = (scope) => {
     scopes.push(scope);
-    return table.guarded(billingPolicy(scope, denied));
+    const allowed = billingPolicy(scope, denied);
+    return table.guarded((command, input) => command !== options.refuse && allowed(command, input));
   };
   const client = () => (options.stripeFails ? Promise.reject(options.stripeFails) : Promise.resolve(stripe.client));
   const userInfo = async (token: string): Promise<CognitoUser> => {
@@ -209,7 +210,7 @@ function event(request: Request = {}): DataEvent {
     rawQueryString: "",
     headers: { authorization: `Bearer token-${user}`, "idempotency-key": KEY, ...request.headers },
     pathParameters: { teamId },
-    body: request.rawBody ?? (request.body === undefined ? JSON.stringify({ plan: "starter", interval: "month", seats: 3 }) : JSON.stringify(request.body)),
+    body: request.rawBody ?? (request.body === undefined ? JSON.stringify({ plan: "starter", interval: "month" }) : JSON.stringify(request.body)),
     isBase64Encoded: false,
     requestContext: {
       http: { method: "POST", path: PATH, protocol: "HTTP/1.1", sourceIp: "192.0.2.1", userAgent: "test" },
@@ -247,7 +248,8 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
       mode: "subscription",
       customer: "cus_test_1",
       client_reference_id: TEAM,
-      line_items: [{ price: "price_monthly", quantity: 3 }],
+      // A seat for each billed member: the owner and the editor, not the viewer (data/seats.ts)
+      line_items: [{ price: "price_monthly", quantity: 2 }],
       success_url: `${APP}/?billing=success&team=${TEAM}`,
       cancel_url: `${APP}/?billing=canceled&team=${TEAM}`,
       metadata: { teamId: TEAM },
@@ -260,7 +262,7 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
         trial_settings: { end_behavior: { missing_payment_method: "cancel" } },
       },
     });
-    expect(session?.key).toBe(idempotencyKey("checkout", TEAM, { key: KEY, customer: "cus_test_1", priceId: "price_monthly", seats: 3, trial: Math.floor((now + 13 * DAY) / 1000) }));
+    expect(session?.key).toBe(idempotencyKey("checkout", TEAM, { key: KEY, customer: "cus_test_1", priceId: "price_monthly", seats: 2, trial: Math.floor((now + 13 * DAY) / 1000) }));
     // Every handle was scoped to the path's team; only the link's also named the customer
     expect(scopes).toEqual([{ teamId: TEAM }, { teamId: TEAM }, { teamId: TEAM, stripeCustomer: "cus_test_1" }]);
     expect(denied).toEqual([]);
@@ -270,20 +272,25 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
 
   it("reuses the linked customer, and the annual price, on the next checkout", async () => {
     await checkout();
-    const { status } = await checkout({ body: { plan: "starter", interval: "year", seats: 5 }, headers: { "idempotency-key": "checkout-key-2" } });
+    const { status } = await checkout({ body: { plan: "starter", interval: "year" }, headers: { "idempotency-key": "checkout-key-2" } });
     expect(status).toBe(201);
     expect(stripe.state.customers).toHaveLength(1);
-    expect(stripe.state.sessions[1]?.params).toMatchObject({ customer: "cus_test_1", line_items: [{ price: "price_annual", quantity: 5 }] });
+    expect(stripe.state.sessions[1]?.params).toMatchObject({ customer: "cus_test_1", line_items: [{ price: "price_annual", quantity: 2 }] });
     expect(scopes.filter((s) => s.stripeCustomer)).toHaveLength(1);
   });
 
-  it("gives a retry with the same Idempotency-Key and choices the same Stripe idempotency key, and new choices a new one", async () => {
+  it("gives a retry with the same Idempotency-Key and choices the same Stripe idempotency key, and a new key or seats a new one", async () => {
     await checkout();
     await checkout();
-    await checkout({ body: { plan: "starter", interval: "month", seats: 4 } });
-    const [a, b, c] = stripe.state.sessions.map((s) => s.key);
+    await checkout({ headers: { "idempotency-key": "checkout-key-2" } });
+    // The viewer became an editor meanwhile: one more seat, so a new session rather than Stripe refusing the reused key
+    table.put({ ...(table.get(`TEAM#${TEAM}`, `MEMBER#${VIEWER}`) as Record<string, unknown>), role: "contributor" });
+    await checkout();
+    const [a, b, c, d] = stripe.state.sessions.map((s) => s.key);
     expect(a).toBe(b);
     expect(c).not.toBe(a);
+    expect(d).not.toBe(a);
+    expect(stripe.state.sessions[3]?.params.line_items).toEqual([{ price: "price_monthly", quantity: 3 }]);
     // Prices are looked up once, then kept
     expect(stripe.state.lists).toBe(1);
   });
@@ -348,15 +355,15 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
   });
 
   it.each([
-    [{ plan: "starter", interval: "month", seats: 3, coupon: "FREE" }],
-    [{ plan: "enterprise", interval: "month", seats: 3 }],
-    [{ plan: "starter", interval: "week", seats: 3 }],
-    [{ plan: 1, interval: "month", seats: 3 }],
-    [{ plan: "starter", interval: "month" }],
-    [{ plan: "starter", interval: "month", seats: 0 }],
-    [{ plan: "starter", interval: "month", seats: MEMBERS_PER_TEAM + 1 }],
-    [{ plan: "starter", interval: "month", seats: 2.5 }],
-    [{ plan: "starter", interval: "month", seats: "3" }],
+    [{ plan: "starter", interval: "month", coupon: "FREE" }],
+    [{ plan: "enterprise", interval: "month" }],
+    [{ plan: "starter", interval: "week" }],
+    [{ plan: 1, interval: "month" }],
+    [{ plan: "starter" }],
+    // The seat count is the server's, from the team's billed members: a client can't choose it
+    [{ plan: "starter", interval: "month", seats: 3 }],
+    [{ plan: "starter", interval: "month", seats: MEMBERS_PER_TEAM }],
+    [{ plan: "starter", interval: "month", quantity: 1 }],
     [["starter"]],
   ])("refuses the body %j", async (body) => {
     const { status, body: answer } = await checkout({ body });
@@ -365,15 +372,29 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
     expect(stripe.state.customers).toHaveLength(0);
   });
 
-  it("refuses fewer seats than the team has members", async () => {
-    const { status, body } = await checkout({ body: { plan: "starter", interval: "month", seats: 2 } });
-    expect(status).toBe(400);
-    expect(body.error.message).toContain("at least 3 seats");
+  it("bills only owners and editors, counted from the members as they are now, so the seat sync has nothing to prorate", async () => {
+    // Viewers are free; the META item's member count (viewers included, or missing on an old team) doesn't matter
+    table.seedTeam("team-v", { [OWNER]: "owner", v1: "viewer", v2: "viewer", v3: "viewer", v4: "viewer" });
+    patchTeam({ members: undefined, createdAt: new Date(now - DAY).toISOString() }, "team-v");
+    const { status } = await checkout({ teamId: "team-v" });
+    expect(status).toBe(201);
+    expect(stripe.state.sessions[0]?.params.line_items).toEqual([{ price: "price_monthly", quantity: 1 }]);
+    // Two owners and three editors: five seats
+    table.seedTeam("team-e", { [OWNER]: "owner", o2: "owner", e1: "contributor", e2: "contributor", e3: "contributor", v1: "viewer" });
+    patchTeam({ members: 50, createdAt: new Date(now - DAY).toISOString() }, "team-e");
+    expect((await checkout({ teamId: "team-e" })).status).toBe(201);
+    expect(stripe.state.sessions[1]?.params.line_items).toEqual([{ price: "price_monthly", quantity: 5 }]);
+    // The count read only the members' keys and roles, as the billing-access role allows
+    expect(denied).toEqual([]);
+    expect(logs).toContainEqual(["Checkout started", expect.objectContaining({ teamId: "team-e", seats: 5 })]);
   });
 
-  it("allows as few as one seat for a team from before the member count", async () => {
-    patchTeam({ members: undefined });
-    expect((await checkout({ body: { plan: "starter", interval: "month", seats: 1 } })).status).toBe(201);
+  it("fails without a Stripe call if the billed members can't be counted", async () => {
+    build({ refuse: "QueryCommand" });
+    const { status } = await checkout();
+    expect(status).toBe(500);
+    expect(stripe.state.customers).toHaveLength(0);
+    expect(stripe.state.sessions).toHaveLength(0);
   });
 
   it("refuses a closed team", async () => {

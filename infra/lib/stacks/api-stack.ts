@@ -52,6 +52,7 @@ import {
   INVITE_LIMIT_ATTRIBUTES,
   INVITE_LIMIT_PREFIX,
   MEMBER_ROW_ATTRIBUTES,
+  MEMBER_SEAT_ATTRIBUTES,
   OPERATOR_AUDIT_PREFIX,
   OPS_AUDIT_INDEX_PREFIX,
   OPS_OWNERS_PREFIX,
@@ -516,12 +517,15 @@ export class ApiStack extends SupplyCheckoutStack {
    * made it) the team's Stripe customer, may:
    *
    * - GetItem in `TEAM#<teamId>` (the membership check and the team).
+   * - Query in `TEAM#<teamId>`, on the table only, naming only the keys and
+   *   `role` with Select SPECIFIC_ATTRIBUTES (MEMBER_SEAT_ATTRIBUTES): the
+   *   billed member count that is Checkout's seat quantity.
    * - UpdateItem in `TEAM#<teamId>` naming only the keys and
    *   `stripeCustomerId`, returning nothing (linking the customer).
    * - PutItem in `STRIPE#<stripeCustomer>` naming only the link's
    *   attributes, returning nothing.
    *
-   * No Query, Scan or DeleteItem, and no other team's partition.
+   * No other Query, no Scan or DeleteItem, and no other team's partition.
    */
   private addBilling(config: DeploymentConfig, table: string, tableArn: string, region: string, appOrigin: string, issuerUrl: string, tableKeyStatement: () => PolicyStatement) {
     const mode = stripeModeOf(config);
@@ -542,7 +546,7 @@ export class ApiStack extends SupplyCheckoutStack {
     const tags = Object.values(BILLING_SESSION_TAGS);
     const team = `TEAM#${tag(BILLING_SESSION_TAGS.teamId)}`;
     const role = new Role(this, "BillingAccessRole", {
-      description: "Assumed by the billing function per request, tagged with the team and its Stripe customer: reads the team, and links the customer",
+      description: "Assumed by the billing function per request, tagged with the team and its Stripe customer: reads the team, counts its members' roles, and links the customer",
       maxSessionDuration: Duration.hours(1),
       assumedBy: new ArnPrincipal(fnRole.roleArn)
         .withConditions({
@@ -561,6 +565,17 @@ export class ApiStack extends SupplyCheckoutStack {
               actions: ["dynamodb:GetItem"],
               resources: [tableArn],
               conditions: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [team] } },
+            }),
+            // Checkout's seat quantity (supply-checkout-8jc.20): the team's members' keys and roles, counted
+            new PolicyStatement({
+              sid: "TeamMemberRolesOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:Query"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [team], "dynamodb:Attributes": [...MEMBER_SEAT_ATTRIBUTES] },
+                StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+              },
             }),
             // The team's Stripe customer, in the same transaction as the link
             new PolicyStatement({
