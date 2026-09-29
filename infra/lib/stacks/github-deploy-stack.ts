@@ -15,6 +15,9 @@ const ISSUER = GITHUB_OIDC_URL.replace(/^https:\/\//, "");
 export const githubDeployRoleName = (envName: string) => `supply-checkout-${envName}-github-deploy`;
 
 /** The CDK bootstrap roles a `cdk deploy` (and `cdk diff`) assumes, by their bootstrap template names. */
+/** CDK's rule for a bootstrap qualifier (`cdk bootstrap --qualifier`). */
+const BOOTSTRAP_QUALIFIER_PATTERN = /^[A-Za-z0-9_-]{1,10}$/;
+
 const BOOTSTRAP_ROLES = ["deploy", "file-publishing", "image-publishing", "lookup"] as const;
 
 /**
@@ -37,8 +40,15 @@ const BOOTSTRAP_ROLES = ["deploy", "file-publishing", "image-publishing", "looku
  *   laptop. No managed policy, no wildcard.
  * - It is NOT part of the main app: the owner deploys it once, from
  *   bin/github-deploy.ts (`npm run deploy:github-deploy`), so a pipeline
- *   running `cdk deploy --all` can't change its own trust. Termination
- *   protection and RETAIN keep a stray delete from locking the pipeline out.
+ *   running `cdk deploy --all` never changes it by accident. It is not a
+ *   security boundary: a job with this role can assume the bootstrap deploy
+ *   role and, through CloudFormation's execution role (AdministratorAccess
+ *   by default), change this stack or its trust too. The real boundary is
+ *   the production environment's rules on GitHub, plus a narrower execution
+ *   policy (supply-checkout-3x3.2). Termination protection and RETAIN keep a
+ *   stray delete from locking the pipeline out; RETAIN also means deleting
+ *   the stack doesn't revoke access.
+ * - Prod only: the trust always names the `production` GitHub environment.
  */
 export class GithubDeployStack extends SupplyCheckoutStack {
   readonly provider: OidcProviderNative;
@@ -48,6 +58,9 @@ export class GithubDeployStack extends SupplyCheckoutStack {
     // Stateful: termination protection. IAM is global, so one stack, in the primary region.
     super(scope, { config, region, component: "github-deploy", layer: "stateful" });
     if (region !== config.primaryRegion) throw new Error("The GitHub deploy stack is in the primary region only (IAM is global)");
+    // The trust always names the `production` GitHub environment, so another
+    // environment's role would be assumable by prod's deploy jobs
+    if (config.envName !== "prod") throw new Error(`The GitHub deploy stack is for prod only: its trust names the ${GITHUB_DEPLOY_ENVIRONMENT} GitHub environment (got envName "${config.envName}")`);
 
     this.provider = new OidcProviderNative(this, "GithubOidc", {
       url: GITHUB_OIDC_URL,
@@ -68,7 +81,10 @@ export class GithubDeployStack extends SupplyCheckoutStack {
     });
     this.role.applyRemovalPolicy(RemovalPolicy.RETAIN);
 
-    const qualifier = this.node.tryGetContext("@aws-cdk/core:bootstrapQualifier") ?? DefaultStackSynthesizer.DEFAULT_QUALIFIER;
+    const qualifier = String(this.node.tryGetContext("@aws-cdk/core:bootstrapQualifier") ?? DefaultStackSynthesizer.DEFAULT_QUALIFIER);
+    // CDK's own rule for a qualifier. It's part of the role ARNs below, so a
+    // `*` or `?` would widen the grant to other roles.
+    if (!BOOTSTRAP_QUALIFIER_PATTERN.test(qualifier)) throw new Error(`The CDK bootstrap qualifier must be 1-10 letters, digits, _ or - (got "${qualifier}")`);
     const regions = [...new Set([...config.regions, GLOBAL_SERVICES_REGION])];
     this.role.addToPolicy(
       new PolicyStatement({

@@ -60,7 +60,9 @@ npx cdk deploy --all --profile supply-prod
 
 The repository comes from `DEFAULT_GITHUB_REPOSITORY` in `lib/config.ts` (override it with `-c githubRepository=<owner>/<name>`), and the environment name from `GITHUB_DEPLOY_ENVIRONMENT`. No account ID is written down: the ARNs are built from CloudFormation's `AWS::AccountId`.
 
-It is a separate CDK app, `bin/github-deploy.ts`, like the backup account's vault. `cdk deploy --all` never includes it, so a pipeline deploying the main app can't change the role it deploys with. The stack has termination protection, and the provider and role are retained if it's deleted.
+It is a separate CDK app, `bin/github-deploy.ts`, like the backup account's vault. `cdk deploy --all` never includes it, so a pipeline deploying the main app never changes the role it deploys with by accident. That is not a security boundary: a job with this role can assume the bootstrap deploy role and, through CloudFormation's execution role, update this stack or the role's trust too. The real boundary is the `production` environment's rules on GitHub, plus a narrower CloudFormation execution policy (bead `supply-checkout-3x3.2`; see [What it doesn't limit](#what-it-doesnt-limit)). The stack is prod only (the trust always names the `production` GitHub environment, so the synth refuses any other `envName`), and a bootstrap qualifier from context (`@aws-cdk/core:bootstrapQualifier`) must match CDK's own rule, 1 to 10 letters, digits, `_` or `-`, so it can't widen the role ARNs. The stack has termination protection, and the provider and role are retained if it's deleted.
+
+**Revoking access.** Because the provider and role are retained, deleting the stack does not revoke GitHub's access. To cut it off, delete the role by hand (`aws iam delete-role-policy` for its policy, then `aws iam delete-role --role-name supply-checkout-prod-github-deploy`), or replace its trust policy with one that allows nothing (`aws iam update-assume-role-policy`). Deleting the OIDC provider also stops every role that trusts it.
 
 **Deploying it (the owner, once).** CDK must already be bootstrapped in the account and regions (see [Deploying](#deploying)).
 
@@ -74,17 +76,30 @@ npm run deploy:github-deploy -- --profile supply-prod     # CDK asks to confirm 
 
 An account can have only one OIDC provider for GitHub's URL. If one already exists (made by hand or another tool), the deploy fails: delete it first if nothing else uses it, or bring it into the stack with `cdk import`. Deploy the stack again when a region is added to `DEFAULT_REGIONS` (phase 2), so the role may assume that region's bootstrap roles, and after the repository is renamed or transferred (with the new `-c githubRepository`).
 
-**Setting up the `production` environment on GitHub (the owner, once).** The environment's rules decide which jobs get the trusted subject, so set them before any workflow uses it. In the repository's Settings, Environments, create `production` with:
+**Setting up the `production` environment on GitHub (the owner, once, before the first deploy of this stack).** The environment's rules decide which jobs get the trusted subject, so set them before the role exists. In the repository's Settings, Environments, create `production` with:
 
 - Deployment branches and tags: selected only, `main` and the release tags (`v*`). Without this, a workflow on any branch could declare `environment: production`.
 - Required reviewers: the owner, so every prod deploy waits for an approval.
 - Optionally, prevent self-review and a wait timer.
 
+Check it before deploying the stack:
+
+```bash
+gh api repos/davetashner/supply-checkout/environments/production \
+  --jq '{branch_policy: .deployment_branch_policy, rules: [.protection_rules[].type]}'
+gh api repos/davetashner/supply-checkout/environments/production/deployment-branch-policies \
+  --jq '[.branch_policies[] | {name, type}]'
+```
+
+`deployment_branch_policy` must not be `null` (null means any branch may deploy), with `custom_branch_policies: true`; the second command must list only `main` (type `branch`) and `v*` (type `tag`); and `rules` must include `required_reviewers`. Don't deploy the stack until it does.
+
 **What it enables.** The CI/CD bead (`supply-checkout-qq7`) adds the deploy workflow. Its deploy job runs with `environment: production` and `permissions: id-token: write`, and uses `aws-actions/configure-aws-credentials` with `role-to-assume` set to the `DeployRoleArn` output (keep it in a `production` environment variable, not in the repository). Nothing deploys from GitHub until then.
 
 To check the trust after deploying: `aws iam get-role --role-name supply-checkout-prod-github-deploy --profile supply-prod` shows the one statement above, and a job that runs without the `production` environment fails in `configure-aws-credentials` with `Not authorized to perform sts:AssumeRoleWithWebIdentity`.
 
-**What it doesn't limit.** The CDK bootstrap roles decide what a deploy can change. By default, `cdk bootstrap` gives the CloudFormation execution role `AdministratorAccess`, so anyone who can run a job in the `production` environment can change anything in the account through CloudFormation. The environment's branch rules and required reviewers are the guard. Bootstrapping with a narrower `--cloudformation-execution-policies` is a possible later step.
+### What it doesn't limit
+
+The CDK bootstrap roles decide what a deploy can change. By default, `cdk bootstrap` gives the CloudFormation execution role `AdministratorAccess`, so anyone who can run a job in the `production` environment can change anything in the account through CloudFormation, this stack and the role's own trust included. The environment's branch rules and required reviewers are the guard. Bootstrapping with a narrower `--cloudformation-execution-policies` is bead `supply-checkout-3x3.2`.
 
 ## The CloudTrail trail
 

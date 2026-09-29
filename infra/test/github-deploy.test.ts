@@ -99,11 +99,25 @@ describe("GitHub Actions deploy role (supply-checkout-5ik)", () => {
     expect(JSON.stringify(trust)).not.toContain("*");
   });
 
-  it("follows the configured repository and environment name", () => {
-    const { template } = build({ envName: "staging" }, "someone/fork");
-    const r = role(template);
-    expect(r.Properties.RoleName).toBe("supply-checkout-staging-github-deploy");
-    expect(JSON.stringify(r.Properties.AssumeRolePolicyDocument)).toContain('"repo:someone/fork:environment:production"');
+  it("follows the configured repository", () => {
+    const { template } = build({}, "someone/fork");
+    expect(JSON.stringify(role(template).Properties.AssumeRolePolicyDocument)).toContain('"repo:someone/fork:environment:production"');
+    expect(githubDeployRoleName("staging")).toBe("supply-checkout-staging-github-deploy");
+  });
+
+  it("refuses any environment but prod, since the trust always names the production GitHub environment", () => {
+    expect(() => build({ envName: "staging" })).toThrow(/prod only/);
+  });
+
+  it("uses a bootstrap qualifier from context, and refuses one that isn't CDK's 1-10 letters, digits, _ or -", () => {
+    const withQualifier = (qualifier: string) => {
+      const app = new App({ context: { "aws:cdk:version-reporting": false, "@aws-cdk/core:bootstrapQualifier": qualifier } });
+      return Template.fromStack(addGithubDeploy(app, config, REPO));
+    };
+    expect(JSON.stringify(policyStatements(withQualifier("custom_q-1")))).toContain(":role/cdk-custom_q-1-deploy-role-");
+    for (const bad of ["*", "?", "hnb*", "a?b", "", "elevenchars", "a/b", "a:b"]) {
+      expect(() => withQualifier(bad), bad).toThrow(/bootstrap qualifier/);
+    }
   });
 
   it("has no managed policy, a one-hour session, and may only assume the CDK bootstrap roles of the deployed regions", () => {
@@ -122,6 +136,8 @@ describe("GitHub Actions deploy role (supply-checkout-5ik)", () => {
       },
     ]);
     for (const s of statements) for (const a of actions(s)) expect(a).not.toContain("*");
+    // No wildcard in any resource either: each ARN names exactly one role
+    for (const s of statements) expect(JSON.stringify(s.Resource)).not.toMatch(/[*?]/);
   });
 
   it("adds each deployed region's bootstrap roles, and GLOBAL_SERVICES_REGION's", () => {

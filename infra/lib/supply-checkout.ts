@@ -153,7 +153,8 @@ export function addBackupAccount(app: App, config: DeploymentConfig): BackupAcco
  * GitHub Actions' OIDC provider and deploy role (supply-checkout-5ik), in the
  * primary region. Only bin/github-deploy.ts calls this, with the workload
  * account's profile; the main app never includes it, so a pipeline deploying
- * the main app can't change the role it deploys with.
+ * the main app never changes the role it deploys with by accident. That isn't
+ * a security boundary (see GithubDeployStack).
  */
 export function addGithubDeploy(app: App, config: DeploymentConfig, repository: string): GithubDeployStack {
   Tags.of(app).add("app", "supply-checkout");
