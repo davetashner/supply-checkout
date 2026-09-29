@@ -11,7 +11,7 @@ import type { DataEvent } from "../src/api/data-handler.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
 import { MEMBER_ROW_ATTRIBUTES } from "../src/data/schema.js";
 import type { Observability } from "../src/observability/index.js";
-import { accountPartitions, fakeMailer, unusedDeleteUser, unusedDeletionLog, unusedEmailCodes } from "./helpers.js";
+import { accountPartitions, fakeMailer, unusedDeleteUser, unusedDeletionLog, unusedEmailCodes, unusedTotp } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const mails = fakeMailer();
@@ -57,9 +57,9 @@ beforeEach(() => {
   // Leaving reads the caller's verified address from Cognito (their pending invites to it go too)
   const userInfo = async (token: string) => {
     const sub = token.replace(/^token-/, "");
-    return { sub, email: `${sub.slice(5)}@example.com`, emailVerified: true, emailVerifiedInCognito: true };
+    return { sub, email: `${sub.slice(5)}@example.com`, emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false };
   };
-  handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, emailCodes: unusedEmailCodes, now: () => NOW });
+  handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, emailCodes: unusedEmailCodes, totp: unusedTotp, now: () => NOW });
 });
 
 function event(method: string, path: string, user: string, body?: unknown, rawBody?: string): DataEvent {

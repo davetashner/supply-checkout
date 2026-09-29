@@ -29,9 +29,35 @@ export type ErrorCode =
  * ended, so it can't start another checkout. `subscription_ended`: the
  * team's subscription ended, so it's read-only until an owner subscribes.
  * `no_billing_account`: the team has no Stripe customer yet (no owner has
- * started a checkout), so there's no Customer Portal to open.
+ * started a checkout), so there's no Customer Portal to open. `mfa_required`:
+ * a billing route for an owner without two-step sign-in (an authenticator
+ * app) on. Setting it up: `password_invalid` (the password policy),
+ * `password_mismatch` (the current password is wrong or missing) and
+ * `federated_sign_in` (a Google or Apple user, who has nothing to set up), and
+ * `signout_failed` (it's on, but the user's other sessions weren't ended yet:
+ * POST /me/sign-out-everywhere finishes it).
  */
-export type ErrorReason = "view_only" | "owners_only" | "not_member" | "last_owner" | "team_full" | "team_closed" | "team_deleting" | "code_mismatch" | "code_expired" | "already_verified" | "email_in_use" | "email_changed" | "already_subscribed" | "subscription_ended" | "no_billing_account";
+export type ErrorReason =
+  | "view_only"
+  | "owners_only"
+  | "not_member"
+  | "last_owner"
+  | "team_full"
+  | "team_closed"
+  | "team_deleting"
+  | "code_mismatch"
+  | "code_expired"
+  | "already_verified"
+  | "email_in_use"
+  | "email_changed"
+  | "already_subscribed"
+  | "subscription_ended"
+  | "no_billing_account"
+  | "mfa_required"
+  | "password_invalid"
+  | "password_mismatch"
+  | "federated_sign_in"
+  | "signout_failed";
 
 /** An error with the HTTP status and code the client sees. */
 export class ApiError extends Error {
@@ -87,6 +113,13 @@ export function ownersOnly(): ApiError {
 /** Not a member of the team, or no such team: one answer for both, so it doesn't reveal which teams exist. */
 export function notMember(): ApiError {
   return new ApiError(403, "permission_denied", "You're not a member of this team", "not_member");
+}
+
+/** The caller's access token, as API Gateway verified it (with or without the Bearer prefix). */
+export function accessToken(event: Pick<APIGatewayProxyEventV2, "headers">): string {
+  const token = (header(event, "authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  if (!token) throw new ApiError(401, "unauthenticated", "Sign in again");
+  return token;
 }
 
 /** The request body as text, decoded and size-checked. */

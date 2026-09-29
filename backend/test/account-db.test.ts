@@ -5,7 +5,7 @@
 import type { AssumeRoleCommand } from "@aws-sdk/client-sts";
 import { describe, expect, it, vi } from "vitest";
 import { accountScopedDbs } from "../src/api/account-db.js";
-import { cognitoDeleteUser, cognitoEmailCodes, cognitoUserInfo } from "../src/api/cognito-user.js";
+import { cognitoDeleteUser, cognitoEmailCodes, cognitoTotp, cognitoUserInfo } from "../src/api/cognito-user.js";
 import { ApiError } from "../src/api/http.js";
 import { connection } from "../src/data/client.js";
 import { type Db, hashEmail, InvalidInputError } from "../src/data/index.js";
@@ -81,7 +81,7 @@ describe("cognitoUserInfo", () => {
         { Name: "email_verified", Value: "true" },
       ],
     });
-    expect(await cognitoUserInfo(ISSUER, fetch)("access-token")).toEqual({ sub: "user-1", email: "pat@example.com", emailVerified: true, emailVerifiedInCognito: true });
+    expect(await cognitoUserInfo(ISSUER, fetch)("access-token")).toEqual({ sub: "user-1", email: "pat@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false });
     const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://cognito-idp.test-local-1.amazonaws.com/");
     expect(init.headers).toMatchObject({ "x-amz-target": "AWSCognitoIdentityProviderService.GetUser" });
@@ -90,8 +90,8 @@ describe("cognitoUserInfo", () => {
 
   it("treats an unverified or missing email as unverified", async () => {
     const unverified = reply(200, { UserAttributes: [{ Name: "sub", Value: "u" }, { Name: "email", Value: "a@example.com" }, { Name: "email_verified", Value: "false" }] });
-    expect(await cognitoUserInfo(ISSUER, unverified)("t")).toMatchObject({ emailVerified: false, emailVerifiedInCognito: false });
-    expect(await cognitoUserInfo(ISSUER, reply(200, {}))("t")).toEqual({ sub: "", email: undefined, emailVerified: false, emailVerifiedInCognito: false });
+    expect(await cognitoUserInfo(ISSUER, unverified)("t")).toMatchObject({ emailVerified: false, emailVerifiedInCognito: false, totp: false, federated: false });
+    expect(await cognitoUserInfo(ISSUER, reply(200, {}))("t")).toEqual({ sub: "", email: undefined, emailVerified: false, emailVerifiedInCognito: false, totp: false, federated: false });
   });
 
   it("says what Cognito says of email_verified apart from whether the API trusts the email", async () => {
@@ -123,6 +123,19 @@ describe("cognitoUserInfo", () => {
     expect(await user("u", { email: "pat@example.com" })).toMatchObject({ emailVerified: true });
     expect(await user("u", { email: "pat@example.com", identities: "[]", "custom:linked_email": "other@example.com" })).toMatchObject({ emailVerified: true });
     expect(await user("google_1076", { email: "pat@example.com", identities: google })).toMatchObject({ emailVerified: true });
+  });
+
+  it("says whether an authenticator app is on and preferred, and whether it's a Google or Apple user", async () => {
+    const google = JSON.stringify([{ userId: "1076", providerName: "Google", providerType: "Google" }]);
+    const user = (body: Record<string, unknown>) => cognitoUserInfo(ISSUER, reply(200, { Username: "u", UserAttributes: [{ Name: "sub", Value: "u" }], ...body }))("t");
+    expect(await user({ UserMFASettingList: ["SOFTWARE_TOKEN_MFA"], PreferredMfaSetting: "SOFTWARE_TOKEN_MFA" })).toMatchObject({ totp: true, federated: false });
+    // On but not preferred, preferred but not on, or not a list: Cognito might not ask for it
+    expect(await user({ UserMFASettingList: ["SOFTWARE_TOKEN_MFA"] })).toMatchObject({ totp: false });
+    expect(await user({ UserMFASettingList: ["EMAIL_OTP"], PreferredMfaSetting: "SOFTWARE_TOKEN_MFA" })).toMatchObject({ totp: false });
+    expect(await user({ UserMFASettingList: "SOFTWARE_TOKEN_MFA", PreferredMfaSetting: "SOFTWARE_TOKEN_MFA" })).toMatchObject({ totp: false });
+    expect(await user({ Username: "google_1076", UserAttributes: [{ Name: "sub", Value: "u" }, { Name: "identities", Value: google }] })).toMatchObject({ totp: false, federated: true });
+    // A native user with Google linked signs in natively too: not federated
+    expect(await user({ UserAttributes: [{ Name: "sub", Value: "u" }, { Name: "identities", Value: google }] })).toMatchObject({ federated: false });
   });
 
   it("answers 401 to a revoked token and fails on anything else", async () => {
@@ -210,5 +223,62 @@ describe("cognitoEmailCodes", () => {
 
   it("only talks to a Cognito issuer", () => {
     expect(() => cognitoEmailCodes("https://evil.example.com/pool")).toThrow(/not a Cognito user pool issuer/);
+  });
+});
+
+describe("cognitoTotp", () => {
+  const ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_pool";
+  const reply = (status: number, body: unknown) => vi.fn(async () => new Response(JSON.stringify(body), { status }));
+  const sent = (fetch: ReturnType<typeof reply>) =>
+    fetch.mock.calls.map((c) => {
+      const [, init] = c as unknown as [string, RequestInit];
+      return [(init.headers as Record<string, string>)["x-amz-target"]?.split(".")[1], JSON.parse(init.body as string)];
+    });
+
+  it("makes each call with the caller's own token", async () => {
+    const fetch = reply(200, { SecretCode: "JBSWY3DPEHPK3PXP", Status: "SUCCESS" });
+    const totp = cognitoTotp(ISSUER, fetch);
+    await totp.setPassword("t", "New-Password-1");
+    await totp.setPassword("t", "New-Password-2", "New-Password-1");
+    expect(await totp.associate("t")).toBe("JBSWY3DPEHPK3PXP");
+    await totp.verify("t", "654321");
+    await totp.signOutEverywhere("t");
+    expect(sent(fetch)).toEqual([
+      ["ChangePassword", { AccessToken: "t", ProposedPassword: "New-Password-1" }],
+      ["ChangePassword", { AccessToken: "t", ProposedPassword: "New-Password-2", PreviousPassword: "New-Password-1" }],
+      ["AssociateSoftwareToken", { AccessToken: "t" }],
+      ["VerifySoftwareToken", { AccessToken: "t", UserCode: "654321", FriendlyDeviceName: "Authenticator app" }],
+      ["SetUserMFAPreference", { AccessToken: "t", SoftwareTokenMfaSettings: { Enabled: true, PreferredMfa: true } }],
+      ["GlobalSignOut", { AccessToken: "t" }],
+    ]);
+  });
+
+  it("turns nothing on for a code Cognito doesn't accept", async () => {
+    const fetch = reply(200, { Status: "ERROR" });
+    await expect(cognitoTotp(ISSUER, fetch).verify("t", "654321")).rejects.toMatchObject({ status: 400, reason: "code_mismatch" });
+    expect(sent(fetch).map((c) => c[0])).toEqual(["VerifySoftwareToken"]);
+  });
+
+  it("fails without a secret", async () => {
+    await expect(cognitoTotp(ISSUER, reply(200, {})).associate("t")).rejects.toThrow(/no secret/);
+  });
+
+  it("passes on the refusals the person can act on, and nothing of Cognito's message", async () => {
+    const refused = (type: string, message = "") => cognitoTotp(ISSUER, reply(400, { __type: `com.amazonaws#${type}`, message }));
+    await expect(refused("NotAuthorizedException", "Incorrect username or password.").setPassword("t", "p", "old")).rejects.toMatchObject({ status: 400, reason: "password_mismatch" });
+    await expect(refused("NotAuthorizedException", "Access Token has been revoked").setPassword("t", "p")).rejects.toMatchObject({ status: 401 });
+    await expect(refused("NotAuthorizedException").associate("t")).rejects.toMatchObject({ status: 401 });
+    await expect(refused("InvalidPasswordException", "Password did not conform with policy").setPassword("t", "p")).rejects.toMatchObject({ status: 400, reason: "password_invalid" });
+    await expect(refused("PasswordHistoryPolicyViolationException").setPassword("t", "p")).rejects.toMatchObject({ status: 400, reason: "password_invalid" });
+    await expect(refused("InvalidParameterException").setPassword("t", "p")).rejects.toMatchObject({ status: 400, reason: "password_mismatch" });
+    // Only ChangePassword's means a missing current password
+    await expect(refused("InvalidParameterException").associate("t")).rejects.toThrow("AssociateSoftwareToken failed: 400 InvalidParameterException");
+    await expect(refused("NotAuthorizedException", "Password attempts exceeded").setPassword("t", "p", "old")).rejects.toMatchObject({ status: 429 });
+    for (const type of ["CodeMismatchException", "EnableSoftwareTokenMFAException"]) await expect(refused(type).verify("t", "1")).rejects.toMatchObject({ status: 400, reason: "code_mismatch" });
+    await expect(refused("SoftwareTokenMFANotFoundException").verify("t", "1")).rejects.toMatchObject({ status: 409, reason: "code_expired" });
+    for (const type of ["LimitExceededException", "TooManyRequestsException", "TooManyFailedAttemptsException"]) await expect(refused(type).verify("t", "1")).rejects.toMatchObject({ status: 429 });
+    const unknown = refused("InternalErrorException", "secret stuff: t");
+    await expect(unknown.signOutEverywhere("t")).rejects.toThrow("GlobalSignOut failed: 400 InternalErrorException");
+    await expect(cognitoTotp(ISSUER, reply(500, {})).associate("t")).rejects.toThrow("AssociateSoftwareToken failed: 500 ");
   });
 });

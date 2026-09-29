@@ -224,6 +224,19 @@ export function createSession(config, { onSignedOut, onRefreshed, onUserChanged 
 
     end,
 
+    // After two-step sign-in was turned on (mfa.js): the API signed the user out everywhere,
+    // so nothing is revoked here, and the refresh the API now refuses clears the refresh
+    // cookie. Nothing of theirs is forgotten: the same person signs straight back in, and
+    // keeps their team and drafts. Resolves to Managed Login's sign-out URL, which ends its
+    // own session too, so the next sign-in asks for the password and the app's code.
+    async endEverywhere() {
+      signingOut = ended = true;
+      clearTimeout(timer);
+      tokens = null;
+      await post("/auth/refresh").catch(() => {});
+      return logoutUrl();
+    },
+
     // After the account was deleted (DELETE /me): Cognito already ended every session, so
     // nothing is revoked. Forgets what signOut forgets, and asks for a refresh, which the
     // API refuses now the user is gone and answers by clearing the refresh cookie. No

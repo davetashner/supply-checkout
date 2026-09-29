@@ -6,7 +6,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { BillingScope, DbForBilling } from "../src/api/billing-db.js";
 import { type BillingStripe, type CheckoutSessionParams, createBillingHandler, idempotencyKey, type PortalSessionParams, trialEnd } from "../src/api/billing-handler.js";
+import type { CognitoUser } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
+import { ApiError } from "../src/api/http.js";
 import { BILLING_ROUTES, routeKey } from "../src/api/routes.js";
 import { PORTAL_METADATA, type PortalConfigurationLike, type PortalConfigurationLister, portalConfigurationResolver } from "../src/billing/portal.js";
 import { priceResolver, type StripePriceLike } from "../src/billing/prices.js";
@@ -42,6 +44,10 @@ let scopes: BillingScope[];
 let denied: { command: string; input: Record<string, unknown> }[];
 let stripe: ReturnType<typeof fakeStripe>;
 let handler: ReturnType<typeof createBillingHandler>;
+// GetUser: each user's two-step sign-in, by the user in the token ("token-<user>"); OUTSIDER's
+// is on too. Tokens for a user not listed here are refused, as Cognito refuses a revoked one
+let cognito: Record<string, Pick<CognitoUser, "totp" | "federated">>;
+let getUsers: string[];
 
 function fakeStripe() {
   const state = {
@@ -138,8 +144,16 @@ function build(options: { stripeFails?: Error } = {}) {
     return table.guarded(billingPolicy(scope, denied));
   };
   const client = () => (options.stripeFails ? Promise.reject(options.stripeFails) : Promise.resolve(stripe.client));
+  const userInfo = async (token: string): Promise<CognitoUser> => {
+    getUsers.push(token);
+    const sub = token.replace(/^token-/, "");
+    const user = cognito[sub];
+    if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
+    return { sub, emailVerified: true, emailVerifiedInCognito: true, ...user };
+  };
   handler = createBillingHandler({
     dbFor,
+    userInfo,
     stripe: client,
     priceFor: priceResolver(client, { now: () => now }),
     portalConfiguration: portalConfigurationResolver(client, { now: () => now }),
@@ -156,6 +170,9 @@ beforeEach(() => {
   logs = [];
   scopes = [];
   denied = [];
+  const on = { totp: true, federated: false };
+  cognito = { [OWNER]: on, [CONTRIBUTOR]: on, [VIEWER]: on, [OUTSIDER]: on };
+  getUsers = [];
   table = new MemoryTable();
   table.seedTeam(TEAM, { [OWNER]: "owner", [CONTRIBUTOR]: "contributor", [VIEWER]: "viewer" });
   table.seedTeam("team-b", { [OUTSIDER]: "owner" });
@@ -470,6 +487,59 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
     e.pathParameters = {};
     stripe.state.sessionError = new Error("boom");
     expect((await handler(e)).statusCode).toBe(400);
+  });
+});
+
+describe("two-step sign-in for billing (supply-checkout-8jc.12)", () => {
+  const portal = (request: Request = {}) => checkout({ routeKey: routeKey(BILLING_ROUTES[1] as (typeof BILLING_ROUTES)[number]), rawBody: "", ...request });
+
+  it("refuses an owner without an authenticator app on both routes, before the body is read or Stripe is called", async () => {
+    patchTeam({ stripeCustomerId: "cus_linked" });
+    cognito[OWNER] = { totp: false, federated: false };
+    for (const [name, send] of [["checkout", checkout], ["portal", portal]] as const) {
+      const { status, body } = await send({ rawBody: name === "checkout" ? "not json" : "", headers: { "idempotency-key": "" } });
+      expect(status, name).toBe(403);
+      expect(body.error, name).toMatchObject({ code: "permission_denied", reason: "mfa_required" });
+      expect(body.error.message, name).toMatch(/two-step sign-in/);
+    }
+    expect(getUsers).toEqual([`token-${OWNER}`, `token-${OWNER}`]);
+    expect(stripe.state.customers).toEqual([]);
+    expect(stripe.state.sessions).toEqual([]);
+    expect(stripe.state.portalSessions).toEqual([]);
+  });
+
+  it("lets an owner through with TOTP on, and a Google or Apple owner without it", async () => {
+    expect((await checkout()).status).toBe(201);
+    cognito[OWNER] = { totp: false, federated: true };
+    expect((await portal()).status).toBe(201);
+  });
+
+  it("checks membership and role first, so anyone else gets the same answer as before, and Cognito isn't asked", async () => {
+    cognito[CONTRIBUTOR] = { totp: false, federated: false };
+    expect((await checkout({ user: CONTRIBUTOR })).body.error.reason).toBe("owners_only");
+    expect((await checkout({ user: OUTSIDER })).body.error.reason).toBe("not_member");
+    expect(getUsers).toEqual([]);
+  });
+
+  it("refuses a revoked token (signed out everywhere when TOTP was turned on), and a token whose GetUser is someone else's", async () => {
+    cognito = { [OUTSIDER]: { totp: true, federated: false } };
+    expect(await checkout()).toMatchObject({ status: 401, body: { error: { code: "unauthenticated" } } });
+    cognito[OWNER] = { totp: true, federated: false };
+    expect((await checkout({ headers: { authorization: `Bearer token-${OUTSIDER}` } })).status).toBe(401);
+    expect((await checkout({ headers: { authorization: "" } })).status).toBe(401);
+    expect(stripe.state.sessions).toEqual([]);
+  });
+
+  it("fails with 500 when Cognito can't answer, without counting it as Stripe's failure", async () => {
+    cognito = new Proxy({}, { get: () => { throw new Error("GetUser failed: 500 InternalErrorException"); } });
+    expect((await checkout()).status).toBe(500);
+    expect((await portal()).status).toBe(500);
+    expect(stripe.state.sessions).toEqual([]);
+    expect(counts).toEqual({});
+    expect(logs.filter((l) => l[0] === "Two-step sign-in check failed")).toEqual([
+      ["Two-step sign-in check failed", { code: "Error" }],
+      ["Two-step sign-in check failed", { code: "Error" }],
+    ]);
   });
 });
 

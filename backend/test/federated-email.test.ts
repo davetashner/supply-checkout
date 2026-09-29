@@ -25,7 +25,7 @@ import {
 } from "../src/identity/email-verified-handler.js";
 import { DOWNGRADE_PENDING_ATTRIBUTE, FEDERATED_PROVIDERS, LINKED_EMAIL_ATTRIBUTE, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "../src/identity/names.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
-import { REGION, accountPartitions, fakeMailer, unusedDeleteUser, unusedDeletionLog, unusedEmailCodes } from "./helpers.js";
+import { REGION, accountPartitions, fakeMailer, unusedDeleteUser, unusedDeletionLog, unusedEmailCodes, unusedTotp } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const mails = fakeMailer();
@@ -676,6 +676,8 @@ describe("invites for Google and Apple users", () => {
         email: user.attributes.email,
         emailVerified: emailVerifiedFrom(token.replace(/^token-/, ""), user.attributes),
         emailVerifiedInCognito: user.attributes.email_verified === "true",
+        totp: false,
+        federated: false,
       };
     };
     const emailCodes = {
@@ -696,6 +698,7 @@ describe("invites for Google and Apple users", () => {
       mailer: mails.mailer,
       deleteUser: unusedDeleteUser, deletions: unusedDeletionLog,
       emailCodes: { send: (t) => handlerCodes.send(t), verify: (t, c) => handlerCodes.verify(t, c) },
+      totp: unusedTotp,
       now: () => now,
     });
   });

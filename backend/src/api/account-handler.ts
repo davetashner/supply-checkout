@@ -44,6 +44,18 @@
 //                                   team they're in here, linked user or not,
 //                                   and a verified address that changed is
 //                                   copied again on /me (keepMemberEmail).
+//   POST /me/password               Sets the caller's password (their current
+//                                   one, if they have one, confirms it). Once
+//                                   an authenticator app is on, Cognito lets
+//                                   them sign in only with a password and its
+//                                   code, so the app sets one first.
+//   POST /me/mfa/totp               A new secret for an authenticator app.
+//   POST /me/mfa/totp/verify        Checks a code from the app, turns it on as
+//                                   the caller's second factor, and signs
+//                                   them out everywhere (see "Two-step
+//                                   sign-in" below).
+//   POST /me/sign-out-everywhere    Signs the caller out everywhere: what the
+//                                   app sends when turning TOTP on couldn't.
 //
 // The team's last owner can't be removed, demoted or leave: the team item's
 // owner count moves in the same transaction as the membership, conditioned
@@ -83,6 +95,18 @@
 // (DeleteUser: no IAM permission to delete anyone else). Every step is
 // idempotent, so a retry after a failure part-way carries on. Each removal
 // and closure is audited in its team; the log line has only IDs and counts.
+//
+// Two-step sign-in (supply-checkout-8jc.12, ADR 0007): the billing routes
+// refuse owners without it (billing-handler.ts). Turning it on ends every
+// session the caller has (GlobalSignOut, which also makes Cognito's GetUser
+// refuse their access tokens, and the billing routes call GetUser), so any
+// native session that passes the billing check afterwards began with the
+// authenticator's code: with optional MFA, a user with TOTP preferred can
+// only sign in natively with a password and the code. Google and Apple users
+// (signing in only through their provider) have nothing to set up: the
+// provider's sign-in stands in for it, as it does when a user with a provider
+// linked signs in through it (docs/infrastructure.md, Sign-in). Passwords,
+// secrets and codes are never logged.
 //
 // Invite emails: the invite is written first, then sent (email/mailer.ts). If
 // SES won't take it, the invite stays, marked failed (`not_sent`), so the
@@ -149,9 +173,9 @@ import type { EmailInput } from "../email/templates.js";
 import type { DeletionLog } from "../deletions/records.js";
 import { BusinessMetric, type BusinessMetricName, type Observability } from "../observability/index.js";
 import type { DbForAccount } from "./account-db.js";
-import type { CognitoUser, DeleteUser, EmailCodes, UserInfo } from "./cognito-user.js";
+import type { CognitoUser, DeleteUser, EmailCodes, TotpSetup, UserInfo } from "./cognito-user.js";
 import { callerId, type DataEvent, errorFor as dataErrorFor } from "./data-handler.js";
-import { ApiError, errorResponse, header, json, jsonBody, noContent, notMember } from "./http.js";
+import { accessToken, ApiError, errorResponse, header, json, jsonBody, noContent, notMember } from "./http.js";
 import { requireRole } from "./roles.js";
 import { ACCOUNT_ROUTES, type AccountRoute, IDEMPOTENCY_HEADER, routeKey } from "./routes.js";
 
@@ -160,6 +184,8 @@ export interface AccountHandlerDeps {
   readonly userInfo: UserInfo;
   /** Emails the caller a verification code and checks it (cognito-user.ts). */
   readonly emailCodes: EmailCodes;
+  /** Sets the caller's password and authenticator app up, and signs them out everywhere (cognito-user.ts). */
+  readonly totp: TotpSetup;
   /** The user pool's issuer URL; tokens from anywhere else are refused. */
   readonly issuerUrl: string;
   readonly obs: Observability;
@@ -181,8 +207,14 @@ const EMAIL_CODE_FAILURES: Partial<Record<AccountRoute["action"], BusinessMetric
 };
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const REQUEST_KEY = /^[A-Za-z0-9_-]{8,128}$/;
-/** Cognito's verification codes are 6 digits. */
+/** Cognito's verification codes are 6 digits, as are an authenticator app's. */
 const EMAIL_CODE = /^[0-9]{6}$/;
+/** Cognito's password limit; the pool's policy (12+, mixed) is Cognito's to check. */
+const MAX_PASSWORD = 256;
+/** How many times turning TOTP on tries to sign the user out everywhere. */
+const SIGN_OUT_ATTEMPTS = 3;
+/** The wait before each try after the first, times the tries so far. */
+const SIGN_OUT_BACKOFF_MS = 100;
 
 /** The data layer's errors, as the account routes answer them. */
 export function errorFor(error: unknown): ApiError {
@@ -282,6 +314,18 @@ const sameAddress = (a?: string, b?: string) => !!a?.trim() && !!b?.trim() && ve
 
 const emailChanged = () => new ApiError(409, "aborted", "Your email address changed while it was being verified; send a new code", "email_changed");
 
+/**
+ * Two-step sign-in, as /me says it: `totp` (an authenticator app is on),
+ * `provider` (a Google or Apple user, whose provider's sign-in counts for it),
+ * or `off`.
+ */
+export const mfaState = (user: Pick<CognitoUser, "totp" | "federated">) => (user.federated ? "provider" : user.totp ? "totp" : "off");
+
+/** Refuses the setup routes to a Google or Apple user: their provider's sign-in counts, and Cognito would never ask them for a code. */
+function nativeOnly(user: CognitoUser): void {
+  if (user.federated) throw new ApiError(409, "aborted", "You sign in with Google or Apple, so there's no authenticator to set up", "federated_sign_in");
+}
+
 /** The verified email, normalized, or undefined if Cognito hasn't verified one. */
 function verifiedEmail(user: CognitoUser): string | undefined {
   if (!user.emailVerified || !user.email) return undefined;
@@ -308,13 +352,6 @@ const REOPENED_NOTICES: NoticeMetrics = { sent: BusinessMetric.TeamReopenedNotic
 export function createAccountHandler(deps: AccountHandlerDeps) {
   const now = deps.now ?? Date.now;
   const { dbFor, obs } = deps;
-
-  /** The caller's access token, as API Gateway verified it (with or without the Bearer prefix). */
-  function accessToken(event: DataEvent): string {
-    const token = (header(event, "authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
-    if (!token) throw new ApiError(401, "unauthenticated", "Sign in again");
-    return token;
-  }
 
   /** The caller as Cognito sees them now, from their own access token. */
   async function cognitoUser(event: DataEvent, userId: string): Promise<CognitoUser> {
@@ -350,7 +387,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
     const joined = new Set(teams.map((t) => t.id));
     return json(200, {
-      user: { id: userId, email: user.email ?? null, emailVerified: email !== undefined },
+      user: { id: userId, email: user.email ?? null, emailVerified: email !== undefined, mfa: mfaState(user) },
       teams,
       invites: invites.filter((i) => !joined.has(i.teamId)).map(inviteBody),
     });
@@ -755,6 +792,73 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     return noContent();
   }
 
+  /**
+   * Sets the caller's password. `currentPassword` is theirs if they have one;
+   * a user who has only ever signed in with an email code or a passkey sends
+   * none. Cognito checks both, and the password policy.
+   */
+  async function setPassword(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    const body = jsonBody(event, ["password", "currentPassword"]);
+    const { password, currentPassword } = body;
+    if (typeof password !== "string" || !password || password.length > MAX_PASSWORD) throw new ApiError(400, "bad_request", "Choose a password", "password_invalid");
+    if (currentPassword !== undefined && (typeof currentPassword !== "string" || !currentPassword || currentPassword.length > MAX_PASSWORD)) {
+      throw new ApiError(400, "bad_request", "Enter your current password", "password_mismatch");
+    }
+    nativeOnly(await cognitoUser(event, userId));
+    await deps.totp.setPassword(accessToken(event), password, currentPassword);
+    obs.logger.info("Password set", { userId });
+    return noContent();
+  }
+
+  /** A new secret for the caller's authenticator app, to show as a QR code and as text. Nothing is on until a code from it is verified. */
+  async function startTotp(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    if (event.body) jsonBody(event, []);
+    nativeOnly(await cognitoUser(event, userId));
+    const secret = await deps.totp.associate(accessToken(event));
+    return json(200, { totp: { secret } });
+  }
+
+  /** Checks a code from the authenticator app, turns TOTP on and signs the caller out everywhere (see "Two-step sign-in"). */
+  async function verifyTotp(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    const code = jsonBody(event, ["code"]).code;
+    if (typeof code !== "string" || !EMAIL_CODE.test(code)) throw new ApiError(400, "bad_request", "Enter the 6-digit code from your authenticator app", "code_mismatch");
+    nativeOnly(await cognitoUser(event, userId));
+    const token = accessToken(event);
+    await deps.totp.verify(token, code);
+    obs.logger.info("Two-step sign-in turned on", { userId });
+    // Every earlier session, this one too, began without the code: end them all. Until that
+    // works they'd pass the billing check, so it's tried again, and if it still fails the app
+    // is told to finish it (POST /me/sign-out-everywhere)
+    await endEverySession(token, userId);
+    return noContent();
+  }
+
+  async function endEverySession(token: string, userId: string): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await deps.totp.signOutEverywhere(token);
+        return;
+      } catch (error) {
+        // A revoked token: every session has ended already. Anything else, throttling
+        // included, is tried again, and then the app is told to finish it
+        if (error instanceof ApiError && error.status === 401) throw error;
+        if (attempt >= SIGN_OUT_ATTEMPTS) {
+          obs.logger.error("Sign-out everywhere failed", { userId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+          throw new ApiError(503, "internal", "Two-step sign-in is on, but your other sessions weren't signed out yet. Try again.", "signout_failed");
+        }
+        await new Promise((resolve) => setTimeout(resolve, SIGN_OUT_BACKOFF_MS * attempt));
+      }
+    }
+  }
+
+  /** Ends every session the caller has (GlobalSignOut with their own token), this one too. */
+  async function signOutEverywhere(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
+    if (event.body) jsonBody(event, []);
+    await cognitoUser(event, userId);
+    await endEverySession(accessToken(event), userId);
+    return noContent();
+  }
+
   const actions: Record<AccountRoute["action"], (event: DataEvent, userId: string) => Promise<APIGatewayProxyStructuredResultV2>> = {
     me,
     createTeam: newTeam,
@@ -771,6 +875,10 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     deleteAccount,
     sendEmailCode,
     verifyEmail,
+    setPassword,
+    startTotp,
+    verifyTotp,
+    signOutEverywhere,
   };
 
   return async (event: DataEvent, context?: Context): Promise<APIGatewayProxyStructuredResultV2> => {

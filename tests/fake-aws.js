@@ -239,6 +239,25 @@ export class FakeBackend {
       this.invites.push(...this.pendingInvites.splice(0));
       return [204];
     }
+    // Two-step sign-in as Cognito does it: a password that meets the policy ("short" doesn't),
+    // with the current one if given ("wrong" isn't), a secret, and 654321 is the app's code.
+    // A right code turns it on and signs the user out everywhere: their token and refresh
+    // cookie stop working.
+    if (path === "/me/password") {
+      if (call.body.password === "short") return err(400, "bad_request", "password_invalid");
+      if (call.body.currentPassword === "wrong") return err(400, "bad_request", "password_mismatch");
+      return [204];
+    }
+    if (path === "/me/mfa/totp") { this.totpStarted = true; return [200, { totp: { secret: "JBSWY3DPEHPK3PXP" } }]; }
+    if (path === "/me/sign-out-everywhere") { this.signedIn = false; this.token = null; return [204]; }
+    if (path === "/me/mfa/totp/verify") {
+      if (!this.totpStarted) return err(409, "aborted", "code_expired");
+      if (call.body.code !== "654321") return err(400, "bad_request", "code_mismatch");
+      this.user = { ...this.user, mfa: "totp" };
+      this.signedIn = false;
+      this.token = null;
+      return [204];
+    }
     if (path === "/teams" && method === "POST") {
       const team = { ...TEAM, id: "t-" + call.headers["idempotency-key"].slice(0, 8), name: call.body.name, role: "owner" };
       const again = this.teams.find((t) => t.id === team.id);

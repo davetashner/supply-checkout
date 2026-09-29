@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AccountScope, DbForAccount } from "../src/api/account-db.js";
 import { createAccountHandler } from "../src/api/account-handler.js";
-import type { CognitoUser } from "../src/api/cognito-user.js";
+import type { CognitoUser, TotpSetup } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
@@ -29,12 +29,12 @@ const UNVERIFIED = "user-unverified";
 const IMPOSTOR = "user-impostor";
 
 const USERS: Record<string, CognitoUser> = {
-  [OWNER]: { sub: OWNER, email: "owner@example.com", emailVerified: true, emailVerifiedInCognito: true },
-  [PAT]: { sub: PAT, email: "Pat@Example.com", emailVerified: true, emailVerifiedInCognito: true },
-  [MALLORY]: { sub: MALLORY, email: "mallory@example.com", emailVerified: true, emailVerifiedInCognito: true },
+  [OWNER]: { sub: OWNER, email: "owner@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false },
+  [PAT]: { sub: PAT, email: "Pat@Example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false },
+  [MALLORY]: { sub: MALLORY, email: "mallory@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false },
   // Signed up with Pat's address but never confirmed it
-  [UNVERIFIED]: { sub: UNVERIFIED, email: "pat@example.com", emailVerified: false, emailVerifiedInCognito: false },
-  [IMPOSTOR]: { sub: IMPOSTOR, email: "pat@example.com", emailVerified: true, emailVerifiedInCognito: true },
+  [UNVERIFIED]: { sub: UNVERIFIED, email: "pat@example.com", emailVerified: false, emailVerifiedInCognito: false, totp: false, federated: false },
+  [IMPOSTOR]: { sub: IMPOSTOR, email: "pat@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false },
 };
 
 let table: MemoryTable;
@@ -49,6 +49,14 @@ let codesChecked: [string, string][];
 let verifiedNow: Set<string>;
 let codeFailure: Error | undefined;
 let logs: unknown[];
+// Two-step sign-in: what the fake Cognito was asked to do, in order, who has TOTP on, and
+// what its next call fails with
+let totpCalls: unknown[][];
+let totpOn: Set<string>;
+let totpFailure: Error | undefined;
+// How many sign-outs everywhere fail before one works
+let signOutFailures: number;
+let signOutRefusal: ApiError | undefined;
 let handler: ReturnType<typeof createAccountHandler>;
 
 function fakeObservability(): Observability {
@@ -71,6 +79,11 @@ beforeEach(() => {
   codesChecked = [];
   verifiedNow = new Set();
   codeFailure = undefined;
+  totpCalls = [];
+  totpOn = new Set();
+  totpFailure = undefined;
+  signOutFailures = 0;
+  signOutRefusal = undefined;
   logs = [];
   scopes = [];
   table = new MemoryTable();
@@ -86,7 +99,30 @@ beforeEach(() => {
     if (cognitoDown) throw new Error("GetUser failed: 500");
     const user = USERS[token.replace(/^token-/, "")];
     if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
-    return verifiedNow.has(user.sub) ? { ...user, emailVerified: true, emailVerifiedInCognito: true } : user;
+    const seen = verifiedNow.has(user.sub) ? { ...user, emailVerified: true, emailVerifiedInCognito: true } : user;
+    return totpOn.has(user.sub) ? { ...seen, totp: true } : seen;
+  };
+  const totp: TotpSetup = {
+    async setPassword(token, proposed, previous) {
+      if (totpFailure) throw totpFailure;
+      totpCalls.push(["setPassword", token, proposed, previous]);
+    },
+    async associate(token) {
+      if (totpFailure) throw totpFailure;
+      totpCalls.push(["associate", token]);
+      return "JBSWY3DPEHPK3PXP";
+    },
+    async verify(token, code) {
+      if (totpFailure) throw totpFailure;
+      totpCalls.push(["verify", token, code]);
+      if (code !== "654321") throw new ApiError(400, "bad_request", "That code isn't right", "code_mismatch");
+      totpOn.add(token.replace(/^token-/, ""));
+    },
+    async signOutEverywhere(token) {
+      totpCalls.push(["signOutEverywhere", token]);
+      if (signOutRefusal) throw signOutRefusal;
+      if (signOutFailures-- > 0) throw new Error("GlobalSignOut failed: 500 InternalErrorException");
+    },
   };
   const emailCodes = {
     async send(token: string) {
@@ -100,7 +136,7 @@ beforeEach(() => {
       verifiedNow.add(token.replace(/^token-/, ""));
     },
   };
-  handler = createAccountHandler({ dbFor, userInfo, emailCodes, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, now: () => now });
+  handler = createAccountHandler({ dbFor, userInfo, emailCodes, totp, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, now: () => now });
 });
 
 interface Request {
@@ -238,7 +274,7 @@ describe("GET /me", () => {
     const created = (await create(PAT, "Bravo Co", "pat-team-1")).body.team;
     const { status, body } = await call("GET", "/me", { user: PAT });
     expect(status).toBe(200);
-    expect(body.user).toEqual({ id: PAT, email: "Pat@Example.com", emailVerified: true });
+    expect(body.user).toEqual({ id: PAT, email: "Pat@Example.com", emailVerified: true, mfa: "off" });
     expect(body.teams).toEqual([
       created,
       { id: "team-a", name: "team-a", role: "contributor", plan: undefined, status: undefined, trialEndsAt: null, homeRegion: REGION, closedAt: null, deletesAt: null, reopenBy: null, comp: null, subscriptionEnded: false, billingAccount: false, cancelsAt: null, members: 2, memberCap: MEMBERS_PER_TRIAL_TEAM },
@@ -257,7 +293,7 @@ describe("GET /me", () => {
   it("shows a new user no teams and no invites", async () => {
     expect(await call("GET", "/me", { user: MALLORY })).toEqual({
       status: 200,
-      body: { user: { id: MALLORY, email: "mallory@example.com", emailVerified: true }, teams: [], invites: [] },
+      body: { user: { id: MALLORY, email: "mallory@example.com", emailVerified: true, mfa: "off" }, teams: [], invites: [] },
     });
   });
 
@@ -368,7 +404,7 @@ describe("POST /invites/{inviteId}/accept", () => {
     await table.seedTeam("team-b", { [OWNER]: "owner" });
     // U+212A KELVIN SIGN: NFKC folds it to K on both sides
     const { inviteId, token } = await invite("\u212Aat@example.com", { team: "team-b" });
-    USERS["user-kat"] = { sub: "user-kat", email: "kat@example.com", emailVerified: true, emailVerifiedInCognito: true };
+    USERS["user-kat"] = { sub: "user-kat", email: "kat@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false };
     expect((await call("GET", "/me", { user: "user-kat" })).body.invites).toHaveLength(1);
     expect((await accept("user-kat", inviteId, token)).status).toBe(200);
   });
@@ -404,7 +440,7 @@ describe("verifying the caller's email address", () => {
       verifiedAt: new Date(now).toISOString(),
     });
     const me = (await call("GET", "/me", { user: UNVERIFIED })).body;
-    expect(me.user).toEqual({ id: UNVERIFIED, email: "pat@example.com", emailVerified: true });
+    expect(me.user).toEqual({ id: UNVERIFIED, email: "pat@example.com", emailVerified: true, mfa: "off" });
     expect(me.invites).toHaveLength(1);
     // Neither the code nor the token is logged
     expect(JSON.stringify(logs)).not.toMatch(/123456|654321|token-|pat@/);
@@ -428,7 +464,7 @@ describe("verifying the caller's email address", () => {
   });
 
   it("has nothing to verify for a user with no email", async () => {
-    USERS["user-no-email"] = { sub: "user-no-email", emailVerified: false, emailVerifiedInCognito: false };
+    USERS["user-no-email"] = { sub: "user-no-email", emailVerified: false, emailVerifiedInCognito: false, totp: false, federated: false };
     try {
       expect(await call("POST", "/me/email/code", { user: "user-no-email" })).toMatchObject({ status: 400, body: { error: { code: "bad_request" } } });
     } finally {
@@ -502,6 +538,100 @@ describe("verifying the caller's email address", () => {
 });
 
 // supply-checkout-xv3k: MEMBER.email follows the address the user has verified now
+describe("two-step sign-in", () => {
+  const FEDERATED = "google_1076";
+  beforeEach(() => {
+    USERS[FEDERATED] = { sub: FEDERATED, email: "g@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: true };
+  });
+
+  it("says on /me whether it's on, off, or the provider's", async () => {
+    expect((await call("GET", "/me")).body.user.mfa).toBe("off");
+    totpOn.add(OWNER);
+    expect((await call("GET", "/me")).body.user.mfa).toBe("totp");
+    expect((await call("GET", "/me", { user: FEDERATED })).body.user.mfa).toBe("provider");
+  });
+
+  it("sets a password, a secret and a code with the caller's own token, then signs them out everywhere", async () => {
+    expect(await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).toEqual({ status: 204, body: undefined });
+    expect(await call("POST", "/me/password", { body: { password: "Correct-Horse-10", currentPassword: "Correct-Horse-9" } })).toEqual({ status: 204, body: undefined });
+    expect(await call("POST", "/me/mfa/totp")).toEqual({ status: 200, body: { totp: { secret: "JBSWY3DPEHPK3PXP" } } });
+    expect(await call("POST", "/me/mfa/totp", { body: {} })).toMatchObject({ status: 200 });
+    expect(await call("POST", "/me/mfa/totp/verify", { body: { code: "654321" } })).toEqual({ status: 204, body: undefined });
+    const token = `token-${OWNER}`;
+    expect(totpCalls).toEqual([
+      ["setPassword", token, "Correct-Horse-9", undefined],
+      ["setPassword", token, "Correct-Horse-10", "Correct-Horse-9"],
+      ["associate", token],
+      ["associate", token],
+      ["verify", token, "654321"],
+      ["signOutEverywhere", token],
+    ]);
+    // Never the password, the secret or the code in a log line
+    expect(JSON.stringify(logs)).not.toMatch(/Correct-Horse|JBSWY3DPEHPK3PXP|654321/);
+  });
+
+  it("signs nobody out for a wrong code", async () => {
+    expect(await call("POST", "/me/mfa/totp/verify", { body: { code: "111111" } })).toMatchObject({ status: 400, body: { error: { reason: "code_mismatch" } } });
+    expect(totpCalls.map((c) => c[0])).toEqual(["verify"]);
+  });
+
+  it("checks the request before calling Cognito", async () => {
+    for (const body of [undefined, {}, { password: "" }, { password: 7 }, { password: "x".repeat(257) }, { password: "Correct-Horse-9", currentPassword: "" }, { password: "Correct-Horse-9", currentPassword: 7 }, { password: "Correct-Horse-9", other: 1 }]) {
+      expect((await call("POST", "/me/password", { body })).status, JSON.stringify(body)).toBe(400);
+    }
+    for (const body of [undefined, {}, { code: "12345" }, { code: "1234567" }, { code: 123456 }, { code: "12a456" }, { code: "123456", other: 1 }]) {
+      expect((await call("POST", "/me/mfa/totp/verify", { body })).status, JSON.stringify(body)).toBe(400);
+    }
+    expect((await call("POST", "/me/mfa/totp", { body: { secret: "mine" } })).status).toBe(400);
+    expect(totpCalls).toEqual([]);
+  });
+
+  it("has nothing to set up for a Google or Apple user", async () => {
+    for (const [path, body] of [["/me/password", { password: "Correct-Horse-9" }], ["/me/mfa/totp", undefined], ["/me/mfa/totp/verify", { code: "654321" }]] as const) {
+      expect(await call("POST", path, { user: FEDERATED, body }), path).toMatchObject({ status: 409, body: { error: { reason: "federated_sign_in" } } });
+    }
+    expect(totpCalls).toEqual([]);
+  });
+
+  it("tries the sign-out everywhere again, and if it still fails says so, for the app to finish it", async () => {
+    signOutFailures = 2;
+    expect(await call("POST", "/me/mfa/totp/verify", { body: { code: "654321" } })).toEqual({ status: 204, body: undefined });
+    expect(totpCalls.map((c) => c[0])).toEqual(["verify", "signOutEverywhere", "signOutEverywhere", "signOutEverywhere"]);
+    totpCalls = [];
+    signOutFailures = 3;
+    expect(await call("POST", "/me/mfa/totp/verify", { body: { code: "654321" } })).toMatchObject({ status: 503, body: { error: { reason: "signout_failed" } } });
+    expect(totpCalls.map((c) => c[0])).toEqual(["verify", "signOutEverywhere", "signOutEverywhere", "signOutEverywhere"]);
+    expect(logs).toContainEqual(["Sign-out everywhere failed", { userId: OWNER, code: "Error" }]);
+    // Finishing it: the same, without a code
+    totpCalls = [];
+    expect(await call("POST", "/me/sign-out-everywhere")).toEqual({ status: 204, body: undefined });
+    expect(await call("POST", "/me/sign-out-everywhere", { user: FEDERATED, body: {} })).toEqual({ status: 204, body: undefined });
+    expect(totpCalls).toEqual([["signOutEverywhere", `token-${OWNER}`], ["signOutEverywhere", `token-${FEDERATED}`]]);
+    expect((await call("POST", "/me/sign-out-everywhere", { body: { all: true } })).status).toBe(400);
+  });
+
+  it("tries a throttled sign-out everywhere again, but not one refused for a revoked token", async () => {
+    signOutRefusal = new ApiError(429, "quota_exceeded", "Too many attempts; try again later");
+    expect(await call("POST", "/me/sign-out-everywhere")).toMatchObject({ status: 503, body: { error: { reason: "signout_failed" } } });
+    expect(totpCalls).toHaveLength(3);
+    totpCalls = [];
+    signOutRefusal = new ApiError(401, "unauthenticated", "Sign in again");
+    expect((await call("POST", "/me/sign-out-everywhere")).status).toBe(401);
+    expect(totpCalls).toEqual([["signOutEverywhere", `token-${OWNER}`]]);
+  });
+
+  it("passes on Cognito's refusals, and only for the token's own user", async () => {
+    totpFailure = new ApiError(400, "bad_request", "That current password isn't right", "password_mismatch");
+    expect(await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).toMatchObject({ status: 400, body: { error: { reason: "password_mismatch" } } });
+    totpFailure = new Error("AssociateSoftwareToken failed: 500 InternalErrorException");
+    expect((await call("POST", "/me/mfa/totp")).status).toBe(500);
+    totpFailure = undefined;
+    // A token whose GetUser is someone else's
+    expect((await call("POST", "/me/mfa/totp", { user: PAT, claims: { sub: OWNER, token_use: "access", exp: String(Math.floor(now / 1000) + 600), iss: ISSUER, client_id: "web" } })).status).toBe(401);
+    expect(totpCalls).toEqual([]);
+  });
+});
+
 describe("keeping members' email current", () => {
   const memberEmail = (team: string, user: string) => table.get(`TEAM#${team}`, `MEMBER#${user}`)?.email;
   const memberUpdates = () => table.calls.filter((c) => c.command === "UpdateCommand" && c.partitions.some((p) => p.startsWith("TEAM#")));

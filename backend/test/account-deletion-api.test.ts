@@ -16,7 +16,7 @@ import { BusinessMetric, type Observability } from "../src/observability/index.j
 import { PURGE_BUDGET_MS } from "../src/ops/names.js";
 import { createTeamPurgeHandler } from "../src/ops/team-purge-handler.js";
 import { TEAM_PURGE_ATTRIBUTES, TEAM_PURGE_MARK_ATTRIBUTES } from "../src/data/schema.js";
-import { REGION, accountPartitions, fakeDb, fakeMailer, memoryDeletionLog, unusedEmailCodes } from "./helpers.js";
+import { REGION, accountPartitions, fakeDb, fakeMailer, memoryDeletionLog, unusedEmailCodes, unusedTotp } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 import { connection } from "../src/data/client.js";
 import { EmailNotSentError, type Mailer } from "../src/email/mailer.js";
@@ -33,11 +33,11 @@ const VIEWER = "user-viewer";
 const SOLO = "user-solo";
 
 const USERS: Record<string, CognitoUser> = {
-  [OWNER]: { sub: OWNER, email: "owner@example.com", emailVerified: true, emailVerifiedInCognito: true },
-  [CO_OWNER]: { sub: CO_OWNER, email: "co@example.com", emailVerified: true, emailVerifiedInCognito: true },
-  [PAT]: { sub: PAT, email: "pat@example.com", emailVerified: true, emailVerifiedInCognito: true },
-  [VIEWER]: { sub: VIEWER, email: "viewer@example.com", emailVerified: false, emailVerifiedInCognito: false },
-  [SOLO]: { sub: SOLO, email: "solo@example.com", emailVerified: true, emailVerifiedInCognito: true },
+  [OWNER]: { sub: OWNER, email: "owner@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false },
+  [CO_OWNER]: { sub: CO_OWNER, email: "co@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false },
+  [PAT]: { sub: PAT, email: "pat@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false },
+  [VIEWER]: { sub: VIEWER, email: "viewer@example.com", emailVerified: false, emailVerifiedInCognito: false, totp: false, federated: false },
+  [SOLO]: { sub: SOLO, email: "solo@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false },
 };
 
 let table: MemoryTable;
@@ -150,7 +150,7 @@ beforeEach(() => {
       return { messageId: `notice-${notices.length}` };
     },
   };
-  accountHandler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer, emailCodes: unusedEmailCodes, deleteUser, deletions: deletions.log, now: () => now });
+  accountHandler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer, emailCodes: unusedEmailCodes, totp: unusedTotp, deleteUser, deletions: deletions.log, now: () => now });
   dataHandler = createDataHandler({ dbForTeam: (teamId) => table.db(teamId), obs, now: () => now });
 });
 
@@ -286,7 +286,7 @@ describe("closing a team", () => {
 
   it("takes nobody new, even with an invite that's still there", async () => {
     await close();
-    USERS["user-new"] = { sub: "user-new", email: "newbie@example.com", emailVerified: true, emailVerifiedInCognito: true };
+    USERS["user-new"] = { sub: "user-new", email: "newbie@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false };
     invite("team-a", "inv-late", "newbie@example.com");
     expect(await call("POST", "/invites/inv-late/accept", "user-new", { token: "t".repeat(32) })).toMatchObject({ status: 404, body: { error: { code: "not_found" } } });
     expect(table.get("TEAM#team-a", "MEMBER#user-new")).toBeUndefined();

@@ -18,7 +18,7 @@ import { hashEmail, hashInviteToken, inviteLimitKey, INVITES_PER_ADDRESS_PER_DAY
 import { INVITE_LIMIT_ATTRIBUTES } from "../src/data/schema.js";
 import type { Observability } from "../src/observability/index.js";
 import { connection } from "../src/data/client.js";
-import { accountPartitions, fakeDb, fakeMailer, unusedDeleteUser, unusedDeletionLog, unusedEmailCodes } from "./helpers.js";
+import { accountPartitions, fakeDb, fakeMailer, unusedDeleteUser, unusedDeletionLog, unusedEmailCodes, unusedTotp } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_pool";
@@ -31,11 +31,11 @@ const PAT = "user-pat";
 const OTHER_OWNER = "user-other-owner";
 
 const USERS: Record<string, CognitoUser> = {
-  [OWNER]: { sub: OWNER, email: "owner@example.com", emailVerified: true, emailVerifiedInCognito: true },
-  [CO_OWNER]: { sub: CO_OWNER, email: "co-owner@example.com", emailVerified: true, emailVerifiedInCognito: true },
-  [SAM]: { sub: SAM, email: "sam@example.com", emailVerified: true, emailVerifiedInCognito: true },
-  [PAT]: { sub: PAT, email: "Pat@Example.com", emailVerified: true, emailVerifiedInCognito: true },
-  [OTHER_OWNER]: { sub: OTHER_OWNER, email: "other@example.com", emailVerified: true, emailVerifiedInCognito: true },
+  [OWNER]: { sub: OWNER, email: "owner@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false },
+  [CO_OWNER]: { sub: CO_OWNER, email: "co-owner@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false },
+  [SAM]: { sub: SAM, email: "sam@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false },
+  [PAT]: { sub: PAT, email: "Pat@Example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false },
+  [OTHER_OWNER]: { sub: OTHER_OWNER, email: "other@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false },
 };
 
 let table: MemoryTable;
@@ -86,7 +86,7 @@ beforeEach(() => {
     if (!user) throw new ApiError(401, "unauthenticated", "Sign in again");
     return user;
   };
-  handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, emailCodes: unusedEmailCodes, now: () => now });
+  handler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, emailCodes: unusedEmailCodes, totp: unusedTotp, now: () => now });
 });
 
 function event(method: string, path: string, user: string, body?: unknown): DataEvent {
@@ -231,7 +231,7 @@ describe("POST /teams/{teamId}/invites", () => {
       userInfo: async () => USERS[OWNER] as CognitoUser,
       issuerUrl: ISSUER,
       obs: { region: "x", logger: { info: () => {}, warn: (m: string, e: unknown) => logs.push(["warn", m, e]), error: () => {} }, count: () => {}, flush: () => {} } as unknown as Observability,
-      emailCodes: unusedEmailCodes,
+      emailCodes: unusedEmailCodes, totp: unusedTotp,
       mailer: { send: () => Promise.reject(Object.assign(new Error("to pat@example.com"), { name: "TypeError" })) },
       deleteUser: unusedDeleteUser, deletions: unusedDeletionLog,
       now: () => now,
@@ -246,7 +246,7 @@ describe("POST /teams/{teamId}/invites", () => {
       userInfo: async () => USERS[OWNER] as CognitoUser,
       issuerUrl: ISSUER,
       obs: { region: "x", logger: { info: () => {}, warn: (m: string, e: unknown) => logs.push(["warn", m, e]), error: () => {} }, count: () => {}, flush: () => {} } as unknown as Observability,
-      emailCodes: unusedEmailCodes,
+      emailCodes: unusedEmailCodes, totp: unusedTotp,
       mailer: { send: () => Promise.reject(null) },
       deleteUser: unusedDeleteUser, deletions: unusedDeletionLog,
       now: () => now,
@@ -481,7 +481,7 @@ describe("rate limits", () => {
     const teams = Array.from({ length: INVITES_PER_ADDRESS_PER_DAY / INVITES_PER_TEAM_ADDRESS_PER_DAY }, (_, i) => `team-flood-${i}`);
     for (const teamId of teams) {
       const owner = `user-${teamId}`;
-      USERS[owner] = { sub: owner, email: `${teamId}@example.com`, emailVerified: true, emailVerifiedInCognito: true };
+      USERS[owner] = { sub: owner, email: `${teamId}@example.com`, emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false };
       team(teamId, teamId, { [owner]: "owner" });
       let id = (await invite("pat@example.com", "viewer", owner, teamId)).body.invite.id as string;
       for (let i = 1; i < INVITES_PER_TEAM_ADDRESS_PER_DAY; i++) id = (await resend(id, owner, teamId)).body.invite.id;

@@ -4441,6 +4441,222 @@
         }
       }
     },
+    "HttpApiPOSTmepasswordAccountIntegrationPermission699FFAB5": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/me/password"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTmepasswordD1522314": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /me/password",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTmemfatotpAccountIntegrationPermission81477F93": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/me/mfa/totp"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTmemfatotp57EF9FDD": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /me/mfa/totp",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTmemfatotpverifyAccountIntegrationPermission5707CC5F": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/me/mfa/totp/verify"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTmemfatotpverifyDCE730CC": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /me/mfa/totp/verify",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTmesignouteverywhereAccountIntegrationPermission368271B0": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "AccountFunctionLiveB08200FC"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/me/sign-out-everywhere"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTmesignouteverywhereEF68DA1F": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /me/sign-out-everywhere",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETmeAccountIntegration0EFB5255"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiPOSTteamsteamIdbillingcheckoutBillingIntegration84D4E72C": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -4907,6 +5123,22 @@
             "ThrottlingRateLimit": 10,
             "ThrottlingBurstLimit": 20
           },
+          "POST /me/password": {
+            "ThrottlingRateLimit": 2,
+            "ThrottlingBurstLimit": 5
+          },
+          "POST /me/mfa/totp": {
+            "ThrottlingRateLimit": 2,
+            "ThrottlingBurstLimit": 5
+          },
+          "POST /me/mfa/totp/verify": {
+            "ThrottlingRateLimit": 5,
+            "ThrottlingBurstLimit": 10
+          },
+          "POST /me/sign-out-everywhere": {
+            "ThrottlingRateLimit": 2,
+            "ThrottlingBurstLimit": 5
+          },
           "POST /teams/{teamId}/billing/checkout": {
             "ThrottlingRateLimit": 2,
             "ThrottlingBurstLimit": 5
@@ -4954,6 +5186,14 @@
         "HttpApiPOSTmeemailcode157ED3EE",
         "HttpApiPOSTmeemailverifyAccountIntegrationPermission0E703411",
         "HttpApiPOSTmeemailverify7BFB4943",
+        "HttpApiPOSTmemfatotpverifyAccountIntegrationPermission5707CC5F",
+        "HttpApiPOSTmemfatotpverifyDCE730CC",
+        "HttpApiPOSTmemfatotpAccountIntegrationPermission81477F93",
+        "HttpApiPOSTmemfatotp57EF9FDD",
+        "HttpApiPOSTmepasswordAccountIntegrationPermission699FFAB5",
+        "HttpApiPOSTmepasswordD1522314",
+        "HttpApiPOSTmesignouteverywhereAccountIntegrationPermission368271B0",
+        "HttpApiPOSTmesignouteverywhereEF68DA1F",
         "HttpApiPOSTteamsteamIdbillingcheckoutBillingIntegrationPermissionA972843A",
         "HttpApiPOSTteamsteamIdbillingcheckoutBillingIntegration84D4E72C",
         "HttpApiPOSTteamsteamIdbillingcheckoutAA8688DD",
