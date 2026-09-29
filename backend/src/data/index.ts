@@ -44,6 +44,7 @@ export * from "./sheets.js";
 export * from "./usage.js";
 export * from "./audit.js";
 export * from "./billing.js";
+export { BILLED_ROLES, countBilledMembers, isBilledRole, listTeamsToReconcile, type TeamToReconcile } from "./seats.js";
 export * from "./documents.js";
 export * from "./commands.js";
 export * from "./imports.js";

@@ -1,7 +1,8 @@
 # 0016. A live-update channel per member, not per team
 
-- Status: Proposed
-- Date: 2026-09-26
+- Status: Accepted
+- Date: 2026-09-28 (proposed 2026-09-26)
+- Note: The owner accepted this on 2026-09-28. Built and deployed as described.
 - Changes: the "one channel per team" part of [ADR 0006](0006-api-and-realtime-sync.md). The rest of 0006 stands.
 
 ## Context

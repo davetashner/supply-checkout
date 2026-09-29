@@ -66,6 +66,12 @@ export const BusinessMetric = {
   BillingNotices: "BillingNotices",
   /** Owners who should have had a billing email and didn't (SES refused it, or no address on file) (J7, J8). */
   BillingNoticeFailures: "BillingNoticeFailures",
+  /** Subscription seat quantities the billing worker changed to match the team's billed members (supply-checkout-l50); the reason goes in metadata (J7). */
+  SeatQuantityUpdates: "SeatQuantityUpdates",
+  /** Teams the nightly seat reconciliation found billed for a different number of seats than they have billed members: the event-driven sync missed them (J7). */
+  SeatQuantityDrift: "SeatQuantityDrift",
+  /** Membership changes whose seat sync couldn't be queued; the nightly reconciliation fixes the quantity (J7). */
+  SeatSyncQueueFailures: "SeatSyncQueueFailures",
   /** Sign-outs whose refresh token Cognito didn't revoke: it stays valid until it expires (J0). */
   SignOutRevokeFailures: "SignOutRevokeFailures",
   /** Federated sign-ins whose provider-verified email couldn't be marked verified: the user stays unverified (J3). */
@@ -80,6 +86,8 @@ export const BusinessMetric = {
   StuckImports: "StuckImports",
   /** Gauge: SES sends in the last 24 hours as a percentage of the daily sending quota (J3). */
   EmailQuotaUsedPercent: "EmailQuotaUsedPercent",
+  /** Gauge: teams the nightly seat reconciliation queued for a check, from its run (J7). None for two days means it isn't running. */
+  SeatReconcileTeams: "SeatReconcileTeams",
   /** Gauge: closed teams still not deleted more than a day after their deletion date, from the hourly purge (J11). */
   ClosedTeamsOverdue: "ClosedTeamsOverdue",
   /** Teams an owner closed (or that closed with their only member's account). */

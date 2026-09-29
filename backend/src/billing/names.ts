@@ -36,6 +36,10 @@ export const BILLING_ENV = {
   queueUrl: "BILLING_QUEUE_URL",
   /** The role the billing worker assumes, tagged with the event, the customer and the team. */
   workerRoleArn: "BILLING_WORKER_ROLE_ARN",
+  /** The seat sync queue's URL, where the account function and the nightly reconciliation send seat syncs (billing/seats.ts). */
+  seatQueueUrl: "SEAT_QUEUE_URL",
+  /** The seat sync queue's ARN: the billing worker takes only seat syncs from it, and only Stripe events from the billing queue. */
+  seatQueueArn: "SEAT_QUEUE_ARN",
 } as const;
 
 /** Resources the api stack names for billing, so the alarms and docs can refer to them. */
@@ -48,6 +52,15 @@ export const billingResourceNames = (envName: string) => ({
   queue: `supply-checkout-${envName}-billing-events.fifo`,
   /** Events the worker couldn't apply after BILLING_MAX_RECEIVES tries. */
   deadLetterQueue: `supply-checkout-${envName}-billing-events-dlq.fifo`,
+  /**
+   * Seat syncs (supply-checkout-l50, billing/seats.ts), from the account
+   * function after a membership change and from the nightly reconciliation:
+   * FIFO, grouped by Stripe customer. Apart from the billing queue, so only
+   * the webhook can put a Stripe event in front of the worker.
+   */
+  seatQueue: `supply-checkout-${envName}-seat-syncs.fifo`,
+  /** Seat syncs the worker couldn't apply after BILLING_MAX_RECEIVES tries. */
+  seatDeadLetterQueue: `supply-checkout-${envName}-seat-syncs-dlq.fifo`,
 });
 
 /** Tries the worker gets at an event before it goes to the dead-letter queue. */

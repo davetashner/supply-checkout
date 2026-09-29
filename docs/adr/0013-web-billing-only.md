@@ -1,7 +1,8 @@
 # 0013. Web billing only; the mobile apps link to web checkout
 
-- Status: Proposed
-- Date: 2026-09-25
+- Status: Accepted
+- Date: 2026-09-28 (proposed 2026-09-25)
+- Note: The owner accepted this on 2026-09-28. Stripe's fees are about 7% of a monthly $9 charge, not 4–6% (see 0009); the conclusion stands. The store-rules spike is bead `supply-checkout-8jc.7`.
 
 ## Context
 

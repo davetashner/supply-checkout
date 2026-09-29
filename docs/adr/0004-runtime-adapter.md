@@ -1,7 +1,8 @@
 # 0004. Keep one web app behind a runtime adapter
 
-- Status: Proposed
-- Date: 2026-09-25
+- Status: Accepted
+- Date: 2026-09-28 (proposed 2026-09-25)
+- Note: The owner accepted this on 2026-09-28. Built as described: `src/runtime.js` with the artifact and web builds.
 
 ## Context
 

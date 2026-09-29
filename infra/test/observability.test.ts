@@ -20,7 +20,14 @@ import {
   GROUP_WATCH_EVERY_MINUTES,
   GROUP_WATCH_SILENT_ALARM_MINUTES,
   INITIAL_GROUP_SNAPSHOT,
-  HEARTBEAT_EVERY_MINUTES, HEARTBEAT_SILENT_ALARM_MINUTES, PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS, PURGE_SILENT_ALARM_HOURS, STUCK_IMPORT_AFTER_MINUTES,
+  HEARTBEAT_EVERY_MINUTES,
+  HEARTBEAT_SILENT_ALARM_MINUTES,
+  PURGE_EVERY_HOURS,
+  PURGE_OVERDUE_AFTER_HOURS,
+  PURGE_SILENT_ALARM_HOURS,
+  SEAT_RECONCILE_HOUR_UTC,
+  SEAT_RECONCILE_SILENT_ALARM_DAYS,
+  STUCK_IMPORT_AFTER_MINUTES,
 } from "../../backend/src/ops/names.js";
 import { DELETIONS_BUCKET_CHANGE_EVENTS } from "../lib/observability/deletion-records-watch.js";
 import { addBackupAccount, addSupplyCheckout } from "../lib/supply-checkout.js";
@@ -103,13 +110,15 @@ const ALARM_IDS = [
   "webhook-signature-failures",
   "billing-events-stuck",
   "billing-events-late",
+  "seat-syncs-stuck",
+  "seat-counts-drifting",
   "deletion-overdue",
   "team-closed-notices-failing",
   "team-reopened-notices-failing",
 ];
 
 /** Alarms on gauges that only the primary region's scheduled checks and purge send (ops-checks.ts). */
-const PRIMARY_ONLY_ALARM_IDS = ["imports-stuck", "near-sending-limit", "deletion-overdue"];
+const PRIMARY_ONLY_ALARM_IDS = ["imports-stuck", "near-sending-limit", "seat-counts-drifting", "deletion-overdue"];
 
 describe("alarm topics", () => {
   it("has a P1 and a P2 topic, encrypted with a rotating key that CloudWatch may use, refusing plain HTTP", () => {
@@ -270,7 +279,7 @@ describe("journey alarms (docs/journeys.md)", () => {
       // The purge's own alarm is with the purge, and the operator audit and group watches' are with the watches, in the primary region only (tested below)
       const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm"))
         .map((a) => a.Properties)
-        .filter((a) => a.AlarmName !== "supply-checkout-prod-p2-deletion-not-running" && !/operator-audit|operator-group|deletion-record|site-down|web-router/.test(String(a.AlarmName)));
+        .filter((a) => !["supply-checkout-prod-p2-deletion-not-running", "supply-checkout-prod-p2-seat-reconcile-not-running"].includes(a.AlarmName) && !/operator-audit|operator-group|deletion-record|site-down|web-router/.test(String(a.AlarmName)));
       const specs = journeyAlarmSpecs(r, "t", "api", "prod").filter((s) => r === config.primaryRegion || !s.primaryOnly);
       expect(alarms.map((a) => a.AlarmName).sort()).toEqual(
         specs.map((s) => `supply-checkout-prod-${s.severity.toLowerCase()}-${s.id}`).sort(),
@@ -574,7 +583,7 @@ describe("alarms added with the email code routes, the live update budget, team 
 describe("scheduled checks", () => {
   const functions = (t: Template) => Object.values(t.findResources("AWS::Lambda::Function")).map((f) => f.Properties);
 
-  it("run in the primary region only, every 10 minutes (the purge every hour), without retries", () => {
+  it("run in the primary region only, every 10 minutes (the purge every hour, the seat reconciliation nightly), without retries", () => {
     const { region } = build();
     const west = Template.fromStack(region(WEST).observability);
     west.resourceCountIs("AWS::Lambda::Function", 0);
@@ -585,12 +594,13 @@ describe("scheduled checks", () => {
       "supply-checkout-prod-email-quota",
       "supply-checkout-prod-operator-audit-watch",
       "supply-checkout-prod-operator-group-watch",
+      "supply-checkout-prod-seat-reconcile",
       "supply-checkout-prod-stuck-imports",
       "supply-checkout-prod-team-purge",
     ]);
     const rules = Object.values(t.findResources("AWS::Events::Rule")).map((r) => r.Properties).filter((r) => r.ScheduleExpression !== undefined);
-    expect(rules).toHaveLength(4);
-    expect(rules.map((r) => r.ScheduleExpression).sort()).toEqual(["rate(1 hour)", `rate(${CHECK_EVERY_MINUTES} minutes)`, `rate(${CHECK_EVERY_MINUTES} minutes)`, `rate(${GROUP_WATCH_EVERY_MINUTES} minutes)`].sort());
+    expect(rules).toHaveLength(5);
+    expect(rules.map((r) => r.ScheduleExpression).sort()).toEqual([`cron(0 ${SEAT_RECONCILE_HOUR_UTC} * * ? *)`, "rate(1 hour)", `rate(${CHECK_EVERY_MINUTES} minutes)`, `rate(${CHECK_EVERY_MINUTES} minutes)`, `rate(${GROUP_WATCH_EVERY_MINUTES} minutes)`].sort());
     for (const rule of rules) expect(rule.Targets).toEqual([expect.objectContaining({ RetryPolicy: { MaximumRetryAttempts: 0 } })]);
     t.hasResourceProperties("AWS::Lambda::Function", { FunctionName: "supply-checkout-prod-team-purge", Timeout: 300 });
     t.hasResourceProperties("AWS::Lambda::Function", {
@@ -722,6 +732,56 @@ describe("scheduled checks", () => {
     // The other region runs no purge, so an alarm there would always be in alarm
     const west = Object.values(Template.fromStack(region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties.AlarmName);
     expect(west).not.toContain("supply-checkout-prod-p2-deletion-not-running");
+  });
+
+  it("let the seat reconciliation list teams from the operators' index by keys, customer, closure and status, and send only to the seat sync queue (supply-checkout-l50)", () => {
+    const t = observability();
+    const found = statements(t, "supply-checkout-prod-seat-reconcile");
+    expect(found.map((s) => s.Action)).toEqual([["logs:CreateLogStream", "logs:PutLogEvents"], "dynamodb:Query", ["kms:Decrypt", "kms:DescribeKey"], "sqs:SendMessage"]);
+    const query = found.find((s) => s.Action === "dynamodb:Query") as Record<string, unknown>;
+    expect(query.Resource).toEqual({
+      "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app/index/GSI3"]],
+    });
+    expect(query.Condition).toEqual({
+      "ForAllValues:StringEquals": {
+        "dynamodb:LeadingKeys": ["OPS#TEAMS"],
+        "dynamodb:Attributes": ["PK", "SK", "GSI3PK", "GSI3SK", "stripeCustomerId", "closedAt", "status"],
+      },
+      StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+    });
+    const send = found.find((s) => s.Action === "sqs:SendMessage") as Record<string, unknown>;
+    expect(send.Resource).toEqual({
+      "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:sqs:${EAST}:`, { Ref: "AWS::AccountId" }, ":supply-checkout-prod-seat-syncs.fifo"]],
+    });
+    const [fn] = functions(t).filter((f) => f.FunctionName === "supply-checkout-prod-seat-reconcile");
+    expect(fn?.Timeout).toBe(300);
+    expect(JSON.stringify(fn?.Environment)).toContain("/supply-checkout-prod-seat-syncs.fifo");
+  });
+
+  it("alarm when the seat reconciliation stops sending its gauge for two nights, in the primary region only (J7)", () => {
+    const { region } = build();
+    const east = Template.fromStack(region(EAST).observability);
+    east.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-seat-reconcile-not-running",
+      Metrics: [
+        Match.objectLike({
+          MetricStat: Match.objectLike({
+            Metric: Match.objectLike({ Namespace: "SupplyCheckout", MetricName: BusinessMetric.SeatReconcileTeams, Dimensions: [{ Name: "Region", Value: EAST }] }),
+            Stat: "SampleCount",
+            Period: 86400,
+          }),
+        }),
+      ],
+      Threshold: 1,
+      ComparisonOperator: "LessThanThreshold",
+      EvaluationPeriods: SEAT_RECONCILE_SILENT_ALARM_DAYS,
+      DatapointsToAlarm: SEAT_RECONCILE_SILENT_ALARM_DAYS,
+      TreatMissingData: "breaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      AlarmDescription: Match.stringLikeRegexp("docs/journeys.md"),
+    });
+    const west = Object.values(Template.fromStack(region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties.AlarmName);
+    expect(west).not.toContain("supply-checkout-prod-p2-seat-reconcile-not-running");
   });
 
   it("let the SES quota check read the account's quota and nothing else", () => {

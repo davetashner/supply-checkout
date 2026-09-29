@@ -1,7 +1,8 @@
 # 0009. Stripe Billing for subscriptions, invoices and payments
 
-- Status: Proposed
-- Date: 2026-09-25
+- Status: Accepted
+- Date: 2026-09-28 (proposed 2026-09-25)
+- Note: The owner accepted this with changes on 2026-09-28. Fees are about 7% of a monthly $9 charge (2.9% + $0.30, plus Stripe Billing and Tax), and about 4.5% of a yearly one. One-time payments and scheduled payments are phase 2. The MVP serves webhooks from us-east-1 only. The webhook handler queues each event first and the worker records it once applied.
 
 ## Context
 
@@ -13,7 +14,7 @@ We need per-seat monthly subscriptions (chosen on the web or in the mobile apps,
 - **Products and prices** come from the subscription tiers bead. Starting proposal, to be confirmed in the business plan:
   - **Starter**: $9/month includes 3 seats, then $3 per extra seat. 200 receipts a month per team.
   - **Annual**: 2 months free, billed once a year.
-  - Seats are a quantity on the subscription. Adding a member updates the quantity with proration.
+  - Seats are a quantity on the subscription. Adding a member updates the quantity with proration. Owners and editors are billed seats; viewers are free (owner decision 2026-09-28, `BILLED_ROLES` in `backend/src/data/seats.ts`). The quantity is always recomputed from the team's members, asynchronously through the billing queue, and a nightly reconciliation alarms on drift (`supply-checkout-l50`, [infrastructure](../infrastructure.md#billing)).
 - **Stripe Checkout** for sign-up and upgrades; the **Customer Portal** for payment methods, invoices, plan changes and cancellation. We don't build card forms and never touch card numbers, which keeps us at PCI SAQ A.
 - **Invoices**: Stripe generates and emails them. Owners also see the list in the app (fetched from Stripe) with links to the hosted invoice and PDF.
 - **One-time payments**: Checkout in `payment` mode, or invoice items added to the next invoice.

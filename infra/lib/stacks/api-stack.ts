@@ -167,6 +167,9 @@ export class ApiStack extends SupplyCheckoutStack {
   /** Verified Stripe events, FIFO per customer, and the events that kept failing. */
   readonly billingQueue: Queue;
   readonly billingDeadLetterQueue: Queue;
+  /** Seat syncs for the billing worker (supply-checkout-l50), from the account function and the nightly reconciliation. */
+  readonly seatQueue: Queue;
+  readonly seatDeadLetterQueue: Queue;
   /** Applies queued events to teams (ADR 0009). */
   readonly billingWorker: NodejsFunction;
   readonly billingWorkerRole: Role;
@@ -375,6 +378,12 @@ export class ApiStack extends SupplyCheckoutStack {
     this.billingDeadLetterQueue = events.deadLetterQueue;
     this.billingWorker = events.worker;
     this.billingWorkerRole = events.role;
+    this.seatQueue = events.seatQueue;
+    this.seatDeadLetterQueue = events.seatDeadLetterQueue;
+    // Seat syncs after a membership change (supply-checkout-l50, backend/src/billing/seats.ts):
+    // the account function may send to the seat sync queue, and never to the billing queue
+    this.accountFunction.addToRolePolicy(new PolicyStatement({ sid: "QueueSeatSyncs", actions: ["sqs:SendMessage"], resources: [events.seatQueue.queueArn] }));
+    this.accountFunction.addEnvironment(BILLING_ENV.seatQueueUrl, events.seatQueue.queueUrl);
 
     // The API
     this.api = new HttpApi(this, "HttpApi", {
@@ -607,9 +616,18 @@ export class ApiStack extends SupplyCheckoutStack {
    *   API key.
    * - The queue is FIFO, grouped by Stripe customer and deduplicated by
    *   event ID. A message that fails BILLING_MAX_RECEIVES times goes to the
-   *   dead-letter queue (the "Billing events stuck" alarm).
-   * - The worker applies each event. Its own role can't reach the table: it
-   *   may read the Stripe secret key, send owner emails (grantSendEmail), and
+   *   dead-letter queue (the "Billing events stuck" alarm). Only the webhook
+   *   may send to it.
+   * - The seat sync queue (supply-checkout-l50) is FIFO too, grouped by
+   *   Stripe customer, with its own dead-letter queue ("Seat syncs stuck"):
+   *   the account function sends one after a membership change, and the
+   *   nightly seat reconciliation (observability/ops-checks.ts) one per team.
+   *   A seat sync names only a Stripe customer; the worker finds the team
+   *   from its link, and takes only seat syncs from this queue
+   *   (SEAT_QUEUE_ARN), so neither sender can pass off a Stripe event.
+   * - The worker applies each event, and sets a subscription's seat
+   *   quantity to the team's billed members. Its own role can't reach the
+   *   table: it may read the Stripe secret key, send owner emails (grantSendEmail), and
    *   assume the billing-worker role tagged with the event, its customer and
    *   (once the link is read) the team. That role may:
    *   - GetItem and PutItem in `WEBHOOK#<eventId>`, naming only the event
@@ -647,6 +665,27 @@ export class ApiStack extends SupplyCheckoutStack {
       deadLetterQueue: { queue: deadLetterQueue, maxReceiveCount: BILLING_MAX_RECEIVES },
     });
 
+    const seatDeadLetterQueue = new Queue(this, "SeatSyncsDeadLetterQueue", {
+      queueName: names.seatDeadLetterQueue,
+      fifo: true,
+      encryption: QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      retentionPeriod: Duration.days(14),
+    });
+    Validations.of(seatDeadLetterQueue).acknowledge({
+      id: "AwsSolutions-SQS3",
+      reason: "This is the dead-letter queue: it holds seat syncs the billing worker couldn't apply; the nightly reconciliation fixes their teams anyway.",
+    });
+    const seatQueue = new Queue(this, "SeatSyncsQueue", {
+      queueName: names.seatQueue,
+      fifo: true,
+      encryption: QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      visibilityTimeout: Duration.seconds(workerTimeout.toSeconds() * 6),
+      retentionPeriod: Duration.days(4),
+      deadLetterQueue: { queue: seatDeadLetterQueue, maxReceiveCount: BILLING_MAX_RECEIVES },
+    });
+
     const webhook = this.handler(
       "BillingWebhookFunction",
       "webhook",
@@ -672,6 +711,8 @@ export class ApiStack extends SupplyCheckoutStack {
       "billing",
     );
     worker.addEventSource(new SqsEventSource(queue, { batchSize: 1, reportBatchItemFailures: true }));
+    worker.addEventSource(new SqsEventSource(seatQueue, { batchSize: 1, reportBatchItemFailures: true }));
+    worker.addEnvironment(BILLING_ENV.seatQueueArn, seatQueue.queueArn);
     worker.addToRolePolicy(new PolicyStatement({ sid: "ReadStripeSecretKey", actions: ["secretsmanager:GetSecretValue"], resources: [stripeSecretArn(where, config.envName, mode)] }));
     // Trial-ending, payment-failed and read-only emails to owners
     grantSendEmail(worker, config);
@@ -746,7 +787,7 @@ export class ApiStack extends SupplyCheckoutStack {
     });
     worker.addToRolePolicy(new PolicyStatement({ actions: ["sts:AssumeRole", "sts:TagSession"], resources: [role.roleArn] }));
     worker.addEnvironment(BILLING_ENV.workerRoleArn, role.roleArn);
-    return { webhook, queue, deadLetterQueue, worker, role };
+    return { webhook, queue, deadLetterQueue, seatQueue, seatDeadLetterQueue, worker, role };
   }
 
   /**

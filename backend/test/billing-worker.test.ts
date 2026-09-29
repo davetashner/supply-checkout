@@ -8,6 +8,7 @@ import type { SQSEvent } from "aws-lambda";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BillingMessage } from "../src/billing/webhook-handler.js";
 import { closingKey } from "../src/billing/closing.js";
+import type { SeatStripe, SeatSubscription } from "../src/billing/seats.js";
 import { createBillingWorker, noticeFor, parseMessage, type SubscriptionLike, subscriptionState, type WorkerStripe } from "../src/billing/worker.js";
 import { workerScopedDbs, type WorkerScope } from "../src/billing/worker-db.js";
 import { createWorkerHandler } from "../src/billing/worker-handler.js";
@@ -33,6 +34,7 @@ let subs: Map<string, SubscriptionLike>;
 let retrieves: string[];
 let cancels: { id: string; key: string }[];
 let updates: { id: string; params: Record<string, unknown>; key: string }[];
+let seatUpdates: { item: string; quantity: number; proration: string; key: string }[];
 let stripeDown: boolean;
 /** Runs as Stripe is asked for a subscription: after the worker read the team, before it writes. */
 let onRetrieve: (() => void) | undefined;
@@ -55,7 +57,10 @@ function obs(): Observability {
   };
 }
 
-function subscription(fields: Partial<SubscriptionLike> & { quantity?: number; lookupKey?: string | null; interval?: string } = {}): SubscriptionLike {
+/** A Stripe subscription as both the worker and the seat sync read it. */
+type Sub = SubscriptionLike & SeatSubscription;
+
+function subscription(fields: Partial<SubscriptionLike> & { quantity?: number; lookupKey?: string | null; interval?: string } = {}): Sub {
   const { quantity = 3, lookupKey = "supply_checkout_starter_monthly", interval = "month", ...rest } = fields;
   return {
     id: "sub_test_1",
@@ -64,9 +69,9 @@ function subscription(fields: Partial<SubscriptionLike> & { quantity?: number; l
     cancel_at_period_end: false,
     trial_end: NOW / 1000 + 13 * DAY_S,
     default_payment_method: null,
-    items: { data: [{ quantity, current_period_end: NOW / 1000 + 13 * DAY_S, price: { lookup_key: lookupKey, recurring: { interval } } }] },
+    items: { data: [{ id: "si_test_1", quantity, current_period_end: NOW / 1000 + 13 * DAY_S, price: { lookup_key: lookupKey, recurring: { interval } } }] },
     ...rest,
-  };
+  } as Sub;
 }
 
 beforeEach(() => {
@@ -82,6 +87,7 @@ beforeEach(() => {
   cancels = [];
   updates = [];
   onRetrieve = undefined;
+  seatUpdates = [];
   stripeDown = false;
   denied = [];
   scopes = [];
@@ -92,15 +98,15 @@ beforeEach(() => {
 });
 
 function build() {
-  const stripe: WorkerStripe = {
+  const stripe: WorkerStripe & SeatStripe = {
     subscriptions: {
-      async retrieve(id) {
+      async retrieve(id: string) {
         retrieves.push(id);
         onRetrieve?.();
         if (stripeDown) throw Object.assign(new Error("Stripe is down"), { name: "StripeConnectionError" });
         const found = subs.get(id);
         if (!found) throw new Error(`No such subscription ${id}`);
-        return found;
+        return found as SubscriptionLike & SeatSubscription;
       },
       async update(id, params, options) {
         if (stripeDown) throw Object.assign(new Error("Stripe is down"), { name: "StripeConnectionError" });
@@ -110,6 +116,16 @@ function build() {
       async cancel(id, _params, options) {
         cancels.push({ id, key: options.idempotencyKey });
         subs.set(id, { ...(subs.get(id) as SubscriptionLike), status: "canceled" });
+      },
+    },
+    subscriptionItems: {
+      async update(item, params, options) {
+        seatUpdates.push({ item, quantity: params.quantity, proration: params.proration_behavior, key: options.idempotencyKey });
+        for (const [id, sub] of subs) {
+          if (sub.items.data.some((i) => (i as { id?: string }).id === item)) {
+            subs.set(id, { ...sub, items: { data: sub.items.data.map((i) => ((i as { id?: string }).id === item ? { ...i, quantity: params.quantity } : i)) } });
+          }
+        }
       },
     },
   };
@@ -153,7 +169,11 @@ describe("applying a subscription", () => {
     expect(mails.sent).toEqual([]);
     expect(denied).toEqual([]);
     // The team comes from our link, then every team call is on a session tagged with it
-    expect(scopes).toEqual([{ eventId: "evt_test_1", stripeCustomer: CUSTOMER }, { eventId: "evt_test_1", stripeCustomer: CUSTOMER, teamId: TEAM }]);
+    // (twice: the event, then its seat check, which finds the team the same way)
+    const scoped = [{ eventId: "evt_test_1", stripeCustomer: CUSTOMER }, { eventId: "evt_test_1", stripeCustomer: CUSTOMER, teamId: TEAM }];
+    expect(scopes).toEqual([...scoped, ...scoped]);
+    // Three billed members, three seats: nothing to change
+    expect(seatUpdates).toEqual([]);
   });
 
   it("makes the team active when the purchase is paid (no trial)", async () => {
@@ -171,11 +191,15 @@ describe("applying a subscription", () => {
     const calls = retrieves.length;
     expect(await worker(message("customer.subscription.updated"))).toBe("duplicate");
     expect(meta()).toEqual(before);
-    expect(retrieves).toHaveLength(calls);
+    // Only the seat check reads it again (a retry after the seat update failed), and the seats are right
+    expect(retrieves).toHaveLength(calls + 1);
+    expect(seatUpdates).toEqual([]);
   });
 
   it("applies the latest subscription whatever the order: an older event after a newer one leaves the newer state", async () => {
     subs.set("sub_test_1", subscription({ status: "active", quantity: 4 }));
+    // Four billed members, so the seat sync leaves the quantity as it is
+    table.put({ PK: `TEAM#${TEAM}`, SK: "MEMBER#user-4", type: "member", teamId: TEAM, userId: "user-4", role: "contributor" });
     await worker(message("customer.subscription.updated", { eventId: "evt_new", created: NOW / 1000 }));
     await worker(message("customer.subscription.created", { eventId: "evt_old", created: NOW / 1000 - 60 }));
     expect(meta()).toMatchObject({ status: "active", seats: 4 });
@@ -313,7 +337,8 @@ describe("applying a subscription", () => {
     patchTeam({ status: "canceled" });
     retrieves = [];
     expect(await worker(message("checkout.session.completed", { eventId: "evt_test_4", subscription: "sub_test_3" }))).toBe("applied");
-    expect(retrieves).toEqual(["sub_test_3"]);
+    // Once to apply it, once for its seats
+    expect(retrieves).toEqual(["sub_test_3", "sub_test_3"]);
   });
 
   it("throws, recording nothing, when Stripe can't be reached, so the event is retried", async () => {
@@ -517,8 +542,9 @@ describe("the SQS handler", () => {
   it("reports a failed message and every later one in its group, and carries on with other groups", async () => {
     const seen: string[] = [];
     const handler = createWorkerHandler(async (m) => {
-      seen.push(m.eventId);
-      if (m.eventId === "evt_2") throw new Error("boom");
+      const id = "kind" in m ? m.id : m.eventId;
+      seen.push(id);
+      if (id === "evt_2") throw new Error("boom");
     }, obs());
     const body = (eventId: string, customer: string) => JSON.stringify(message("invoice.paid", { eventId, customer }));
     const result = await handler({ Records: [record("m1", "cus_a", body("evt_1", "cus_a")), record("m2", "cus_b", body("evt_2", "cus_b")), record("m3", "cus_b", body("evt_3", "cus_b")), record("m4", "cus_a", body("evt_4", "cus_a")), record("m5", "cus_c", "junk")] });

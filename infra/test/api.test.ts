@@ -532,8 +532,8 @@ describe("Stripe webhook, billing queue and worker (ADR 0009)", () => {
         RedrivePolicy: { deadLetterTargetArn: { "Fn::GetAtt": [Match.stringLikeRegexp("^BillingEventsDeadLetterQueue"), "Arn"] }, maxReceiveCount: 5 },
       });
       template.hasResourceProperties("AWS::SQS::Queue", { QueueName: "supply-checkout-prod-billing-events-dlq.fifo", FifoQueue: true, SqsManagedSseEnabled: true, MessageRetentionPeriod: 14 * 86400 });
-      // Both refuse anything but TLS
-      expect(resources(template, "AWS::SQS::QueuePolicy").filter(([, p]) => JSON.stringify(p.Properties).includes("aws:SecureTransport"))).toHaveLength(2);
+      // Both refuse anything but TLS, as do the seat sync queue and its dead-letter queue
+      expect(resources(template, "AWS::SQS::QueuePolicy").filter(([, p]) => JSON.stringify(p.Properties).includes("aws:SecureTransport"))).toHaveLength(4);
     }
   });
 
@@ -546,6 +546,43 @@ describe("Stripe webhook, billing queue and worker (ADR 0009)", () => {
     expect(env).toMatchObject({ STRIPE_MODE: "test", STRIPE_WEBHOOK_SECRET_ID: "supply-checkout/prod/stripe/test-webhook-secret", BILLING_QUEUE_URL: { Ref: expect.stringMatching(/^BillingEventsQueue/) } });
     expect(env).not.toHaveProperty("TABLE_NAME");
     expect(env).not.toHaveProperty("STRIPE_SECRET_ID");
+  });
+
+  it("lets the account function send seat syncs to their own queue, and never to the billing queue (supply-checkout-l50)", () => {
+    for (const region of [EAST, WEST]) {
+      const { template } = api(region);
+      const own = statements(template, "AccountFunctionRole");
+      const sqs = own.filter((s) => JSON.stringify(s.Action).includes("sqs:"));
+      expect(sqs).toEqual([expect.objectContaining({ Sid: "QueueSeatSyncs", Action: "sqs:SendMessage", Resource: { "Fn::GetAtt": [expect.stringMatching(/^SeatSyncsQueue/), "Arn"] } })]);
+      const env = (resources(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("AccountFunction"))?.[1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+      expect(env).toMatchObject({ SEAT_QUEUE_URL: { Ref: expect.stringMatching(/^SeatSyncsQueue/) } });
+      expect(env).not.toHaveProperty("BILLING_QUEUE_URL");
+      // Still no Stripe key
+      expect(JSON.stringify(own)).not.toContain("secretsmanager");
+      // Only the webhook sends to the billing queue
+      const senders = resources(template, "AWS::IAM::Policy").filter(([, p]) => (p.Properties.PolicyDocument as { Statement: { Action: unknown; Resource: unknown }[] }).Statement.some((s) => JSON.stringify(s.Action).includes("sqs:SendMessage") && /BillingEventsQueue/.test(JSON.stringify(s.Resource))));
+      expect(senders.map(([id]) => id)).toEqual([expect.stringMatching(/^BillingWebhookFunctionRole/)]);
+    }
+  });
+
+  it("has a FIFO seat sync queue with SSE and TLS only, redriving to its own dead-letter queue, that the worker reads and knows by ARN", () => {
+    for (const region of [EAST, WEST]) {
+      const { template } = api(region);
+      template.hasResourceProperties("AWS::SQS::Queue", {
+        QueueName: "supply-checkout-prod-seat-syncs.fifo",
+        FifoQueue: true,
+        SqsManagedSseEnabled: true,
+        VisibilityTimeout: 180,
+        RedrivePolicy: { deadLetterTargetArn: { "Fn::GetAtt": [Match.stringLikeRegexp("^SeatSyncsDeadLetterQueue"), "Arn"] }, maxReceiveCount: 5 },
+      });
+      template.hasResourceProperties("AWS::SQS::Queue", { QueueName: "supply-checkout-prod-seat-syncs-dlq.fifo", FifoQueue: true, SqsManagedSseEnabled: true, MessageRetentionPeriod: 14 * 86400 });
+      const mappings = resources(template, "AWS::Lambda::EventSourceMapping").map(([, m]) => m.Properties);
+      expect(mappings.filter((m) => JSON.stringify(m.EventSourceArn).includes("SeatSyncsQueue"))).toEqual([
+        expect.objectContaining({ BatchSize: 1, FunctionResponseTypes: ["ReportBatchItemFailures"], FunctionName: { Ref: expect.stringMatching(/^BillingWorkerFunction/) } }),
+      ]);
+      const env = (resources(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("BillingWorkerFunction"))?.[1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+      expect(env).toMatchObject({ SEAT_QUEUE_ARN: { "Fn::GetAtt": [expect.stringMatching(/^SeatSyncsQueue/), "Arn"] } });
+    }
   });
 
   it("runs the worker from the queue one event at a time, reporting failures per message", () => {

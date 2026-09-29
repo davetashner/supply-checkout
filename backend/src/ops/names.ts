@@ -57,8 +57,23 @@ export const GROUP_WATCH_SILENT_ALARM_MINUTES = 15;
 /** The SSM parameter where the operator group watch keeps the group as it last saw it. */
 export const operatorGroupSnapshotParameter = (envName: string) => `/supply-checkout/${envName}/observability/operator-group-snapshot`;
 
-/** What the CDK app puts in that parameter; the watch's first run replaces it without counting anything. */
+/** What the CDK app puts in that parameter; the watch counts finding it as a reset, which pages (supply-checkout-3sv.5). */
 export const INITIAL_GROUP_SNAPSHOT = "none";
+
+/**
+ * When the nightly seat reconciliation runs (supply-checkout-l50): 07:00 UTC,
+ * the small hours in the US. It queues one seat sync per open team with a
+ * Stripe customer on the seat sync queue (billing/seats.ts), in batches of
+ * SEAT_RECONCILE_BATCH, the most SQS takes in one call.
+ */
+export const SEAT_RECONCILE_HOUR_UTC = 7;
+export const SEAT_RECONCILE_BATCH = 10;
+
+/**
+ * No SeatReconcileTeams sample for this many days alarms ("Seat
+ * reconciliation not running"): two nightly runs missed.
+ */
+export const SEAT_RECONCILE_SILENT_ALARM_DAYS = 2;
 
 /** Functions the observability stack names. */
 export const opsResourceNames = (envName: string) => ({
@@ -68,6 +83,7 @@ export const opsResourceNames = (envName: string) => ({
   operatorAuditWatchFunction: `supply-checkout-${envName}-operator-audit-watch`,
   deletionRecordsWatchFunction: `supply-checkout-${envName}-deletion-records-watch`,
   operatorGroupWatchFunction: `supply-checkout-${envName}-operator-group-watch`,
+  seatReconcileFunction: `supply-checkout-${envName}-seat-reconcile`,
 });
 
 /** Environment variables the checks read. */
@@ -78,4 +94,6 @@ export const OPS_ENV = {
   opsUserPoolId: "OPS_USER_POOL_ID",
   /** The operator group watch's SSM parameter. */
   groupSnapshotParameter: "GROUP_SNAPSHOT_PARAMETER",
+  /** The seat sync queue's URL (the seat reconciliation). */
+  seatQueueUrl: "SEAT_QUEUE_URL",
 } as const;
