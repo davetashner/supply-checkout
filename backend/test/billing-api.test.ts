@@ -5,7 +5,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import type { BillingScope, DbForBilling } from "../src/api/billing-db.js";
-import { type BillingStripe, type CheckoutSessionParams, createBillingHandler, idempotencyKey, type PortalSessionParams, trialEnd } from "../src/api/billing-handler.js";
+import { type BillingStripe, type CheckoutSessionParams, createBillingHandler, idempotencyKey, INVOICE_PAGE, type InvoiceLike, type PortalSessionParams, trialEnd } from "../src/api/billing-handler.js";
 import type { CognitoUser } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
@@ -70,6 +70,10 @@ function fakeStripe() {
       { id: "bpc_ours", active: true, metadata: { ...PORTAL_METADATA } },
     ] as PortalConfigurationLike[],
     configurationLists: 0,
+    /** The customers' invoices in Stripe, newest first. */
+    invoices: [] as (InvoiceLike & { customer: string })[],
+    invoiceLists: [] as { customer: string; limit: number }[],
+    invoiceError: undefined as Error | undefined,
   };
   const client: BillingStripe & PortalConfigurationLister = {
     billingPortal: {
@@ -86,6 +90,14 @@ function fakeStripe() {
           state.portalSessions.push(params);
           return { id: `bps_test_${state.portalSessions.length}`, url: `https://billing.stripe.test/p/session/bps_test_${state.portalSessions.length}` };
         },
+      },
+    },
+    invoices: {
+      async list(params) {
+        if (state.invoiceError) throw state.invoiceError;
+        state.invoiceLists.push(params);
+        const mine = state.invoices.filter((i) => i.customer === params.customer);
+        return { data: mine.slice(0, params.limit), has_more: mine.length > params.limit };
       },
     },
     subscriptions: {
@@ -254,7 +266,8 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
       cancel_url: `${APP}/?billing=canceled&team=${TEAM}`,
       metadata: { teamId: TEAM },
       payment_method_collection: "if_required",
-      billing_address_collection: "auto",
+      billing_address_collection: "required",
+      tax_id_collection: { enabled: true },
       customer_update: { address: "auto", name: "auto" },
       subscription_data: {
         metadata: { teamId: TEAM, plan: "starter" },
@@ -514,25 +527,29 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
 describe("two-step sign-in for billing (supply-checkout-8jc.12)", () => {
   const portal = (request: Request = {}) => checkout({ routeKey: routeKey(BILLING_ROUTES[1] as (typeof BILLING_ROUTES)[number]), rawBody: "", ...request });
 
-  it("refuses an owner without an authenticator app on both routes, before the body is read or Stripe is called", async () => {
+  const invoices = (request: Request = {}) => checkout({ routeKey: routeKey(BILLING_ROUTES.find((r) => r.action === "listInvoices") as (typeof BILLING_ROUTES)[number]), rawBody: "", ...request });
+
+  it("refuses an owner without an authenticator app on every route, before the body is read or Stripe is called", async () => {
     patchTeam({ stripeCustomerId: "cus_linked" });
     cognito[OWNER] = { totp: false, federated: false };
-    for (const [name, send] of [["checkout", checkout], ["portal", portal]] as const) {
+    for (const [name, send] of [["checkout", checkout], ["portal", portal], ["invoices", invoices]] as const) {
       const { status, body } = await send({ rawBody: name === "checkout" ? "not json" : "", headers: { "idempotency-key": "" } });
       expect(status, name).toBe(403);
       expect(body.error, name).toMatchObject({ code: "permission_denied", reason: "mfa_required" });
       expect(body.error.message, name).toMatch(/two-step sign-in/);
     }
-    expect(getUsers).toEqual([`token-${OWNER}`, `token-${OWNER}`]);
+    expect(getUsers).toEqual([`token-${OWNER}`, `token-${OWNER}`, `token-${OWNER}`]);
     expect(stripe.state.customers).toEqual([]);
     expect(stripe.state.sessions).toEqual([]);
     expect(stripe.state.portalSessions).toEqual([]);
+    expect(stripe.state.invoiceLists).toEqual([]);
   });
 
   it("lets an owner through with TOTP on, and a Google or Apple owner without it", async () => {
     expect((await checkout()).status).toBe(201);
     cognito[OWNER] = { totp: false, federated: true };
     expect((await portal()).status).toBe(201);
+    expect((await invoices()).status).toBe(200);
   });
 
   it("checks membership and role first, so anyone else gets the same answer as before, and Cognito isn't asked", async () => {
@@ -677,6 +694,132 @@ describe("POST /teams/{teamId}/billing/portal", () => {
   it("refuses tokens from another issuer before anything else", async () => {
     const exp = String(Math.floor(now / 1000) + 600);
     expect((await portal({ claims: { sub: OWNER, token_use: "access", exp, iss: "https://elsewhere.example" } })).status).toBe(401);
+    expect(scopes).toEqual([]);
+  });
+});
+
+describe("GET /teams/{teamId}/billing/invoices (supply-checkout-eja)", () => {
+  const INVOICES_ROUTE = routeKey(BILLING_ROUTES.find((r) => r.action === "listInvoices") as (typeof BILLING_ROUTES)[number]);
+  const invoices = (request: Request = {}) => checkout({ routeKey: INVOICES_ROUTE, rawBody: "", ...request });
+  const at = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  const invoice = (n: number, fields: Partial<InvoiceLike> = {}, customer = "cus_test_9") => ({
+    id: `in_test_${n}`,
+    customer,
+    number: `ABCD1234-000${n}`,
+    status: "paid" as const,
+    created: at(`2026-0${n}-01T00:00:00Z`),
+    currency: "usd",
+    total: 900 + n,
+    amount_due: 900 + n,
+    amount_paid: 900 + n,
+    hosted_invoice_url: `https://invoice.stripe.com/i/acct_x/test_${n}`,
+    invoice_pdf: `https://pay.stripe.com/invoice/acct_x/test_${n}/pdf`,
+    ...fields,
+  });
+
+  beforeEach(() => {
+    patchTeam({ stripeCustomerId: "cus_test_9", stripeSubscriptionId: "sub_test_1", status: "active", plan: "starter" });
+  });
+
+  it("lists the team's own invoices from Stripe, newest first, with Stripe's hosted page and PDF", async () => {
+    stripe.state.invoices = [invoice(3, { status: "open", amount_paid: 0 }), invoice(2), invoice(1, { number: null }), invoice(4, {}, "cus_test_b")];
+    const { status, body } = await invoices();
+    expect(status).toBe(200);
+    expect(body).toEqual({
+      invoices: [
+        { id: "in_test_3", number: "ABCD1234-0003", status: "open", createdAt: "2026-03-01T00:00:00.000Z", currency: "usd", total: 903, amountDue: 903, amountPaid: 0, hostedUrl: "https://invoice.stripe.com/i/acct_x/test_3", pdfUrl: "https://pay.stripe.com/invoice/acct_x/test_3/pdf" },
+        { id: "in_test_2", number: "ABCD1234-0002", status: "paid", createdAt: "2026-02-01T00:00:00.000Z", currency: "usd", total: 902, amountDue: 902, amountPaid: 902, hostedUrl: "https://invoice.stripe.com/i/acct_x/test_2", pdfUrl: "https://pay.stripe.com/invoice/acct_x/test_2/pdf" },
+        { id: "in_test_1", number: null, status: "paid", createdAt: "2026-01-01T00:00:00.000Z", currency: "usd", total: 901, amountDue: 901, amountPaid: 901, hostedUrl: "https://invoice.stripe.com/i/acct_x/test_1", pdfUrl: "https://pay.stripe.com/invoice/acct_x/test_1/pdf" },
+      ],
+      hasMore: false,
+    });
+    // Only the path's team's customer, a page of them
+    expect(stripe.state.invoiceLists).toEqual([{ customer: "cus_test_9", limit: INVOICE_PAGE }]);
+    // Read-only: handles scoped to the path's team only, and nothing written
+    expect(scopes).toEqual([{ teamId: TEAM }, { teamId: TEAM }]);
+    expect(denied).toEqual([]);
+    expect(logs.find((l) => l[0] === "Invoices listed")?.[1]).toEqual({ teamId: TEAM, count: 3 });
+    expect(JSON.stringify(logs)).not.toContain("cus_test_9");
+  });
+
+  it("leaves out drafts, which have no page yet, and says when there are older ones", async () => {
+    stripe.state.invoices = [invoice(9, { status: "draft", hosted_invoice_url: null, invoice_pdf: null }), ...Array.from({ length: INVOICE_PAGE }, (_, i) => invoice(1, { id: `in_many_${i}` }))];
+    const { body } = await invoices();
+    expect(body.invoices).toHaveLength(INVOICE_PAGE - 1);
+    expect(body.invoices.map((i: { status: string }) => i.status)).not.toContain("draft");
+    expect(body.hasMore).toBe(true);
+  });
+
+  it("gives no link that isn't Stripe's own https page", async () => {
+    stripe.state.invoices = [
+      invoice(1, { hosted_invoice_url: "javascript:alert(1)", invoice_pdf: "http://pay.stripe.com/x" }),
+      invoice(2, { hosted_invoice_url: "https://invoice.stripe.com.evil.example/x", invoice_pdf: "not a url" }),
+      invoice(3, { hosted_invoice_url: undefined, invoice_pdf: "https://stripe.com/x", status: null }),
+      invoice(4, { hosted_invoice_url: "https://evilstripe.com/x", invoice_pdf: null, status: "void" }),
+    ];
+    const { body } = await invoices();
+    expect(body.invoices.map((i: { id: string; status: string; hostedUrl: unknown; pdfUrl: unknown }) => [i.id, i.status, i.hostedUrl, i.pdfUrl])).toEqual([
+      ["in_test_1", "paid", null, null],
+      ["in_test_2", "paid", null, null],
+      ["in_test_4", "void", null, null],
+    ]);
+  });
+
+  it("lists them for a team whose subscription ended", async () => {
+    patchTeam({ status: "canceled" });
+    stripe.state.invoices = [invoice(1)];
+    expect((await invoices()).body.invoices).toHaveLength(1);
+  });
+
+  it.each([
+    [CONTRIBUTOR, "owners_only"],
+    [VIEWER, "owners_only"],
+    [OUTSIDER, "not_member"],
+  ])("refuses %s (%s) before calling Stripe", async (user, reason) => {
+    const { status, body } = await invoices({ user });
+    expect(status).toBe(403);
+    expect(body.error).toMatchObject({ code: "permission_denied", reason });
+    expect(stripe.state.invoiceLists).toHaveLength(0);
+  });
+
+  it("never lists another team's invoices: the owner of team-b gets only team-b's", async () => {
+    patchTeam({ stripeCustomerId: "cus_test_b" }, "team-b");
+    stripe.state.invoices = [invoice(1), invoice(2, {}, "cus_test_b")];
+    expect((await invoices({ user: OUTSIDER })).status).toBe(403);
+    const { status, body } = await invoices({ user: OUTSIDER, teamId: "team-b" });
+    expect(status).toBe(200);
+    expect(body.invoices.map((i: { id: string }) => i.id)).toEqual(["in_test_2"]);
+    expect(stripe.state.invoiceLists.map((l) => l.customer)).toEqual(["cus_test_b"]);
+  });
+
+  it("answers no_billing_account for a team with no Stripe customer yet, or one that isn't one", async () => {
+    patchTeam({ stripeCustomerId: undefined, stripeSubscriptionId: undefined, status: "trialing" });
+    expect((await invoices()).body.error).toMatchObject({ code: "aborted", reason: "no_billing_account" });
+    patchTeam({ stripeCustomerId: "cus bad/../x" });
+    expect((await invoices()).body.error.reason).toBe("no_billing_account");
+    expect(stripe.state.invoiceLists).toHaveLength(0);
+  });
+
+  it("refuses a closed team", async () => {
+    patchTeam({ closedAt: new Date(now - DAY).toISOString(), purgeAfter: new Date(now + 29 * DAY).toISOString() });
+    const { status, body } = await invoices();
+    expect(status).toBe(403);
+    expect(body.error.reason).toBe("team_closed");
+    expect(stripe.state.invoiceLists).toHaveLength(0);
+  });
+
+  it("fails with 500, counts it apart from the portal and logs no Stripe message when Stripe fails", async () => {
+    stripe.state.invoiceError = new Stripe.errors.StripeInvalidRequestError({ type: "invalid_request_error", message: "No such customer: 'cus_test_9'", code: "resource_missing", statusCode: 400, requestId: "req_3" } as never);
+    const { status } = await invoices();
+    expect(status).toBe(500);
+    expect(counts).toEqual({ [BusinessMetric.InvoiceListErrors]: 1 });
+    expect(logs.find((l) => l[0] === "Invoices failed")?.[1]).toEqual({ teamId: TEAM, type: "StripeInvalidRequestError", code: "resource_missing", status: 400, requestId: "req_3" });
+    expect(JSON.stringify(logs)).not.toContain("cus_test_9");
+  });
+
+  it("refuses tokens from another issuer before anything else", async () => {
+    const exp = String(Math.floor(now / 1000) + 600);
+    expect((await invoices({ claims: { sub: OWNER, token_use: "access", exp, iss: "https://elsewhere.example" } })).status).toBe(401);
     expect(scopes).toEqual([]);
   });
 });
