@@ -1479,7 +1479,7 @@
           ],
           "Version": "2012-10-17"
         },
-        "Description": "Assumed by the billing function per request, tagged with the team and its Stripe customer: reads the team, and links the customer",
+        "Description": "Assumed by the billing function per request, tagged with the team and its Stripe customer: reads the team, counts its members' roles, and links the customer",
         "MaxSessionDuration": 3600,
         "Policies": [
           {
@@ -1512,6 +1512,42 @@
                     ]
                   },
                   "Sid": "TeamReadOnly"
+                },
+                {
+                  "Action": "dynamodb:Query",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "TEAM#${aws:PrincipalTag/teamId}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "role"
+                      ]
+                    },
+                    "StringEquals": {
+                      "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-west-2:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "TeamMemberRolesOnly"
                 },
                 {
                   "Action": "dynamodb:UpdateItem",

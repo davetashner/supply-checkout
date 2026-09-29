@@ -7,7 +7,7 @@ import { parse } from "yaml";
 import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, REFRESH_COOKIE, WEBHOOK_ROUTES } from "../src/api/routes.js";
 import { BILLING_EVENTS } from "../src/billing/names.js";
 import { BILLING_INTERVALS, CATALOG } from "../src/billing/catalog.js";
-import { MEMBERS_PER_TEAM, RESERVED_FIELDS } from "../src/data/index.js";
+import { RESERVED_FIELDS } from "../src/data/index.js";
 
 const text = readFileSync(new URL("../../docs/api/openapi.yaml", import.meta.url), "utf8");
 const spec = parse(text) as {
@@ -64,11 +64,11 @@ describe("OpenAPI description", () => {
     }
   });
 
-  it("offers exactly the catalog's plans and intervals at checkout", () => {
+  it("offers exactly the catalog's plans and intervals at checkout, and no seat count (the server's, supply-checkout-8jc.20)", () => {
     const body = (spec.paths["/teams/{teamId}/billing/checkout"]?.post as unknown as { requestBody: { content: { "application/json": { schema: { properties: Record<string, { enum?: string[]; maximum?: number }> } } } } }).requestBody.content["application/json"].schema.properties;
     expect(body.plan?.enum).toEqual(CATALOG.plans.map((p) => p.plan));
     expect(body.interval?.enum).toEqual([...BILLING_INTERVALS]);
-    expect(body.seats?.maximum).toBe(MEMBERS_PER_TEAM);
+    expect(Object.keys(body)).toEqual(["plan", "interval"]);
   });
 
   it("names every Stripe event the webhook handles", () => {

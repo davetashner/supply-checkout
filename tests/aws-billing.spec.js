@@ -43,9 +43,10 @@ test("an owner sees why the team is read-only, and subscribes again through Stri
   await expect(link).toHaveAttribute("href", STRIPE);
   await expect(link).toBeFocused();
   const calls = backend.requests("POST", CHECKOUT);
+  // No seat count: the server bills the team's owners and editors (supply-checkout-8jc.20)
   expect(calls.map((c) => c.body)).toEqual([
-    { plan: "starter", interval: "month", seats: 4 },
-    { plan: "starter", interval: "month", seats: 4 },
+    { plan: "starter", interval: "month" },
+    { plan: "starter", interval: "month" },
   ]);
   expect(calls[0].headers["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/);
   expect(calls[1].headers["idempotency-key"]).toBe(calls[0].headers["idempotency-key"]);
@@ -56,8 +57,8 @@ test("an owner whose team already subscribed meanwhile is told to reload", async
   backend.on("POST", CHECKOUT, error(409, "aborted", { reason: "already_subscribed" }));
   await bar(page).getByRole("button", { name: "Subscribe" }).click();
   await expect(page.locator("#toast")).toHaveText("This team already has a subscription. Reload the page to see it.");
-  // At least one seat, for a team from before the member count
-  expect(backend.requests("POST", CHECKOUT)[0].body.seats).toBe(1);
+  // No seat count, whatever the team's member count
+  expect(backend.requests("POST", CHECKOUT)[0].body).toEqual({ plan: "starter", interval: "month" });
 });
 
 test("a contributor is told to ask an owner, with no way to subscribe", async ({ page }) => {
