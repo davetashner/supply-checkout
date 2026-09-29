@@ -25,7 +25,7 @@ The web app and the demo are static builds served by one CloudFront distribution
 - **WAF** (CloudFront scope): a rate limit of 2,000 requests per IP per 5 minutes, then the AWS managed IP reputation, common and known-bad-inputs rule groups.
 - **Caching.** `scripts/publish-web.mjs` uploads `assets/` with `Cache-Control: public, max-age=31536000, immutable`, and everything else (`index.html`) with `max-age=0, must-revalidate` for browsers and `s-maxage` for the edge, which is safe because a release never changes. Source maps aren't uploaded.
 
-**Publishing.** `scripts/publish-web.mjs` reads the bucket and the KeyValueStore from the SSM parameters under `/supply-checkout/<env>/web/`, so it needs the web stack deployed and an AWS CLI v2 login:
+**Publishing.** For a release of the app, `npm run deploy -- app` builds it, publishes it to `app.`, makes it live and runs `check-router`, from an up-to-date, clean `main` ([Deploying](infrastructure.md#deploying)). The commands below are the steps it runs, and the rest (the demo, rollbacks, status). `scripts/publish-web.mjs` reads the bucket and the KeyValueStore from the SSM parameters under `/supply-checkout/<env>/web/`, so it needs the web stack deployed and an AWS CLI v2 login:
 
 ```bash
 npm run publish:demo                                            # build:demo, upload as demo-<time>-<commit>, make it live at /demo/
