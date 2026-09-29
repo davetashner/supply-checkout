@@ -14,7 +14,7 @@ These terms are an agreement between you and **[COMPANY LEGAL NAME]**, a [STATE]
 
 - You accept these terms by ticking the box at sign-up. We record the time you accepted and the version you accepted.
 - If we change these terms in a way that matters, we will email the team owner and show a notice in the app at least 30 days before the change takes effect. Continuing to use the Service after that date means you accept the new terms. If you don't accept them, you can cancel before they take effect.
-- Our [Acceptable Use Policy](acceptable-use.md) and [Privacy Policy]([PRIVACY POLICY LINK]) are part of these terms.
+- Our [Acceptable Use Policy](acceptable-use.md) and [Privacy Policy](privacy-policy.md) are part of these terms.
 
 ## 2. Who can use the Service
 
