@@ -1299,7 +1299,8 @@ describe("operator pool alerts (ADR 0015)", () => {
     // The operator audit watch's log group and the operator group watch's (supply-checkout-3sv.5)
     const groups = ["OperatorAuditWatchLogs", "OperatorGroupWatchLogs"].map((prefix) => ({ Ref: Object.keys(t.findResources("AWS::Logs::LogGroup")).find((id) => id.startsWith(prefix)) }));
     expect(groups.every((g) => g.Ref)).toBe(true);
-    const identifier = groups.flatMap((name) => [name, { wildcard: { "Fn::Join": ["", ["*:log-group:", name]] } }, { wildcard: { "Fn::Join": ["", ["*:log-group:", name, ":*"]] } }]);
+    // One wildcard per group: two per group with both groups made EventBridge refuse the rule as too complex on deploy
+    const identifier = groups.flatMap((name) => [name, { wildcard: { "Fn::Join": ["", ["*:log-group:", name, "*"]] } }]);
     const tableArn = { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]] };
     const streamPrefix = { prefix: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app/stream/"]] } };
     const table = ["supply-checkout-prod-app", tableArn];

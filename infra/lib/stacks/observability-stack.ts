@@ -467,7 +467,10 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         $or: [
           // DeleteLogGroup names the group; the transformer and data protection calls take its name or ARN
           ...calls({ always: AUDIT_WATCH_LOG_EVENTS.always }, { requestParameters: { logGroupName: logGroups } }),
-          ...calls({ outsideDeploys: AUDIT_WATCH_LOG_EVENTS.outsideDeploys }, { requestParameters: { logGroupIdentifier: logGroups.flatMap((g) => [g, { wildcard: `*:log-group:${g}` }, { wildcard: `*:log-group:${g}:*` }]) } }),
+          // One wildcard per group covers the ARN with or without ":*". EventBridge refuses a rule as "too complex" with two
+          // per group once there are two groups, because the generated names repeat long sequences after each wildcard
+          // (it only checks this when the rule is saved, so tests can't see it). It also matches a longer name, which only over-alerts.
+          ...calls({ outsideDeploys: AUDIT_WATCH_LOG_EVENTS.outsideDeploys }, { requestParameters: { logGroupIdentifier: logGroups.flatMap((g) => [g, { wildcard: `*:log-group:${g}*` }]) } }),
           ...calls({ always: ["PutAccountPolicy"] }, { requestParameters: { policyType: [...LOG_ACCOUNT_POLICY_TYPES] } }),
         ],
       },
