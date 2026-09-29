@@ -130,3 +130,31 @@ export function configFromContext(
     stripeMode: String(node.tryGetContext("stripeMode") ?? "test") as StripeMode,
   });
 }
+
+/**
+ * The GitHub repository whose Actions workflows may deploy (supply-checkout-5ik),
+ * as `owner/name`. Override it with `-c githubRepository=owner/name` (a fork,
+ * or after a transfer or rename). It's public, so it's fine to commit.
+ */
+export const DEFAULT_GITHUB_REPOSITORY = "davetashner/supply-checkout";
+
+/**
+ * The GitHub environment a deploy job must run in to assume the deploy role
+ * (ADR 0012). Its protection rules on GitHub (who may approve, which branches
+ * and tags may use it) are what stand between a workflow and prod.
+ */
+export const GITHUB_DEPLOY_ENVIRONMENT = "production";
+
+// GitHub's own rules: an owner is 1-39 letters, digits or single dashes, not
+// starting with a dash; a repository name is letters, digits, `.`, `_` and `-`.
+// Nothing else, so the value can't widen the role's `sub` condition.
+const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
+
+/** The repository from `-c githubRepository=owner/name`, or DEFAULT_GITHUB_REPOSITORY. */
+export function githubRepositoryFromContext(node: ContextReader): string {
+  const value = String(node.tryGetContext("githubRepository") ?? DEFAULT_GITHUB_REPOSITORY);
+  if (!GITHUB_REPOSITORY_PATTERN.test(value)) {
+    throw new Error(`githubRepository must be a GitHub owner/name like octo-org/octo-repo (got "${value}")`);
+  }
+  return value;
+}

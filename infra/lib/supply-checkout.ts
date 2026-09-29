@@ -10,6 +10,7 @@ import type { SupplyCheckoutStack } from "./stacks/base-stack.js";
 import { DataStack } from "./stacks/data-stack.js";
 import { DomainStack } from "./stacks/domain-stack.js";
 import { EmailStack } from "./stacks/email-stack.js";
+import { GithubDeployStack } from "./stacks/github-deploy-stack.js";
 import { IdentityStack } from "./stacks/identity-stack.js";
 import { ObservabilityStack } from "./stacks/observability-stack.js";
 import { RealtimeStack } from "./stacks/realtime-stack.js";
@@ -146,4 +147,18 @@ export function addBackupAccount(app: App, config: DeploymentConfig): BackupAcco
   Tags.of(app).add("managed-by", "cdk");
   Validations.of(app).addPlugins(new AwsSolutionsChecks(app, { verbose: true }));
   return new BackupAccountStack(app, config, config.primaryRegion);
+}
+
+/**
+ * GitHub Actions' OIDC provider and deploy role (supply-checkout-5ik), in the
+ * primary region. Only bin/github-deploy.ts calls this, with the workload
+ * account's profile; the main app never includes it, so a pipeline deploying
+ * the main app never changes the role it deploys with by accident. That isn't
+ * a security boundary (see GithubDeployStack).
+ */
+export function addGithubDeploy(app: App, config: DeploymentConfig, repository: string): GithubDeployStack {
+  Tags.of(app).add("app", "supply-checkout");
+  Tags.of(app).add("managed-by", "cdk");
+  Validations.of(app).addPlugins(new AwsSolutionsChecks(app, { verbose: true }));
+  return new GithubDeployStack(app, config, config.primaryRegion, repository);
 }

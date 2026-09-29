@@ -6,8 +6,8 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import { Bucket } from "aws-cdk-lib/aws-s3";
 import { AwsSolutionsChecks } from "cdk-nag";
 import { describe, expect, it } from "vitest";
-import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
-import { addBackupAccount, addSupplyCheckout, type SupplyCheckoutStacks } from "../lib/supply-checkout.js";
+import { APPROVED_REGIONS, DEFAULT_GITHUB_REPOSITORY, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
+import { addBackupAccount, addGithubDeploy, addSupplyCheckout, type SupplyCheckoutStacks } from "../lib/supply-checkout.js";
 import { OPS_INDEX_ATTRIBUTES } from "../../backend/src/data/schema.js";
 
 // No account: tests synth account-agnostic templates, exactly as CI does, so
@@ -150,7 +150,10 @@ describe("template snapshots", () => {
   // The backup account's vault stack is a separate app (bin/backup-account.ts)
   const backupAccountApp = new App({ context: { "aws:cdk:version-reporting": false } });
   const backupAccount = addBackupAccount(backupAccountApp, config);
-  const snapshotted: Stack[] = [...stacks.all, backupAccount];
+  // So is GitHub Actions' deploy role (bin/github-deploy.ts)
+  const githubDeployApp = new App({ context: { "aws:cdk:version-reporting": false } });
+  const githubDeploy = addGithubDeploy(githubDeployApp, config, DEFAULT_GITHUB_REPOSITORY);
+  const snapshotted: Stack[] = [...stacks.all, backupAccount, githubDeploy];
   const snapshots = join(dirname(fileURLToPath(import.meta.url)), "__snapshots__");
 
   it.each(snapshotted.map((stack) => [stack.stackName, stack] as const))("%s matches its snapshot", async (name, stack) => {

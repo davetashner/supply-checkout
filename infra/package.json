@@ -17,7 +17,9 @@
     "diff": "cdk diff",
     "deploy": "cdk deploy --all",
     "deploy:backup-account": "cdk deploy --app \"npx tsx bin/backup-account.ts\" -o cdk.out/backup-account",
-    "check": "npm run lint && npm test && npm run synth && npm run synth:all-regions && npm run synth:backup-account",
+    "synth:github-deploy": "cdk synth --quiet --app \"npx tsx bin/github-deploy.ts\" -o cdk.out/github-deploy",
+    "deploy:github-deploy": "cdk deploy --app \"npx tsx bin/github-deploy.ts\" -o cdk.out/github-deploy",
+    "check": "npm run lint && npm test && npm run synth && npm run synth:all-regions && npm run synth:backup-account && npm run synth:github-deploy",
     "cdk": "cdk"
   },
   "dependencies": {
