@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.4.0](https://github.com/davetashner/supply-checkout/compare/v1.3.0...v1.4.0) (2026-09-29)
+
+
+### Features
+
+* add the GitHub Actions OIDC deploy role for prod ([#222](https://github.com/davetashner/supply-checkout/issues/222)) ([ea6d60e](https://github.com/davetashner/supply-checkout/commit/ea6d60e980e51aa718ba013d2c2ff41da780abff))
+* alarm when the web app is down: CloudFront 5xx rate and router errors ([#192](https://github.com/davetashner/supply-checkout/issues/192)) ([280816c](https://github.com/davetashner/supply-checkout/commit/280816c5b29b89a8241aa87177fe70c8f178f873))
+* cancel a closed team's Stripe subscription and delete its customer at purge ([#210](https://github.com/davetashner/supply-checkout/issues/210)) ([bffb3f5](https://github.com/davetashner/supply-checkout/commit/bffb3f5f2bb5e95cfe65548ee8e9a5d516a647a5))
+* check team entitlements against Stripe nightly and add the billing DLQ replay runbook ([#229](https://github.com/davetashner/supply-checkout/issues/229)) ([d20df16](https://github.com/davetashner/supply-checkout/commit/d20df16e8f427b0b5af58e01d9d59541cb8dee7e))
+* keep the seat quantity in sync with billed team members ([#213](https://github.com/davetashner/supply-checkout/issues/213)) ([124f1cf](https://github.com/davetashner/supply-checkout/commit/124f1cffd549d1ac79fad403faa7aac3858ad622))
+* list a team's invoices in the app, from Stripe ([#231](https://github.com/davetashner/supply-checkout/issues/231)) ([d9ee646](https://github.com/davetashner/supply-checkout/commit/d9ee6469089690904eba0d5763606ce3bf588e02))
+* require two-step sign-in for billing, with TOTP setup in the app ([#202](https://github.com/davetashner/supply-checkout/issues/202)) ([91242b8](https://github.com/davetashner/supply-checkout/commit/91242b87a63eb6412b3826b91c75a39fbf00acdf))
+
+
+### Bug Fixes
+
+* alert on operator group changes with a scheduled watch ([#209](https://github.com/davetashner/supply-checkout/issues/209)) ([19b51ae](https://github.com/davetashner/supply-checkout/commit/19b51ae0bc08094d128d4552701fd4ae4ee3e97b))
+* harden the seat sync from the PR [#213](https://github.com/davetashner/supply-checkout/issues/213) review ([#233](https://github.com/davetashner/supply-checkout/issues/233)) ([2708316](https://github.com/davetashner/supply-checkout/commit/270831614c4bb45ea9d27033312241159e5617f2))
+* keep the operator log-group rule inside EventBridge's complexity limit ([#241](https://github.com/davetashner/supply-checkout/issues/241)) ([632a05f](https://github.com/davetashner/supply-checkout/commit/632a05f8f8dc7a3cedc5d43a36859b746242ebd1))
+* set Checkout's seat quantity from billed members on the server ([#224](https://github.com/davetashner/supply-checkout/issues/224)) ([cb8e2d3](https://github.com/davetashner/supply-checkout/commit/cb8e2d398b78e675500f2dbe59b771b3282ebb6b))
+
 ## [1.3.0](https://github.com/davetashner/supply-checkout/compare/v1.2.0...v1.3.0) (2026-09-28)
 
 
