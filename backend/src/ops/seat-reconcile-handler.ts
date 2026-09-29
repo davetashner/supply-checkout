@@ -5,9 +5,9 @@
 // membership change queues a seat sync (billing/seats.ts). This catches what
 // that missed (a sync that couldn't be queued, one that went to the
 // dead-letter queue, a change made outside the account API such as a restore
-// removing a deleted user). It lists the open teams with a Stripe customer
-// from the operators' index (listTeamsToReconcile, reading only keys, the
-// customer, closure and status) and queues a seat sync with reason
+// removing a deleted user). It lists the open teams with a Stripe customer,
+// ended or not, from the operators' index (listTeamsToReconcile, reading only
+// keys, the customer, closure and status) and queues a seat sync with reason
 // `reconcile` for each on the seat sync queue. The billing worker does the
 // comparison: where the quantity is wrong it counts SeatQuantityDrift (the
 // "Seat counts drifting" alarm), logs the IDs and both numbers, and fixes it.
@@ -26,8 +26,12 @@
 // earlier run. If some messages aren't accepted, the rest still go, and the run
 // throws at the end (the Lambda errors metric), naming how many.
 //
-// When the nightly entitlement reconciliation (supply-checkout-8jc.9) lands,
-// it can queue its own checks from this same listing, or fold this in.
+// The same message also carries the nightly entitlement check
+// (supply-checkout-8jc.9, billing/entitlements.ts): for a seat sync with
+// reason `reconcile` the worker first compares the team's subscription,
+// status, plan and seats with Stripe's, and fixes and counts any drift
+// (EntitlementDrift, "Entitlements drifting"). So teams whose status has
+// ended are listed too, for a resubscription we never heard about.
 
 import { SendMessageBatchCommand, SQSClient } from "@aws-sdk/client-sqs";
 import type { SeatSyncMessage } from "../billing/seat-queue.js";

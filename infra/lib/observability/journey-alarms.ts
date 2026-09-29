@@ -415,6 +415,16 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       threshold: 0,
       primaryOnly: true,
     },
+    {
+      id: "entitlements-drifting",
+      title: "Entitlements drifting",
+      journeys: "J7, J8",
+      severity: "P2",
+      rule: "Any EntitlementDrift over an hour: the nightly entitlement check (primary region, with the seat reconciliation) found a team whose subscription, status, plan or seats weren't what Stripe has, so a Stripe event was lost or is stuck. The billing worker has already applied Stripe's state (a missing subscription it can't fix); the log line \"Entitlement drift\" has the team and subscription IDs, the fields and both values. Owners weren't emailed about it. See docs/runbooks/billing-dlq-replay.md.",
+      metric: business(BusinessMetric.EntitlementDrift, region, Duration.hours(1)),
+      threshold: 0,
+      primaryOnly: true,
+    },
     // J11. Delete an account
     {
       id: "deletion-overdue",

@@ -9,7 +9,7 @@
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { id, prefixes, teamPartition } from "./keys.js";
-import { hasEnded, type MemberRole } from "./model.js";
+import type { MemberRole } from "./model.js";
 import { GSI3, GSI3PK, MEMBER_SEAT_ATTRIBUTES, OPS_TEAMS_PARTITION, SEAT_RECONCILE_ATTRIBUTES } from "./schema.js";
 import { type TeamContext, readable } from "./team-context.js";
 
@@ -62,7 +62,9 @@ export interface TeamToReconcile {
 
 /**
  * Every team that may have a Stripe subscription to reconcile: open (not
- * closed), with a Stripe customer, and a status that hasn't ended. Read from
+ * closed) and with a Stripe customer. Teams whose status has ended are
+ * included: the nightly entitlement check (billing/entitlements.ts) looks for
+ * a resubscription or recovery we never heard about. Read from
  * the operators' index (GSI3's OPS#TEAMS partition), naming only
  * SEAT_RECONCILE_ATTRIBUTES, so the reconciliation reads no team's data,
  * names or emails. The worker checks the rest (a subscription, its state).
@@ -86,7 +88,7 @@ export async function listTeamsToReconcile(db: Db): Promise<TeamToReconcile[]> {
       }),
     );
     for (const item of page.Items ?? []) {
-      if (typeof item.stripeCustomerId !== "string" || item.closedAt !== undefined || hasEnded(item.status)) continue;
+      if (typeof item.stripeCustomerId !== "string" || item.closedAt !== undefined) continue;
       const teamId = String(item.PK).slice("TEAM#".length);
       out.push({ teamId: id(teamId, "team ID"), stripeCustomerId: id(item.stripeCustomerId, "Stripe customer ID") });
     }

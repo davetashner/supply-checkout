@@ -122,9 +122,9 @@ export class OpsDashboard extends Construct {
       businessGraph("J7, J8: billing events and owner emails", [BusinessMetric.BillingEventsApplied, BusinessMetric.BillingNotices, BusinessMetric.BillingNoticeFailures]),
       businessGraph("J4: live updates, failed and deferred", [BusinessMetric.LiveUpdates, BusinessMetric.LiveUpdateFailures, BusinessMetric.LiveUpdatesDeferred]),
     );
-    // Seats follow billed members (supply-checkout-l50): drift and the gauge are from the nightly reconciliation (primary region)
+    // Seats follow billed members (supply-checkout-l50): drift and the gauge are from the nightly reconciliation (primary region), with entitlement drift (supply-checkout-8jc.9)
     this.dashboard.addWidgets(
-      businessGraph("J7: seat quantity updates, drift and sync failures", [BusinessMetric.SeatQuantityUpdates, BusinessMetric.SeatQuantityDrift, BusinessMetric.SeatSyncQueueFailures]),
+      businessGraph("J7: seat updates, seat and entitlement drift, sync failures", [BusinessMetric.SeatQuantityUpdates, BusinessMetric.SeatQuantityDrift, BusinessMetric.EntitlementDrift, BusinessMetric.SeatSyncQueueFailures]),
       graph("J7: teams the nightly seat reconciliation checked", each((r) => business(BusinessMetric.SeatReconcileTeams, r, FIVE_MINUTES, "Maximum")), WIDTH / 4),
     );
     this.dashboard.addWidgets(

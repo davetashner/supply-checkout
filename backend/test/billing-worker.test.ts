@@ -8,6 +8,7 @@ import type { SQSEvent } from "aws-lambda";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BillingMessage } from "../src/billing/webhook-handler.js";
 import { closingKey } from "../src/billing/closing.js";
+import type { EntitlementStripe } from "../src/billing/entitlements.js";
 import type { SeatStripe, SeatSubscription } from "../src/billing/seats.js";
 import { createBillingWorker, noticeFor, parseMessage, type SubscriptionLike, subscriptionState, type WorkerStripe } from "../src/billing/worker.js";
 import { workerScopedDbs, type WorkerScope } from "../src/billing/worker-db.js";
@@ -98,8 +99,11 @@ beforeEach(() => {
 });
 
 function build() {
-  const stripe: WorkerStripe & SeatStripe = {
+  const stripe: WorkerStripe & SeatStripe & EntitlementStripe = {
     subscriptions: {
+      async list() {
+        throw new Error("not used");
+      },
       async retrieve(id: string) {
         retrieves.push(id);
         onRetrieve?.();

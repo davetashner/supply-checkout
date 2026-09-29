@@ -15,7 +15,8 @@
 // queue), or from a seat sync (seats.ts) on its own queue, which the account
 // function or the nightly reconciliation sent with a customer taken from the
 // team's own item: a seat sync can only make the worker recompute a quantity
-// from the team's members. The team comes from our own link, never from the
+// from the team's members and, for the nightly reconciliation's, re-apply
+// Stripe's own state for that customer (entitlements.ts). The team comes from our own link, never from the
 // message.
 
 import { STSClient } from "@aws-sdk/client-sts";
