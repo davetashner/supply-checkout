@@ -371,7 +371,7 @@ Restored tables have no deletion protection. The drill's copy in the target vaul
 
 Deleted data lives on in the backups: up to 35 days in PITR and the workload vault (`LOCAL_RETENTION`), and up to 90 days in the backup account's copies (`COPY_RETENTION`, both in `infra/lib/backup.ts`). The clock starts when the data is deleted: when an account is deleted, or when the purge deletes a team 30 days after it was closed. So deleted data is gone from every backup within 90 days of its deletion, once AWS removes the expired recovery points. A restore re-applies the recorded account and team deletions ([step 4](#4-re-apply-deletions-on-the-restored-table)), so restoring doesn't bring them back. Smaller deletions (a sheet or an item) aren't recorded: like every other change after the recovery point, they're undone by a restore.
 
-The [terms of service](legal/terms-of-service.md) (section 8) and the privacy policy must say the same. Change them with `LOCAL_RETENTION`, `COPY_RETENTION` or PITR's window.
+The [terms of service](legal/terms-of-service.md) (section 8) and the [privacy policy](legal/privacy-policy.md) (section 7) must say the same. Change them with `LOCAL_RETENTION`, `COPY_RETENTION` or PITR's window.
 
 ### Why deletion records
 
