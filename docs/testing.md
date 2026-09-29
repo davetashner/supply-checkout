@@ -67,6 +67,23 @@ While working on a change, run just the file and browser you're touching, e.g. `
 
 Every test also fails if the page throws an uncaught error or logs a console error.
 
+## Journey videos
+
+`npm run journeys:video` records a video of each [customer journey](journeys.md), J0 to J11 (J12 is phase 2), for people to watch rather than to test anything. A Chromium window opens and a visible cursor moves and clicks through each journey's steps as written, with a caption banner saying what each step shows or checks, and a title card and an end card listing what was shown, what was simulated and what isn't built yet. There's no narration. The videos go to `dist/journey-videos/<J#-slug>.webm` (gitignored), 1280 × 800, and each runs for about a minute.
+
+It runs the web build against the same fakes as the tests: `FakeBackend` in `tests/fake-aws.js`, and for J5, whose AWS receipt reading isn't built yet, the claude.ai runtime stand-in in `tests/mock-claude.js`. Nothing leaves the machine: any request the fakes don't answer is refused. Where a journey hands off to an outside service (Managed Login, Stripe Checkout and the Customer Portal, email, Stripe's webhooks), the video goes up to the handoff and the caption is marked Simulated; a step that isn't built yet gets a Not built yet caption instead of made-up screens.
+
+```bash
+npm run journeys:video                      # every journey, in a visible browser
+npm run journeys:video -- --only J4         # one journey (or --only J4,J7)
+npm run journeys:video -- --headless        # no window; the videos are the same
+npm run journeys:video -- --pace 0.3        # shorter pauses, for checking a change quickly
+npm run journeys:video -- --slow-mo 100     # Playwright's slowMo in ms (default 40)
+npm run journeys:video -- --skip-build      # use the dist/web already built
+```
+
+It holds the Playwright run lock (`tests/run-lock.js`) while it runs, so it waits for a test run in another worktree, and uses one browser. The scripts are in `scripts/journey-videos/`: `record.mjs` (the command), `director.mjs` (the cursor, captions and cards drawn in the page) and `journeys.mjs` (one entry per journey). When a journey or its screens change, update its entry there too; nothing in CI runs it.
+
 ## Coverage
 
 `npm run test:coverage` runs the suites in desktop Chrome with code coverage on, once for each build. Coverage is mapped back to the files in `src/` through the builds' source maps. A run fails if lines, statements, functions or branches fall below **98%** (`THRESHOLD` in `tests/coverage.js`). CI runs this on every pull request.

@@ -40,7 +40,7 @@ export default [
   },
   {
     // The mock and page.evaluate callbacks run inside the browser
-    files: ["tests/**/*.js"],
+    files: ["tests/**/*.js", "scripts/journey-videos/**/*.mjs"],
     languageOptions: { globals: { ...globals.browser } },
   },
 ];

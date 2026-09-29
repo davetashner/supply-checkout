@@ -24,6 +24,7 @@
     "test:web": "BUILD=web playwright test",
     "check": "npm run lint && npm run check:public && npm run check:regions && npm run test:scripts && npm test",
     "test:coverage": "COVERAGE=1 BUILD=artifact playwright test --project=desktop-chrome && COVERAGE=1 BUILD=web playwright test --project=desktop-chrome",
+    "journeys:video": "node scripts/journey-videos/record.mjs",
     "beads:export": "node scripts/export-beads.mjs",
     "beads:pr": "bash scripts/beads-pr.sh",
     "backlog:page": "node scripts/backlog-page.mjs",
