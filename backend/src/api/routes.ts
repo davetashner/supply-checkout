@@ -96,7 +96,11 @@ export interface AccountRoute {
     | "reopenTeam"
     | "deleteAccount"
     | "sendEmailCode"
-    | "verifyEmail";
+    | "verifyEmail"
+    | "setPassword"
+    | "startTotp"
+    | "verifyTotp"
+    | "signOutEverywhere";
   /**
    * API Gateway's throttle for this route across all callers (requests a
    * second, and burst), below the stage's. /me assumes a role per team, so it
@@ -113,7 +117,9 @@ export interface AccountRoute {
  * email, see each invite as pending, failed or expired, revoke it and re-send
  * it. Owners close a team (and reopen it before it's deleted), and anyone deletes their own account (the
  * account handler's "Closing a team" and "Deleting an account"). And
- * verifying the user's email address with a code Cognito emails them.
+ * verifying the user's email address with a code Cognito emails them. And
+ * two-step sign-in, which owners need for billing: setting a password and an
+ * authenticator app (TOTP) up (supply-checkout-8jc.12).
  * Each needs a Cognito access token (the JWT
  * authorizer). They write the user's own `USER#` rows (or, for a member
  * change, that member's), which the team-scoped data function can't reach,
@@ -141,6 +147,12 @@ export const ACCOUNT_ROUTES: readonly AccountRoute[] = [
   // Cognito emails the code and limits codes and tries per user; these keep the total down too
   { method: "POST", path: "/me/email/code", action: "sendEmailCode", throttle: { rate: 5, burst: 10 } },
   { method: "POST", path: "/me/email/verify", action: "verifyEmail", throttle: { rate: 10, burst: 20 } },
+  // Two-step sign-in: rare, once per person or new phone. Cognito limits password and code tries per user too
+  { method: "POST", path: "/me/password", action: "setPassword", throttle: { rate: 2, burst: 5 } },
+  { method: "POST", path: "/me/mfa/totp", action: "startTotp", throttle: { rate: 2, burst: 5 } },
+  { method: "POST", path: "/me/mfa/totp/verify", action: "verifyTotp", throttle: { rate: 5, burst: 10 } },
+  // Finishing two-step sign-in when its sign-out everywhere failed: rare
+  { method: "POST", path: "/me/sign-out-everywhere", action: "signOutEverywhere", throttle: { rate: 2, burst: 5 } },
 ];
 
 export interface BillingRoute {

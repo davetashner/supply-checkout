@@ -4,7 +4,7 @@ import { afterAll, beforeAll } from "vitest";
 import { authorizeTeam, createDb, type Db, type Role, type TeamContext } from "../src/data/index.js";
 import { connection, dbFromConnection } from "../src/data/client.js";
 import { createLocalTable, deleteLocalTable } from "../src/data/local-table.js";
-import type { EmailCodes } from "../src/api/cognito-user.js";
+import type { EmailCodes, TotpSetup } from "../src/api/cognito-user.js";
 import { EmailNotSentError, type Mailer, type MessageTags } from "../src/email/mailer.js";
 import type { EmailInput } from "../src/email/templates.js";
 import { type DeletionLog, type DeletionRecord, validRecord } from "../src/deletions/records.js";
@@ -60,6 +60,14 @@ export function contextFor(role: Role, homeRegion = REGION, teamId = "t1", userI
 export const unusedEmailCodes: EmailCodes = {
   send: () => Promise.reject(new Error("not used")),
   verify: () => Promise.reject(new Error("not used")),
+};
+
+/** Two-step sign-in setup for handlers whose tests don't use it (account-api.test.ts does). */
+export const unusedTotp: TotpSetup = {
+  setPassword: () => Promise.reject(new Error("not used")),
+  associate: () => Promise.reject(new Error("not used")),
+  verify: () => Promise.reject(new Error("not used")),
+  signOutEverywhere: () => Promise.reject(new Error("not used")),
 };
 
 /** A mailer that records what it would send, or fails like SES when `fail` names an error. */

@@ -77,12 +77,14 @@ const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
  * - Sign in with Apple and Google, each only when turned on in context
  *   (`-c appleSignIn=true`, `-c googleSignIn=true`) and its secret exists.
  *
- * Owners before billing: the billing routes (supply-checkout-d8b and the
- * billing beads) call AdminGetUser for the caller's `sub` and refuse any change
- * with 403 `mfa_required` unless `UserMFASettingList` contains
- * `SOFTWARE_TOKEN_MFA`. The web app sets TOTP up with AssociateSoftwareToken
- * and VerifySoftwareToken, which is why the client grants the
- * `aws.cognito.signin.user.admin` scope.
+ * Owners before billing (supply-checkout-8jc.12): the billing routes call
+ * GetUser with the caller's own access token and refuse with 403
+ * `mfa_required` unless `UserMFASettingList` contains `SOFTWARE_TOKEN_MFA` and
+ * it's preferred (Google and Apple users excepted). The account API sets a
+ * password (ChangePassword) and TOTP up (AssociateSoftwareToken,
+ * VerifySoftwareToken, SetUserMFAPreference) and then signs the user out
+ * everywhere (GlobalSignOut), all with the user's own token, which is why the
+ * client grants the `aws.cognito.signin.user.admin` scope. No IAM grant.
  *
  * Verified emails from Google and Apple: with either provider on, a pre token
  * generation trigger (backend/src/identity/email-verified-handler.ts) sets

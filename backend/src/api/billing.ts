@@ -9,6 +9,7 @@ import { cachedStripe, createStripe, secretsManagerReader, STRIPE_ENV, stripeMod
 import { createObservability, withObservability } from "../observability/index.js";
 import { billingScopedDbs } from "./billing-db.js";
 import { createBillingHandler } from "./billing-handler.js";
+import { cognitoUserInfo } from "./cognito-user.js";
 import { API_ENV } from "./routes.js";
 
 function required(name: string): string {
@@ -24,6 +25,7 @@ const stripe = cachedStripe({
   read: secretsManagerReader(process.env.AWS_REGION),
   create: createStripe,
 });
+const issuerUrl = required(API_ENV.issuerUrl);
 const obs = createObservability({ service: "billing-api" });
 export const handler = withObservability(
   obs,
@@ -32,7 +34,8 @@ export const handler = withObservability(
     stripe,
     priceFor: priceResolver(stripe),
     portalConfiguration: portalConfigurationResolver(stripe),
-    issuerUrl: required(API_ENV.issuerUrl),
+    issuerUrl,
+    userInfo: cognitoUserInfo(issuerUrl),
     appUrl: required(API_ENV.appUrl),
     obs,
   }),

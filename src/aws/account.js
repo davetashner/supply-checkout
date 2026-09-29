@@ -7,7 +7,9 @@
 // whose subscription ended (its trial ended without a card, or payments stopped), with a
 // notice, and for its owners a way to subscribe again on Stripe Checkout. Owners of a team
 // with a Stripe customer get Billing, the Stripe Customer Portal (a card, plan changes,
-// invoices, cancelling), and a canceled subscription says when it ends.
+// invoices, cancelling), and a canceled subscription says when it ends. Billing needs
+// two-step sign-in (an authenticator app, mfa.js), which Account sets up; when the server
+// refuses billing for want of it, the setup opens.
 import { esc } from "../format.js";
 import { armButton, closeModal, toast } from "../dom.js";
 import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, firstRunKey, forgetLocal, local, tab } from "./session.js";
@@ -16,6 +18,7 @@ import { openImport } from "./import.js";
 import { openMembers, openReopen } from "./members.js";
 import { openDeleteAccount } from "./delete-account.js";
 import { openVerifyEmail } from "./verify-email.js";
+import { openTwoStep } from "./mfa.js";
 
 const ROLE = { owner: "an owner", contributor: "a contributor", viewer: "a viewer" };
 // A screen's promise resolves with this key after the user verifies their email: start the
@@ -153,7 +156,19 @@ export async function start(config) {
       <p>You've been removed from your teams and can't sign in with this account any more. Thanks for using Supply Checkout.</p>
       <div class="actions"><a class="btn primary" href="${esc(out)}" id="deletedDone" autofocus>Done</a></div>`);
   }
-  const account = (me) => openDeleteAccount(session.api, me.user.email, deleted);
+  // Two-step sign-in is on, and the API signed the user out everywhere: this tab's session is
+  // over, so stop, and offer to sign in again (with the password and the app's code). The
+  // owner mark stays, so the same person keeps their team and drafts.
+  async function twoStepOn() {
+    owner = null;
+    if (db) db.stop();
+    const out = await session.endEverywhere();
+    show(`<h2>Two-step sign-in is on</h2>
+      <p>You've been signed out everywhere, here too. Sign in again with your email, your password and a code from your authenticator app.</p>
+      <div class="actions"><a class="btn primary big" href="${esc(out)}" id="signInAgain" data-autofocus>Sign in again</a></div>`);
+  }
+  const twoStep = (me, options) => openTwoStep(session, me.user.email, twoStepOn, options);
+  const account = (me) => openDeleteAccount(session.api, me.user.email, deleted, { mfa: me.user.mfa, setUp: (moving) => twoStep(me, { moving }) });
 
   // Who's signed in, with a way out, on the screens before a team is open
   const whoami = (me) => `<p class="whoami">Signed in as ${esc(me.user.email || "you")}. <button type="button" class="btn ghost" id="accountSignOut">Sign out</button> <button type="button" class="btn ghost" id="accountDelete">Delete account</button></p>`;
@@ -379,8 +394,8 @@ export async function start(config) {
     if (verify) verify.addEventListener("click", () => openVerifyEmail(session, me.user.email, (fresh) => { me.user = fresh.user; verify.remove(); }));
     if (owner) {
       bar.querySelector("#members").addEventListener("click", () => openMembers(session.api, team, me.user.id, changed, invited(fr)));
-      if (billing) bar.querySelector("#manageBilling").addEventListener("click", (e) => manageBilling(team, e.currentTarget));
-      if (ended) bar.querySelector("#subscribe").addEventListener("click", (e) => subscribe(team, e.currentTarget));
+      if (billing) bar.querySelector("#manageBilling").addEventListener("click", (e) => manageBilling(me, team, e.currentTarget));
+      if (ended) bar.querySelector("#subscribe").addEventListener("click", (e) => subscribe(me, team, e.currentTarget));
       else if (!team.closedAt) bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id, download));
       else {
         bar.querySelector("#reopenTeam").addEventListener("click", () => openReopen(session.api, team, changed));
@@ -397,7 +412,13 @@ export async function start(config) {
   // monthly, with a seat for each member. The server makes the page; a link to it replaces
   // the button, so the owner goes to Stripe with one more tap (and a retry gets the same page).
   let checkoutKey = null;
-  async function subscribe(team, button) {
+  // Billing refused for want of two-step sign-in: set it up, saying why
+  const needsTwoStep = (me, e) => {
+    if (e.reason !== "mfa_required") return false;
+    twoStep(me, { why: "To manage billing, turn on two-step sign-in first. It keeps someone who gets hold of your email from changing how your team pays." });
+    return true;
+  };
+  async function subscribe(me, team, button) {
     checkoutKey ||= crypto.randomUUID();
     button.disabled = true;
     try {
@@ -411,6 +432,7 @@ export async function start(config) {
       link.focus();
     } catch (e) {
       button.disabled = false;
+      if (needsTwoStep(me, e)) return;
       toast(e.reason === "already_subscribed" ? "This team already has a subscription. Reload the page to see it." : "Couldn't start checkout. Check your connection and try again.", 5000);
     }
   }
@@ -418,7 +440,7 @@ export async function start(config) {
   // An owner opens the Stripe Customer Portal: the server makes a session for the team's own
   // Stripe customer, and a link to it replaces the button, as for Checkout. A session soon
   // expires, so after PORTAL_LINK_MS the button comes back to make a new one.
-  async function manageBilling(team, button) {
+  async function manageBilling(me, team, button) {
     button.disabled = true;
     try {
       const { portal } = await session.api("POST", `/teams/${encodeURIComponent(team.id)}/billing/portal`);
@@ -433,6 +455,7 @@ export async function start(config) {
       setTimeout(() => link.replaceWith(button), PORTAL_LINK_MS);
     } catch (e) {
       button.disabled = false;
+      if (needsTwoStep(me, e)) return;
       toast(e.reason === "no_billing_account" ? "This team has no billing account yet. Reload the page, then subscribe." : "Couldn't open billing. Check your connection and try again.", 5000);
     }
   }

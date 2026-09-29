@@ -30,6 +30,13 @@
 // 2. The team comes only from the path, and the caller must be its owner
 //    (authorizeTeam, then requireRole), before the body is read or Stripe is
 //    called.
+// 2a. Then two-step sign-in (ADR 0007, supply-checkout-8jc.12): Cognito's
+//    GetUser, with the caller's own token, must show an authenticator app
+//    (TOTP) on and preferred, or a Google or Apple user (whose provider's
+//    sign-in counts for it); otherwise 403 `mfa_required`. GetUser also
+//    refuses a revoked token (401), and turning TOTP on in the app signs the
+//    user out everywhere (account-handler.ts), so a session from before it
+//    can't pass: every one that does began with the authenticator's code.
 // 3. Every DynamoDB call runs on a billing-access role session tagged with
 //    that team and, when linking, the customer Stripe returned (billing-db.ts):
 //    IAM refuses any other partition, and any attribute but the link's.
@@ -63,7 +70,8 @@ import {
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import type { DbForBilling } from "./billing-db.js";
 import { callerId, type DataEvent, errorFor as dataErrorFor } from "./data-handler.js";
-import { ApiError, errorResponse, header, json, jsonBody, notMember } from "./http.js";
+import type { UserInfo } from "./cognito-user.js";
+import { accessToken, ApiError, errorResponse, header, json, jsonBody, notMember } from "./http.js";
 import { requireRole } from "./roles.js";
 import { BILLING_ROUTES, type BillingRoute, IDEMPOTENCY_HEADER, routeKey } from "./routes.js";
 
@@ -130,10 +138,20 @@ export interface BillingHandlerDeps {
   readonly portalConfiguration: () => Promise<string>;
   /** The user pool's issuer URL; tokens from anywhere else are refused. */
   readonly issuerUrl: string;
+  /** Cognito's GetUser with the caller's own token (cognito-user.ts): whether two-step sign-in is on. */
+  readonly userInfo: UserInfo;
   /** `https://app.<env domain>`: where Checkout and the portal send the owner back to. Never from the request. */
   readonly appUrl: string;
   readonly obs: Observability;
   readonly now?: () => number;
+}
+
+/** GetUser failed for the two-step sign-in check (a 500, logged and counted apart from Stripe's failures). */
+class MfaCheckError extends Error {
+  override readonly name = "MfaCheckError";
+  constructor(cause: unknown) {
+    super("The two-step sign-in check failed", { cause });
+  }
 }
 
 const ROUTES = new Map(BILLING_ROUTES.map((r) => [routeKey(r), r]));
@@ -171,7 +189,7 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
   const now = deps.now ?? Date.now;
   const { dbFor, obs } = deps;
 
-  /** The caller's context for the path's team, as its owner, or 403 (`not_member` for a team that doesn't exist). */
+  /** The caller's context for the path's team, as its owner with two-step sign-in on, or 403 (`not_member` for a team that doesn't exist, `mfa_required`). */
   async function ownerContext(event: DataEvent, userId: string, route: BillingRoute): Promise<TeamContext> {
     const teamId = event.pathParameters?.teamId;
     if (typeof teamId !== "string" || !ID.test(teamId)) throw new ApiError(400, "bad_request", "Invalid team ID");
@@ -180,7 +198,20 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
       throw error;
     });
     requireRole(ctx.role, route.minRole);
+    await requireMfa(event, userId);
     return ctx;
+  }
+
+  /** Two-step sign-in on (see 2a at the top), or 403 `mfa_required`. */
+  async function requireMfa(event: DataEvent, userId: string): Promise<void> {
+    const user = await deps.userInfo(accessToken(event)).catch((error: unknown) => {
+      // Cognito couldn't answer: not Stripe's failure, so not counted as one
+      throw error instanceof ApiError ? error : new MfaCheckError(error);
+    });
+    // The same user API Gateway verified, or something is badly wrong
+    if (user.sub !== userId) throw new ApiError(401, "unauthenticated", "Sign in again");
+    if (user.totp || user.federated) return;
+    throw new ApiError(403, "permission_denied", "Turn on two-step sign-in with an authenticator app (Account, in the team bar) before managing billing", "mfa_required");
   }
 
   /** The body's plan, interval and seats, checked against the catalog and the member cap. */
@@ -311,7 +342,10 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
     } catch (error) {
       const apiError = errorFor(error);
       status = apiError.status;
-      if (apiError.status >= 500) {
+      if (error instanceof MfaCheckError) {
+        // Only the error's name: GetUser's errors carry only Cognito's status and type
+        obs.logger.error("Two-step sign-in check failed", { code: (error.cause as { name?: string } | null)?.name ?? "Unknown" });
+      } else if (apiError.status >= 500) {
         const teamId = event.pathParameters?.teamId;
         // Stripe's error fields only: never its message, which can echo what was sent
         const portal = route?.action === "createPortalSession";

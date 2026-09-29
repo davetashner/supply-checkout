@@ -35,8 +35,16 @@
 // no Cognito regional endpoint, and the app's config names no region), and
 // API Gateway's throttle sits in front of Cognito's own limits. Neither the
 // token nor the code is ever logged.
+//
+// Two-step sign-in (supply-checkout-8jc.12): GetUser also says whether the
+// caller has an authenticator app (TOTP) on and preferred, and whether they're
+// a Google or Apple user. cognitoTotp() sets a password (ChangePassword),
+// adds an authenticator (AssociateSoftwareToken, VerifySoftwareToken,
+// SetUserMFAPreference) and signs the caller out everywhere (GlobalSignOut),
+// each with the caller's own access token, like GetUser. Neither the token,
+// the password, the secret nor the code is ever logged.
 
-import { isDowngradePending, isRecordedEmail, linkedUser } from "../identity/email-verified-handler.js";
+import { isDowngradePending, isFederatedOnly, isRecordedEmail, linkedUser } from "../identity/email-verified-handler.js";
 import { ApiError } from "./http.js";
 
 /** Deletes the user whose access token this is. */
@@ -53,7 +61,14 @@ export interface CognitoUser {
    * reason to trust the email.
    */
   readonly emailVerifiedInCognito: boolean;
+  /** An authenticator app (TOTP) is on and preferred, so Cognito asks for its code at every native sign-in. */
+  readonly totp: boolean;
+  /** A Google or Apple user who signs in only through their provider (isFederatedOnly), whom Cognito never asks for a second factor. */
+  readonly federated: boolean;
 }
+
+/** Cognito's name for an authenticator app (TOTP) as a second factor. */
+const SOFTWARE_TOKEN_MFA = "SOFTWARE_TOKEN_MFA";
 
 /**
  * Whether GetUser's attributes (or a trigger's) say the email is verified:
@@ -85,7 +100,7 @@ interface CognitoReply {
 }
 
 /** One call to a Cognito user pool action authorized by the caller's access token. */
-async function callCognito(endpoint: string, doFetch: typeof fetch, action: string, body: Record<string, string>): Promise<CognitoReply> {
+async function callCognito(endpoint: string, doFetch: typeof fetch, action: string, body: Record<string, unknown>): Promise<CognitoReply> {
   const response = await doFetch(endpoint, {
     method: "POST",
     headers: { "content-type": "application/x-amz-json-1.1", "x-amz-target": `AWSCognitoIdentityProviderService.${action}` },
@@ -111,7 +126,12 @@ export function cognitoUserInfo(issuerUrl: string, doFetch: typeof fetch = fetch
       if (status === 400 && (type === "NotAuthorizedException" || type === "UserNotFoundException")) throw signInAgain();
       throw new Error(`GetUser failed: ${status} ${type}`);
     }
-    const { Username, UserAttributes } = body as { Username?: string; UserAttributes?: { Name?: string; Value?: string }[] };
+    const { Username, UserAttributes, UserMFASettingList, PreferredMfaSetting } = body as {
+      Username?: string;
+      UserAttributes?: { Name?: string; Value?: string }[];
+      UserMFASettingList?: unknown;
+      PreferredMfaSetting?: unknown;
+    };
     const attributes: Record<string, string | undefined> = Object.fromEntries(
       (Array.isArray(UserAttributes) ? UserAttributes : []).filter((a) => typeof a?.Name === "string" && typeof a.Value === "string").map((a) => [a.Name, a.Value]),
     );
@@ -120,6 +140,8 @@ export function cognitoUserInfo(issuerUrl: string, doFetch: typeof fetch = fetch
       email: attributes.email,
       emailVerified: emailVerifiedFrom(Username, attributes),
       emailVerifiedInCognito: attributes.email_verified === "true",
+      totp: Array.isArray(UserMFASettingList) && UserMFASettingList.includes(SOFTWARE_TOKEN_MFA) && PreferredMfaSetting === SOFTWARE_TOKEN_MFA,
+      federated: isFederatedOnly(Username, attributes),
     };
   };
 }
@@ -182,5 +204,80 @@ export function cognitoEmailCodes(issuerUrl: string, doFetch: typeof fetch = fet
   return {
     send: (accessToken) => call("GetUserAttributeVerificationCode", { AccessToken: accessToken, AttributeName: "email" }),
     verify: (accessToken, code) => call("VerifyUserAttribute", { AccessToken: accessToken, AttributeName: "email", Code: code }),
+  };
+}
+
+/** Setting a password and an authenticator app (TOTP) up for the caller, and signing them out everywhere. */
+export interface TotpSetup {
+  /** Sets the caller's password: `previous` is their current one, or none for a user who signs in without one. */
+  setPassword(accessToken: string, proposed: string, previous?: string): Promise<void>;
+  /** A new TOTP secret for the caller's authenticator app. Their current one, if any, works until this one is verified. */
+  associate(accessToken: string): Promise<string>;
+  /** Checks a code from the authenticator app for the associated secret, then turns TOTP on as the caller's preferred second factor. */
+  verify(accessToken: string, code: string): Promise<void>;
+  /** Revokes every one of the caller's refresh tokens, and their access tokens for Cognito's own calls (GetUser). */
+  signOutEverywhere(accessToken: string): Promise<void>;
+}
+
+const passwordInvalid = () =>
+  new ApiError(400, "bad_request", "Choose a password of at least 12 characters, with upper and lower case letters, a number and a symbol", "password_invalid");
+const codeWrong = () => new ApiError(400, "bad_request", "That code isn't right. Check the app and try again", "code_mismatch");
+const tooMany = () => new ApiError(429, "quota_exceeded", "Too many attempts; try again later");
+
+/**
+ * Cognito's refusals of the two-step sign-in calls that the person can act
+ * on, by error type. ChangePassword answers a wrong current password with
+ * NotAuthorizedException, as it does a revoked token and too many wrong
+ * passwords: its message (never passed on or logged) says which. Only
+ * ChangePassword's InvalidParameterException means the current password is
+ * missing; any other call's is a failure.
+ */
+const TOTP_REFUSALS = new Map<string, (message: string, action: string) => ApiError | undefined>(Object.entries({
+  NotAuthorizedException: (message: string) =>
+    /attempts exceeded/i.test(message) ? tooMany()
+      : /password/i.test(message) && !/token/i.test(message) ? new ApiError(400, "bad_request", "That current password isn't right", "password_mismatch")
+      : signInAgain(),
+  InvalidPasswordException: passwordInvalid,
+  PasswordHistoryPolicyViolationException: () => new ApiError(400, "bad_request", "Choose a password you haven't used before", "password_invalid"),
+  // ChangePassword without the current password, for a user who has one
+  InvalidParameterException: (_message: string, action: string) =>
+    action === "ChangePassword" ? new ApiError(400, "bad_request", "Enter your current password", "password_mismatch") : undefined,
+  CodeMismatchException: codeWrong,
+  EnableSoftwareTokenMFAException: codeWrong,
+  // A code checked with no secret associated, or after the setup was replaced
+  SoftwareTokenMFANotFoundException: () => new ApiError(409, "aborted", "This setup has expired. Start again", "code_expired"),
+  LimitExceededException: tooMany,
+  TooManyRequestsException: tooMany,
+  TooManyFailedAttemptsException: tooMany,
+}));
+
+/** ChangePassword, AssociateSoftwareToken, VerifySoftwareToken, SetUserMFAPreference and GlobalSignOut, against the pool that issued the token. */
+export function cognitoTotp(issuerUrl: string, doFetch: typeof fetch = fetch): TotpSetup {
+  const endpoint = poolEndpoint(issuerUrl);
+  const call = async (action: string, body: Record<string, unknown>) => {
+    const reply = await callCognito(endpoint, doFetch, action, body);
+    if (reply.ok) return reply.body;
+    const refusal = reply.status === 400 ? TOTP_REFUSALS.get(reply.type)?.(typeof reply.body.message === "string" ? reply.body.message : "", action) : undefined;
+    if (refusal) throw refusal;
+    // Only the status and the error's name: never the token, the password, the code or Cognito's message
+    throw new Error(`${action} failed: ${reply.status} ${reply.type}`);
+  };
+  return {
+    async setPassword(accessToken, proposed, previous) {
+      await call("ChangePassword", { AccessToken: accessToken, ProposedPassword: proposed, ...(previous === undefined ? {} : { PreviousPassword: previous }) });
+    },
+    async associate(accessToken) {
+      const { SecretCode } = await call("AssociateSoftwareToken", { AccessToken: accessToken });
+      if (typeof SecretCode !== "string" || !SecretCode) throw new Error("AssociateSoftwareToken returned no secret");
+      return SecretCode;
+    },
+    async verify(accessToken, code) {
+      const { Status } = await call("VerifySoftwareToken", { AccessToken: accessToken, UserCode: code, FriendlyDeviceName: "Authenticator app" });
+      if (Status !== "SUCCESS") throw codeWrong();
+      await call("SetUserMFAPreference", { AccessToken: accessToken, SoftwareTokenMfaSettings: { Enabled: true, PreferredMfa: true } });
+    },
+    async signOutEverywhere(accessToken) {
+      await call("GlobalSignOut", { AccessToken: accessToken });
+    },
   };
 }
