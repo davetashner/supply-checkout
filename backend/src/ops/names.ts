@@ -47,6 +47,20 @@ export const HEARTBEAT_EVERY_MINUTES = 10;
 export const HEARTBEAT_SILENT_ALARM_MINUTES = 30;
 
 /**
+ * How often the operator group watch compares the operators group with what
+ * it saw last (supply-checkout-3sv.5), and how long without a finished run
+ * before "Operator group watch silent" fires: three missed runs.
+ */
+export const GROUP_WATCH_EVERY_MINUTES = 5;
+export const GROUP_WATCH_SILENT_ALARM_MINUTES = 15;
+
+/** The SSM parameter where the operator group watch keeps the group as it last saw it. */
+export const operatorGroupSnapshotParameter = (envName: string) => `/supply-checkout/${envName}/observability/operator-group-snapshot`;
+
+/** What the CDK app puts in that parameter; the watch counts finding it as a reset, which pages (supply-checkout-3sv.5). */
+export const INITIAL_GROUP_SNAPSHOT = "none";
+
+/**
  * When the nightly seat reconciliation runs (supply-checkout-l50): 07:00 UTC,
  * the small hours in the US. It queues one seat sync per open team with a
  * Stripe customer on the seat sync queue (billing/seats.ts), in batches of
@@ -68,6 +82,7 @@ export const opsResourceNames = (envName: string) => ({
   teamPurgeFunction: `supply-checkout-${envName}-team-purge`,
   operatorAuditWatchFunction: `supply-checkout-${envName}-operator-audit-watch`,
   deletionRecordsWatchFunction: `supply-checkout-${envName}-deletion-records-watch`,
+  operatorGroupWatchFunction: `supply-checkout-${envName}-operator-group-watch`,
   seatReconcileFunction: `supply-checkout-${envName}-seat-reconcile`,
 });
 
@@ -75,6 +90,10 @@ export const opsResourceNames = (envName: string) => ({
 export const OPS_ENV = {
   /** The app table (the stuck-import check and the team purge). */
   tableName: "TABLE_NAME",
+  /** The operator pool (the operator group watch). */
+  opsUserPoolId: "OPS_USER_POOL_ID",
+  /** The operator group watch's SSM parameter. */
+  groupSnapshotParameter: "GROUP_SNAPSHOT_PARAMETER",
   /** The seat sync queue's URL (the seat reconciliation). */
   seatQueueUrl: "SEAT_QUEUE_URL",
 } as const;

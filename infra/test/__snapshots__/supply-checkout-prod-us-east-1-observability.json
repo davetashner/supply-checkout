@@ -275,6 +275,18 @@
                     },
                     {
                       "Fn::GetAtt": [
+                        "OperatorGroupWatchAlarmChangesC2E3164B",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorGroupSnapshotChanges2735A311",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
                         "OperatorAlertRouteChangesB6D06886",
                         "Arn"
                       ]
@@ -5421,6 +5433,526 @@
         "TreatMissingData": "breaching"
       }
     },
+    "OperatorGroupWatchLogs7309A89A": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "OperatorGroupWatchSnapshotE071F08A": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "The operators group as the operator group watch last saw it: each member's sub and whether they're enabled (supply-checkout-3sv.5)",
+        "Name": "/supply-checkout/prod/observability/operator-group-snapshot",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "observability",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": "none"
+      }
+    },
+    "OperatorGroupWatchRole9830274D": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the operator group watch",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "OperatorGroupWatchRoleDefaultPolicyCF83748B": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "OperatorGroupWatchLogs7309A89A",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "cognito-idp:ListUsersInGroup",
+              "Condition": {
+                "ArnEquals": {
+                  "lambda:SourceFunctionArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":lambda:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":function:supply-checkout-prod-operator-group-watch"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":cognito-idp:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":userpool/",
+                    {
+                      "Ref": "SsmParameterValuesupplycheckoutprodidentityopsuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter"
+                    }
+                  ]
+                ]
+              },
+              "Sid": "ListOperatorGroup"
+            },
+            {
+              "Action": [
+                "ssm:GetParameter",
+                "ssm:PutParameter"
+              ],
+              "Condition": {
+                "ArnEquals": {
+                  "lambda:SourceFunctionArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":lambda:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":function:supply-checkout-prod-operator-group-watch"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":ssm:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":parameter",
+                    {
+                      "Ref": "OperatorGroupWatchSnapshotE071F08A"
+                    }
+                  ]
+                ]
+              },
+              "Sid": "OwnSnapshot"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OperatorGroupWatchRoleDefaultPolicyCF83748B",
+        "Roles": [
+          {
+            "Ref": "OperatorGroupWatchRole9830274D"
+          }
+        ]
+      }
+    },
+    "OperatorGroupWatchFunctionB805D55E": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "Alarms when anyone joins or leaves the operators group, or is disabled or enabled",
+        "Environment": {
+          "Variables": {
+            "NODE_OPTIONS": "--enable-source-maps",
+            "OPS_USER_POOL_ID": {
+              "Ref": "SsmParameterValuesupplycheckoutprodidentityopsuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter"
+            },
+            "GROUP_SNAPSHOT_PARAMETER": {
+              "Ref": "OperatorGroupWatchSnapshotE071F08A"
+            },
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "SUPPLY_CHECKOUT_ENV": "prod"
+          }
+        },
+        "FunctionName": "supply-checkout-prod-operator-group-watch",
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "OperatorGroupWatchLogs7309A89A"
+          }
+        },
+        "MemorySize": 256,
+        "Role": {
+          "Fn::GetAtt": [
+            "OperatorGroupWatchRole9830274D",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 60,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "OperatorGroupWatchRoleDefaultPolicyCF83748B",
+        "OperatorGroupWatchRole9830274D"
+      ]
+    },
+    "OperatorGroupWatchFunctionXRayWrite49568B93": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTraceSegments",
+                "xray:PutTelemetryRecords"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OperatorGroupWatchFunctionXRayWrite49568B93",
+        "Roles": [
+          {
+            "Ref": "OperatorGroupWatchRole9830274D"
+          }
+        ]
+      }
+    },
+    "OperatorGroupWatchSchedule0FB6E5AC": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Runs the operator group watch every 5 minutes (supply-checkout-3sv.5)",
+        "Name": "supply-checkout-prod-operator-group-watch",
+        "ScheduleExpression": "rate(5 minutes)",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Fn::GetAtt": [
+                "OperatorGroupWatchFunctionB805D55E",
+                "Arn"
+              ]
+            },
+            "Id": "Target0",
+            "RetryPolicy": {
+              "MaximumRetryAttempts": 0
+            }
+          }
+        ]
+      }
+    },
+    "OperatorGroupWatchScheduleAllowEventRulesupplycheckoutproduseast1observabilityOperatorGroupWatchFunctionD1AD34F054F53979": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "OperatorGroupWatchFunctionB805D55E",
+            "Arn"
+          ]
+        },
+        "Principal": "events.amazonaws.com",
+        "SourceArn": {
+          "Fn::GetAtt": [
+            "OperatorGroupWatchSchedule0FB6E5AC",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "OperatorGroupWatchChanged900C2830": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "AlarmDescription": "P1. Operator group changed: someone joined or left the operators group, or an operator was disabled or enabled, since the operator group watch last looked, or the watch had to start its snapshot again (after the deploy that creates or changes its parameter, or when the parameter was reset or garbled). The watch's log lists them by sub; CloudTrail's AdminAddUserToGroup, AdminRemoveUserFromGroup, AdminDeleteUser, AdminDisableUser or AdminEnableUser event says who did it. If nobody expected it, follow \"Operators\" in docs/infrastructure.md.",
+        "AlarmName": "supply-checkout-prod-p1-operator-group-changed",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Expression": "FILL(changed, 0) + FILL(reset, 0)",
+            "Id": "expr_1",
+            "Label": "Operator group changes and baseline resets",
+            "ReturnData": true
+          },
+          {
+            "Id": "changed",
+            "Label": "OperatorGroupChanged (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "OperatorGroupChanged",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "reset",
+            "Label": "OperatorGroupBaselineReset (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "OperatorGroupBaselineReset",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "OperatorGroupWatchSilent532FE560": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2. Operator group watch silent: no run of the operator group watch has finished in 15 minutes, so \"Operator group changed\" can't fire. Check its schedule rule is enabled, and its log for the error (a missing permission, the parameter or the pool); follow \"Operators\" in docs/infrastructure.md.",
+        "AlarmName": "supply-checkout-prod-p2-operator-group-watch-silent",
+        "ComparisonOperator": "LessThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "OperatorGroupMembers (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "OperatorGroupMembers",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 900,
+              "Stat": "SampleCount"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 1,
+        "TreatMissingData": "breaching"
+      }
+    },
     "DeletionRecordsWatchLogs3E3D4A7A": {
       "Type": "AWS::Logs::LogGroup",
       "Properties": {
@@ -6072,7 +6604,7 @@
           }
         },
         "Name": "supply-checkout-prod-operator-pool-changes",
-        "State": "ENABLED",
+        "State": "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS",
         "Tags": [
           {
             "Key": "app",
@@ -6202,7 +6734,7 @@
     "OperatorAuditWatchChanges59EE8EE1": {
       "Type": "AWS::Events::Rule",
       "Properties": {
-        "Description": "The operator audit watch's stream mapping or function was deleted, or changed outside a deploy (supply-checkout-6uw.11)",
+        "Description": "The operator audit watch's stream mapping, or its or the operator group watch's function, was deleted, or changed outside a deploy (supply-checkout-6uw.11)",
         "EventPattern": {
           "source": [
             "aws.lambda"
@@ -6263,10 +6795,11 @@
                   "functionName": [
                     "supply-checkout-prod-operator-audit-watch",
                     {
-                      "wildcard": "*:function:supply-checkout-prod-operator-audit-watch"
+                      "wildcard": "*:function:supply-checkout-prod-operator-audit-watch*"
                     },
+                    "supply-checkout-prod-operator-group-watch",
                     {
-                      "wildcard": "*:function:supply-checkout-prod-operator-audit-watch:*"
+                      "wildcard": "*:function:supply-checkout-prod-operator-group-watch*"
                     }
                   ]
                 }
@@ -6287,10 +6820,11 @@
                   "functionName": [
                     "supply-checkout-prod-operator-audit-watch",
                     {
-                      "wildcard": "*:function:supply-checkout-prod-operator-audit-watch"
+                      "wildcard": "*:function:supply-checkout-prod-operator-audit-watch*"
                     },
+                    "supply-checkout-prod-operator-group-watch",
                     {
-                      "wildcard": "*:function:supply-checkout-prod-operator-audit-watch:*"
+                      "wildcard": "*:function:supply-checkout-prod-operator-group-watch*"
                     }
                   ]
                 },
@@ -6353,18 +6887,16 @@
     "OperatorAuditWatchRoleChangesFCFE9D73": {
       "Type": "AWS::Events::Rule",
       "Properties": {
-        "Description": "The operator audit watch's role or its policies were deleted, or changed outside a deploy (supply-checkout-6uw.11)",
+        "Description": "The operator audit or group watch's role or its policies were deleted or changed outside a deploy, or a function given the group watch's role outside a deploy (supply-checkout-6uw.11)",
         "EventPattern": {
           "source": [
-            "aws.iam"
+            "aws.iam",
+            "aws.lambda"
           ],
           "detail-type": [
             "AWS API Call via CloudTrail"
           ],
           "detail": {
-            "eventSource": [
-              "iam.amazonaws.com"
-            ],
             "$or": [
               {
                 "eventName": [
@@ -6372,10 +6904,16 @@
                   "DeleteRolePolicy",
                   "DetachRolePolicy"
                 ],
+                "eventSource": [
+                  "iam.amazonaws.com"
+                ],
                 "requestParameters": {
                   "roleName": [
                     {
                       "Ref": "OperatorAuditWatchRole832B8493"
+                    },
+                    {
+                      "Ref": "OperatorGroupWatchRole9830274D"
                     }
                   ]
                 }
@@ -6387,10 +6925,49 @@
                   "UpdateAssumeRolePolicy",
                   "PutRolePermissionsBoundary"
                 ],
+                "eventSource": [
+                  "iam.amazonaws.com"
+                ],
                 "requestParameters": {
                   "roleName": [
                     {
                       "Ref": "OperatorAuditWatchRole832B8493"
+                    },
+                    {
+                      "Ref": "OperatorGroupWatchRole9830274D"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  {
+                    "prefix": "CreateFunction"
+                  },
+                  {
+                    "prefix": "UpdateFunctionConfiguration"
+                  }
+                ],
+                "eventSource": [
+                  "lambda.amazonaws.com"
+                ],
+                "requestParameters": {
+                  "role": [
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorGroupWatchRole9830274D",
+                        "Arn"
+                      ]
                     }
                   ]
                 },
@@ -6453,7 +7030,7 @@
     "OperatorAuditWatchLogChangesE46D2D06": {
       "Type": "AWS::Events::Rule",
       "Properties": {
-        "Description": "The operator audit watch's log group was deleted, or given a transformer or data protection policy outside a deploy, or one was set for the account (supply-checkout-6uw.11)",
+        "Description": "The operator audit or group watch's log group was deleted, or given a transformer or data protection policy outside a deploy, or one was set for the account (supply-checkout-6uw.11)",
         "EventPattern": {
           "source": [
             "aws.logs"
@@ -6474,6 +7051,9 @@
                   "logGroupName": [
                     {
                       "Ref": "OperatorAuditWatchLogsC88D29BF"
+                    },
+                    {
+                      "Ref": "OperatorGroupWatchLogs7309A89A"
                     }
                   ]
                 }
@@ -6510,6 +7090,36 @@
                             "*:log-group:",
                             {
                               "Ref": "OperatorAuditWatchLogsC88D29BF"
+                            },
+                            ":*"
+                          ]
+                        ]
+                      }
+                    },
+                    {
+                      "Ref": "OperatorGroupWatchLogs7309A89A"
+                    },
+                    {
+                      "wildcard": {
+                        "Fn::Join": [
+                          "",
+                          [
+                            "*:log-group:",
+                            {
+                              "Ref": "OperatorGroupWatchLogs7309A89A"
+                            }
+                          ]
+                        ]
+                      }
+                    },
+                    {
+                      "wildcard": {
+                        "Fn::Join": [
+                          "",
+                          [
+                            "*:log-group:",
+                            {
+                              "Ref": "OperatorGroupWatchLogs7309A89A"
                             },
                             ":*"
                           ]
@@ -6924,6 +7534,252 @@
                 "detail-eventID": "$.detail.eventID"
               },
               "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on an operator audit alarm at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorGroupWatchAlarmChangesC2E3164B": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "An operator group watch alarm was disabled or deleted, or rewritten outside a deploy (supply-checkout-3sv.5)",
+        "EventPattern": {
+          "source": [
+            "aws.monitoring"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "monitoring.amazonaws.com"
+            ],
+            "$or": [
+              {
+                "eventName": [
+                  "DisableAlarmActions",
+                  "DeleteAlarms"
+                ],
+                "requestParameters": {
+                  "alarmNames": [
+                    {
+                      "Ref": "OperatorGroupWatchChanged900C2830"
+                    },
+                    {
+                      "Ref": "OperatorGroupWatchSilent532FE560"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "PutMetricAlarm"
+                ],
+                "requestParameters": {
+                  "alarmName": [
+                    {
+                      "Ref": "OperatorGroupWatchChanged900C2830"
+                    },
+                    {
+                      "Ref": "OperatorGroupWatchSilent532FE560"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-group-watch-alarms",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on an operator group watch alarm at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorGroupSnapshotChanges2735A311": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The operator group watch's snapshot parameter was changed or deleted by anyone but the watch or a deploy (supply-checkout-3sv.5)",
+        "EventPattern": {
+          "source": [
+            "aws.ssm"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "ssm.amazonaws.com"
+            ],
+            "$or": [
+              {
+                "eventName": [
+                  "PutParameter",
+                  "DeleteParameter",
+                  "LabelParameterVersion",
+                  "UnlabelParameterVersion"
+                ],
+                "requestParameters": {
+                  "name": [
+                    "/supply-checkout/prod/observability/operator-group-snapshot",
+                    {
+                      "wildcard": "*:parameter/supply-checkout/prod/observability/operator-group-snapshot"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ],
+                  "sessionContext": {
+                    "sessionIssuer": {
+                      "arn": [
+                        {
+                          "exists": false
+                        },
+                        {
+                          "anything-but": {
+                            "Fn::GetAtt": [
+                              "OperatorGroupWatchRole9830274D",
+                              "Arn"
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "eventName": [
+                  "DeleteParameters"
+                ],
+                "requestParameters": {
+                  "names": [
+                    "/supply-checkout/prod/observability/operator-group-snapshot",
+                    {
+                      "wildcard": "*:parameter/supply-checkout/prod/observability/operator-group-snapshot"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ],
+                  "sessionContext": {
+                    "sessionIssuer": {
+                      "arn": [
+                        {
+                          "exists": false
+                        },
+                        {
+                          "anything-but": {
+                            "Fn::GetAtt": [
+                              "OperatorGroupWatchRole9830274D",
+                              "Arn"
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-group-snapshot",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the operator group watch's snapshot at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
             }
           }
         ]
@@ -7952,6 +8808,20 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
+                  "OperatorGroupWatchChanged900C2830",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "OperatorGroupWatchSilent532FE560",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
                   "DeletionRecordsWatchRewritten0F9EA081",
                   "Arn"
                 ]
@@ -8127,7 +8997,11 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"ClosedTeamSubscriptionsEnded\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamSubscriptionsEnded (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersDeleted\",\"Region\",\"us-east-1\",{\"label\":\"StripeCustomersDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsEnded\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamSubscriptionsEnded (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersDeleted\",\"Region\",\"us-west-2\",{\"label\":\"StripeCustomersDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
+              "\",\"metrics\":[[\"SupplyCheckout\",\"ClosedTeamSubscriptionsEnded\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamSubscriptionsEnded (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersDeleted\",\"Region\",\"us-east-1\",{\"label\":\"StripeCustomersDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsEnded\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamSubscriptionsEnded (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersDeleted\",\"Region\",\"us-west-2\",{\"label\":\"StripeCustomersDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":79,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: group changes, resets and size\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorGroupChanged\",\"Region\",\"us-east-1\",{\"label\":\"OperatorGroupChanged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorGroupBaselineReset\",\"Region\",\"us-east-1\",{\"label\":\"OperatorGroupBaselineReset (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorGroupMembers\",\"Region\",\"us-east-1\",{\"label\":\"OperatorGroupMembers (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"OperatorGroupChanged\",\"Region\",\"us-west-2\",{\"label\":\"OperatorGroupChanged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorGroupBaselineReset\",\"Region\",\"us-west-2\",{\"label\":\"OperatorGroupBaselineReset (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorGroupMembers\",\"Region\",\"us-west-2\",{\"label\":\"OperatorGroupMembers (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}}]}"
             ]
           ]
         },

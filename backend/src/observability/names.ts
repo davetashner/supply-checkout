@@ -114,6 +114,12 @@ export const BusinessMetric = {
   OperatorAuditChanged: "OperatorAuditChanged",
   /** Heartbeats the operator audit watch read from the table's stream (OPERATOR_AUDIT_HEARTBEAT): none for a while means it isn't reading the stream, or its metrics aren't arriving. */
   OperatorAuditWatchHeartbeat: "OperatorAuditWatchHeartbeat",
+  /** Operators added to or removed from the operators group, disabled or enabled, since the operator group watch last looked (supply-checkout-3sv.5, primary region). */
+  OperatorGroupChanged: "OperatorGroupChanged",
+  /** Times the operator group watch had to start its snapshot again: the deploy's initial value, or one it couldn't read. Alarms P1 with OperatorGroupChanged. */
+  OperatorGroupBaselineReset: "OperatorGroupBaselineReset",
+  /** Users in the operators group, sent by every run of the operator group watch that finishes: none for a while means it isn't running. */
+  OperatorGroupMembers: "OperatorGroupMembers",
   /** Deletion records written over, deleted or hidden behind a delete marker, or objects in the bucket that aren't records: from the deletion records watch (primary region). */
   DeletionRecordRewrites: "DeletionRecordRewrites",
 } as const;
