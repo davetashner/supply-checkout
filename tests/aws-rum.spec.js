@@ -12,7 +12,7 @@ test.skip(currentBuild() !== "web", "RUM is only in the web build");
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const withRum = (extra = {}, options = {}) => new FakeBackend({ ...options, config: { ...CONFIG, ...RUM, ...extra } });
 
-test("reports an error with the release version, signed with the pool's guest credentials, and nothing personal", async ({ page }) => {
+test("reports an error with the release version, signed with the pool's guest credentials, and nothing personal", async ({ page, browserName }) => {
   const rum = new FakeRum();
   await rum.install(page);
   // An invite link, signed out: its token must never reach RUM
@@ -30,10 +30,10 @@ test("reports an error with the release version, signed with the pool's guest cr
   expect(error.details).toMatchObject({
     type: "Error",
     message: "Couldn't load https://supply-checkout.test/ and /teams/t1/sheets for [email] with [token]",
-    filename: "https://supply-checkout.test/",
-    lineno: 3,
-    colno: 7,
   });
+  // Chromium and WebKit report the event's position; Firefox takes it from the stack, which here is the evaluated code
+  if (browserName !== "firefox") expect(error.details).toMatchObject({ filename: "https://supply-checkout.test/", lineno: 3, colno: 7 });
+  expect(error.details.filename).not.toMatch(/[?#]|sign-in-code/);
   // With a stack trace (Chromium's starts with the message, scrubbed too; WebKit's doesn't)
   expect(error.details.stack).toEqual(expect.any(String));
   expect(error.metadata.pageId).toBe("/");
