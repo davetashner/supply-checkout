@@ -29,7 +29,7 @@ import {
   TeamDeletingError,
 } from "../src/data/index.js";
 import { OWNER_OPERATOR_AUDIT_ATTRIBUTES } from "../src/data/schema.js";
-import type { Observability } from "../src/observability/index.js";
+import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import type { OperatorDirectory } from "../src/operator/cognito.js";
 import { createOpsHandler, groupsClaim, type OpsEvent } from "../src/operator/ops-handler.js";
 import { fakeDb, REGION } from "./helpers.js";
@@ -56,6 +56,9 @@ let reopenCalls: ReopenRequest[];
 let reopenTags: string[];
 let tags: string[];
 let logs: unknown[];
+let counted: string[];
+let seatSyncs: [string, string][];
+let seatQueueDown: boolean;
 let directoryCalls: string[];
 let revoked: Set<string>;
 let groups: Map<string, string[]>;
@@ -68,7 +71,7 @@ function fakeObservability(): Observability {
   return {
     region: REGION,
     logger: { info: log, warn: log, error: log, addContext: () => {} } as unknown as Observability["logger"],
-    count: () => {},
+    count: (metric) => void counted.push(metric),
     gauge: () => {},
     flush: () => {},
   };
@@ -134,6 +137,9 @@ beforeEach(async () => {
   reopenTags = [];
   tags = [];
   logs = [];
+  counted = [];
+  seatSyncs = [];
+  seatQueueDown = false;
   directoryCalls = [];
   revoked = new Set();
   groups = new Map([[OPERATOR, ["operators"]]]);
@@ -151,6 +157,10 @@ beforeEach(async () => {
       reopenCalls.push(request);
       const reopen = createReopenHandler({ dbFor: (_sub, teamId) => { reopenTags.push(teamId ?? "."); return table.guarded(reopenPolicy(teamId ?? ".", reopenDenied)); }, obs: fakeObservability(), now: () => now });
       return JSON.parse(JSON.stringify(await reopen(JSON.parse(JSON.stringify(request)))));
+    },
+    seats: async (customer, reason) => {
+      if (seatQueueDown) throw Object.assign(new Error("SQS is down"), { name: "QueueDoesNotExist" });
+      seatSyncs.push([customer, reason]);
     },
     directory,
     issuerUrl: OPS_ISSUER,
@@ -761,6 +771,37 @@ describe("reopening a closed team (supply-checkout-6uw.6)", () => {
     expect(reopenDenied).toEqual([]);
     expect(reopenTags).toEqual([teamC]);
     expect(reopenCalls).toEqual([{ operatorSub: OPERATOR, teamId: teamC, reason: "Owner closed it by mistake", expectedVersion: version, idempotencyKey: "reopen-key-0001" }]);
+  });
+
+  it("queues a seat sync for the team's Stripe customer after a reopen, and again on a replay (supply-checkout-8jc.21)", async () => {
+    const closed = await closeC(24 * 60);
+    table.put({ ...teamOf(teamC), stripeCustomerId: "cus_team_c" });
+    expect((await reopen(teamC, { reason: "Disputed closure", expectedVersion: closed.version })).status).toBe(200);
+    expect(seatSyncs).toEqual([["cus_team_c", "membership"]]);
+    // A retry replays the reopen, and queues another sync: harmless, the worker recomputes the quantity
+    expect((await reopen(teamC, { reason: "Disputed closure", expectedVersion: closed.version })).body.replayed).toBe(true);
+    expect(seatSyncs).toHaveLength(2);
+    // Read from the operators' index on the ops function's own role, never a session for the team
+    expect(denied).toEqual([]);
+    expect(tags.filter((t) => t.endsWith(` ${teamC}`))).toEqual([]);
+  });
+
+  it("queues nothing for a team with no Stripe customer, or when the reopen is refused", async () => {
+    const closed = await closeC(24 * 60);
+    expect((await reopen(teamC, { reason: "Too early", expectedVersion: (closed.version as number) + 1 })).status).toBe(409);
+    expect((await reopen(teamC, { reason: "Disputed closure", expectedVersion: closed.version })).status).toBe(200);
+    expect(seatSyncs).toEqual([]);
+  });
+
+  it("still reopens when the seat sync can't be queued, and logs and counts it", async () => {
+    const closed = await closeC(24 * 60);
+    table.put({ ...teamOf(teamC), stripeCustomerId: "cus_team_c" });
+    seatQueueDown = true;
+    const res = await reopen(teamC, { reason: "Disputed closure", expectedVersion: closed.version });
+    expect(res.status).toBe(200);
+    expect(teamOf(teamC).closedAt).toBeUndefined();
+    expect(counted).toContain(BusinessMetric.SeatSyncQueueFailures);
+    expect(logs).toContainEqual(["Seat sync not queued", { teamId: teamC, code: "QueueDoesNotExist" }]);
   });
 
   it("shows the owners what support did, never who", async () => {

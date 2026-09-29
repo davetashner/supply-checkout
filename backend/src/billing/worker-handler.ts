@@ -13,7 +13,7 @@ import { parseMessage, type QueueMessage } from "./worker.js";
  * sync, and a record from anywhere else (the billing queue) a Stripe event,
  * so nothing that can send seat syncs can pass one off as an event.
  */
-export function createWorkerHandler(apply: (message: QueueMessage) => Promise<unknown>, obs: Observability, seatQueueArn?: string) {
+export function createWorkerHandler(apply: (message: QueueMessage, delivery: string) => Promise<unknown>, obs: Observability, seatQueueArn?: string) {
   return async (event: SQSEvent): Promise<SQSBatchResponse> => {
     const failedGroups = new Set<string>();
     const batchItemFailures: { itemIdentifier: string }[] = [];
@@ -24,7 +24,8 @@ export function createWorkerHandler(apply: (message: QueueMessage) => Promise<un
         continue;
       }
       try {
-        await apply(seatQueueArn !== undefined && record.eventSourceARN === seatQueueArn ? parseSeatSync(record.body) : parseMessage(record.body));
+        // The SQS message ID goes along: the same on every receive of this message, new for any other (seats.ts, "Idempotency")
+        await apply(seatQueueArn !== undefined && record.eventSourceARN === seatQueueArn ? parseSeatSync(record.body) : parseMessage(record.body), record.messageId);
       } catch (error) {
         // The error's name only: a Stripe or DynamoDB message can echo request data
         obs.logger.error("Billing event failed", { messageId: record.messageId, code: (error as { name?: string } | null)?.name ?? "Unknown" });

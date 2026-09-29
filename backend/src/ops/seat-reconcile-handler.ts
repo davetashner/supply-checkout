@@ -20,14 +20,17 @@
 //
 // Deduplication: one message per customer per UTC day, so a second run the
 // same day (by hand, after a deploy) within SQS's five minutes queues nothing
-// twice. If some messages aren't accepted, the rest still go, and the run
+// twice. A run after that queues the same message IDs again, as new SQS
+// messages: the worker folds the SQS message ID into Stripe's idempotency key
+// (billing/seats.ts), so it never replays an update Stripe cached from the
+// earlier run. If some messages aren't accepted, the rest still go, and the run
 // throws at the end (the Lambda errors metric), naming how many.
 //
 // When the nightly entitlement reconciliation (supply-checkout-8jc.9) lands,
 // it can queue its own checks from this same listing, or fold this in.
 
 import { SendMessageBatchCommand, SQSClient } from "@aws-sdk/client-sqs";
-import type { SeatSyncMessage } from "../billing/seats.js";
+import type { SeatSyncMessage } from "../billing/seat-queue.js";
 import { type Db, listTeamsToReconcile } from "../data/index.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import { SEAT_RECONCILE_BATCH } from "./names.js";

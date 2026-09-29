@@ -581,7 +581,17 @@ for f in $FNS; do aws lambda delete-function-concurrency $P --function-name "$f"
 date -u +%FT%TZ   # writes back on
 ```
 
-Sign in, open a team, add a sheet line, and watch the alarms clear and the canary pass. Then delete the restored table ([Clean up](#clean-up)), and write the times in the [drill log](#drill-log).
+Sign in, open a team, add a sheet line, and watch the alarms clear and the canary pass.
+
+Then put every subscribed team's seat quantity right: the copy-back took teams' members back to the recovery point, and step 4 removed deleted accounts, all without a seat sync (the worker reads the live table, so a sync queued during step 4 would have counted the old members). Run the nightly seat reconciliation once by hand, now that the billing worker runs again:
+
+```bash
+aws lambda invoke $P --function-name supply-checkout-prod-seat-reconcile /dev/stdout   # {"queued": <teams>}
+```
+
+The billing worker's `Seat quantity drift` lines name each team it corrected, and Seat counts drifting fires for them: expected after a restore. A team whose quantity went down may need a credit for the time it was overbilled (see "Seat counts drifting: what to do" in [journeys](journeys.md)). Running it again the same day is safe: each run's messages are new deliveries, so none replays an earlier update.
+
+Then delete the restored table ([Clean up](#clean-up)), and write the times in the [drill log](#drill-log).
 
 ### How it's tested
 

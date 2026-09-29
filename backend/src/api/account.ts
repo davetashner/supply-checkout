@@ -3,7 +3,7 @@
 // built once per container, outside the handler.
 
 import { BILLING_ENV } from "../billing/names.js";
-import { sqsSeatSyncQueue } from "../billing/seats.js";
+import { sqsSeatSyncQueue } from "../billing/seat-queue.js";
 import { deletionLogFromEnv } from "../deletions/records.js";
 import { mailerFromEnv } from "../email/mailer.js";
 import { createObservability, withObservability } from "../observability/index.js";

@@ -525,7 +525,24 @@ describe("messages and state", () => {
   it("parses only well-formed billing messages", () => {
     const good = message("invoice.paid");
     expect(parseMessage(JSON.stringify(good))).toEqual(good);
-    for (const bad of [{ ...good, eventId: "evt#1" }, { ...good, customer: 7 }, { ...good, type: "customer.created" }, { ...good, created: "now" }, { ...good, subscription: "sub/1" }, null]) {
+    // Only the fields it checked come back (supply-checkout-8jc.21)
+    const full = { ...good, status: "active", previousStatus: "trialing", trialEnd: 1, nextAttempt: 2 };
+    expect(parseMessage(JSON.stringify({ ...full, extra: "dropped", id: "x", reason: "reconcile" }))).toEqual(full);
+    for (const bad of [
+      { ...good, eventId: "evt#1" },
+      { ...good, customer: 7 },
+      { ...good, type: "customer.created" },
+      { ...good, created: "now" },
+      { ...good, subscription: "sub/1" },
+      // Never a seat sync in disguise: the worker tells them apart by `kind`
+      { ...good, kind: "seats" },
+      { ...good, kind: undefined, status: 1 },
+      { ...good, previousStatus: false },
+      { ...good, trialEnd: "soon" },
+      { ...good, nextAttempt: "later" },
+      [good],
+      null,
+    ]) {
       expect(() => parseMessage(JSON.stringify(bad))).toThrow("Not a billing message");
     }
     expect(() => parseMessage("not json")).toThrow();

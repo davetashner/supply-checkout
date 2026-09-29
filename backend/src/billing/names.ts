@@ -67,6 +67,17 @@ export const billingResourceNames = (envName: string) => ({
 export const BILLING_MAX_RECEIVES = 5;
 
 /**
+ * The most billing worker instances the seat sync queue runs at once (its
+ * event source mapping's maximumConcurrency; Lambda's minimum is 2). The
+ * nightly reconciliation queues a sync for every subscribed team at once, and
+ * each sync makes one or two Stripe calls in a few hundred milliseconds, so 5
+ * keeps the fan-out near 20 requests a second: under Stripe's rate limit
+ * (100 a second live, 25 in test mode) with room for the billing queue's
+ * events, which the mapping doesn't limit.
+ */
+export const SEAT_SYNC_MAX_CONCURRENCY = 5;
+
+/**
  * The Stripe events the webhook takes (ADR 0009). Anything else is answered
  * 200 and dropped, so Stripe doesn't retry it. Subscribe the endpoint to
  * exactly these.

@@ -67,7 +67,7 @@ import {
   WEBHOOK_RECORD_ATTRIBUTES,
   WEBHOOK_RECORD_PREFIX,
 } from "../../../backend/src/data/schema.js";
-import { BILLING_ENV, BILLING_MAX_RECEIVES, billingResourceNames, STRIPE_ENV, stripeSecretName, stripeWebhookSecretName } from "../../../backend/src/billing/names.js";
+import { BILLING_ENV, BILLING_MAX_RECEIVES, billingResourceNames, SEAT_SYNC_MAX_CONCURRENCY, STRIPE_ENV, stripeSecretName, stripeWebhookSecretName } from "../../../backend/src/billing/names.js";
 import { BILLING_WORKER_TAGS } from "../../../backend/src/billing/worker-db.js";
 import { type DeploymentConfig, stripeModeOf, stripeSecretArn, stripeWebhookSecretArn } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
@@ -460,6 +460,9 @@ export class ApiStack extends SupplyCheckoutStack {
       this.operatorAccessRole = ops.role;
       this.opsReopenFunction = ops.reopen;
       this.operatorReopenRole = ops.reopenRole;
+      // A seat sync after an operator reopens a team (backend/src/operator/ops-handler.ts): the ops function may send to the seat sync queue, and never to the billing queue
+      ops.fn.addToRolePolicy(new PolicyStatement({ sid: "QueueSeatSyncs", actions: ["sqs:SendMessage"], resources: [events.seatQueue.queueArn] }));
+      ops.fn.addEnvironment(BILLING_ENV.seatQueueUrl, events.seatQueue.queueUrl);
       const opsAuthorizer = opsJwtAuthorizer(this, { envName: config.envName });
       const opsIntegration = new HttpLambdaIntegration("OpsIntegration", this.live(ops.fn));
       for (const route of OPS_ROUTES) {
@@ -726,7 +729,8 @@ export class ApiStack extends SupplyCheckoutStack {
       "billing",
     );
     worker.addEventSource(new SqsEventSource(queue, { batchSize: 1, reportBatchItemFailures: true }));
-    worker.addEventSource(new SqsEventSource(seatQueue, { batchSize: 1, reportBatchItemFailures: true }));
+    // Capped, so the nightly reconciliation's fan-out stays under Stripe's rate limit (SEAT_SYNC_MAX_CONCURRENCY)
+    worker.addEventSource(new SqsEventSource(seatQueue, { batchSize: 1, reportBatchItemFailures: true, maxConcurrency: SEAT_SYNC_MAX_CONCURRENCY }));
     worker.addEnvironment(BILLING_ENV.seatQueueArn, seatQueue.queueArn);
     worker.addToRolePolicy(new PolicyStatement({ sid: "ReadStripeSecretKey", actions: ["secretsmanager:GetSecretValue"], resources: [stripeSecretArn(where, config.envName, mode)] }));
     // Trial-ending, payment-failed and read-only emails to owners

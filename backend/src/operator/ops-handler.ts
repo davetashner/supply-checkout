@@ -32,6 +32,14 @@
 // attributes, and only append audit items. Every change is audited in its own
 // transaction (data/operator.ts). Log lines carry the action, the team ID,
 // the operator's `sub` and the status: never emails, names or tokens.
+//
+// After an operator reopens a team, it queues a seat sync for the team's
+// Stripe customer (billing/seats.ts), as the account function does after an
+// owner reopens one: members may have left while it was closed. Best effort,
+// like there: the reopen stands, and a sync that couldn't be queued is logged
+// and counted (SeatSyncQueueFailures); the nightly reconciliation puts it
+// right. Its only other permission for that is sqs:SendMessage on the seat
+// sync queue.
 
 import type { APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyStructuredResultV2, Context } from "aws-lambda";
 import {
@@ -47,6 +55,7 @@ import {
   listStuckImportsForOps,
   NotFoundError,
   type Operator,
+  opsTeamStripeCustomer,
   type OperatorAuditEvent,
   type OperatorAuditSummary,
   type OpsOwner,
@@ -55,7 +64,8 @@ import {
 } from "../data/index.js";
 import { OPERATORS_GROUP } from "../identity/names.js";
 import { STUCK_IMPORT_AFTER_MINUTES } from "../ops/names.js";
-import type { Observability } from "../observability/index.js";
+import type { SeatSyncQueue } from "../billing/seat-queue.js";
+import { BusinessMetric, type Observability } from "../observability/index.js";
 import { ApiError, errorFor as apiErrorFor, errorResponse, header, json, jsonBody } from "../api/http.js";
 import { IDEMPOTENCY_HEADER, OPS_ROUTES, type OpsRoute, routeKey } from "../api/routes.js";
 import type { OperatorDirectory } from "./cognito.js";
@@ -69,6 +79,8 @@ export interface OpsHandlerDeps {
   readonly directory: OperatorDirectory;
   /** Reopens a closed team through the operator reopen function: this function's role can't write closure fields. */
   readonly reopen: Reopener;
+  /** Queues a seat sync after a reopen (see the top). */
+  readonly seats?: SeatSyncQueue;
   /** The operator pool's issuer URL. */
   readonly issuerUrl: string;
   /** The operator pool's `ops` client ID. */
@@ -186,6 +198,18 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
 
   type Result = { response: APIGatewayProxyStructuredResultV2; teamId?: string };
 
+  /** A seat sync for the reopened team's Stripe customer, if it has one. Never throws (see the top). */
+  async function queueSeatSync(op: Operator, teamId: string): Promise<void> {
+    if (!deps.seats) return;
+    try {
+      const customer = await opsTeamStripeCustomer(deps.dbFor(op.sub), op, teamId);
+      if (customer) await deps.seats(customer, "membership");
+    } catch (error) {
+      obs.logger.warn("Seat sync not queued", { teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      obs.count(BusinessMetric.SeatSyncQueueFailures, 1, { teamId });
+    }
+  }
+
   const actions: Record<OpsRoute["action"], (event: OpsEvent, op: Operator) => Promise<Result>> = {
     async listTeams(event, op) {
       const q = event.queryStringParameters ?? {};
@@ -236,6 +260,8 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
         if (kind === "not_found") throw new ApiError(404, "not_found", message);
         throw new ApiError(409, "aborted", message, kind === "team_deleting" ? "team_deleting" : undefined);
       }
+      // A replay too: harmless, since the quantity is recomputed, and it covers a first try whose sync wasn't queued
+      await queueSeatSync(op, teamId);
       return { teamId, response: json(200, answer.outcome) };
     },
     async listAudit(event, op) {

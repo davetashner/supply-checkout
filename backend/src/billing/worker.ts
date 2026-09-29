@@ -101,21 +101,36 @@ export type Outcome = "applied" | "duplicate" | "unknown_customer" | "team_gone"
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const iso = (seconds: number | null | undefined) => (typeof seconds === "number" && Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString() : undefined);
 
-/** A queue message, checked: the webhook wrote it, but the worker trusts no shape it didn't check. */
+const optional = (value: unknown, type: "string" | "number") => value === undefined || typeof value === type;
+
+/**
+ * A queue message, checked: the webhook wrote it, but the worker trusts no
+ * shape it didn't check. It returns only the fields it checked, and refuses
+ * one with a `kind`, so nothing on the billing queue can be taken for a
+ * seat sync (the worker tells them apart by `kind`).
+ */
 export function parseMessage(body: string): BillingMessage {
-  const m = JSON.parse(body) as Partial<BillingMessage>;
+  const m = JSON.parse(body) as Record<string, unknown> | null;
   const ok =
     typeof m === "object" &&
     m !== null &&
+    !Array.isArray(m) &&
+    !("kind" in m) &&
     typeof m.eventId === "string" &&
     ID.test(m.eventId) &&
     typeof m.customer === "string" &&
     ID.test(m.customer) &&
-    (BILLING_EVENTS as readonly string[]).includes(m.type as string) &&
+    (BILLING_EVENTS as readonly unknown[]).includes(m.type) &&
     typeof m.created === "number" &&
-    (m.subscription === undefined || (typeof m.subscription === "string" && ID.test(m.subscription)));
+    (m.subscription === undefined || (typeof m.subscription === "string" && ID.test(m.subscription))) &&
+    optional(m.status, "string") &&
+    optional(m.previousStatus, "string") &&
+    optional(m.trialEnd, "number") &&
+    optional(m.nextAttempt, "number");
   if (!ok) throw new Error("Not a billing message");
-  return m as BillingMessage;
+  const picked: Record<string, unknown> = { eventId: m.eventId, type: m.type, created: m.created, customer: m.customer };
+  for (const field of ["subscription", "status", "previousStatus", "trialEnd", "nextAttempt"] as const) if (m[field] !== undefined) picked[field] = m[field];
+  return picked as unknown as BillingMessage;
 }
 
 /** What the worker takes: a verified Stripe event from the billing queue, or a seat sync from the seat sync queue (seats.ts). */
@@ -271,14 +286,15 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
 
   const seats = createSeatSync({ dbFor: deps.dbFor, stripe: deps.stripe, obs, now: deps.now });
 
-  return async (message: QueueMessage): Promise<Outcome | SeatOutcome> => {
+  /** `delivery` is the SQS message ID that delivered it, when a queue did: part of a seat update's idempotency key (seats.ts). */
+  return async (message: QueueMessage, delivery?: string): Promise<Outcome | SeatOutcome> => {
     // Checked again here, whatever handed it over: only a well-formed seat sync goes to the seat sync
-    if ("kind" in message) return seats(parseSeatSync(JSON.stringify(message)));
+    if ("kind" in message) return seats(parseSeatSync(JSON.stringify(message)), delivery);
     const outcome = await process(message);
     obs.logger.info("Billing event", { eventId: message.eventId, type: message.type, outcome });
     // 6: after the event is recorded, so a failure here retries only this (the event is a duplicate then)
     if (message.subscription && (outcome === "applied" || outcome === "duplicate")) {
-      await seats({ kind: "seats", id: message.eventId, customer: message.customer, reason: "subscription", created: message.created });
+      await seats({ kind: "seats", id: message.eventId, customer: message.customer, reason: "subscription", created: message.created }, delivery);
     }
     return outcome;
   };
