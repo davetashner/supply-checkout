@@ -627,8 +627,16 @@ describe("scheduled checks", () => {
       ["dynamodb:GetItem", "dynamodb:DeleteItem"],
       "dynamodb:UpdateItem",
       ["kms:Decrypt", "kms:DescribeKey"],
+      "secretsmanager:GetSecretValue",
       "s3:PutObject",
     ]);
+    // The Stripe secret key of this environment's mode, and no other secret
+    expect(found.find((s) => s.Sid === "ReadStripeSecretKey")).toEqual({
+      Sid: "ReadStripeSecretKey",
+      Effect: "Allow",
+      Action: "secretsmanager:GetSecretValue",
+      Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:secretsmanager:${EAST}:`, { Ref: "AWS::AccountId" }, ":secret:supply-checkout/prod/stripe/test-secret-key-??????"]] },
+    });
     // Team deletion records only: no reads, deletes or retention changes, and not users/
     expect(found.at(-1)).toEqual({
       Sid: "PutTeamDeletionRecords",
@@ -641,8 +649,10 @@ describe("scheduled checks", () => {
     expect((fn.Environment as { Variables: Record<string, unknown> }).Variables).toMatchObject({
       DELETIONS_BUCKET: { "Fn::Join": ["", [`supply-checkout-prod-deletions-${EAST}-`, { Ref: "AWS::AccountId" }]] },
       DELETIONS_REGION: EAST,
+      STRIPE_SECRET_ID: "supply-checkout/prod/stripe/test-secret-key",
+      STRIPE_MODE: "test",
     });
-    const attributes = ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "purgeAfter", "purging", "stripeCustomerId", "teamId"];
+    const attributes = ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "purgeAfter", "purging", "stripeCustomerId", "stripeSubscriptionId", "stripeCancelledFor", "teamId"];
     const [, index, query, items, mark] = found as Record<string, unknown>[];
     expect(index?.Condition).toEqual({
       "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAMS#CLOSED"], "dynamodb:Attributes": attributes },
@@ -664,11 +674,12 @@ describe("scheduled checks", () => {
       "ForAllValues:StringEquals": { "dynamodb:Attributes": attributes },
       StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
     });
-    // The purging mark: team partitions only, naming only the META item's key, purgeAfter and the mark: never closedAt, so it can't close or reopen a team
+    // The purging mark and the subscription-ended record: team partitions only, naming only the META item's key, purgeAfter
+    // and the two marks: never closedAt, so it can't close or reopen a team
     expect(mark?.Resource).toEqual(table);
     expect(mark?.Condition).toEqual({
       "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
-      "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "purgeAfter", "purging"] },
+      "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "purgeAfter", "purging", "stripeCancelledFor"] },
       StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
     });
   });

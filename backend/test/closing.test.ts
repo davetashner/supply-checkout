@@ -14,6 +14,7 @@ import {
   cancelAccountDeletion,
   CLOSED_TEAM_RETENTION_DAYS,
   closeTeam,
+  closedTeamToEnd,
   ConflictError,
   countTeamsDueBefore,
   createInvite,
@@ -26,6 +27,8 @@ import {
   LastOwnerError,
   LimitReachedError,
   linkStripeCustomer,
+  markSubscriptionEnding,
+  listClosedTeamsToEnd,
   listInvitesForEmail,
   listTeamsForUser,
   listTeamsToPurge,
@@ -214,6 +217,43 @@ describe.skipIf(!endpoint)("closing teams and deleting accounts (DynamoDB Local)
     };
     return dbFromConnection({ ...real, doc: { send } as unknown as typeof real.doc });
   }
+
+  it("lists closed teams whose subscription isn't set to end for this closure, and records it only for that closure", async () => {
+    const now = new Date("2026-09-06T00:00:00.000Z");
+    const { teamId, owner } = await team(now);
+    const bare = await team(now);
+    await linkStripeCustomer(table.db, owner, `cus_${teamId.slice(0, 8)}`);
+    // The billing worker records the subscription (system writes; set directly here)
+    await connection(table.db).doc.send(
+      new UpdateCommand({ TableName: table.db.tableName, Key: { PK: `TEAM#${teamId}`, SK: "META" }, UpdateExpression: "SET stripeSubscriptionId = :sub", ExpressionAttributeValues: { ":sub": "sub_ddb_1" } }),
+    );
+    // Open: not listed
+    expect((await listClosedTeamsToEnd(table.db)).map((t) => t.teamId)).not.toContain(teamId);
+    expect(await closedTeamToEnd(table.db, teamId)).toBeUndefined();
+    await closeTeam(table.db, owner, { confirmName: "Echo Cleaning" }, now);
+    await closeTeam(table.db, bare.owner, { confirmName: "Echo Cleaning" }, now);
+    const purgeAfter = new Date(now.getTime() + CLOSED_TEAM_RETENTION_DAYS * DAY).toISOString();
+    const expected = { teamId, closedAt: now.toISOString(), purgeAfter, stripeCustomerId: `cus_${teamId.slice(0, 8)}`, stripeSubscriptionId: "sub_ddb_1" };
+    // The index is eventually consistent: DynamoDB Local's is immediate
+    const listed = await listClosedTeamsToEnd(table.db, 1000);
+    expect(listed).toContainEqual(expected);
+    // Closed without a subscription: nothing to end
+    expect(listed.map((t) => t.teamId)).not.toContain(bare.teamId);
+    expect(await closedTeamToEnd(table.db, teamId)).toEqual(expected);
+    // Another closure's purgeAfter: refused, nothing recorded
+    expect(await markSubscriptionEnding(table.db, { ...expected, purgeAfter: new Date(now.getTime() + DAY).toISOString() })).toBe(false);
+    expect(await rawItem(table.db, `TEAM#${teamId}`, "META")).not.toHaveProperty("stripeCancelledFor");
+    expect(await markSubscriptionEnding(table.db, expected)).toBe(true);
+    expect(await rawItem(table.db, `TEAM#${teamId}`, "META")).toMatchObject({ stripeCancelledFor: now.toISOString(), closedAt: now.toISOString() });
+    expect((await listClosedTeamsToEnd(table.db, 1000)).map((t) => t.teamId)).not.toContain(teamId);
+    expect(await closedTeamToEnd(table.db, teamId)).toBeUndefined();
+    // Reopened and closed again: a new closure, listed again
+    const later = new Date(now.getTime() + DAY);
+    await reopenTeam(table.db, await authorizeTeam(table.db, owner.userId, teamId), { confirmName: "Echo Cleaning" }, later);
+    expect(await markSubscriptionEnding(table.db, expected)).toBe(false);
+    await closeTeam(table.db, await authorizeTeam(table.db, owner.userId, teamId), { confirmName: "Echo Cleaning" }, later);
+    expect(await closedTeamToEnd(table.db, teamId)).toMatchObject({ closedAt: later.toISOString() });
+  });
 
   it("counts the closed teams due before a time on the index, without listing them", async () => {
     const now = new Date("2026-09-02T00:00:00.000Z");

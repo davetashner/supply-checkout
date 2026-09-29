@@ -10,8 +10,10 @@ import { LogGroup } from "aws-cdk-lib/aws-logs";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
 import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, GSI1, STUCK_IMPORT_ATTRIBUTES, TEAM_PURGE_ATTRIBUTES, TEAM_PURGE_MARK_ATTRIBUTES } from "../../../backend/src/data/schema.js";
+import { STRIPE_ENV, stripeSecretName, type StripeMode } from "../../../backend/src/billing/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import { CHECK_EVERY_MINUTES, OPS_ENV, opsResourceNames, PURGE_BUDGET_MS, PURGE_EVERY_HOURS, PURGE_SILENT_ALARM_HOURS } from "../../../backend/src/ops/names.js";
+import { stripeSecretArn } from "../config.js";
 import { grantPutDeletionRecords } from "../deletions.js";
 import { bundling } from "../stacks/api-stack.js";
 import type { AlarmTopics } from "./alarm-topics.js";
@@ -26,6 +28,8 @@ export interface OpsChecksProps {
   readonly tableName: string;
   /** This region's alarm topics, for the alarm on the purge itself. */
   readonly topics: AlarmTopics;
+  /** Which Stripe secret key the purge reads (stripeModeOf), to end closed teams' subscriptions and delete purged teams' customers. */
+  readonly stripeMode: StripeMode;
 }
 
 /**
@@ -60,7 +64,14 @@ export interface OpsChecksProps {
  *   gauge stops arriving ("Deletion job not running", docs/journeys.md).
  *   Once a team is marked, and before it deletes anything, it writes the
  *   team's deletion record: s3:PutObject under `teams/` in the deletion
- *   records bucket only.
+ *   records bucket only. It also ends closed teams' Stripe subscriptions
+ *   and deletes purged teams' Stripe customers (supply-checkout-t0en,
+ *   backend/src/billing/closing.ts): it reads GSI1's closed-teams partition
+ *   for them (TEAM_PURGE_ATTRIBUTES includes the Stripe subscription and
+ *   `stripeCancelledFor`), records each with the same UpdateItem grant
+ *   (TEAM_PURGE_MARK_ATTRIBUTES includes `stripeCancelledFor`, still never
+ *   `closedAt`), and may read the one Stripe secret key for this
+ *   environment and mode (secretsmanager:GetSecretValue on its ARN only).
  *
  * The checks run every CHECK_EVERY_MINUTES from an EventBridge rule, each with its own
  * log group and a role that writes only to it. A failed run shows in the
@@ -123,8 +134,8 @@ export class OpsChecks extends Construct {
       "team-purge",
       {
         functionName: names.teamPurgeFunction,
-        description: "Deletes closed teams once their 30-day read-only period ends",
-        environment: { [OPS_ENV.tableName]: props.tableName },
+        description: "Ends closed teams' Stripe subscriptions, and deletes closed teams (and their Stripe customers) once their 30-day read-only period ends",
+        environment: { [OPS_ENV.tableName]: props.tableName, [STRIPE_ENV.secretId]: stripeSecretName(props.envName, props.stripeMode), [STRIPE_ENV.mode]: props.stripeMode },
       },
       { every: Duration.hours(PURGE_EVERY_HOURS), timeout: Duration.millis(PURGE_BUDGET_MS + 60_000) },
     );
@@ -174,9 +185,10 @@ export class OpsChecks extends Construct {
     this.teamPurge.addToRolePolicy(
       new PolicyStatement({
         sid: "MarkClosedTeamPurging",
-        // One update: `purging` on a team's META item, conditioned on its purgeAfter,
-        // before anything is deleted, so reopenTeam refuses it from then on. Not
-        // closedAt: this grant can't close or reopen a team
+        // Two updates, each conditioned on the META item's purgeAfter: `purging`, before
+        // anything is deleted, so reopenTeam refuses it from then on, and
+        // `stripeCancelledFor`, once its subscription is set to end. Not closedAt: this
+        // grant can't close or reopen a team
         actions: ["dynamodb:UpdateItem"],
         resources: [tableArn],
         conditions: {
@@ -193,6 +205,15 @@ export class OpsChecks extends Construct {
         actions: ["kms:Decrypt", "kms:DescribeKey"],
         resources: [tableKey],
         conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
+      }),
+    );
+    // The Stripe secret key: this one secret only, in this (the primary) region. It's encrypted
+    // with Secrets Manager's AWS-managed key, which allows its use through Secrets Manager
+    this.teamPurge.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ReadStripeSecretKey",
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: [stripeSecretArn({ partition: Aws.PARTITION, region: Stack.of(this).region, account: Aws.ACCOUNT_ID }, props.envName, props.stripeMode)],
       }),
     );
     // The checks run in the primary region only, so this stack's region is the bucket's

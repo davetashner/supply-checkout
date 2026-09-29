@@ -144,6 +144,8 @@ export class OpsDashboard extends Construct {
       businessGraph("Operators: audit watch heartbeats", [BusinessMetric.OperatorAuditWatchHeartbeat]),
       // The deletion records watch (primary region): any point here is a P2
       businessGraph("Backups: deletion records rewritten or deleted", [BusinessMetric.DeletionRecordRewrites]),
+      // Closed teams' subscriptions ended, and purged teams' Stripe customers deleted (supply-checkout-t0en)
+      businessGraph("J7: closed teams' subscriptions ended, Stripe customers deleted", [BusinessMetric.ClosedTeamSubscriptionsEnded, BusinessMetric.StripeCustomersDeleted]),
     );
   }
 }

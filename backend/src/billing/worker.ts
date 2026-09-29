@@ -5,7 +5,11 @@
 // 1. Skip it if its record says it was already applied (markWebhookProcessed).
 // 2. Find the team from our own link for the event's customer (never from the
 //    event). An unknown customer, a purged team (no META item), a closed team
-//    or one the purge has started on: record the event and change nothing.
+//    or one the purge has started on: record the event and change nothing on
+//    the team. For a closed team (not yet purging), its subscription is also
+//    ended if it's still live (closing.ts): a checkout that finished after
+//    the team closed, whose subscription the team never recorded, would
+//    otherwise renew. The team is never reopened or written to.
 // 3. Fetch the subscription's latest state from Stripe and apply it (plan,
 //    seats, status, interval, period end) with applySubscription, whose
 //    conditions never recreate a purged team or touch a closed one. Applying
@@ -26,8 +30,10 @@
 // names. Never an owner's email or a name.
 
 import { planForLookupKey } from "./catalog.js";
+import { type ClosingStripe, customerOf, endSubscriptionForClosedTeam } from "./closing.js";
 import {
   applySubscription,
+  type BillingTeam,
   claimBillingNotice,
   type Db,
   getBillingTeam,
@@ -60,19 +66,16 @@ export interface SubscriptionLike {
   readonly items: {
     readonly data: readonly {
       readonly quantity?: number;
+      /** When the period began: the purge warns of one that began after the team closed (a renewal to refund). */
+      readonly current_period_start?: number;
       readonly current_period_end: number;
       readonly price: { readonly lookup_key: string | null; readonly recurring: { readonly interval: string } | null };
     }[];
   };
 }
 
-/** What the worker needs from the Stripe client. */
-export interface WorkerStripe {
-  readonly subscriptions: {
-    retrieve(id: string): PromiseLike<SubscriptionLike>;
-    cancel(id: string, params: Record<string, never>, options: { idempotencyKey: string }): PromiseLike<unknown>;
-  };
-}
+/** What the worker needs from the Stripe client: reading a subscription, cancelling a second one, and ending a closed team's (closing.ts). */
+export type WorkerStripe = ClosingStripe;
 
 export interface BillingWorkerDeps {
   readonly dbFor: DbForWorker;
@@ -87,7 +90,6 @@ export type Outcome = "applied" | "duplicate" | "unknown_customer" | "team_gone"
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const iso = (seconds: number | null | undefined) => (typeof seconds === "number" && Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString() : undefined);
-const idOf = (value: string | { readonly id: string }) => (typeof value === "string" ? value : value.id);
 
 /** A queue message, checked: the webhook wrote it, but the worker trusts no shape it didn't check. */
 export function parseMessage(body: string): BillingMessage {
@@ -186,6 +188,23 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     }
   }
 
+  /**
+   * Ends the event's subscription if it's still live on a closed team (closing.ts): the
+   * subscription as fetched (`sub`), or fetched here. Only the customer's own. Throws on a
+   * Stripe failure, so the event is retried.
+   */
+  async function endForClosedTeam(message: BillingMessage, team: BillingTeam, sub?: SubscriptionLike): Promise<void> {
+    if (!message.subscription || !team.closedAt) return;
+    const stripe = await deps.stripe();
+    const current = sub ?? (await stripe.subscriptions.retrieve(message.subscription));
+    if (customerOf(current) !== message.customer) return;
+    const action = await endSubscriptionForClosedTeam(stripe, current, { teamId: team.teamId, closedAt: team.closedAt });
+    if (action !== "none") {
+      obs.count(BusinessMetric.ClosedTeamSubscriptionsEnded, 1, { teamId: team.teamId, action });
+      obs.logger.info("Closed team's subscription ended", { teamId: team.teamId, eventId: message.eventId, subscriptionId: current.id, status: current.status, action });
+    }
+  }
+
   /** Applies one event. Throws to have it retried. */
   async function process(message: BillingMessage): Promise<Outcome> {
     const { eventId, customer } = message;
@@ -202,12 +221,17 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     if (!ctx || ctx.teamId !== teamId) return done("team_gone");
     const team = await getBillingTeam(db, ctx, now());
     if (!team) return done("team_gone");
-    // A closed team changes no more (supply-checkout-t0en), and a purging one is going
-    if (team.closed || team.purging) return done("team_closed");
+    // A purging team is going: the purge deletes its Stripe customer, which ends any subscription
+    if (team.purging) return done("team_closed");
+    // A closed team changes no more (supply-checkout-t0en), but a subscription still live on it is ended
+    if (team.closed) {
+      await endForClosedTeam(message, team);
+      return done("team_closed");
+    }
     if (!message.subscription) return done("ignored");
     const stripe = await deps.stripe();
     const sub = await stripe.subscriptions.retrieve(message.subscription);
-    if (idOf(sub.customer) !== customer) return done("ignored");
+    if (customerOf(sub) !== customer) return done("ignored");
     const chosen = await choose(stripe, sub, team.stripeSubscriptionId, team.status);
     if (!chosen) {
       // One subscription per team: cancel the second at once, so its trial never turns
@@ -219,7 +243,12 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
       return done("second_subscription_canceled");
     }
     const result = await applySubscription(db, ctx, subscriptionState(sub, customer, chosen.replaces), now());
-    if (result === "ignored") return done("team_closed");
+    if (result === "ignored") {
+      // Closed (or gone) since it was read: a subscription it never recorded is ended here, or it would renew
+      const after = await getBillingTeam(db, ctx, now());
+      if (after?.closed && !after.purging) await endForClosedTeam(message, after, sub);
+      return done("team_closed");
+    }
     obs.count(BusinessMetric.BillingEventsApplied, 1, { teamId, type: message.type });
     const notice = noticeFor(message, sub, team.name);
     // Read-only only if no comp keeps the team going

@@ -22,6 +22,14 @@
 //
 // Deleting MEMBER items here doesn't move the META item's counts: the META
 // item goes too.
+//
+// The purge also ends closed teams' Stripe subscriptions (billing/closing.ts):
+// listClosedTeamsToEnd lists every closed team with a subscription not yet set
+// to end for its closure, closedTeamToEnd re-reads one before Stripe is
+// called, and markSubscriptionEnding records it (`stripeCancelledFor`, the
+// closure's `closedAt`), so later runs skip it. purgeTeam's
+// `deleteStripeCustomer` deletes a team's Stripe customer before any of its
+// items go.
 
 import { DeleteCommand, GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
@@ -94,6 +102,100 @@ export async function countTeamsDueBefore(db: Db, before: Date): Promise<number>
   return count;
 }
 
+/** A closed team whose Stripe subscription hasn't been set to end for this closure yet. */
+export interface ClosedTeamToEnd {
+  readonly teamId: string;
+  readonly closedAt: string;
+  readonly purgeAfter: string;
+  readonly stripeCustomerId: string;
+  readonly stripeSubscriptionId: string;
+}
+
+const TO_END = "closedAt, purgeAfter, purging, stripeCustomerId, stripeSubscriptionId, stripeCancelledFor";
+
+/** The team as ClosedTeamToEnd, if it's closed, not being purged, has a subscription, and it isn't recorded as ended for this closure. */
+function toEnd(teamId: string, item: Record<string, unknown> | undefined): ClosedTeamToEnd | undefined {
+  if (!item || item.purging !== undefined) return undefined;
+  const { closedAt, purgeAfter, stripeCustomerId, stripeSubscriptionId, stripeCancelledFor } = item;
+  if (typeof closedAt !== "string" || typeof purgeAfter !== "string" || typeof stripeCustomerId !== "string" || typeof stripeSubscriptionId !== "string") return undefined;
+  if (stripeCancelledFor === closedAt) return undefined;
+  return { teamId, closedAt, purgeAfter, stripeCustomerId, stripeSubscriptionId };
+}
+
+/**
+ * Every closed team whose Stripe subscription hasn't been set to end for its
+ * closure (no `stripeCancelledFor` equal to its `closedAt`), at most `limit`,
+ * the soonest due first. Teams the purge has started on are left out: deleting
+ * their customer ends the subscription. Read from the closed-teams index
+ * (which projects every attribute), so it may lag a write by a moment:
+ * closedTeamToEnd re-reads each one before Stripe is called.
+ */
+export async function listClosedTeamsToEnd(db: Db, limit = 100): Promise<ClosedTeamToEnd[]> {
+  const out: ClosedTeamToEnd[] = [];
+  let ExclusiveStartKey: Record<string, unknown> | undefined;
+  do {
+    const page = await connection(db).doc.send(
+      new QueryCommand({
+        TableName: db.tableName,
+        IndexName: GSI1,
+        KeyConditionExpression: "GSI1PK = :pk",
+        Select: "SPECIFIC_ATTRIBUTES",
+        ProjectionExpression: `PK, SK, ${TO_END}`,
+        ExpressionAttributeValues: { ":pk": CLOSED_TEAMS_PARTITION },
+        ExclusiveStartKey,
+      }),
+    );
+    for (const item of page.Items ?? []) {
+      const pk = String(item.PK);
+      if (item.SK !== "META" || !pk.startsWith("TEAM#")) continue;
+      let teamId: string;
+      try {
+        teamId = id(pk.slice("TEAM#".length), "team ID");
+      } catch {
+        // Not a key this app wrote: leave it for a person to look at
+        continue;
+      }
+      const team = toEnd(teamId, item);
+      if (team && out.length < limit) out.push(team);
+    }
+    ExclusiveStartKey = page.LastEvaluatedKey;
+  } while (ExclusiveStartKey && out.length < limit);
+  return out;
+}
+
+/** The team as it is now (a consistent read), if its subscription still needs ending for this closure. */
+export async function closedTeamToEnd(db: Db, teamId: string): Promise<ClosedTeamToEnd | undefined> {
+  const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: keys.team(id(teamId, "team ID")), ConsistentRead: true, ProjectionExpression: TO_END }));
+  return toEnd(teamId, Item);
+}
+
+/**
+ * Records that the team's subscription was set to end for this closure
+ * (`stripeCancelledFor`, its `closedAt`), on the condition it's still that
+ * closure (the same `purgeAfter`). Returns false if it isn't: the team was
+ * reopened, or reopened and closed again, while Stripe was being called.
+ */
+export async function markSubscriptionEnding(db: Db, team: Pick<ClosedTeamToEnd, "teamId" | "closedAt" | "purgeAfter">): Promise<boolean> {
+  return connection(db)
+    .doc.send(
+      new UpdateCommand({
+        TableName: db.tableName,
+        Key: keys.team(id(team.teamId, "team ID")),
+        UpdateExpression: "SET stripeCancelledFor = :at",
+        // purgeAfter is set with closedAt and goes with it (see the mark below): still this closure
+        ConditionExpression: "purgeAfter = :purge",
+        ExpressionAttributeValues: { ":at": team.closedAt, ":purge": team.purgeAfter },
+      }),
+    )
+    .then(
+      () => true,
+      (error: unknown) => {
+        if ((error as { name?: string } | null)?.name === "ConditionalCheckFailedException") return false;
+        throw error;
+      },
+    );
+}
+
 /** What purgeTeam did: `skipped` when the team isn't closed or isn't due (it was, or it's gone). */
 export interface PurgeResult {
   readonly deleted: number;
@@ -122,10 +224,17 @@ const CONCURRENCY = 10;
  *
  * `beforeDelete` runs once the team is marked and before anything is deleted
  * (the purge writes the team's deletion record there): after the mark, so a
- * team reopened meanwhile never gets a record. If it fails, nothing is
- * deleted and the next run tries again.
+ * team reopened meanwhile never gets a record. Then, for a team with a Stripe
+ * customer, `deleteStripeCustomer` (the purge deletes the customer in Stripe
+ * there). If either fails, nothing is deleted and the next run tries again,
+ * so a team's items never go while its Stripe customer stays.
  */
-export async function purgeTeam(db: Db, teamId: string, now: Date, options: { readonly beforeDelete?: () => Promise<void> } = {}): Promise<PurgeResult> {
+export async function purgeTeam(
+  db: Db,
+  teamId: string,
+  now: Date,
+  options: { readonly beforeDelete?: () => Promise<void>; readonly deleteStripeCustomer?: (customerId: string) => Promise<void> } = {},
+): Promise<PurgeResult> {
   const { doc } = connection(db);
   const pk = teamPartition(id(teamId, "team ID"));
   const { Item: meta } = await doc.send(
@@ -156,6 +265,7 @@ export async function purgeTeam(db: Db, teamId: string, now: Date, options: { re
     );
   if (!marked) return { deleted: 0, skipped: true };
   await options.beforeDelete?.();
+  if (typeof meta.stripeCustomerId === "string") await options.deleteStripeCustomer?.(meta.stripeCustomerId);
 
   const items: { PK: string; SK: string }[] = [];
   let ExclusiveStartKey: Record<string, unknown> | undefined;

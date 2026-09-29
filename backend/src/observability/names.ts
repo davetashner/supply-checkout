@@ -98,6 +98,10 @@ export const BusinessMetric = {
   AccountsDeleted: "AccountsDeleted",
   /** Closed teams deleted by the scheduled purge once their read-only period ended. */
   TeamsPurged: "TeamsPurged",
+  /** Closed teams' Stripe subscriptions set to cancel at the period's end (or cancelled, if nothing was being paid), by the purge or the billing worker; the action goes in metadata. */
+  ClosedTeamSubscriptionsEnded: "ClosedTeamSubscriptionsEnded",
+  /** Purged teams' Stripe customers deleted (their name, email, address and cards). */
+  StripeCustomersDeleted: "StripeCustomersDeleted",
   /** Operator audit items (OPAUDIT#) changed or deleted other than by their TTL: the audit trail was tampered with (ADR 0015). From the operator audit watch (primary region). */
   OperatorAuditChanged: "OperatorAuditChanged",
   /** Heartbeats the operator audit watch read from the table's stream (OPERATOR_AUDIT_HEARTBEAT): none for a while means it isn't reading the stream, or its metrics aren't arriving. */

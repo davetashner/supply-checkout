@@ -120,6 +120,8 @@ export interface BillingTeam {
   readonly seats: number;
   /** Closed by an owner (closeTeam): webhooks change nothing. */
   readonly closed: boolean;
+  /** When it closed, while it's closed: the closure its subscription is ended for (billing/closing.ts). */
+  readonly closedAt?: string;
   /** The purge has started deleting it: webhooks change nothing. */
   readonly purging: boolean;
   readonly stripeCustomerId?: string;
@@ -149,6 +151,7 @@ export async function getBillingTeam(db: Db, ctx: TeamContext, now = new Date())
     plan: str(Item.plan) ?? "",
     seats: typeof Item.seats === "number" ? Item.seats : 0,
     closed: typeof Item.closedAt === "string",
+    ...(str(Item.closedAt) ? { closedAt: Item.closedAt as string } : {}),
     purging: Item.purging !== undefined,
     ...(str(Item.stripeCustomerId) ? { stripeCustomerId: Item.stripeCustomerId as string } : {}),
     ...(str(Item.stripeSubscriptionId) ? { stripeSubscriptionId: Item.stripeSubscriptionId as string } : {}),
