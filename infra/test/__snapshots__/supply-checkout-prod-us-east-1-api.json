@@ -2554,6 +2554,9 @@
         "FunctionResponseTypes": [
           "ReportBatchItemFailures"
         ],
+        "ScalingConfig": {
+          "MaximumConcurrency": 5
+        },
         "Tags": [
           {
             "Key": "app",
@@ -6147,6 +6150,17 @@
                 ]
               },
               "Sid": "InvokeReopenOnly"
+            },
+            {
+              "Action": "sqs:SendMessage",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "SeatSyncsQueue518F74A6",
+                  "Arn"
+                ]
+              },
+              "Sid": "QueueSeatSyncs"
             }
           ],
           "Version": "2012-10-17"
@@ -6194,6 +6208,9 @@
               "Ref": "SsmParameterValuesupplycheckoutprodidentityopsuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter"
             },
             "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "SEAT_QUEUE_URL": {
+              "Ref": "SeatSyncsQueue518F74A6"
+            },
             "SUPPLY_CHECKOUT_ENV": "prod",
             "TABLE_NAME": "supply-checkout-prod-app"
           }

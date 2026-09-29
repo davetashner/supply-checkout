@@ -2,6 +2,8 @@
 // the operator-access sessions and the logger are built once per container.
 
 import { API_ENV } from "../api/routes.js";
+import { BILLING_ENV } from "../billing/names.js";
+import { sqsSeatSyncQueue } from "../billing/seat-queue.js";
 import { createObservability, withObservability } from "../observability/index.js";
 import { operatorDirectory } from "./cognito.js";
 import { createOpsHandler } from "./ops-handler.js";
@@ -23,6 +25,7 @@ export const handler = withObservability(
     dbFor: opsScopedDbs({ roleArn: required(API_ENV.opsRoleArn) }),
     directory: operatorDirectory({ issuerUrl, userPoolId: required(API_ENV.opsUserPoolId) }),
     reopen: lambdaReopener({ functionName: required(API_ENV.opsReopenFunction), region: required("AWS_REGION") }),
+    seats: sqsSeatSyncQueue(required(BILLING_ENV.seatQueueUrl)),
     issuerUrl,
     clientId: required(API_ENV.opsClientId),
     obs,

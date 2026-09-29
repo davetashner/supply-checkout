@@ -591,8 +591,11 @@ describe("Stripe webhook, billing queue and worker (ADR 0009)", () => {
       template.hasResourceProperties("AWS::SQS::Queue", { QueueName: "supply-checkout-prod-seat-syncs-dlq.fifo", FifoQueue: true, SqsManagedSseEnabled: true, MessageRetentionPeriod: 14 * 86400 });
       const mappings = resources(template, "AWS::Lambda::EventSourceMapping").map(([, m]) => m.Properties);
       expect(mappings.filter((m) => JSON.stringify(m.EventSourceArn).includes("SeatSyncsQueue"))).toEqual([
-        expect.objectContaining({ BatchSize: 1, FunctionResponseTypes: ["ReportBatchItemFailures"], FunctionName: { Ref: expect.stringMatching(/^BillingWorkerFunction/) } }),
+        // At most 5 at once, so the nightly fan-out stays under Stripe's rate limit (supply-checkout-8jc.21)
+        expect.objectContaining({ BatchSize: 1, FunctionResponseTypes: ["ReportBatchItemFailures"], FunctionName: { Ref: expect.stringMatching(/^BillingWorkerFunction/) }, ScalingConfig: { MaximumConcurrency: 5 } }),
       ]);
+      // Stripe's own events aren't held back by it
+      expect(mappings.filter((m) => JSON.stringify(m.EventSourceArn).includes("BillingEventsQueue")).map((m) => m.ScalingConfig)).toEqual([undefined]);
       const env = (resources(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("BillingWorkerFunction"))?.[1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
       expect(env).toMatchObject({ SEAT_QUEUE_ARN: { "Fn::GetAtt": [expect.stringMatching(/^SeatSyncsQueue/), "Arn"] } });
     }
@@ -788,6 +791,12 @@ describe("operator-access role (ADR 0015)", () => {
     // Its one other grant: invoking the reopen function, unqualified, and nothing else in Lambda
     const lambda = statements.filter((s) => JSON.stringify(s.Action).includes("lambda:"));
     expect(lambda).toEqual([expect.objectContaining({ Action: "lambda:InvokeFunction", Resource: { "Fn::GetAtt": [expect.stringMatching(/^OpsReopenFunction[0-9A-F]+$/), "Arn"] } })]);
+    // And sending a seat sync after a reopen: to the seat sync queue only, never the billing queue (supply-checkout-8jc.21)
+    const sqs = statements.filter((s) => JSON.stringify(s.Action).includes("sqs:"));
+    expect(sqs).toEqual([expect.objectContaining({ Sid: "QueueSeatSyncs", Action: "sqs:SendMessage", Resource: { "Fn::GetAtt": [expect.stringMatching(/^SeatSyncsQueue/), "Arn"] } })]);
+    const env = (resources(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("OpsFunction"))?.[1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    expect(env).toMatchObject({ SEAT_QUEUE_URL: { Ref: expect.stringMatching(/^SeatSyncsQueue/) } });
+    expect(env).not.toHaveProperty("BILLING_QUEUE_URL");
   });
 
   it("gives the ops function the operator pool's settings and its role", () => {

@@ -181,7 +181,7 @@ import {
 import { EmailNotSentError, type Mailer, sendInviteEmail, sendTeamNotice } from "../email/mailer.js";
 import type { EmailInput } from "../email/templates.js";
 import type { DeletionLog } from "../deletions/records.js";
-import type { SeatSyncQueue } from "../billing/seats.js";
+import type { SeatSyncQueue } from "../billing/seat-queue.js";
 import { BusinessMetric, type BusinessMetricName, type Observability } from "../observability/index.js";
 import type { DbForAccount } from "./account-db.js";
 import type { CognitoUser, DeleteUser, EmailCodes, TotpSetup, UserInfo } from "./cognito-user.js";

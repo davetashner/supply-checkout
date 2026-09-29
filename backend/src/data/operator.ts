@@ -387,6 +387,16 @@ export async function getOpsTeam(db: Db, operator: Operator, teamId: string, now
   return { team, owners: await listOpsOwners(db, operator, teamId) };
 }
 
+/**
+ * The team's Stripe customer, from the operators' index, if it has one: for
+ * the seat sync the ops function queues after an operator reopens the team
+ * (billing/seats.ts). Not audited on its own: the reopen it follows is.
+ */
+export async function opsTeamStripeCustomer(db: Db, operator: Operator, teamId: string): Promise<string | undefined> {
+  operatorSub(operator);
+  return (await findTeam(db, id(teamId, "team ID")))?.stripeCustomerId;
+}
+
 /** The comp as the audit records it: never who granted it (owners read the audit). */
 function compRecord(team: Pick<OpsTeam, "compPlan" | "compSeats" | "compUntil" | "compReason">): Record<string, unknown> | null {
   if (team.compPlan === undefined) return null;

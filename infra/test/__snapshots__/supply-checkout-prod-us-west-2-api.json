@@ -2554,6 +2554,9 @@
         "FunctionResponseTypes": [
           "ReportBatchItemFailures"
         ],
+        "ScalingConfig": {
+          "MaximumConcurrency": 5
+        },
         "Tags": [
           {
             "Key": "app",

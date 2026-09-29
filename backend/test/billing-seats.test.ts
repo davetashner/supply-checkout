@@ -10,7 +10,7 @@ import type { SQSEvent } from "aws-lambda";
 import { createBillingWorker, type QueueMessage, type SubscriptionLike, type WorkerStripe } from "../src/billing/worker.js";
 import { createWorkerHandler } from "../src/billing/worker-handler.js";
 import type { WorkerScope } from "../src/billing/worker-db.js";
-import { BILLED_ROLES, isBilledRole } from "../src/data/index.js";
+import { BILLED_ROLES, isBilledRole, MEMBERS_PER_TEAM } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { workerPolicy } from "./billing-policy.js";
 import { fakeMailer, REGION } from "./helpers.js";
@@ -188,10 +188,30 @@ describe("a seat sync after a membership change", () => {
     expect(updates).toHaveLength(1);
   });
 
-  it("makes different keys for different messages, items, and current and target quantities", () => {
+  it("makes different keys for different messages, deliveries, items, and current and target quantities", () => {
     const key = seatUpdateKey(TEAM, "m1", ITEM, 5, 3);
     expect(key).toMatch(/^seats-team-a-[0-9a-f]{64}$/);
-    expect(new Set([key, seatUpdateKey(TEAM, "m2", ITEM, 5, 3), seatUpdateKey(TEAM, "m1", "si_2", 5, 3), seatUpdateKey(TEAM, "m1", ITEM, 5, 4), seatUpdateKey(TEAM, "m1", ITEM, 4, 3)]).size).toBe(5);
+    const others = [seatUpdateKey(TEAM, "m2", ITEM, 5, 3), seatUpdateKey(TEAM, "m1", "si_2", 5, 3), seatUpdateKey(TEAM, "m1", ITEM, 5, 4), seatUpdateKey(TEAM, "m1", ITEM, 4, 3), seatUpdateKey(TEAM, "m1", ITEM, 5, 3, "sqs-1"), seatUpdateKey(TEAM, "m1", ITEM, 5, 3, "sqs-2")];
+    expect(new Set([key, ...others]).size).toBe(7);
+    expect(seatUpdateKey(TEAM, "m1", ITEM, 5, 3, "sqs-1")).toBe(others[4]);
+  });
+
+  it("folds the SQS delivery into the key, so the same message ID delivered again isn't a replay of Stripe's cached update (supply-checkout-8jc.21)", async () => {
+    const message = seats("reconcile", "reconcile-2026-09-28-cus_test_1");
+    expect(await worker(message, "sqs-run-1")).toBe("updated");
+    // Someone sets it back by hand, and the reconciliation runs again the same day: same message ID, new delivery
+    subs.set(SUB, subscription(5));
+    expect(await worker(message, "sqs-run-2")).toBe("updated");
+    expect(updates.map((u) => u.key)).toEqual([seatUpdateKey(TEAM, message.id, ITEM, 5, 3, "sqs-run-1"), seatUpdateKey(TEAM, message.id, ITEM, 5, 3, "sqs-run-2")]);
+    expect(updates[0]?.key).not.toBe(updates[1]?.key);
+  });
+
+  it("sends the same key when SQS delivers the same message again (a retry)", async () => {
+    stripeDown = true;
+    await expect(worker(seats(), "sqs-1")).rejects.toThrow("Stripe is down");
+    stripeDown = false;
+    expect(await worker(seats(), "sqs-1")).toBe("updated");
+    expect(updates.map((u) => u.key)).toEqual([seatUpdateKey(TEAM, "seats-1", ITEM, 5, 3, "sqs-1")]);
   });
 });
 
@@ -210,6 +230,20 @@ describe("what a seat sync skips", () => {
     expect(updates).toEqual([]);
   });
 
+  it("a team whose own Stripe customer isn't the message's, with a warning (supply-checkout-8jc.21)", async () => {
+    patchTeam({ stripeCustomerId: "cus_other" });
+    expect(await worker(seats())).toBe("not_ours");
+    patchTeam({ stripeCustomerId: undefined });
+    expect(await worker(seats())).toBe("not_ours");
+    expect(updates).toEqual([]);
+    expect(logs.filter(([level]) => level === "warn")).toEqual([
+      ["warn", "Seat sync skipped: the team has another Stripe customer", { teamId: TEAM, messageId: "seats-1" }],
+      ["warn", "Seat sync skipped: the team has another Stripe customer", { teamId: TEAM, messageId: "seats-1" }],
+    ]);
+    // Before Stripe is asked anything
+    expect(logs).toContainEqual(["info", "Seat sync", { messageId: "seats-1", reason: "membership", outcome: "not_ours" }]);
+  });
+
   it("a team without a subscription (a trial that never went through Checkout), or whose subscription ended", async () => {
     patchTeam({ stripeSubscriptionId: undefined, status: "trialing" });
     expect(await worker(seats())).toBe("no_subscription");
@@ -226,6 +260,21 @@ describe("what a seat sync skips", () => {
     subs.set(SUB, subscription(5, { customer: { id: "cus_other" } }));
     expect(await worker(seats())).toBe("not_ours");
     expect(updates).toEqual([]);
+    expect(logs).toContainEqual(["warn", "Seat sync skipped: another customer's subscription", { teamId: TEAM, subscriptionId: SUB }]);
+  });
+
+  it("more billed members than a team can have: changes nothing, and counts drift so the alarm brings a person (supply-checkout-8jc.21)", async () => {
+    // Three billed already; up to the cap is still billed
+    for (let i = 3; i < MEMBERS_PER_TEAM; i++) member(`user-extra-${i}`, "contributor");
+    expect(await worker(seats())).toBe("updated");
+    expect(quantity()).toBe(MEMBERS_PER_TEAM);
+    counts = [];
+    member("user-one-too-many", "contributor");
+    expect(await worker(seats("membership", "seats-2"))).toBe("over_cap");
+    expect(quantity()).toBe(MEMBERS_PER_TEAM);
+    expect(updates).toHaveLength(1);
+    expect(counts).toEqual([[BusinessMetric.SeatQuantityDrift, 1, { teamId: TEAM }]]);
+    expect(logs).toContainEqual(["warn", "Seat sync skipped: more billed members than a team can have", { teamId: TEAM, billedMembers: MEMBERS_PER_TEAM + 1, cap: MEMBERS_PER_TEAM }]);
   });
 
   it("a subscription that isn't one item on a price we sell, which someone set up by hand", async () => {
@@ -305,13 +354,16 @@ describe("seat sync messages", () => {
     const SEATS_ARN = "arn:aws:sqs:test-local-1:account:supply-checkout-prod-seat-syncs.fifo";
     const EVENTS_ARN = "arn:aws:sqs:test-local-1:account:supply-checkout-prod-billing-events.fifo";
     const applied: QueueMessage[] = [];
-    const handler = createWorkerHandler(async (m) => void applied.push(m), obs(), SEATS_ARN);
+    const deliveries: string[] = [];
+    const handler = createWorkerHandler(async (m, delivery) => void (applied.push(m), deliveries.push(delivery)), obs(), SEATS_ARN);
     const record = (id: string, source: string, body: unknown) => ({ messageId: id, eventSourceARN: source, body: JSON.stringify(body), attributes: { MessageGroupId: `g-${id}` } }) as unknown as SQSEvent["Records"][number];
     const event = { eventId: "evt_1", type: "invoice.paid", created: 1, customer: CUSTOMER };
     const result = await handler({
       Records: [record("m1", SEATS_ARN, seats()), record("m2", EVENTS_ARN, event), record("m3", EVENTS_ARN, seats()), record("m4", SEATS_ARN, event)],
     });
     expect(applied).toEqual([seats(), event]);
+    // Each with the SQS message ID that delivered it (for the seat update's idempotency key)
+    expect(deliveries).toEqual(["m1", "m2"]);
     // A seat sync passed off as an event, and the reverse, are refused
     expect(result.batchItemFailures).toEqual([{ itemIdentifier: "m3" }, { itemIdentifier: "m4" }]);
   });
