@@ -6,7 +6,7 @@ import type { Construct } from "constructs";
 import { tableName } from "../../../backend/src/data/schema.js";
 import { opsResourceNames } from "../../../backend/src/ops/names.js";
 import { backupAlertRuleArns } from "../backup-alerts.js";
-import { type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../config.js";
+import { type DeploymentConfig, GLOBAL_SERVICES_REGION, stripeModeOf } from "../config.js";
 import { AlarmTopics, alarmContactsFromContext } from "../observability/alarm-topics.js";
 import { apiOutputParameters } from "./api-stack.js";
 import { auditOutputParameters } from "./audit-stack.js";
@@ -247,7 +247,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     }
 
     if (this.isPrimaryRegion) {
-      this.checks = new OpsChecks(this, "OpsChecks", { envName: config.envName, tableName: table, topics: this.topics });
+      this.checks = new OpsChecks(this, "OpsChecks", { envName: config.envName, tableName: table, topics: this.topics, stripeMode: stripeModeOf(config) });
       this.operatorAudit = new OperatorAuditWatch(this, "OperatorAuditWatch", { envName: config.envName, region, tableName: table, topics: this.topics });
       this.deletionRecords = new DeletionRecordsWatch(this, "DeletionRecordsWatch", { envName: config.envName, region, topics: this.topics });
       // The tampering rules also watch the deletion records watch's two rules (supply-checkout-72d.17)

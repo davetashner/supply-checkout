@@ -298,9 +298,10 @@ const confirmation = (value: string) => value.normalize("NFKC").trim().toLocaleL
  *
  * Idempotent: closing a closed team changes nothing and returns it as it is,
  * with `closedNow: false`, after deleting any invites still there (a retry
- * after the invites step failed part-way). The Stripe subscription isn't
- * cancelled here yet: billing (supply-checkout-x0l) does that from the
- * team's `closedAt`.
+ * after the invites step failed part-way). Stripe isn't called here, so a
+ * Stripe outage can't refuse or half-finish a closure: the closure is the
+ * pending cancellation, and the hourly purge sets the subscription to cancel
+ * at the period's end from the team's `closedAt` (billing/closing.ts).
  */
 export async function closeTeam(
   db: Db,

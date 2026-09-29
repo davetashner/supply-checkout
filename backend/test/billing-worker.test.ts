@@ -7,6 +7,7 @@ import type { AssumeRoleCommand } from "@aws-sdk/client-sts";
 import type { SQSEvent } from "aws-lambda";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BillingMessage } from "../src/billing/webhook-handler.js";
+import { closingKey } from "../src/billing/closing.js";
 import { createBillingWorker, noticeFor, parseMessage, type SubscriptionLike, subscriptionState, type WorkerStripe } from "../src/billing/worker.js";
 import { workerScopedDbs, type WorkerScope } from "../src/billing/worker-db.js";
 import { createWorkerHandler } from "../src/billing/worker-handler.js";
@@ -31,7 +32,10 @@ let table: MemoryTable;
 let subs: Map<string, SubscriptionLike>;
 let retrieves: string[];
 let cancels: { id: string; key: string }[];
+let updates: { id: string; params: Record<string, unknown>; key: string }[];
 let stripeDown: boolean;
+/** Runs as Stripe is asked for a subscription: after the worker read the team, before it writes. */
+let onRetrieve: (() => void) | undefined;
 let denied: { command: string; input: Record<string, unknown> }[];
 let scopes: WorkerScope[];
 let counts: Record<string, number>;
@@ -76,6 +80,8 @@ beforeEach(() => {
   subs = new Map([["sub_test_1", subscription()]]);
   retrieves = [];
   cancels = [];
+  updates = [];
+  onRetrieve = undefined;
   stripeDown = false;
   denied = [];
   scopes = [];
@@ -90,10 +96,16 @@ function build() {
     subscriptions: {
       async retrieve(id) {
         retrieves.push(id);
+        onRetrieve?.();
         if (stripeDown) throw Object.assign(new Error("Stripe is down"), { name: "StripeConnectionError" });
         const found = subs.get(id);
         if (!found) throw new Error(`No such subscription ${id}`);
         return found;
+      },
+      async update(id, params, options) {
+        if (stripeDown) throw Object.assign(new Error("Stripe is down"), { name: "StripeConnectionError" });
+        updates.push({ id, params, key: options.idempotencyKey });
+        subs.set(id, { ...(subs.get(id) as SubscriptionLike), cancel_at_period_end: params.cancel_at_period_end });
       },
       async cancel(id, _params, options) {
         cancels.push({ id, key: options.idempotencyKey });
@@ -183,14 +195,58 @@ describe("applying a subscription", () => {
     expect(retrieves).toEqual([]);
   });
 
-  it("ignores a closed team, and a team being purged, without calling Stripe", async () => {
-    patchTeam({ closedAt: new Date(NOW - DAY_S * 1000).toISOString() });
+  it("ignores a team being purged without calling Stripe: deleting its customer ends the subscription", async () => {
+    patchTeam({ closedAt: new Date(NOW - DAY_S * 1000).toISOString(), purging: new Date(NOW).toISOString() });
     expect(await worker(message("customer.subscription.updated"))).toBe("team_closed");
-    expect(meta()).toMatchObject({ status: "trialing", plan: "trial" });
-    patchTeam({ closedAt: undefined, purging: new Date(NOW).toISOString() });
-    expect(await worker(message("customer.subscription.updated", { eventId: "evt_test_2" }))).toBe("team_closed");
     expect(meta().stripeSubscriptionId).toBeUndefined();
     expect(retrieves).toEqual([]);
+    expect(processed()).toBeDefined();
+  });
+
+  it("never reopens or changes a closed team, but sets a subscription still live on it to cancel at the period's end, once", async () => {
+    const closedAt = new Date(NOW - DAY_S * 1000).toISOString();
+    patchTeam({ closedAt });
+    const before = structuredClone(meta());
+    // A checkout that finished after the team closed: its subscription was never recorded
+    expect(await worker(message("checkout.session.completed"))).toBe("team_closed");
+    expect(meta()).toEqual(before);
+    expect(updates).toEqual([{ id: "sub_test_1", params: { cancel_at_period_end: true }, key: closingKey("cancel_at_period_end", TEAM, closedAt, "sub_test_1") }]);
+    expect(counts[BusinessMetric.ClosedTeamSubscriptionsEnded]).toBe(1);
+    expect(counts[BusinessMetric.BillingEventsApplied]).toBeUndefined();
+    expect(logs).toContainEqual(["Closed team's subscription ended", { teamId: TEAM, eventId: "evt_test_1", subscriptionId: "sub_test_1", status: "trialing", action: "cancel_at_period_end" }]);
+    // Stripe's own event for that change, and a later payment: nothing more to do, and still nothing written
+    expect(await worker(message("customer.subscription.updated", { eventId: "evt_test_2" }))).toBe("team_closed");
+    expect(await worker(message("invoice.paid", { eventId: "evt_test_3" }))).toBe("team_closed");
+    expect(updates).toHaveLength(1);
+    expect(meta()).toEqual(before);
+    expect(mails.sent).toEqual([]);
+    expect(denied).toEqual([]);
+  });
+
+  it("cancels an unpaid or paused subscription on a closed team at once, and leaves an ended or foreign one", async () => {
+    const closedAt = new Date(NOW - DAY_S * 1000).toISOString();
+    patchTeam({ closedAt });
+    subs.set("sub_test_1", subscription({ status: "paused" }));
+    expect(await worker(message("customer.subscription.updated"))).toBe("team_closed");
+    expect(cancels).toEqual([{ id: "sub_test_1", key: closingKey("cancel_now", TEAM, closedAt, "sub_test_1") }]);
+    // Now canceled: nothing more
+    expect(await worker(message("customer.subscription.deleted", { eventId: "evt_test_2" }))).toBe("team_closed");
+    subs.set("sub_test_2", subscription({ id: "sub_test_2", status: "active", customer: "cus_test_other" }));
+    expect(await worker(message("customer.subscription.updated", { eventId: "evt_test_3", subscription: "sub_test_2" }))).toBe("team_closed");
+    // No subscription on the event: nothing to fetch
+    expect(await worker(message("invoice.paid", { eventId: "evt_test_4", subscription: undefined }))).toBe("team_closed");
+    expect(cancels).toHaveLength(1);
+    expect(updates).toEqual([]);
+  });
+
+  it("retries a closed team's event when Stripe can't be reached, recording nothing", async () => {
+    patchTeam({ closedAt: new Date(NOW - DAY_S * 1000).toISOString() });
+    stripeDown = true;
+    await expect(worker(message("customer.subscription.updated"))).rejects.toThrow("Stripe is down");
+    expect(processed()).toBeUndefined();
+    stripeDown = false;
+    expect(await worker(message("customer.subscription.updated"))).toBe("team_closed");
+    expect(updates).toHaveLength(1);
   });
 
   it("never recreates a purged team", async () => {
@@ -199,14 +255,28 @@ describe("applying a subscription", () => {
     expect(table.get(`TEAM#${TEAM}`, "META")).toBeUndefined();
   });
 
-  it("ignores a team closed between its read and the write", async () => {
-    let gets = 0;
-    table.afterGet = () => {
-      // The link, the team's home, then the billing read: close it right after that
-      if (++gets === 4) patchTeam({ closedAt: new Date(NOW).toISOString() });
+  it("ignores a team closed between its read and the write, and sets the subscription it never recorded to cancel", async () => {
+    const closedAt = new Date(NOW).toISOString();
+    onRetrieve = () => {
+      onRetrieve = undefined;
+      patchTeam({ closedAt });
     };
     expect(await worker(message("customer.subscription.updated"))).toBe("team_closed");
     expect(meta().stripeSubscriptionId).toBeUndefined();
+    expect(updates).toEqual([{ id: "sub_test_1", params: { cancel_at_period_end: true }, key: closingKey("cancel_at_period_end", TEAM, closedAt, "sub_test_1") }]);
+    // Fetched once: the subscription as read is the one ended
+    expect(retrieves).toEqual(["sub_test_1"]);
+  });
+
+  it("leaves Stripe alone for a team purged or being purged between its read and the write", async () => {
+    onRetrieve = () => patchTeam({ closedAt: new Date(NOW).toISOString(), purging: new Date(NOW).toISOString() });
+    expect(await worker(message("customer.subscription.updated"))).toBe("team_closed");
+    patchTeam({ closedAt: undefined, purging: undefined });
+    onRetrieve = () => table.items.delete(`TEAM#${TEAM}\u0000META`);
+    expect(await worker(message("customer.subscription.updated", { eventId: "evt_test_2" }))).toBe("team_closed");
+    expect(table.get(`TEAM#${TEAM}`, "META")).toBeUndefined();
+    expect(updates).toEqual([]);
+    expect(cancels).toEqual([]);
   });
 
   it("ignores a subscription that belongs to another customer", async () => {

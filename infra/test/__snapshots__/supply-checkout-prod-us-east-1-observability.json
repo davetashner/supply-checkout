@@ -3604,6 +3604,8 @@
                     "purgeAfter",
                     "purging",
                     "stripeCustomerId",
+                    "stripeSubscriptionId",
+                    "stripeCancelledFor",
                     "teamId"
                   ]
                 },
@@ -3653,6 +3655,8 @@
                     "purgeAfter",
                     "purging",
                     "stripeCustomerId",
+                    "stripeSubscriptionId",
+                    "stripeCancelledFor",
                     "teamId"
                   ]
                 },
@@ -3702,6 +3706,8 @@
                     "purgeAfter",
                     "purging",
                     "stripeCustomerId",
+                    "stripeSubscriptionId",
+                    "stripeCancelledFor",
                     "teamId"
                   ]
                 },
@@ -3741,7 +3747,8 @@
                     "PK",
                     "SK",
                     "purgeAfter",
-                    "purging"
+                    "purging",
+                    "stripeCancelledFor"
                   ]
                 },
                 "StringEqualsIfExists": {
@@ -3795,6 +3802,27 @@
               "Sid": "TableKeyThroughDynamoDb"
             },
             {
+              "Action": "secretsmanager:GetSecretValue",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":secretsmanager:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":secret:supply-checkout/prod/stripe/test-secret-key-??????"
+                  ]
+                ]
+              },
+              "Sid": "ReadStripeSecretKey"
+            },
+            {
               "Action": "s3:PutObject",
               "Condition": {
                 "Null": {
@@ -3843,11 +3871,13 @@
           },
           "S3Key": "<asset hash>.zip"
         },
-        "Description": "Deletes closed teams once their 30-day read-only period ends",
+        "Description": "Ends closed teams' Stripe subscriptions, and deletes closed teams (and their Stripe customers) once their 30-day read-only period ends",
         "Environment": {
           "Variables": {
             "NODE_OPTIONS": "--enable-source-maps",
             "TABLE_NAME": "supply-checkout-prod-app",
+            "STRIPE_SECRET_ID": "supply-checkout/prod/stripe/test-secret-key",
+            "STRIPE_MODE": "test",
             "DELETIONS_BUCKET": {
               "Fn::Join": [
                 "",
@@ -7525,7 +7555,11 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-east-1\",{\"label\":\"DeletionRecordRewrites (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-west-2\",{\"label\":\"DeletionRecordRewrites (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
+              "\",\"metrics\":[[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-east-1\",{\"label\":\"DeletionRecordRewrites (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-west-2\",{\"label\":\"DeletionRecordRewrites (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":67,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: closed teams' subscriptions ended, Stripe customers deleted\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"ClosedTeamSubscriptionsEnded\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamSubscriptionsEnded (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersDeleted\",\"Region\",\"us-east-1\",{\"label\":\"StripeCustomersDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsEnded\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamSubscriptionsEnded (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersDeleted\",\"Region\",\"us-west-2\",{\"label\":\"StripeCustomersDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
             ]
           ]
         },
