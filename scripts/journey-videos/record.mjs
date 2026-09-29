@@ -115,6 +115,9 @@ async function main() {
       } catch (e) {
         error = e;
         console.error(`  ${journey.id} failed: ${e.stack || e}`);
+        // What the page looked like, to see why
+        const shot = file.replace(/\.webm$/, "-failed.png");
+        await page.screenshot({ path: shot }).then(() => console.error(`  ${journey.id} screenshot: ${shot}`), () => {});
       }
       const video = page.video();
       await context.close();

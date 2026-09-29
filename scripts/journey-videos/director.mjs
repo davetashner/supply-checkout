@@ -9,7 +9,7 @@ const BANNER = 84;
 // none of them take pointer events.
 export function installOverlay(bannerHeight) {
   if (window.__jv) return;
-  const api = { ready: false, x: -100, y: -100 };
+  const api = { ready: false, x: -100, y: -100, path: { x0: -100, y0: -100, x1: -100, y1: -100 } };
   window.__jv = api;
   const css = `
     html.jv-banner { padding-top: ${bannerHeight}px !important; scroll-padding-top: ${bannerHeight + 16}px; }
@@ -65,8 +65,23 @@ export function installOverlay(bannerHeight) {
     card.id = "jv-card";
     root.append(style, banner, card, cursor);
     const place = () => { cursor.style.transform = `translate(${api.x - 3}px, ${api.y - 2}px)`; };
-    document.addEventListener("mousemove", (e) => { api.x = e.clientX; api.y = e.clientY; place(); }, { capture: true, passive: true });
+    // Only the recording's own mouse counts. In a visible window the real pointer, if it's
+    // over the window, sends events too; those don't move the drawn cursor or ripple, and a
+    // click on a dialog's backdrop, or Escape, doesn't close the dialog (the recording never
+    // does either).
+    const near = (e) => {
+      const { x0, y0, x1, y1 } = api.path, dx = x1 - x0, dy = y1 - y0, len = dx * dx + dy * dy;
+      const t = len ? Math.max(0, Math.min(1, ((e.clientX - x0) * dx + (e.clientY - y0) * dy) / len)) : 0;
+      return Math.hypot(e.clientX - (x0 + t * dx), e.clientY - (y0 + t * dy)) <= 3;
+    };
+    document.addEventListener("mousemove", (e) => {
+      if (!near(e)) return;
+      api.x = e.clientX;
+      api.y = e.clientY;
+      place();
+    }, { capture: true, passive: true });
     document.addEventListener("mousedown", (e) => {
+      if (Math.hypot(e.clientX - api.path.x1, e.clientY - api.path.y1) > 8) return;
       const r = document.createElement("div");
       r.className = "jv-ripple";
       r.style.left = e.clientX + "px";
@@ -74,6 +89,8 @@ export function installOverlay(bannerHeight) {
       root.append(r);
       setTimeout(() => r.remove(), 700);
     }, { capture: true, passive: true });
+    document.addEventListener("click", (e) => { if (e.target && e.target.id === "overlay") e.stopImmediatePropagation(); }, true);
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") e.stopImmediatePropagation(); }, true);
     api.ready = true;
   };
   const labels = { check: "Checks", simulated: "Simulated", planned: "Not built yet", step: "" };
@@ -88,6 +105,8 @@ export function installOverlay(bannerHeight) {
   };
   api.card = (html) => { make(); card.innerHTML = html; card.classList.add("on"); };
   api.hideCard = () => { make(); card.classList.remove("on"); };
+  // The segment the recording's mouse is about to move along
+  api.expect = (x0, y0, x1, y1) => { api.path = { x0, y0, x1, y1 }; };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", make);
   else make();
 }
@@ -118,6 +137,7 @@ export class Director {
     if (!(await this.page.evaluate(() => !!window.__jv))) await this.page.evaluate(installOverlay, BANNER);
     await this.page.waitForFunction(() => window.__jv.ready);
     if (this.last) await this.show(...this.last);
+    await this.page.evaluate(([x, y]) => window.__jv.expect(x, y, x, y), [this.x, this.y]);
     await this.page.mouse.move(this.x, this.y);
   }
 
@@ -148,6 +168,7 @@ export class Director {
     const dist = Math.hypot(tx - this.x, ty - this.y);
     const steps = Math.max(10, Math.min(28, Math.round(dist / 20)));
     const x0 = this.x, y0 = this.y;
+    await this.page.evaluate((p) => window.__jv.expect(...p), [x0, y0, tx, ty]);
     for (let i = 1; i <= steps; i++) {
       const t = i / steps, e = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
       await this.page.mouse.move(x0 + (tx - x0) * e, y0 + (ty - y0) * e);
@@ -158,9 +179,21 @@ export class Director {
     await this.pause(250);
   }
 
-  async click(locator) {
+  // opens: what the click should show. If it hasn't shown within a few seconds (the click
+  // landed as the app redrew the button), the click is tried once more.
+  async click(locator, { opens } = {}) {
     await this.moveTo(locator);
     await locator.click();
+    if (opens) {
+      try {
+        await opens.waitFor({ state: "visible", timeout: 4000 });
+      } catch {
+        console.warn(`  ${this.journey.id}: clicking ${locator} didn't open ${opens} the first time; trying again`);
+        await this.moveTo(locator);
+        await locator.click();
+        await opens.waitFor({ state: "visible" });
+      }
+    }
     await this.pause(550);
   }
 

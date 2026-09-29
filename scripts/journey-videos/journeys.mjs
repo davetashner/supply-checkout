@@ -54,10 +54,42 @@ const ENDED = { status: "canceled", plan: "starter", subscriptionEnded: true };
 const STRIPE_CHECKOUT = "https://checkout.stripe.test/c/pay/cs_test_journey";
 const STRIPE_PORTAL = "https://billing.stripe.test/p/session/bps_test_journey";
 
+// Once connected, the app subscribes to live updates and lists sheets and inventory again,
+// which redraws the page. A click that lands during that redraw can hit a button just as it's
+// replaced, and do nothing (seen in a headed run), so a journey waits for the second listing
+// of each before it starts clicking. The fake API in use, and how many times each collection
+// had been listed when the page last loaded:
+let current = null;
+const lists = (backend) => {
+  const count = { products: 0, sheets: 0 };
+  for (const call of backend.calls) {
+    const m = call.method === "GET" && call.path.match(/^\/teams\/[^/]+\/(products|sheets)$/);
+    if (m && !call.query.cursor) count[m[1]]++;
+  }
+  return count;
+};
+const mark = (backend) => { backend.listedBefore = lists(backend); };
+
+async function settle(d) {
+  await connected(d.page);
+  const before = current.listedBefore;
+  const until = Date.now() + 10e3;
+  for (;;) {
+    const now = lists(current);
+    if (now.products - before.products >= 2 && now.sheets - before.sheets >= 2) break;
+    if (Date.now() > until) { console.warn("  The app didn't list its data again after connecting; carrying on"); break; }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  // Let the redraw that follows the listing finish
+  await d.page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+}
+
 // Opens the web build signed in (or not) against a fake API. Stripe's pages answer 204, so
 // following a link there leaves the page where it is, as Managed Login's do (openAws).
 async function openTeam(d, backendOptions = {}, openOptions = {}) {
   const backend = new FakeBackend({ docs: teamDocs(), ...backendOptions });
+  current = backend;
+  mark(backend);
   await d.page.route(/^https:\/\/[^/]*stripe\.test\//, (route) => route.fulfill({ status: 204 }));
   await openAws(d.page, backend, openOptions);
   await d.ready();
@@ -68,6 +100,7 @@ async function openTeam(d, backendOptions = {}, openOptions = {}) {
 // The fake API answers only the first load with the page unless it's told to start again.
 async function reload(d, backend, path = "/") {
   backend.pageLoads = 0;
+  mark(backend);
   await d.page.goto(ORIGIN + path);
   await d.ready();
 }
@@ -75,6 +108,7 @@ async function reload(d, backend, path = "/") {
 // Something the app does that reloads the page (switching teams, Continue)
 async function reloadsAfter(d, backend, action) {
   backend.pageLoads = 0;
+  mark(backend);
   const loaded = d.page.waitForEvent("load");
   await action();
   await loaded;
@@ -127,7 +161,7 @@ export const JOURNEYS = [
       const { state } = await page.evaluate(() => JSON.parse(sessionStorage.getItem("supplyCheckout.signIn")));
       await d.simulated("Once you're signed in, Managed Login sends you back to the app with a one-time code.");
       await reload(d, backend, `/?code=good-code&state=${state}`);
-      await connected(page);
+      await settle(d);
       await d.check("The app swaps the code for a session and the team's sheets appear (expected within 3 seconds).");
       await d.moveTo(card(page, "Echo Studio"));
       await d.pause(800);
@@ -135,12 +169,12 @@ export const JOURNEYS = [
       await d.moveTo(pick);
       await d.say("This person is in two teams, so the team bar has a team picker.");
       await reloadsAfter(d, backend, () => d.select(pick, "t2"));
-      await connected(page);
+      await settle(d);
       await d.check("Bravo Co's sheets, not Echo Cleaning's. The app remembers the team for next time.");
       await d.moveTo(card(page, "Bravo Co warehouse"));
       await d.say("Close the app and open it again later on the same device…");
       await reload(d, backend);
-      await connected(page);
+      await settle(d);
       await d.check("Still signed in, straight into the team last used, with no sign-in page.");
     },
   },
@@ -167,7 +201,7 @@ export const JOURNEYS = [
       await d.say("Signed in for the first time, with no team yet: name the team.");
       await d.type(page.getByLabel("Team name"), "Northside Cleaning");
       await d.click(page.getByRole("button", { name: "Create team" }));
-      await connected(page);
+      await settle(d);
       await d.check("An empty team, ready to use, owned by the person who made it.");
       const list = page.locator("#firstRun");
       await d.moveTo(list.getByRole("heading", { name: "Get your team started" }));
@@ -190,10 +224,10 @@ export const JOURNEYS = [
       const { page } = d;
       const docs = teamDocs("t1", { [`products/${TOWELS}`]: PRODUCTS[`products/${TOWELS}`], "products/nb-bins": PRODUCTS["products/nb-bins"] });
       const backend = await openTeam(d, { docs });
-      await connected(page);
+      await settle(d);
       await d.say("The owner opens Inventory, then + Add item.");
       await d.click(page.getByRole("button", { name: "Inventory" }));
-      await d.click(page.getByRole("button", { name: "+ Add item" }));
+      await d.click(page.getByRole("button", { name: "+ Add item" }), { opens: modal(page).getByRole("heading", { name: "Add item" }) });
       await d.say("Scan the barcode with the phone camera (Scan), or type it. Here it's typed.");
       await d.type(modal(page).getByPlaceholder("Type, scan, or leave blank"), GLOVES);
       await d.type(modal(page).getByLabel("Item name"), "Nitrile gloves, box of 100");
@@ -203,7 +237,7 @@ export const JOURNEYS = [
       await d.moveTo(itemRow(page, "Nitrile gloves"));
       await d.check("The item is listed with its barcode, 8 in storage, and their value.");
       await d.say("An item with no barcode: leave the barcode blank.");
-      await d.click(page.getByRole("button", { name: "+ Add item" }));
+      await d.click(page.getByRole("button", { name: "+ Add item" }), { opens: modal(page).getByRole("heading", { name: "Add item" }) });
       await d.type(modal(page).getByLabel("Item name"), "Microfiber cloths, 12 pack");
       await d.type(modal(page).getByLabel("Price each ($)"), "9");
       await d.type(modal(page).getByLabel("In storage now"), "5");
@@ -211,12 +245,12 @@ export const JOURNEYS = [
       await d.moveTo(page.locator("#main tfoot"));
       await d.check("Totals update: items in storage and what they're worth. Items without a barcode are found by name when checking out.");
       await d.say("To edit or delete an item later, tap its row.");
-      await d.click(itemRow(page, "Microfiber cloths"));
+      await d.click(itemRow(page, "Microfiber cloths"), { opens: page.locator("#overlay") });
       await d.type(modal(page).getByLabel("In storage now"), "7");
       await d.click(modal(page).getByRole("button", { name: "Save" }));
 
       await d.say("A whole inventory can come from a spreadsheet instead: Import CSV in the team bar.");
-      await d.click(bar(page).getByRole("button", { name: "Import CSV" }));
+      await d.click(bar(page).getByRole("button", { name: "Import CSV" }), { opens: page.locator("#overlay") });
       await download(d, modal(page).getByRole("button", { name: "Download a template" }));
       await d.say("Download a template to fill in, then choose the filled-in file.");
       const csv = "name,barcode,price,stock\nGlass cleaner 32 oz,041167066218,4.25,12\nMop heads,,3,14\nNitrile gloves box of 100,075020036541,13,10\n";
@@ -259,9 +293,9 @@ export const JOURNEYS = [
     async run(d) {
       const { page } = d;
       const backend = await openTeam(d, { members: { t1: [ME] }, teamInvites: { t1: [] } });
-      await connected(page);
+      await settle(d);
       await d.say("The owner opens Members from the team bar.");
-      await d.click(bar(page).getByRole("button", { name: "Members" }));
+      await d.click(bar(page).getByRole("button", { name: "Members" }), { opens: page.locator("#overlay") });
       await d.say("Enter the crew member's email and pick Contributor: they can scan, check out, return and edit.");
       await d.type(modal(page).getByLabel("Email"), SAM.email);
       await d.select(modal(page).getByLabel("Role", { exact: true }), "contributor");
@@ -287,7 +321,7 @@ export const JOURNEYS = [
       await reload(d, crew, `/?code=good-code&state=${state}`);
       await d.say(`Back in the app, the invite to ${TEAM.name} is waiting.`);
       await d.click(page.getByRole("button", { name: "Join" }));
-      await connected(page);
+      await settle(d);
       await d.check("Sam is in the team and sees its sheets right away.");
       await d.moveTo(card(page, "Echo Studio"));
       await d.simulated("Adding a contributor adds a seat to the team's Stripe subscription within a minute (server side, not shown).");
@@ -305,9 +339,9 @@ export const JOURNEYS = [
     async run(d) {
       const { page } = d;
       const backend = await openTeam(d, { teams: [{ ...TEAM, role: "contributor" }], user: SAM, claims: SAM_CLAIMS });
-      await connected(page);
+      await settle(d);
       await d.say("Early morning: Sam opens the app and creates a sheet for today's client.");
-      await d.click(page.getByRole("button", { name: "+ New sheet" }));
+      await d.click(page.getByRole("button", { name: "+ New sheet" }), { opens: page.getByLabel("Client", { exact: true }) });
       await d.type(page.getByLabel("Client", { exact: true }), "Pine Street Offices");
       await d.click(page.getByRole("button", { name: "Create sheet" }));
       await d.check("The sheet records the client, the date and who prepared it.");
@@ -317,7 +351,7 @@ export const JOURNEYS = [
       await d.check("The item is found in inventory, with how many are in storage. Choose how many.");
       await d.type(modal(page).locator("#fQty"), "3");
       await d.click(modal(page).getByRole("button", { name: "Add 3 to sheet" }));
-      await d.click(page.getByRole("button", { name: "Add item without a barcode" }));
+      await d.click(page.getByRole("button", { name: "Add item without a barcode" }), { opens: page.locator("#overlay") });
       await d.show("An item with no barcode: pick it from the inventory by name.");
       await d.type(modal(page).getByLabel("Or pick from inventory"), "mop");
       await d.click(modal(page).locator("#pick").getByRole("button", { name: /Mop heads/ }));
@@ -408,7 +442,7 @@ export const JOURNEYS = [
     async run(d) {
       const { page } = d;
       await openTeam(d);
-      await connected(page);
+      await settle(d);
       await d.say("Open a finished sheet: the Returned list has them.");
       await d.click(page.getByRole("button", { name: "Returned", exact: true }));
       await d.click(card(page, "Harbor Dental"));
@@ -418,7 +452,7 @@ export const JOURNEYS = [
       await d.check(`Downloaded as “${file.name}”.`);
       await d.click(page.getByRole("button", { name: "← All sheets" }));
       await d.say("Owners can also export all of the team's data: Export data.");
-      await d.click(page.getByRole("button", { name: "Export data" }));
+      await d.click(page.getByRole("button", { name: "Export data" }), { opens: page.locator("#overlay") });
       await d.moveTo(modal(page).getByRole("button", { name: "Sheets (CSV)" }));
       await d.say("Every sheet as CSV (one row per item), the inventory as CSV, or everything as JSON.");
       const all = await download(d, modal(page).getByRole("button", { name: "Sheets (CSV)" }));
@@ -439,11 +473,11 @@ export const JOURNEYS = [
     async run(d) {
       const { page } = d;
       const backend = await openTeam(d, { members: { t1: [ME, SAM_MEMBER] }, teamInvites: { t1: [] } });
-      await connected(page);
+      await settle(d);
       await d.planned("On the free trial, choosing a plan in the app isn't built yet (supply-checkout-8jc.5). Today an owner subscribes when the trial ends.");
       backend.teams[0] = { ...TEAM, ...ENDED };
       await reload(d, backend);
-      await connected(page);
+      await settle(d);
       await d.moveTo(bar(page).locator(".closed-note"));
       await d.check("Once the trial ends without a card, the team is read-only, nothing is deleted, and the owner can subscribe.");
       backend.on("POST", "/teams/t1/billing/checkout", { status: 201, body: { checkout: { url: STRIPE_CHECKOUT, expiresAt: "2026-09-30T12:00:00.000Z", trialEndsAt: null } } });
@@ -453,12 +487,12 @@ export const JOURNEYS = [
       backend.teams[0] = { ...TEAM, ...PAYING };
       await d.simulated("Stripe tells the server the payment went through; the team is active within a minute.");
       await reload(d, backend);
-      await connected(page);
+      await settle(d);
       await d.moveTo(page.getByRole("button", { name: "+ New sheet" }));
       await d.check("Active again: everything can be changed, and the team bar has Billing and Invoices.");
 
       await d.say("Later, the owner invites someone else from Members.");
-      await d.click(bar(page).getByRole("button", { name: "Members" }));
+      await d.click(bar(page).getByRole("button", { name: "Members" }), { opens: page.locator("#overlay") });
       await d.type(modal(page).getByLabel("Email"), "lee@example.com");
       await d.click(modal(page).getByRole("button", { name: "Send invite" }));
       await d.simulated("Once they join, the server adds a seat to the Stripe subscription, with proration (not shown).");
@@ -474,7 +508,7 @@ export const JOURNEYS = [
           ],
         },
       });
-      await d.click(bar(page).getByRole("button", { name: "Invoices" }));
+      await d.click(bar(page).getByRole("button", { name: "Invoices" }), { opens: page.locator("#overlay") });
       await d.moveTo(modal(page).locator(".invoice").first());
       await d.check("The latest invoices from Stripe, each with Stripe's page and a PDF. Stripe also emails them.");
       await d.click(modal(page).getByRole("button", { name: "Close" }));
@@ -497,7 +531,7 @@ export const JOURNEYS = [
     async run(d) {
       const { page } = d;
       const backend = await openTeam(d, { teams: [{ ...TEAM, ...PAYING }] });
-      await connected(page);
+      await settle(d);
       await d.simulated("A renewal payment fails at Stripe. The server hears of it and emails the owner (no email is sent here).");
       await d.planned("The in-app banner for a failed payment and the 7-day grace period aren't built yet (supply-checkout-qdx).");
       await d.say("Meanwhile the team keeps working. The owner fixes the card from Billing.");
@@ -507,7 +541,7 @@ export const JOURNEYS = [
       await d.say("If the payment is never made, the subscription ends…");
       backend.teams[0] = { ...TEAM, ...ENDED, billingAccount: true };
       await reload(d, backend);
-      await connected(page);
+      await settle(d);
       await d.moveTo(bar(page).locator(".closed-note"));
       await d.check("…and the team becomes read-only. Nothing is deleted, and it can still be exported.");
       await d.moveTo(page.locator("#notice"));
@@ -515,7 +549,7 @@ export const JOURNEYS = [
       backend.teams[0] = { ...TEAM, ...PAYING };
       await d.simulated("The owner pays (Subscribe or the Customer Portal). Stripe tells the server within a minute.");
       await reload(d, backend);
-      await connected(page);
+      await settle(d);
       await d.moveTo(page.getByRole("button", { name: "+ New sheet" }));
       await d.check("Full access is back.");
     },
@@ -531,7 +565,7 @@ export const JOURNEYS = [
     async run(d) {
       const { page } = d;
       await openTeam(d, { teams: [{ ...TEAM, role: "viewer" }], user: { id: "u-bea", email: "bea@example.com", emailVerified: true }, claims: { given_name: "Bea", family_name: "Park", email: "bea@example.com" } });
-      await connected(page);
+      await settle(d);
       await d.say("Bea, the bookkeeper, signs in. She's a viewer on the team.");
       await d.moveTo(page.locator("#notice"));
       await d.check("Signed in as a viewer: everything is visible, with a view-only notice. No + New sheet.");
@@ -559,23 +593,23 @@ export const JOURNEYS = [
     async run(d) {
       const { page } = d;
       const backend = await openTeam(d, { teams: [{ ...TEAM, ...PAYING }] });
-      await connected(page);
+      await settle(d);
       await d.say("The owner opens Billing to cancel.");
       backend.on("POST", "/teams/t1/billing/portal", { status: 201, body: { portal: { url: STRIPE_PORTAL } } });
       await d.click(bar(page).getByRole("button", { name: "Billing" }));
       await followToStripe(d, "Continue to billing", "In the Stripe Customer Portal the owner cancels at the end of the period. Simulated.");
       backend.teams[0] = { ...TEAM, ...PAYING, cancelsAt: "2026-10-27T12:00:00.000Z" };
       await reload(d, backend);
-      await connected(page);
+      await settle(d);
       await d.moveTo(bar(page).locator("#cancelNote"));
       await d.check("The team bar says when it ends. Everything keeps working until then.");
       backend.teams[0] = { ...TEAM, ...ENDED, billingAccount: true };
       await d.say("After the end of the period…");
       await reload(d, backend);
-      await connected(page);
+      await settle(d);
       await d.moveTo(bar(page).locator(".closed-note"));
       await d.check("The team is read-only, with nothing deleted, and the owner can export it.");
-      await d.click(page.getByRole("button", { name: "Export data" }));
+      await d.click(page.getByRole("button", { name: "Export data" }), { opens: page.locator("#overlay") });
       const everything = await download(d, modal(page).getByRole("button", { name: "Everything (JSON)" }));
       await showFile(d, everything, "Everything, as JSON: each sheet with its totals, and the inventory. Sheets and inventory also come as CSV.", 14);
       await d.click(modal(page).getByRole("button", { name: "Close" }));
@@ -594,9 +628,9 @@ export const JOURNEYS = [
     async run(d) {
       const { page } = d;
       const backend = await openTeam(d, { members: { t1: [ME, SAM_MEMBER] }, teamInvites: { t1: [] } });
-      await connected(page);
+      await settle(d);
       await d.say("Open Account in the team bar.");
-      await d.click(bar(page).getByRole("button", { name: "Account" }));
+      await d.click(bar(page).getByRole("button", { name: "Account" }), { opens: page.locator("#overlay") });
       await d.say("Type DELETE, then Delete account.");
       await d.type(modal(page).getByLabel("Type DELETE to confirm"), "DELETE");
       await d.click(modal(page).getByRole("button", { name: "Delete account" }));
@@ -604,15 +638,15 @@ export const JOURNEYS = [
       await d.check("Refused, with the server's reason: Pat is the only owner of a team Sam is still in.");
       await d.click(modal(page).getByRole("button", { name: "Cancel" }));
       await d.say("Pat could make Sam an owner, or close the team. Members → Close the team.");
-      await d.click(bar(page).getByRole("button", { name: "Members" }));
+      await d.click(bar(page).getByRole("button", { name: "Members" }), { opens: page.locator("#overlay") });
       await d.type(modal(page).getByLabel(`Type the team's name, ${TEAM.name}, to close it`), TEAM.name);
       await d.click(modal(page).getByRole("button", { name: "Close team" }));
       await d.moveTo(page.locator("#account"));
       await d.check("Closed: the team is read-only now, and everything in it is deleted after 30 days.");
       await reloadsAfter(d, backend, () => d.click(page.getByRole("button", { name: "Continue" })));
-      await connected(page);
+      await settle(d);
       await d.say("Now Account → Delete account again.");
-      await d.click(bar(page).getByRole("button", { name: "Account" }));
+      await d.click(bar(page).getByRole("button", { name: "Account" }), { opens: page.locator("#overlay") });
       await d.type(modal(page).getByLabel("Type DELETE to confirm"), "DELETE");
       await d.click(modal(page).getByRole("button", { name: "Delete account" }));
       await page.getByRole("heading", { name: "Your account is deleted" }).waitFor();

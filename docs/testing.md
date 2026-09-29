@@ -82,6 +82,8 @@ npm run journeys:video -- --slow-mo 100     # Playwright's slowMo in ms (default
 npm run journeys:video -- --skip-build      # use the dist/web already built
 ```
 
+In a visible window, leave the real mouse and keyboard alone while it records: the page ignores the real pointer's movement, clicks on a dialog's backdrop and Escape, so they can't move the drawn cursor or close a dialog, but a real click on a button still counts. A journey that fails leaves a screenshot beside its video (`<J#-slug>-failed.png`).
+
 It holds the Playwright run lock (`tests/run-lock.js`) while it runs, so it waits for a test run in another worktree, and uses one browser. The scripts are in `scripts/journey-videos/`: `record.mjs` (the command), `director.mjs` (the cursor, captions and cards drawn in the page) and `journeys.mjs` (one entry per journey). When a journey or its screens change, update its entry there too; nothing in CI runs it.
 
 ## Coverage
