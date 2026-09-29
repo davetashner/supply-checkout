@@ -30,7 +30,7 @@ async function expectAccessible(page) {
   expect(violations.map((v) => v.id)).toEqual([]);
 }
 
-test("an owner sets a password and an authenticator app up from Account, and signs in again", async ({ page }) => {
+test("an owner sets a password and an authenticator app up from Account, and signs in again", { tag: ["@J0"] }, async ({ page }) => {
   const backend = await open(page, new FakeBackend({ user: { ...USER, mfa: "off" } }));
   await bar(page).getByRole("button", { name: "Account" }).click();
   await expect(dialog(page).locator("#twoStepState")).toHaveText("Owners need two-step sign-in to manage billing. You'll sign in with a password and a code from an authenticator app on your phone.");
@@ -90,7 +90,7 @@ test("an owner sets a password and an authenticator app up from Account, and sig
   expect(await page.evaluate(() => [localStorage.getItem("supplyCheckout.team"), localStorage.getItem("supplyCheckout.owner")])).toEqual(["t1", USER.id]);
 });
 
-test("billing refused for want of two-step sign-in opens the setup, saying why", async ({ page }) => {
+test("billing refused for want of two-step sign-in opens the setup, saying why", { tag: ["@J0", "@J7"] }, async ({ page }) => {
   const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING }], user: { ...USER, mfa: "off" } }));
   backend.on("POST", PORTAL, error(403, "permission_denied", { reason: "mfa_required" }));
   await bar(page).getByRole("button", { name: "Billing" }).click();
@@ -110,7 +110,7 @@ test("billing refused for want of two-step sign-in opens the setup, saying why",
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("an owner subscribing again without two-step sign-in is sent to set it up", async ({ page }) => {
+test("an owner subscribing again without two-step sign-in is sent to set it up", { tag: ["@J0", "@J7"] }, async ({ page }) => {
   const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, status: "canceled", plan: "starter", subscriptionEnded: true }], user: { ...USER, mfa: "off" } }));
   backend.on("POST", CHECKOUT, error(403, "permission_denied", { reason: "mfa_required" }));
   await bar(page).getByRole("button", { name: "Subscribe" }).click();
@@ -118,7 +118,7 @@ test("an owner subscribing again without two-step sign-in is sent to set it up",
   await expect(bar(page).getByRole("button", { name: "Subscribe" })).toBeEnabled();
 });
 
-test("with it on, Account offers to move it to a new phone, with no password step", async ({ page }) => {
+test("with it on, Account offers to move it to a new phone, with no password step", { tag: ["@J0"] }, async ({ page }) => {
   const backend = await open(page, new FakeBackend({ user: { ...USER, mfa: "totp" } }));
   await bar(page).getByRole("button", { name: "Account" }).click();
   await expect(dialog(page).locator("#twoStepState")).toHaveText("Two-step sign-in is on: signing in with your email takes your password and a code from your authenticator app.");
@@ -137,7 +137,7 @@ test("with it on, Account offers to move it to a new phone, with no password ste
   await expect(fail(page)).toHaveText("Too many tries for now. Wait a few minutes, then try again.");
 });
 
-test("when it's on but the other sessions weren't signed out, the dialog finishes that", async ({ page }) => {
+test("when it's on but the other sessions weren't signed out, the dialog finishes that", { tag: ["@J0"] }, async ({ page }) => {
   const backend = await open(page, new FakeBackend({ user: { ...USER, mfa: "totp" } }));
   await bar(page).getByRole("button", { name: "Account" }).click();
   await dialog(page).getByRole("button", { name: "Move to a new phone" }).click();
@@ -157,7 +157,7 @@ test("when it's on but the other sessions weren't signed out, the dialog finishe
   expect(backend.requests("POST", "/me/sign-out-everywhere").map((c) => c.body ?? null)).toEqual([null, null]);
 });
 
-test("moving to a new phone that can't start says so", async ({ page }) => {
+test("moving to a new phone that can't start says so", { tag: ["@J0"] }, async ({ page }) => {
   const backend = await open(page, new FakeBackend({ user: { ...USER, mfa: "totp" } }));
   backend.on("POST", "/me/mfa/totp", { abort: true });
   await bar(page).getByRole("button", { name: "Account" }).click();
@@ -166,14 +166,14 @@ test("moving to a new phone that can't start says so", async ({ page }) => {
   await expect(dialog(page).getByLabel("New password")).toBeHidden();
 });
 
-test("a Google or Apple user has nothing to set up", async ({ page }) => {
+test("a Google or Apple user has nothing to set up", { tag: ["@J0"] }, async ({ page }) => {
   await open(page, new FakeBackend({ user: { ...USER, mfa: "provider" } }));
   await bar(page).getByRole("button", { name: "Account" }).click();
   await expect(dialog(page).locator("#twoStepState")).toHaveText("You sign in with Google or Apple, which covers two-step sign-in here.");
   await expect(dialog(page).getByRole("button", { name: /two-step|new phone/ })).toHaveCount(0);
 });
 
-test("an API that doesn't say shows nothing about it", async ({ page }) => {
+test("an API that doesn't say shows nothing about it", { tag: ["@J0"] }, async ({ page }) => {
   await open(page, new FakeBackend());
   await bar(page).getByRole("button", { name: "Account" }).click();
   await expect(dialog(page).getByLabel("Type DELETE to confirm")).toBeFocused();

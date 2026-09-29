@@ -33,7 +33,7 @@ async function open(page, backend) {
   return backend;
 }
 
-test.describe("leaving a team", () => {
+test.describe("leaving a team", { tag: ["@J11"] }, () => {
   test("a contributor leaves from the team bar with two taps, and the team is forgotten", async ({ page }) => {
     const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, role: "contributor" }], members: { t1: [{ ...ME, role: "owner", userId: "u-owner" }, { ...SAM, userId: USER.id }] } }));
     await expect(bar(page).getByRole("button", { name: "Members" })).toHaveCount(0);
@@ -59,7 +59,7 @@ test.describe("leaving a team", () => {
   });
 });
 
-test.describe("closing a team", () => {
+test.describe("closing a team", { tag: ["@J11.2"] }, () => {
   test("an owner types the team's name to close it, and starts again", async ({ page }) => {
     const backend = await open(page, new FakeBackend({ members: { t1: [ME, SAM] }, teamInvites: { t1: [] } }));
     await bar(page).getByRole("button", { name: "Members" }).click();
@@ -100,7 +100,7 @@ test.describe("closing a team", () => {
   });
 });
 
-test.describe("a closed team", () => {
+test.describe("a closed team", { tag: ["@J11"] }, () => {
   test("is read-only with a notice for its owner, who can still export, remove people and leave", async ({ page }) => {
     const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...CLOSED }], members: { t1: [ME, SAM] } }));
     await expect(bar(page).locator(".closed-note")).toHaveText("This team was closed on September 26, 2026. It's read-only, and everything in it will be deleted on October 26, 2026. Use Export data to keep a copy.");
@@ -290,8 +290,8 @@ test.describe("a closed team", () => {
   });
 });
 
-test.describe("deleting an account", () => {
-  test("from the team bar: typed DELETE, the server's reason when it refuses, then signed out for good", async ({ page }) => {
+test.describe("deleting an account", { tag: ["@J11.1"] }, () => {
+  test("from the team bar: typed DELETE, the server's reason when it refuses, then signed out for good", { tag: ["@J11.2"] }, async ({ page }) => {
     const backend = await open(page, new FakeBackend({ members: { t1: [ME, SAM] } }));
     await bar(page).getByRole("button", { name: "Account" }).click();
     await expect(dialog(page)).toContainText(`Signed in as ${USER.email}.`);

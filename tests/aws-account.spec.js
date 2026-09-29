@@ -39,8 +39,8 @@ test.describe("config", () => {
   }
 });
 
-test.describe("sign-in", () => {
-  test("resumes the session and opens the team", async ({ page }) => {
+test.describe("sign-in", { tag: ["@J0"] }, () => {
+  test("resumes the session and opens the team", { tag: ["@J0.1"] }, async ({ page }) => {
     const backend = new FakeBackend({ docs: { ...seeded(), "t1/sheets/mine": { client: "Mine", date: "2026-09-25", createdBy: USER.id, status: "open", items: {} } } });
     await openAws(page, backend);
     await connected(page);
@@ -66,7 +66,7 @@ test.describe("sign-in", () => {
     await expectAccessible(page);
   });
 
-  test("signed out: a sign-in link to Managed Login with PKCE", async ({ page }) => {
+  test("signed out: a sign-in link to Managed Login with PKCE", { tag: ["@J0.1"] }, async ({ page }) => {
     const backend = new FakeBackend({ signedIn: false });
     await openAws(page, backend);
     await expect(account(page).getByRole("heading", { name: "Sign in" })).toBeVisible();
@@ -93,14 +93,14 @@ test.describe("sign-in", () => {
     await expect.poll(() => backend.authRequests).toEqual([url.href]);
   });
 
-  test("an invite link is kept across sign-in", async ({ page }) => {
+  test("an invite link is kept across sign-in", { tag: ["@J3.2"] }, async ({ page }) => {
     await openAws(page, new FakeBackend({ signedIn: false }), { path: "/?invite=i1&token=tok" });
     await expect(account(page)).toContainText("Sign in with the email address your invite was sent to");
     expect(new URL(page.url()).search).toBe("");
     expect(JSON.parse(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.invite")))).toEqual({ id: "i1", token: "tok" });
   });
 
-  test("finishes the sign-in redirect", async ({ page }) => {
+  test("finishes the sign-in redirect", { tag: ["@J0.2"] }, async ({ page }) => {
     const backend = new FakeBackend({ signedIn: false, docs: seeded() });
     const verifier = "v".repeat(43);
     await openAws(page, backend, { path: "/?code=good-code&state=st1", storage: { session: { "supplyCheckout.signIn": JSON.stringify({ verifier, state: "st1" }) } } });
@@ -132,7 +132,7 @@ test.describe("sign-in", () => {
   // links it and fails that sign-in with ACCOUNT_LINKED:<provider> (supply-checkout-0b1)
   const linkedError = (provider, state = "st1") => `/?${new URLSearchParams({ error_description: `PreSignUp failed with error ACCOUNT_LINKED:${provider}. `, state, error: "invalid_request" })}`;
   for (const [provider, name, article] of [["Google", "Google", "a"], ["SignInWithApple", "Apple", "an"]]) {
-    test(`${article} ${name} sign-in just linked to an existing account signs in again with ${name}, once`, async ({ page }) => {
+    test(`${article} ${name} sign-in just linked to an existing account signs in again with ${name}, once`, { tag: ["@J0.2"] }, async ({ page }) => {
       const backend = new FakeBackend({ signedIn: false });
       await openAws(page, backend, { path: linkedError(provider), storage: { session: { "supplyCheckout.signIn": JSON.stringify({ verifier: "v".repeat(43), state: "st1" }), "supplyCheckout.invite": JSON.stringify({ id: "i1", token: "tok" }) } } });
       await expect.poll(() => backend.authRequests.length).toBe(1);
@@ -489,7 +489,7 @@ test.describe("sign-in", () => {
 });
 
 test.describe("first sign-in and teams", () => {
-  test("a new user names their team", async ({ page }) => {
+  test("a new user names their team", { tag: ["@J1.3"] }, async ({ page }) => {
     const backend = new FakeBackend({ teams: [] });
     await openAws(page, backend);
     await expect(account(page).getByRole("heading", { name: "Name your team" })).toBeVisible();
@@ -531,7 +531,7 @@ test.describe("first sign-in and teams", () => {
     expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.team"))).toBe(backend.teams[0].id);
   });
 
-  test("invites without the link are shown, with how to join", async ({ page }) => {
+  test("invites without the link are shown, with how to join", { tag: ["@J3.2"] }, async ({ page }) => {
     const backend = new FakeBackend({ teams: [], user: { ...USER, email: null }, invites: [{ id: "i9", teamName: "Bravo Co", role: "viewer", expiresAt: "2026-10-03T12:00:00.000Z" }] });
     await openAws(page, backend);
     await expect(account(page)).toContainText("Bravo Co invited you as a viewer. Open the link in your invite email to join.");
@@ -543,7 +543,7 @@ test.describe("first sign-in and teams", () => {
   const invited = { id: "i1", teamName: "Bravo Co", role: "contributor", expiresAt: "2026-10-03T12:00:00.000Z" };
   const inviteLink = (token = "tok") => ({ session: { "supplyCheckout.invite": JSON.stringify({ id: "i1", token }) } });
 
-  test("joins the team from an invite link", async ({ page }) => {
+  test("joins the team from an invite link", { tag: ["@J3.2"] }, async ({ page }) => {
     const backend = new FakeBackend({ teams: [], invites: [invited], docs: seeded("t-i1") });
     await openAws(page, backend, { storage: inviteLink() });
     await expect(account(page).getByRole("heading", { name: "Join Bravo Co" })).toBeVisible();
@@ -558,7 +558,7 @@ test.describe("first sign-in and teams", () => {
     expect(await page.evaluate(() => sessionStorage.getItem("supplyCheckout.invite"))).toBeNull();
   });
 
-  test("an invite that's expired or used says so, and offers a team of their own", async ({ page }) => {
+  test("an invite that's expired or used says so, and offers a team of their own", { tag: ["@J3.2"] }, async ({ page }) => {
     const backend = new FakeBackend({ teams: [], invites: [invited] });
     await openAws(page, backend, { storage: inviteLink("wrong") });
     await page.getByRole("button", { name: "Join" }).click();
@@ -568,7 +568,7 @@ test.describe("first sign-in and teams", () => {
     await expect(account(page).getByRole("heading", { name: "Name your team" })).toBeVisible();
   });
 
-  test("joining explains an unverified email, too many teams, a full team, and a lost connection", async ({ page }) => {
+  test("joining explains an unverified email, too many teams, a full team, and a lost connection", { tag: ["@J3.2"] }, async ({ page }) => {
     const backend = new FakeBackend({ teams: [], invites: [invited] });
     backend.on("POST", "/invites/i1/accept", { status: 403, body: { error: { code: "permission_denied", message: "verify" } } });
     backend.on("POST", "/invites/i1/accept", { status: 429, body: { error: { code: "quota_exceeded", message: "20 teams" } } });
@@ -588,7 +588,7 @@ test.describe("first sign-in and teams", () => {
     await connected(page);
   });
 
-  test("an invite to a team they're already in opens their team", async ({ page }) => {
+  test("an invite to a team they're already in opens their team", { tag: ["@J3.2"] }, async ({ page }) => {
     const backend = new FakeBackend({ docs: seeded() });
     backend.on("POST", "/invites/i7/accept", { status: 409, body: { error: { code: "aborted", message: "member" } } });
     await openAws(page, backend, { path: "/?invite=i7&token=tok" });
@@ -599,7 +599,7 @@ test.describe("first sign-in and teams", () => {
     await expect(page.locator(".teambar")).toContainText("Team: Echo Cleaning");
   });
 
-  test("an invite can wait while they use their own team", async ({ page }) => {
+  test("an invite can wait while they use their own team", { tag: ["@J3.2"] }, async ({ page }) => {
     const backend = new FakeBackend({ docs: seeded(), invites: [invited] });
     await openAws(page, backend, { storage: inviteLink() });
     await page.getByRole("button", { name: "Not now" }).click();
@@ -610,7 +610,7 @@ test.describe("first sign-in and teams", () => {
 
   const teams = [TEAM, { ...TEAM, id: "t2", name: "Bravo Co", role: "contributor" }];
 
-  test("with several teams, opens the last one used and switches between them", async ({ page }) => {
+  test("with several teams, opens the last one used and switches between them", { tag: ["@J0.3"] }, async ({ page }) => {
     const backend = new FakeBackend({ teams, docs: { ...seeded(), "t2/sheets/b1": { client: "Bravo job", date: "2026-09-20", status: "open", items: {} } } });
     await openAws(page, backend, { storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.team": "t2" } } });
     await connected(page);
@@ -627,14 +627,14 @@ test.describe("first sign-in and teams", () => {
     expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.team"))).toBe("t1");
   });
 
-  test("a remembered team they've left falls back to the first", async ({ page }) => {
+  test("a remembered team they've left falls back to the first", { tag: ["@J0.3"] }, async ({ page }) => {
     const backend = new FakeBackend({ teams, docs: seeded() });
     await openAws(page, backend, { storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.team": "gone" } } });
     await connected(page);
     await expect(page.getByLabel("Team")).toHaveValue("t1");
   });
 
-  test("viewers see the view-only notice", async ({ page }) => {
+  test("viewers see the view-only notice", { tag: ["@J9.1"] }, async ({ page }) => {
     const backend = new FakeBackend({ teams: [{ ...TEAM, role: "viewer" }], docs: seeded() });
     await openAws(page, backend);
     await connected(page);
@@ -642,7 +642,7 @@ test.describe("first sign-in and teams", () => {
     await expect(page.getByRole("button", { name: "+ New sheet" })).toHaveCount(0);
   });
 
-  test("the account screens and team bar fit a 320px phone", async ({ page }) => {
+  test("the account screens and team bar fit a 320px phone", { tag: ["@J0"] }, async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 640 });
     const backend = new FakeBackend({ teams: [], invites: [{ ...invited, teamName: "A team with a rather long name, Incorporated" }] });
     await openAws(page, backend, { storage: inviteLink() });
@@ -653,7 +653,7 @@ test.describe("first sign-in and teams", () => {
     await expectNoSideways(page);
   });
 
-  test("the team switcher fits a 320px phone", async ({ page }) => {
+  test("the team switcher fits a 320px phone", { tag: ["@J0.3"] }, async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 640 });
     await openAws(page, new FakeBackend({ teams: [TEAM, { ...TEAM, id: "t2", name: "A team with a rather long name, Incorporated" }], docs: seeded() }));
     await connected(page);
@@ -663,7 +663,7 @@ test.describe("first sign-in and teams", () => {
 
   // Nothing tells the page when another of the user's teams removes them: /me, asked again
   // when the data is re-listed (at most once a minute), does
-  test("drops a team the user was removed from when the data is next re-listed", async ({ page }) => {
+  test("drops a team the user was removed from when the data is next re-listed", { tag: ["@J0"] }, async ({ page }) => {
     const three = [...teams, { ...TEAM, id: "t3", name: "Charlie Ltd", role: "viewer" }];
     const backend = new FakeBackend({ teams: three, docs: seeded() });
     await page.clock.install();
@@ -697,7 +697,7 @@ test.describe("first sign-in and teams", () => {
     await expectAccessible(page);
   });
 
-  test("while polling instead of a socket, /me is asked at most every 10 minutes", async ({ page }) => {
+  test("while polling instead of a socket, /me is asked at most every 10 minutes", { tag: ["@J0"] }, async ({ page }) => {
     const backend = new FakeBackend({ teams, docs: seeded() });
     await page.clock.install();
     // The socket never opens, so after three tries the app polls every 15 seconds
@@ -726,7 +726,7 @@ test.describe("first sign-in and teams", () => {
     await expect.poll(meCalls).toBe(3);
   });
 
-  test("a /me without the open team leaves the switcher to the removal notice", async ({ page }) => {
+  test("a /me without the open team leaves the switcher to the removal notice", { tag: ["@J0"] }, async ({ page }) => {
     const backend = new FakeBackend({ teams, docs: seeded() });
     await page.clock.install();
     await openAws(page, backend);
@@ -745,7 +745,7 @@ test.describe("first sign-in and teams", () => {
 
 // The team choice and receipt drafts kept in localStorage, on a device people share
 // (supply-checkout-5nj, supply-checkout-i7h)
-test.describe("saved on this device", () => {
+test.describe("saved on this device", { tag: ["@J0"] }, () => {
   const teams = [TEAM, { ...TEAM, id: "t2", name: "Bravo Co", role: "contributor" }];
   const SAM = { id: "u-sam", email: "sam@example.com", emailVerified: true };
   const draft = (store) => JSON.stringify({ store, receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines: [{ id: "l1", name: "Paper towels", raw: "", qty: 1, price: 8, dest: "stock", code: "", match: "", suggested: false, useName: "inv", usePrice: "receipt" }] });

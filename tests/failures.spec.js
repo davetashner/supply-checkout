@@ -10,7 +10,7 @@ const openEcho = async (page, opts = failing) => {
   await page.getByRole("button", { name: /Echo Studio/ }).click();
 };
 
-test("a failed sheet delete keeps the sheet open", async ({ page }) => {
+test("a failed sheet delete keeps the sheet open", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Delete sheet" }).click();
   await page.getByRole("button", { name: "Tap again to delete" }).click();
@@ -18,7 +18,7 @@ test("a failed sheet delete keeps the sheet open", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Echo Studio" })).toBeVisible();
 });
 
-test("a failed edit keeps the edit form open", async ({ page }) => {
+test("a failed edit keeps the edit form open", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Edit details" }).click();
   await modal(page).getByRole("button", { name: "Save" }).click();
@@ -26,7 +26,7 @@ test("a failed edit keeps the edit form open", async ({ page }) => {
   await expect(modal(page).getByRole("heading", { name: "Edit sheet" })).toBeVisible();
 });
 
-test("failed line edits keep the line editor open", async ({ page }) => {
+test("failed line edits keep the line editor open", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Paper towels").click();
   await modal(page).getByRole("button", { name: "Save" }).click();
@@ -37,7 +37,7 @@ test("failed line edits keep the line editor open", async ({ page }) => {
   await expect(modal(page).getByRole("heading", { name: "Paper towels, 6 roll" })).toBeVisible();
 });
 
-test("an edit someone else saved over first closes the editor and says so", async ({ page }) => {
+test("an edit someone else saved over first closes the editor and says so", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page, { ...usedState, writeErrorFor: { prefix: "sheets/", code: "aborted" } });
   await lineRow(page, "Paper towels").click();
   await modal(page).getByRole("button", { name: "Save" }).click();
@@ -47,7 +47,7 @@ test("an edit someone else saved over first closes the editor and says so", asyn
 });
 
 // `refused` is the web build's code for a checkout or return the API refused (src/aws/db.js)
-test("a return refused for what's saved now closes the form and says why, not to check the connection", async ({ page }) => {
+test("a return refused for what's saved now closes the form and says why, not to check the connection", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page, { ...usedState, writeErrorFor: { prefix: "sheets/", code: "refused" } });
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await enterBarcode(page, "SKU1");
@@ -56,7 +56,7 @@ test("a return refused for what's saved now closes the form and says why, not to
   await expect(modal(page)).toBeEmpty();
 });
 
-test("any other refusal from the runtime keeps the form open with the usual message", async ({ page }) => {
+test("any other refusal from the runtime keeps the form open with the usual message", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page, { ...usedState, writeErrorFor: { prefix: "sheets/", code: "failed_precondition" } });
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await enterBarcode(page, "SKU1");
@@ -65,7 +65,7 @@ test("any other refusal from the runtime keeps the form open with the usual mess
   await expect(modal(page).getByRole("button", { name: "Try again" })).toBeVisible();
 });
 
-test("a new item that can't be saved to inventory isn't added to the sheet", async ({ page }) => {
+test("a new item that can't be saved to inventory isn't added to the sheet", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page, { ...usedState, writeErrorFor: { prefix: "products/", code: "unavailable" } });
   await enterBarcode(page, "NEW1");
   await modal(page).getByLabel("Item name").fill("Wax");
@@ -75,7 +75,7 @@ test("a new item that can't be saved to inventory isn't added to the sheet", asy
   await expect(modal(page).getByLabel("Item name")).toHaveValue("Wax");
 });
 
-test("a checkout that fails after saving a new item doesn't save the item again on retry", async ({ page }) => {
+test("a checkout that fails after saving a new item doesn't save the item again on retry", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page, { ...usedState, writeErrorFor: { prefix: "sheets/", code: "unavailable" } });
   await enterBarcode(page, "NEW1");
   await modal(page).getByLabel("Item name").fill("Wax");
@@ -90,7 +90,7 @@ test("a checkout that fails after saving a new item doesn't save the item again 
   expect(await page.evaluate(() => window.__mock.docs.has("products/NEW1"))).toBe(false);
 });
 
-test("a failed item delete keeps the item", async ({ page }) => {
+test("a failed item delete keeps the item", { tag: ["@J2.3"] }, async ({ page }) => {
   await openApp(page, failing);
   await page.getByRole("button", { name: "Inventory" }).click();
   await inventoryRow(page, "Storage bins").click();
@@ -100,7 +100,7 @@ test("a failed item delete keeps the item", async ({ page }) => {
   await expect(modal(page).getByRole("heading", { name: "Edit item" })).toBeVisible();
 });
 
-test("a new sheet from a receipt that fails to save stays in the review", async ({ page }) => {
+test("a new sheet from a receipt that fails to save stays in the review", { tag: ["@J5.3"] }, async ({ page }) => {
   await openApp(page, { ...usedState, writeErrorFor: { prefix: "sheets/", code: "unavailable" } });
   await page.setInputFiles("#receiptFile", fakeImage);
   await page.getByLabel("Client name").fill("Alpha Two");
@@ -110,7 +110,7 @@ test("a new sheet from a receipt that fails to save stays in the review", async 
   await expect(page.getByRole("button", { name: /Alpha Two/ })).toHaveCount(0);
 });
 
-test("a download rejected without an error is treated as cancelled", async ({ page }) => {
+test("a download rejected without an error is treated as cancelled", { tag: ["@J6.2"] }, async ({ page }) => {
   await openEcho(page, { ...usedState, downloadError: "bare" });
   await page.getByRole("button", { name: "Download CSV" }).click();
   await expect(page.locator("#toast")).toBeHidden();

@@ -19,7 +19,7 @@ async function openOwner(page, opts = {}) {
 }
 const saved = (page, i) => page.evaluate((i) => window.__mock.saves[i], i);
 
-test("owners export every sheet and the inventory as CSV, and everything as JSON", async ({ page }) => {
+test("owners export every sheet and the inventory as CSV, and everything as JSON", { tag: ["@J6", "@J10.2"] }, async ({ page }) => {
   await openOwner(page);
   await page.getByRole("button", { name: "Export data" }).click();
   await expect(modal(page)).toContainText("3 sheets and 5 inventory items");
@@ -70,7 +70,7 @@ test("owners export every sheet and the inventory as CSV, and everything as JSON
 });
 
 // The artifact build's marks of recent saves only guard retries (src/moves.js): they aren't data
-test("the JSON export leaves out the marks of recent saves", async ({ page }) => {
+test("the JSON export leaves out the marks of recent saves", { tag: ["@J6"] }, async ({ page }) => {
   await openOwner(page, { seed: {
     "products/a": { name: "A", price: 1, stock: 3, ops: ["m1"] },
     "sheets/s": { client: "One", date: "2026-09-01", status: "open", savedReceipts: { m0: true }, items: { a: { code: "", name: "A", price: 1, out: 2, returned: 0, ops: ["m1", "m2"] } } },
@@ -85,7 +85,7 @@ test("the JSON export leaves out the marks of recent saves", async ({ page }) =>
   expect(json.inventory).toEqual([{ key: "a", name: "A", price: 1, stock: 3 }]);
 });
 
-test("a single sheet's CSV guards formula-like text too", async ({ page }) => {
+test("a single sheet's CSV guards formula-like text too", { tag: ["@J6.2"] }, async ({ page }) => {
   await openOwner(page, { seed: { "sheets/f": { client: "@Risky", date: "2026-09-01", status: "open", items: { a: { code: "-1", name: "+Plus", price: 1, out: 1, returned: 0 } } } } });
   await page.getByRole("button", { name: /Risky/ }).click();
   await page.getByRole("button", { name: "Download CSV" }).click();
@@ -96,7 +96,7 @@ test("a single sheet's CSV guards formula-like text too", async ({ page }) => {
   expect(data).toContain("'+Plus,'-1,1.00,1,0,1,1.00");
 });
 
-test("view-only owners can still export (a cancelled team's read-only period)", async ({ page }) => {
+test("view-only owners can still export (a cancelled team's read-only period)", { tag: ["@J6", "@J10.2"] }, async ({ page }) => {
   await openOwner(page, { canWrite: false, seed: { "products/a": { name: "A", price: 1 }, "sheets/s": { client: "One", date: "2026-09-01", status: "open", items: {} } } });
   await expect(page.getByRole("button", { name: "+ New sheet" })).toHaveCount(0);
   await page.getByRole("button", { name: "Export data" }).click();
@@ -105,33 +105,33 @@ test("view-only owners can still export (a cancelled team's read-only period)", 
   await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
 });
 
-test("only owners see Export data", async ({ page }) => {
+test("only owners see Export data", { tag: ["@J6"] }, async ({ page }) => {
   await openOwner(page, { owner: false });
   await expect(page.getByRole("button", { name: /Echo Studio/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Export data" })).toHaveCount(0);
 });
 
-test("no Export data when the owner check fails or downloads aren't available", async ({ page }) => {
+test("no Export data when the owner check fails or downloads aren't available", { tag: ["@J6"] }, async ({ page }) => {
   await openOwner(page, { userErrors: ["isOwner"], unavailable: ["downloads"] });
   await expect(page.getByRole("button", { name: /Echo Studio/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Export data" })).toHaveCount(0);
 });
 
-test("a declined export says nothing", async ({ page }) => {
+test("a declined export says nothing", { tag: ["@J6"] }, async ({ page }) => {
   await openOwner(page, { downloadError: "declined" });
   await page.getByRole("button", { name: "Export data" }).click();
   await modal(page).getByRole("button", { name: "Inventory (CSV)" }).click();
   await expect(page.locator("#toast")).toBeHidden();
 });
 
-test("a failed export says it couldn't be prepared", async ({ page }) => {
+test("a failed export says it couldn't be prepared", { tag: ["@J6"] }, async ({ page }) => {
   await openOwner(page, { downloadError: "unavailable" });
   await page.getByRole("button", { name: "Export data" }).click();
   await modal(page).getByRole("button", { name: "Sheets (CSV)" }).click();
   await expect(page.locator("#toast")).toHaveText("Couldn't prepare the download here.");
 });
 
-test("exports 1,000 sheets in well under 30 seconds", async ({ page }) => {
+test("exports 1,000 sheets in well under 30 seconds", { tag: ["@J6"] }, async ({ page }) => {
   const big = { ...usedState.seed };
   for (let i = 0; i < 1000; i++) {
     const items = {};

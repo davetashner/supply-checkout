@@ -56,6 +56,7 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `docs/architecture/` | Architecture overview and diagrams (Mermaid). |
 | `docs/*.md` | The pages linked under [Documentation](#documentation): infrastructure, backend, the web app, observability, testing and releases. |
 | `docs/journeys.md` | The customer journeys the product must never break, the tests that cover them, and the production alarms for when one is blocked. |
+| `journeys/registry.json` | The journeys' steps (J4.2 …), their status and their alarms, which `docs/journeys.md`'s table and step lists are generated from. `scripts/journeys.mjs` (`npm run journeys:trace`) ties them to the tagged tests; see [Journey tags](docs/testing.md#journey-tags-and-the-traceability-check). |
 | `.beads/` | The [beads](https://github.com/steveyegge/beads) backlog. `issues.jsonl` is an export; run `bd ready` to see what's next. |
 
 ## Development
@@ -128,10 +129,10 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | Job | Gate |
 | --- | --- |
 | PR title | Conventional Commits format (pull requests only) |
-| Lint and validate HTML | ESLint on `src/`, `demo/`, scripts and tests; builds all three and runs html-validate on each |
+| Lint and validate HTML | ESLint on `src/`, `demo/`, scripts and tests; builds all three and runs html-validate on each; then `npm run journeys:trace`, which fails if a built journey step has no test, a critical journey has no alarm, or `docs/journeys.md` doesn't match `journeys/registry.json` |
 | Lint GitHub workflows | actionlint |
 | No region names outside the config module | `scripts/check-region-strings.mjs`: fails on any AWS region name in `infra/`, `backend/` or `src/` outside `infra/lib/config.ts` (ADR 0010) |
-| Shell scripts | shellcheck on `scripts/*.sh`, the `land-pr.sh` and `beads-pr.sh` tests against a fake `gh`, and the Node tests for `publish-web.mjs`, `ops.mjs`, `check-stray-files.mjs`, `backlog-page.mjs` and `backlog-stop-hook.mjs` (`npm run test:scripts`) |
+| Shell scripts | shellcheck on `scripts/*.sh`, the `land-pr.sh` and `beads-pr.sh` tests against a fake `gh`, and the Node tests for `publish-web.mjs`, `ops.mjs`, `check-stray-files.mjs`, `backlog-page.mjs`, `backlog-stop-hook.mjs` and `journeys.mjs` (`npm run test:scripts`) |
 | Secret scan | gitleaks on commits: on a pull request, only the PR's own commits (base..head), so a flagged string on another branch doesn't fail every PR; on the merge queue, pushes to `main`, the nightly run and manual runs, every commit on every branch. Also `scripts/check-public-safety.mjs` on every file (AWS account and SSO identifiers, email addresses, AWS and Stripe keys, private keys), and `scripts/check-stray-files.mjs`, which fails on any tracked `*.orig` or `*.rej` file |
 | Dependency audit | `npm audit` fails on high-severity advisories; dependency review fails a PR that adds a moderate-or-worse vulnerable package |
 | CodeQL (javascript-typescript), CodeQL (actions) | CodeQL `security-extended` queries on the app, scripts, tests and workflows (`.github/workflows/codeql.yml`, which also runs weekly). Results go to the repository's code scanning alerts |

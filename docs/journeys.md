@@ -2,14 +2,20 @@
 
 These are the journeys Supply Checkout must never break. Each one lists who does it, the steps, what should happen, the tests that prove it works, and whether it is **critical**: blocked for even a few minutes, it stops crews working or stops us getting paid. The second half of this page lists the alarms that tell us when a journey is blocked in production.
 
-When you add or change a feature, update the journey here, its tests, and its alarms in the same pull request.
+Each step has an ID (J4.2 is the second step of J4). The journeys, their steps and their alarms live in [`journeys/registry.json`](../journeys/registry.json), and the journeys table and step lists below are generated from it. See [Keeping this page current](#keeping-this-page-current).
 
-**Status**
-- **Tested**: works in today's app (the claude.ai artifact) and has automated tests.
-- **Partly tested**: some steps exist and are tested; the rest are planned.
-- **Planned**: needs the AWS version. The beads listed build it.
+End-to-end tests of every journey against a deployed environment are `supply-checkout-o60`. Until then, "tests" below means the Playwright suites that run against the mock runtime and the fake API (`tests/`), and the backend's tests (`backend/test/`).
 
-End-to-end tests of every journey against a deployed environment are `supply-checkout-o60`. Until then, "tests" below means the Playwright suites that run against the mock runtime (`tests/`).
+## Keeping this page current
+
+When you add or change a feature, update the journey, its tests and its alarms in the same pull request:
+
+1. Change the journey's steps, a step's status (`built` or `planned`) or its alarms in [`journeys/registry.json`](../journeys/registry.json), then run `npm run journeys:docs` to regenerate the journeys table and step lists here. The Status column is computed from the steps; don't edit it by hand.
+2. Tag the Playwright tests that prove a step with the step's ID, `test("…", { tag: ["@J4.2"] }, …)`, or tag a whole `test.describe`. A test that belongs to a journey without proving one step gets the journey's tag, `@J4`. In a test that walks through several steps, name its `test.step` blocks by step: `test.step("J4.2 Scan an item and choose how many", …)`. Backend tests go in the step's `tests` list in the registry, by path.
+3. Add a new alarm to the registry with the journeys it watches, and to this page's alarm tables; once it's built, give it its `infra` ID and add it to [Which alarms exist](#which-alarms-exist).
+4. Run `npm run journeys:trace`. It prints each step with its tests and alarms, and fails when a built step has no test, a critical journey has no alarm of its own, a tag names a step that doesn't exist, or this page doesn't match the registry. A built step that really has no automated test yet gets an `untested` reason in the registry instead of a fake tag. CI's lint job runs it.
+
+To run one journey's tests: `npx playwright test --grep "@J4\b" --project=desktop-chrome` (the `\b` keeps `@J1` from matching `@J10`), or one step's: `--grep @J4.2`.
 
 ## People
 
@@ -21,21 +27,29 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 ## Journeys
 
+<!-- journeys:table -->
+**Status** (computed from the registry by `npm run journeys:docs`)
+- **Tested**: every step is built and has automated tests. "Still to come" names what's planned beyond the steps.
+- **Built, not all tested**: every step is built; some have no automated test yet, for the reasons in the registry.
+- **Partly built**: some steps are built and tested; the steps marked *Planned* aren't built yet.
+- **Planned**: no step is built yet. The beads listed build it.
+
 | # | Journey | Persona | Critical | Status |
 | --- | --- | --- | --- | --- |
-| [J0](#j0-sign-in) | Sign in | Everyone | Yes | Planned |
-| [J1](#j1-sign-up-and-start-a-trial) | Sign up and start a trial | Owner | Yes | Planned |
-| [J2](#j2-set-up-the-inventory) | Set up the inventory | Owner | No | Partly tested |
-| [J3](#j3-invite-the-crew) | Invite the crew | Owner, crew member | No | Tested; seats planned |
+| [J0](#j0-sign-in) | Sign in | Everyone | Yes | Tested |
+| [J1](#j1-sign-up-and-start-a-trial) | Sign up and start a trial | Owner | Yes | Partly built |
+| [J2](#j2-set-up-the-inventory) | Set up the inventory | Owner | No | Tested |
+| [J3](#j3-invite-the-crew) | Invite the crew | Owner, crew member | No | Tested; still to come: opening the mobile app from the invite link (phase 2) |
 | [J4](#j4-check-supplies-out-and-back-in) | Check supplies out and back in | Crew member | Yes | Tested |
-| [J5](#j5-read-a-receipt) | Read a receipt | Crew member, owner | No | Tested (claude.ai); Bedrock planned |
+| [J5](#j5-read-a-receipt) | Read a receipt | Crew member, owner | No | Tested; still to come: reading receipts in the web app, on Bedrock |
 | [J6](#j6-export-a-sheet-to-bill-a-client) | Export a sheet to bill a client | Owner, bookkeeper | No | Tested |
-| [J7](#j7-subscribe-add-seats-and-see-invoices) | Subscribe, add seats and see invoices | Owner | Yes | Planned |
-| [J8](#j8-a-payment-fails-and-is-fixed) | A payment fails and is fixed | Owner | Yes | Planned |
-| [J9](#j9-a-viewer-can-see-but-not-change) | A viewer can see but not change | Bookkeeper | No | Tested; server-side roles planned |
-| [J10](#j10-cancel-and-take-the-data) | Cancel and take the data | Owner | No | Planned |
-| [J11](#j11-delete-an-account) | Delete an account | Anyone | No | Planned |
+| [J7](#j7-subscribe-add-seats-and-see-invoices) | Subscribe, add seats and see invoices | Owner | Yes | Partly built |
+| [J8](#j8-a-payment-fails-and-is-fixed) | A payment fails and is fixed | Owner | Yes | Partly built |
+| [J9](#j9-a-viewer-can-see-but-not-change) | A viewer can see but not change | Bookkeeper | No | Tested |
+| [J10](#j10-cancel-and-take-the-data) | Cancel and take the data | Owner | No | Tested; still to come: deleting a canceled team's data after 30 days |
+| [J11](#j11-delete-an-account) | Delete an account | Anyone | No | Tested |
 | [J12](#j12-choose-a-plan-in-the-mobile-app) | Choose a plan in the mobile app | Owner | No | Planned (phase 2) |
+<!-- /journeys:table -->
 
 ---
 
@@ -43,58 +57,69 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Persona:** everyone. **Critical:** every other journey starts here.
 
-1. Open the app on a phone or laptop.
-2. Sign in with an email code, a passkey, Apple or Google.
-3. If the person belongs to more than one team, pick the team.
+<!-- journeys:steps J0 -->
+- **J0.1** Open the app on a phone or laptop.
+- **J0.2** Sign in with an email code, a passkey, Apple or Google.
+- **J0.3** If the person belongs to more than one team, pick the team.
+<!-- /journeys:steps J0 -->
 
 **Expected:** the team's sheets appear within 3 seconds. Staying signed in lasts 30 days on the same device. Signing in with Apple or Google using the verified email of an existing account, at an address that provider runs (Gmail or the account's own Workspace domain; iCloud or an Apple relay address), opens that same account and its teams (`supply-checkout-0b1`: `backend/test/account-link.test.ts`, and the retry in `tests/aws-account.spec.js`). A person removed from a team no longer sees it on their next request.
 
-**Status:** planned. `supply-checkout-zsm` (Cognito), `supply-checkout-l5y` (team switcher).
+**Status:** built (`supply-checkout-zsm`: Cognito and Managed Login; `supply-checkout-l5y`: the team switcher). The tests use a fake Managed Login: `tests/aws-account.spec.js`, `aws-session-tabs.spec.js` and `aws-two-step.spec.js`, and `backend/test/auth-api.test.ts`.
 
 ### J1. Sign up and start a trial
 
 **Persona:** owner. **Critical:** no sign-ups, no new customers.
 
-1. Visit supplycheckout.com, read the pricing page, tap **Start free trial**.
-2. Sign up and accept the terms.
-3. Name the team.
+<!-- journeys:steps J1 -->
+- **J1.1** Visit supplycheckout.com, read the pricing page, tap **Start free trial**. *Planned: `supply-checkout-21q`.*
+- **J1.2** Sign up and accept the terms. *Planned: `supply-checkout-21q`.*
+- **J1.3** Name the team.
+<!-- /journeys:steps J1 -->
 
 **Expected:** an empty team ready to use in under a minute, with a 14-day trial and no card needed. The terms acceptance time is stored. In the web app, the new team opens with a short **Get your team started** checklist above the sheets and inventory: add supplies (by hand, or import a CSV using the import's template), invite the crew from Members, and create a first sheet. Each step ticks itself off from what's saved, and the checklist shows to the team's owners on that device until every step is done or they dismiss it (`supply-checkout-dhc`: `tests/aws-first-run.spec.js`, including accessibility in light and dark mode and a phone-width layout).
 
-**Status:** planned. `supply-checkout-21q` (landing and sign-up), `supply-checkout-zsm` (sign-in), `supply-checkout-l5y` (team creation: `GET /me` and `POST /teams`, see [docs/api/onboarding.md](api/onboarding.md)), `supply-checkout-x0l` (trial).
+**Status:** partly built. Sign-in (`supply-checkout-zsm`), team creation (`supply-checkout-l5y`: `GET /me` and `POST /teams`, see [docs/api/onboarding.md](api/onboarding.md)), the trial (`supply-checkout-x0l`) and the checklist (`supply-checkout-dhc`) are built. The landing and pricing pages, and accepting the terms at sign-up, are `supply-checkout-21q`.
 
 ### J2. Set up the inventory
 
 **Persona:** owner.
 
-1. Open **Inventory**, tap **+ Add item**.
-2. Type or scan a barcode (or leave it blank), then enter the name, price and how many are in storage.
-3. Edit or delete items later by tapping their row.
+<!-- journeys:steps J2 -->
+- **J2.1** Open **Inventory**, tap **+ Add item**.
+- **J2.2** Type or scan a barcode (or leave it blank), then enter the name, price and how many are in storage.
+- **J2.3** Edit or delete items later by tapping their row.
+- **J2.4** Or import an existing inventory: **Import CSV** in **Inventory** checks the file, shows a preview, and imports it.
+<!-- /journeys:steps J2 -->
 
 **Expected:** items appear in the list with storage counts, value per item and totals. Items without a barcode can be found by name when checking out.
 
-**Status:** partly tested. Adding items works today. Creating the team first is planned (`supply-checkout-l5y`), as is importing an existing inventory (`supply-checkout-ig9`).
+**Status:** tested. Importing a CSV is in the web app, for owners (`aws-import.spec.js`, `backend/test/imports-api.test.ts`); moving a claude.ai artifact's data into a team is an operator script (`supply-checkout-ig9`).
 
-**Tests:** `inventory.spec.js` (all tests), `barcode.spec.js`: "an item's barcode can be scanned when adding it to inventory", and in the web app, `aws-first-run.spec.js` (the new team's checklist leads here).
+**Tests:** `inventory.spec.js` (all tests), `barcode.spec.js`: "an item's barcode can be scanned when adding it to inventory", and in the web app, `aws-import.spec.js` and `aws-first-run.spec.js` (the new team's checklist leads here).
 
 ### J3. Invite the crew
 
 **Persona:** owner, then crew member.
 
-1. The owner opens **Members**, enters a crew member's email and picks **Contributor**.
-2. The crew member gets an email, taps the link on their phone and signs up or signs in.
+<!-- journeys:steps J3 -->
+- **J3.1** The owner opens **Members**, enters a crew member's email and picks **Contributor**.
+- **J3.2** The crew member gets an email, taps the link on their phone and signs up or signs in.
+<!-- /journeys:steps J3 -->
 
 **Expected:** the email arrives within a minute. The link works once and expires after 7 days. The crew member sees the team's sheets right away, and the seat count on the subscription goes up.
 
-**Status:** tested, except the seat count. Inviting, the email, accepting, resending, revoking and failed deliveries are in `tests/aws-invites.spec.js` and `tests/aws-account.spec.js` (the web build) and `backend/test/invites-api.test.ts` (`supply-checkout-5tp`, `supply-checkout-5hx`, `supply-checkout-dj6`). Seats are `supply-checkout-l50`. The link opens the web app; opening the mobile app from it (universal links) comes with the phase 2 apps.
+**Status:** tested. Inviting, the email, accepting, resending, revoking and failed deliveries are in `tests/aws-invites.spec.js` and `tests/aws-account.spec.js` (the web build) and `backend/test/invites-api.test.ts` (`supply-checkout-5tp`, `supply-checkout-5hx`, `supply-checkout-dj6`). The seat count follows the members (`supply-checkout-l50`, see J7). The link opens the web app; opening the mobile app from it (universal links) comes with the phase 2 apps.
 
 ### J4. Check supplies out and back in
 
 **Persona:** crew member. **Critical:** this is the job the app does every morning.
 
-1. Create a sheet for the client and date, or open today's sheet.
-2. Scan each item's barcode with the phone camera (or type the number, or pick an item that has no barcode) and choose how many.
-3. Back from the job, switch to **Return**, scan what came back unused, and tap **Finished Return**.
+<!-- journeys:steps J4 -->
+- **J4.1** Create a sheet for the client and date, or open today's sheet.
+- **J4.2** Scan each item's barcode with the phone camera (or type the number, or pick an item that has no barcode) and choose how many.
+- **J4.3** Back from the job, switch to **Return**, scan what came back unused, and tap **Finished Return**.
+<!-- /journeys:steps J4 -->
 
 **Expected:** each checkout takes storage counts down and each return puts them back. The sheet shows taken, returned, used and the charge. Other people's phones show the changes within 2 seconds. Nothing is lost if two people work on the same sheet. On a slow or flaky connection, a checkout or return never shows as saved before the server confirms it, a double tap or a retry never counts twice, and one that didn't save keeps what was entered and says so, with Try again.
 
@@ -114,9 +139,11 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Persona:** crew member or owner, after buying supplies.
 
-1. Tap **Scan receipt** and photograph the receipt.
-2. Check each line: name, quantity, price, and the suggested inventory match.
-3. Assign each line to a client (a new or existing sheet) or to **General inventory**, then tap **Save**.
+<!-- journeys:steps J5 -->
+- **J5.1** Tap **Scan receipt** and photograph the receipt.
+- **J5.2** Check each line: name, quantity, price, and the suggested inventory match.
+- **J5.3** Assign each line to a client (a new or existing sheet) or to **General inventory**, then tap **Save**.
+<!-- /journeys:steps J5 -->
 
 **Expected:** lines appear within 60 seconds. Nothing is saved until **Save**. An item that comes in packs of n shows "1 case = n each" and adds eaches (cases × n) at a cost of the case price ÷ n, rounded to cents, unless the line is switched to **Priced per each**. Where the price differs from the item's, the line offers **Charge the receipt price** or **Keep the client price**, and keeps the client price by default when the item's cost is below its price (ADR 0014). Client items go on the sheets at the chosen price, with the receipt's cost; storage items raise storage counts; and the receipt's cost each is saved to the item. If reading fails, the person can enter the items by hand.
 
@@ -128,8 +155,10 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Persona:** owner or bookkeeper.
 
-1. Open a finished sheet.
-2. Tap **Download CSV**.
+<!-- journeys:steps J6 -->
+- **J6.1** Open a finished sheet.
+- **J6.2** Tap **Download CSV**.
+<!-- /journeys:steps J6 -->
 
 **Expected:** a CSV named after the client and date, with each item's price, taken, returned, used and charge, and a total row.
 
@@ -141,21 +170,25 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Persona:** owner. **Critical:** this is how we get paid.
 
-1. Before or at the end of the trial, open **Billing** and choose a plan and number of seats.
-2. Pay on Stripe Checkout (card, Apple Pay or Google Pay).
-3. Later, invite more people (seats go up) and open past invoices.
+<!-- journeys:steps J7 -->
+- **J7.1** Before or at the end of the trial, open **Billing** and choose a plan. *Planned: `supply-checkout-8jc.5`.*
+- **J7.2** Pay on Stripe Checkout (card, Apple Pay or Google Pay).
+- **J7.3** Later, invite more people (seats go up) and open past invoices.
+<!-- /journeys:steps J7 -->
 
 **Expected:** the team shows as active within a minute of paying. Adding or removing an owner or editor, or changing someone between viewer and a billed role, updates the seat count with proration; viewers are free. Invoices are emailed and listed in the app with the company name.
 
-**Status:** partly built, in the Stripe sandbox. Checkout (`supply-checkout-x0l`) and the webhook, queue and worker (`supply-checkout-2kl`) are built: a finished checkout sets the team's plan, seats and status within a minute, a team whose trial ends without a card turns read-only with a banner (and owners are emailed), and an owner of a read-only team can subscribe again from the team bar. Owners of a team with a Stripe customer open the Customer Portal (`supply-checkout-121`) from **Billing** in the team bar, to add or change a card, switch between monthly and annual, see and download invoices, and cancel at the end of the period; a cancellation shows in the team bar within a minute. Seat sync (`supply-checkout-l50`) is built: Checkout starts the subscription at the team's owners and editors (viewers are free; the owner doesn't pick a seat count, `supply-checkout-8jc.20`), the quantity follows them within a minute of a membership change, and right after Checkout, with proration, and a nightly reconciliation fixes and alarms on any drift ([infrastructure](infrastructure.md#billing), Seats). The same nightly run checks each team's subscription, status, plan and seats against Stripe and fixes and alarms on any drift (`supply-checkout-8jc.9`), so a lost or stuck webhook is put right within a day ([runbook](runbooks/billing-dlq-replay.md)). Invoices are listed in the app (`supply-checkout-eja`): **Invoices** in the team bar shows owners the latest ones from Stripe, with Stripe's hosted page and PDF, which carry the billing name, address and tax ID Checkout collected; Stripe emails them (a Dashboard setting, [infrastructure](infrastructure.md#billing), Invoice and receipt emails). Still to come: the in-app plan picker (`supply-checkout-8jc.5`). Tests: `backend/test/billing-api.test.ts` (with the invoice list), `billing-webhook.test.ts`, `billing-worker.test.ts` ("canceling in the Customer Portal"), `billing-seats.test.ts` (seat sync and the entitlement check), `members-api.test.ts`, `invites-api.test.ts` and `account-deletion-api.test.ts` ("seats"), `ops-checks.test.ts` (the reconciliation), `billing-ddb.test.ts`, `stripe-catalog.test.ts` (the portal configuration), and `tests/aws-billing.spec.js`.
+**Status:** built, in the Stripe sandbox, except choosing a plan in the app. Checkout (`supply-checkout-x0l`) and the webhook, queue and worker (`supply-checkout-2kl`) are built: a finished checkout sets the team's plan, seats and status within a minute, a team whose trial ends without a card turns read-only with a banner (and owners are emailed), and an owner of a read-only team can subscribe again from the team bar. Owners of a team with a Stripe customer open the Customer Portal (`supply-checkout-121`) from **Billing** in the team bar, to add or change a card, switch between monthly and annual, see and download invoices, and cancel at the end of the period; a cancellation shows in the team bar within a minute. Seat sync (`supply-checkout-l50`) is built: Checkout starts the subscription at the team's owners and editors (viewers are free; the owner doesn't pick a seat count, `supply-checkout-8jc.20`), the quantity follows them within a minute of a membership change, and right after Checkout, with proration, and a nightly reconciliation fixes and alarms on any drift ([infrastructure](infrastructure.md#billing), Seats). The same nightly run checks each team's subscription, status, plan and seats against Stripe and fixes and alarms on any drift (`supply-checkout-8jc.9`), so a lost or stuck webhook is put right within a day ([runbook](runbooks/billing-dlq-replay.md)). Invoices are listed in the app (`supply-checkout-eja`): **Invoices** in the team bar shows owners the latest ones from Stripe, with Stripe's hosted page and PDF, which carry the billing name, address and tax ID Checkout collected; Stripe emails them (a Dashboard setting, [infrastructure](infrastructure.md#billing), Invoice and receipt emails). Still to come: the in-app plan picker (`supply-checkout-8jc.5`). Tests: `backend/test/billing-api.test.ts` (with the invoice list), `billing-webhook.test.ts`, `billing-worker.test.ts` ("canceling in the Customer Portal"), `billing-seats.test.ts` (seat sync and the entitlement check), `members-api.test.ts`, `invites-api.test.ts` and `account-deletion-api.test.ts` ("seats"), `ops-checks.test.ts` (the reconciliation), `billing-ddb.test.ts`, `stripe-catalog.test.ts` (the portal configuration), and `tests/aws-billing.spec.js`.
 
 ### J8. A payment fails and is fixed
 
 **Persona:** owner. **Critical:** if this breaks, paying customers lose access, or we give access away.
 
-1. A renewal payment fails.
-2. The owner sees a banner and gets an email. The team keeps full access for 7 days.
-3. The owner updates their card in the Customer Portal.
+<!-- journeys:steps J8 -->
+- **J8.1** A renewal payment fails.
+- **J8.2** The owner sees a banner and gets an email. The team keeps full access for 7 days. *Planned: `supply-checkout-qdx`.*
+- **J8.3** The owner updates their card in the Customer Portal.
+<!-- /journeys:steps J8 -->
 
 **Expected:** after 7 days without payment the team becomes read-only. Nothing is deleted. As soon as payment succeeds, full access returns within a minute.
 
@@ -165,11 +198,13 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Persona:** bookkeeper.
 
-1. Sign in and open sheets and inventory.
+<!-- journeys:steps J9 -->
+- **J9.1** Sign in and open sheets and inventory.
+<!-- /journeys:steps J9 -->
 
 **Expected:** everything is visible. No scan, edit, delete or receipt controls appear, and the server refuses any write that is attempted anyway.
 
-**Status:** tested in the UI. Server-side enforcement is planned: `supply-checkout-dj6`.
+**Status:** tested, in the UI and on the server (`supply-checkout-dj6`: `backend/test/roles.test.ts`, and in the web app, `aws-data.spec.js`: "a checkout by someone made a viewer meanwhile is refused").
 
 **Tests:** `app.spec.js`: "view-only users can't make changes"; `sheets.spec.js`: "view-only users can open a sheet but not change it"; `inventory.spec.js`: "view-only users see inventory but can't change it"; `resilience.spec.js`: "a permission failure switches the page to view-only".
 
@@ -177,8 +212,10 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Persona:** owner.
 
-1. Open the Customer Portal from **Billing** and cancel.
-2. Export all sheets and inventory.
+<!-- journeys:steps J10 -->
+- **J10.1** Open the Customer Portal from **Billing** and cancel.
+- **J10.2** Export all sheets and inventory.
+<!-- /journeys:steps J10 -->
 
 **Expected:** access continues to the end of the paid period, then the team is read-only for 30 days with export available. After that the data is deleted, as the privacy policy says.
 
@@ -188,8 +225,10 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Persona:** anyone. (Required by the App Store and promised in the privacy policy.)
 
-1. Open **Account → Delete account** in the team bar (or **Delete account** on the first screen) and type DELETE.
-2. An owner of a team others are in either makes another member an owner or closes the team (**Members → Close the team**, typing its name) first; the app shows the server's message naming those teams.
+<!-- journeys:steps J11 -->
+- **J11.1** Open **Account → Delete account** in the team bar (or **Delete account** on the first screen) and type DELETE.
+- **J11.2** An owner of a team others are in either makes another member an owner or closes the team (**Members → Close the team**, typing its name) first; the app shows the server's message naming those teams.
+<!-- /journeys:steps J11 -->
 
 **Expected:** done without contacting support. The user is out of every team, a team they were alone in is closed, invites to their address and their sign-in are gone, and a closed team's data is deleted 30 days after it closed. Closing a subscribed team sets its Stripe subscription to cancel at the period's end within about an hour (the hourly purge, `supply-checkout-t0en`), and the purge deletes its Stripe customer with its data.
 
@@ -199,9 +238,11 @@ End-to-end tests of every journey against a deployed environment are `supply-che
 
 **Persona:** owner, in the iOS or Android app.
 
-1. Open **Plans** in the app and choose a plan and seats.
-2. Pay on Stripe Checkout in the in-app browser with Apple Pay or Google Pay.
-3. Return to the app.
+<!-- journeys:steps J12 -->
+- **J12.1** Open **Plans** in the app and choose a plan and seats. *Planned: `supply-checkout-8jc.5`.*
+- **J12.2** Pay on Stripe Checkout in the in-app browser with Apple Pay or Google Pay. *Planned: `supply-checkout-8jc.5`.*
+- **J12.3** Return to the app. *Planned: `supply-checkout-8jc.5`.*
+<!-- /journeys:steps J12 -->
 
 **Expected:** the app shows the plan as active without reopening it. Where store rules don't allow the link, the app shows "Manage your plan on our website" and no prices ([ADR 0013](adr/0013-web-billing-only.md)).
 
@@ -247,6 +288,7 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Sign-out not revoking | J0 | P2 | As below |
 | Imports stuck | J2 | P2 | As below, from the stuck-import check. In the primary region only, where the check runs. |
 | Email verification not saved, Email codes failing, Near the sending limit | J3 | P2 | As below. Near the sending limit reads the SES quota check's gauge, and is in the primary region only, where the check runs. |
+| Invite surge | J3 | P2 | As below: `InvitesSent` summed over every team |
 | Email bouncing, Email complaints | J3 | P1 | SES reputation metrics, as below |
 | Email events dropped | J3 | P2 | As below |
 | Writes rejected | J4 | P2 | `ConditionalWriteConflicts` ÷ `Writes`, at least 20 writes |
@@ -272,7 +314,8 @@ Every other alarm on this page waits for the resource or code it watches, and is
 | **API errors** | API Gateway `5xx` per route | above 2% of requests for 5 minutes (at least 20 requests) | P1 |
 | **API slow** | API Gateway `Latency` p95 | above 2 seconds for 10 minutes | P2 |
 | **API unhealthy** | Route 53 health check on `/health` in us-east-1 | unhealthy for 2 minutes | P1 |
-| **Functions failing or throttled** | Lambda `Errors` and `Throttles` per function | errors above 1% for 5 minutes, or any throttles for 5 minutes | P1 errors, P2 throttles |
+| **Functions failing** | Lambda `Errors` per function | above 1% for 5 minutes | P1 |
+| **Functions throttled** | Lambda `Throttles` per function | any, for 5 minutes | P2 |
 | **Database errors** | DynamoDB `SystemErrors` | any, for 5 minutes | P1 |
 | **Database throttled** | DynamoDB `ThrottledRequests` | any, for 5 minutes | P2 |
 | **Firewall blocking customers** | AWS WAF `BlockedRequests` | more than 3× the usual rate (anomaly detection) for 15 minutes | P2 |
@@ -400,6 +443,9 @@ Receipt reading is not critical: people can still enter items by hand.
 | --- | --- | --- | --- |
 | **Mass lockout** | Teams switched to read-only in the last hour | more than 3, or more than 5% of active teams. Protects against a billing bug locking out paying customers. | P1 |
 | **Billing events stuck** | See J7 | | P1 |
+| **Billing portal broken** | See J7 | | P1 |
+| **Billing events late** | See J7 | | P2 |
+| **Entitlements drifting** | See J7 | | P2 |
 | **Failed payments rising** | `invoice.payment_failed` events | more than 2× the 30-day average in a day | P3 |
 
 ### J9, J10, J11: roles, cancellation and deletion

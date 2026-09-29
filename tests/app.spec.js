@@ -1,7 +1,7 @@
 import { test, expect, openApp, createSheet, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
 import { usedState } from "./fixtures.js";
 
-test("creates a sheet recording client, date and who prepared it", async ({ page }) => {
+test("creates a sheet recording client, date and who prepared it", { tag: ["@J4.1"] }, async ({ page }) => {
   await openApp(page);
   await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
   await createSheet(page, "Acme Offices");
@@ -10,33 +10,39 @@ test("creates a sheet recording client, date and who prepared it", async ({ page
   await expect(page.locator(".sheet-head .pill")).toHaveText("Checked out");
 });
 
-test("checks out a new barcode, returns part of it, and finishes the return", async ({ page }) => {
+test("checks out a new barcode, returns part of it, and finishes the return", { tag: ["@J4.1", "@J4.2", "@J4.3"] }, async ({ page }) => {
   await openApp(page);
-  await createSheet(page, "Acme Offices");
+  await test.step("J4.1 Create a sheet for the client", async () => {
+    await createSheet(page, "Acme Offices");
+  });
 
-  await enterBarcode(page, "012345678905");
-  await modal(page).getByLabel("Item name").fill("Nitrile gloves");
-  await modal(page).getByLabel("Price each ($)").fill("12.50");
-  await modal(page).locator("#fQty").fill("3");
-  await modal(page).getByRole("button", { name: "Add 3 to sheet" }).click();
+  await test.step("J4.2 Scan an item and choose how many", async () => {
+    await enterBarcode(page, "012345678905");
+    await modal(page).getByLabel("Item name").fill("Nitrile gloves");
+    await modal(page).getByLabel("Price each ($)").fill("12.50");
+    await modal(page).locator("#fQty").fill("3");
+    await modal(page).getByRole("button", { name: "Add 3 to sheet" }).click();
 
-  await expect(lineRow(page, "Nitrile gloves")).toContainText("Barcode 012345678905");
-  await expect(page.locator(".totals .charge")).toHaveText("$37.50");
+    await expect(lineRow(page, "Nitrile gloves")).toContainText("Barcode 012345678905");
+    await expect(page.locator(".totals .charge")).toHaveText("$37.50");
+  });
 
-  await page.getByRole("button", { name: "Return", exact: true }).click();
-  await enterBarcode(page, "012345678905");
-  await modal(page).locator("#fRet").fill("1");
-  await modal(page).getByRole("button", { name: "Save return" }).click();
+  await test.step("J4.3 Return what came back unused and finish the return", async () => {
+    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await enterBarcode(page, "012345678905");
+    await modal(page).locator("#fRet").fill("1");
+    await modal(page).getByRole("button", { name: "Save return" }).click();
 
-  await expect(page.locator(".totals")).toContainText("Returned1");
-  await expect(page.locator(".totals .charge")).toHaveText("$25.00");
+    await expect(page.locator(".totals")).toContainText("Returned1");
+    await expect(page.locator(".totals .charge")).toHaveText("$25.00");
 
-  await page.getByRole("button", { name: "Finished Return" }).click();
-  await expect(page.locator(".sheet-head .pill")).toHaveText("Returned");
-  await expect(page.locator("#scanbar")).toBeHidden();
+    await page.getByRole("button", { name: "Finished Return" }).click();
+    await expect(page.locator(".sheet-head .pill")).toHaveText("Returned");
+    await expect(page.locator("#scanbar")).toBeHidden();
+  });
 });
 
-test("storage counts go down on checkout and back up on return", async ({ page }) => {
+test("storage counts go down on checkout and back up on return", { tag: ["@J4.2", "@J4.3"] }, async ({ page }) => {
   await openApp(page, { seed: { "products/SKU1": { code: "SKU1", name: "Paper towels", price: 2, stock: 10 } } });
   await createSheet(page, "Beta LLC");
 
@@ -61,7 +67,7 @@ test("storage counts go down on checkout and back up on return", async ({ page }
   await expect(inventoryRow(page, "Paper towels").locator("td").nth(1)).toHaveText("8");
 });
 
-test("adds an item that has no barcode", async ({ page }) => {
+test("adds an item that has no barcode", { tag: ["@J4.2"] }, async ({ page }) => {
   await openApp(page);
   await createSheet(page, "Gamma Co");
 
@@ -79,7 +85,7 @@ test("adds an item that has no barcode", async ({ page }) => {
   await expect(inventoryRow(page, "Leftover bins")).toBeVisible();
 });
 
-test("receipt review merges duplicates and splits items between a client and storage", async ({ page }) => {
+test("receipt review merges duplicates and splits items between a client and storage", { tag: ["@J5.3"] }, async ({ page }) => {
   await openApp(page, {
     seed: { "products/nb-bins": { code: "", name: "Storage bins, 12 qt", price: 5, stock: 2 } },
     receipt: {
@@ -120,7 +126,7 @@ test("receipt review merges duplicates and splits items between a client and sto
   await expect(inventoryRow(page, "Painter's tape")).toBeVisible();
 });
 
-test("exports a sheet as CSV", async ({ page }) => {
+test("exports a sheet as CSV", { tag: ["@J6.1", "@J6.2"] }, async ({ page }) => {
   await openApp(page, {
     seed: {
       "sheets/s1": {
@@ -129,31 +135,35 @@ test("exports a sheet as CSV", async ({ page }) => {
       },
     },
   });
-  await page.getByRole("button", { name: /Echo Studio/ }).click();
-  await page.getByRole("button", { name: "Download CSV" }).click();
-  const save = await page.evaluate(() => window.__mock.saves[0]);
-  expect(save.filename).toBe("Echo Studio 2026-09-24.csv");
-  expect(save.data).toContain("Prepared by,Test User");
-  expect(save.data).toContain("Drop cloth,A1,8.00,2,1,1,8.00");
+  await test.step("J6.1 Open the sheet", async () => {
+    await page.getByRole("button", { name: /Echo Studio/ }).click();
+  });
+  await test.step("J6.2 Download CSV", async () => {
+    await page.getByRole("button", { name: "Download CSV" }).click();
+    const save = await page.evaluate(() => window.__mock.saves[0]);
+    expect(save.filename).toBe("Echo Studio 2026-09-24.csv");
+    expect(save.data).toContain("Prepared by,Test User");
+    expect(save.data).toContain("Drop cloth,A1,8.00,2,1,1,8.00");
+  });
 });
 
-test("view-only users can't make changes", async ({ page }) => {
+test("view-only users can't make changes", { tag: ["@J9.1"] }, async ({ page }) => {
   await openApp(page, { canWrite: false });
   await expect(page.locator("#notice")).toContainText("view-only access");
   await expect(page.getByRole("button", { name: "+ New sheet" })).toHaveCount(0);
 });
 
-test("a runtime that says why the page is read-only (a closed team) shows that instead of the role's notice", async ({ page }) => {
+test("a runtime that says why the page is read-only (a closed team) shows that instead of the role's notice", { tag: ["@J9"] }, async ({ page }) => {
   await openApp(page, { canWrite: false, viewOnlyNotice: "This team is closed, so nothing in it can be changed." });
   await expect(page.locator("#notice")).toHaveText("This team is closed, so nothing in it can be changed.");
 });
 
-test("a runtime with nothing to say about it keeps the role's view-only notice", async ({ page }) => {
+test("a runtime with nothing to say about it keeps the role's view-only notice", { tag: ["@J9"] }, async ({ page }) => {
   await openApp(page, { canWrite: false, viewOnlyNotice: null });
   await expect(page.locator("#notice")).toHaveText("You have view-only access. Ask the owner to give you Contributor access to scan and edit.");
 });
 
-test("a refused write says why from the runtime when it can", async ({ page }) => {
+test("a refused write says why from the runtime when it can", { tag: ["@J9"] }, async ({ page }) => {
   await openApp(page, { writeError: "invalid_argument", viewOnlyNotice: "An owner closed this team." });
   await expect(page.locator("#notice")).toBeHidden();
   await page.getByRole("button", { name: "+ New sheet" }).click();
@@ -163,7 +173,7 @@ test("a refused write says why from the runtime when it can", async ({ page }) =
   await expect(page.locator("#notice")).toHaveText("An owner closed this team.");
 });
 
-test("returning the same item again adds to what's already been returned", async ({ page }) => {
+test("returning the same item again adds to what's already been returned", { tag: ["@J4.3"] }, async ({ page }) => {
   await openApp(page, {
     seed: {
       "products/SKU1": { code: "SKU1", name: "Paper towels", price: 2, stock: 0 },
@@ -201,7 +211,7 @@ test("returning the same item again adds to what's already been returned", async
   await expect(inventoryRow(page, "Paper towels").locator("td").nth(1)).toHaveText("5");
 });
 
-test("Enter on a sheet line or inventory row opens its editor and keeps it open", async ({ page }) => {
+test("Enter on a sheet line or inventory row opens its editor and keeps it open", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page, usedState);
   await expect(page.locator("#notice")).toBeHidden();
   await page.getByRole("button", { name: /Echo Studio/ }).click();
@@ -216,7 +226,7 @@ test("Enter on a sheet line or inventory row opens its editor and keeps it open"
   await expect(page.locator("#toast")).toBeHidden();
 });
 
-test("inventory search matches barcodes in any case", async ({ page }) => {
+test("inventory search matches barcodes in any case", { tag: ["@J2"] }, async ({ page }) => {
   await openApp(page, usedState);
   await page.getByRole("button", { name: /Echo Studio/ }).click();
   await page.getByRole("button", { name: "Add item without a barcode" }).click();

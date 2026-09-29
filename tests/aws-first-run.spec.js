@@ -28,7 +28,7 @@ async function createTeam(page, backend, name = "Bravo Co") {
   return backend.teams[0].id;
 }
 
-test("a new owner is guided through the checklist to a team ready to use", async ({ page }) => {
+test("a new owner is guided through the checklist to a team ready to use", { tag: ["@J1.3"] }, async ({ page }) => {
   const backend = new FakeBackend({ teams: [] });
   const team = await createTeam(page, backend);
   const list = checklist(page);
@@ -72,14 +72,14 @@ test("a new owner is guided through the checklist to a team ready to use", async
   await expect(list).toBeHidden();
 });
 
-test("a finished or dismissed checklist stays away", async ({ page }) => {
+test("a finished or dismissed checklist stays away", { tag: ["@J1"] }, async ({ page }) => {
   await openAws(page, new FakeBackend(), { storage: { local: { [KEY]: JSON.stringify({ done: true }) } } });
   await connected(page);
   await expect(page.locator(".teambar")).toContainText("Team: Echo Cleaning");
   await expect(checklist(page)).toHaveCount(0);
 });
 
-test("the checklist offers the CSV import with its template, and fits a phone in dark mode", async ({ page }) => {
+test("the checklist offers the CSV import with its template, and fits a phone in dark mode", { tag: ["@J1", "@J2.4"] }, async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 740 });
   await page.emulateMedia({ colorScheme: "dark" });
   const backend = new FakeBackend({ teams: [] });
@@ -97,7 +97,7 @@ test("the checklist offers the CSV import with its template, and fits a phone in
   await expect(list).toContainText("0 of 3 done");
 });
 
-test("dismissing it is remembered for the team", async ({ page }) => {
+test("dismissing it is remembered for the team", { tag: ["@J1"] }, async ({ page }) => {
   const backend = new FakeBackend();
   await openAws(page, backend, { storage: { local: { [KEY]: "{}" } } });
   await connected(page);
@@ -116,7 +116,7 @@ test("dismissing it is remembered for the team", async ({ page }) => {
   await expect(list).toBeHidden();
 });
 
-test("an invite sent from the team bar's Members ticks the step too", async ({ page }) => {
+test("an invite sent from the team bar's Members ticks the step too", { tag: ["@J1", "@J3.1"] }, async ({ page }) => {
   const backend = new FakeBackend();
   await openAws(page, backend, { storage: { local: { [KEY]: "{}" } } });
   await connected(page);
@@ -133,7 +133,7 @@ for (const [what, team] of [
   ["a contributor", { ...TEAM, role: "contributor" }],
   ["the owner of a closed team", { ...TEAM, closedAt: "2026-09-01T12:00:00.000Z", deletesAt: "2026-10-01T12:00:00.000Z" }],
 ]) {
-  test(`${what} doesn't see it, even with one started`, async ({ page }) => {
+  test(`${what} doesn't see it, even with one started`, { tag: ["@J1"] }, async ({ page }) => {
     await openAws(page, new FakeBackend({ teams: [team] }), { storage: { local: { [KEY]: "{}" } } });
     await connected(page);
     await expect(page.locator(".teambar")).toContainText("Team: Echo Cleaning");
@@ -141,7 +141,7 @@ for (const [what, team] of [
   });
 }
 
-test("it hides when a write is refused because another owner closed the team meanwhile", async ({ page }) => {
+test("it hides when a write is refused because another owner closed the team meanwhile", { tag: ["@J1"] }, async ({ page }) => {
   const backend = new FakeBackend();
   await openAws(page, backend, { storage: { local: { [KEY]: "{}" } } });
   await connected(page);
@@ -162,14 +162,14 @@ test("it hides when a write is refused because another owner closed the team mea
   expect(await stored(page, "t1")).toEqual({});
 });
 
-test("an owner's existing team with none started doesn't get one", async ({ page }) => {
+test("an owner's existing team with none started doesn't get one", { tag: ["@J1"] }, async ({ page }) => {
   await openAws(page, new FakeBackend());
   await connected(page);
   await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
   await expect(checklist(page)).toHaveCount(0);
 });
 
-test("a new team gets the checklist even when storage is blocked", async ({ page }) => {
+test("a new team gets the checklist even when storage is blocked", { tag: ["@J1"] }, async ({ page }) => {
   await page.addInitScript(() => {
     for (const m of ["getItem", "setItem"]) {
       const real = Storage.prototype[m];

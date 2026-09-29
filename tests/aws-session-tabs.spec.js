@@ -30,7 +30,7 @@ async function openPat(page, backend = new FakeBackend({ docs: seeded() })) {
   return backend;
 }
 
-test.describe("another tab", () => {
+test.describe("another tab", { tag: ["@J0"] }, () => {
   test("someone else signing in stops this tab before it writes anything, then reloads it", async ({ page }) => {
     const backend = await openPat(page);
     // Pat is creating a sheet; the save is on its way when Sam signs in in another tab
@@ -230,7 +230,7 @@ test.describe("another tab", () => {
   });
 });
 
-test.describe("signing out or deleting the account here", () => {
+test.describe("signing out or deleting the account here", { tag: ["@J0"] }, () => {
   const hideAndShow = async (page) => { await setVisible(page, false); await setVisible(page, true); };
 
   test("switching away before Managed Login's sign-out loads doesn't reload over it", async ({ page }) => {
@@ -280,7 +280,7 @@ test.describe("signing out or deleting the account here", () => {
   });
 });
 
-test.describe("a receipt draft", () => {
+test.describe("a receipt draft", { tag: ["@J0"] }, () => {
   test("isn't kept once the owner mark isn't this user's, even before this tab has heard", async ({ page }) => {
     const line = { id: "l1", name: "Paper towels", raw: "", qty: 2, price: 8, dest: "stock", code: "", match: "SKU1", suggested: false, useName: "inv", usePrice: "receipt" };
     const draft = JSON.stringify({ store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines: [line] });
@@ -299,7 +299,7 @@ test.describe("a receipt draft", () => {
   });
 });
 
-test.describe("an invite saved in this tab", () => {
+test.describe("an invite saved in this tab", { tag: ["@J0"] }, () => {
   const invited = { id: "i1", teamName: "Bravo Co", role: "contributor", expiresAt: "2026-10-03T12:00:00.000Z" };
   const savedInvite = (page) => page.evaluate(() => JSON.parse(sessionStorage.getItem("supplyCheckout.invite")));
 
@@ -323,7 +323,7 @@ test.describe("an invite saved in this tab", () => {
   });
 });
 
-test.describe("after the session ends", () => {
+test.describe("after the session ends", { tag: ["@J0"] }, () => {
   test("a save says they're signed out, not to check the connection", async ({ page }) => {
     const backend = await openPat(page);
     backend.token = "expired";

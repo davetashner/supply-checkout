@@ -22,7 +22,7 @@ async function open(page, backend, options) {
   return backend;
 }
 
-test("an owner sees why the team is read-only, and subscribes again through Stripe Checkout", async ({ page }) => {
+test("an owner sees why the team is read-only, and subscribes again through Stripe Checkout", { tag: ["@J7.2"] }, async ({ page }) => {
   // A checklist this device started doesn't come back for a team that can't change
   const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...ENDED }] }), { storage: { local: { "supplyCheckout.firstRun.t1": "{}" } } });
   await expect(bar(page).locator(".closed-note")).toHaveText("This team's subscription has ended, so it's read-only. Nothing has been deleted: everyone can still see it, and you can export it. Subscribe to make changes again.");
@@ -52,7 +52,7 @@ test("an owner sees why the team is read-only, and subscribes again through Stri
   expect(calls[1].headers["idempotency-key"]).toBe(calls[0].headers["idempotency-key"]);
 });
 
-test("an owner whose team already subscribed meanwhile is told to reload", async ({ page }) => {
+test("an owner whose team already subscribed meanwhile is told to reload", { tag: ["@J7.2"] }, async ({ page }) => {
   const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...ENDED, members: null }] }));
   backend.on("POST", CHECKOUT, error(409, "aborted", { reason: "already_subscribed" }));
   await bar(page).getByRole("button", { name: "Subscribe" }).click();
@@ -61,14 +61,14 @@ test("an owner whose team already subscribed meanwhile is told to reload", async
   expect(backend.requests("POST", CHECKOUT)[0].body).toEqual({ plan: "starter", interval: "month" });
 });
 
-test("a contributor is told to ask an owner, with no way to subscribe", async ({ page }) => {
+test("a contributor is told to ask an owner, with no way to subscribe", { tag: ["@J7"] }, async ({ page }) => {
   await open(page, new FakeBackend({ teams: [{ ...TEAM, ...ENDED, role: "contributor" }] }));
   await expect(bar(page).locator(".closed-note")).toHaveText("This team's subscription has ended, so it's read-only. Nothing has been deleted: everyone can still see it. Ask an owner to subscribe to make changes again.");
   await expect(bar(page).getByRole("button", { name: "Subscribe" })).toHaveCount(0);
   await expect(page.locator("#notice")).toHaveText("This team's subscription ended, so nothing in it can be changed until an owner subscribes.");
 });
 
-test("a closed team whose subscription also ended shows only the closure", async ({ page }) => {
+test("a closed team whose subscription also ended shows only the closure", { tag: ["@J7"] }, async ({ page }) => {
   await open(page, new FakeBackend({ teams: [{ ...TEAM, ...ENDED, closedAt: "2026-09-26T12:00:00.000Z", deletesAt: "2026-10-26T12:00:00.000Z" }] }));
   await expect(bar(page).locator(".closed-note")).toHaveCount(1);
   await expect(bar(page).locator(".closed-note")).toContainText("This team was closed");
@@ -76,7 +76,7 @@ test("a closed team whose subscription also ended shows only the closure", async
   await expect(page.locator("#notice")).toHaveText("This team is closed, so nothing in it can be changed.");
 });
 
-test("a write refused because the subscription ended meanwhile switches the app to view-only", async ({ page }) => {
+test("a write refused because the subscription ended meanwhile switches the app to view-only", { tag: ["@J7"] }, async ({ page }) => {
   const backend = await open(page, new FakeBackend());
   backend.on("PUT", /^\/teams\/t1\/sheets\//, error(403, "permission_denied", { reason: "subscription_ended" }));
   await page.getByRole("button", { name: "+ New sheet" }).click();
@@ -95,7 +95,7 @@ const PORTAL = "/teams/t1/billing/portal";
 const PORTAL_URL = "https://billing.stripe.test/p/session/bps_test_1";
 const PAYING = { status: "active", plan: "starter", billingAccount: true, cancelsAt: null, members: 4 };
 
-test("an owner opens the Customer Portal from Billing, and a stale link gives way to a new one", async ({ page }) => {
+test("an owner opens the Customer Portal from Billing, and a stale link gives way to a new one", { tag: ["@J8.3", "@J10.1"] }, async ({ page }) => {
   await page.clock.install();
   const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING }] }));
   await expect(bar(page).locator("#cancelNote")).toHaveCount(0);
@@ -119,7 +119,7 @@ test("an owner opens the Customer Portal from Billing, and a stale link gives wa
   await expect(bar(page).getByRole("button", { name: "Billing" })).toBeEnabled();
 });
 
-test("an owner whose team has no billing account yet is told so", async ({ page }) => {
+test("an owner whose team has no billing account yet is told so", { tag: ["@J7"] }, async ({ page }) => {
   const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING }] }));
   backend.on("POST", PORTAL, error(409, "aborted", { reason: "no_billing_account" }));
   await bar(page).getByRole("button", { name: "Billing" }).click();
@@ -127,7 +127,7 @@ test("an owner whose team has no billing account yet is told so", async ({ page 
   await expect(bar(page).getByRole("button", { name: "Billing" })).toBeEnabled();
 });
 
-test("an owner whose subscription was canceled sees when it ends, and can renew from Billing", async ({ page }) => {
+test("an owner whose subscription was canceled sees when it ends, and can renew from Billing", { tag: ["@J10.1"] }, async ({ page }) => {
   await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING, cancelsAt: "2026-10-27T12:00:00.000Z" }] }));
   await expect(bar(page).locator("#cancelNote")).toHaveText("This team's subscription was canceled. Everything works until October 27, 2026; then the team becomes read-only. To keep it, renew it from Billing.");
   await expect(bar(page).getByRole("button", { name: "Billing" })).toBeVisible();
@@ -135,27 +135,27 @@ test("an owner whose subscription was canceled sees when it ends, and can renew 
   await expect(page.getByRole("button", { name: "+ New sheet" })).toBeVisible();
 });
 
-test("a contributor sees a cancellation too, with no Billing", async ({ page }) => {
+test("a contributor sees a cancellation too, with no Billing", { tag: ["@J10"] }, async ({ page }) => {
   await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING, role: "contributor", cancelsAt: "2026-10-27T12:00:00.000Z" }] }));
   await expect(bar(page).locator("#cancelNote")).toHaveText("This team's subscription was canceled. Everything works until October 27, 2026; then the team becomes read-only. Ask an owner to renew it to keep it.");
   await expect(bar(page).getByRole("button", { name: "Billing" })).toHaveCount(0);
 });
 
-test("an owner of a team with no Stripe customer has no Billing", async ({ page }) => {
+test("an owner of a team with no Stripe customer has no Billing", { tag: ["@J7"] }, async ({ page }) => {
   await open(page, new FakeBackend({ teams: [{ ...TEAM, billingAccount: false, cancelsAt: null }] }));
   await expect(bar(page).getByRole("button", { name: "Members" })).toBeVisible();
   await expect(bar(page).getByRole("button", { name: "Billing" })).toHaveCount(0);
   await expect(bar(page).getByRole("button", { name: "Invoices" })).toHaveCount(0);
 });
 
-test("an owner of a team whose subscription ended can subscribe again or open Billing, and no cancellation shows", async ({ page }) => {
+test("an owner of a team whose subscription ended can subscribe again or open Billing, and no cancellation shows", { tag: ["@J7.2"] }, async ({ page }) => {
   await open(page, new FakeBackend({ teams: [{ ...TEAM, ...ENDED, billingAccount: true, cancelsAt: "2026-09-20T12:00:00.000Z" }] }));
   await expect(bar(page).getByRole("button", { name: "Subscribe" })).toBeVisible();
   await expect(bar(page).getByRole("button", { name: "Billing" })).toBeVisible();
   await expect(bar(page).locator("#cancelNote")).toHaveCount(0);
 });
 
-test("a closed team has no Billing and no cancellation note", async ({ page }) => {
+test("a closed team has no Billing and no cancellation note", { tag: ["@J7"] }, async ({ page }) => {
   await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING, cancelsAt: "2026-10-27T12:00:00.000Z", closedAt: "2026-09-26T12:00:00.000Z", deletesAt: "2026-10-26T12:00:00.000Z" }] }));
   await expect(bar(page).locator(".closed-note")).toHaveCount(1);
   await expect(bar(page).getByRole("button", { name: "Billing" })).toHaveCount(0);
@@ -180,7 +180,7 @@ const invoice = (n, fields = {}) => ({
   ...fields,
 });
 
-test("an owner sees the team's invoices, with Stripe's page and PDF for each", async ({ page }) => {
+test("an owner sees the team's invoices, with Stripe's page and PDF for each", { tag: ["@J7.3"] }, async ({ page }) => {
   const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING }] }));
   // The first try fails and offers another
   backend.on("GET", INVOICES, { abort: true });
@@ -221,7 +221,7 @@ test("an owner sees the team's invoices, with Stripe's page and PDF for each", a
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("an owner whose team has no invoices yet is told so", async ({ page }) => {
+test("an owner whose team has no invoices yet is told so", { tag: ["@J7.3"] }, async ({ page }) => {
   const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING }] }));
   backend.on("GET", INVOICES, { status: 200, body: { invoices: [], hasMore: false } });
   await bar(page).getByRole("button", { name: "Invoices" }).click();
@@ -229,7 +229,7 @@ test("an owner whose team has no invoices yet is told so", async ({ page }) => {
   await expect(dialog(page).locator("#olderInvoices")).toHaveCount(0);
 });
 
-test("an owner whose team has no billing account yet is told there are no invoices", async ({ page }) => {
+test("an owner whose team has no billing account yet is told there are no invoices", { tag: ["@J7.3"] }, async ({ page }) => {
   const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING }] }));
   backend.on("GET", INVOICES, error(409, "aborted", { reason: "no_billing_account" }));
   await bar(page).getByRole("button", { name: "Invoices" }).click();
@@ -237,7 +237,7 @@ test("an owner whose team has no billing account yet is told there are no invoic
   await expect(dialog(page).getByRole("button", { name: "Try again" })).toHaveCount(0);
 });
 
-test("invoices refused for want of two-step sign-in open the setup, saying why", async ({ page }) => {
+test("invoices refused for want of two-step sign-in open the setup, saying why", { tag: ["@J7.3"] }, async ({ page }) => {
   const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING }] }));
   backend.on("GET", INVOICES, error(403, "permission_denied", { reason: "mfa_required" }));
   await bar(page).getByRole("button", { name: "Invoices" }).click();

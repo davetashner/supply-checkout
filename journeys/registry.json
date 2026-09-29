@@ -1,0 +1,314 @@
+{
+  "journeys": [
+    {
+      "id": "J0",
+      "name": "Sign in",
+      "persona": "Everyone",
+      "critical": true,
+      "steps": [
+        { "id": "J0.1", "text": "Open the app on a phone or laptop.", "status": "built", "beads": ["supply-checkout-zsm"] },
+        {
+          "id": "J0.2",
+          "text": "Sign in with an email code, a passkey, Apple or Google.",
+          "status": "built",
+          "beads": ["supply-checkout-zsm", "supply-checkout-0b1"],
+          "simulated": "Managed Login (Cognito) and Apple and Google are fakes in the tests",
+          "tests": ["backend/test/auth-api.test.ts", "backend/test/account-link.test.ts"]
+        },
+        { "id": "J0.3", "text": "If the person belongs to more than one team, pick the team.", "status": "built", "beads": ["supply-checkout-l5y"] }
+      ]
+    },
+    {
+      "id": "J1",
+      "name": "Sign up and start a trial",
+      "persona": "Owner",
+      "critical": true,
+      "steps": [
+        { "id": "J1.1", "text": "Visit supplycheckout.com, read the pricing page, tap **Start free trial**.", "status": "planned", "beads": ["supply-checkout-21q"] },
+        { "id": "J1.2", "text": "Sign up and accept the terms.", "status": "planned", "beads": ["supply-checkout-21q"] },
+        {
+          "id": "J1.3",
+          "text": "Name the team.",
+          "status": "built",
+          "beads": ["supply-checkout-l5y", "supply-checkout-x0l", "supply-checkout-dhc"],
+          "tests": ["backend/test/account-api.test.ts"]
+        }
+      ]
+    },
+    {
+      "id": "J2",
+      "name": "Set up the inventory",
+      "persona": "Owner",
+      "critical": false,
+      "steps": [
+        { "id": "J2.1", "text": "Open **Inventory**, tap **+ Add item**.", "status": "built" },
+        { "id": "J2.2", "text": "Type or scan a barcode (or leave it blank), then enter the name, price and how many are in storage.", "status": "built" },
+        { "id": "J2.3", "text": "Edit or delete items later by tapping their row.", "status": "built" },
+        {
+          "id": "J2.4",
+          "text": "Or import an existing inventory: **Import CSV** in **Inventory** checks the file, shows a preview, and imports it.",
+          "status": "built",
+          "tests": ["backend/test/imports-api.test.ts", "backend/test/imports.test.ts"]
+        }
+      ]
+    },
+    {
+      "id": "J3",
+      "name": "Invite the crew",
+      "persona": "Owner, crew member",
+      "critical": false,
+      "steps": [
+        {
+          "id": "J3.1",
+          "text": "The owner opens **Members**, enters a crew member's email and picks **Contributor**.",
+          "status": "built",
+          "beads": ["supply-checkout-5tp", "supply-checkout-dj6"],
+          "tests": ["backend/test/invites-api.test.ts"]
+        },
+        {
+          "id": "J3.2",
+          "text": "The crew member gets an email, taps the link on their phone and signs up or signs in.",
+          "status": "built",
+          "beads": ["supply-checkout-5tp", "supply-checkout-5hx"],
+          "simulated": "The email (SES) and Managed Login are fakes in the tests",
+          "tests": ["backend/test/invites-api.test.ts", "backend/test/email.test.ts"]
+        }
+      ],
+      "planned": [{ "what": "opening the mobile app from the invite link (phase 2)" }]
+    },
+    {
+      "id": "J4",
+      "name": "Check supplies out and back in",
+      "persona": "Crew member",
+      "critical": true,
+      "steps": [
+        { "id": "J4.1", "text": "Create a sheet for the client and date, or open today's sheet.", "status": "built" },
+        {
+          "id": "J4.2",
+          "text": "Scan each item's barcode with the phone camera (or type the number, or pick an item that has no barcode) and choose how many.",
+          "status": "built",
+          "tests": ["backend/test/commands-api.test.ts", "backend/test/commands.test.ts"]
+        },
+        {
+          "id": "J4.3",
+          "text": "Back from the job, switch to **Return**, scan what came back unused, and tap **Finished Return**.",
+          "status": "built",
+          "tests": ["backend/test/commands-api.test.ts", "backend/test/commands.test.ts"]
+        }
+      ]
+    },
+    {
+      "id": "J5",
+      "name": "Read a receipt",
+      "persona": "Crew member, owner",
+      "critical": false,
+      "steps": [
+        {
+          "id": "J5.1",
+          "text": "Tap **Scan receipt** and photograph the receipt.",
+          "status": "built",
+          "simulated": "Receipt reading is claude.ai's, faked by tests/mock-claude.js"
+        },
+        { "id": "J5.2", "text": "Check each line: name, quantity, price, and the suggested inventory match.", "status": "built" },
+        { "id": "J5.3", "text": "Assign each line to a client (a new or existing sheet) or to **General inventory**, then tap **Save**.", "status": "built" }
+      ],
+      "planned": [{ "what": "reading receipts in the web app, on Bedrock", "beads": ["supply-checkout-kx8", "supply-checkout-wxx"] }]
+    },
+    {
+      "id": "J6",
+      "name": "Export a sheet to bill a client",
+      "persona": "Owner, bookkeeper",
+      "critical": false,
+      "steps": [
+        { "id": "J6.1", "text": "Open a finished sheet.", "status": "built" },
+        { "id": "J6.2", "text": "Tap **Download CSV**.", "status": "built" }
+      ]
+    },
+    {
+      "id": "J7",
+      "name": "Subscribe, add seats and see invoices",
+      "persona": "Owner",
+      "critical": true,
+      "steps": [
+        { "id": "J7.1", "text": "Before or at the end of the trial, open **Billing** and choose a plan.", "status": "planned", "beads": ["supply-checkout-8jc.5"] },
+        {
+          "id": "J7.2",
+          "text": "Pay on Stripe Checkout (card, Apple Pay or Google Pay).",
+          "status": "built",
+          "beads": ["supply-checkout-x0l", "supply-checkout-2kl", "supply-checkout-8jc.20"],
+          "simulated": "Stripe Checkout and Stripe's webhooks are fakes in the tests",
+          "tests": ["backend/test/billing-api.test.ts", "backend/test/billing-webhook.test.ts", "backend/test/billing-worker.test.ts", "backend/test/billing-ddb.test.ts"]
+        },
+        {
+          "id": "J7.3",
+          "text": "Later, invite more people (seats go up) and open past invoices.",
+          "status": "built",
+          "beads": ["supply-checkout-l50", "supply-checkout-eja"],
+          "simulated": "Stripe's invoices and subscriptions are fakes in the tests",
+          "tests": ["backend/test/billing-seats.test.ts", "backend/test/billing-api.test.ts", "backend/test/ops-checks.test.ts"]
+        }
+      ]
+    },
+    {
+      "id": "J8",
+      "name": "A payment fails and is fixed",
+      "persona": "Owner",
+      "critical": true,
+      "steps": [
+        {
+          "id": "J8.1",
+          "text": "A renewal payment fails.",
+          "status": "built",
+          "beads": ["supply-checkout-2kl"],
+          "simulated": "Stripe's webhooks are fakes in the tests",
+          "tests": ["backend/test/billing-webhook.test.ts", "backend/test/billing-worker.test.ts"]
+        },
+        { "id": "J8.2", "text": "The owner sees a banner and gets an email. The team keeps full access for 7 days.", "status": "planned", "beads": ["supply-checkout-qdx"] },
+        {
+          "id": "J8.3",
+          "text": "The owner updates their card in the Customer Portal.",
+          "status": "built",
+          "beads": ["supply-checkout-121"],
+          "simulated": "The Stripe Customer Portal is a fake in the tests",
+          "tests": ["backend/test/billing-worker.test.ts"]
+        }
+      ]
+    },
+    {
+      "id": "J9",
+      "name": "A viewer can see but not change",
+      "persona": "Bookkeeper",
+      "critical": false,
+      "steps": [
+        {
+          "id": "J9.1",
+          "text": "Sign in and open sheets and inventory.",
+          "status": "built",
+          "beads": ["supply-checkout-dj6"],
+          "tests": ["backend/test/roles.test.ts"]
+        }
+      ]
+    },
+    {
+      "id": "J10",
+      "name": "Cancel and take the data",
+      "persona": "Owner",
+      "critical": false,
+      "steps": [
+        {
+          "id": "J10.1",
+          "text": "Open the Customer Portal from **Billing** and cancel.",
+          "status": "built",
+          "beads": ["supply-checkout-121"],
+          "simulated": "The Stripe Customer Portal is a fake in the tests",
+          "tests": ["backend/test/billing-worker.test.ts"]
+        },
+        { "id": "J10.2", "text": "Export all sheets and inventory.", "status": "built", "beads": ["supply-checkout-zuv"] }
+      ],
+      "planned": [{ "what": "deleting a canceled team's data after 30 days", "beads": ["supply-checkout-qdx"] }]
+    },
+    {
+      "id": "J11",
+      "name": "Delete an account",
+      "persona": "Anyone",
+      "critical": false,
+      "steps": [
+        {
+          "id": "J11.1",
+          "text": "Open **Account → Delete account** in the team bar (or **Delete account** on the first screen) and type DELETE.",
+          "status": "built",
+          "beads": ["supply-checkout-b1h"],
+          "tests": ["backend/test/account-deletion-api.test.ts", "backend/test/closing.test.ts"]
+        },
+        {
+          "id": "J11.2",
+          "text": "An owner of a team others are in either makes another member an owner or closes the team (**Members → Close the team**, typing its name) first; the app shows the server's message naming those teams.",
+          "status": "built",
+          "beads": ["supply-checkout-b1h"],
+          "tests": ["backend/test/account-deletion-api.test.ts", "backend/test/closing.test.ts"]
+        }
+      ]
+    },
+    {
+      "id": "J12",
+      "name": "Choose a plan in the mobile app",
+      "persona": "Owner",
+      "critical": false,
+      "phase2": true,
+      "steps": [
+        { "id": "J12.1", "text": "Open **Plans** in the app and choose a plan and seats.", "status": "planned", "beads": ["supply-checkout-8jc.5"] },
+        { "id": "J12.2", "text": "Pay on Stripe Checkout in the in-app browser with Apple Pay or Google Pay.", "status": "planned", "beads": ["supply-checkout-8jc.5"] },
+        { "id": "J12.3", "text": "Return to the app.", "status": "planned", "beads": ["supply-checkout-8jc.5"] }
+      ]
+    }
+  ],
+  "alarms": [
+    { "name": "Core journey canary failing", "journeys": ["*", "J4"] },
+    { "name": "Site down", "journeys": ["*"], "infra": "site-down" },
+    { "name": "Web router failing", "journeys": ["*"], "infra": "web-router-failing" },
+    { "name": "API errors", "journeys": ["*"], "infra": "api-errors" },
+    { "name": "API slow", "journeys": ["*"], "infra": "api-slow" },
+    { "name": "API unhealthy", "journeys": ["*"] },
+    { "name": "Functions failing", "journeys": ["*"], "infra": "functions-failing" },
+    { "name": "Functions throttled", "journeys": ["*"], "infra": "functions-throttled" },
+    { "name": "Database errors", "journeys": ["*"], "infra": "database-errors" },
+    { "name": "Database throttled", "journeys": ["*"], "infra": "database-throttled" },
+    { "name": "Firewall blocking customers", "journeys": ["*"] },
+
+    { "name": "Nobody can sign in", "journeys": ["J0"] },
+    { "name": "Sign-in throttled", "journeys": ["J0"] },
+    { "name": "Social sign-in failing", "journeys": ["J0"] },
+    { "name": "Sign-out not revoking", "journeys": ["J0"], "infra": "sign-out-not-revoking" },
+
+    { "name": "Sign-up canary failing", "journeys": ["J1"] },
+    { "name": "No sign-ups", "journeys": ["J1"] },
+
+    { "name": "Imports stuck", "journeys": ["J2"], "infra": "imports-stuck" },
+
+    { "name": "Email bouncing", "journeys": ["J3"], "infra": "email-bouncing" },
+    { "name": "Email complaints", "journeys": ["J3"], "infra": "email-complaints" },
+    { "name": "Email events dropped", "journeys": ["J3"], "infra": "email-events-dropped" },
+    { "name": "Near the sending limit", "journeys": ["J3"], "infra": "near-sending-limit" },
+    { "name": "Invite surge", "journeys": ["J3"], "infra": "invite-surge" },
+    { "name": "Email verification not saved", "journeys": ["J3"], "infra": "email-verification-not-saved" },
+    { "name": "Email codes failing", "journeys": ["J3"], "infra": "email-codes-failing" },
+    { "name": "Invites not accepted", "journeys": ["J3"] },
+
+    { "name": "Checkouts stopped", "journeys": ["J4"] },
+    { "name": "Writes rejected", "journeys": ["J4"], "infra": "writes-rejected" },
+    { "name": "Live updates failing", "journeys": ["J4"], "infra": "live-updates-failing" },
+    { "name": "Live updates delayed", "journeys": ["J4"], "infra": "live-updates-delayed" },
+    { "name": "Live updates dropped", "journeys": ["J4"], "infra": "live-updates-dropped" },
+    { "name": "Live updates deferred", "journeys": ["J4"], "infra": "live-updates-deferred" },
+    { "name": "Stock counts drifting", "journeys": ["J4"] },
+
+    { "name": "Receipt reading failing", "journeys": ["J5"], "infra": "receipt-reading-failing" },
+    { "name": "Bedrock throttled", "journeys": ["J5"] },
+    { "name": "Bedrock errors", "journeys": ["J5"] },
+    { "name": "Receipts slow", "journeys": ["J5"] },
+    { "name": "Receipt cost spike", "journeys": ["J5"] },
+
+    { "name": "Checkout broken", "journeys": ["J7"], "infra": "checkout-broken" },
+    { "name": "Billing portal broken", "journeys": ["J7", "J8"], "infra": "billing-portal-broken" },
+    { "name": "Webhook signature failures", "journeys": ["J7"], "infra": "webhook-signature-failures" },
+    { "name": "Billing events stuck", "journeys": ["J7", "J8"], "infra": "billing-events-stuck" },
+    { "name": "Billing events late", "journeys": ["J7", "J8"], "infra": "billing-events-late" },
+    { "name": "Seat syncs stuck", "journeys": ["J7"], "infra": "seat-syncs-stuck" },
+    { "name": "Seat counts drifting", "journeys": ["J7"], "infra": "seat-counts-drifting" },
+    { "name": "Seat reconciliation not running", "journeys": ["J7"], "infra": "seat-reconcile-not-running" },
+    { "name": "Entitlements drifting", "journeys": ["J7", "J8"], "infra": "entitlements-drifting" },
+
+    { "name": "Mass lockout", "journeys": ["J8"] },
+    { "name": "Failed payments rising", "journeys": ["J8"] },
+
+    { "name": "Cross-team access attempts", "journeys": ["J9"] },
+    { "name": "Export failing", "journeys": ["J10"], "coveredBy": "API errors" },
+    { "name": "Deletion job failing", "journeys": ["J11"], "coveredBy": "Functions failing" },
+    { "name": "Deletion overdue", "journeys": ["J11"], "infra": "deletion-overdue" },
+    { "name": "Deletion job not running", "journeys": ["J11"], "infra": "deletion-not-running" },
+    { "name": "Team closure emails failing", "journeys": ["J11"], "infra": "team-closed-notices-failing" },
+    { "name": "Team reopened emails failing", "journeys": ["J11"], "infra": "team-reopened-notices-failing" },
+
+    { "name": "App checkouts abandoned", "journeys": ["J12"] }
+  ]
+}

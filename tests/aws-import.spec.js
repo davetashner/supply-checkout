@@ -40,7 +40,7 @@ async function openImport(page, backend = new FakeBackend()) {
 
 const choose = (page, text = CSV, name = "inventory.csv") => page.getByLabel("CSV file").setInputFiles({ name, mimeType: "text/csv", buffer: Buffer.from(text) });
 
-test("an owner previews a file, imports it, and every retry sends the same import ID", async ({ page }) => {
+test("an owner previews a file, imports it, and every retry sends the same import ID", { tag: ["@J2.4"] }, async ({ page }) => {
   const backend = new FakeBackend();
   backend.on("POST", PATH, ok(PREVIEW));
   await openImport(page, backend);
@@ -72,7 +72,7 @@ test("an owner previews a file, imports it, and every retry sends the same impor
   expect(second).toEqual(first);
 });
 
-test("shows the server's words when an import can't go on as it is", async ({ page }) => {
+test("shows the server's words when an import can't go on as it is", { tag: ["@J2.4"] }, async ({ page }) => {
   const backend = new FakeBackend();
   const message = "This import expired before it finished. Choose the file again to finish; rows already imported won't be added twice.";
   backend.on("POST", PATH, ok(PREVIEW));
@@ -84,7 +84,7 @@ test("shows the server's words when an import can't go on as it is", async ({ pa
   await expect(dialog(page).getByRole("button", { name: "Try again" })).toBeVisible();
 });
 
-test("shows every problem in the file and offers no import", async ({ page }) => {
+test("shows every problem in the file and offers no import", { tag: ["@J2.4"] }, async ({ page }) => {
   const backend = new FakeBackend();
   backend.on("POST", PATH, ok({
     ...PREVIEW,
@@ -110,7 +110,7 @@ test("shows every problem in the file and offers no import", async ({ page }) =>
   await expect(result).not.toContainText("more problem");
 });
 
-test("shows the first 100 rows, and says when everything was already there", async ({ page }) => {
+test("shows the first 100 rows, and says when everything was already there", { tag: ["@J2.4"] }, async ({ page }) => {
   const backend = new FakeBackend();
   const rows = Array.from({ length: 105 }, (_, i) => ({ line: i + 2, name: `Item ${i}`, barcode: "", price: 1, key: `k${i}`, action: "unchanged", changes: [] }));
   const summary = { rows: 105, created: 0, updated: 0, unchanged: 105 };
@@ -125,7 +125,7 @@ test("shows the first 100 rows, and says when everything was already there", asy
   await expect(page.locator("#toast")).toHaveText("Everything in the file was already in inventory");
 });
 
-test("a row that clashes by the time of the import shows the problems again", async ({ page }) => {
+test("a row that clashes by the time of the import shows the problems again", { tag: ["@J2.4"] }, async ({ page }) => {
   const backend = new FakeBackend();
   backend.on("POST", PATH, ok({ ...PREVIEW, rows: PREVIEW.rows.slice(0, 1), summary: { rows: 1, created: 0, updated: 1, unchanged: 0 } }));
   backend.on("POST", PATH, error(400, "bad_request", "1 row has a problem; nothing was imported"));
@@ -138,7 +138,7 @@ test("a row that clashes by the time of the import shows the problems again", as
   expect(backend.requests("POST", PATH).map((c) => c.body.dryRun)).toEqual([true, undefined, true]);
 });
 
-test("says why a file couldn't be checked", async ({ page }) => {
+test("says why a file couldn't be checked", { tag: ["@J2.4"] }, async ({ page }) => {
   const backend = new FakeBackend();
   backend.on("POST", PATH, error(400, "bad_request", "The file needs a price column."));
   backend.on("POST", PATH, error(403, "permission_denied"));
@@ -154,7 +154,7 @@ test("says why a file couldn't be checked", async ({ page }) => {
   await expect(dialog(page).getByRole("button", { name: "Import", exact: true })).toBeHidden();
 });
 
-test("refuses a file over 300 KB without sending it, ignores an empty choice, and cancels", async ({ page }) => {
+test("refuses a file over 300 KB without sending it, ignores an empty choice, and cancels", { tag: ["@J2.4"] }, async ({ page }) => {
   const backend = await openImport(page);
   await choose(page, "x".repeat(300_001));
   await expect(page.locator("#importResult").getByRole("alert")).toHaveText("This file is larger than 300 KB. Split it into smaller files and import each one.");
@@ -165,7 +165,7 @@ test("refuses a file over 300 KB without sending it, ignores an empty choice, an
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("offers a template with a column guide, and the template goes through the preview as it is", async ({ page }) => {
+test("offers a template with a column guide, and the template goes through the preview as it is", { tag: ["@J2.4"] }, async ({ page }) => {
   const backend = new FakeBackend();
   backend.on("POST", PATH, ok({ ...PREVIEW, rows: PREVIEW.rows.slice(0, 2).map((r) => ({ ...r, action: "create" })), ignoredColumns: [], summary: { rows: 2, created: 2, updated: 0, unchanged: 0 } }));
   await openImport(page, backend);
@@ -194,7 +194,7 @@ test("offers a template with a column guide, and the template goes through the p
   expect(backend.requests("POST", PATH).map((c) => c.body)).toEqual([{ dryRun: true, csv: text }]);
 });
 
-test("only owners see Import CSV", async ({ page }) => {
+test("only owners see Import CSV", { tag: ["@J2.4"] }, async ({ page }) => {
   await openAws(page, new FakeBackend({ teams: [{ ...TEAM, role: "contributor" }] }));
   await connected(page);
   await expect(page.locator(".teambar").getByRole("button", { name: "Sign out" })).toBeVisible();
