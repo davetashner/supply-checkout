@@ -55,7 +55,8 @@ test("an owner sets a password and an authenticator app up from Account, and sig
   await next.click();
   await expect(fail(page)).toHaveText("Couldn't set the password. Check your connection and try again.");
   await next.click();
-  expect(backend.requests("POST", "/me/password").map((c) => c.body)).toEqual([
+  // Wait for the retry to be sent: Firefox can still be sending it when the click returns
+  await expect.poll(() => backend.requests("POST", "/me/password").map((c) => c.body)).toEqual([
     { password: "short" },
     { password: "Correct-Horse-9", currentPassword: "wrong" },
     { password: "Correct-Horse-9" },
