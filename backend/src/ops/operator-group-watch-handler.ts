@@ -18,10 +18,13 @@
 // gauge, and "Operator group watch silent" (P2) fires when none arrives for
 // a while: a disabled schedule, a failing function, a missing permission.
 //
-// The first run after the parameter is created (it holds INITIAL_GROUP_SNAPSHOT)
-// records the group without counting anything. Anything else it can't read
-// counts once and is replaced, so a garbled parameter is seen, not trusted.
-// The parameter is written only when something changed, after the count.
+// A snapshot it has to start again counts once in OperatorGroupBaselineReset,
+// which alarms P1 with OperatorGroupChanged: the deploy's
+// INITIAL_GROUP_SNAPSHOT (on the first deploy, and again whenever a deploy
+// changes the parameter), or anything it can't read. A reset can't be told
+// from someone putting the parameter back to hide a change made before it,
+// so it pages rather than passing quietly. The parameter is written only
+// when something changed, after the count.
 //
 // It logs `sub`s (Cognito's opaque user IDs, which CloudTrail records for
 // these calls too), never usernames, emails or other attributes.
@@ -91,28 +94,29 @@ export function diffGroup(before: ReadonlyMap<string, boolean>, now: readonly Gr
 
 export function createOperatorGroupWatchHandler(deps: OperatorGroupWatchDeps) {
   const { obs } = deps;
-  return async (): Promise<{ members: number; changed: number }> => {
+  return async (): Promise<{ members: number; changed: number; reset: boolean }> => {
     const members = await deps.listMembers();
     for (const m of members) if (!SUB.test(m.sub)) throw new Error("ListUsersInGroup answered with a user without a sub");
     const raw = await deps.readSnapshot();
     const snapshot = snapshotOf(members);
     let changed = 0;
-    if (raw === INITIAL_GROUP_SNAPSHOT) {
-      obs.logger.info("Recorded the operators group for the first time", { members: members.length });
+    const before = raw === INITIAL_GROUP_SNAPSHOT ? undefined : parseSnapshot(raw);
+    if (!before) {
+      obs.logger.error(
+        raw === INITIAL_GROUP_SNAPSHOT ? "Operator group watch started its snapshot again from the deploy's initial value" : "Operator group watch couldn't read its last snapshot; replacing it",
+        { members: members.length },
+      );
+      obs.count(BusinessMetric.OperatorGroupBaselineReset, 1);
     } else {
-      const before = parseSnapshot(raw);
-      if (!before) {
-        changed = 1;
-        obs.logger.error("Operator group watch couldn't read its last snapshot; replacing it", { members: members.length });
-      } else {
-        const changes = diffGroup(before, members);
-        changed = changes.added.length + changes.removed.length + changes.disabled.length + changes.enabled.length;
-        if (changed > 0) obs.logger.error("Operator group changed", { ...changes, members: members.length });
+      const changes = diffGroup(before, members);
+      changed = changes.added.length + changes.removed.length + changes.disabled.length + changes.enabled.length;
+      if (changed > 0) {
+        obs.logger.error("Operator group changed", { ...changes, members: members.length });
+        obs.count(BusinessMetric.OperatorGroupChanged, changed);
       }
     }
-    if (changed > 0) obs.count(BusinessMetric.OperatorGroupChanged, changed);
     if (raw !== snapshot) await deps.writeSnapshot(snapshot);
     obs.gauge(BusinessMetric.OperatorGroupMembers, members.length);
-    return { members: members.length, changed };
+    return { members: members.length, changed, reset: !before };
   };
 }

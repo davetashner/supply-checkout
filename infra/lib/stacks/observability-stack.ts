@@ -4,7 +4,7 @@ import { PolicyStatement, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import { tableName } from "../../../backend/src/data/schema.js";
-import { opsResourceNames } from "../../../backend/src/ops/names.js";
+import { operatorGroupSnapshotParameter, opsResourceNames } from "../../../backend/src/ops/names.js";
 import { backupAlertRuleArns } from "../backup-alerts.js";
 import { type DeploymentConfig, GLOBAL_SERVICES_REGION, stripeModeOf } from "../config.js";
 import { AlarmTopics, alarmContactsFromContext } from "../observability/alarm-topics.js";
@@ -102,6 +102,8 @@ export const OPERATOR_RULE_SUFFIXES = {
   OperatorAlertKeyAndTrailChanges: "alert-key-and-trail",
   OperatorRuleTampering: "rule-tampering",
   OperatorRuleTamperingWatch: "rule-tampering-watch",
+  OperatorGroupWatchAlarmChanges: "group-watch-alarms",
+  OperatorGroupSnapshotChanges: "group-snapshot",
 } as const;
 
 /**
@@ -120,6 +122,13 @@ export const OPERATOR_GROUP_WATCH_RULE_SUFFIX = "group-watch";
  * `readOnly: false`, which would explain AdminAddUserToGroup and
  * AdminRemoveUserFromGroup never reaching the rule (supply-checkout-3sv.5).
  */
+/**
+ * SSM calls that change or remove the operator group watch's snapshot
+ * parameter (supply-checkout-3sv.5): P1 unless the watch's own role or
+ * CloudFormation made them. DeleteParameters names it in a list.
+ */
+export const GROUP_SNAPSHOT_EVENTS = ["PutParameter", "DeleteParameter", "LabelParameterVersion", "UnlabelParameterVersion"] as const;
+
 export const OPERATOR_POOL_RULE_STATE = "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS";
 
 /**
@@ -281,7 +290,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       });
       this.deletionRecords = new DeletionRecordsWatch(this, "DeletionRecordsWatch", { envName: config.envName, region, topics: this.topics });
       // The tampering rules also watch the deletion records watch's two rules (supply-checkout-72d.17)
-      this.operatorChanges = this.alertOnOperatorChanges(config.envName, this.operatorAudit, [this.deletionRecords.rule, this.deletionRecords.bucketChanges]);
+      this.operatorChanges = this.alertOnOperatorChanges(config.envName, this.operatorAudit, this.operatorGroup, [this.deletionRecords.rule, this.deletionRecords.bucketChanges]);
       // The backup stack (primary region, deployed after this one) alerts P1
       // when its vault, plan or key is changed (backup-alerts.ts): only its
       // two rules, by name, may publish
@@ -347,6 +356,11 @@ export class ObservabilityStack extends SupplyCheckoutStack {
    *   reading the stream.
    * - `OperatorAlarmChanges`: disabling or deleting the operator audit
    *   alarms whoever does it, and rewriting them outside a deploy.
+   * - `OperatorGroupWatchAlarmChanges` and `OperatorGroupSnapshotChanges`
+   *   (supply-checkout-3sv.5): the operator group watch's two alarms, as
+   *   above, and any change to or deletion of its snapshot parameter that
+   *   neither its own role nor CloudFormation made. Its function, role and log
+   *   group are in the three rules above.
    * - `OperatorAlertRouteChanges`: deleting either alarm topic, or taking
    *   its permissions away, whoever does it; changing its attributes (its
    *   policy or key) or a subscription to it, including unsubscribing,
@@ -371,7 +385,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
    *   `alsoWatched` (the deletion records watch's rule and its bucket-changes
    *   rule), by reference. It has a fixed name, which the two above watch.
    */
-  private alertOnOperatorChanges(envName: string, watch: OperatorAuditWatch, alsoWatched: Rule[]): Rule[] {
+  private alertOnOperatorChanges(envName: string, watch: OperatorAuditWatch, groupWatch: OperatorGroupWatch, alsoWatched: Rule[]): Rule[] {
     const poolId = StringParameter.valueForStringParameter(this, identityOutputParameters(envName).opsUserPoolId);
     const cloudTrail = { detailType: ["AWS API Call via CloudTrail"] };
     const base = { source: ["aws.cognito-idp"], ...cloudTrail };
@@ -413,11 +427,12 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       ];
     };
     // The name as a string (the template knows it), so the patterns hold no references
-    const functionName = opsResourceNames(envName).operatorAuditWatchFunction;
-    const functionNames = [functionName, { wildcard: `*:function:${functionName}` }, { wildcard: `*:function:${functionName}:*` }];
-    const logGroup = watch.logGroup.logGroupName;
+    // The operator group watch's function, role and log group too (supply-checkout-3sv.5)
+    const watchFunctions = [opsResourceNames(envName).operatorAuditWatchFunction, opsResourceNames(envName).operatorGroupWatchFunction];
+    const functionNames = watchFunctions.flatMap((name) => [name, { wildcard: `*:function:${name}` }, { wildcard: `*:function:${name}:*` }]);
+    const logGroups = [watch.logGroup.logGroupName, groupWatch.logGroup.logGroupName];
     const table = tableName(envName);
-    const watchChanges = operatorRule("OperatorAuditWatchChanges", "The operator audit watch's stream mapping or function was deleted, or changed outside a deploy (supply-checkout-6uw.11)", {
+    const watchChanges = operatorRule("OperatorAuditWatchChanges", "The operator audit watch's stream mapping, or its or the operator group watch's function, was deleted, or changed outside a deploy (supply-checkout-6uw.11)", {
       source: ["aws.lambda"],
       ...cloudTrail,
       detail: {
@@ -429,23 +444,23 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         ],
       },
     });
-    const roleChanges = operatorRule("OperatorAuditWatchRoleChanges", "The operator audit watch's role or its policies were deleted, or changed outside a deploy (supply-checkout-6uw.11)", {
+    const roleChanges = operatorRule("OperatorAuditWatchRoleChanges", "The operator audit or group watch's role or its policies were deleted, or changed outside a deploy (supply-checkout-6uw.11)", {
       source: ["aws.iam"],
       ...cloudTrail,
       detail: {
         eventSource: ["iam.amazonaws.com"],
-        $or: calls(AUDIT_WATCH_ROLE_EVENTS, { requestParameters: { roleName: [watch.role.roleName] } }),
+        $or: calls(AUDIT_WATCH_ROLE_EVENTS, { requestParameters: { roleName: [watch.role.roleName, groupWatch.role.roleName] } }),
       },
     });
-    const logChanges = operatorRule("OperatorAuditWatchLogChanges", "The operator audit watch's log group was deleted, or given a transformer or data protection policy outside a deploy, or one was set for the account (supply-checkout-6uw.11)", {
+    const logChanges = operatorRule("OperatorAuditWatchLogChanges", "The operator audit or group watch's log group was deleted, or given a transformer or data protection policy outside a deploy, or one was set for the account (supply-checkout-6uw.11)", {
       source: ["aws.logs"],
       ...cloudTrail,
       detail: {
         eventSource: ["logs.amazonaws.com"],
         $or: [
           // DeleteLogGroup names the group; the transformer and data protection calls take its name or ARN
-          ...calls({ always: AUDIT_WATCH_LOG_EVENTS.always }, { requestParameters: { logGroupName: [logGroup] } }),
-          ...calls({ outsideDeploys: AUDIT_WATCH_LOG_EVENTS.outsideDeploys }, { requestParameters: { logGroupIdentifier: [logGroup, { wildcard: `*:log-group:${logGroup}` }, { wildcard: `*:log-group:${logGroup}:*` }] } }),
+          ...calls({ always: AUDIT_WATCH_LOG_EVENTS.always }, { requestParameters: { logGroupName: logGroups } }),
+          ...calls({ outsideDeploys: AUDIT_WATCH_LOG_EVENTS.outsideDeploys }, { requestParameters: { logGroupIdentifier: logGroups.flatMap((g) => [g, { wildcard: `*:log-group:${g}` }, { wildcard: `*:log-group:${g}:*` }]) } }),
           ...calls({ always: ["PutAccountPolicy"] }, { requestParameters: { policyType: [...LOG_ACCOUNT_POLICY_TYPES] } }),
         ],
       },
@@ -471,6 +486,33 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         eventSource: ["monitoring.amazonaws.com"],
         // DisableAlarmActions and DeleteAlarms take a list, `alarmNames`; PutMetricAlarm one `alarmName`
         $or: [...calls({ always: OPERATOR_ALARM_EVENTS.always }, { requestParameters: { alarmNames } }), ...calls({ outsideDeploys: OPERATOR_ALARM_EVENTS.outsideDeploys }, { requestParameters: { alarmName: alarmNames } })],
+      },
+    });
+    // The operator group watch's two alarms, the same way (OperatorAlarmChanges has no room for them)
+    const groupAlarmNames = [groupWatch.changed.alarmName, groupWatch.silent.alarmName];
+    const groupAlarmChanges = operatorRule("OperatorGroupWatchAlarmChanges", "An operator group watch alarm was disabled or deleted, or rewritten outside a deploy (supply-checkout-3sv.5)", {
+      source: ["aws.monitoring"],
+      ...cloudTrail,
+      detail: {
+        eventSource: ["monitoring.amazonaws.com"],
+        $or: [...calls({ always: OPERATOR_ALARM_EVENTS.always }, { requestParameters: { alarmNames: groupAlarmNames } }), ...calls({ outsideDeploys: OPERATOR_ALARM_EVENTS.outsideDeploys }, { requestParameters: { alarmName: groupAlarmNames } })],
+      },
+    });
+    // Its snapshot: a PutParameter could hide the next change. The watch's own writes and a deploy's don't alert.
+    // The name as a string, like the functions', to keep the pattern short; SSM also takes a parameter's ARN
+    const snapshotName = operatorGroupSnapshotParameter(envName);
+    const snapshotNames = [snapshotName, { wildcard: `*:parameter${snapshotName}` }];
+    const notTheWatch = { ...NOT_CLOUDFORMATION, sessionContext: { sessionIssuer: { arn: [{ exists: false }, { "anything-but": groupWatch.role.roleArn }] } } };
+    const snapshotChanges = operatorRule("OperatorGroupSnapshotChanges", "The operator group watch's snapshot parameter was changed or deleted by anyone but the watch or a deploy (supply-checkout-3sv.5)", {
+      source: ["aws.ssm"],
+      ...cloudTrail,
+      detail: {
+        eventSource: ["ssm.amazonaws.com"],
+        $or: [
+          { eventName: [...GROUP_SNAPSHOT_EVENTS], requestParameters: { name: snapshotNames }, userIdentity: notTheWatch },
+          // DeleteParameters names it in a list
+          { eventName: ["DeleteParameters"], requestParameters: { names: snapshotNames }, userIdentity: notTheWatch },
+        ],
       },
     });
     const topics = Object.values(this.topics.topics);
@@ -534,7 +576,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       "The same as OperatorRuleTampering, which it watches in turn, so neither can be removed first unseen (supply-checkout-6uw.11)",
       tamperingPattern(watched),
     );
-    const rules = [admin, selfService, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, routeChanges, keyAndTrailChanges, tampering, tamperingWatch, deletionsTampering];
+    const rules = [admin, selfService, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, tampering, tamperingWatch, deletionsTampering];
     const topic = this.topics.topics.P1;
     // EventBridge publishes to the encrypted topic: it may use the key, for this account's rules only
     this.topics.key.addToResourcePolicy(
@@ -567,6 +609,8 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       [logChanges, message("the operator audit watch's log group")],
       [tableChanges, message("the table's stream or the table key")],
       [alarmChanges, message("an operator audit alarm")],
+      [groupAlarmChanges, message("an operator group watch alarm")],
+      [snapshotChanges, message("the operator group watch's snapshot")],
       [routeChanges, message("the alarm topics")],
       [keyAndTrailChanges, message("the alarm topics' key or CloudTrail")],
       [tampering, message("an operator alert rule")],

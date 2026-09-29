@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { Duration, Stack } from "aws-cdk-lib";
-import { Alarm, ComparisonOperator, TreatMissingData } from "aws-cdk-lib/aws-cloudwatch";
+import { Alarm, ComparisonOperator, MathExpression, TreatMissingData } from "aws-cdk-lib/aws-cloudwatch";
 import { Rule, Schedule } from "aws-cdk-lib/aws-events";
 import { LambdaFunction } from "aws-cdk-lib/aws-events-targets";
 import { PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
@@ -40,9 +40,11 @@ export interface OperatorGroupWatchProps {
  *   GROUP_WATCH_EVERY_MINUTES from `schedule`, lists the group
  *   (ListUsersInGroup) and compares each member's `sub` and enabled flag with
  *   what it saved last in `snapshot`, an SSM parameter. Each change counts in
- *   OperatorGroupChanged.
- * - `changed`: P1 when OperatorGroupChanged is above 0 in 5 minutes
- *   ("Operator group changed").
+ *   OperatorGroupChanged; a snapshot it had to start again (the deploy's
+ *   INITIAL_GROUP_SNAPSHOT, or one it can't read) in OperatorGroupBaselineReset.
+ * - `changed`: P1 when either is above 0 in 5 minutes ("Operator group
+ *   changed"). A reset pages too: whoever can reset the snapshot could
+ *   otherwise hide the change made before it.
  * - `silent`: P2 when no run has finished (the OperatorGroupMembers gauge) in
  *   GROUP_WATCH_SILENT_ALARM_MINUTES ("Operator group watch silent"): the
  *   schedule disabled or deleted, the function failing or throttled, its
@@ -60,10 +62,11 @@ export class OperatorGroupWatch extends Construct {
   readonly schedule: Rule;
   readonly changed: Alarm;
   readonly silent: Alarm;
+  readonly logGroup: LogGroup;
 
   constructor(scope: Construct, id: string, props: OperatorGroupWatchProps) {
     super(scope, id);
-    const logGroup = new LogGroup(this, "Logs", { retention: LOG_RETENTION });
+    const logGroup = (this.logGroup = new LogGroup(this, "Logs", { retention: LOG_RETENTION }));
     this.snapshot = new StringParameter(this, "Snapshot", {
       parameterName: operatorGroupSnapshotParameter(props.envName),
       // The first run replaces this without alerting; a deploy doesn't change it again
@@ -119,8 +122,16 @@ export class OperatorGroupWatch extends Construct {
     this.changed = new Alarm(this, "Changed", {
       alarmName: `supply-checkout-${props.envName}-p1-operator-group-changed`,
       alarmDescription:
-        "P1. Operator group changed: someone joined or left the operators group, or an operator was disabled or enabled, since the operator group watch last looked. The watch's log lists them by sub; CloudTrail's AdminAddUserToGroup, AdminRemoveUserFromGroup, AdminDeleteUser, AdminDisableUser or AdminEnableUser event says who did it. If nobody expected it, follow \"Operators\" in docs/infrastructure.md.",
-      metric: business(BusinessMetric.OperatorGroupChanged, props.region, FIVE_MINUTES),
+        "P1. Operator group changed: someone joined or left the operators group, or an operator was disabled or enabled, since the operator group watch last looked, or the watch had to start its snapshot again (after the deploy that creates or changes its parameter, or when the parameter was reset or garbled). The watch's log lists them by sub; CloudTrail's AdminAddUserToGroup, AdminRemoveUserFromGroup, AdminDeleteUser, AdminDisableUser or AdminEnableUser event says who did it. If nobody expected it, follow \"Operators\" in docs/infrastructure.md.",
+      metric: new MathExpression({
+        expression: "FILL(changed, 0) + FILL(reset, 0)",
+        usingMetrics: {
+          changed: business(BusinessMetric.OperatorGroupChanged, props.region, FIVE_MINUTES),
+          reset: business(BusinessMetric.OperatorGroupBaselineReset, props.region, FIVE_MINUTES),
+        },
+        label: "Operator group changes and baseline resets",
+        period: FIVE_MINUTES,
+      }),
       threshold: 0,
       evaluationPeriods: 1,
       comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,

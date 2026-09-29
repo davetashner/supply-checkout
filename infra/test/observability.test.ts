@@ -49,6 +49,7 @@ import {
   OPERATOR_RULE_SUFFIXES,
   OPERATOR_GROUP_WATCH_RULE_SUFFIX,
   OPERATOR_POOL_RULE_STATE,
+  GROUP_SNAPSHOT_EVENTS,
   deletionsRuleTamperingName,
   operatorRuleName,
   operatorRulePrefix,
@@ -732,6 +733,7 @@ describe("scheduled checks", () => {
 });
 
 describe("operator group watch (supply-checkout-3sv.5)", () => {
+  const NOT_CLOUDFORMATION = { invokedBy: [{ exists: false }, { "anything-but": "cloudformation.amazonaws.com" }] };
   const functions = (t: Template) => Object.entries(t.findResources("AWS::Lambda::Function"));
   const poolParam = /^SsmParameterValuesupplycheckoutprodidentityopsuserpoolid/;
 
@@ -776,7 +778,12 @@ describe("operator group watch (supply-checkout-3sv.5)", () => {
     const t = observability();
     t.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "supply-checkout-prod-p1-operator-group-changed",
-      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.OperatorGroupChanged, Dimensions: [{ Name: "Region", Value: EAST }] }), Stat: "Sum", Period: 300 }) })],
+      // A change, or a snapshot started again (the deploy's initial value, or one it couldn't read)
+      Metrics: [
+        Match.objectLike({ Expression: "FILL(changed, 0) + FILL(reset, 0)" }),
+        Match.objectLike({ Id: "changed", MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.OperatorGroupChanged, Dimensions: [{ Name: "Region", Value: EAST }] }), Stat: "Sum", Period: 300 }) }),
+        Match.objectLike({ Id: "reset", MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.OperatorGroupBaselineReset, Dimensions: [{ Name: "Region", Value: EAST }] }), Stat: "Sum", Period: 300 }) }),
+      ],
       Threshold: 0,
       ComparisonOperator: "GreaterThanThreshold",
       TreatMissingData: "notBreaching",
@@ -793,6 +800,59 @@ describe("operator group watch (supply-checkout-3sv.5)", () => {
     });
     const west = Object.values(Template.fromStack(build().region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties.AlarmName);
     expect(west.filter((n) => String(n).includes("operator-group"))).toEqual([]);
+  });
+
+  it("tell P1 when either of its alarms is disabled, deleted or rewritten outside a deploy, in a rule of its own inside the pattern limit", () => {
+    const t = observability();
+    const rules = Object.values(t.findResources("AWS::Events::Rule")).map((r) => r.Properties);
+    const rule = rules.find((r) => r.Name === operatorRuleName("prod", OPERATOR_RULE_SUFFIXES.OperatorGroupWatchAlarmChanges));
+    const alarms = ["supply-checkout-prod-p1-operator-group-changed", "supply-checkout-prod-p2-operator-group-watch-silent"];
+    // By reference, to the two alarms with those names
+    const byName = Object.entries(t.findResources("AWS::CloudWatch::Alarm"));
+    const refs = alarms.map((name) => ({ Ref: byName.find(([, a]) => a.Properties.AlarmName === name)?.[0] }));
+    expect(refs.every((r) => r.Ref)).toBe(true);
+    expect(rule?.EventPattern).toEqual({
+      source: ["aws.monitoring"],
+      "detail-type": ["AWS API Call via CloudTrail"],
+      detail: {
+        eventSource: ["monitoring.amazonaws.com"],
+        $or: [
+          { eventName: ["DisableAlarmActions", "DeleteAlarms"], requestParameters: { alarmNames: refs } },
+          { eventName: ["PutMetricAlarm"], requestParameters: { alarmName: refs }, userIdentity: NOT_CLOUDFORMATION },
+        ],
+      },
+    });
+    expect(JSON.stringify(rule?.EventPattern).length).toBeLessThan(EVENT_PATTERN_LIMIT);
+    expect(rule?.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP1/) } })]);
+    expect(JSON.stringify(rule?.Targets)).toContain("an operator group watch alarm");
+    // Every alarm the watch has is named there
+    const own = Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties.AlarmName).filter((n) => String(n).includes("operator-group"));
+    expect(own.sort()).toEqual(alarms);
+  });
+
+  it("tell P1 when its snapshot parameter is changed or deleted by anyone but the watch's role or a deploy", () => {
+    const t = observability();
+    const rules = Object.values(t.findResources("AWS::Events::Rule")).map((r) => r.Properties);
+    const rule = rules.find((r) => r.Name === operatorRuleName("prod", OPERATOR_RULE_SUFFIXES.OperatorGroupSnapshotChanges));
+    const role = Object.keys(t.findResources("AWS::IAM::Role")).find((id) => id.startsWith("OperatorGroupWatchRole"));
+    const name = "/supply-checkout/prod/observability/operator-group-snapshot";
+    const names = [name, { wildcard: `*:parameter${name}` }];
+    const notTheWatch = { ...NOT_CLOUDFORMATION, sessionContext: { sessionIssuer: { arn: [{ exists: false }, { "anything-but": { "Fn::GetAtt": [role, "Arn"] } }] } } };
+    expect(rule?.EventPattern).toEqual({
+      source: ["aws.ssm"],
+      "detail-type": ["AWS API Call via CloudTrail"],
+      detail: {
+        eventSource: ["ssm.amazonaws.com"],
+        $or: [
+          { eventName: ["PutParameter", "DeleteParameter", "LabelParameterVersion", "UnlabelParameterVersion"], requestParameters: { name: names }, userIdentity: notTheWatch },
+          { eventName: ["DeleteParameters"], requestParameters: { names }, userIdentity: notTheWatch },
+        ],
+      },
+    });
+    expect(GROUP_SNAPSHOT_EVENTS).toEqual(["PutParameter", "DeleteParameter", "LabelParameterVersion", "UnlabelParameterVersion"]);
+    t.hasResourceProperties("AWS::SSM::Parameter", { Name: name });
+    expect(rule?.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP1/) } })]);
+    expect(JSON.stringify(rule?.Targets)).toContain("the operator group watch's snapshot");
   });
 
   it("lets OperatorPoolChanges match management events EventBridge counts as read-only too", () => {
@@ -956,7 +1016,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     const t = observability();
     // The deletion records watch's rules are tested with the watch
     const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch"));
-    expect(rules).toHaveLength(12);
+    expect(rules).toHaveLength(14);
     const byId = (prefix: string) => {
       // Logical IDs end in an 8-character hash
       const found = rules.find(([id]) => id.startsWith(prefix) && /^[0-9A-F]{8}$/.test(id.slice(prefix.length)));
@@ -972,6 +1032,8 @@ describe("operator pool alerts (ADR 0015)", () => {
       logChanges: byId("OperatorAuditWatchLogChanges"),
       tableChanges: byId("OperatorAuditWatchTableChanges"),
       alarmChanges: byId("OperatorAlarmChanges"),
+      groupAlarmChanges: byId("OperatorGroupWatchAlarmChanges"),
+      snapshotChanges: byId("OperatorGroupSnapshotChanges"),
       routeChanges: byId("OperatorAlertRouteChanges"),
       keyAndTrailChanges: byId("OperatorAlertKeyAndTrailChanges"),
       tampering: byId("OperatorRuleTampering"),
@@ -984,7 +1046,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     const { region } = build();
     const west = Template.fromStack(region(WEST).observability);
     expect(Object.values(west.findResources("AWS::Events::Rule")).filter((r) => r.Properties.EventPattern)).toEqual([]);
-    const { t, admin, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, routeChanges, keyAndTrailChanges, tampering, tamperingWatch, deletionsTampering } = operatorRules();
+    const { t, admin, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, tampering, tamperingWatch, deletionsTampering } = operatorRules();
     const poolId = { Ref: expect.stringMatching(/identityopsuserpoolid/i) };
     expect(admin.props.EventPattern).toEqual({
       source: ["aws.cognito-idp"],
@@ -1026,7 +1088,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     expect(fromEvents).toEqual(expect.arrayContaining([
       expect.objectContaining({
         Sid: "AllowOperatorPoolAlertToPublish",
-        Condition: { ArnEquals: { "aws:SourceArn": [admin, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, routeChanges, keyAndTrailChanges, tampering, tamperingWatch, deletionsTampering].map((r) => ({ "Fn::GetAtt": [r.id, "Arn"] })) } },
+        Condition: { ArnEquals: { "aws:SourceArn": [admin, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, tampering, tamperingWatch, deletionsTampering].map((r) => ({ "Fn::GetAtt": [r.id, "Arn"] })) } },
       }),
       // The two route rules on the P2 topic, and nothing else
       expect.objectContaining({
@@ -1118,8 +1180,9 @@ describe("operator pool alerts (ADR 0015)", () => {
     const { t, watchChanges, roleChanges } = operatorRules();
     const mapping = Object.keys(t.findResources("AWS::Lambda::EventSourceMapping"))[0];
     const role = Object.keys(t.findResources("AWS::IAM::Role")).find((id) => id.startsWith("OperatorAuditWatchRole"));
-    const fn = "supply-checkout-prod-operator-audit-watch";
-    const names = [fn, { wildcard: `*:function:${fn}` }, { wildcard: `*:function:${fn}:*` }];
+    // The operator group watch's function and role too (supply-checkout-3sv.5)
+    const groupRole = Object.keys(t.findResources("AWS::IAM::Role")).find((id) => id.startsWith("OperatorGroupWatchRole"));
+    const names = ["supply-checkout-prod-operator-audit-watch", "supply-checkout-prod-operator-group-watch"].flatMap((fn) => [fn, { wildcard: `*:function:${fn}` }, { wildcard: `*:function:${fn}:*` }]);
     const prefixed = (list: readonly string[]) => list.map((prefix) => ({ prefix }));
     expect(watchChanges.props.EventPattern).toEqual({
       source: ["aws.lambda"],
@@ -1141,8 +1204,8 @@ describe("operator pool alerts (ADR 0015)", () => {
       detail: {
         eventSource: ["iam.amazonaws.com"],
         $or: [
-          { eventName: [...AUDIT_WATCH_ROLE_EVENTS.always], requestParameters: { roleName: [{ Ref: role }] } },
-          { eventName: [...AUDIT_WATCH_ROLE_EVENTS.outsideDeploys], requestParameters: { roleName: [{ Ref: role }] }, userIdentity: NOT_CLOUDFORMATION },
+          { eventName: [...AUDIT_WATCH_ROLE_EVENTS.always], requestParameters: { roleName: [{ Ref: role }, { Ref: groupRole }] } },
+          { eventName: [...AUDIT_WATCH_ROLE_EVENTS.outsideDeploys], requestParameters: { roleName: [{ Ref: role }, { Ref: groupRole }] }, userIdentity: NOT_CLOUDFORMATION },
         ],
       },
     });
@@ -1155,9 +1218,10 @@ describe("operator pool alerts (ADR 0015)", () => {
 
   it("tell P1 when the watch's log group, the table's stream or the table key is deleted or disabled, or changed outside a deploy (supply-checkout-6uw.11)", () => {
     const { t, logChanges, tableChanges } = operatorRules();
-    const logGroup = Object.keys(t.findResources("AWS::Logs::LogGroup")).find((id) => id.startsWith("OperatorAuditWatchLogs"));
-    const name = { Ref: logGroup };
-    const identifier = [name, { wildcard: { "Fn::Join": ["", ["*:log-group:", name]] } }, { wildcard: { "Fn::Join": ["", ["*:log-group:", name, ":*"]] } }];
+    // The operator audit watch's log group and the operator group watch's (supply-checkout-3sv.5)
+    const groups = ["OperatorAuditWatchLogs", "OperatorGroupWatchLogs"].map((prefix) => ({ Ref: Object.keys(t.findResources("AWS::Logs::LogGroup")).find((id) => id.startsWith(prefix)) }));
+    expect(groups.every((g) => g.Ref)).toBe(true);
+    const identifier = groups.flatMap((name) => [name, { wildcard: { "Fn::Join": ["", ["*:log-group:", name]] } }, { wildcard: { "Fn::Join": ["", ["*:log-group:", name, ":*"]] } }]);
     const tableArn = { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]] };
     const streamPrefix = { prefix: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app/stream/"]] } };
     const table = ["supply-checkout-prod-app", tableArn];
@@ -1170,7 +1234,7 @@ describe("operator pool alerts (ADR 0015)", () => {
         eventSource: ["logs.amazonaws.com"],
         $or: [
           // The role can't recreate a deleted group, and its metrics are in its lines
-          { eventName: ["DeleteLogGroup"], requestParameters: { logGroupName: [name] } },
+          { eventName: ["DeleteLogGroup"], requestParameters: { logGroupName: groups } },
           { eventName: ["PutTransformer", "DeleteTransformer", "PutDataProtectionPolicy"], requestParameters: { logGroupIdentifier: identifier }, userIdentity: NOT_CLOUDFORMATION },
           { eventName: ["PutAccountPolicy"], requestParameters: { policyType: ["TRANSFORMER_POLICY", "DATA_PROTECTION_POLICY"] } },
         ],

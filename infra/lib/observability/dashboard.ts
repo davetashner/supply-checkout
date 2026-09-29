@@ -148,8 +148,8 @@ export class OpsDashboard extends Construct {
       businessGraph("J7: closed teams' subscriptions ended, Stripe customers deleted", [BusinessMetric.ClosedTeamSubscriptionsEnded, BusinessMetric.StripeCustomersDeleted]),
       // The operator group watch (primary region): a change is a P1; a gap in the size means it isn't running ("Operator group watch silent")
       graph(
-        "Operators: group changes and size",
-        each((r) => [business(BusinessMetric.OperatorGroupChanged, r), business(BusinessMetric.OperatorGroupMembers, r, FIVE_MINUTES, "Maximum")]),
+        "Operators: group changes, resets and size",
+        each((r) => [business(BusinessMetric.OperatorGroupChanged, r), business(BusinessMetric.OperatorGroupBaselineReset, r), business(BusinessMetric.OperatorGroupMembers, r, FIVE_MINUTES, "Maximum")]),
         WIDTH / 4,
       ),
     );
