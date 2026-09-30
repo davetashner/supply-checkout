@@ -5,9 +5,11 @@ import {
   Metric,
   TreatMissingData,
 } from "aws-cdk-lib/aws-cloudwatch";
+import { Duration } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { GLOBAL_SERVICES_REGION } from "../config.js";
-import type { AlarmTopics } from "./alarm-topics.js";
+import { rumAppMonitorName } from "../web/rum.js";
+import type { AlarmTopics, Severity } from "./alarm-topics.js";
 import { FIVE_MINUTES } from "./metrics.js";
 
 /** Requests in 5 minutes below which "Site down" doesn't look at the 5xx rate, so a quiet night's one error doesn't page. */
@@ -16,6 +18,32 @@ export const SITE_DOWN_MIN_REQUESTS = 50;
 export const SITE_DOWN_PERCENT = 1;
 /** Router errors and throttles in 5 minutes above which "Web router failing" alarms. */
 export const ROUTER_FAILING_ABOVE = 4;
+
+/**
+ * RUM events ingested in an hour above which "RUM events surge" (P2) alarms.
+ * At $1 per 100,000 events that's $1 an hour. Honest traffic is far below it:
+ * at most 200 events a session, and MVP traffic is a few hundred sessions a day.
+ */
+export const RUM_EVENTS_SURGE_PER_HOUR = 100_000;
+/** RUM events ingested in an hour above which "RUM events flood" (P1) alarms: $10 an hour, $240 a day if it goes on. */
+export const RUM_EVENTS_FLOOD_PER_HOUR = 10 * RUM_EVENTS_SURGE_PER_HOUR;
+
+/**
+ * Events the web app's RUM app monitor ingested: RumEventPayloadSize's
+ * SampleCount (one sample per event), per hour. AWS/RUM publishes it in the
+ * app monitor's region with the dimension application_name.
+ */
+export function rumEvents(envName: string): Metric {
+  return new Metric({
+    namespace: "AWS/RUM",
+    metricName: "RumEventPayloadSize",
+    dimensionsMap: { application_name: rumAppMonitorName(envName) },
+    statistic: "SampleCount",
+    period: Duration.hours(1),
+    region: GLOBAL_SERVICES_REGION,
+    label: "RUM events ingested",
+  });
+}
 
 /**
  * CloudFront metrics: published only in GLOBAL_SERVICES_REGION,
@@ -71,9 +99,9 @@ export interface WebAlarmsProps {
 }
 
 /**
- * P1 alarms for the web app being down (supply-checkout-3sv.2): on 2026-09-27
- * app. and /demo/ answered 503 for 90 minutes after a web deploy broke the
- * router function, and nothing alarmed.
+ * P1 alarms for the web app being down (supply-checkout-3sv.2), and on RUM
+ * events that cost too much. On 2026-09-27 app. and /demo/ answered 503 for
+ * 90 minutes after a web deploy broke the router function, and nothing alarmed.
  *
  * - `siteDown` ("Site down" in docs/journeys.md): the distribution's
  *   5xxErrorRate above 1% for 5 minutes, once it has 50 requests. This covers
@@ -83,8 +111,13 @@ export interface WebAlarmsProps {
  *   FunctionValidationErrors and FunctionThrottles, 5 or more in 5 minutes.
  *   Every request a broken router sees errors, so this fires even when there
  *   are too few requests for Site down, and says where to look.
+ * - `rumSurge` (P2) and `rumFlood` (P1): the RUM app monitor's ingested
+ *   events above RUM_EVENTS_SURGE_PER_HOUR and RUM_EVENTS_FLOOD_PER_HOUR in
+ *   an hour (supply-checkout-3sv.7). The RUM client's limits bound honest
+ *   browsers only; anyone with the identity pool's ID can send billed events.
  *
- * CloudFront's metrics are only in GLOBAL_SERVICES_REGION, and an alarm can
+ * CloudFront's metrics are only in GLOBAL_SERVICES_REGION (and the app
+ * monitor is there, with the distribution), and an alarm can
  * only notify a topic in its own region, so these are in the observability
  * stack there. Missing data doesn't breach: no requests is not
  * an outage.
@@ -92,6 +125,8 @@ export interface WebAlarmsProps {
 export class WebAlarms extends Construct {
   readonly siteDown: Alarm;
   readonly routerFailing: Alarm;
+  readonly rumSurge: Alarm;
+  readonly rumFlood: Alarm;
   readonly alarms: Alarm[];
 
   constructor(scope: Construct, id: string, props: WebAlarmsProps) {
@@ -128,6 +163,27 @@ export class WebAlarms extends Construct {
       routerFailures(props.routerFunctionName),
       ROUTER_FAILING_ABOVE,
     );
-    this.alarms = [this.siteDown, this.routerFailing];
+    // Anyone can send the RUM app monitor events with the public identity pool, and each is billed (supply-checkout-3sv.7)
+    const rum = (alarmId: string, severity: Severity, title: string, threshold: number) => {
+      const a = new Alarm(this, alarmId, {
+        alarmName: `supply-checkout-${props.envName}-${severity.toLowerCase()}-${alarmId}`,
+        alarmDescription: [
+          `${severity} ${title} (CloudWatch RUM cost).`,
+          `The web app's RUM app monitor ingested more than ${threshold} events in an hour ($1 per 100,000): someone is probably sending events with the public identity pool's guest credentials.`,
+          "Runbook: docs/observability.md, When RUM events surge.",
+        ].join(" "),
+        metric: rumEvents(props.envName),
+        threshold,
+        comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+        evaluationPeriods: 1,
+        datapointsToAlarm: 1,
+        treatMissingData: TreatMissingData.NOT_BREACHING,
+      });
+      props.topics.notify(a, severity);
+      return a;
+    };
+    this.rumSurge = rum("rum-events-surge", "P2", "RUM events surge", RUM_EVENTS_SURGE_PER_HOUR);
+    this.rumFlood = rum("rum-events-flood", "P1", "RUM events flood", RUM_EVENTS_FLOOD_PER_HOUR);
+    this.alarms = [this.siteDown, this.routerFailing, this.rumSurge, this.rumFlood];
   }
 }

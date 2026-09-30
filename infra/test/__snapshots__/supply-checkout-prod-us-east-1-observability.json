@@ -1213,6 +1213,71 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmssecuritynoticesfailing933F267B": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Security notices failing (J0, us-east-1). Any SecurityNoticeFailures over 15 minutes: someone set a password or turned on two-step sign-in and the account's own verified address wasn't told (SES refused the message or took more than 3 seconds, or there's no verified address). The change stands anyway, so an account taken over this way goes unnoticed by its owner (supply-checkout-8jc.15). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-security-notices-failing",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "SecurityNoticeFailures (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "SecurityNoticeFailures",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 900,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmsimportsstuck68033DBE": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -3084,6 +3149,136 @@
           }
         ],
         "Threshold": 4,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "WebAlarmsrumeventssurge8165FF86": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 RUM events surge (CloudWatch RUM cost). The web app's RUM app monitor ingested more than 100000 events in an hour ($1 per 100,000): someone is probably sending events with the public identity pool's guest credentials. Runbook: docs/observability.md, When RUM events surge.",
+        "AlarmName": "supply-checkout-prod-p2-rum-events-surge",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "RUM events ingested",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "application_name",
+                    "Value": "supply-checkout-prod-app"
+                  }
+                ],
+                "MetricName": "RumEventPayloadSize",
+                "Namespace": "AWS/RUM"
+              },
+              "Period": 3600,
+              "Stat": "SampleCount"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 100000,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "WebAlarmsrumeventsfloodD12E88DA": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "AlarmDescription": "P1 RUM events flood (CloudWatch RUM cost). The web app's RUM app monitor ingested more than 1000000 events in an hour ($1 per 100,000): someone is probably sending events with the public identity pool's guest credentials. Runbook: docs/observability.md, When RUM events surge.",
+        "AlarmName": "supply-checkout-prod-p1-rum-events-flood",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "RUM events ingested",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "application_name",
+                    "Value": "supply-checkout-prod-app"
+                  }
+                ],
+                "MetricName": "RumEventPayloadSize",
+                "Namespace": "AWS/RUM"
+              },
+              "Period": 3600,
+              "Stat": "SampleCount"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 1000000,
         "TreatMissingData": "notBreaching"
       }
     },
@@ -8791,6 +8986,13 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
+                  "JourneyAlarmssecuritynoticesfailing933F267B",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
                   "JourneyAlarmsimportsstuck68033DBE",
                   "Arn"
                 ]
@@ -8974,6 +9176,20 @@
               {
                 "Fn::GetAtt": [
                   "WebAlarmswebrouterfailing51AEFA16",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "WebAlarmsrumeventssurge8165FF86",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "WebAlarmsrumeventsfloodD12E88DA",
                   "Arn"
                 ]
               },
