@@ -292,12 +292,12 @@ test("list says when the pool is empty", () => {
   assert.match(h.logs.join("\n"), /No users in the operator pool/);
 });
 
-test("disable and enable make one call each; only enable alerts", () => {
+test("disable and enable make one call each, and each alerts", () => {
   const d = harness();
   main(["disable", "alex"], d.deps);
   assert.deepEqual(d.ops(), ["admin-disable-user"]);
   assert.match(d.text(), /Disabled alex/);
-  assert.match(d.text(), /No P1 alert expected/);
+  assert.match(d.text(), /P1 alerts .*AdminDisableUser/);
   const e = harness();
   main(["enable", "alex"], e.deps);
   assert.deepEqual(e.ops(), ["admin-enable-user"]);
@@ -316,6 +316,8 @@ test("remove takes them out of the group, signs out and disables; deletes only w
   main(["remove", "alex", "--yes"], y.deps);
   assert.deepEqual(y.ops(), ["admin-remove-user-from-group", "admin-user-global-sign-out", "admin-disable-user", "admin-delete-user"]);
   assert.match(y.text(), /deleted alex/);
+  // Every one of remove's calls alerts, the deletion included (supply-checkout-6uw.16)
+  assert.match(y.logs.at(-1), /P1 alerts \(OperatorPoolChanges\) for AdminRemoveUserFromGroup, AdminUserGlobalSignOut, AdminDisableUser, AdminDeleteUser on/);
   const f = harness({ fail: ["admin-disable-user"] });
   assert.throws(() => main(["remove", "alex", "--yes"], f.deps), (e) => /Already done: remove alex from the operators group; sign alex out everywhere/.test(e.message) && /Not done: disable alex; delete alex/.test(e.message));
   assert.ok(!f.ops().includes("admin-delete-user"));
@@ -336,7 +338,7 @@ test("reset runs the stolen-credential runbook and prints the next steps", () =>
   assert.ok(h.outs[0].includes(set.input.Password));
   assert.ok(!h.logs.join("\n").includes(set.input.Password));
   assert.match(h.text(), /Next:[\s\S]*operators -- list should show alex with no TOTP and disabled[\s\S]*npm run operators -- enable alex[\s\S]*TOTP again[\s\S]*npm run ops -- audit/);
-  assert.match(h.logs.at(-1), /AdminSetUserMFAPreference, AdminSetUserPassword on/);
+  assert.match(h.logs.at(-1), /for AdminUserGlobalSignOut, AdminDisableUser, AdminSetUserMFAPreference, AdminSetUserPassword on/);
 });
 
 test("reset --enable enables them at the end; --send-email (with --enable) has Cognito resend the invitation", () => {
@@ -412,10 +414,14 @@ test("--dry-run prints every call, redacts the password and runs nothing", () =>
   assert.doesNotMatch(h.text(), /ssm get-parameter/);
 });
 
-test("the alerted calls match the observability stack's OPERATOR_USER_EVENTS", () => {
+test("the alerted calls match the observability stack's OPERATOR_USER_EVENTS and OPERATOR_LOCKOUT_EVENTS", () => {
   const source = readFileSync(path.join(here, "..", "infra", "lib", "stacks", "observability-stack.ts"), "utf8");
-  const block = source.match(/OPERATOR_USER_EVENTS = \[([\s\S]*?)\]/)[1];
-  const events = [...block.matchAll(/"(\w+)"/g)].map((m) => m[1]);
+  const events = ["OPERATOR_USER_EVENTS", "OPERATOR_LOCKOUT_EVENTS"].flatMap((list) => {
+    const block = source.match(new RegExp(`${list} = \\[([\\s\\S]*?)\\]`))[1];
+    return [...block.matchAll(/"(\w+)"/g)].map((m) => m[1]);
+  });
+  // Deleting, disabling and signing an operator out alert too (supply-checkout-6uw.16)
+  for (const call of ["AdminDeleteUser", "AdminDisableUser", "AdminUserGlobalSignOut"]) assert.ok(events.includes(call), call);
   assert.deepEqual(Object.values(ALERTING_CALLS).sort(), events.sort());
 });
 

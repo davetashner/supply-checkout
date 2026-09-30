@@ -319,7 +319,7 @@ jobs:
             echo "backend=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if grep -Eq '^(infra/|backend/|\.github/workflows/ci\.yml$)' <<< "$changed"; then
+          if grep -Eq '^(infra/|backend/|scripts/npm-audit|\.github/workflows/ci\.yml$)' <<< "$changed"; then
             echo "infra=true" >> "$GITHUB_OUTPUT"
           else
             echo "infra=false" >> "$GITHUB_OUTPUT"
@@ -354,7 +354,9 @@ jobs:
       - name: Install backend dependencies for bundling
         run: npm ci
         working-directory: backend
-      - run: npm audit --audit-level=high
+      # Fails on high or critical advisories, except narrow, expiring
+      # exceptions in scripts/npm-audit-exceptions.json (see their reasons).
+      - run: node ../scripts/npm-audit.mjs
       - run: npm run lint
       - run: npm test
       # Account-agnostic synth (no AWS credentials). cdk-nag AwsSolutions runs

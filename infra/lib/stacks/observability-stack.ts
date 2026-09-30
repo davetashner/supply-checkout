@@ -9,7 +9,7 @@ import { backupAlertRuleArns } from "../backup-alerts.js";
 import { type DeploymentConfig, GLOBAL_SERVICES_REGION, stripeModeOf } from "../config.js";
 import { AlarmTopics, alarmContactsFromContext } from "../observability/alarm-topics.js";
 import { apiOutputParameters } from "./api-stack.js";
-import { auditOutputParameters } from "./audit-stack.js";
+import { auditOutputParameters, trailBucketName } from "./audit-stack.js";
 import { webOutputParameters } from "./web-stack.js";
 import { identityOutputParameters } from "../identity.js";
 import { OpsDashboard } from "../observability/dashboard.js";
@@ -25,10 +25,12 @@ import { SupplyCheckoutStack } from "./base-stack.js";
  * Calls on the operator pool that change who is an operator or how they sign
  * in: users, group membership, passwords and MFA. Each alerts P1 whoever
  * makes it, CloudFormation included (supply-checkout-6uw.7): a stack deploy
- * must never add an operator silently.
+ * must never add an operator silently. Deleting one too: deleting every
+ * operator would lock responders out (supply-checkout-6uw.16).
  */
 export const OPERATOR_USER_EVENTS = [
   "AdminCreateUser",
+  "AdminDeleteUser",
   "AdminAddUserToGroup",
   "AdminRemoveUserFromGroup",
   "AdminSetUserPassword",
@@ -55,8 +57,17 @@ export const OPERATOR_POOL_CONFIG_EVENTS = [
   "CreateIdentityProvider",
 ] as const;
 
+/**
+ * Calls that lock an operator out without deleting them: disabling them, or
+ * ending every session they have. P1 outside a deploy (supply-checkout-6uw.16):
+ * no template makes them, and done to every operator they lock responders
+ * out as surely as a deletion. `npm run operators -- disable`, `remove` and
+ * `reset` make them, and say so.
+ */
+export const OPERATOR_LOCKOUT_EVENTS = ["AdminDisableUser", "AdminUserGlobalSignOut"] as const;
+
 /** Every admin and configuration call on the operator pool that alerts P1 (ADR 0015). */
-export const OPERATOR_POOL_ADMIN_EVENTS = [...OPERATOR_USER_EVENTS, ...OPERATOR_POOL_CONFIG_EVENTS] as const;
+export const OPERATOR_POOL_ADMIN_EVENTS = [...OPERATOR_USER_EVENTS, ...OPERATOR_POOL_CONFIG_EVENTS, ...OPERATOR_LOCKOUT_EVENTS] as const;
 
 /**
  * EventBridge calls that silence one of the operator alert rules: delete or
@@ -100,6 +111,7 @@ export const OPERATOR_RULE_SUFFIXES = {
   OperatorAlarmChanges: "alarm-changes",
   OperatorAlertRouteChanges: "alert-route-changes",
   OperatorAlertKeyAndTrailChanges: "alert-key-and-trail",
+  OperatorTrailBucketChanges: "trail-bucket-changes",
   OperatorRuleTampering: "rule-tampering",
   OperatorRuleTamperingWatch: "rule-tampering-watch",
   OperatorGroupWatchAlarmChanges: "group-watch-alarms",
@@ -191,6 +203,26 @@ export const ALARM_KEY_ALIAS_EVENTS = { always: ["CreateAlias", "UpdateAlias"] }
  * trail logging (the audit stack's), none of these rules sees anything.
  */
 export const TRAIL_EVENTS = ["StopLogging", "DeleteTrail", "UpdateTrail", "PutEventSelectors", "PutAdvancedEventSelectors"] as const;
+
+/**
+ * S3 calls on the trail's bucket that would destroy or cut off the log
+ * archive (supply-checkout-3sv.4): deleting the bucket, its policy or its
+ * encryption whoever does it; a lifecycle rule (a one-day expiry), versioning
+ * suspended, a policy that denies CloudTrail, another key, or its access logs
+ * turned off, outside a deploy. CloudTrail records PutBucketLifecycleConfiguration
+ * as PutBucketLifecycle (as for DELETIONS_BUCKET_CHANGE_EVENTS).
+ */
+export const TRAIL_BUCKET_EVENTS = {
+  always: ["DeleteBucket", "DeleteBucketPolicy", "DeleteBucketEncryption"],
+  outsideDeploys: ["PutBucketPolicy", "PutBucketLifecycle", "DeleteBucketLifecycle", "PutBucketVersioning", "PutBucketEncryption", "PutBucketLogging"],
+} as const;
+/**
+ * KMS calls on the trail's key that nothing here ever makes: a grant lets
+ * someone else use it (read the logs, or encrypt files CloudTrail's
+ * validation won't match), and rotation off weakens it. Whoever makes them.
+ * Disabling it, scheduling its deletion and its policy are ALARM_KEY_EVENTS.
+ */
+export const TRAIL_KEY_EVENTS = { always: ["CreateGrant", "DisableKeyRotation"] } as const;
 
 /**
  * A deploy's own calls carry this in userIdentity.invokedBy; a person's or a
@@ -332,7 +364,9 @@ export class ObservabilityStack extends SupplyCheckoutStack {
    *   configuration calls in OPERATOR_POOL_CONFIG_EVENTS unless
    *   CloudFormation made them for a deploy (supply-checkout-6uw.7). A
    *   template that created an operator user or added one to the group would
-   *   still alert.
+   *   still alert. Deleting an operator alerts whoever does it, and disabling
+   *   or signing one out everywhere (OPERATOR_LOCKOUT_EVENTS) outside a
+   *   deploy (supply-checkout-6uw.16).
    * - `OperatorSelfServiceChanges`: what an operator's own access token can
    *   do with the aws.cognito.signin.user.admin scope (OPERATOR_SELF_SERVICE_EVENTS):
    *   replace their TOTP, turn MFA settings, change attributes or delete
@@ -375,6 +409,12 @@ export class ObservabilityStack extends SupplyCheckoutStack {
    *   trail in the account (the audit stack's trail is the one these rules
    *   need, supply-checkout-3sv.3).
    *   Both route rules tell both topics, so deleting one still reaches the other.
+   * - `OperatorTrailBucketChanges` (supply-checkout-3sv.4): deleting the
+   *   trail's bucket, its policy or its encryption whoever does it, and its
+   *   policy, lifecycle, versioning, encryption or access logging changed
+   *   outside a deploy (TRAIL_BUCKET_EVENTS); a grant on the trail's key or
+   *   its rotation turned off, whoever does it (TRAIL_KEY_EVENTS). These break
+   *   the log archive, not the alerts, so P1 only.
    * - `OperatorRuleTampering` and `OperatorRuleTamperingWatch`: deleting or
    *   disabling any rule whose name starts with operatorRulePrefix (every
    *   rule above, and these two), or DeletionsRuleTampering, or removing its
@@ -406,6 +446,8 @@ export class ObservabilityStack extends SupplyCheckoutStack {
             { eventName: [...OPERATOR_USER_EVENTS] },
             // How the pool is set up: not CloudFormation's own calls during a deploy
             { eventName: [...OPERATOR_POOL_CONFIG_EVENTS], userIdentity: NOT_CLOUDFORMATION },
+            // An operator disabled or signed out everywhere: outside a deploy (supply-checkout-6uw.16)
+            { eventName: [...OPERATOR_LOCKOUT_EVENTS], userIdentity: NOT_CLOUDFORMATION },
           ],
         },
       },
@@ -557,6 +599,19 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         ],
       },
     });
+    // The trail's bucket and key: a one-day lifecycle rule or a policy that denies CloudTrail silently destroys or cuts off the
+    // log archive (supply-checkout-3sv.4). The bucket's name as the template builds it, like the deletion records bucket's
+    const trailBucket = trailBucketName(envName, this.region);
+    const trailBucketChanges = operatorRule("OperatorTrailBucketChanges", "The CloudTrail trail's bucket was deleted or lost its policy or encryption, or changed outside a deploy, or its key granted or rotation turned off (supply-checkout-3sv.4)", {
+      source: ["aws.s3", "aws.kms"],
+      ...cloudTrail,
+      detail: {
+        $or: [
+          ...calls(TRAIL_BUCKET_EVENTS, { eventSource: ["s3.amazonaws.com"], requestParameters: { bucketName: [trailBucket] } }),
+          ...calls(TRAIL_KEY_EVENTS, { eventSource: ["kms.amazonaws.com"], resources: { ARN: [trailKeyArn] } }),
+        ],
+      },
+    });
     // DeleteRule, DisableRule and PutRule name the rule in `name`; RemoveTargets and PutTargets in `rule`.
     const silencing = OPERATOR_RULE_SILENCING_EVENTS.filter((e) => e !== "RemoveTargets");
     const tamperingPattern = (watched: unknown[]): EventPattern => ({
@@ -586,7 +641,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       "The same as OperatorRuleTampering, which it watches in turn, so neither can be removed first unseen (supply-checkout-6uw.11)",
       tamperingPattern(watched),
     );
-    const rules = [admin, selfService, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, tampering, tamperingWatch, deletionsTampering];
+    const rules = [admin, selfService, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering];
     const topic = this.topics.topics.P1;
     // EventBridge publishes to the encrypted topic: it may use the key, for this account's rules only
     this.topics.key.addToResourcePolicy(
@@ -623,6 +678,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       [snapshotChanges, message("the operator group watch's snapshot")],
       [routeChanges, message("the alarm topics")],
       [keyAndTrailChanges, message("the alarm topics' key or CloudTrail")],
+      [trailBucketChanges, message("the CloudTrail trail's bucket or key")],
       [tampering, message("an operator alert rule")],
       [tamperingWatch, message("an operator alert rule")],
       [deletionsTampering, message("a deletion records watch rule")],
