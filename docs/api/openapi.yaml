@@ -790,9 +790,9 @@ paths:
         Once it's set, the account's verified address (from Cognito, never
         the request) is emailed that a password was set, and when; the
         answer doesn't depend on that email and waits at most 3 seconds for
-        it. Only a change made here is emailed: one made with a direct
-        Cognito call (ChangePassword) sends nothing, and after an email
-        change the notice goes to the new address.
+        it. The same change made with a direct Cognito call (ChangePassword)
+        is emailed too, from CloudTrail, and a change made here isn't emailed
+        twice; an email change is told to the previous address.
       requestBody:
         required: true
         content:
@@ -870,10 +870,10 @@ paths:
         account's verified address (from Cognito, never the request) is
         emailed that two-step sign-in was turned on, and when, whether or not
         the sign-out everywhere finished; the answer doesn't depend on that
-        email and waits at most 3 seconds for it. Only a change made here is
-        emailed: one made with direct Cognito calls (AssociateSoftwareToken,
-        VerifySoftwareToken, SetUserMFAPreference) sends nothing, and after
-        an email change the notice goes to the new address.
+        email and waits at most 3 seconds for it. The same change made with
+        direct Cognito calls (VerifySoftwareToken, SetUserMFAPreference) is
+        emailed too, from CloudTrail, and a change made here isn't emailed
+        twice; an email change is told to the previous address.
       requestBody:
         required: true
         content:

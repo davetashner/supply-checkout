@@ -725,6 +725,57 @@ describe("two-step sign-in", () => {
       expect(mails.sent).toEqual([]);
       expect(counts[BusinessMetric.SecurityNotices]).toBeUndefined();
       expect(counts[BusinessMetric.SecurityNoticeFailures]).toBeUndefined();
+      // Nor marks one sent, so the same change made directly isn't kept quiet
+      expect(table.get(`USER#${OWNER}`, "NOTICE#passwordSet")).toBeUndefined();
+      expect(table.get(`USER#${OWNER}`, "NOTICE#twoStepOn")).toBeUndefined();
+    });
+
+    // supply-checkout-8jc.28: the CloudTrail notices function skips a kind marked in the last NOTICE_DEDUPE_MS
+    it("marks each notice's kind sent as soon as Cognito has made the change, so CloudTrail's copy of it isn't emailed again", async () => {
+      expect(await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).toMatchObject({ status: 204 });
+      expect(table.get(`USER#${OWNER}`, "NOTICE#passwordSet")).toEqual({ PK: `USER#${OWNER}`, SK: "NOTICE#passwordSet", noticeSentAt: at() });
+      signOutFailures = 3;
+      expect((await call("POST", "/me/mfa/totp/verify", { body: { code: "654321" } })).status).toBe(503);
+      expect(table.get(`USER#${OWNER}`, "NOTICE#twoStepOn")).toEqual({ PK: `USER#${OWNER}`, SK: "NOTICE#twoStepOn", noticeSentAt: at() });
+    });
+
+    it("still sends the notice when the kind can't be marked, and logs it without the address", async () => {
+      table.failingUpdates = (input) => JSON.stringify(input.ExpressionAttributeNames).includes("noticeSentAt");
+      expect(await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).toEqual({ status: 204, body: undefined });
+      expect(mails.sent.map((m) => m.input.kind)).toEqual(["passwordSet"]);
+      expect(logs).toContainEqual(["Security notice not marked", { userId: OWNER, kind: "passwordSet", code: "ProvisionedThroughputExceededException" }]);
+      expect(JSON.stringify(logs)).not.toContain("owner@");
+    });
+  });
+
+  // supply-checkout-8jc.29: the address an email change is told to
+  describe("the account's address for security notices", () => {
+    it("is recorded on /me the first time the account has a verified address, and never replaced there", async () => {
+      expect((await call("GET", "/me")).status).toBe(200);
+      expect(table.get(`USER#${OWNER}`, "NOTICE_ADDRESS")).toMatchObject({ noticeAddress: "owner@example.com", noticeAddressAt: new Date(now).toISOString() });
+      // Someone who changed the email and loads the app can't move it: only the notices function does, after telling the old address
+      USERS[OWNER] = { ...(USERS[OWNER] as CognitoUser), email: "mallory@example.com" };
+      try {
+        expect((await call("GET", "/me")).status).toBe(200);
+      } finally {
+        USERS[OWNER] = { ...(USERS[OWNER] as CognitoUser), email: "owner@example.com" };
+      }
+      expect(table.get(`USER#${OWNER}`, "NOTICE_ADDRESS")).toMatchObject({ noticeAddress: "owner@example.com" });
+      // Normalized, as the notices function compares it
+      expect((await call("GET", "/me", { user: PAT })).status).toBe(200);
+      expect(table.get(`USER#${PAT}`, "NOTICE_ADDRESS")).toMatchObject({ noticeAddress: "pat@example.com" });
+    });
+
+    it("isn't recorded for an unverified address", async () => {
+      expect((await call("GET", "/me", { user: UNVERIFIED })).status).toBe(200);
+      expect(table.get(`USER#${UNVERIFIED}`, "NOTICE_ADDRESS")).toBeUndefined();
+    });
+
+    it("doesn't fail /me when it can't be recorded", async () => {
+      table.failingUpdates = (input) => JSON.stringify(input.ExpressionAttributeNames).includes("noticeAddress");
+      expect((await call("GET", "/me")).status).toBe(200);
+      expect(logs).toContainEqual(["Notice address not recorded", { userId: OWNER, code: "ProvisionedThroughputExceededException" }]);
+      expect(JSON.stringify(logs)).not.toContain("owner@");
     });
   });
 

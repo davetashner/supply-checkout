@@ -116,7 +116,7 @@ describe("stack layout", () => {
       expect(deps(r.observability)).toEqual([r.api.stackName, r.realtime.stackName, ...audit, ...web].sort());
     }
     expect(deps(stacks.identity)).toEqual([globalDomain, stacks.web.stackName, inRegion(stacks, EAST).data.stackName].sort());
-    expect(deps(stacks.email)).toEqual([stacks.domain[EAST]?.stackName, inRegion(stacks, EAST).data.stackName].sort());
+    expect(deps(stacks.email)).toEqual([stacks.domain[EAST]?.stackName, inRegion(stacks, EAST).data.stackName, stacks.identity.stackName].sort());
     expect(deps(stacks.web)).toEqual([globalDomain, ...Object.values(stacks.regions).map((r) => r.data.stackName)].sort());
     for (const domain of Object.values(stacks.domain)) expect(deps(domain)).toEqual([]);
     const east = inRegion(stacks, EAST);

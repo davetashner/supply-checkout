@@ -31,6 +31,7 @@ const samples: EmailInput[] = [
   { kind: "teamReopened", teamName: "Echo Cleaning" },
   { kind: "passwordSet", at: "2026-09-30T14:05:09.000Z" },
   { kind: "twoStepOn", at: "2026-09-30T14:05:09.000Z" },
+  { kind: "emailChanged", at: "2026-09-30T14:05:09.000Z" },
 ];
 
 describe("templates", () => {
@@ -178,6 +179,20 @@ describe("templates", () => {
       expect(email.html).toContain("If it wasn&#39;t you");
     }
     expect(() => renderEmail({ kind: "passwordSet", at: "soon" }, { appUrl: APP })).toThrow("Invalid date");
+  });
+
+  // supply-checkout-8jc.29
+  it("tells the previous address the account's email changed, when, and what to do if it wasn't them", () => {
+    const changed = renderEmail(samples[9] as EmailInput, { appUrl: APP });
+    expect(changed.subject).toBe("The email address on your Supply Checkout account was changed");
+    expect(changed.text).toContain("on September 30, 2026 at 14:05 UTC");
+    expect(changed.text).toContain("the address the account had before");
+    expect(changed.text).toContain("If this was you, you don't need to do anything.");
+    // Codes now go to the new address, so the usual advice (reset with a code sent here) can't work
+    expect(changed.text).not.toContain("code sent to this address");
+    expect(changed.text).toContain("Contact Supply Checkout support");
+    expect(changed.html).toContain("If it wasn&#39;t you");
+    expect(() => renderEmail({ kind: "emailChanged", at: "soon" }, { appUrl: APP })).toThrow("Invalid date");
   });
 
   it("shortens long names and names a blank one", () => {

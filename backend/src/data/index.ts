@@ -52,6 +52,7 @@ export * from "./accounts.js";
 export { type ClosedTeamToEnd, closedTeamToEnd, countTeamsDueBefore, listClosedTeamsToEnd, listTeamsToPurge, markSubscriptionEnding, purgeTeam, type PurgeResult, type TeamDue } from "./team-purge.js";
 export * from "./email-codes.js";
 export * from "./verified-email.js";
+export * from "./security-notices.js";
 export { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
 export { audienceChangeFromStream, documentChangeFromStream, type DocumentChange } from "./changes.js";
 export { liveUpdateRecipients } from "./live-audience.js";

@@ -266,6 +266,25 @@ export const VERIFIED_EMAIL_ATTRIBUTES = [PK, SK, "verifiedEmailHash", "verified
 export const EMAIL_CODE_SENT_SK = "EMAIL_CODE_SENT";
 
 /**
+ * Security notices (supply-checkout-8jc.28, 8jc.29, security-notices.ts), in a
+ * user's own `USER#<sub>` partition: `NOTICE#<kind>` records when a notice of
+ * that kind last went out (so a change isn't told twice), and NOTICE_ADDRESS
+ * the verified address the account had, for telling it when the email
+ * changes. Not `LIMIT#` keys, so deleting an account removes them.
+ */
+export const NOTICE_SENT_PREFIX = "NOTICE#";
+export const NOTICE_ADDRESS_SK = "NOTICE_ADDRESS";
+
+/**
+ * The only attributes the security notices function may name, read or write
+ * (GetItem and UpdateItem, in `USER#` partitions): its IAM policy allows
+ * exactly these (dynamodb:Attributes). No other item has any but the keys, so
+ * it can't read a user's teams or proofs, and with no `expiresAt` it can't set
+ * a TTL that would delete one of their rows.
+ */
+export const SECURITY_NOTICE_ATTRIBUTES = [PK, SK, "noticeSentAt", "noticeAddress", "noticeAddressAt"] as const;
+
+/**
  * The partition prefix of a Stripe customer's link to its team:
  * `STRIPE#<customerId>`, sort key `TEAM` (linkStripeCustomer). Webhooks name a
  * customer, not a team, and the link is how they find the team.

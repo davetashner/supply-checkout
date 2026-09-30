@@ -39,6 +39,8 @@ export class MemoryTable {
   beforeTransactWrite?: () => void;
   /** Runs before each PutCommand is applied, after its condition passes: DynamoDB refusing it, say. */
   beforePut?: (item: Item) => void;
+  /** Refuses an UpdateCommand (outside a transaction) it returns true for, as a throttled DynamoDB would. */
+  failingUpdates?: (input: Record<string, unknown>) => boolean;
 
   private static id = (k: Item) => `${String(k.PK)}\u0000${String(k.SK)}`;
 
@@ -195,6 +197,7 @@ export class MemoryTable {
       case "UpdateCommand": {
         const key = input.Key as Item;
         record([String(key.PK)]);
+        if (this.failingUpdates?.(input)) throw Object.assign(new Error("Throughput exceeded"), { name: "ProvisionedThroughputExceededException" });
         const old = this.items.get(MemoryTable.id(key));
         this.check(input, old);
         this.items.set(MemoryTable.id(key), this.update(input, old ?? { ...key }));

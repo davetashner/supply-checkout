@@ -1,7 +1,8 @@
 // The app's transactional email: an invite, and the billing and account
 // notices (including a team's closure and reopening, to every owner, and the
 // security notices to the account's own verified address when a password is
-// set or two-step sign-in is turned on). Each renders to a subject, an HTML body and a plain-text body.
+// set or two-step sign-in is turned on, and to its previous address when its
+// email changes). Each renders to a subject, an HTML body and a plain-text body.
 //
 // Built for the mail clients people actually use (Gmail, Outlook including
 // Word-rendered desktop Outlook, iOS Mail):
@@ -47,14 +48,16 @@ export type EmailInput =
   | { readonly kind: "teamReopened"; readonly teamName: string }
   /**
    * Security notices to the account's own verified address (supply-checkout-8jc.15): a
-   * password was set or changed, or two-step sign-in (an authenticator app) was turned on.
-   * `at` is when (ISO 8601). No team: they're about the account.
+   * password was set or changed, or two-step sign-in (an authenticator app) was turned on;
+   * and, to the address the account had before, that its email changed (supply-checkout-8jc.29).
+   * `at` is when (ISO 8601). No team: they're about the account. Never the new address.
    */
   | { readonly kind: "passwordSet"; readonly at: string }
-  | { readonly kind: "twoStepOn"; readonly at: string };
+  | { readonly kind: "twoStepOn"; readonly at: string }
+  | { readonly kind: "emailChanged"; readonly at: string };
 
 /** The security notices, to an account's own address rather than a team's owners. */
-export type SecurityNotice = Extract<EmailInput, { kind: "passwordSet" | "twoStepOn" }>;
+export type SecurityNotice = Extract<EmailInput, { kind: "passwordSet" | "twoStepOn" | "emailChanged" }>;
 
 /** A notice about a team, to its owners: every kind but an invite and the security notices. */
 export type TeamNoticeInput = Exclude<EmailInput, { kind: "invite" } | SecurityNotice>;
@@ -139,6 +142,10 @@ export function formatDateTime(value: string): string {
 const NOT_YOU =
   "If it wasn't you, someone else may be able to sign in to your account. Reset your password from the Supply Checkout sign-in page with a code sent to this address, check that the email address on your account is still yours, tell the other owners of your teams, and contact Supply Checkout support. We'll never ask you for your password or a sign-in code.";
 
+/** NOT_YOU for an email change: codes and resets now go to the new address, so they can't help. */
+const EMAIL_NOT_YOU =
+  "If it wasn't you, someone else may have taken over your account: sign-in codes and password resets now go to their address. Contact Supply Checkout support from this address right away, and tell the other owners of your teams. We'll never ask you for your password or a sign-in code.";
+
 interface Content {
   readonly subject: string;
   /** The inbox preview line. */
@@ -210,7 +217,7 @@ function text(c: Content): string {
 }
 
 function content(input: EmailInput, appUrl: string): Content {
-  if (input.kind === "passwordSet" || input.kind === "twoStepOn") return securityContent(input, appUrl);
+  if (input.kind === "passwordSet" || input.kind === "twoStepOn" || input.kind === "emailChanged") return securityContent(input, appUrl);
   const team = teamLabel(input.teamName);
   switch (input.kind) {
     case "invite": {
@@ -316,6 +323,19 @@ function securityContent(input: SecurityNotice, appUrl: string): Content {
       preheader: `Your password was set or changed on ${when}.`,
       heading: "Your password was set",
       paragraphs: [`A new password was set on your Supply Checkout account on ${when}.`, "If this was you, you don't need to do anything.", NOT_YOU],
+      button,
+    };
+  }
+  if (input.kind === "emailChanged") {
+    return {
+      subject: "The email address on your Supply Checkout account was changed",
+      preheader: `Your account's email address was changed on ${when}.`,
+      heading: "Your email address was changed",
+      paragraphs: [
+        `The email address on your Supply Checkout account was changed on ${when}. We're writing to this address, the address the account had before, so you know. Account email and sign-in codes now go to the new address.`,
+        "If this was you, you don't need to do anything.",
+        EMAIL_NOT_YOU,
+      ],
       button,
     };
   }

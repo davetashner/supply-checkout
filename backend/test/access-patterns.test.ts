@@ -12,6 +12,12 @@ import {
   clearCodeSent,
   codeSentHash,
   provenEmailHash,
+  claimNotice,
+  markNoticeSent,
+  moveNoticeAddress,
+  NOTICE_DEDUPE_MS,
+  noticeAddress,
+  recordNoticeAddress,
   recordCodeSent,
   recordVerifiedEmail,
   verifiedEmailHash,
@@ -168,6 +174,25 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await clearCodeSent(db, userId);
       expect(await codeSentHash(db, userId, at)).toBeUndefined();
       await expect(provenEmailHash(db, "USER#x")).rejects.toThrow(InvalidInputError);
+    });
+
+    // supply-checkout-8jc.28, 8jc.29
+    it("keeps the security notices' records in the user's own partition, claimed and moved only on their conditions", async () => {
+      db = table.db;
+      const userId = newUser();
+      const at = new Date("2026-09-30T14:05:09.000Z");
+      await markNoticeSent(db, userId, "passwordSet", at);
+      expect(await rawItem(db, `USER#${userId}`, "NOTICE#passwordSet")).toEqual({ PK: `USER#${userId}`, SK: "NOTICE#passwordSet", noticeSentAt: at.toISOString() });
+      expect(await claimNotice(db, userId, "passwordSet", new Date(at.getTime() + NOTICE_DEDUPE_MS - 1))).toBe(false);
+      expect(await claimNotice(db, userId, "passwordSet", new Date(at.getTime() + NOTICE_DEDUPE_MS + 1))).toBe(true);
+      expect(await claimNotice(db, userId, "twoStepOn", at)).toBe(true);
+      expect(await noticeAddress(db, userId)).toBeUndefined();
+      expect(await recordNoticeAddress(db, userId, "owner@example.com", at)).toBe(true);
+      expect(await recordNoticeAddress(db, userId, "other@example.com", at)).toBe(false);
+      expect(await moveNoticeAddress(db, userId, "other@example.com", "new@example.com", at)).toBe(false);
+      expect(await moveNoticeAddress(db, userId, "owner@example.com", "new@example.com", at)).toBe(true);
+      expect(await rawItem(db, `USER#${userId}`, "NOTICE_ADDRESS")).toEqual({ PK: `USER#${userId}`, SK: "NOTICE_ADDRESS", noticeAddress: "new@example.com", noticeAddressAt: at.toISOString() });
+      expect(await noticeAddress(db, userId)).toBe("new@example.com");
     });
 
     it("starts a trial, and makes one team per request key however often it's sent", async () => {
