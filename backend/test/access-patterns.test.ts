@@ -829,6 +829,15 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
         await expect(setSheetLine(db, contributor, sheet.id, "x", { ...gloves, cost }, s.version)).rejects.toThrow(InvalidInputError);
         await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", items: { a: { ...rags, cost } } })).rejects.toThrow(InvalidInputError);
       }
+      // So is its price (ADR 0014), and one within 1e-12 of whole cents is stored as those cents
+      for (const price of [-0.01, Number.NaN, "1" as unknown as number, 1.234, 1_000_000.01]) {
+        await expect(setSheetLine(db, contributor, sheet.id, "x", { ...gloves, price }, s.version)).rejects.toThrow(InvalidInputError);
+        await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", items: { a: { ...rags, price } } })).rejects.toThrow(InvalidInputError);
+      }
+      s = await setSheetLine(db, contributor, sheet.id, "x", { ...gloves, price: 0.1 + 0.2 }, s.version);
+      expect(s.items.x?.price).toBe(0.3);
+      const priciest = await createSheet(db, contributor, { client: "x", date: "2026-09-25", items: { a: { ...rags, price: 1_000_000 } } });
+      expect((await getSheet(db, viewer, priciest.id))?.items.a?.price).toBe(1_000_000);
       await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", source: null as unknown as { store: string; receiptDate: string } })).rejects.toThrow(InvalidInputError);
       await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", source: { store: 1 as unknown as string, receiptDate: "" } })).rejects.toThrow(InvalidInputError);
       await expect(createSheet(db, contributor, { client: "x", date: "2026-09-25", createdByName: "x".repeat(201) })).rejects.toThrow(InvalidInputError);

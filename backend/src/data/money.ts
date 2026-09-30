@@ -2,7 +2,9 @@
 //
 // - Money is dollars as a JSON number: finite, 0 to MAX_MONEY, with at most
 //   two decimals. The server rejects anything else rather than rounding it,
-//   so it never stores a number the person didn't see.
+//   so it never stores a number the person didn't see. A value within 1e-12
+//   of whole cents (floating-point noise, like 0.1 + 0.2) counts as those
+//   cents and is stored rounded to them.
 // - Quantities are whole eaches.
 
 import { InvalidInputError } from "./errors.js";

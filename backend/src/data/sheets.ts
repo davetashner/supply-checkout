@@ -70,7 +70,6 @@ function line(value: SheetLine): SheetLine {
   const count = (n: unknown) => typeof n === "number" && Number.isInteger(n) && n >= 0;
   if (
     typeof value?.name !== "string" ||
-    typeof value.price !== "number" || !Number.isFinite(value.price) || value.price < 0 ||
     !count(value.out) || !count(value.returned) || value.returned > value.out
   ) {
     throw new InvalidInputError("Invalid sheet line");
@@ -78,7 +77,7 @@ function line(value: SheetLine): SheetLine {
   return {
     ...(value.code === undefined ? {} : { code: barcode(value.code) }),
     name: value.name,
-    price: value.price,
+    price: money(value.price, "price"),
     ...(value.cost === undefined ? {} : { cost: money(value.cost, "cost") }),
     out: value.out,
     returned: value.returned,
