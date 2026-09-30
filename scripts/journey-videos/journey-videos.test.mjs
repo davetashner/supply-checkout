@@ -175,6 +175,8 @@ test("the viewports and the command's options", () => {
   assert.throws(() => parseArgs(["--viewport", "tv"]), /--viewport is desktop or phone/);
   assert.throws(() => parseArgs(["--only"]), /--only needs a value/);
   assert.throws(() => parseArgs(["--loud"]), /Unknown option --loud/);
+  assert.throws(() => parseArgs(["--onlyJ4"]), /Unknown option --onlyJ4/);
+  assert.throws(() => parseArgs(["--paces", "1"]), /Unknown option --paces/);
 });
 
 // ---------------------------------------------------------------------------
@@ -185,9 +187,9 @@ const idOf = (id) => { const out = []; while (id > 0) { out.unshift(id & 0xff); 
 const el = (id, ...body) => { const data = Buffer.concat(body); return Buffer.concat([idOf(id), vint(data.length, 4), data]); };
 const uint = (id, n, len = 2) => el(id, Buffer.from(vint(n, len).map((b, i) => (i ? b : b & (0xff >> len)))));
 const block = (time, key) => { const b = Buffer.alloc(4 + 3); b[0] = 0x81; b.writeInt16BE(time, 1); b[3] = key ? 0x80 : 0; return el(0xa3, b); };
-function webm(clusters, { scale = 1e6, unknownCluster = false } = {}) {
+function webm(clusters, { scale = 1e6, unknownCluster = false, width = 640, height = 400 } = {}) {
   const info = el(0x1549a966, uint(0x2ad7b1, scale, 4), el(0x4489, Buffer.alloc(8)));
-  const tracks = el(0x1654ae6b, el(0xae, uint(0xd7, 1, 1)));
+  const tracks = el(0x1654ae6b, el(0xae, uint(0xd7, 1, 1), el(0x86, Buffer.from("V_VP8")), el(0xe0, uint(0xb0, width), uint(0xba, height))));
   const body = clusters.map(([timecode, blocks]) => {
     const inner = Buffer.concat([uint(0xe7, timecode), uint(0xab, 5), ...blocks.map(([time, key]) => block(time, key))]);
     return unknownCluster ? Buffer.concat([idOf(0x1f43b675), Buffer.from([0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]), inner]) : el(0x1f43b675, inner);
@@ -214,6 +216,10 @@ test("WebM videos are joined end to end, with their timestamps moved along and c
   const other = join(dir, "c.webm");
   writeFileSync(other, webm([[0, [[0, true]]]], { scale: 1e5 }));
   assert.throws(() => concatWebm([a, other], out), /different timestamp scale/);
+  assert.equal(joined.format, "V_VP8 640x400");
+  const small = join(dir, "d.webm");
+  writeFileSync(small, webm([[0, [[0, true]]]], { width: 320, height: 240 }));
+  assert.throws(() => concatWebm([a, small], out), /d\.webm is V_VP8 320x240, but .*a\.webm is V_VP8 640x400: joined videos need the same codec and size/);
   assert.throws(() => concatWebm([], out), /No videos to join/);
   assert.throws(() => parseWebm(Buffer.from([0x00, 0x01])), /Not a WebM element/);
   assert.throws(() => parseWebm(el(0x1a45dfa3)), /Not a WebM file/);
@@ -232,3 +238,35 @@ function cueTimes(buf) {
   }
   return times;
 }
+
+// ---------------------------------------------------------------------------
+// Stopping: Ctrl-C reaches the Playwright run and its browser, then the lock and scratch go
+
+test("SIGINT or SIGTERM stops the child's whole process group, then cleans up and exits 130 or 143", async () => {
+  const { spawn } = await import("node:child_process");
+  const { existsSync } = await import("node:fs");
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
+    const dir = mkdtempSync(join(tmpdir(), "jv-signal-"));
+    // record.mjs's shape: a child (Playwright's runner) with a child of its own (its browser),
+    // and a cleanup that releases the lock
+    const script = `
+      import { writeFileSync } from "node:fs";
+      import { run, onInterrupt } from ${JSON.stringify(new URL("./process.mjs", import.meta.url).href)};
+      onInterrupt(async () => writeFileSync(${JSON.stringify(join(dir, "cleaned"))}, "yes"));
+      const child = ${JSON.stringify(`const { spawn } = require("node:child_process"); const g = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(${JSON.stringify(join(dir, "pids"))}, process.pid + " " + g.pid); setInterval(() => {}, 1000);`)};
+      await run(process.execPath, ["-e", child]);
+      writeFileSync(${JSON.stringify(join(dir, "carried-on"))}, "yes");
+    `;
+    const parent = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "ignore", "pipe"] });
+    while (!existsSync(join(dir, "pids")) || !readFileSync(join(dir, "pids"), "utf8").includes(" ")) await new Promise((r) => setTimeout(r, 50));
+    const pids = readFileSync(join(dir, "pids"), "utf8").split(" ").map(Number);
+    parent.kill(signal);
+    const exitCode = await new Promise((r) => parent.on("exit", (c) => r(c)));
+    assert.equal(exitCode, code);
+    assert.ok(existsSync(join(dir, "cleaned")), "cleanup ran");
+    assert.ok(!existsSync(join(dir, "carried-on")), "the caller didn't carry on");
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(pids.map(alive), [false, false], "the child and its child are gone");
+  }
+});

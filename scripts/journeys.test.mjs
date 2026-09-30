@@ -7,7 +7,7 @@ import { join } from "node:path";
 import {
   validateRegistry, journeyStatus, playwrightTests, stepNames, trace, generateDoc, renderTable,
   checkHeadings, docAlarms, checkAlarms, renderTrace, main, slug, ROOT, listErrors, listPlaywrightTests,
-  checkTestsLines, checkStatusLines,
+  checkTestsLines, checkStatusLines, testCalls, quotedTitles,
 } from "./journeys.mjs";
 
 // A small registry: J0 is critical, J1 is phase 2
@@ -136,21 +136,35 @@ test("tests are read from Playwright's listing once each, with their describe ti
   assert.deepEqual(playwrightTests({ suites: [{ specs: [{ title: "x", file: "b.spec.js", line: 3 }] }] }), [{ file: "tests/b.spec.js", line: 3, title: "x", tags: [] }]);
 });
 
-test("test.step names are read for their step IDs and lines", () => {
-  assert.deepEqual(stepNames({ "tests/a.spec.js": `await test.step("J0.1 Open a sheet", async () => {});\nawait test.step('setup', f);\ntest.step(\`J4.12 x\`)` }), [
-    { file: "tests/a.spec.js", id: "J0.1", line: 1 },
-    { file: "tests/a.spec.js", id: "J4.12", line: 3 },
+test("test.step names are read for their step IDs and lines, and the test whose body they're in", () => {
+  const source = [
+    `const helper = () => test.step("J0.9 in a helper above", f);`,
+    `test("one", { tag: ["@J0.1"] }, async () => {`,
+    `  const s = "a ) in a string", t = \`and \${"a ( in a template"} here\`; // a ) in a comment`,
+    `  /* a ( in another */ await test.step("J0.1 Open a sheet", async () => {});`,
+    `});`,
+    `test.describe("group", () => {`,
+    `  test.skip(\`two \${x}\`, async () => { await test.step('J4.12 x', f); });`,
+    `});`,
+    `async function below() { await test.step("J0.2 after every test", f); }`,
+  ].join("\n");
+  assert.deepEqual(stepNames({ "tests/a.spec.js": source }), [
+    { file: "tests/a.spec.js", id: "J0.9", line: 1 },
+    { file: "tests/a.spec.js", id: "J0.1", line: 4, testLine: 2 },
+    { file: "tests/a.spec.js", id: "J4.12", line: 7, testLine: 7 },
+    { file: "tests/a.spec.js", id: "J0.2", line: 9 },
   ]);
+  assert.deepEqual(testCalls(source).map((c) => source.slice(c.start, c.end + 1).split("\n").length), [4, 1]);
 });
 
 test("a test.step named for a step must be in a test tagged with that step", () => {
   const tests = playwrightTests(listing([spec("opens", ["J0.1"], { line: 1 }), spec("scans", ["J0"], { line: 10 }), spec("tagged by its group", ["J0.2"], { describe: true, line: 20 })]));
   const steps = [
-    { file: "tests/a.spec.js", id: "J0.1", line: 2 },
-    { file: "tests/a.spec.js", id: "J0.2", line: 12 },
-    { file: "tests/a.spec.js", id: "J0.2", line: 21 },
-    // Above every test (a shared helper): nothing to check it against
-    { file: "tests/b.spec.js", id: "J0.2", line: 1 },
+    { file: "tests/a.spec.js", id: "J0.1", line: 2, testLine: 1 },
+    { file: "tests/a.spec.js", id: "J0.2", line: 12, testLine: 10 },
+    { file: "tests/a.spec.js", id: "J0.2", line: 21, testLine: 20 },
+    // In a helper outside every test: nothing to check it against
+    { file: "tests/a.spec.js", id: "J0.2", line: 30 },
   ];
   assert.deepEqual(trace(registry(), tests, { steps }).problems, [
     `tests/a.spec.js:12: a test.step is named for J0.2 in "scans", which isn't tagged @J0.2`,
@@ -339,6 +353,13 @@ Some text. **Tests:**
     "docs/journeys.md, J1's Tests: c.spec.js has no test tagged @J1 or with one of its steps",
     "docs/journeys.md, J1's Tests: missing.test.ts doesn't exist",
   ]);
+});
+
+test("only a list of quoted titles right after a file's colon is read as titles", () => {
+  assert.deepEqual(quotedTitles(`: "a", "b" and "c"; then the "Save" button`), ["a", "b", "c"]);
+  assert.deepEqual(quotedTitles(`: "a"; "b", and "c"\n- next`), ["a", "b", "c"]);
+  assert.deepEqual(quotedTitles(`: failed reads, and what "Try again" does`), []);
+  assert.deepEqual(quotedTitles(` (all tests, "x")`), []);
 });
 
 test("each journey's Status paragraph starts with the status the table computes", () => {

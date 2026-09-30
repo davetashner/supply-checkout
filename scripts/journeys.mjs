@@ -141,13 +141,61 @@ export function listErrors(stdout) {
   }
 }
 
-// The step IDs that test.step names start with, in each spec file, with their lines
+// The step IDs that test.step names start with, in each spec file, with their lines and the line
+// of the test whose body they're in (none for a test.step in a helper outside every test)
 export function stepNames(sources) {
   const found = [];
+  const lineAt = (text, index) => text.slice(0, index).split("\n").length;
   for (const [file, text] of Object.entries(sources)) {
-    for (const m of text.matchAll(/test\.step\(\s*["'`](J\d+\.\d+)\b/g)) found.push({ file, id: m[1], line: text.slice(0, m.index).split("\n").length });
+    const bodies = testCalls(text);
+    for (const m of text.matchAll(/test\.step\(\s*["'`](J\d+\.\d+)\b/g)) {
+      const inside = bodies.filter((b) => b.start < m.index && m.index < b.end).at(-1);
+      found.push({ file, id: m[1], line: lineAt(text, m.index), ...(inside ? { testLine: lineAt(text, inside.start) } : {}) });
+    }
   }
   return found;
+}
+
+// Where each test(…) call starts and ends in a spec's source: from "test(" to its closing
+// parenthesis, skipping strings, template literals and comments
+export function testCalls(text) {
+  const calls = [];
+  for (const m of text.matchAll(/(?<![\w.$])test(?:\.(?:only|skip|fixme|fail|slow))?\(/g)) {
+    let depth = 0, i = m.index + m[0].length - 1;
+    for (; i < text.length; i++) {
+      const c = text[i];
+      if (c === "(") depth++;
+      else if (c === ")" && --depth === 0) break;
+      else if (c === '"' || c === "'") i = skipQuoted(text, i, c);
+      else if (c === "`") i = skipTemplate(text, i);
+      else if (c === "/" && text[i + 1] === "/") i = text.indexOf("\n", i) < 0 ? text.length : text.indexOf("\n", i);
+      else if (c === "/" && text[i + 1] === "*") i = text.indexOf("*/", i) < 0 ? text.length : text.indexOf("*/", i) + 1;
+    }
+    calls.push({ start: m.index, end: i });
+  }
+  return calls;
+}
+
+function skipQuoted(text, i, quote) {
+  for (i++; i < text.length && text[i] !== quote && text[i] !== "\n"; i++) if (text[i] === "\\") i++;
+  return i;
+}
+
+function skipTemplate(text, i) {
+  for (i++; i < text.length && text[i] !== "`"; i++) {
+    if (text[i] === "\\") i++;
+    else if (text[i] === "$" && text[i + 1] === "{") {
+      // Up to the matching }, which may hold strings and templates of its own
+      let depth = 0;
+      for (i++; i < text.length; i++) {
+        if (text[i] === "{") depth++;
+        else if (text[i] === "}" && --depth === 0) break;
+        else if (text[i] === '"' || text[i] === "'") i = skipQuoted(text, i, text[i]);
+        else if (text[i] === "`") i = skipTemplate(text, i);
+      }
+    }
+  }
+  return i;
 }
 
 function specSources(root) {
@@ -282,6 +330,23 @@ export function checkAlarms(md, reg, infraSource) {
   return problems;
 }
 
+// The test titles right after a file's name: `file.spec.js`: "one", "two" and "three"; … A list
+// of quoted titles starts straight after the colon and ends at the first thing that isn't one,
+// so quoted words in the prose around it aren't read as titles.
+export function quotedTitles(after) {
+  const titles = [];
+  const list = /^\s*:\s*/.exec(after);
+  if (!list) return titles;
+  const item = /^"([^"]+)"(\s*(?:,\s*and\s+|,\s*|;\s*|\s+and\s+))?/y;
+  let rest = after.slice(list[0].length);
+  for (let m; (m = item.exec(rest)); rest = rest.slice(m[0].length)) {
+    item.lastIndex = 0;
+    titles.push(m[1]);
+    if (!m[2]) break;
+  }
+  return titles;
+}
+
 // The hand-written **Tests:** paragraphs in each journey's section: every file they name exists,
 // every test they quote by title is in that file and tagged with the journey or one of its
 // steps, and every spec file they name has at least one test tagged for the journey
@@ -309,7 +374,7 @@ export function checkTestsLines(md, reg, tests, fileExists = () => true) {
         if (!path.endsWith(".spec.js")) continue;
         const inFile = tests.filter((t) => t.file === path);
         const after = text.slice(ref.index + ref[0].length, refs[k + 1]?.index ?? text.length);
-        const titles = /^\s*:/.test(after) ? [...after.matchAll(/"([^"]+)"/g)].map((m) => m[1]) : [];
+        const titles = quotedTitles(after);
         for (const title of titles) {
           const found = inFile.filter((t) => t.title.split(" › ").at(-1) === title);
           if (!found.length) problems.push(`${DOC}, ${j.id}'s Tests: ${name} has no test "${title}"`);
@@ -341,10 +406,9 @@ export function trace(reg, tests, { steps = [], fileExists = () => true, beads =
       problems.push(`${s.file}: a test.step is named for ${s.id}, which isn't in ${REGISTRY}`);
       continue;
     }
-    // The test it's in is the last one that starts above it
-    const above = tests.filter((t) => t.file === s.file && s.line !== undefined && t.line <= s.line);
-    const line = Math.max(...above.map((t) => t.line));
-    const owners = above.filter((t) => t.line === line);
+    // Only a test.step in a test's own body is checked, against that test (or each test a loop makes
+    // from it); one in a helper outside every test can't be pinned on a test
+    const owners = s.testLine === undefined ? [] : tests.filter((t) => t.file === s.file && t.line === s.testLine);
     if (owners.length && !owners.some((t) => t.tags.includes(s.id))) {
       problems.push(`${s.file}:${s.line}: a test.step is named for ${s.id} in "${owners[0].title}", which isn't tagged @${s.id}`);
     }

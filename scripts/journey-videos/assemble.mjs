@@ -1,5 +1,5 @@
 // What goes into each journey video, in what order, and what the sidecar JSON says about it
-// (record.mjs). Kept free of Playwright and the file system, for scripts/journey-videos/assemble.test.mjs.
+// (record.mjs). Kept free of Playwright and the file system, for journey-videos.test.mjs.
 import { journeyStatus } from "../journeys.mjs";
 import { errorSummary } from "./director.mjs";
 

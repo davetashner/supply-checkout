@@ -20,7 +20,8 @@
 // phone the names end in -phone. It holds the Playwright run lock (tests/run-lock.js) from start
 // to end, runs one test at a time in one Chromium, and exits 1 if any recorded test failed; the
 // videos are still written, showing the failure.
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,13 +40,14 @@ export function parseArgs(argv) {
       if (v === undefined) throw new Error(`${arg} needs a value\n${USAGE}`);
       return v;
     };
+    const is = (flag) => arg === flag || arg.startsWith(`${flag}=`);
     if (arg === "--headless") opts.headless = true;
     else if (arg === "--headed") opts.headless = false;
     else if (arg === "--skip-build") opts.build = false;
-    else if (arg.startsWith("--only")) opts.only = [...(opts.only || []), ...value().split(",").map((s) => s.trim().toUpperCase()).filter(Boolean)];
-    else if (arg.startsWith("--pace")) opts.pace = Number(value());
-    else if (arg.startsWith("--slow-mo")) opts.slowMo = Number(value());
-    else if (arg.startsWith("--viewport")) opts.viewport = value();
+    else if (is("--only")) opts.only = [...(opts.only || []), ...value().split(",").map((s) => s.trim().toUpperCase()).filter(Boolean)];
+    else if (is("--pace")) opts.pace = Number(value());
+    else if (is("--slow-mo")) opts.slowMo = Number(value());
+    else if (is("--viewport")) opts.viewport = value();
     else if (arg === "--help" || arg === "-h") return { help: true };
     else throw new Error(`Unknown option ${arg}\n${USAGE}`);
   }
@@ -55,9 +57,10 @@ export function parseArgs(argv) {
   return opts;
 }
 
-// Runs Playwright with the recording config
-function playwright(args, env, stdio) {
-  return spawnSync("npx", ["playwright", "test", "--config", CONFIG, ...args], { cwd: ROOT, env: { ...process.env, ...env }, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, stdio });
+// Runs Playwright with the recording config (process.mjs: stopped with record.mjs)
+const PLAYWRIGHT = createRequire(import.meta.url).resolve("@playwright/test/cli");
+function playwright(run, args, env, capture = false) {
+  return run(process.execPath, [PLAYWRIGHT, "test", "--config", CONFIG, ...args], { cwd: ROOT, env: { ...process.env, ...env }, capture });
 }
 
 function commit() {
@@ -97,6 +100,7 @@ async function main() {
   const { concatWebm, webmDuration } = await import("./webm.mjs");
   const { acquireRunLock, releaseRunLock } = await import("../../tests/run-lock.js");
   const { buildApp, distDir, DEMO } = await import("../builds.mjs");
+  const { run, onInterrupt } = await import("./process.mjs");
   const registry = JSON.parse(readFileSync(join(ROOT, "journeys/registry.json"), "utf8"));
   const size = frame(opts.viewport);
 
@@ -109,7 +113,16 @@ async function main() {
     JOURNEY_VIDEO_OPTIONS: JSON.stringify({ viewport: opts.viewport, pace: opts.pace, slowMo: opts.slowMo, headless: opts.headless, outputDir: join(scratch, "results"), report: join(scratch, "report.json") }),
   };
   const written = [];
-  let failed = 0, browser;
+  let failed = 0, browser, done = false;
+  // Also on Ctrl-C or SIGTERM, once the Playwright run has stopped
+  const cleanup = async () => {
+    if (done) return;
+    done = true;
+    if (browser) await browser.close().catch(() => {});
+    rmSync(scratch, { recursive: true, force: true });
+    releaseRunLock();
+  };
+  const stopHandling = onInterrupt(cleanup);
   try {
     // Listing the tests loads the web build, and tests/demo.spec.js the demo's
     for (const build of ["web", DEMO]) {
@@ -117,15 +130,15 @@ async function main() {
       console.log(`Building the ${build} app…`);
       await buildApp(build);
     }
-    const listing = playwright(["--list", "--reporter=json"], env, ["ignore", "pipe", "pipe"]);
+    const listing = await playwright(run, ["--list", "--reporter=json"], env, true);
     const list = JSON.parse(listing.stdout || "{}");
     if (list.errors?.length || listing.status) throw new Error(`Couldn't list the tests:\n${(list.errors || []).map((e) => e.message).join("\n") || listing.stderr}`);
     const plans = planVideos(registry, playwrightTests(list), opts.only);
     const count = new Set(plans.flatMap((p) => p.tests.map((t) => `${t.file}:${t.line}:${t.title}`))).size;
     console.log(`Recording ${count} tests for ${plans.map((p) => p.journey.id).join(", ")} (${opts.viewport})…`);
-    const run = count ? playwright(["--grep", grepFor(plans)], env, "inherit") : { status: 0 };
+    const recording = count ? await playwright(run, ["--grep", grepFor(plans)], env) : { status: 0 };
     const report = existsSync(join(scratch, "report.json")) ? JSON.parse(readFileSync(join(scratch, "report.json"), "utf8")) : {};
-    if (count && !report.suites) throw new Error(`The recording run didn't finish (exit ${run.status})`);
+    if (count && !report.suites) throw new Error(`The recording run didn't finish (exit ${recording.status})`);
     const results = readReport(report, (videos) => videos.reduce((a, b) => (webmDuration(b) > webmDuration(a) ? b : a)));
 
     const { chromium } = await import("@playwright/test");
@@ -154,9 +167,8 @@ async function main() {
       written.push({ id: plan.journey.id, file, duration, bytes: statSync(file).size, summary: data.summary });
     }
   } finally {
-    if (browser) await browser.close();
-    rmSync(scratch, { recursive: true, force: true });
-    releaseRunLock();
+    stopHandling();
+    await cleanup();
   }
 
   console.log("\nJourney videos:");

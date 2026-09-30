@@ -12,6 +12,7 @@ const ID = {
   TimecodeScale: 0x2ad7b1, Duration: 0x4489, Timecode: 0xe7, PrevSize: 0xab, Position: 0xa7,
   SimpleBlock: 0xa3, BlockGroup: 0xa0, Block: 0xa1, ReferenceBlock: 0xfb, BlockDuration: 0x9b,
   Seek: 0x4dbb, SeekID: 0x53ab, SeekPosition: 0x53ac,
+  TrackEntry: 0xae, CodecID: 0x86, Video: 0xe0, PixelWidth: 0xb0, PixelHeight: 0xba,
   CuePoint: 0xbb, CueTime: 0xb3, CueTrackPositions: 0xb7, CueTrack: 0xf7, CueClusterPosition: 0xf1,
 };
 const TOP_LEVEL = new Set([ID.SeekHead, ID.Info, ID.Tracks, ID.Cluster, ID.Cues, ID.Tags, ID.Chapters, ID.Attachments]);
@@ -80,6 +81,7 @@ export function parseWebm(buf) {
       }
     } else if (el.id === ID.Tracks) {
       video.tracks = buf.subarray(el.start, el.end);
+      video.format = trackFormat(buf, el);
     } else if (el.id === ID.Cluster) {
       const cluster = { timecode: 0, body: [], last: 0, key: null };
       for (const c of children(buf, el.data, el.end)) {
@@ -102,6 +104,25 @@ export function parseWebm(buf) {
   // One frame past the last one's start (Playwright records at 25 frames a second)
   video.duration = last ? last.timecode + last.last + Math.round(40e6 / video.scale) : 0;
   return video;
+}
+
+// Each track's codec and picture size, e.g. "V_VP8 1280x804": what joined videos must share
+function trackFormat(buf, tracks) {
+  const formats = [];
+  for (const entry of children(buf, tracks.data, tracks.end)) {
+    if (entry.id !== ID.TrackEntry) continue;
+    let codec = "", size = "";
+    for (const c of children(buf, entry.data, entry.end)) {
+      if (c.id === ID.CodecID) codec = buf.toString("latin1", c.data, c.end);
+      if (c.id === ID.Video) {
+        const dims = {};
+        for (const d of children(buf, c.data, c.end)) if (d.id === ID.PixelWidth || d.id === ID.PixelHeight) dims[d.id] = readUint(buf, d.data, d.end);
+        size = `${dims[ID.PixelWidth]}x${dims[ID.PixelHeight]}`;
+      }
+    }
+    formats.push(`${codec} ${size}`.trim());
+  }
+  return formats.join(", ");
 }
 
 function blockGroup(buf, group) {
@@ -129,8 +150,9 @@ export function concatWebm(files, out) {
   let offset = 0, first;
   for (const file of files) {
     const video = parseWebm(readFileSync(file));
-    if (!first) first = { header: video.header, info: video.info, tracks: video.tracks, scale: video.scale, track: video.track };
+    if (!first) first = { header: video.header, info: video.info, tracks: video.tracks, scale: video.scale, track: video.track, format: video.format };
     else if (video.scale !== first.scale) throw new Error(`${file} has a different timestamp scale from ${files[0]}`);
+    else if (video.format !== first.format) throw new Error(`${file} is ${video.format}, but ${files[0]} is ${first.format}: joined videos need the same codec and size`);
     layout.push({ file, offset, clusters: video.clusters.map((c) => ({ time: offset + c.timecode, key: c.key, size: clusterSize(c) })) });
     offset += video.duration;
   }
