@@ -48,12 +48,15 @@
 //                                   one, if they have one, confirms it). Once
 //                                   an authenticator app is on, Cognito lets
 //                                   them sign in only with a password and its
-//                                   code, so the app sets one first.
+//                                   code, so the app sets one first. The
+//                                   account's verified address is emailed
+//                                   (see "Security notices" below).
 //   POST /me/mfa/totp               A new secret for an authenticator app.
 //   POST /me/mfa/totp/verify        Checks a code from the app, turns it on as
 //                                   the caller's second factor, and signs
 //                                   them out everywhere (see "Two-step
-//                                   sign-in" below).
+//                                   sign-in" below), then emails the account's
+//                                   verified address ("Security notices").
 //   POST /me/sign-out-everywhere    Signs the caller out everywhere: what the
 //                                   app sends when turning TOTP on couldn't.
 //
@@ -107,6 +110,17 @@
 // provider's sign-in stands in for it, as it does when a user with a provider
 // linked signs in through it (docs/infrastructure.md, Sign-in). Passwords,
 // secrets and codes are never logged.
+//
+// Security notices (supply-checkout-8jc.15): setting up two-step sign-in is
+// trust on first use, so someone who got into an account could set a password
+// and their own authenticator. After a password is set, and after TOTP is
+// turned on (once the sign-out everywhere has run, whether or not it
+// finished), the account's verified address is emailed what changed and when
+// (noticeAccount). The address is the one Cognito's GetUser returned for the
+// caller's own token before the change, verified (verifiedEmail), never one
+// from the request. Best effort: the change stands if the email isn't sent,
+// which is logged with the user ID, the kind and the error's name only, and
+// counted (SecurityNoticeFailures).
 //
 // Seats (supply-checkout-l50): after a membership change commits (an invite
 // accepted, a role changed, a member removed or leaving, an account deleted,
@@ -179,7 +193,7 @@ import {
   teamIdForRequest,
 } from "../data/index.js";
 import { EmailNotSentError, type Mailer, sendInviteEmail, sendTeamNotice } from "../email/mailer.js";
-import type { EmailInput } from "../email/templates.js";
+import type { EmailInput, SecurityNotice } from "../email/templates.js";
 import type { DeletionLog } from "../deletions/records.js";
 import type { SeatSyncQueue } from "../billing/seat-queue.js";
 import { BusinessMetric, type BusinessMetricName, type Observability } from "../observability/index.js";
@@ -360,6 +374,9 @@ interface NoticeMetrics {
 }
 
 const CLOSED_NOTICES: NoticeMetrics = { sent: BusinessMetric.TeamClosedNotices, failures: BusinessMetric.TeamClosedNoticeFailures, log: "Team closure emails not sent" };
+/** An email to the account's own verified address about a change to how it signs in (noticeAccount). */
+type AccountNotice = SecurityNotice["kind"];
+
 const REOPENED_NOTICES: NoticeMetrics = { sent: BusinessMetric.TeamReopenedNotices, failures: BusinessMetric.TeamReopenedNoticeFailures, log: "Team reopened emails not sent" };
 
 export function createAccountHandler(deps: AccountHandlerDeps) {
@@ -696,6 +713,24 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     }
   }
 
+  /**
+   * Emails the caller's verified address that their password was set or two-step sign-in
+   * turned on (see "Security notices" at the top). `user` is what GetUser said for the
+   * caller's own token before the change. Never throws.
+   */
+  async function noticeAccount(user: CognitoUser, userId: string, kind: AccountNotice): Promise<void> {
+    const to = verifiedEmail(user);
+    try {
+      if (!to) throw new EmailNotSentError("NoAddress");
+      await deps.mailer.send(to, { kind, at: new Date(now()).toISOString() });
+      obs.count(BusinessMetric.SecurityNotices, 1, { kind });
+    } catch (error) {
+      const code = error instanceof EmailNotSentError ? error.code : ((error as { name?: string } | null)?.name ?? "Unknown");
+      obs.logger.warn("Security notice not sent", { userId, kind, code });
+      obs.count(BusinessMetric.SecurityNoticeFailures, 1, { kind, reason: to ? "not_sent" : "no_address" });
+    }
+  }
+
   /** Deletes the caller's account (see "Deleting an account" at the top). */
   async function deleteAccount(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
     const body = jsonBody(event, ["confirm"]);
@@ -851,9 +886,11 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     if (currentPassword !== undefined && (typeof currentPassword !== "string" || !currentPassword || currentPassword.length > MAX_PASSWORD)) {
       throw new ApiError(400, "bad_request", "Enter your current password", "password_mismatch");
     }
-    nativeOnly(await cognitoUser(event, userId));
+    const user = await cognitoUser(event, userId);
+    nativeOnly(user);
     await deps.totp.setPassword(accessToken(event), password, currentPassword);
     obs.logger.info("Password set", { userId });
+    await noticeAccount(user, userId, "passwordSet");
     return noContent();
   }
 
@@ -869,14 +906,20 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
   async function verifyTotp(event: DataEvent, userId: string): Promise<APIGatewayProxyStructuredResultV2> {
     const code = jsonBody(event, ["code"]).code;
     if (typeof code !== "string" || !EMAIL_CODE.test(code)) throw new ApiError(400, "bad_request", "Enter the 6-digit code from your authenticator app", "code_mismatch");
-    nativeOnly(await cognitoUser(event, userId));
+    const user = await cognitoUser(event, userId);
+    nativeOnly(user);
     const token = accessToken(event);
     await deps.totp.verify(token, code);
     obs.logger.info("Two-step sign-in turned on", { userId });
-    // Every earlier session, this one too, began without the code: end them all. Until that
-    // works they'd pass the billing check, so it's tried again, and if it still fails the app
-    // is told to finish it (POST /me/sign-out-everywhere)
-    await endEverySession(token, userId);
+    try {
+      // Every earlier session, this one too, began without the code: end them all. Until that
+      // works they'd pass the billing check, so it's tried again, and if it still fails the app
+      // is told to finish it (POST /me/sign-out-everywhere)
+      await endEverySession(token, userId);
+    } finally {
+      // TOTP is on whether or not the sign-out finished: the account's address hears of it either way
+      await noticeAccount(user, userId, "twoStepOn");
+    }
     return noContent();
   }
 

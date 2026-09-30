@@ -1,5 +1,7 @@
 // The app's transactional email: an invite, and the billing and account
-// notices (including a team's closure and reopening, to every owner). Each renders to a subject, an HTML body and a plain-text body.
+// notices (including a team's closure and reopening, to every owner, and the
+// security notices to the account's own verified address when a password is
+// set or two-step sign-in is turned on). Each renders to a subject, an HTML body and a plain-text body.
 //
 // Built for the mail clients people actually use (Gmail, Outlook including
 // Word-rendered desktop Outlook, iOS Mail):
@@ -42,7 +44,20 @@ export type EmailInput =
       /** When the purge deletes the team: the team item's purgeAfter (ISO 8601). */
       readonly purgeAfter: string;
     }
-  | { readonly kind: "teamReopened"; readonly teamName: string };
+  | { readonly kind: "teamReopened"; readonly teamName: string }
+  /**
+   * Security notices to the account's own verified address (supply-checkout-8jc.15): a
+   * password was set or changed, or two-step sign-in (an authenticator app) was turned on.
+   * `at` is when (ISO 8601). No team: they're about the account.
+   */
+  | { readonly kind: "passwordSet"; readonly at: string }
+  | { readonly kind: "twoStepOn"; readonly at: string };
+
+/** The security notices, to an account's own address rather than a team's owners. */
+export type SecurityNotice = Extract<EmailInput, { kind: "passwordSet" | "twoStepOn" }>;
+
+/** A notice about a team, to its owners: every kind but an invite and the security notices. */
+export type TeamNoticeInput = Exclude<EmailInput, { kind: "invite" } | SecurityNotice>;
 
 export interface RenderedEmail {
   readonly kind: EmailKind;
@@ -108,6 +123,21 @@ export function formatDate(value: string | number): string {
   if (Number.isNaN(date.getTime())) throw new Error("Invalid date");
   return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" }).format(date);
 }
+
+/** A time for people: "October 3, 2026 at 23:30 UTC". */
+export function formatDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw new Error("Invalid date");
+  const time = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "UTC" }).format(date);
+  return `${formatDate(value)} at ${time} UTC`;
+}
+
+/**
+ * What a security notice says to do if the change wasn't the account's owner. It links
+ * nowhere but the app, and asks for nothing: a message like this is what a phisher copies.
+ */
+const NOT_YOU =
+  "If it wasn't you, someone else may be able to sign in to your account. Reset your password from the Supply Checkout sign-in page with a code sent to this address, tell the other owners of your teams, and contact Supply Checkout support. We'll never ask you for your password or a sign-in code.";
 
 interface Content {
   readonly subject: string;
@@ -180,6 +210,7 @@ function text(c: Content): string {
 }
 
 function content(input: EmailInput, appUrl: string): Content {
+  if (input.kind === "passwordSet" || input.kind === "twoStepOn") return securityContent(input, appUrl);
   const team = teamLabel(input.teamName);
   switch (input.kind) {
     case "invite": {
@@ -273,6 +304,32 @@ function content(input: EmailInput, appUrl: string): Content {
         button: { label: "Open Supply Checkout", url: appLink(appUrl, "/") },
       };
   }
+}
+
+/** A security notice: what changed on the account, when, and what to do if it wasn't them. */
+function securityContent(input: SecurityNotice, appUrl: string): Content {
+  const when = formatDateTime(input.at);
+  const button = { label: "Open Supply Checkout", url: appLink(appUrl, "/") };
+  if (input.kind === "passwordSet") {
+    return {
+      subject: "A password was set on your Supply Checkout account",
+      preheader: `Your password was set or changed on ${when}.`,
+      heading: "Your password was set",
+      paragraphs: [`A new password was set on your Supply Checkout account on ${when}.`, "If this was you, you don't need to do anything.", NOT_YOU],
+      button,
+    };
+  }
+  return {
+    subject: "Two-step sign-in was turned on for your Supply Checkout account",
+    preheader: `An authenticator app was added on ${when}.`,
+    heading: "Two-step sign-in is on",
+    paragraphs: [
+      `Two-step sign-in was turned on for your Supply Checkout account on ${when}: signing in now takes your password and a code from an authenticator app. The account was signed out everywhere.`,
+      "If this was you, you don't need to do anything.",
+      NOT_YOU,
+    ],
+    button,
+  };
 }
 
 /** Renders one message. Throws on a bad date or a link off the app's origin. */
