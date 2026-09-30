@@ -1,261 +1,204 @@
-// What a journey video draws on the page, and how it moves through it: a visible mouse
-// cursor with a click ripple (Playwright's videos don't show the mouse), a caption banner
-// with the journey and the current step, and title and end cards. See record.mjs.
+// What a journey video draws (npm run journeys:video, record.mjs): the viewports, the overlay
+// drawn over each recorded test's page (tests/journey-video.js), and the cards between the
+// tests. Playwright's videos don't show the mouse, so the overlay draws a cursor that glides to
+// each element a test acts on, with a ripple on each click, and a caption banner with the step
+// IDs, the registry's text for them, the test's name, and whether the step passed or failed.
 
-const BANNER = 84;
+// The Playwright device each viewport emulates (the test projects' own), the banner's height
+// above its viewport, and how much larger than the page the video is. The phone is an iPhone 13
+// in Chromium's mobile emulation, recorded at twice its CSS size so text stays sharp.
+export const VIEWPORTS = {
+  desktop: { device: "Desktop Chrome", viewport: { width: 1280, height: 720 }, banner: 84, scale: 1 },
+  phone: { device: "iPhone 13", viewport: { width: 390, height: 664 }, banner: 112, scale: 2 },
+};
 
-// In the page, before the app (context.addInitScript). Self-contained: it's serialized.
-// The elements go on <html>, outside <body>, so the app's redraws never remove them, and
-// none of them take pointer events.
-export function installOverlay(bannerHeight) {
-  if (window.__jv) return;
-  const api = { ready: false, x: -100, y: -100, path: { x0: -100, y0: -100, x1: -100, y1: -100 } };
+// The page's viewport (the test's own, plus the banner), and the video's size
+export function frame(name) {
+  const v = VIEWPORTS[name];
+  if (!v) throw new Error(`--viewport is desktop or phone, not ${name}`);
+  const page = { width: v.viewport.width, height: v.viewport.height + v.banner };
+  return { ...v, page, video: { width: page.width * v.scale, height: page.height * v.scale } };
+}
+
+// In the page, before the app (context.addInitScript). Self-contained: it's serialized. The
+// elements go on <html>, outside <body>, so the app's redraws never remove them; none of them
+// take pointer events, and none is in the accessibility tree. The styles are a constructed
+// stylesheet, so a Content Security Policy that forbids inline styles doesn't stop them.
+export function installOverlay({ banner: height, compact }) {
+  if (window.top !== window || window.__jv) return;
+  const api = { ready: false, state: null };
   window.__jv = api;
   const css = `
-    html.jv-banner { padding-top: ${bannerHeight}px !important; scroll-padding-top: ${bannerHeight + 16}px; }
-    html.jv-banner .overlay { top: ${bannerHeight}px !important; }
-    #jv-banner, #jv-cursor, #jv-card, .jv-ripple { pointer-events: none !important; }
-    #jv-banner { position: fixed; top: 0; left: 0; right: 0; height: ${bannerHeight}px; z-index: 2147483600; box-sizing: border-box;
-      display: none; align-items: center; gap: 18px; padding: 0 24px; background: #0b1b2b; color: #fff;
-      font: 500 15px/1.3 system-ui, -apple-system, "Segoe UI", sans-serif; box-shadow: 0 2px 10px rgba(0,0,0,.35); border-bottom: 3px solid #3ea6ff; }
-    html.jv-banner #jv-banner { display: flex; }
-    #jv-banner .jv-id { flex: none; font: 800 26px/1 system-ui, sans-serif; background: #3ea6ff; color: #04121f; border-radius: 10px; padding: 10px 12px; }
+    html.jv-on { padding-top: ${height}px !important; scroll-padding-top: ${height + 16}px; }
+    html.jv-on .overlay { top: ${height}px !important; }
+    #jv-banner, #jv-cursor, .jv-ripple { pointer-events: none !important; }
+    #jv-banner { position: fixed; top: 0; left: 0; right: 0; height: ${height}px; z-index: 2147483600; box-sizing: border-box; overflow: hidden;
+      display: none; align-items: center; gap: ${compact ? 8 : 16}px; padding: 0 ${compact ? 10 : 20}px; background: #0b1b2b; color: #fff;
+      font: 500 ${compact ? 12 : 15}px/1.3 system-ui, -apple-system, "Segoe UI", sans-serif; border-bottom: 4px solid #3ea6ff; }
+    html.jv-on #jv-banner { display: flex; }
+    #jv-banner .jv-id { flex: none; max-width: ${compact ? 30 : 22}%; font: 800 ${compact ? 14 : 22}px/1.1 system-ui, sans-serif; background: #3ea6ff; color: #04121f; border-radius: 8px; padding: ${compact ? "6px 7px" : "9px 11px"}; }
     #jv-banner .jv-text { flex: 1; min-width: 0; }
-    #jv-banner .jv-title { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: #9cc9f0; margin-bottom: 3px; }
-    #jv-banner .jv-step { font-size: 20px; font-weight: 650; line-height: 1.25; }
-    #jv-banner .jv-kind { flex: none; font: 800 13px/1 system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase; border-radius: 999px; padding: 8px 12px; }
-    #jv-banner .jv-kind:empty { display: none; }
-    #jv-banner[data-kind="check"] { border-bottom-color: #3ddc84; }
-    #jv-banner[data-kind="check"] .jv-kind { background: #3ddc84; color: #06220f; }
-    #jv-banner[data-kind="simulated"] { border-bottom-color: #ffb020; }
-    #jv-banner[data-kind="simulated"] .jv-kind { background: #ffb020; color: #2a1a00; }
-    #jv-banner[data-kind="planned"] { border-bottom-color: #ff5fa2; }
-    #jv-banner[data-kind="planned"] .jv-kind { background: #ff5fa2; color: #2b0014; }
+    #jv-banner .jv-test { font-size: ${compact ? 10 : 12}px; color: #9cc9f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 2px; }
+    #jv-banner .jv-step { font-size: ${compact ? 13 : 18}px; font-weight: 650; line-height: 1.25; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: ${compact ? 3 : 2}; overflow: hidden; }
+    #jv-banner .jv-note { font-size: ${compact ? 10 : 12}px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #ffd27a; }
+    #jv-banner .jv-note:empty { display: none; }
+    #jv-banner .jv-state { flex: none; font: 800 ${compact ? 11 : 14}px/1 system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; border-radius: 999px; padding: ${compact ? "6px 8px" : "9px 13px"}; background: #d8e6f3; color: #0b1b2b; }
+    #jv-banner[data-state="passed"] { border-bottom-color: #3ddc84; }
+    #jv-banner[data-state="passed"] .jv-state { background: #3ddc84; color: #06220f; }
+    #jv-banner[data-state="failed"] { border-bottom-color: #ff4d4d; background: #3a0b0b; }
+    #jv-banner[data-state="failed"] .jv-state { background: #ff4d4d; color: #200000; }
+    #jv-banner[data-state="failed"] .jv-note { color: #ffb3b3; }
+    #jv-banner[data-state="skipped"] .jv-state { background: #b8b8b8; color: #111; }
     #jv-cursor { position: fixed; left: 0; top: 0; width: 28px; height: 28px; z-index: 2147483647; transform: translate(-100px, -100px);
-      filter: drop-shadow(0 1px 2px rgba(0,0,0,.5)); }
+      transition: transform var(--jv-glide, 400ms) cubic-bezier(.45, 0, .25, 1); filter: drop-shadow(0 1px 2px rgba(0,0,0,.5)); }
     .jv-ripple { position: fixed; z-index: 2147483646; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%;
       border: 3px solid #ff3b30; background: rgba(255,59,48,.25); animation: jv-ripple .6s ease-out forwards; }
     @keyframes jv-ripple { from { transform: scale(.3); opacity: 1; } to { transform: scale(1.5); opacity: 0; } }
-    #jv-card { position: fixed; inset: 0; z-index: 2147483640; display: none; flex-direction: column; justify-content: center; gap: 18px;
-      padding: 0 10%; background: linear-gradient(135deg, #0b1b2b, #123a5c); color: #fff; font: 400 22px/1.45 system-ui, sans-serif; }
-    #jv-card.on { display: flex; }
-    #jv-card .jv-big { font: 800 64px/1.05 system-ui, sans-serif; }
-    #jv-card .jv-id { display: inline-block; font: 800 30px/1 system-ui, sans-serif; background: #3ea6ff; color: #04121f; border-radius: 12px; padding: 10px 16px; align-self: flex-start; }
-    #jv-card .jv-meta { color: #9cc9f0; }
-    #jv-card ul { margin: 0; padding-left: 1.2em; }
-    #jv-card li { margin: 4px 0; }
-    #jv-card .jv-planned { color: #ff9cc6; }
-    #jv-card .jv-small { font-size: 16px; color: #9cc9f0; }
   `;
-  let banner, cursor, card;
-  // Once per document: setContent replaces the document but keeps this window
+  let banner, cursor;
+  const el = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
+  // Once per document
   const make = () => {
     if (banner && banner.isConnected) return;
     const root = document.documentElement;
-    const style = document.createElement("style");
-    style.textContent = css;
-    banner = document.createElement("div");
+    if (!root) return;
+    try {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(css);
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    } catch { /* the overlay still shows the cursor's position, unstyled */ }
+    banner = el("div");
     banner.id = "jv-banner";
     banner.setAttribute("aria-hidden", "true");
-    banner.innerHTML = `<div class="jv-id"></div><div class="jv-text"><div class="jv-title"></div><div class="jv-step"></div></div><div class="jv-kind"></div>`;
-    cursor = document.createElement("div");
+    const text = el("div", "jv-text");
+    text.append(el("div", "jv-test"), el("div", "jv-step"), el("div", "jv-note"));
+    banner.append(el("div", "jv-id"), text, el("div", "jv-state"));
+    cursor = el("div");
     cursor.id = "jv-cursor";
-    cursor.innerHTML = `<svg viewBox="0 0 24 24" width="28" height="28"><path d="M3 2 L3 19 L7.5 14.8 L10.6 21.6 L13.6 20.3 L10.6 13.6 L17 13.4 Z" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
-    card = document.createElement("div");
-    card.id = "jv-card";
-    root.append(style, banner, card, cursor);
-    const place = () => { cursor.style.transform = `translate(${api.x - 3}px, ${api.y - 2}px)`; };
-    // Only the recording's own mouse counts. In a visible window the real pointer, if it's
-    // over the window, sends events too; those don't move the drawn cursor or ripple, and a
-    // click on a dialog's backdrop, or Escape, doesn't close the dialog (the recording never
-    // does either).
-    const near = (e) => {
-      const { x0, y0, x1, y1 } = api.path, dx = x1 - x0, dy = y1 - y0, len = dx * dx + dy * dy;
-      const t = len ? Math.max(0, Math.min(1, ((e.clientX - x0) * dx + (e.clientY - y0) * dy) / len)) : 0;
-      return Math.hypot(e.clientX - (x0 + t * dx), e.clientY - (y0 + t * dy)) <= 3;
-    };
-    document.addEventListener("mousemove", (e) => {
-      if (!near(e)) return;
-      api.x = e.clientX;
-      api.y = e.clientY;
-      place();
-    }, { capture: true, passive: true });
-    document.addEventListener("mousedown", (e) => {
-      if (Math.hypot(e.clientX - api.path.x1, e.clientY - api.path.y1) > 8) return;
-      const r = document.createElement("div");
-      r.className = "jv-ripple";
-      r.style.left = e.clientX + "px";
-      r.style.top = e.clientY + "px";
-      root.append(r);
-      setTimeout(() => r.remove(), 700);
-    }, { capture: true, passive: true });
-    document.addEventListener("click", (e) => { if (e.target && e.target.id === "overlay") e.stopImmediatePropagation(); }, true);
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape") e.stopImmediatePropagation(); }, true);
+    cursor.setAttribute("aria-hidden", "true");
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", "28");
+    svg.setAttribute("height", "28");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    for (const [k, v] of Object.entries({ d: "M3 2 L3 19 L7.5 14.8 L10.6 21.6 L13.6 20.3 L10.6 13.6 L17 13.4 Z", fill: "#111", stroke: "#fff", "stroke-width": "1.6", "stroke-linejoin": "round" })) path.setAttribute(k, v);
+    svg.append(path);
+    cursor.append(svg);
+    root.append(banner, cursor);
     api.ready = true;
+    if (api.state) api.caption(api.state);
+    if (api.at) cursor.style.transform = `translate(${api.at.x - 3}px, ${api.at.y - 2}px)`;
   };
-  const labels = { check: "Checks", simulated: "Simulated", planned: "Not built yet", step: "" };
-  api.caption = (id, title, text, kind = "step") => {
+  const labels = { running: "Running", passed: "Passed", failed: "Failed", skipped: "Skipped" };
+  // state: { id, test, step, note, state }
+  api.caption = (state) => {
+    api.state = state;
     make();
-    document.documentElement.classList.add("jv-banner");
-    banner.dataset.kind = kind;
-    banner.querySelector(".jv-id").textContent = id;
-    banner.querySelector(".jv-title").textContent = title;
-    banner.querySelector(".jv-step").textContent = text;
-    banner.querySelector(".jv-kind").textContent = labels[kind] ?? "";
+    if (!banner) return;
+    document.documentElement.classList.add("jv-on");
+    banner.dataset.state = state.state;
+    banner.querySelector(".jv-id").textContent = state.id;
+    banner.querySelector(".jv-test").textContent = state.test;
+    banner.querySelector(".jv-step").textContent = state.step;
+    banner.querySelector(".jv-note").textContent = state.note || "";
+    banner.querySelector(".jv-state").textContent = labels[state.state] || state.state;
   };
-  api.card = (html) => { make(); card.innerHTML = html; card.classList.add("on"); };
-  api.hideCard = () => { make(); card.classList.remove("on"); };
-  // The segment the recording's mouse is about to move along
-  api.expect = (x0, y0, x1, y1) => { api.path = { x0, y0, x1, y1 }; };
+  // Glides the drawn cursor to (x, y) over ms, and ripples there for a click
+  api.point = (x, y, ms, click) => {
+    make();
+    if (!cursor) return;
+    api.at = { x, y };
+    cursor.style.setProperty("--jv-glide", `${ms}ms`);
+    cursor.style.transform = `translate(${x - 3}px, ${y - 2}px)`;
+    if (!click) return;
+    setTimeout(() => {
+      const r = el("div", "jv-ripple");
+      r.setAttribute("aria-hidden", "true");
+      r.style.left = x + "px";
+      r.style.top = y + "px";
+      document.documentElement.append(r);
+      setTimeout(() => r.remove(), 700);
+    }, ms);
+  };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", make);
   else make();
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+// ---------------------------------------------------------------------------
+// Cards: whole-frame pages recorded between the tests (record.mjs)
 
-export class Director {
-  // pace scales every pause (1 for watching, lower for a quick check); slowMo is the
-  // browser's, which the cursor's steps take into account
-  constructor(page, journey, { pace = 1, slowMo = 0 } = {}) {
-    Object.assign(this, { page, journey, pace, slowMo });
-    this.x = 640;
-    this.y = 460;
-    this.last = null;
-  }
+export const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+// One line for a failed assertion: the matcher, and what it expected and got
+export function errorSummary(message) {
+  // eslint-disable-next-line no-control-regex -- terminal colors in Playwright's messages
+  const lines = String(message ?? "").replace(/\u001b\[[0-9;]*m/g, "").split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const head = (lines[0] || "").replace(/^Error:\s*/, "").replace(/\s*\/\/.*$/, "");
+  const detail = ["Expected", "Received"].map((w) => lines.find((l) => l.startsWith(w))).filter(Boolean);
+  const out = [head, ...detail].join(" · ");
+  return out.length > 240 ? `${out.slice(0, 239)}…` : out;
+}
 
-  static bannerHeight = BANNER;
+// The registry's step text is Markdown; the video shows it plain
+export const plain = (s) => String(s ?? "").replace(/\*\*(.+?)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1");
 
-  async pause(ms) {
-    await sleep(Math.round(ms * this.pace));
-  }
+const CARD_CSS = `
+  html, body { margin: 0; height: 100%; }
+  body { box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; gap: 14px; padding: 5vh 7vw;
+    background: linear-gradient(135deg, #0b1b2b, #123a5c); color: #fff; font: 400 clamp(13px, 2.1vw, 21px)/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  .id { display: inline-block; align-self: flex-start; font: 800 clamp(18px, 3vw, 30px)/1 system-ui, sans-serif; background: #3ea6ff; color: #04121f; border-radius: 12px; padding: 10px 16px; }
+  .big { font: 800 clamp(26px, 5vw, 60px)/1.08 system-ui, sans-serif; }
+  .mid { font: 700 clamp(18px, 3.2vw, 36px)/1.2 system-ui, sans-serif; }
+  .meta { color: #9cc9f0; }
+  .small { font-size: clamp(11px, 1.5vw, 16px); color: #9cc9f0; }
+  ul { margin: 0; padding-left: 1.1em; }
+  li { margin: 3px 0; }
+  .tag { display: inline-block; font: 800 .72em/1 system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; border-radius: 999px; padding: 5px 9px; margin-right: 6px; vertical-align: .1em; }
+  .passed { background: #3ddc84; color: #06220f; } .failed { background: #ff4d4d; color: #200000; }
+  .simulated { background: #ffb020; color: #2a1a00; } .planned { background: #ff5fa2; color: #2b0014; }
+  .backend { background: #b48cff; color: #1a0638; } .skipped, .untested { background: #b8b8b8; color: #111; }
+  .count { font-weight: 700; }
+`;
+const page = (title, body) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${esc(title)}</title><style>${CARD_CSS}</style></head><body>${body}</body></html>`;
 
-  // Waits for the overlay in the current document, and puts back the caption and cursor
-  // after a navigation
-  async ready() {
-    // A document the init script didn't reach (setContent) gets the overlay now
-    if (!(await this.page.evaluate(() => !!window.__jv))) await this.page.evaluate(installOverlay, BANNER);
-    await this.page.waitForFunction(() => window.__jv.ready);
-    if (this.last) await this.show(...this.last);
-    await this.page.evaluate(([x, y]) => window.__jv.expect(x, y, x, y), [this.x, this.y]);
-    await this.page.mouse.move(this.x, this.y);
-  }
+const RESULT_LABEL = { passed: "Passed", failed: "Failed", planned: "Not built yet", backend: "Backend tests", untested: "No test yet", skipped: "Not run" };
+const tag = (kind, text = RESULT_LABEL[kind]) => `<span class="tag ${kind}">${esc(text)}</span>`;
 
-  async show(text, kind) {
-    this.last = [text, kind];
-    const { id, title } = this.journey;
-    await this.page.evaluate(([i, t, s, k]) => window.__jv.caption(i, t, s, k), [id, title, text, kind]);
-  }
+// The first frames: the journey, who does it, and what the video is
+export function titleCard(journey, { viewport, build, commit, date, tests }) {
+  return page(`${journey.id} ${journey.name}`, `<div class="id">${esc(journey.id)}</div><div class="big">${esc(journey.name)}</div>
+    <div class="meta">Persona: ${esc(journey.persona)}${journey.critical ? " · Critical journey" : ""} · ${esc(journey.status)}</div>
+    <div>The ${tests} automated test${tests === 1 ? "" : "s"} that prove this journey's steps, recorded as they run: each caption is the step from docs/journeys.md, and each step shows whether it passed or failed.</div>
+    <div class="small">The ${esc(build)} build in ${viewport === "phone" ? "a phone (iPhone 13 in Chromium)" : "desktop Chromium"}, against the test suite's fakes: no real AWS, Stripe or email.${commit ? ` Commit ${esc(commit)}.` : ""} ${esc(date)}.</div>`);
+}
 
-  // A new caption, held long enough to read. kind: step, check (what the step checks),
-  // simulated (an outside service stood in for), planned (not built yet)
-  async say(text, kind = "step") {
-    await this.show(text, kind);
-    await this.pause(Math.min(5500, Math.max(2000, 900 + 42 * text.length)));
-  }
+// A step with nothing to show on screen: not built yet, or proved by backend tests only
+export function stepCard(journey, step) {
+  const kind = step.result;
+  const body = kind === "planned"
+    ? `<div>Not built yet.${step.beads?.length ? ` Planned in ${esc(step.beads.join(", "))}.` : ""}</div>`
+    : kind === "backend"
+      ? `<div>No screen to show: this step is proved by backend tests, which aren't in this video.</div><ul>${step.backendTests.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>`
+      : `<div>No automated test yet: ${esc(step.untested)}</div>`;
+  return page(`${step.id}`, `<div class="id">${esc(step.id)}</div><div class="mid">${esc(plain(step.text))}</div>
+    <div>${tag(kind)}${step.simulated ? tag("simulated", "Simulated") : ""}</div>${body}
+    ${step.simulated ? `<div class="small">Simulated: ${esc(step.simulated)}.</div>` : ""}`);
+}
 
-  async check(text) { await this.say(text, "check"); }
-  async simulated(text) { await this.say(text, "simulated"); }
-  async planned(text) { await this.say(text, "planned"); }
-
-  // Glides the real mouse to the element's centre, in small steps so the motion shows
-  async moveTo(locator) {
-    await locator.waitFor({ state: "visible" });
-    await locator.scrollIntoViewIfNeeded();
-    const box = await locator.boundingBox();
-    if (!box) throw new Error(`Nothing to point at: ${locator}`);
-    const tx = box.x + box.width / 2, ty = box.y + box.height / 2;
-    const dist = Math.hypot(tx - this.x, ty - this.y);
-    const steps = Math.max(10, Math.min(28, Math.round(dist / 20)));
-    const x0 = this.x, y0 = this.y;
-    await this.page.evaluate((p) => window.__jv.expect(...p), [x0, y0, tx, ty]);
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps, e = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
-      await this.page.mouse.move(x0 + (tx - x0) * e, y0 + (ty - y0) * e);
-      if (this.slowMo < 16) await sleep(16 - this.slowMo);
-    }
-    this.x = tx;
-    this.y = ty;
-    await this.pause(250);
-  }
-
-  // opens: what the click should show. If it hasn't shown within a few seconds (the click
-  // landed as the app redrew the button), the click is tried once more.
-  async click(locator, { opens } = {}) {
-    await this.moveTo(locator);
-    await locator.click();
-    if (opens) {
-      try {
-        await opens.waitFor({ state: "visible", timeout: 4000 });
-      } catch {
-        console.warn(`  ${this.journey.id}: clicking ${locator} didn't open ${opens} the first time; trying again`);
-        await this.moveTo(locator);
-        await locator.click();
-        await opens.waitFor({ state: "visible" });
-      }
-    }
-    await this.pause(550);
-  }
-
-  // Types as a person would, a key at a time, replacing what was there
-  async type(locator, text, { enter = false } = {}) {
-    await this.moveTo(locator);
-    await locator.click();
-    await locator.fill("");
-    await locator.pressSequentially(text, { delay: Math.max(20, Math.round(45 * this.pace)) });
-    if (enter) await locator.press("Enter");
-    await this.pause(500);
-  }
-
-  async select(locator, value) {
-    await this.moveTo(locator);
-    await locator.selectOption(value);
-    await this.pause(800);
-  }
-
-  // Clicks something that opens a file picker, and picks the file
-  async chooseFile(locator, files) {
-    const chooser = this.page.waitForEvent("filechooser");
-    await this.click(locator);
-    await (await chooser).setFiles(files);
-    await this.pause(600);
-  }
-
-  // A caption shown large, over the whole page, for a step with nothing on screen to show
-  async note(text, kind = "planned") {
-    const label = { planned: "Not built yet", simulated: "Simulated", check: "Checks", step: "" }[kind];
-    await this.page.evaluate((h) => window.__jv.card(h), `${label ? `<div class="jv-meta" style="text-transform:uppercase;letter-spacing:.08em">${esc(label)}</div>` : ""}<div class="jv-big" style="font-size:40px;line-height:1.2">${esc(text)}</div>`);
-    await this.say(text, kind);
-    await this.hideCard();
-  }
-
-  async card(html, ms) {
-    await this.page.evaluate((h) => window.__jv.card(h), html);
-    await this.pause(ms);
-  }
-
-  async hideCard() {
-    await this.page.evaluate(() => window.__jv.hideCard());
-  }
-
-  // The first frames: journey, name and persona, before the app opens
-  async titleCard() {
-    const j = this.journey;
-    await this.page.setContent("<!doctype html><title>Supply Checkout journey</title><body style='margin:0;background:#0b1b2b'></body>");
-    await this.ready();
-    await this.card(`<div class="jv-id">${esc(j.id)}</div><div class="jv-big">${esc(j.title)}</div>
-      <div class="jv-meta">Persona: ${esc(j.persona)}${j.critical ? " · Critical journey" : ""} · Status: ${esc(j.status)}</div>
-      <div class="jv-small">Supply Checkout customer journey (docs/journeys.md). Recorded against the web build with the test suite's fakes: no real AWS, Stripe or email. Captions marked Simulated stand in for an outside service; Not built yet marks what's still planned.</div>`, 4500);
-  }
-
-  async endCard() {
-    const j = this.journey;
-    const shown = j.shown.map((s) => `<li>${esc(s)}</li>`).join("");
-    const list = (items, cls = "") => (items || []).map((s) => `<li class="${cls}">${esc(s)}</li>`).join("");
-    const simulated = list(j.simulated), planned = list(j.planned, "jv-planned");
-    await this.card(`<div class="jv-id">${esc(j.id)}</div><div class="jv-big" style="font-size:44px">End of ${esc(j.title)}</div>
-      <div><div class="jv-meta">Shown</div><ul>${shown}</ul></div>
-      ${simulated ? `<div><div class="jv-meta">Simulated in this recording</div><ul>${simulated}</ul></div>` : ""}
-      ${planned ? `<div><div class="jv-meta">Not built yet</div><ul>${planned}</ul></div>` : ""}`, 6000);
-  }
+// The last frames: each step's result
+export function endCard(journey, steps, summary) {
+  const MAX = 4;
+  const rows = steps.map((s) => {
+    const failed = s.tests.filter((t) => t.result === "failed");
+    const detail = s.result === "passed" || s.result === "failed"
+      ? ` <span class="small">(${s.tests.filter((t) => t.result === "passed").length} passed${failed.length ? `, ${failed.length} failed` : ""} of ${s.tests.length} test${s.tests.length === 1 ? "" : "s"})</span>`
+      : "";
+    const failures = failed.length
+      ? `<ul class="small">${failed.slice(0, MAX).map((t) => `<li>${esc(t.title)}</li>`).join("")}${failed.length > MAX ? `<li>and ${failed.length - MAX} more</li>` : ""}</ul>`
+      : "";
+    return `<li><b>${esc(s.id)}</b> ${tag(s.result)}${s.simulated ? tag("simulated", "Simulated") : ""}${esc(plain(s.text))}${detail}${failures}</li>`;
+  }).join("");
+  const counts = [["passed", "passed"], ["failed", "failed"], ["simulated", "simulated"], ["planned", "not built yet"], ["backend", "proved by backend tests"]]
+    .filter(([k]) => summary[k]).map(([k, label]) => `<span class="count">${summary[k]}</span> ${label}`).join(" · ");
+  return page(`End of ${journey.id}`, `<div class="id">${esc(journey.id)}</div><div class="mid">End of ${esc(journey.name)}</div>
+    <div class="meta">Steps: ${counts || "none"}</div><ul>${rows}</ul>`);
 }

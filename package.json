@@ -38,7 +38,7 @@
     "icons": "node scripts/render-icons.mjs",
     "land": "bash scripts/land-pr.sh",
     "deploy": "bash scripts/deploy.sh",
-    "test:scripts": "shellcheck scripts/*.sh && bash scripts/land-pr.test.sh && bash scripts/beads-pr.test.sh && bash scripts/deploy.test.sh && node --test scripts/publish-web.test.mjs scripts/ops.test.mjs scripts/operators.test.mjs scripts/check-stray-files.test.mjs scripts/backlog-page.test.mjs scripts/backlog-stop-hook.test.mjs scripts/journeys.test.mjs",
+    "test:scripts": "shellcheck scripts/*.sh && bash scripts/land-pr.test.sh && bash scripts/beads-pr.test.sh && bash scripts/deploy.test.sh && node --test scripts/publish-web.test.mjs scripts/ops.test.mjs scripts/operators.test.mjs scripts/check-stray-files.test.mjs scripts/backlog-page.test.mjs scripts/backlog-stop-hook.test.mjs scripts/journeys.test.mjs scripts/journey-videos/journey-videos.test.mjs",
     "publish:web": "node scripts/publish-web.mjs",
     "ops": "node scripts/ops.mjs",
     "operators": "node scripts/operators.mjs",

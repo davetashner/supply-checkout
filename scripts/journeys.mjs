@@ -112,24 +112,90 @@ export function playwrightTests(list) {
   return [...tests.values()];
 }
 
-export function listPlaywrightTests(root = ROOT) {
+// Playwright's listing loads every spec, and the specs load the artifact build: it's built first
+// when it's missing
+export function listPlaywrightTests(root = ROOT, { run = execFileSync } = {}) {
+  if (!existsSync(join(root, "dist", "artifact", "index.html"))) {
+    console.error("Building the artifact (npm run build:artifact), which the Playwright tests load…");
+    run("npm", ["run", "build:artifact"], { cwd: root, stdio: ["ignore", "ignore", "inherit"] });
+  }
+  let out;
   try {
-    const out = execFileSync("npx", ["playwright", "test", "--list", "--reporter=json", "--project=desktop-chrome"], {
+    out = run("npx", ["playwright", "test", "--list", "--reporter=json", "--project=desktop-chrome"], {
       cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
     });
-    return JSON.parse(out);
   } catch (e) {
-    throw new Error(`Couldn't list the Playwright tests (they load the build: run npm run build:artifact first).\n${e.stderr || e.message}`, { cause: e });
+    throw new Error(`Couldn't list the Playwright tests:\n${listErrors(e.stdout) || e.stderr || e.message}`, { cause: e });
+  }
+  const list = JSON.parse(out);
+  if (list.errors?.length) throw new Error(`Couldn't list the Playwright tests:\n${listErrors(out)}`);
+  return list;
+}
+
+// The errors in Playwright's JSON listing (a spec that doesn't load, say), one per line
+export function listErrors(stdout) {
+  try {
+    return (JSON.parse(stdout).errors || []).map((e) => e.message).join("\n");
+  } catch {
+    return "";
   }
 }
 
-// The step IDs that test.step names start with, in each spec file
+// The step IDs that test.step names start with, in each spec file, with their lines and the line
+// of the test whose body they're in (none for a test.step in a helper outside every test)
 export function stepNames(sources) {
   const found = [];
+  const lineAt = (text, index) => text.slice(0, index).split("\n").length;
   for (const [file, text] of Object.entries(sources)) {
-    for (const m of text.matchAll(/test\.step\(\s*["'`](J\d+\.\d+)\b/g)) found.push({ file, id: m[1] });
+    const bodies = testCalls(text);
+    for (const m of text.matchAll(/test\.step\(\s*["'`](J\d+\.\d+)\b/g)) {
+      const inside = bodies.filter((b) => b.start < m.index && m.index < b.end).at(-1);
+      found.push({ file, id: m[1], line: lineAt(text, m.index), ...(inside ? { testLine: lineAt(text, inside.start) } : {}) });
+    }
   }
   return found;
+}
+
+// Where each test(…) call starts and ends in a spec's source: from "test(" to its closing
+// parenthesis, skipping strings, template literals and comments
+export function testCalls(text) {
+  const calls = [];
+  for (const m of text.matchAll(/(?<![\w.$])test(?:\.(?:only|skip|fixme|fail|slow))?\(/g)) {
+    let depth = 0, i = m.index + m[0].length - 1;
+    for (; i < text.length; i++) {
+      const c = text[i];
+      if (c === "(") depth++;
+      else if (c === ")" && --depth === 0) break;
+      else if (c === '"' || c === "'") i = skipQuoted(text, i, c);
+      else if (c === "`") i = skipTemplate(text, i);
+      else if (c === "/" && text[i + 1] === "/") i = text.indexOf("\n", i) < 0 ? text.length : text.indexOf("\n", i);
+      else if (c === "/" && text[i + 1] === "*") i = text.indexOf("*/", i) < 0 ? text.length : text.indexOf("*/", i) + 1;
+    }
+    calls.push({ start: m.index, end: i });
+  }
+  return calls;
+}
+
+function skipQuoted(text, i, quote) {
+  for (i++; i < text.length && text[i] !== quote && text[i] !== "\n"; i++) if (text[i] === "\\") i++;
+  return i;
+}
+
+function skipTemplate(text, i) {
+  for (i++; i < text.length && text[i] !== "`"; i++) {
+    if (text[i] === "\\") i++;
+    else if (text[i] === "$" && text[i + 1] === "{") {
+      // Up to the matching }, which may hold strings and templates of its own
+      let depth = 0;
+      for (i++; i < text.length; i++) {
+        if (text[i] === "{") depth++;
+        else if (text[i] === "}" && --depth === 0) break;
+        else if (text[i] === '"' || text[i] === "'") i = skipQuoted(text, i, text[i]);
+        else if (text[i] === "`") i = skipTemplate(text, i);
+      }
+    }
+  }
+  return i;
 }
 
 function specSources(root) {
@@ -197,6 +263,21 @@ export function checkHeadings(md, reg) {
   return problems;
 }
 
+// Each journey's hand-written **Status:** paragraph starts with the status the table computes
+// ("tested", "partly built", …), so the two can't disagree
+export function checkStatusLines(md, reg) {
+  const problems = [];
+  const half = md.split(ALARMS_HEADING)[0];
+  for (const part of half.split(/^### /m).slice(1)) {
+    const j = reg.journeys.find((x) => x.id === /^(J\d+)\./.exec(part)?.[1]);
+    const line = /^\*\*Status:\*\* (.*)$/m.exec(part)?.[1];
+    if (!j || line === undefined) continue;
+    const want = journeyStatus(j).split(/[;(]/)[0].trim().toLowerCase();
+    if (!line.toLowerCase().startsWith(want)) problems.push(`${DOC}: ${j.id}'s Status paragraph should start with "${want}", as the journeys table says (it starts "${line.slice(0, 40)}")`);
+  }
+  return problems;
+}
+
 // The alarms half: each "### <journeys>" section's bold alarm names, and the "Which alarms exist" table
 export function docAlarms(md) {
   const half = md.split(ALARMS_HEADING)[1] || "";
@@ -240,11 +321,69 @@ export function checkAlarms(md, reg, infraSource) {
   for (const a of reg.alarms) {
     if (a.infra && !builtNames.has(a.name)) problems.push(`Alarm ${a.name} is built (infra: ${a.infra}) but isn't in ${DOC}'s "Which alarms exist" table`);
     if (!a.infra && builtNames.has(a.name)) problems.push(`Alarm ${a.name} is in ${DOC}'s "Which alarms exist" table, but the registry has no infra ID for it`);
-    if (a.infra && !new RegExp(`["\`-]${escapeRegExp(a.infra)}["\`]`).test(infraSource)) {
+    // The ID is a whole string ("site-down"), or ends an alarm name after its severity (`…-p1-site-down`)
+    if (a.infra && !new RegExp(`(["\`]|-p\\d-)${escapeRegExp(a.infra)}["\`]`).test(infraSource)) {
       problems.push(`Alarm ${a.name}'s infra ID ${a.infra} isn't in infra/lib/observability`);
     }
   }
   for (const name of builtNames) if (!byName.has(name)) problems.push(`Alarm ${name} (${DOC}, Which alarms exist) isn't in ${REGISTRY}`);
+  return problems;
+}
+
+// The test titles right after a file's name: `file.spec.js`: "one", "two" and "three"; … A list
+// of quoted titles starts straight after the colon and ends at the first thing that isn't one,
+// so quoted words in the prose around it aren't read as titles.
+export function quotedTitles(after) {
+  const titles = [];
+  const list = /^\s*:\s*/.exec(after);
+  if (!list) return titles;
+  const item = /^"([^"]+)"(\s*(?:,\s*and\s+|,\s*|;\s*|\s+and\s+))?/y;
+  let rest = after.slice(list[0].length);
+  for (let m; (m = item.exec(rest)); rest = rest.slice(m[0].length)) {
+    item.lastIndex = 0;
+    titles.push(m[1]);
+    if (!m[2]) break;
+  }
+  return titles;
+}
+
+// The hand-written **Tests:** paragraphs in each journey's section: every file they name exists,
+// every test they quote by title is in that file and tagged with the journey or one of its
+// steps, and every spec file they name has at least one test tagged for the journey
+export function checkTestsLines(md, reg, tests, fileExists = () => true) {
+  const problems = [];
+  const half = md.split(ALARMS_HEADING)[0];
+  for (const part of half.split(/^### /m).slice(1)) {
+    const id = /^(J\d+)\./.exec(part)?.[1];
+    const j = reg.journeys.find((x) => x.id === id);
+    if (!j) continue;
+    const mine = (t) => t.tags.some((tag) => tag === j.id || tag.startsWith(`${j.id}.`));
+    for (const para of part.split(/\n\s*\n/)) {
+      const at = para.indexOf("**Tests:**");
+      if (at < 0) continue;
+      // Each `file`, and the quoted titles after it up to the next file
+      const text = para.slice(at);
+      const refs = [...text.matchAll(/`([^`]+\.(?:spec\.js|test\.ts))`/g)];
+      for (const [k, ref] of refs.entries()) {
+        const name = ref[1];
+        const path = name.includes("/") ? name : name.endsWith(".spec.js") ? `tests/${name}` : `backend/test/${name}`;
+        if (!fileExists(path)) {
+          problems.push(`${DOC}, ${j.id}'s Tests: ${name} doesn't exist`);
+          continue;
+        }
+        if (!path.endsWith(".spec.js")) continue;
+        const inFile = tests.filter((t) => t.file === path);
+        const after = text.slice(ref.index + ref[0].length, refs[k + 1]?.index ?? text.length);
+        const titles = quotedTitles(after);
+        for (const title of titles) {
+          const found = inFile.filter((t) => t.title.split(" › ").at(-1) === title);
+          if (!found.length) problems.push(`${DOC}, ${j.id}'s Tests: ${name} has no test "${title}"`);
+          else if (!found.some(mine)) problems.push(`${DOC}, ${j.id}'s Tests: "${title}" (${name}) isn't tagged @${j.id} or with one of its steps`);
+        }
+        if (!titles.length && !inFile.some(mine)) problems.push(`${DOC}, ${j.id}'s Tests: ${name} has no test tagged @${j.id} or with one of its steps`);
+      }
+    }
+  }
   return problems;
 }
 
@@ -262,7 +401,18 @@ export function trace(reg, tests, { steps = [], fileExists = () => true, beads =
       else if (m && !(m[2] ? stepIds.has(tag) : journeyIds.has(tag))) problems.push(`${t.file}: "${t.title}" has tag @${tag}, which isn't in ${REGISTRY}`);
     }
   }
-  for (const s of steps) if (!stepIds.has(s.id)) problems.push(`${s.file}: a test.step is named for ${s.id}, which isn't in ${REGISTRY}`);
+  for (const s of steps) {
+    if (!stepIds.has(s.id)) {
+      problems.push(`${s.file}: a test.step is named for ${s.id}, which isn't in ${REGISTRY}`);
+      continue;
+    }
+    // Only a test.step in a test's own body is checked, against that test (or each test a loop makes
+    // from it); one in a helper outside every test can't be pinned on a test
+    const owners = s.testLine === undefined ? [] : tests.filter((t) => t.file === s.file && t.line === s.testLine);
+    if (owners.length && !owners.some((t) => t.tags.includes(s.id))) {
+      problems.push(`${s.file}:${s.line}: a test.step is named for ${s.id} in "${owners[0].title}", which isn't tagged @${s.id}`);
+    }
+  }
 
   const status = (id) => beads?.get(id);
   const journeys = reg.journeys.map((j) => {
@@ -367,7 +517,7 @@ export function main(argv, root = ROOT) {
   } else if (generated.md !== md && !generated.problems.length) {
     problems.push(`${DOC}'s journeys table or step lists don't match ${REGISTRY}. Run npm run journeys:docs`);
   }
-  problems.push(...checkHeadings(generated.md, reg), ...checkAlarms(generated.md, reg, infraSource(root)));
+  problems.push(...checkHeadings(generated.md, reg), ...checkStatusLines(generated.md, reg), ...checkAlarms(generated.md, reg, infraSource(root)));
 
   const testsFile = arg("--tests");
   const list = testsFile ? JSON.parse(readFileSync(testsFile, "utf8")) : listPlaywrightTests(root);
@@ -376,7 +526,7 @@ export function main(argv, root = ROOT) {
     fileExists: (p) => existsSync(join(root, p)),
     beads: readBeads(root),
   });
-  problems.push(...result.problems);
+  problems.push(...result.problems, ...checkTestsLines(generated.md, reg, playwrightTests(list), (p) => existsSync(join(root, p))));
   const json = arg("--json");
   if (json) writeFileSync(json, `${JSON.stringify({ journeys: result.journeys, everyJourneyAlarms: result.everyJourneyAlarms }, null, 2)}\n`);
 

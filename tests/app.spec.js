@@ -85,7 +85,7 @@ test("adds an item that has no barcode", { tag: ["@J4.2"] }, async ({ page }) =>
   await expect(inventoryRow(page, "Leftover bins")).toBeVisible();
 });
 
-test("receipt review merges duplicates and splits items between a client and storage", { tag: ["@J5.3"] }, async ({ page }) => {
+test("receipt review merges duplicates and splits items between a client and storage", { tag: ["@J5.1", "@J5.2", "@J5.3"] }, async ({ page }) => {
   await openApp(page, {
     seed: { "products/nb-bins": { code: "", name: "Storage bins, 12 qt", price: 5, stock: 2 } },
     receipt: {
@@ -100,30 +100,37 @@ test("receipt review merges duplicates and splits items between a client and sto
       total: 36.9,
     },
   });
-  await expect(page.getByText("Scan receipt")).toBeVisible();
-  await page.setInputFiles("#receiptFile", { name: "receipt.jpg", mimeType: "image/jpeg", buffer: Buffer.from("fake image") });
+  await test.step("J5.1 Scan a receipt photo", async () => {
+    await expect(page.getByText("Scan receipt")).toBeVisible();
+    await page.setInputFiles("#receiptFile", { name: "receipt.jpg", mimeType: "image/jpeg", buffer: Buffer.from("fake image") });
 
-  await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
-  const prompt = await page.evaluate(() => window.__mock.sampleCalls[0]);
-  expect(prompt).toContain("i1 | Storage bins, 12 qt");
+    await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+    const prompt = await page.evaluate(() => window.__mock.sampleCalls[0]);
+    expect(prompt).toContain("i1 | Storage bins, 12 qt");
+  });
 
   const bins = page.locator(".rline").nth(0);
-  await expect(bins).toContainText("Suggested match");
-  await expect(bins).toContainText("Price changed");
-  await bins.getByRole("button", { name: /Keep the client price/ }).click();
-  await page.locator(".rline").nth(0).locator('select[data-f="dest"]').selectOption({ label: "General inventory (storage)" });
+  await test.step("J5.2 Check each line and its inventory match", async () => {
+    await expect(bins).toContainText("Suggested match");
+    await expect(bins).toContainText("Price changed");
+    await bins.getByRole("button", { name: /Keep the client price/ }).click();
+  });
 
-  await page.getByLabel("Client name").fill("Delta Inc");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await test.step("J5.3 Assign the lines to a client and storage, and save", async () => {
+    await page.locator(".rline").nth(0).locator('select[data-f="dest"]').selectOption({ label: "General inventory (storage)" });
 
-  await expect(page.getByRole("heading", { name: "Delta Inc" })).toBeVisible();
-  await expect(lineRow(page, "Painter's tape")).toContainText("$6.25");
+    await page.getByLabel("Client name").fill("Delta Inc");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
 
-  await page.getByRole("button", { name: "Inventory" }).click();
-  const binsRow = inventoryRow(page, "Storage bins, 12 qt");
-  await expect(binsRow.locator("td").nth(1)).toHaveText("6");
-  await expect(binsRow.locator("td").nth(2)).toHaveText("$5.00");
-  await expect(inventoryRow(page, "Painter's tape")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Delta Inc" })).toBeVisible();
+    await expect(lineRow(page, "Painter's tape")).toContainText("$6.25");
+
+    await page.getByRole("button", { name: "Inventory" }).click();
+    const binsRow = inventoryRow(page, "Storage bins, 12 qt");
+    await expect(binsRow.locator("td").nth(1)).toHaveText("6");
+    await expect(binsRow.locator("td").nth(2)).toHaveText("$5.00");
+    await expect(inventoryRow(page, "Painter's tape")).toBeVisible();
+  });
 });
 
 test("exports a sheet as CSV", { tag: ["@J6.1", "@J6.2"] }, async ({ page }) => {
