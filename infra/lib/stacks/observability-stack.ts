@@ -150,7 +150,14 @@ export const tamperingWatchRuleName = (envName: string) => operatorRuleName(envN
 export const AUDIT_WATCH_MAPPING_EVENTS = { always: ["DeleteEventSourceMapping"], outsideDeploys: ["UpdateEventSourceMapping"] } as const;
 /** Lambda calls that give a function the operator group watch's role, outside a deploy (supply-checkout-3sv.5), by prefix like the others. */
 export const GROUP_WATCH_ROLE_FUNCTION_EVENTS = { outsideDeploys: ["CreateFunction", "UpdateFunctionConfiguration"] } as const;
-export const AUDIT_WATCH_FUNCTION_EVENTS = { always: ["DeleteFunction"], outsideDeploys: ["PutFunctionConcurrency", "UpdateFunctionCode", "UpdateFunctionConfiguration"] } as const;
+/**
+ * The watch functions' own calls: deleting one, or taking away a permission on
+ * it (RemovePermission, e.g. EventBridge's to invoke the group watch, which
+ * stops every run with only its P2 silent alarm 15 minutes later), whoever does
+ * it (supply-checkout-3sv.9); changing its code, configuration or concurrency
+ * outside a deploy.
+ */
+export const AUDIT_WATCH_FUNCTION_EVENTS = { always: ["DeleteFunction", "RemovePermission"], outsideDeploys: ["PutFunctionConcurrency", "UpdateFunctionCode", "UpdateFunctionConfiguration"] } as const;
 /** IAM calls on the watch's role that could take away its stream access. */
 export const AUDIT_WATCH_ROLE_EVENTS = {
   always: ["DeleteRole", "DeleteRolePolicy", "DetachRolePolicy"],
@@ -454,8 +461,10 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       detail: {
         $or: [
           ...calls(AUDIT_WATCH_ROLE_EVENTS, { eventSource: ["iam.amazonaws.com"], requestParameters: { roleName: [watch.role.roleName, groupWatch.role.roleName] } }),
-          // Any other function given the operator group watch's role (supply-checkout-3sv.5); its grants also need lambda:SourceFunctionArn
-          ...calls(GROUP_WATCH_ROLE_FUNCTION_EVENTS, { eventSource: ["lambda.amazonaws.com"], requestParameters: { role: [groupWatch.role.roleArn] } }, true),
+          // Any other function given the operator group watch's role (supply-checkout-3sv.5); its grants also need lambda:SourceFunctionArn.
+          // Its ARN, and any ARN ending in its name (a path, or an ARN spelled differently from GetAtt's), which only over-alerts
+          // on another role whose name ends in this one (supply-checkout-3sv.9)
+          ...calls(GROUP_WATCH_ROLE_FUNCTION_EVENTS, { eventSource: ["lambda.amazonaws.com"], requestParameters: { role: [groupWatch.role.roleArn, { wildcard: `*:role/*${groupWatch.role.roleName}` }] } }, true),
         ],
       },
     });

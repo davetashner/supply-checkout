@@ -5594,6 +5594,26 @@
                 "logs:CreateLogStream",
                 "logs:PutLogEvents"
               ],
+              "Condition": {
+                "ArnEquals": {
+                  "lambda:SourceFunctionArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":lambda:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":function:supply-checkout-prod-operator-group-watch"
+                      ]
+                    ]
+                  }
+                }
+              },
               "Effect": "Allow",
               "Resource": {
                 "Fn::GetAtt": [
@@ -6854,6 +6874,9 @@
                 "eventName": [
                   {
                     "prefix": "DeleteFunction"
+                  },
+                  {
+                    "prefix": "RemovePermission"
                   }
                 ],
                 "requestParameters": {
@@ -7033,6 +7056,19 @@
                         "OperatorGroupWatchRole9830274D",
                         "Arn"
                       ]
+                    },
+                    {
+                      "wildcard": {
+                        "Fn::Join": [
+                          "",
+                          [
+                            "*:role/*",
+                            {
+                              "Ref": "OperatorGroupWatchRole9830274D"
+                            }
+                          ]
+                        ]
+                      }
                     }
                   ]
                 },
