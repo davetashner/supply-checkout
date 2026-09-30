@@ -40,9 +40,8 @@
 // is logged, left unrecorded for the next run, and fails the run (the
 // Functions failing alarm). A subscription that renewed after its team closed
 // (the team closed within an hour of a renewal) is logged as a warning and
-// counted
-// (ClosedTeamRenewalsCharged, the "Closed team charged" alarm) for a refund by
-// hand. A team reopened while Stripe was being called is logged as
+// counted (ClosedTeamRenewalsCharged, the "Closed team charged" alarm) for a
+// refund by hand. A team reopened while Stripe was being called is logged as
 // an error: its subscription was set to end, and an owner or operator must
 // resume it (supply-checkout-85qp).
 //
