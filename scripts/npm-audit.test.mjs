@@ -1,18 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkAudit, ghsa } from "./npm-audit.mjs";
+import { checkAudit, ghsa, validateAudit, validateExceptions } from "./npm-audit.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const BUNDLED = "node_modules/aws-cdk-lib/node_modules/brace-expansion";
 const adv = (id, severity) => ({ url: `https://github.com/advisories/${id}`, severity });
 
+// npm's v2 audit JSON, with the summary counts npm would give.
 function audit(vulns) {
-  return { vulnerabilities: vulns };
+  const counts = { info: 0, low: 0, moderate: 0, high: 0, critical: 0 };
+  for (const v of Object.values(vulns)) counts[v.severity] += 1;
+  return { auditReportVersion: 2, vulnerabilities: vulns, metadata: { vulnerabilities: { ...counts, total: Object.keys(vulns).length } } };
 }
 const exception = {
   package: "brace-expansion",
@@ -20,6 +23,7 @@ const exception = {
   advisories: ["GHSA-aaaa-bbbb-cccc", "GHSA-dddd-eeee-ffff"],
   expires: "2026-10-31",
   bead: "supply-checkout-x",
+  reason: "test",
 };
 const brace = (nodes = [BUNDLED], via = [adv("GHSA-aaaa-bbbb-cccc", "high"), adv("GHSA-dddd-eeee-ffff", "moderate")]) => ({
   severity: "high",
@@ -94,16 +98,59 @@ test("the CLI exits non-zero on a failure and zero when everything is allowed", 
       stdio: "pipe",
     });
   assert.match(run("2026-10-01"), /1 allowed/);
+  // A symlinked path to the script still runs it.
+  const link = join(dir, "npm-audit-link.mjs");
+  symlinkSync(join(here, "npm-audit.mjs"), link);
+  assert.throws(
+    () => execFileSync(process.execPath, [link, "--input", input, "--exceptions", exceptions, "--today", "2026-12-01"], { stdio: "pipe" }),
+    (err) => err.status === 1,
+  );
+  for (const bad of [{}, { message: "oops" }, "not json"]) {
+    writeFileSync(input, typeof bad === "string" ? bad : JSON.stringify(bad));
+    assert.throws(() => run("2026-10-01"), (err) => err.status === 1);
+  }
+  writeFileSync(input, JSON.stringify(audit({ "brace-expansion": brace() })));
+  writeFileSync(exceptions, JSON.stringify([{ ...exception, expires: undefined }]));
+  assert.throws(() => run("2099-01-01"), (err) => err.status === 1 && /expires as YYYY-MM-DD/.test(err.stderr));
+  writeFileSync(exceptions, JSON.stringify([exception]));
   assert.throws(() => run("2026-12-01"), (err) => err.status === 1 && /expired/.test(err.stderr));
   writeFileSync(input, JSON.stringify({ error: { summary: "registry down" } }));
   assert.throws(() => run("2026-10-01"), (err) => err.status === 1 && /registry down/.test(err.stderr));
 });
 
 test("the checked-in exceptions are well formed", () => {
-  const list = JSON.parse(readFileSync(join(here, "npm-audit-exceptions.json"), "utf8"));
-  for (const e of list) {
-    assert.ok(e.package && e.paths.length && e.advisories.length && e.reason && /^supply-checkout-/.test(e.bead));
-    assert.match(e.expires, /^\d{4}-\d{2}-\d{2}$/);
-    for (const id of e.advisories) assert.match(id, /^GHSA-/);
-  }
+  validateExceptions(JSON.parse(readFileSync(join(here, "npm-audit-exceptions.json"), "utf8")));
+});
+
+test("validateAudit rejects anything but npm's v2 report, and counts that don't match", () => {
+  const ok = audit({ "brace-expansion": brace() });
+  assert.equal(validateAudit(ok), ok);
+  assert.throws(() => validateAudit({}), /auditReportVersion/);
+  assert.throws(() => validateAudit(null), /isn't a JSON object/);
+  assert.throws(() => validateAudit({ auditReportVersion: 1, advisories: { 1: { severity: "critical" } } }), /auditReportVersion/);
+  assert.throws(() => validateAudit({ auditReportVersion: 2, metadata: ok.metadata }), /no vulnerabilities object/);
+  assert.throws(() => validateAudit({ auditReportVersion: 2, vulnerabilities: {} }), /no metadata/);
+  const shouting = audit({ x: { severity: "high", nodes: ["n"], via: [adv("GHSA-1", "high")] } });
+  shouting.vulnerabilities.x.severity = "High";
+  assert.throws(() => validateAudit(shouting), /severity "High"/);
+  const badVia = audit({ x: { severity: "high", nodes: ["n"], via: [{ url: "u", severity: "HIGH" }] } });
+  assert.throws(() => validateAudit(badVia), /advisory with an unexpected shape/);
+  const hidden = audit({});
+  hidden.metadata.vulnerabilities.critical = 1;
+  assert.throws(() => validateAudit(hidden), /counts 1 high or critical, but lists 0/);
+  const noCount = audit({});
+  delete noCount.metadata.vulnerabilities.high;
+  assert.throws(() => validateAudit(noCount), /no integer high/);
+});
+
+test("validateExceptions rejects incomplete entries", () => {
+  assert.throws(() => validateExceptions({}), /JSON array/);
+  assert.throws(() => validateExceptions([null]), /isn't an object/);
+  assert.throws(() => validateExceptions([{ ...exception, package: "" }]), /no package/);
+  assert.throws(() => validateExceptions([{ ...exception, paths: [] }]), /paths/);
+  assert.throws(() => validateExceptions([{ ...exception, advisories: ["CVE-1"] }]), /GHSA/);
+  assert.throws(() => validateExceptions([{ ...exception, expires: "31/10/2026" }]), /expires/);
+  assert.throws(() => validateExceptions([{ ...exception, bead: "" }]), /bead/);
+  assert.throws(() => validateExceptions([{ ...exception, reason: "" }]), /reason/);
+  assert.deepEqual(validateExceptions([exception]), [exception]);
 });

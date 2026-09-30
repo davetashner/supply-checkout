@@ -9,11 +9,58 @@
 // Options: --exceptions <file>, --input <audit json file> (tests),
 // --today <YYYY-MM-DD> (tests).
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const FAILING = new Set(["high", "critical"]);
+const SEVERITIES = new Set(["info", "low", "moderate", "high", "critical"]);
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const nonEmptyStrings = (v) => Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === "string" && x);
+
+// Throws unless every exception is complete; a missing expiry must never mean "forever".
+export function validateExceptions(list) {
+  if (!Array.isArray(list)) throw new Error("the exceptions file must hold a JSON array");
+  list.forEach((e, i) => {
+    const where = `exception ${i + 1}`;
+    if (!isObject(e)) throw new Error(`${where} isn't an object`);
+    if (typeof e.package !== "string" || !e.package) throw new Error(`${where} has no package`);
+    if (!nonEmptyStrings(e.paths)) throw new Error(`${where} needs a non-empty paths array`);
+    if (!nonEmptyStrings(e.advisories) || !e.advisories.every((id) => id.startsWith("GHSA-")))
+      throw new Error(`${where} needs a non-empty advisories array of GHSA IDs`);
+    if (typeof e.expires !== "string" || !DATE.test(e.expires)) throw new Error(`${where} needs expires as YYYY-MM-DD`);
+    if (typeof e.bead !== "string" || !e.bead.startsWith("supply-checkout-")) throw new Error(`${where} needs a bead`);
+    if (typeof e.reason !== "string" || !e.reason) throw new Error(`${where} needs a reason`);
+  });
+  return list;
+}
+
+// Throws unless the report is npm's v2 audit JSON, so a format change or an odd
+// registry reply fails the run instead of passing it.
+export function validateAudit(audit) {
+  if (!isObject(audit)) throw new Error("npm audit output isn't a JSON object");
+  if (audit.auditReportVersion !== 2) throw new Error(`unexpected auditReportVersion ${JSON.stringify(audit.auditReportVersion)}; expected 2`);
+  if (!isObject(audit.vulnerabilities)) throw new Error("npm audit output has no vulnerabilities object");
+  const counts = audit.metadata?.vulnerabilities;
+  if (!isObject(counts)) throw new Error("npm audit output has no metadata.vulnerabilities counts");
+  for (const [name, v] of Object.entries(audit.vulnerabilities)) {
+    if (!isObject(v) || !SEVERITIES.has(v.severity) || !Array.isArray(v.nodes) || !Array.isArray(v.via))
+      throw new Error(`npm audit entry ${name} has an unexpected shape or severity ${JSON.stringify(v?.severity)}`);
+    for (const via of v.via) {
+      if (typeof via !== "string" && !(isObject(via) && SEVERITIES.has(via.severity)))
+        throw new Error(`npm audit entry ${name} has an advisory with an unexpected shape or severity`);
+    }
+  }
+  for (const level of FAILING) {
+    if (!Number.isInteger(counts[level])) throw new Error(`npm audit counts have no integer ${level}`);
+  }
+  const listed = Object.values(audit.vulnerabilities).filter((v) => FAILING.has(v.severity)).length;
+  if (counts.high + counts.critical !== listed)
+    throw new Error(`npm audit counts ${counts.high + counts.critical} high or critical, but lists ${listed}`);
+  return audit;
+}
 
 function arg(name, fallback) {
   const i = process.argv.indexOf(name);
@@ -27,7 +74,7 @@ export function ghsa(url) {
 
 // Returns { allowed: [...], failures: [...] } as human-readable lines.
 export function checkAudit(audit, exceptions, today) {
-  const vulns = audit.vulnerabilities || {};
+  const vulns = audit.vulnerabilities;
   const allowed = [];
   const failures = [];
   const memo = new Map();
@@ -68,7 +115,7 @@ export function checkAudit(audit, exceptions, today) {
 
 function main() {
   const here = dirname(fileURLToPath(import.meta.url));
-  const exceptions = JSON.parse(readFileSync(arg("--exceptions", join(here, "npm-audit-exceptions.json")), "utf8"));
+  const exceptions = validateExceptions(JSON.parse(readFileSync(arg("--exceptions", join(here, "npm-audit-exceptions.json")), "utf8")));
   const today = arg("--today", new Date().toISOString().slice(0, 10));
   const input = arg("--input");
   let raw;
@@ -83,10 +130,11 @@ function main() {
     }
   }
   const audit = JSON.parse(raw);
-  if (audit.error) {
+  if (isObject(audit) && audit.error) {
     console.error(`npm audit failed: ${audit.error.summary || JSON.stringify(audit.error)}`);
     process.exit(1);
   }
+  validateAudit(audit);
   const { allowed, failures } = checkAudit(audit, exceptions, today);
   for (const line of allowed) console.log(`::warning::Allowed by scripts/npm-audit-exceptions.json: ${line}`);
   if (failures.length) {
@@ -97,4 +145,13 @@ function main() {
   console.log(`No high or critical vulnerabilities without a current exception (${allowed.length} allowed).`);
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) main();
+// realpath on both sides, so a symlinked path still runs main() instead of
+// exiting 0 silently.
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+  try {
+    main();
+  } catch (err) {
+    console.error(`::error::${err.message}`);
+    process.exit(1);
+  }
+}
