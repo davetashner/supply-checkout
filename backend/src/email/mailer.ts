@@ -13,7 +13,7 @@
 import { SESv2Client, SendEmailCommand, type SendEmailCommandInput } from "@aws-sdk/client-sesv2";
 import { type Invite, mailAddress } from "../data/index.js";
 import { EMAIL_ENV, EMAIL_TAGS, FROM_NAME } from "./names.js";
-import { type EmailInput, renderEmail } from "./templates.js";
+import { type EmailInput, renderEmail, type TeamNoticeInput } from "./templates.js";
 
 /** What the mailer needs from an SES client: `send`, as SESv2Client has it. */
 export interface SesSender {
@@ -68,7 +68,13 @@ export function createMailer(options: MailerOptions): Mailer {
       } catch {
         throw new EmailNotSentError("InvalidRecipient");
       }
-      const message = renderEmail(input, { appUrl });
+      let message: ReturnType<typeof renderEmail>;
+      try {
+        message = renderEmail(input, { appUrl });
+      } catch {
+        // A bad date or link in the input: our bug, not SES's, and named so
+        throw new EmailNotSentError("RenderFailed");
+      }
       const params: SendEmailCommandInput = {
         FromEmailAddress: `${FROM_NAME} <${fromAddress}>`,
         Destination: { ToAddresses: [recipient] },
@@ -131,7 +137,7 @@ export function sendTeamNotice(
   mailer: Mailer,
   to: string,
   teamId: string,
-  input: Exclude<EmailInput, { kind: "invite" }>,
+  input: TeamNoticeInput,
 ): Promise<{ messageId: string }> {
   return mailer.send(to, input, { teamId });
 }

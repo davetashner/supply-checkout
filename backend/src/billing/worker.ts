@@ -55,7 +55,7 @@ import {
   teamContextForStripeCustomer,
 } from "../data/index.js";
 import { EmailNotSentError, type Mailer, sendTeamNotice } from "../email/mailer.js";
-import type { EmailInput } from "../email/templates.js";
+import type { TeamNoticeInput } from "../email/templates.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import { BILLING_EVENTS, type BillingEventType } from "./names.js";
 import type { BillingMessage } from "./webhook-handler.js";
@@ -121,7 +121,7 @@ export type QueueMessage = BillingMessage | SeatSyncMessage;
 const readOnlyStatus = (status: string | undefined) => hasEnded(status) || status === "paused";
 
 /** The owner email an event calls for, if any, decided from the event itself so a retry decides the same. */
-export function noticeFor(message: BillingMessage, sub: SubscriptionLike | undefined, teamName: string): Exclude<EmailInput, { kind: "invite" }> | undefined {
+export function noticeFor(message: BillingMessage, sub: SubscriptionLike | undefined, teamName: string): TeamNoticeInput | undefined {
   const type: BillingEventType = message.type;
   if (type === "customer.subscription.trial_will_end") {
     // Only when there's no card to charge: then the trial ends by cancelling
@@ -157,7 +157,7 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
   }
 
   /** Emails each owner about the event, once each whatever the retries (claimBillingNotice first). */
-  async function notify(db: Db, ctx: TeamContext, eventId: string, input: Exclude<EmailInput, { kind: "invite" }>): Promise<void> {
+  async function notify(db: Db, ctx: TeamContext, eventId: string, input: TeamNoticeInput): Promise<void> {
     const owners = await listOwnerContacts(db, ctx);
     let sent = 0;
     const failures: string[] = [];

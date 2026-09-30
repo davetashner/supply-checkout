@@ -158,5 +158,9 @@ export class OpsDashboard extends Construct {
         WIDTH / 4,
       ),
     );
+    this.dashboard.addWidgets(
+      // The account's own address told of a password set or two-step sign-in turned on (supply-checkout-8jc.15)
+      businessGraph("J0: security notices emailed, and not", [BusinessMetric.SecurityNotices, BusinessMetric.SecurityNoticeFailures]),
+    );
   }
 }

@@ -10,7 +10,7 @@ import { type Invite, type Member, type Team, hashEmail, markInviteFailed, teamC
 import { createEmailEventsHandler } from "../src/email/events-handler.js";
 import { EmailNotSentError, createMailer, mailerFromEnv, sendInviteEmail, sendTeamNotice, type SesSender } from "../src/email/mailer.js";
 import { EMAIL_ENV, EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, EMAIL_KINDS, EMAIL_TAGS, configurationSetName } from "../src/email/names.js";
-import { type EmailInput, escapeHtml, formatDate, plainName, renderEmail, teamLabel } from "../src/email/templates.js";
+import { type EmailInput, type TeamNoticeInput, escapeHtml, formatDate, formatDateTime, plainName, renderEmail, teamLabel } from "../src/email/templates.js";
 import type { Observability } from "../src/observability/index.js";
 import { contextFor, fakeDb } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -29,6 +29,8 @@ const samples: EmailInput[] = [
   { kind: "exportReady", teamName: "Echo Cleaning", exportId: "exp-1", expiresAt: "2026-10-05T00:00:00.000Z" },
   { kind: "teamClosed", teamName: "Echo Cleaning", purgeAfter: "2026-10-26T12:00:00.000Z" },
   { kind: "teamReopened", teamName: "Echo Cleaning" },
+  { kind: "passwordSet", at: "2026-09-30T14:05:09.000Z" },
+  { kind: "twoStepOn", at: "2026-09-30T14:05:09.000Z" },
 ];
 
 describe("templates", () => {
@@ -40,9 +42,9 @@ describe("templates", () => {
     describe(input.kind, () => {
       const email = renderEmail(input, { appUrl: APP });
 
-      it("has a short one-line subject naming the team", () => {
+      it("has a short one-line subject naming the team, or for the account's own notices, the change", () => {
         expect(email.kind).toBe(input.kind);
-        expect(email.subject).toContain("Echo Cleaning");
+        expect(email.subject).toContain("teamName" in input ? "Echo Cleaning" : "Supply Checkout");
         expect(email.subject).not.toMatch(/[\r\n]/);
         expect(email.subject.length).toBeLessThan(120);
       });
@@ -84,7 +86,7 @@ describe("templates", () => {
       });
 
       it("has a readable text part", () => {
-        expect(email.text).toContain("Echo Cleaning");
+        expect(email.text).toContain("teamName" in input ? "Echo Cleaning" : "September 30, 2026 at 14:05 UTC");
         expect(email.text).not.toMatch(/<[a-z/]/i);
         expect(email.text.split("\n").every((line) => line.length < 400)).toBe(true);
       });
@@ -161,6 +163,23 @@ describe("templates", () => {
     expect([...hostile.html.matchAll(/href="([^"]+)"/g)].every((m) => new URL((m[1] as string).replaceAll("&amp;", "&")).origin === APP)).toBe(true);
   });
 
+  // supply-checkout-8jc.15
+  it("tells the account's owner a password was set or two-step sign-in turned on, when, and what to do if it wasn't them", () => {
+    const password = renderEmail(samples[7] as EmailInput, { appUrl: APP });
+    expect(password.subject).toBe("A password was set on your Supply Checkout account");
+    const twoStep = renderEmail(samples[8] as EmailInput, { appUrl: APP });
+    expect(twoStep.subject).toBe("Two-step sign-in was turned on for your Supply Checkout account");
+    expect(twoStep.text).toContain("signed out everywhere");
+    for (const email of [password, twoStep]) {
+      expect(email.text).toContain("on September 30, 2026 at 14:05 UTC");
+      expect(email.text).toContain("If this was you, you don't need to do anything.");
+      expect(email.text).toContain("If it wasn't you");
+      expect(email.text).toContain("check that the email address on your account is still yours");
+      expect(email.html).toContain("If it wasn&#39;t you");
+    }
+    expect(() => renderEmail({ kind: "passwordSet", at: "soon" }, { appUrl: APP })).toThrow("Invalid date");
+  });
+
   it("shortens long names and names a blank one", () => {
     expect(plainName("x".repeat(200))).toHaveLength(80);
     expect(plainName("x".repeat(200)).endsWith("…")).toBe(true);
@@ -172,6 +191,9 @@ describe("templates", () => {
   it("formats dates in UTC and refuses bad ones", () => {
     expect(formatDate("2026-10-03T23:30:00Z")).toBe("October 3, 2026");
     expect(formatDate(EXPIRES)).toBe("October 3, 2026");
+    expect(formatDateTime("2026-10-03T23:30:59Z")).toBe("October 3, 2026 at 23:30 UTC");
+    expect(formatDateTime("2026-10-04T00:05:00Z")).toBe("October 4, 2026 at 00:05 UTC");
+    expect(() => formatDateTime("soon")).toThrow("Invalid date");
     expect(() => formatDate("soon")).toThrow("Invalid date");
   });
 
@@ -241,7 +263,7 @@ describe("mailer", () => {
   });
 
   it("tags a notice with its team only", async () => {
-    await sendTeamNotice(mailer(), INVITEE, TEAM, samples[1] as Exclude<EmailInput, { kind: "invite" }>);
+    await sendTeamNotice(mailer(), INVITEE, TEAM, samples[1] as TeamNoticeInput);
     expect(ses.sent[0]?.input.EmailTags).toEqual([
       { Name: EMAIL_TAGS.kind, Value: "trialEnding" },
       { Name: EMAIL_TAGS.teamId, Value: TEAM },
@@ -263,6 +285,10 @@ describe("mailer", () => {
     await expect(mailer().send(INVITEE, samples[3] as EmailInput)).rejects.toMatchObject({ code: "NoMessageId" });
     ses.answer = () => Promise.reject("boom");
     await expect(mailer().send(INVITEE, samples[3] as EmailInput)).rejects.toMatchObject({ code: "Unknown" });
+    // A message that won't render (a bad date) says so, not "Error", and SES isn't asked
+    const asked = ses.sent.length;
+    await expect(mailer().send(INVITEE, { kind: "passwordSet", at: "soon" })).rejects.toMatchObject({ name: "EmailNotSentError", code: "RenderFailed" });
+    expect(ses.sent.length).toBe(asked);
   });
 
   it("needs its settings", () => {
