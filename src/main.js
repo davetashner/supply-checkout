@@ -83,7 +83,9 @@ const TRY = "Try again";
 // A price or cost field (data-money) over the API's limit says so, and its form won't submit
 // until it's fixed: never a silent cap, and never a save the API refuses
 const MONEY_LIMIT = `Prices and costs go up to ${money(MAX_MONEY)}.`;
-$("#modal").addEventListener("input", e => { if (e.target.matches("[data-money]")) e.target.setCustomValidity(Number(e.target.value) > MAX_MONEY ? MONEY_LIMIT : ""); });
+const checkMoney = e => { if (e.target.matches("[data-money]")) e.target.setCustomValidity(Number(e.target.value) > MAX_MONEY ? MONEY_LIMIT : ""); };
+$("#modal").addEventListener("input", checkMoney);
+$("#rBody").addEventListener("input", checkMoney);
 const onSubmit = (form, fn) => form.addEventListener("submit", e => { e.preventDefault(); if (!form.hasAttribute("aria-busy")) fn(); });
 // Closes the modal once the write saved, and resolves to whether it did
 const closing = async saved => { const ok = await saved; if (ok) closeModal(); return ok; };
@@ -829,7 +831,7 @@ function lineHTML(l) {
       ${codeClash ? `<p class="hint warn">This inventory item already has barcode ${esc(p.code)}. Pick a different inventory item if this is a different product.</p>` : ""}
       <div class="rrow">
         <label>${packOf(l) > 1 ? "Cases" : "Qty"}<input type="number" data-f="qty" id="q-${l.id}" min="0" inputmode="numeric" value="${l.qty}"></label>
-        <label>${packOf(l) > 1 ? "Per case" : "Each"} ($)<input type="number" data-f="price" id="p-${l.id}" min="0" step="0.01" inputmode="decimal" value="${l.price}"></label>
+        <label>${packOf(l) > 1 ? "Per case" : "Each"} ($)<input type="number" data-f="price" id="p-${l.id}" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${l.price}"></label>
         <label class="grow">For<select data-f="dest" id="d-${l.id}">${destOptions(l.dest)}</select></label>
       </div>
       <p class="hint" data-note>${lineNote(l)}</p>
@@ -933,6 +935,9 @@ async function saveReceipt() {
   const d = draft;
   const lines = d.lines.filter(l => (lineProd(l) || l.name.trim()) && int(l.qty) > 0);
   if (!lines.length) { toast("Add at least one item with a name and a quantity."); return; }
+  // A price over the API's limit, read from the photo or typed, is fixed before anything is saved
+  const over = lines.find(l => Number(l.price) > MAX_MONEY);
+  if (over) { toast(MONEY_LIMIT); const f = $("#p-" + over.id); f.setCustomValidity(MONEY_LIMIT); f.focus(); return; }
   const usedDests = d.dests.filter(x => lines.some(l => l.dest === x.id));
   const unnamed = usedDests.find(x => !x.sheetId && !x.client.trim());
   if (unnamed) { toast("Enter a client name for each new sheet."); const f = $("#dname-" + unnamed.id); f && f.focus(); return; }

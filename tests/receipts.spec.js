@@ -809,3 +809,33 @@ test("a file the browser can't decode is sent as it is", { tag: ["@J5.1"] }, asy
   await scanReceipt(page);
   expect(await page.evaluate(async () => { const f = window.__mock.sampleImages[0]; return [f.name, await f.text()]; })).toEqual(["photo.jpg", "fake image"]);
 });
+
+// The API takes money from 0 to 1,000,000 (ADR 0014): a receipt line's price says so, like the
+// other price fields, and the receipt isn't saved until it's fixed
+test("a receipt line price over the limit says so, and the receipt isn't saved until it's fixed", { tag: ["@J5.2"] }, async ({ page }) => {
+  await seedDraft(page, {
+    dests: [{ id: "d1", sheetId: "", client: "Limit Co" }],
+    lines: [draftLine({ name: "Chandelier", qty: 1, price: 1000000.01 })],
+  });
+  const price = line(page, 0).getByLabel("Each ($)");
+  const message = () => price.evaluate((el) => el.validationMessage);
+  const before = await docs(page, "");
+  // A price read from the photo, or typed before, is checked on save
+  await saveBtn(page).click();
+  await expect(toast(page)).toHaveText("Prices and costs go up to $1,000,000.00.");
+  await expect(price).toBeFocused();
+  expect(await message()).toBe("Prices and costs go up to $1,000,000.00.");
+  expect(await docs(page, "")).toEqual(before);
+  await price.fill("2000000");
+  expect(await message()).toBe("Prices and costs go up to $1,000,000.00.");
+  await hideToast(page);
+  await saveBtn(page).click();
+  await expect(toast(page)).toHaveText("Prices and costs go up to $1,000,000.00.");
+  expect(await docs(page, "")).toEqual(before);
+  await price.fill("1000000");
+  expect(await message()).toBe("");
+  await saveBtn(page).click();
+  await expect(page.getByRole("heading", { name: "Limit Co" })).toBeVisible();
+  const [sheet] = Object.values(await docs(page, "sheets/")).filter((s) => s.client === "Limit Co");
+  expect(Object.values(sheet.items)[0]).toMatchObject({ name: "Chandelier", price: 1000000, cost: 1000000, out: 1 });
+});
