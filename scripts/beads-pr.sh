@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Refreshes the committed beads export (.beads/issues.jsonl) through a chore PR:
-#   1. runs npm run beads:export in a fresh worktree off origin/main
-#   2. if the export changed, commits it (signed off), pushes, opens a
+#   1. if a beads export PR is already open (a chore/beads-export-* branch,
+#      from an earlier run whose land didn't finish, say), lands that one
+#      first with npm run land instead of opening another, and stops if it
+#      doesn't land
+#   2. runs npm run beads:export in a fresh worktree off origin/main
+#   3. if the export changed, commits it (signed off), pushes, opens a
 #      "chore: refresh the beads export" PR and lands it with npm run land
-#   3. otherwise says there's nothing to do
+#   4. otherwise says there's nothing to do
 # The worktree is removed on every path. npm run land runs it after a merge
 # whenever the export is stale (with LAND_SKIP_BACKLOG=1, which reaches the
 # export PR's land), and the lead can run it by hand. land-pr.sh knows the
@@ -38,6 +42,20 @@ beads_pr() {
   pr="" url="" root="" wt="" branch=""
   root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
   cd "$root"
+  # Land an export PR that's already open (the oldest, if there are several)
+  # rather than opening a duplicate. Once it's merged, the export below runs
+  # off the new main, so it only opens a PR for what that one missed.
+  local open_pr
+  open_pr="$(gh pr list --state open --limit 100 --json number,headRefName \
+    --jq '[.[] | select(.headRefName | startswith("chore/beads-export-"))] | sort_by(.number) | .[0].number // empty')"
+  if [ -n "$open_pr" ]; then
+    say "Beads export PR #$open_pr is already open: landing it instead of opening another"
+    if ! npm run -s land -- "$open_pr"; then
+      say "PR #$open_pr didn't land. Once it can merge run: npm run land -- $open_pr"
+      return 1
+    fi
+  fi
+
   branch="chore/beads-export-$(date +%Y%m%d-%H%M%S)"
   wt="$root/.claude/worktrees/$branch"
 

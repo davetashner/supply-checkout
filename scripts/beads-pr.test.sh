@@ -10,6 +10,8 @@
 #   export       what `npm run beads:export` writes to .beads/issues.jsonl
 #                (if missing, the export fails)
 #   land_rc      exit code of `npm run land` (default 0)
+#   open_prs     JSON array of open PRs (number, headRefName) that
+#                `gh pr list` returns (default [])
 #   calls        every gh and npm call, appended by the fakes
 set -euo pipefail
 
@@ -30,6 +32,10 @@ cat > "$tmp/bin/gh" <<'FAKE'
 echo "gh $*" >> "$FAKE/calls"
 case "$1 $2" in
   "pr create") echo "https://github.com/example/repo/pull/77" ;;
+  "pr list")
+    expr="."
+    while [ $# -gt 0 ]; do case "$1" in -q|--jq) expr="$2"; shift 2 ;; *) shift ;; esac; done
+    if [ -e "$FAKE/open_prs" ]; then jq -r "$expr" "$FAKE/open_prs"; else echo '[]' | jq -r "$expr"; fi ;;
   *) echo "fake gh: unexpected: gh $*" >&2; exit 2 ;;
 esac
 FAKE
@@ -167,6 +173,33 @@ out="$(cd "$repo/.claude/worktrees/feat/x" && bash "$script" 2>&1)" || rc=$?
 check "exits 0" exits 0
 check "lands from the main checkout" called "npm run -s land -- 77 (in repo)"
 check "leaves the other worktree alone" [ -d "$repo/.claude/worktrees/feat/x" ]
+done_case
+
+echo "an export PR is already open"
+scenario open-export
+echo '[{"number": 12, "headRefName": "feat/other"}, {"number": 66, "headRefName": "chore/beads-export-20260927-101500"}, {"number": 61, "headRefName": "chore/beads-export-20260927-091500"}]' > "$FAKE/open_prs"
+run_it
+check "exits 0" exits 0
+check "says it's landing the open one" says "Beads export PR #61 is already open"
+check "lands the oldest open export PR" called "npm run -s land -- 61"
+check "doesn't land another PR" not_called "npm run -s land -- 12"
+check "then exports again off main" called "npm run -s beads:export (in beads-export-"
+check "opens no PR when the export is then current" not_called "gh pr create"
+check "removes the worktree and branch" tidy
+done_case
+
+echo "an export PR is already open, but it doesn't land"
+scenario open-export-land-fails
+echo '[{"number": 66, "headRefName": "chore/beads-export-20260927-101500"}]' > "$FAKE/open_prs"
+echo '{"id":"supply-checkout-abc","status":"closed"}' > "$FAKE/export"
+echo 1 > "$FAKE/land_rc"
+run_it
+check "exits non-zero" fails
+check "says how to retry" says "npm run land -- 66"
+check "opens no PR" not_called "gh pr create"
+check "doesn't export" not_called "npm run -s beads:export"
+check "pushes nothing" not_pushed
+check "removes the worktree and branch" tidy
 done_case
 
 echo
