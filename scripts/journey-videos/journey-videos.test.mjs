@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { planVideos, grepFor, readReport, stepResults, clipsFor, sidecar, summarize, journeySlug, testKey } from "./assemble.mjs";
 import { parseWebm, concatWebm, webmDuration } from "./webm.mjs";
 import { errorSummary, frame, plain, titleCard, stepCard, endCard } from "./director.mjs";
@@ -248,17 +249,10 @@ test("SIGINT or SIGTERM stops the child's whole process group, then cleans up an
   const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
   for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
     const dir = mkdtempSync(join(tmpdir(), "jv-signal-"));
-    // record.mjs's shape: a child (Playwright's runner) with a child of its own (its browser),
-    // and a cleanup that releases the lock
-    const script = `
-      import { writeFileSync } from "node:fs";
-      import { run, onInterrupt } from ${JSON.stringify(new URL("./process.mjs", import.meta.url).href)};
-      onInterrupt(async () => writeFileSync(${JSON.stringify(join(dir, "cleaned"))}, "yes"));
-      const child = ${JSON.stringify(`const { spawn } = require("node:child_process"); const g = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(${JSON.stringify(join(dir, "pids"))}, process.pid + " " + g.pid); setInterval(() => {}, 1000);`)};
-      await run(process.execPath, ["-e", child]);
-      writeFileSync(${JSON.stringify(join(dir, "carried-on"))}, "yes");
-    `;
-    const parent = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "ignore", "pipe"] });
+    // process-helper.mjs acts as record.mjs: a child (Playwright's runner) with a child of its own
+    // (its browser), and a cleanup that releases the lock
+    const helper = fileURLToPath(new URL("./process-helper.mjs", import.meta.url));
+    const parent = spawn(process.execPath, [helper], { env: { ...process.env, JV_SIGNAL_DIR: dir }, stdio: ["ignore", "ignore", "pipe"] });
     while (!existsSync(join(dir, "pids")) || !readFileSync(join(dir, "pids"), "utf8").includes(" ")) await new Promise((r) => setTimeout(r, 50));
     const pids = readFileSync(join(dir, "pids"), "utf8").split(" ").map(Number);
     parent.kill(signal);
