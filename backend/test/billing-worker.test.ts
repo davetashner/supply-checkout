@@ -277,6 +277,47 @@ describe("applying a subscription", () => {
     expect(updates).toHaveLength(1);
   });
 
+  it("fails an event, and flags it, when the team was reopened while its subscription was being set to cancel", async () => {
+    const closedAt = new Date(NOW - DAY_S * 1000).toISOString();
+    patchTeam({ closedAt });
+    // The owner reopens after the worker read the team as closed, before Stripe answers
+    onRetrieve = () => {
+      onRetrieve = undefined;
+      patchTeam({ closedAt: undefined });
+    };
+    await expect(worker(message("customer.subscription.updated"))).rejects.toThrow("Team reopened while its subscription was being ended");
+    expect(updates).toEqual([{ id: "sub_test_1", params: { cancel_at_period_end: true }, key: closingKey("cancel_at_period_end", TEAM, closedAt, "sub_test_1") }]);
+    expect(logs).toContainEqual(["Team reopened while its subscription was being ended", { teamId: TEAM, eventId: "evt_test_1", subscriptionId: "sub_test_1", action: "cancel_at_period_end" }]);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBe(1);
+    expect(counts[BusinessMetric.ClosedTeamSubscriptionsEnded]).toBeUndefined();
+    expect(processed()).toBeUndefined();
+    expect(denied).toEqual([]);
+    // Closed again with a new closure in between: still not the closure it was ended for
+    patchTeam({ closedAt });
+    onRetrieve = () => {
+      onRetrieve = undefined;
+      patchTeam({ closedAt: new Date(NOW).toISOString() });
+    };
+    subs.set("sub_test_1", subscription({ status: "unpaid" }));
+    await expect(worker(message("customer.subscription.updated"))).rejects.toThrow("Team reopened while its subscription was being ended");
+    expect(logs).toContainEqual(["Team reopened while its subscription was being ended", { teamId: TEAM, eventId: "evt_test_1", subscriptionId: "sub_test_1", action: "cancel_now" }]);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBe(2);
+  });
+
+  it("carries on when the team is still closed, or purged, once Stripe has answered", async () => {
+    const closedAt = new Date(NOW - DAY_S * 1000).toISOString();
+    patchTeam({ closedAt });
+    // The purge deleted it meanwhile: deleting its customer ends the subscription anyway
+    onRetrieve = () => {
+      onRetrieve = undefined;
+      table.items.delete(`TEAM#${TEAM}\u0000META`);
+    };
+    expect(await worker(message("customer.subscription.updated"))).toBe("team_closed");
+    expect(updates).toHaveLength(1);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBeUndefined();
+    expect(counts[BusinessMetric.ClosedTeamSubscriptionsEnded]).toBe(1);
+  });
+
   it("never recreates a purged team", async () => {
     table.items.delete(`TEAM#${TEAM}\u0000META`);
     expect(await worker(message("customer.subscription.updated"))).toBe("team_gone");

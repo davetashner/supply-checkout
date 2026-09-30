@@ -116,6 +116,8 @@ export const BusinessMetric = {
   TeamsPurged: "TeamsPurged",
   /** Closed teams' Stripe subscriptions set to cancel at the period's end (or cancelled, if nothing was being paid), by the purge or the billing worker; the action goes in metadata. */
   ClosedTeamSubscriptionsEnded: "ClosedTeamSubscriptionsEnded",
+  /** Subscriptions set to end (or ended) for a closure the team was reopened from, by the purge or the billing worker, while Stripe was being called: an owner or operator must resume it (J7, J11). */
+  ReopenedTeamSubscriptionsEnded: "ReopenedTeamSubscriptionsEnded",
   /** Purged teams' Stripe customers deleted (their name, email, address and cards). */
   StripeCustomersDeleted: "StripeCustomersDeleted",
   /** Operator audit items (OPAUDIT#) changed or deleted other than by their TTL: the audit trail was tampered with (ADR 0015). From the operator audit watch (primary region). */

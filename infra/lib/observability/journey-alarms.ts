@@ -455,6 +455,15 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       threshold: 0,
     },
     {
+      id: "reopened-team-subscription-ended",
+      title: "Reopened team's subscription ended",
+      journeys: "J7, J11",
+      severity: "P2",
+      rule: "Any ReopenedTeamSubscriptionsEnded over 15 minutes: an owner reopened a closed team while the billing worker or the closed-team purge was asking Stripe to end its subscription, so a team that's open again has a subscription set to cancel (or cancelled). The log line \"Team reopened while its subscription was being ended\" has the team and subscription IDs and the action: resume the subscription in the Stripe Dashboard, or ask an owner to.",
+      metric: business(BusinessMetric.ReopenedTeamSubscriptionsEnded, region, FIFTEEN_MINUTES),
+      threshold: 0,
+    },
+    {
       id: "team-reopened-notices-failing",
       title: "Team reopened emails failing",
       journeys: "J11",

@@ -9,7 +9,9 @@
 //    the team. For a closed team (not yet purging), its subscription is also
 //    ended if it's still live (closing.ts): a checkout that finished after
 //    the team closed, whose subscription the team never recorded, would
-//    otherwise renew. The team is never reopened or written to.
+//    otherwise renew. The team is never reopened or written to. If an owner
+//    reopened it while Stripe was being asked, that's an error, counted and
+//    alarmed ("Reopened team's subscription ended"), and the event is retried.
 // 3. Fetch the subscription's latest state from Stripe and apply it (plan,
 //    seats, status, interval, period end) with applySubscription, whose
 //    conditions never recreate a purged team or touch a closed one. Applying
@@ -81,6 +83,9 @@ export interface BillingWorkerDeps {
 export type Outcome = "applied" | "duplicate" | "unknown_customer" | "team_gone" | "team_closed" | "second_subscription_canceled" | "ignored";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** Logged when a team was reopened while its subscription was being ended: the same line as the purge's (ops/team-purge-handler.ts). */
+const TEAM_REOPENED = "Team reopened while its subscription was being ended";
 
 const optional = (value: unknown, type: "string" | "number") => value === undefined || typeof value === type;
 
@@ -182,14 +187,27 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
    * Ends the event's subscription if it's still live on a closed team (closing.ts): the
    * subscription as fetched (`sub`), or fetched here. Only the customer's own. Throws on a
    * Stripe failure, so the event is retried.
+   *
+   * Then, if Stripe was asked to change anything, reads the team again (consistent): an
+   * owner who reopened it meanwhile (or reopened and closed it again) now has a subscription
+   * set to end that they meant to keep. That's counted (ReopenedTeamSubscriptionsEnded, the
+   * "Reopened team's subscription ended" alarm), logged as an error as the purge does, and
+   * throws, so the event isn't recorded. A team purged meanwhile is fine: deleting its
+   * customer ends the subscription anyway.
    */
-  async function endForClosedTeam(message: BillingMessage, team: BillingTeam, sub?: SubscriptionLike): Promise<void> {
+  async function endForClosedTeam(db: Db, ctx: TeamContext, message: BillingMessage, team: BillingTeam, sub?: SubscriptionLike): Promise<void> {
     if (!message.subscription || !team.closedAt) return;
     const stripe = await deps.stripe();
     const current = sub ?? (await stripe.subscriptions.retrieve(message.subscription));
     if (customerOf(current) !== message.customer) return;
     const action = await endSubscriptionForClosedTeam(stripe, current, { teamId: team.teamId, closedAt: team.closedAt });
     if (action !== "none") {
+      const after = await getBillingTeam(db, ctx, now());
+      if (after && after.closedAt !== team.closedAt) {
+        obs.count(BusinessMetric.ReopenedTeamSubscriptionsEnded, 1, { teamId: team.teamId, action });
+        obs.logger.error(TEAM_REOPENED, { teamId: team.teamId, eventId: message.eventId, subscriptionId: current.id, action });
+        throw Object.assign(new Error(TEAM_REOPENED), { name: "TeamReopened" });
+      }
       obs.count(BusinessMetric.ClosedTeamSubscriptionsEnded, 1, { teamId: team.teamId, action });
       obs.logger.info("Closed team's subscription ended", { teamId: team.teamId, eventId: message.eventId, subscriptionId: current.id, status: current.status, action });
     }
@@ -215,7 +233,7 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     if (team.purging) return done("team_closed");
     // A closed team changes no more (supply-checkout-t0en), but a subscription still live on it is ended
     if (team.closed) {
-      await endForClosedTeam(message, team);
+      await endForClosedTeam(db, ctx, message, team);
       return done("team_closed");
     }
     if (!message.subscription) return done("ignored");
@@ -236,7 +254,7 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     if (result === "ignored") {
       // Closed (or gone) since it was read: a subscription it never recorded is ended here, or it would renew
       const after = await getBillingTeam(db, ctx, now());
-      if (after?.closed && !after.purging) await endForClosedTeam(message, after, sub);
+      if (after?.closed && !after.purging) await endForClosedTeam(db, ctx, message, after, sub);
       return done("team_closed");
     }
     obs.count(BusinessMetric.BillingEventsApplied, 1, { teamId, type: message.type });

@@ -1079,6 +1079,7 @@ describe("purging closed teams", () => {
     expect(stripe.state.updates).toHaveLength(1);
     expect(meta("team-a")?.stripeCancelledFor).toBeUndefined();
     expect(logs).toContainEqual(["error", "Team reopened while its subscription was being ended", { teamId: "team-a", subscriptionId: "sub_123", action: "cancel_at_period_end" }]);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBe(1);
   });
 
   it("stops ending subscriptions after half its time budget, leaving the rest for the next run", async () => {
