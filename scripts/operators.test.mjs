@@ -601,14 +601,22 @@ test("profiles can't start with a hyphen", () => {
   assert.ok(h.calls.length > 0);
 });
 
-/** Starts the real script with a slow fake CLI and waits until its request file exists. */
+/**
+ * Starts the real script with a slow fake CLI and waits until the CLI is running a call
+ * with a request file. Waiting for the file alone isn't enough: its folder exists before
+ * the CLI starts, and a SIGINT that reaches the script before then (while its code runs
+ * synchronously) never runs its handler, so every step runs and it exits 0.
+ */
 async function startSlow(argv, extra = {}) {
   const { spawn } = await import("node:child_process");
   const setup = realSetup();
   const child = spawn(process.execPath, [path.join(here, "operators.mjs"), ...argv], { env: { ...setup.env, FAKE_AWS_SLOW: "1500" }, stdio: "ignore", ...extra });
   const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
+  // The fake CLI logs a call just before it waits, so a logged request means the CLI is running it
+  const cliRunning = () => existsSync(setup.log) && readFileSync(setup.log, "utf8").includes('"request":{');
   const started = Date.now();
-  while (readdirSync(setup.tmp).length === 0 && Date.now() - started < 10_000) await new Promise((r) => setTimeout(r, 20));
+  while (!cliRunning() && Date.now() - started < 10_000) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(cliRunning(), "the CLI is running a call with a request file");
   assert.equal(readdirSync(setup.tmp).length, 1, "the request file exists while the CLI runs");
   return { ...setup, child, exited };
 }
