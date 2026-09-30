@@ -21,7 +21,6 @@
 // to end, runs one test at a time in one Chromium, and exits 1 if any recorded test failed; the
 // videos are still written, showing the failure.
 import { execFileSync } from "node:child_process";
-import { createRequire } from "node:module";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,9 +57,8 @@ export function parseArgs(argv) {
 }
 
 // Runs Playwright with the recording config (process.mjs: stopped with record.mjs)
-const PLAYWRIGHT = createRequire(import.meta.url).resolve("@playwright/test/cli");
 function playwright(run, args, env, capture = false) {
-  return run(process.execPath, [PLAYWRIGHT, "test", "--config", CONFIG, ...args], { cwd: ROOT, env: { ...process.env, ...env }, capture });
+  return run(process.execPath, [join(ROOT, "node_modules/@playwright/test/cli.js"), "test", "--config", CONFIG, ...args], { cwd: ROOT, env: { ...process.env, ...env }, capture });
 }
 
 function commit() {
