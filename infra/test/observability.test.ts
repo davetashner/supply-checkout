@@ -842,7 +842,8 @@ describe("operator group watch (supply-checkout-3sv.5)", () => {
         "lambda:SourceFunctionArn": { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:lambda:${EAST}:`, { Ref: "AWS::AccountId" }, ":function:supply-checkout-prod-operator-group-watch"]] },
       },
     };
-    expect(found[0]?.Condition).toBeUndefined();
+    // Its log writes too: Lambda sets the key on the calls it makes for the function (supply-checkout-3sv.9)
+    expect(found[0]?.Condition).toEqual(onlyThisFunction);
     expect(found[1]?.Condition).toEqual(onlyThisFunction);
     expect(found[2]?.Condition).toEqual(onlyThisFunction);
     expect(JSON.stringify(found)).not.toContain('"*"');
@@ -1292,13 +1293,16 @@ describe("operator pool alerts (ADR 0015)", () => {
           {
             eventName: [{ prefix: "CreateFunction" }, { prefix: "UpdateFunctionConfiguration" }],
             eventSource: ["lambda.amazonaws.com"],
-            requestParameters: { role: [{ "Fn::GetAtt": [groupRole, "Arn"] }] },
+            // Its ARN, or any ARN ending in its name (a path, another spelling of the ARN) (supply-checkout-3sv.9)
+            requestParameters: { role: [{ "Fn::GetAtt": [groupRole, "Arn"] }, { wildcard: { "Fn::Join": ["", ["*:role/*", { Ref: groupRole }]] } }] },
             userIdentity: NOT_CLOUDFORMATION,
           },
         ],
       },
     });
     expect(GROUP_WATCH_ROLE_FUNCTION_EVENTS.outsideDeploys).toEqual(["CreateFunction", "UpdateFunctionConfiguration"]);
+    // Taking EventBridge's permission to invoke a watch away stops it: whoever does it (supply-checkout-3sv.9)
+    expect([...AUDIT_WATCH_FUNCTION_EVENTS.always]).toEqual(["DeleteFunction", "RemovePermission"]);
     // Zero concurrency, a disabled mapping and new code are each covered
     expect(AUDIT_WATCH_FUNCTION_EVENTS.outsideDeploys).toEqual(expect.arrayContaining(["PutFunctionConcurrency", "UpdateFunctionCode", "UpdateFunctionConfiguration"]));
     expect(AUDIT_WATCH_MAPPING_EVENTS.outsideDeploys).toEqual(["UpdateEventSourceMapping"]);

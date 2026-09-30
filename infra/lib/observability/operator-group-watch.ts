@@ -53,8 +53,8 @@ export interface OperatorGroupWatchProps {
  * The schedule rule's name starts with the operator rules' prefix, so
  * disabling or deleting it, or changing its target, alerts through the
  * rule-tampering rules. Its role may only list the operator pool's users in a
- * group (never change one), and read and write its own parameter, both only
- * from this function (lambda:SourceFunctionArn).
+ * group (never change one), read and write its own parameter, and write its
+ * own log group, all only from this function (lambda:SourceFunctionArn).
  */
 export class OperatorGroupWatch extends Construct {
   readonly fn: NodejsFunction;
@@ -79,7 +79,6 @@ export class OperatorGroupWatch extends Construct {
       assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
       description: "Execution role for the operator group watch",
     }));
-    role.addToPolicy(new PolicyStatement({ actions: ["logs:CreateLogStream", "logs:PutLogEvents"], resources: [logGroup.logGroupArn] }));
     // Only from this function: another function given this role (iam:PassRole, lambda:CreateFunction) could
     // otherwise write the snapshot as the watch, which OperatorGroupSnapshotChanges doesn't alert on. Built from
     // the fixed name, not the function's own ARN, so the role doesn't depend on the function it runs.
@@ -88,6 +87,10 @@ export class OperatorGroupWatch extends Construct {
         "lambda:SourceFunctionArn": Stack.of(this).formatArn({ service: "lambda", resource: "function", resourceName: opsResourceNames(props.envName).operatorGroupWatchFunction, arnFormat: ArnFormat.COLON_RESOURCE_NAME }),
       },
     };
+    // Its log writes too (supply-checkout-3sv.9): its metrics are embedded in its log lines, so another function
+    // given this role could otherwise write OperatorGroupMembers there and keep the silent alarm quiet. Lambda sets
+    // lambda:SourceFunctionArn on the log calls it makes for the function.
+    role.addToPolicy(new PolicyStatement({ actions: ["logs:CreateLogStream", "logs:PutLogEvents"], resources: [logGroup.logGroupArn], conditions: onlyThisFunction }));
     role.addToPolicy(
       new PolicyStatement({
         sid: "ListOperatorGroup",
