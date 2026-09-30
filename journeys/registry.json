@@ -246,6 +246,8 @@
     { "name": "Core journey canary failing", "journeys": ["*", "J4"] },
     { "name": "Site down", "journeys": ["*"], "infra": "site-down" },
     { "name": "Web router failing", "journeys": ["*"], "infra": "web-router-failing" },
+    { "name": "RUM events surge", "journeys": ["*"], "infra": "rum-events-surge" },
+    { "name": "RUM events flood", "journeys": ["*"], "infra": "rum-events-flood" },
     { "name": "API errors", "journeys": ["*"], "infra": "api-errors" },
     { "name": "API slow", "journeys": ["*"], "infra": "api-slow" },
     { "name": "API unhealthy", "journeys": ["*"] },
@@ -259,6 +261,7 @@
     { "name": "Sign-in throttled", "journeys": ["J0"] },
     { "name": "Social sign-in failing", "journeys": ["J0"] },
     { "name": "Sign-out not revoking", "journeys": ["J0"], "infra": "sign-out-not-revoking" },
+    { "name": "Security notices failing", "journeys": ["J0"], "infra": "security-notices-failing" },
 
     { "name": "Sign-up canary failing", "journeys": ["J1"] },
     { "name": "No sign-ups", "journeys": ["J1"] },

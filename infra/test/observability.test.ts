@@ -11,7 +11,8 @@ import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from 
 import { alarmContactParameter, alarmContactsFromContext } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
 import { journeyAlarmSpecs } from "../lib/observability/journey-alarms.js";
-import { ROUTER_FAILING_ABOVE, SITE_DOWN_MIN_REQUESTS, SITE_DOWN_PERCENT } from "../lib/observability/web-alarms.js";
+import { ROUTER_FAILING_ABOVE, RUM_EVENTS_FLOOD_PER_HOUR, RUM_EVENTS_SURGE_PER_HOUR, SITE_DOWN_MIN_REQUESTS, SITE_DOWN_PERCENT } from "../lib/observability/web-alarms.js";
+import { rumAppMonitorName } from "../lib/web/rum.js";
 import { webOutputParameters } from "../lib/stacks/web-stack.js";
 import { OPERATOR_AUDIT_HEARTBEAT } from "../../backend/src/data/schema.js";
 import { DELETION_PREFIXES, LIFECYCLE_EXPIRATION } from "../../backend/src/deletions/names.js";
@@ -94,6 +95,7 @@ const ALARM_IDS = [
   "database-errors",
   "database-throttled",
   "sign-out-not-revoking",
+  "security-notices-failing",
   "imports-stuck",
   "email-verification-not-saved",
   "email-codes-failing",
@@ -283,7 +285,7 @@ describe("journey alarms (docs/journeys.md)", () => {
       // The purge's own alarm is with the purge, and the operator audit and group watches' are with the watches, in the primary region only (tested below)
       const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm"))
         .map((a) => a.Properties)
-        .filter((a) => !["supply-checkout-prod-p2-deletion-not-running", "supply-checkout-prod-p2-seat-reconcile-not-running"].includes(a.AlarmName) && !/operator-audit|operator-group|deletion-record|site-down|web-router/.test(String(a.AlarmName)));
+        .filter((a) => !["supply-checkout-prod-p2-deletion-not-running", "supply-checkout-prod-p2-seat-reconcile-not-running"].includes(a.AlarmName) && !/operator-audit|operator-group|deletion-record|site-down|web-router|rum-events/.test(String(a.AlarmName)));
       const specs = journeyAlarmSpecs(r, "t", "api", "prod").filter((s) => r === config.primaryRegion || !s.primaryOnly);
       expect(alarms.map((a) => a.AlarmName).sort()).toEqual(
         specs.map((s) => `supply-checkout-prod-${s.severity.toLowerCase()}-${s.id}`).sort(),
@@ -525,6 +527,44 @@ describe("alarms on sign-in, email and import failures the functions don't throw
   });
 });
 
+describe("RUM cost guard (supply-checkout-3sv.7)", () => {
+  const rumAlarm = (t: Template, name: string) => {
+    const [alarm] = Object.values(t.findResources("AWS::CloudWatch::Alarm", { Properties: { AlarmName: name } }));
+    return alarm?.Properties;
+  };
+  const events = {
+    Metric: { Namespace: "AWS/RUM", MetricName: "RumEventPayloadSize", Dimensions: [{ Name: "application_name", Value: rumAppMonitorName("prod") }] },
+    Period: 3600,
+    Stat: "SampleCount",
+  };
+
+  it("counts the events the app monitor ingests in an hour: P2 well above real traffic, P1 at ten times that", () => {
+    const t = observability(EAST);
+    const surge = rumAlarm(t, "supply-checkout-prod-p2-rum-events-surge");
+    const flood = rumAlarm(t, "supply-checkout-prod-p1-rum-events-flood");
+    for (const [a, topic, threshold] of [[surge, /^AlarmTopicsP2/, RUM_EVENTS_SURGE_PER_HOUR], [flood, /^AlarmTopicsP1/, RUM_EVENTS_FLOOD_PER_HOUR]] as const) {
+      expect(a).toBeDefined();
+      expect(a.Metrics).toHaveLength(1);
+      expect(a.Metrics[0].MetricStat).toEqual(events);
+      expect(a.Threshold).toBe(threshold);
+      expect(a.ComparisonOperator).toBe("GreaterThanThreshold");
+      expect(a.EvaluationPeriods).toBe(1);
+      expect(a.TreatMissingData).toBe("notBreaching");
+      expect(a.AlarmActions[0].Ref).toMatch(topic);
+      expect(a.OKActions).toEqual(a.AlarmActions);
+      expect(a.AlarmDescription).toContain("docs/observability.md, When RUM events surge");
+    }
+    // At $1 per 100,000 events: the surge is at least a few times an honest day's traffic, and the flood ten times the surge
+    expect(RUM_EVENTS_SURGE_PER_HOUR).toBeGreaterThanOrEqual(50_000);
+    expect(RUM_EVENTS_FLOOD_PER_HOUR).toBe(10 * RUM_EVENTS_SURGE_PER_HOUR);
+  });
+
+  it("are only where the app monitor is, in the global services region", () => {
+    expect(rumAlarm(observability(WEST), "supply-checkout-prod-p2-rum-events-surge")).toBeUndefined();
+    expect(rumAlarm(observability(WEST), "supply-checkout-prod-p1-rum-events-flood")).toBeUndefined();
+  });
+});
+
 describe("alarms added with the email code routes, the live update budget, team closure and the purge", () => {
   it("alarms on repeated 5xx answers from the email code routes (J3)", () => {
     observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
@@ -559,6 +599,20 @@ describe("alarms added with the email code routes, the live update budget, team 
       ComparisonOperator: "GreaterThanThreshold",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
     });
+  });
+
+  it("alarms on any security notice not emailed to an account's own address (J0, supply-checkout-3sv.13)", () => {
+    for (const r of config.regions) {
+      observability(r).hasResourceProperties("AWS::CloudWatch::Alarm", {
+        AlarmName: "supply-checkout-prod-p2-security-notices-failing",
+        Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.SecurityNoticeFailures, Dimensions: [{ Name: "Region", Value: r }] }), Stat: "Sum", Period: 900 }) })],
+        Threshold: 0,
+        ComparisonOperator: "GreaterThanThreshold",
+        TreatMissingData: "notBreaching",
+        AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+        AlarmDescription: Match.stringLikeRegexp("^P2 Security notices failing \\(J0"),
+      });
+    }
   });
 
   it("alarms on any owner not emailed that their team reopened (J11)", () => {

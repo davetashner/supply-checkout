@@ -144,6 +144,15 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       metric: business(BusinessMetric.SignOutRevokeFailures, region, FIFTEEN_MINUTES),
       threshold: 2,
     },
+    {
+      id: "security-notices-failing",
+      title: "Security notices failing",
+      journeys: "J0",
+      severity: "P2",
+      rule: "Any SecurityNoticeFailures over 15 minutes: someone set a password or turned on two-step sign-in and the account's own verified address wasn't told (SES refused the message or took more than 3 seconds, or there's no verified address). The change stands anyway, so an account taken over this way goes unnoticed by its owner (supply-checkout-8jc.15).",
+      metric: business(BusinessMetric.SecurityNoticeFailures, region, FIFTEEN_MINUTES),
+      threshold: 0,
+    },
     // J2. Set up the inventory
     {
       id: "imports-stuck",
