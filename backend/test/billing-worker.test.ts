@@ -292,6 +292,13 @@ describe("applying a subscription", () => {
     expect(counts[BusinessMetric.ClosedTeamSubscriptionsEnded]).toBeUndefined();
     expect(processed()).toBeUndefined();
     expect(denied).toEqual([]);
+    // Its redelivery finds the team open: applied as usual, the pending cancellation recorded, and nothing more sent to Stripe
+    expect(await worker(message("customer.subscription.updated"))).toBe("applied");
+    expect(meta()).toMatchObject({ stripeSubscriptionId: "sub_test_1", cancelAtPeriodEnd: true });
+    expect(updates).toHaveLength(1);
+    expect(cancels).toEqual([]);
+    expect(processed()).toBeDefined();
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBe(1);
     // Closed again with a new closure in between: still not the closure it was ended for
     patchTeam({ closedAt });
     onRetrieve = () => {
@@ -299,8 +306,8 @@ describe("applying a subscription", () => {
       patchTeam({ closedAt: new Date(NOW).toISOString() });
     };
     subs.set("sub_test_1", subscription({ status: "unpaid" }));
-    await expect(worker(message("customer.subscription.updated"))).rejects.toThrow("Team reopened while its subscription was being ended");
-    expect(logs).toContainEqual(["Team reopened while its subscription was being ended", { teamId: TEAM, eventId: "evt_test_1", subscriptionId: "sub_test_1", action: "cancel_now" }]);
+    await expect(worker(message("customer.subscription.updated", { eventId: "evt_test_2" }))).rejects.toThrow("Team reopened while its subscription was being ended");
+    expect(logs).toContainEqual(["Team reopened while its subscription was being ended", { teamId: TEAM, eventId: "evt_test_2", subscriptionId: "sub_test_1", action: "cancel_now" }]);
     expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBe(2);
   });
 
