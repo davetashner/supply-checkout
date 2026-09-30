@@ -33,6 +33,7 @@ export const REGISTRY = "journeys/registry.json";
 export const DOC = "docs/journeys.md";
 const ALARMS_HEADING = "## Alarms for blocked journeys";
 const JOURNEY_TAG = /^@?(J\d+)(?:\.(\d+))?$/;
+const escapeRegExp = (s) => s.replace(/[\\^$.*+?()[\]{}|/-]/g, "\\$&");
 
 // ---------------------------------------------------------------------------
 // The registry
@@ -239,7 +240,7 @@ export function checkAlarms(md, reg, infraSource) {
   for (const a of reg.alarms) {
     if (a.infra && !builtNames.has(a.name)) problems.push(`Alarm ${a.name} is built (infra: ${a.infra}) but isn't in ${DOC}'s "Which alarms exist" table`);
     if (!a.infra && builtNames.has(a.name)) problems.push(`Alarm ${a.name} is in ${DOC}'s "Which alarms exist" table, but the registry has no infra ID for it`);
-    if (a.infra && !new RegExp(`["\`-]${a.infra.replace(/[-]/g, "\\-")}["\`]`).test(infraSource)) {
+    if (a.infra && !new RegExp(`["\`-]${escapeRegExp(a.infra)}["\`]`).test(infraSource)) {
       problems.push(`Alarm ${a.name}'s infra ID ${a.infra} isn't in infra/lib/observability`);
     }
   }
