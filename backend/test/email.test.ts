@@ -174,6 +174,7 @@ describe("templates", () => {
       expect(email.text).toContain("on September 30, 2026 at 14:05 UTC");
       expect(email.text).toContain("If this was you, you don't need to do anything.");
       expect(email.text).toContain("If it wasn't you");
+      expect(email.text).toContain("check that the email address on your account is still yours");
       expect(email.html).toContain("If it wasn&#39;t you");
     }
     expect(() => renderEmail({ kind: "passwordSet", at: "soon" }, { appUrl: APP })).toThrow("Invalid date");
@@ -284,6 +285,10 @@ describe("mailer", () => {
     await expect(mailer().send(INVITEE, samples[3] as EmailInput)).rejects.toMatchObject({ code: "NoMessageId" });
     ses.answer = () => Promise.reject("boom");
     await expect(mailer().send(INVITEE, samples[3] as EmailInput)).rejects.toMatchObject({ code: "Unknown" });
+    // A message that won't render (a bad date) says so, not "Error", and SES isn't asked
+    const asked = ses.sent.length;
+    await expect(mailer().send(INVITEE, { kind: "passwordSet", at: "soon" })).rejects.toMatchObject({ name: "EmailNotSentError", code: "RenderFailed" });
+    expect(ses.sent.length).toBe(asked);
   });
 
   it("needs its settings", () => {

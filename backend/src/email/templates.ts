@@ -137,7 +137,7 @@ export function formatDateTime(value: string): string {
  * nowhere but the app, and asks for nothing: a message like this is what a phisher copies.
  */
 const NOT_YOU =
-  "If it wasn't you, someone else may be able to sign in to your account. Reset your password from the Supply Checkout sign-in page with a code sent to this address, tell the other owners of your teams, and contact Supply Checkout support. We'll never ask you for your password or a sign-in code.";
+  "If it wasn't you, someone else may be able to sign in to your account. Reset your password from the Supply Checkout sign-in page with a code sent to this address, check that the email address on your account is still yours, tell the other owners of your teams, and contact Supply Checkout support. We'll never ask you for your password or a sign-in code.";
 
 interface Content {
   readonly subject: string;

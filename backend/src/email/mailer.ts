@@ -68,7 +68,13 @@ export function createMailer(options: MailerOptions): Mailer {
       } catch {
         throw new EmailNotSentError("InvalidRecipient");
       }
-      const message = renderEmail(input, { appUrl });
+      let message: ReturnType<typeof renderEmail>;
+      try {
+        message = renderEmail(input, { appUrl });
+      } catch {
+        // A bad date or link in the input: our bug, not SES's, and named so
+        throw new EmailNotSentError("RenderFailed");
+      }
       const params: SendEmailCommandInput = {
         FromEmailAddress: `${FROM_NAME} <${fromAddress}>`,
         Destination: { ToAddresses: [recipient] },

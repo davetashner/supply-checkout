@@ -120,7 +120,14 @@
 // caller's own token before the change, verified (verifiedEmail), never one
 // from the request. Best effort: the change stands if the email isn't sent,
 // which is logged with the user ID, the kind and the error's name only, and
-// counted (SecurityNoticeFailures).
+// counted (SecurityNoticeFailures). The send waits at most NOTICE_TIMEOUT_MS.
+// Only changes made through these routes are noticed: the same changes made
+// with direct Cognito calls and the user's own token (ChangePassword,
+// AssociateSoftwareToken, VerifySoftwareToken and SetUserMFAPreference, or
+// UpdateUserAttributes and VerifyUserAttribute for the email) send nothing,
+// and someone who changes the email first gets the notice at their own
+// address. Detecting those, and telling the old address of an email change,
+// are tracked as follow-ups.
 //
 // Seats (supply-checkout-l50): after a membership change commits (an invite
 // accepted, a role changed, a member removed or leaving, an account deleted,
@@ -222,6 +229,8 @@ export interface AccountHandlerDeps {
   readonly deletions: DeletionLog;
   /** Queues a seat sync on the seat sync queue after a membership change (billing/seats.ts). Absent, nothing is queued. */
   readonly seats?: SeatSyncQueue;
+  /** How long a security notice may wait on SES (NOTICE_TIMEOUT_MS); for tests. */
+  readonly noticeTimeoutMs?: number;
   readonly now?: () => number;
 }
 
@@ -374,10 +383,13 @@ interface NoticeMetrics {
 }
 
 const CLOSED_NOTICES: NoticeMetrics = { sent: BusinessMetric.TeamClosedNotices, failures: BusinessMetric.TeamClosedNoticeFailures, log: "Team closure emails not sent" };
+const REOPENED_NOTICES: NoticeMetrics = { sent: BusinessMetric.TeamReopenedNotices, failures: BusinessMetric.TeamReopenedNoticeFailures, log: "Team reopened emails not sent" };
+
 /** An email to the account's own verified address about a change to how it signs in (noticeAccount). */
 type AccountNotice = SecurityNotice["kind"];
 
-const REOPENED_NOTICES: NoticeMetrics = { sent: BusinessMetric.TeamReopenedNotices, failures: BusinessMetric.TeamReopenedNoticeFailures, log: "Team reopened emails not sent" };
+/** How long a security notice may wait on SES before the change is answered without it. */
+const NOTICE_TIMEOUT_MS = 3000;
 
 export function createAccountHandler(deps: AccountHandlerDeps) {
   const now = deps.now ?? Date.now;
@@ -720,14 +732,24 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
    */
   async function noticeAccount(user: CognitoUser, userId: string, kind: AccountNotice): Promise<void> {
     const to = verifiedEmail(user);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       if (!to) throw new EmailNotSentError("NoAddress");
-      await deps.mailer.send(to, { kind, at: new Date(now()).toISOString() });
+      // Bounded: a slow SES mustn't turn a change that's made into a 5xx (and a retried
+      // password change into password_mismatch). One that times out may still arrive
+      await Promise.race([
+        deps.mailer.send(to, { kind, at: new Date(now()).toISOString() }),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new EmailNotSentError("Timeout")), deps.noticeTimeoutMs ?? NOTICE_TIMEOUT_MS);
+        }),
+      ]);
       obs.count(BusinessMetric.SecurityNotices, 1, { kind });
     } catch (error) {
       const code = error instanceof EmailNotSentError ? error.code : ((error as { name?: string } | null)?.name ?? "Unknown");
       obs.logger.warn("Security notice not sent", { userId, kind, code });
       obs.count(BusinessMetric.SecurityNoticeFailures, 1, { kind, reason: to ? "not_sent" : "no_address" });
+    } finally {
+      clearTimeout(timer);
     }
   }
 

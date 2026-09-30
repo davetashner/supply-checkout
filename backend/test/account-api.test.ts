@@ -136,7 +136,7 @@ beforeEach(() => {
       verifiedNow.add(token.replace(/^token-/, ""));
     },
   };
-  handler = createAccountHandler({ dbFor, userInfo, emailCodes, totp, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, now: () => now });
+  handler = createAccountHandler({ dbFor, userInfo, emailCodes, totp, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, noticeTimeoutMs: 50, now: () => now });
 });
 
 interface Request {
@@ -694,6 +694,20 @@ describe("two-step sign-in", () => {
       expect(logs).toContainEqual(["Security notice not sent", { userId: OWNER, kind: "passwordSet", code: "Weird" }]);
       expect(logs).toContainEqual(["Security notice not sent", { userId: OWNER, kind: "passwordSet", code: "Unknown" }]);
       expect(JSON.stringify(logs)).not.toContain("owner@");
+    });
+
+    it("answers without waiting on a slow SES, and logs the notice as timed out", async () => {
+      const original = mails.mailer.send;
+      mails.mailer.send = () => new Promise(() => {});
+      try {
+        expect(await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).toEqual({ status: 204, body: undefined });
+        expect(await call("POST", "/me/mfa/totp/verify", { body: { code: "654321" } })).toEqual({ status: 204, body: undefined });
+      } finally {
+        mails.mailer.send = original;
+      }
+      expect(logs).toContainEqual(["Security notice not sent", { userId: OWNER, kind: "passwordSet", code: "Timeout" }]);
+      expect(logs).toContainEqual(["Security notice not sent", { userId: OWNER, kind: "twoStepOn", code: "Timeout" }]);
+      expect(counts[BusinessMetric.SecurityNoticeFailures]).toBe(2);
     });
 
     it("sends nothing when the change itself fails", async () => {
