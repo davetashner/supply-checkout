@@ -37,7 +37,7 @@ async function enter(page, code) {
   await dialog(page).getByRole("button", { name: "Verify" }).click();
 }
 
-test("an unverified user verifies their email before naming a team, and then sees their invites", async ({ page }) => {
+test("an unverified user verifies their email before naming a team, and then sees their invites", { tag: ["@J3.2"] }, async ({ page }) => {
   const backend = new FakeBackend({ teams: [], user: UNVERIFIED });
   backend.pendingInvites = [INVITE];
   await openAws(page, backend);
@@ -79,7 +79,7 @@ test("an unverified user verifies their email before naming a team, and then see
   expect(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))).not.toMatch(/123456|"at-\d"/);
 });
 
-test("explains a short, expired or refused code, too many tries, and a lost connection", async ({ page }) => {
+test("explains a short, expired or refused code, too many tries, and a lost connection", { tag: ["@J3"] }, async ({ page }) => {
   const backend = new FakeBackend({ teams: [], user: UNVERIFIED });
   backend.on("POST", "/me/email/code", error(429, "quota_exceeded"));
   backend.on("POST", "/me/email/code", { abort: true });
@@ -112,7 +112,7 @@ test("explains a short, expired or refused code, too many tries, and a lost conn
   await expect(dialog(page).locator("#verifyDone")).toBeVisible();
 });
 
-test("an address that changed while a code was sent starts over at sending, with the new address", async ({ page }) => {
+test("an address that changed while a code was sent starts over at sending, with the new address", { tag: ["@J3"] }, async ({ page }) => {
   const backend = new FakeBackend({ teams: [], user: UNVERIFIED });
   backend.rewriteEmail = "pat.lee@example.com";
   await openAws(page, backend);
@@ -135,7 +135,7 @@ test("an address that changed while a code was sent starts over at sending, with
   expect(backend.user).toMatchObject({ email: "pat.lee@example.com", emailVerified: true });
 });
 
-test("a code checked after the address changed starts over at sending, and the countdown is dropped", async ({ page }) => {
+test("a code checked after the address changed starts over at sending, and the countdown is dropped", { tag: ["@J3"] }, async ({ page }) => {
   await page.clock.install();
   const backend = new FakeBackend({ teams: [], user: UNVERIFIED });
   await openAws(page, backend);
@@ -163,7 +163,7 @@ test("a code checked after the address changed starts over at sending, and the c
   expect(backend.requests("POST", "/me/email/verify")).toHaveLength(2);
 });
 
-test("an address change still starts over when /me can't be loaded, keeping the address shown", async ({ page }) => {
+test("an address change still starts over when /me can't be loaded, keeping the address shown", { tag: ["@J3"] }, async ({ page }) => {
   const backend = new FakeBackend({ teams: [], user: UNVERIFIED });
   await openAws(page, backend);
   await account(page).getByRole("button", { name: "Verify email" }).click();
@@ -178,7 +178,7 @@ test("an address change still starts over when /me can't be loaded, keeping the 
   await expect(dialog(page).locator("#verifyDone")).toHaveText("pat@example.com is verified.");
 });
 
-test("a new code can be asked for once a minute", async ({ page }) => {
+test("a new code can be asked for once a minute", { tag: ["@J3"] }, async ({ page }) => {
   await page.clock.install();
   const backend = new FakeBackend({ teams: [], user: UNVERIFIED });
   await openAws(page, backend);
@@ -203,7 +203,7 @@ test("a new code can be asked for once a minute", async ({ page }) => {
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("an address that was verified meanwhile is taken as done, whether sending or checking", async ({ page }) => {
+test("an address that was verified meanwhile is taken as done, whether sending or checking", { tag: ["@J3"] }, async ({ page }) => {
   const backend = new FakeBackend({ teams: [], user: UNVERIFIED });
   await openAws(page, backend);
   await account(page).getByRole("button", { name: "Verify email" }).click();
@@ -216,7 +216,7 @@ test("an address that was verified meanwhile is taken as done, whether sending o
   await expect(account(page).getByRole("button", { name: "Verify email" })).toBeHidden();
 });
 
-test("checking a code that another tab already used is taken as done", async ({ page }) => {
+test("checking a code that another tab already used is taken as done", { tag: ["@J3"] }, async ({ page }) => {
   const backend = new FakeBackend({ teams: [], user: UNVERIFIED });
   await openAws(page, backend);
   await account(page).getByRole("button", { name: "Verify email" }).click();
@@ -226,7 +226,7 @@ test("checking a code that another tab already used is taken as done", async ({ 
   await expect(dialog(page).locator("#verifyDone")).toBeVisible();
 });
 
-test("a code accepted before the account catches up can be tried again", async ({ page }) => {
+test("a code accepted before the account catches up can be tried again", { tag: ["@J3"] }, async ({ page }) => {
   const backend = new FakeBackend({ teams: [], user: UNVERIFIED });
   await openAws(page, backend);
   await account(page).getByRole("button", { name: "Verify email" }).click();
@@ -246,7 +246,7 @@ test("a code accepted before the account catches up can be tried again", async (
   expect(backend.requests("POST", "/me/email/verify")).toHaveLength(1);
 });
 
-test("the team bar offers it while the team is open, and drops the button once verified", async ({ page }) => {
+test("the team bar offers it while the team is open, and drops the button once verified", { tag: ["@J3"] }, async ({ page }) => {
   const backend = new FakeBackend({ user: UNVERIFIED, docs: seeded });
   await openAws(page, backend);
   await connected(page);
@@ -259,14 +259,14 @@ test("the team bar offers it while the team is open, and drops the button once v
   await expect(page.locator(".teambar")).toContainText("Team: Echo Cleaning");
 });
 
-test("a verified user sees no prompt", async ({ page }) => {
+test("a verified user sees no prompt", { tag: ["@J3"] }, async ({ page }) => {
   const backend = new FakeBackend({ docs: seeded });
   await openAws(page, backend);
   await connected(page);
   await expect(page.getByRole("button", { name: "Verify email" })).toHaveCount(0);
 });
 
-test("joining from an invite link: verify first, then join", async ({ page }) => {
+test("joining from an invite link: verify first, then join", { tag: ["@J3.2"] }, async ({ page }) => {
   const backend = new FakeBackend({ teams: [], user: UNVERIFIED });
   backend.pendingInvites = [INVITE];
   await openAws(page, backend, { storage: inviteLink });
@@ -281,7 +281,7 @@ test("joining from an invite link: verify first, then join", async ({ page }) =>
   await expect(page.locator(".teambar")).toContainText("Team: Bravo Co");
 });
 
-test("a join refused for an unverified email shows the prompt, when there's an address", async ({ page }) => {
+test("a join refused for an unverified email shows the prompt, when there's an address", { tag: ["@J3.2"] }, async ({ page }) => {
   const backend = new FakeBackend({ teams: [], invites: [INVITE] });
   backend.on("POST", "/invites/i1/accept", error(403, "permission_denied"));
   await openAws(page, backend, { storage: inviteLink });
@@ -292,7 +292,7 @@ test("a join refused for an unverified email shows the prompt, when there's an a
   await expect(prompt).toBeVisible();
 });
 
-test("a join refused for a user with no address has nothing to verify", async ({ page }) => {
+test("a join refused for a user with no address has nothing to verify", { tag: ["@J3.2"] }, async ({ page }) => {
   const backend = new FakeBackend({ teams: [], user: { ...USER, email: null, emailVerified: false }, invites: [INVITE] });
   backend.on("POST", "/invites/i1/accept", error(403, "permission_denied"));
   await openAws(page, backend, { storage: inviteLink });

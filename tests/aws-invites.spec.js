@@ -40,7 +40,7 @@ async function sendInvite(page, email, role) {
   await dialog(page).getByRole("button", { name: "Send invite" }).click();
 }
 
-test("an owner invites someone, resends the invite and revokes it", async ({ page }) => {
+test("an owner invites someone, resends the invite and revokes it", { tag: ["@J3.1"] }, async ({ page }) => {
   const backend = await openInvites(page, new FakeBackend({ members: { t1: [ME] } }));
   await expect(dialog(page).locator("#invitesList")).toHaveText("No invites waiting.");
   // Contributor is the default role
@@ -72,7 +72,7 @@ test("an owner invites someone, resends the invite and revokes it", async ({ pag
   expect(backend.teamInvites.t1).toEqual([]);
 });
 
-test("shows each invite as pending, failed with why, or expired, and is accessible", async ({ page }) => {
+test("shows each invite as pending, failed with why, or expired, and is accessible", { tag: ["@J3.1"] }, async ({ page }) => {
   const backend = new FakeBackend({
     members: { t1: [ME] },
     teamInvites: {
@@ -103,7 +103,7 @@ test("shows each invite as pending, failed with why, or expired, and is accessib
   await expect(row(page, "bounced@")).not.toContainText("Couldn't deliver");
 });
 
-test("says when the invite email couldn't be sent, and shows the invite as failed", async ({ page }) => {
+test("says when the invite email couldn't be sent, and shows the invite as failed", { tag: ["@J3.1"] }, async ({ page }) => {
   const backend = new FakeBackend({ members: { t1: [ME] } });
   backend.on("POST", PATH, { status: 201, body: { invite: failed("i-9", "pat@example.com", "not_sent") } });
   await openInvites(page, backend);
@@ -112,7 +112,7 @@ test("says when the invite email couldn't be sent, and shows the invite as faile
   await expect(row(page, "pat@example.com")).toContainText("Couldn't deliver. The email couldn't be sent. Try Resend.");
 });
 
-test("says why an invite was refused, and keeps what was typed", async ({ page }) => {
+test("says why an invite was refused, and keeps what was typed", { tag: ["@J3.1"] }, async ({ page }) => {
   const backend = new FakeBackend({ members: { t1: [ME, SAM] }, teamInvites: { t1: [invite("i-1", "lee@example.com")] } });
   await openInvites(page, backend);
   const email = dialog(page).getByLabel("Email");
@@ -148,7 +148,7 @@ test("says why an invite was refused, and keeps what was typed", async ({ page }
   await expect(invites(page)).toHaveCount(2);
 });
 
-test("says why a resend or revoke didn't work", async ({ page }) => {
+test("says why a resend or revoke didn't work", { tag: ["@J3.1"] }, async ({ page }) => {
   const backend = new FakeBackend({ members: { t1: [ME] }, teamInvites: { t1: [invite("i-1", "pat@example.com"), invite("i-2", "quinn@example.com")] } });
   await openInvites(page, backend);
   // A resend that fails for the connection leaves the invite, ready to try again
@@ -172,7 +172,7 @@ test("says why a resend or revoke didn't work", async ({ page }) => {
   await expect(row(page, "quinn@").locator("[data-revoke]")).toBeEnabled();
 });
 
-test("says so when the invites don't load", async ({ page }) => {
+test("says so when the invites don't load", { tag: ["@J3.1"] }, async ({ page }) => {
   const backend = new FakeBackend({ members: { t1: [ME] } });
   backend.on("GET", PATH, error(500, "internal"));
   await openInvites(page, backend);
@@ -184,7 +184,7 @@ test("says so when the invites don't load", async ({ page }) => {
   await expect(invites(page)).toHaveCount(1);
 });
 
-test("removing a member drops their other invites from the list, as the server revokes them", async ({ page }) => {
+test("removing a member drops their other invites from the list, as the server revokes them", { tag: ["@J3.1"] }, async ({ page }) => {
   const backend = new FakeBackend({
     members: { t1: [ME, SAM, NOEMAIL] },
     teamInvites: { t1: [invite("i-sam", "sam@example.com", { role: "owner" }), invite("i-lee", "lee@example.com")] },
@@ -203,7 +203,7 @@ test("removing a member drops their other invites from the list, as the server r
   expect(backend.teamInvites.t1.map((i) => i.id)).toEqual(["i-lee"]);
 });
 
-test("the invites fit a 320px screen", async ({ page }) => {
+test("the invites fit a 320px screen", { tag: ["@J3.1"] }, async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 640 });
   await openInvites(page, new FakeBackend({ members: { t1: [ME] }, teamInvites: { t1: [failed("i-1", "a-very-long-address-for-someone@example.com", "bounced")] } }));
   await expect(invites(page)).toHaveCount(1);

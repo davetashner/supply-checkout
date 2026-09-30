@@ -35,7 +35,7 @@ const seedDraft = async (page, draft, opts = {}) => {
 };
 const draftLine = (o) => ({ id: "l" + Math.random().toString(36).slice(2, 7), name: "", raw: "", qty: 1, price: 0, dest: "d1", code: "", match: "", suggested: false, useName: "inv", usePrice: "receipt", ...o });
 
-test("fills in sensible defaults when parts of the receipt can't be read", async ({ page }) => {
+test("fills in sensible defaults when parts of the receipt can't be read", { tag: ["@J5.1"] }, async ({ page }) => {
   await scanReceipt(page, {
     receipt: { store: null, date: "Sept 20", items: [null, { qty: 1 }, { name: " Tape ", qty: "x", price: "abc", raw: null }], subtotal: "", tax: null, total: "n/a" },
   });
@@ -49,19 +49,19 @@ test("fills in sensible defaults when parts of the receipt can't be read", async
   await expect(page.locator("#rBody .sheet-head .meta span")).toHaveCount(1);
 });
 
-test("a reply without a list of items asks for a better photo", async ({ page }) => {
+test("a reply without a list of items asks for a better photo", { tag: ["@J5.1"] }, async ({ page }) => {
   await openApp(page, { ...usedState, receipt: { items: "none" } });
   await page.setInputFiles("#receiptFile", fakeImage);
   await expect(page.getByText("No line items were found in that photo")).toBeVisible();
 });
 
-test("an unexpected reading error gives a general message", async ({ page }) => {
+test("an unexpected reading error gives a general message", { tag: ["@J5.1"] }, async ({ page }) => {
   await openApp(page, { ...usedState, sampleError: "something_new" });
   await page.setInputFiles("#receiptFile", fakeImage);
   await expect(page.getByText("Reading the receipt failed. Check your connection and try again.")).toBeVisible();
 });
 
-test("reading can be stopped", async ({ page }) => {
+test("reading can be stopped", { tag: ["@J5.1"] }, async ({ page }) => {
   await openApp(page, { ...usedState, sampleHang: true });
   await page.setInputFiles("#receiptFile", fakeImage);
   await page.getByRole("button", { name: "Stop" }).click();
@@ -69,7 +69,7 @@ test("reading can be stopped", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Continue review" })).toHaveCount(0);
 });
 
-test("leaving the review keeps it, and discarding takes two taps", async ({ page }) => {
+test("leaving the review keeps it, and discarding takes two taps", { tag: ["@J5.2"] }, async ({ page }) => {
   await scanReceipt(page);
   await page.locator("#rBack").click();
   await page.getByRole("button", { name: "Continue review" }).click();
@@ -80,7 +80,7 @@ test("leaving the review keeps it, and discarding takes two taps", async ({ page
   await expect(page.getByRole("button", { name: "Continue review" })).toHaveCount(0);
 });
 
-test("view-only users don't see the unfinished review", async ({ page }) => {
+test("view-only users don't see the unfinished review", { tag: ["@J5", "@J9.1"] }, async ({ page }) => {
   await seedDraftOnly(page);
   await openApp(page, { ...usedState, canWrite: false });
   await expect(page.getByRole("button", { name: /Echo Studio/ })).toBeVisible();
@@ -90,7 +90,7 @@ async function seedDraftOnly(page) {
   await page.addInitScript(() => localStorage.setItem("supplyCheckout.receiptDraft", JSON.stringify({ dests: [], lines: [] })));
 }
 
-test("splits a trip between two new clients and saves both sheets", async ({ page }) => {
+test("splits a trip between two new clients and saves both sheets", { tag: ["@J5.3"] }, async ({ page }) => {
   await scanReceipt(page);
   await expect(line(page, 1).locator('[data-f="dest"] option').first()).toHaveText("Client 1");
   await page.getByRole("button", { name: "+ Add another client" }).click();
@@ -109,7 +109,7 @@ test("splits a trip between two new clients and saves both sheets", async ({ pag
   expect(saved.map((s) => s.source.store)).toEqual(["Hardware Co", "Hardware Co"]);
 });
 
-test("removing a client moves its items to the first client", async ({ page }) => {
+test("removing a client moves its items to the first client", { tag: ["@J5.3"] }, async ({ page }) => {
   await scanReceipt(page);
   await page.getByRole("button", { name: "+ Add another client" }).click();
   await page.locator("[data-dname]").nth(1).fill("Romeo LLC");
@@ -120,7 +120,7 @@ test("removing a client moves its items to the first client", async ({ page }) =
   await expect(line(page, 0).locator('[data-f="dest"] option:checked')).toHaveText("Client 1");
 });
 
-test("adds receipt items to an existing sheet, merging with what's already there", async ({ page }) => {
+test("adds receipt items to an existing sheet, merging with what's already there", { tag: ["@J5.3"] }, async ({ page }) => {
   await scanReceipt(page);
   await page.locator("[data-dsel]").selectOption({ label: "Add to Echo Studio (Sep 24, 2026)" });
   await expect(page.locator("[data-dname]")).toHaveCount(0);
@@ -138,7 +138,7 @@ test("adds receipt items to an existing sheet, merging with what's already there
   expect(Object.values(items).find((it) => it.name.startsWith("Painter")).cost).toBe(6.25);
 });
 
-test("a sheet deleted during the review is reported on save", async ({ page }) => {
+test("a sheet deleted during the review is reported on save", { tag: ["@J5.3"] }, async ({ page }) => {
   await seedDraft(page, {
     dests: [{ id: "d1", sheetId: "gone", client: "" }],
     lines: [draftLine({ name: "Mop", qty: 1, price: 2 })],
@@ -149,7 +149,7 @@ test("a sheet deleted during the review is reported on save", async ({ page }) =
   await expect(saveBtn(page)).toBeEnabled();
 });
 
-test("chooses between the inventory and receipt name and price", async ({ page }) => {
+test("chooses between the inventory and receipt name and price", { tag: ["@J5.2"] }, async ({ page }) => {
   await scanReceipt(page);
   const bins = line(page, 0);
   await expect(bins).toContainText("2 in storage now");
@@ -168,7 +168,7 @@ test("chooses between the inventory and receipt name and price", async ({ page }
   await expect(lineRow(page, "Storage bins, 12 qt")).toContainText("$5.00");
 });
 
-test("the receipt name is saved when chosen", async ({ page }) => {
+test("the receipt name is saved when chosen", { tag: ["@J5.2"] }, async ({ page }) => {
   await scanReceipt(page);
   await line(page, 0).getByRole("button", { name: /From receipt/ }).click();
   await page.getByLabel("Client name").fill("Tango Co");
@@ -176,7 +176,7 @@ test("the receipt name is saved when chosen", async ({ page }) => {
   await expect(lineRow(page, "Sterilite 12 qt storage bin")).toContainText("$5.50");
 });
 
-test("changing the inventory match updates the line", async ({ page }) => {
+test("changing the inventory match updates the line", { tag: ["@J5.2"] }, async ({ page }) => {
   await scanReceipt(page);
   await line(page, 0).locator('[data-f="match"]').selectOption({ label: "New item (not in inventory yet)" });
   await expect(line(page, 0).locator('[data-f="name"]')).toHaveValue("Sterilite 12 qt storage bin");
@@ -188,7 +188,7 @@ test("changing the inventory match updates the line", async ({ page }) => {
   await expect(line(page, 1).locator("[data-scan]")).toHaveCount(0);
 });
 
-test("typing a known barcode matches the inventory item", async ({ page }) => {
+test("typing a known barcode matches the inventory item", { tag: ["@J5.2"] }, async ({ page }) => {
   await scanReceipt(page);
   const code = line(page, 1).locator('[data-f="code"]');
   await code.fill("  ");
@@ -202,7 +202,7 @@ test("typing a known barcode matches the inventory item", async ({ page }) => {
   await expect(line(page, 1)).toContainText("Price changed");
 });
 
-test("warns when a line's barcode doesn't match the chosen inventory item", async ({ page }) => {
+test("warns when a line's barcode doesn't match the chosen inventory item", { tag: ["@J5.2"] }, async ({ page }) => {
   await scanReceipt(page);
   await line(page, 1).locator('[data-f="code"]').fill("ABC123");
   await line(page, 1).locator('[data-f="code"]').dispatchEvent("change");
@@ -210,7 +210,7 @@ test("warns when a line's barcode doesn't match the chosen inventory item", asyn
   await expect(line(page, 1)).toContainText("already has barcode SKU1");
 });
 
-test("scans a barcode for a receipt line", async ({ page }) => {
+test("scans a barcode for a receipt line", { tag: ["@J5.2"] }, async ({ page }) => {
   await page.addInitScript(() => { window.BarcodeDetector = class { async detect() { return [{ rawValue: "SKU1" }]; } }; });
   await scanReceipt(page);
   const chooser = page.waitForEvent("filechooser");
@@ -223,14 +223,14 @@ test("scans a barcode for a receipt line", async ({ page }) => {
   await expect(line(page, 1).locator('[data-f="code"]')).toHaveValue("SKU1");
 });
 
-test("cancelling the receipt photo picker changes nothing", async ({ page }) => {
+test("cancelling the receipt photo picker changes nothing", { tag: ["@J5.1"] }, async ({ page }) => {
   await openApp(page, usedState);
   await page.setInputFiles("#receiptFile", []);
   await expect(page.getByRole("heading", { name: "Review receipt" })).toBeHidden();
   await expect(page.getByRole("button", { name: /Echo Studio/ })).toBeVisible();
 });
 
-test("a line barcode photo with no barcode leaves the line alone", async ({ page }) => {
+test("a line barcode photo with no barcode leaves the line alone", { tag: ["@J5.2"] }, async ({ page }) => {
   await page.addInitScript(() => { window.BarcodeDetector = class { async detect() { return []; } }; });
   await scanReceipt(page);
   const chooser = page.waitForEvent("filechooser");
@@ -240,7 +240,7 @@ test("a line barcode photo with no barcode leaves the line alone", async ({ page
   await expect(line(page, 1).locator('[data-f="code"]')).toHaveValue("");
 });
 
-test("splits, removes and adds lines", async ({ page }) => {
+test("splits, removes and adds lines", { tag: ["@J5.2"] }, async ({ page }) => {
   await scanReceipt(page);
   await line(page, 0).getByRole("button", { name: "Split" }).click();
   await expect(page.locator(".rline")).toHaveCount(3);
@@ -262,7 +262,7 @@ test("splits, removes and adds lines", async ({ page }) => {
   await expect(page.locator(".rhead")).toHaveText("Items (4)");
 });
 
-test("editing quantity and price updates the line and the summary", async ({ page }) => {
+test("editing quantity and price updates the line and the summary", { tag: ["@J5.2"] }, async ({ page }) => {
   await scanReceipt(page);
   await line(page, 1).locator('[data-f="qty"]').fill("3");
   await line(page, 1).locator('[data-f="price"]').fill("2");
@@ -274,7 +274,7 @@ test("editing quantity and price updates the line and the summary", async ({ pag
 });
 
 // Coverage stops at a reload, so what's edited before it is tested above
-test("review choices survive a reload", async ({ page }) => {
+test("review choices survive a reload", { tag: ["@J5.2"] }, async ({ page }) => {
   await scanReceipt(page);
   await line(page, 1).locator('[data-f="name"]').fill("Blue tape");
   await page.locator("#rDate").fill("2026-09-21");
@@ -286,7 +286,7 @@ test("review choices survive a reload", async ({ page }) => {
   await expect(line(page, 1).locator('[data-f="name"]')).toHaveValue("Blue tape");
 });
 
-test("save checks for items, client names, a date and who prepared it", async ({ page }) => {
+test("save checks for items, client names, a date and who prepared it", { tag: ["@J5.3"] }, async ({ page }) => {
   await scanReceipt(page, { unavailable: ["user"] });
   await line(page, 0).locator('[data-f="qty"]').fill("0");
   await line(page, 1).locator('[data-f="qty"]').fill("0");
@@ -313,13 +313,13 @@ test("save checks for items, client names, a date and who prepared it", async ({
   await expect(page.locator("#sheetHead")).toContainText("Prepared by Robin");
 });
 
-test("says there's nothing to save when no item is assigned anywhere", async ({ page }) => {
+test("says there's nothing to save when no item is assigned anywhere", { tag: ["@J5.3"] }, async ({ page }) => {
   await seedDraft(page, { lines: [draftLine({ name: "Rags", dest: "elsewhere" })] });
   await saveBtn(page).click();
   await expect(toast(page)).toHaveText("Nothing to save. Assign each item to a client or to General inventory.");
 });
 
-test("items bought for storage only go to inventory", async ({ page }) => {
+test("items bought for storage only go to inventory", { tag: ["@J5.3"] }, async ({ page }) => {
   await scanReceipt(page);
   await line(page, 0).locator('[data-f="dest"]').selectOption({ label: "General inventory (storage)" });
   await line(page, 1).locator('[data-f="dest"]').selectOption({ label: "General inventory (storage)" });
@@ -330,7 +330,7 @@ test("items bought for storage only go to inventory", async ({ page }) => {
   await expect(inventoryRow(page, "Painter's tape").locator("td").nth(1)).toHaveText("2");
 });
 
-test("client items can be kept out of inventory", async ({ page }) => {
+test("client items can be kept out of inventory", { tag: ["@J5.3"] }, async ({ page }) => {
   await scanReceipt(page);
   await page.locator("#rSavePrices").uncheck();
   await page.getByLabel("Client name").fill("Whiskey Bar");
@@ -340,7 +340,7 @@ test("client items can be kept out of inventory", async ({ page }) => {
   expect(Object.values(products).map((p) => p.name)).not.toContain("Painter's tape, 1.88 in");
 });
 
-test("reuses inventory items by barcode or name, and doesn't duplicate new ones", async ({ page }) => {
+test("reuses inventory items by barcode or name, and doesn't duplicate new ones", { tag: ["@J5.3"] }, async ({ page }) => {
   await seedDraft(page, {
     dests: [{ id: "d1", sheetId: "", client: "X-ray Co" }],
     lines: [
@@ -359,7 +359,7 @@ test("reuses inventory items by barcode or name, and doesn't duplicate new ones"
   expect(Object.values(products).find((p) => p.name === "Sponges").stock).toBe(3);
 });
 
-test("barcodes and names that are built-in object keys save as ordinary items", async ({ page }) => {
+test("barcodes and names that are built-in object keys save as ordinary items", { tag: ["@J5.3"] }, async ({ page }) => {
   // A product saved as "__proto__" by an older version stays out of the way
   const seed = { ...usedState.seed, "products/__proto__": { code: "__proto__", name: "Old proto item", price: 1 } };
   await seedDraft(page, {
@@ -409,7 +409,7 @@ test("barcodes and names that are built-in object keys save as ordinary items", 
   await expect(page.getByText("Old proto item")).toHaveCount(0);
 });
 
-test("a failed inventory write stops the save so it can be retried", async ({ page }) => {
+test("a failed inventory write stops the save so it can be retried", { tag: ["@J5.3"] }, async ({ page }) => {
   await scanReceipt(page, { writeErrorFor: { prefix: "products/", code: "unavailable" } });
   await page.getByLabel("Client name").fill("Yankee Co");
   await saveBtn(page).click();
@@ -418,7 +418,7 @@ test("a failed inventory write stops the save so it can be retried", async ({ pa
   await expect(page.locator(".rline")).toHaveCount(2);
 });
 
-test("if one sheet fails to save, only its items stay in the review", async ({ page }) => {
+test("if one sheet fails to save, only its items stay in the review", { tag: ["@J5.3"] }, async ({ page }) => {
   await scanReceipt(page, { writeErrorFor: { prefix: "sheets/s1", code: "unavailable" } });
   await page.getByLabel("Client name").fill("Zulu Co");
   await page.getByRole("button", { name: "+ Add another client" }).click();
@@ -432,7 +432,7 @@ test("if one sheet fails to save, only its items stay in the review", async ({ p
 });
 
 // Saving again after a save whose answer was lost adds each line once (src/moves.js addLines)
-test("a receipt saved to an existing sheet again after a lost answer adds each line once", async ({ page }) => {
+test("a receipt saved to an existing sheet again after a lost answer adds each line once", { tag: ["@J5.3"] }, async ({ page }) => {
   await seedDraft(page, {
     savePrices: false,
     dests: [{ id: "d1", sheetId: "s1", client: "" }],
@@ -457,7 +457,7 @@ test("a receipt saved to an existing sheet again after a lost answer adds each l
   expect(s1.savedReceipts).toBeUndefined();
 });
 
-test("a new sheet from a receipt is saved once, however many tries it takes", async ({ page }) => {
+test("a new sheet from a receipt is saved once, however many tries it takes", { tag: ["@J5.3"] }, async ({ page }) => {
   await seedDraft(page, { savePrices: false, dests: [{ id: "d1", sheetId: "", client: "Kilo Co" }], lines: [draftLine({ name: "Mop heads", qty: 1, price: 4 })] });
   const kilos = async () => Object.values(await docs(page, "sheets/")).filter((s) => s.client === "Kilo Co");
   // Not saved at all, then saved with the answer lost, then found already saved
@@ -478,7 +478,7 @@ test("a new sheet from a receipt is saved once, however many tries it takes", as
   expect(await kilos()).toHaveLength(1);
 });
 
-test("a sheet deleted just before a receipt is saved to it says so, and keeps the receipt", async ({ page }) => {
+test("a sheet deleted just before a receipt is saved to it says so, and keeps the receipt", { tag: ["@J5.3"] }, async ({ page }) => {
   await seedDraft(page, { savePrices: false, dests: [{ id: "d1", sheetId: "s1", client: "" }], lines: [draftLine({ name: "Mop heads", qty: 1, price: 4 })] });
   // Someone deletes it, and this page hasn't heard yet
   await mock(page, () => window.__mock.docs.delete("sheets/s1"));
@@ -505,7 +505,7 @@ async function expectLocked(page) {
   await expect(page.getByRole("button", { name: "Discard" })).toBeEnabled();
 }
 
-test("general-inventory lines saved again after a lost answer add to storage once", async ({ page }) => {
+test("general-inventory lines saved again after a lost answer add to storage once", { tag: ["@J5.3"] }, async ({ page }) => {
   await seedDraft(page, {
     savePrices: false,
     lines: [
@@ -540,7 +540,7 @@ test("general-inventory lines saved again after a lost answer add to storage onc
   expect(Object.values(products).find((p) => p.name === "Sponges")).toMatchObject({ stock: 4 });
 });
 
-test("a receipt whose answer was lost stays locked through a reload, and saves once", async ({ page }) => {
+test("a receipt whose answer was lost stays locked through a reload, and saves once", { tag: ["@J5.3"] }, async ({ page }) => {
   test.skip(currentBuild() === "web", "The web build keeps its drafts per team (tests/aws-data.spec.js)");
   await seedDraft(page, { savePrices: false, dests: [{ id: "d1", sheetId: "s1", client: "" }], lines: [draftLine({ name: "Paper towels", match: "SKU1", qty: 2, price: 8.5 })] });
   await mock(page, () => { window.__mock.loseWrites = "sheets/"; });
@@ -554,7 +554,7 @@ test("a receipt whose answer was lost stays locked through a reload, and saves o
   expect((await docs(page, "sheets/s1"))["sheets/s1"].items.SKU1.out).toBe(5);
 });
 
-test("a sheet deleted after a lost answer unlocks the review, keeping only what wasn't saved", async ({ page }) => {
+test("a sheet deleted after a lost answer unlocks the review, keeping only what wasn't saved", { tag: ["@J5.3"] }, async ({ page }) => {
   await seedDraft(page, {
     savePrices: false,
     dests: [{ id: "d1", sheetId: "", client: "Lima Co" }, { id: "d2", sheetId: "s1", client: "" }],
@@ -584,7 +584,7 @@ test("a sheet deleted after a lost answer unlocks the review, keeping only what 
 
 // claude.ai's db has no timeout, so the artifact gives up on a write after 20 s. It may still
 // land: Try again waits for it, then finds its mark (src/moves.js)
-test("in the artifact, a receipt save that timed out and then landed adds its lines once on Try again", async ({ page }) => {
+test("in the artifact, a receipt save that timed out and then landed adds its lines once on Try again", { tag: ["@J5.3"] }, async ({ page }) => {
   test.skip(currentBuild() === "web", "The web build's requests have their own timeout");
   await page.clock.install();
   await seedDraft(page, { savePrices: false, dests: [{ id: "d1", sheetId: "s1", client: "" }], lines: [draftLine({ name: "Mop heads", qty: 2, price: 4 })] });
@@ -612,7 +612,7 @@ test("in the artifact, a receipt save that timed out and then landed adds its li
 // ADR 0014: cost and client price, and packs converted to eaches (J5)
 const gloves = { code: "GL", name: "Gloves, box", price: 2, cost: 1, packSize: 12, stock: 5 };
 
-test("keeps the client price by default when the item is marked up, and saves the receipt price as its cost", async ({ page }) => {
+test("keeps the client price by default when the item is marked up, and saves the receipt price as its cost", { tag: ["@J5.2"] }, async ({ page }) => {
   const seed = { ...usedState.seed, "products/nb-bins": { code: "", name: "Storage bins, 12 qt", price: 5, cost: 4, packSize: 1, stock: 2 }, "products/SKU1": { ...usedState.seed["products/SKU1"], cost: 9 } };
   await seedDraft(page, {
     dests: [{ id: "d1", sheetId: "", client: "Markup Co" }],
@@ -636,7 +636,7 @@ test("keeps the client price by default when the item is marked up, and saves th
   expect(sheet.items.SKU1).toMatchObject({ price: 9.5, cost: 9.5, out: 1 });
 });
 
-test("a case on a receipt goes into storage as eaches, at the case price divided by its pack size", async ({ page }) => {
+test("a case on a receipt goes into storage as eaches, at the case price divided by its pack size", { tag: ["@J5.3"] }, async ({ page }) => {
   await seedDraft(page, {
     subtotal: 30,
     lines: [draftLine({ name: "Gloves", match: "GL", qty: 2, price: 15, dest: "stock", usePrice: "" })],
@@ -660,7 +660,7 @@ test("a case on a receipt goes into storage as eaches, at the case price divided
   expect(products["products/GL"]).toMatchObject({ price: 2, cost: 1.25, packSize: 12, stock: 41 });
 });
 
-test("a pack item priced per each isn't converted", async ({ page }) => {
+test("a pack item priced per each isn't converted", { tag: ["@J5.2"] }, async ({ page }) => {
   await seedDraft(page, {
     dests: [{ id: "d1", sheetId: "", client: "Singles Co" }],
     lines: [draftLine({ name: "Gloves", match: "GL", qty: 3, price: 1.5, usePrice: "" })],
@@ -680,7 +680,7 @@ test("a pack item priced per each isn't converted", async ({ page }) => {
   expect((await docs(page, "products/"))["products/GL"]).toMatchObject({ price: 1.5, cost: 1.5, stock: 5 });
 });
 
-test("cases added to an existing sheet line add eaches and keep the line's price and cost", async ({ page }) => {
+test("cases added to an existing sheet line add eaches and keep the line's price and cost", { tag: ["@J5.3"] }, async ({ page }) => {
   const s1 = usedState.seed["sheets/s1"];
   const seed = { ...usedState.seed, "products/GL": gloves, "sheets/s1": { ...s1, items: { ...s1.items, GL: { code: "GL", name: "Gloves, box", price: 1.8, cost: 0.9, out: 4, returned: 1 } } } };
   await seedDraft(page, {

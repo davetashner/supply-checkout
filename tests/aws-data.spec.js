@@ -22,7 +22,7 @@ async function open(page, backend = new FakeBackend({ docs: seeded() }), opts) {
 }
 
 test.describe("data", () => {
-  test("maps the app's writes onto the data routes", async ({ page }) => {
+  test("maps the app's writes onto the data routes", { tag: ["@J4"] }, async ({ page }) => {
     const backend = await open(page);
     await createSheet(page, "Foxtrot Dental");
     const put = backend.requests("PUT", /^\/teams\/t1\/sheets\//)[0];
@@ -75,7 +75,7 @@ test.describe("data", () => {
 
   // Each document's writes go one at a time (src/aws/db.js), so the second names the version
   // the first made. A change from someone else still conflicts ("a conflicting edit is refused", below).
-  test("two quick edits to one sheet from the same page both save", async ({ page }) => {
+  test("two quick edits to one sheet from the same page both save", { tag: ["@J4"] }, async ({ page }) => {
     const backend = await open(page);
     await card(page, "Echo Studio").click();
     const release = backend.hold("PATCH", "/teams/t1/sheets/s1");
@@ -133,7 +133,7 @@ test.describe("data", () => {
     expect(backend.requests("PUT", /^\/teams\/t1\/sheets\//)).toHaveLength(5);
   });
 
-  test("a conflicting edit is refused, and the latest values show with a clear message", async ({ page }) => {
+  test("a conflicting edit is refused, and the latest values show with a clear message", { tag: ["@J4"] }, async ({ page }) => {
     const backend = await open(page);
     await card(page, "Echo Studio").click();
     await lineRow(page, "Paper towels").click();
@@ -173,7 +173,7 @@ test.describe("data", () => {
     await expect(page.locator("#notice")).toHaveText("Connecting to shared storage… If this doesn't clear, reload the page.");
   });
 
-  test("CSV downloads are saved by the browser", async ({ page }) => {
+  test("CSV downloads are saved by the browser", { tag: ["@J6.2"] }, async ({ page }) => {
     await page.clock.install();
     await open(page);
     await card(page, "Echo Studio").click();
@@ -184,7 +184,7 @@ test.describe("data", () => {
     await page.clock.fastForward(10e3);
   });
 
-  test("an owner exports 1,000 sheets, listed page by page, as a JSON download", async ({ page }) => {
+  test("an owner exports 1,000 sheets, listed page by page, as a JSON download", { tag: ["@J6", "@J10.2"] }, async ({ page }) => {
     const docs = seeded();
     for (let i = 0; i < 1000; i++) {
       const items = {};
@@ -217,7 +217,7 @@ test.describe("data", () => {
     await expect.poll(() => backend.requests("GET", "/teams/t1/sheets").length).toBe(22);
   });
 
-  test("a tap survives the redraw when a re-list's pages arrive", async ({ page }) => {
+  test("a tap survives the redraw when a re-list's pages arrive", { tag: ["@J4"] }, async ({ page }) => {
     const docs = seeded();
     for (let i = 0; i < 30; i++) docs[`t1/sheets/b${i}`] = { client: `Client ${i}`, date: "2026-09-01", status: "open", items: {} };
     const backend = new FakeBackend({ docs });
@@ -240,7 +240,7 @@ test.describe("data", () => {
     await expect(modal(page)).toContainText("32 sheets and 2 inventory items");
   });
 
-  test("members who aren't owners get no Export data", async ({ page }) => {
+  test("members who aren't owners get no Export data", { tag: ["@J6"] }, async ({ page }) => {
     await open(page, new FakeBackend({ teams: [{ ...TEAM, role: "contributor" }], docs: seeded() }));
     await expect(card(page, "Echo Studio")).toBeVisible();
     await expect(page.getByRole("button", { name: "Export data" })).toHaveCount(0);
@@ -289,13 +289,13 @@ test.describe("data", () => {
     expect(backend.requests("PUT", /^\/teams\/t1\/notes\//)).toHaveLength(1);
   });
 
-  test("the user's name falls back to their email", async ({ page }) => {
+  test("the user's name falls back to their email", { tag: ["@J4"] }, async ({ page }) => {
     await open(page, new FakeBackend({ claims: { email: "pat@example.com" }, docs: { "t1/sheets/m": { client: "Mine", date: "2026-09-25", createdBy: "u-pat", status: "open", items: {} } } }));
     await expect(card(page, "Mine")).toContainText("pat@example.com");
   });
 });
 
-test.describe("checkout and return commands", () => {
+test.describe("checkout and return commands", { tag: ["@J4"] }, () => {
   const CHECKOUT = "/teams/t1/sheets/s1/checkout", RETURN = "/teams/t1/sheets/s1/return";
   const toast = (page) => page.locator("#toast");
   const hideToast = (page) => toast(page).evaluate((t) => { t.hidden = true; });
@@ -305,7 +305,7 @@ test.describe("checkout and return commands", () => {
     await modal(page).getByRole("button", { name: `Add ${qty} to sheet` }).click();
   };
 
-  test("two people checking out the same item at once leave the line and the stock right", async ({ page }) => {
+  test("two people checking out the same item at once leave the line and the stock right", { tag: ["@J4.2"] }, async ({ page }) => {
     const backend = await open(page);
     backend.shareTokens = true;
     // A second device, signed in to the same team
@@ -334,7 +334,7 @@ test.describe("checkout and return commands", () => {
     await other.close();
   });
 
-  test("a retry after a lost answer sends the same operation ID, so it counts once", async ({ page }) => {
+  test("a retry after a lost answer sends the same operation ID, so it counts once", { tag: ["@J4.2"] }, async ({ page }) => {
     const backend = await open(page);
     await card(page, "Echo Studio").click();
     // The API saves the checkout, but the answer never arrives
@@ -369,7 +369,7 @@ test.describe("checkout and return commands", () => {
     expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(11);
   });
 
-  test("a retried return is the same request even after a live update changed the line", async ({ page }) => {
+  test("a retried return is the same request even after a live update changed the line", { tag: ["@J4.3"] }, async ({ page }) => {
     const backend = await open(page);
     await card(page, "Echo Studio").click();
     await page.getByRole("button", { name: "Return", exact: true }).click();
@@ -393,7 +393,7 @@ test.describe("checkout and return commands", () => {
     expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(12);
   });
 
-  test("a retried checkout of a new item saves the item once", async ({ page }) => {
+  test("a retried checkout of a new item saves the item once", { tag: ["@J4.2"] }, async ({ page }) => {
     const backend = await open(page);
     await card(page, "Echo Studio").click();
     backend.on("POST", CHECKOUT, { lost: true });
@@ -412,7 +412,7 @@ test.describe("checkout and return commands", () => {
   });
 
   for (const kind of ["checkout", "return"]) {
-    test(`a ${kind} by someone made a viewer meanwhile is refused, and the app switches to view-only`, async ({ page }) => {
+    test(`a ${kind} by someone made a viewer meanwhile is refused, and the app switches to view-only`, { tag: ["@J9.1"] }, async ({ page }) => {
       const backend = await open(page);
       await card(page, "Echo Studio").click();
       if (kind === "return") await page.getByRole("button", { name: "Return", exact: true }).click();
@@ -615,7 +615,7 @@ test.describe("checkout and return commands", () => {
   });
 });
 
-test.describe("live updates", () => {
+test.describe("live updates", { tag: ["@J4"] }, () => {
   test("another user's changes arrive as events and are fetched", async ({ page }) => {
     const backend = await open(page);
     const gets = (id) => backend.requests("GET", `/teams/t1/sheets/${id}`).length;
@@ -960,7 +960,7 @@ test.describe("live updates", () => {
   });
 });
 
-test.describe("inventory edits", () => {
+test.describe("inventory edits", { tag: ["@J2.3"] }, () => {
   // ADR 0014: the edit form replaces the whole item, so it must carry what it doesn't show
   test("an edit sends the item's cost, pack size and other fields back", async ({ page }) => {
     const docs = seeded();
@@ -984,7 +984,7 @@ test.describe("inventory edits", () => {
 
 // docs/api/commands.md: stock outside a sheet changes only through the stock command, which
 // records why. The document routes keep the stored stock, so a PUT never carries it.
-test.describe("stock commands", () => {
+test.describe("stock commands", { tag: ["@J2"] }, () => {
   const STOCK = "/teams/t1/products/SKU1/stock";
   const toast = (page) => page.locator("#toast");
   const hideToast = (page) => toast(page).evaluate((t) => { t.hidden = true; });
@@ -1121,7 +1121,7 @@ test.describe("stock commands", () => {
     storage: { local: { "supplyCheckout.owner": USER.id, "supplyCheckout.receiptDraft.t1": JSON.stringify({ store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines, ...draft }) } },
   });
 
-  test("a receipt's general-inventory lines are receipt commands, one per line", async ({ page }) => {
+  test("a receipt's general-inventory lines are receipt commands, one per line", { tag: ["@J5.3"] }, async ({ page }) => {
     const backend = new FakeBackend({ docs: seeded() });
     await openDraft(page, backend, [
       draftLine({ id: "l1", name: "Paper towels", qty: 2, price: 7.994, match: "SKU1" }),
@@ -1146,7 +1146,7 @@ test.describe("stock commands", () => {
     expect(backend.requests("PATCH", /^\/teams\/t1\//)).toEqual([]);
   });
 
-  test("a receipt's cases are stock commands in eaches at the cost of one each", async ({ page }) => {
+  test("a receipt's cases are stock commands in eaches at the cost of one each", { tag: ["@J5.3"] }, async ({ page }) => {
     const docs = { ...seeded(), "t1/products/SKU1": { ...usedState.seed["products/SKU1"], cost: 7, packSize: 6 } };
     const backend = new FakeBackend({ docs });
     await openDraft(page, backend, [draftLine({ id: "l1", name: "Paper towels", qty: 2, price: 45, match: "SKU1", usePrice: "" })]);
@@ -1161,7 +1161,7 @@ test.describe("stock commands", () => {
     expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(22);
   });
 
-  test("saving a receipt again after a failed line adds each line once", async ({ page }) => {
+  test("saving a receipt again after a failed line adds each line once", { tag: ["@J5.3"] }, async ({ page }) => {
     const backend = new FakeBackend({ docs: seeded() });
     await openDraft(page, backend, [
       draftLine({ id: "l1", name: "Paper towels", qty: 2, price: 8, match: "SKU1" }),
@@ -1196,7 +1196,7 @@ test.describe("stock commands", () => {
     await page.getByRole("button", { name: "Save", exact: true }).click();
   };
 
-  test("a receipt's lines for an existing sheet are one command, whose retry after a lost answer adds nothing twice", async ({ page }) => {
+  test("a receipt's lines for an existing sheet are one command, whose retry after a lost answer adds nothing twice", { tag: ["@J5.3"] }, async ({ page }) => {
     const backend = new FakeBackend({ docs: seeded() });
     await toEcho(page, backend, [draftLine({ id: "l1", name: "Paper towels", qty: 2, price: 8, match: "SKU1", dest: "d1" }), draftLine({ id: "l2", name: "Mop heads", qty: 1, price: 4.5, dest: "d1" })]);
     backend.on("POST", LINES, { lost: true });
@@ -1224,7 +1224,7 @@ test.describe("stock commands", () => {
     expect(backend.operations.size).toBe(1);
   });
 
-  test("a receipt with more than 40 lines for a sheet goes as one command per 40", async ({ page }) => {
+  test("a receipt with more than 40 lines for a sheet goes as one command per 40", { tag: ["@J5.3"] }, async ({ page }) => {
     const backend = new FakeBackend({ docs: seeded() });
     await toEcho(page, backend, Array.from({ length: 41 }, (_, i) => draftLine({ id: `l${i}`, name: `Item ${i}`, qty: 1, price: 1, dest: "d1" })));
     await saveReceipt(page);
@@ -1233,7 +1233,7 @@ test.describe("stock commands", () => {
     expect(Object.keys(backend.doc("t1", "sheets", "s1").data.items)).toHaveLength(43);
   });
 
-  test("a receipt's lines refused, or for a sheet that's gone or closed, show why and the latest", async ({ page }) => {
+  test("a receipt's lines refused, or for a sheet that's gone or closed, show why and the latest", { tag: ["@J5.3"] }, async ({ page }) => {
     const backend = new FakeBackend({ docs: seeded() });
     await toEcho(page, backend, [draftLine({ id: "l1", name: "Mop heads", qty: 1, price: 4.5, dest: "d1" })]);
     backend.on("POST", LINES, { status: 400, body: { error: { code: "bad_request", message: "Each line must be an object." } } });

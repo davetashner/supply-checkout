@@ -67,6 +67,19 @@ While working on a change, run just the file and browser you're touching, e.g. `
 
 Every test also fails if the page throws an uncaught error or logs a console error.
 
+## Journey tags and the traceability check
+
+Tests that prove a [customer journey](journeys.md) are tagged with it: `@J4.2` on a test (or a `test.describe`) that proves step J4.2, or `@J4` on one that belongs to J4 without proving one step. A test that walks through several steps names its `test.step` blocks by step (`"J4.2 Scan an item and choose how many"`). The journeys, their steps and their alarms are in `journeys/registry.json`, with backend tests listed by path under each step.
+
+```bash
+npx playwright test --grep "@J4\b" --project=desktop-chrome   # J4's tests (\b keeps @J1 from matching @J10)
+npx playwright test --grep @J4.2 --project=desktop-chrome      # one step's
+npm run journeys:trace   # each step with its tests and alarms; fails if anything doesn't trace
+npm run journeys:docs    # regenerate docs/journeys.md's table and step lists from the registry
+```
+
+`npm run journeys:trace` (`scripts/journeys.mjs`) lists the tests with `playwright test --list`, so it needs a build (`npm run build:artifact`). It fails when a built step of a journey that isn't phase 2 has no test (neither a tagged Playwright test nor a backend test in the registry) and no `untested` reason in the registry, when a planned step has tests tagged with it, when a critical journey has no alarm of its own, when a tag or `test.step` names a step that isn't in the registry, when an alarm the registry calls built isn't in `infra/lib/observability`, or when `docs/journeys.md` doesn't match the registry. It warns, without failing, when a step's status disagrees with its beads in `.beads/issues.jsonl`. `--json <file>` also writes the whole trace, with each step's tests by title. CI's lint job runs it, and its tests are in `scripts/journeys.test.mjs` (`npm run test:scripts`).
+
 ## Journey videos
 
 `npm run journeys:video` records a video of each [customer journey](journeys.md), J0 to J11 (J12 is phase 2), for people to watch rather than to test anything. A Chromium window opens and a visible cursor moves and clicks through each journey's steps as written, with a caption banner saying what each step shows or checks, and a title card and an end card listing what was shown, what was simulated and what isn't built yet. There's no narration. The videos go to `dist/journey-videos/<J#-slug>.webm` (gitignored), 1280 × 800, and each runs for about a minute.

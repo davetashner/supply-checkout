@@ -43,7 +43,7 @@ test("reports a lost connection to shared storage", async ({ page }) => {
   await expect(page.locator("#toast")).toHaveText("Lost connection to shared storage. Reload the page.");
 });
 
-test("CSV export quotes commas and quotes, and names untitled sheets", async ({ page }) => {
+test("CSV export quotes commas and quotes, and names untitled sheets", { tag: ["@J6.2"] }, async ({ page }) => {
   await openApp(page, {
     seed: {
       "sheets/q": {
@@ -65,28 +65,28 @@ test("CSV export quotes commas and quotes, and names untitled sheets", async ({ 
   expect(save.data).toContain('"Line\nbreak",,1.50,1,0,1,1.50');
 });
 
-test("a declined download is silent", async ({ page }) => {
+test("a declined download is silent", { tag: ["@J6.2"] }, async ({ page }) => {
   await openApp(page, { ...usedState, downloadError: "declined" });
   await page.getByRole("button", { name: /Echo Studio/ }).click();
   await page.getByRole("button", { name: "Download CSV" }).click();
   await expect(page.locator("#toast")).toBeHidden();
 });
 
-test("a failed download explains", async ({ page }) => {
+test("a failed download explains", { tag: ["@J6.2"] }, async ({ page }) => {
   await openApp(page, { ...usedState, downloadError: "unavailable" });
   await page.getByRole("button", { name: /Echo Studio/ }).click();
   await page.getByRole("button", { name: "Download CSV" }).click();
   await expect(page.locator("#toast")).toHaveText("Couldn't prepare the download here.");
 });
 
-test("a corrupt saved receipt draft is ignored", async ({ page }) => {
+test("a corrupt saved receipt draft is ignored", { tag: ["@J5"] }, async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("supplyCheckout.receiptDraft", "{not json"));
   await openApp(page, usedState);
   await connected(page);
   await expect(page.getByRole("button", { name: "Continue review" })).toHaveCount(0);
 });
 
-test("receipt review still works when the browser won't save drafts", async ({ page }) => {
+test("receipt review still works when the browser won't save drafts", { tag: ["@J5"] }, async ({ page }) => {
   await page.addInitScript(() => { Storage.prototype.setItem = () => { throw new Error("QuotaExceededError"); }; });
   await openApp(page, usedState);
   await page.setInputFiles("#receiptFile", fakeImage);

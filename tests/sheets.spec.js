@@ -8,7 +8,7 @@ const openEcho = async (page, opts = {}) => {
   await page.getByRole("button", { name: /Echo Studio/ }).click();
 };
 
-test("edits a sheet's client and date", async ({ page }) => {
+test("edits a sheet's client and date", { tag: ["@J4.1"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Edit details" }).click();
   await expect(modal(page).getByRole("heading", { name: "Edit sheet" })).toBeVisible();
@@ -20,7 +20,7 @@ test("edits a sheet's client and date", async ({ page }) => {
   await expect(page.locator(".sheet-head .meta")).toContainText("Sep 26, 2026");
 });
 
-test("a new sheet needs a client name, and can be cancelled", async ({ page }) => {
+test("a new sheet needs a client name, and can be cancelled", { tag: ["@J4.1"] }, async ({ page }) => {
   await openApp(page);
   await page.getByRole("button", { name: "+ New sheet" }).click();
   await modal(page).getByLabel("Client", { exact: true }).fill("   ");
@@ -30,7 +30,7 @@ test("a new sheet needs a client name, and can be cancelled", async ({ page }) =
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("modals close with Escape or a tap outside", async ({ page }) => {
+test("modals close with Escape or a tap outside", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page);
   await page.getByRole("button", { name: "+ New sheet" }).click();
   await page.keyboard.press("Escape");
@@ -44,7 +44,7 @@ test("modals close with Escape or a tap outside", async ({ page }) => {
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("filters sheets by open and returned, and shows what each is worth", async ({ page }) => {
+test("filters sheets by open and returned, and shows what each is worth", { tag: ["@J4.1"] }, async ({ page }) => {
   await openApp(page, {
     seed: {
       ...usedState.seed,
@@ -71,13 +71,13 @@ test("filters sheets by open and returned, and shows what each is worth", async 
   await expect(list.locator(".sheet-card")).toHaveCount(2);
 });
 
-test("shows an empty state for filters with no sheets", async ({ page }) => {
+test("shows an empty state for filters with no sheets", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page);
   await page.getByRole("button", { name: "Returned" }).click();
   await expect(page.getByText("No sheets here yet.")).toBeVisible();
 });
 
-test("reopens a finished sheet", async ({ page }) => {
+test("reopens a finished sheet", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Finished Return" }).click();
   await expect(page.locator(".sheet-head .pill")).toHaveText("Returned");
@@ -86,7 +86,7 @@ test("reopens a finished sheet", async ({ page }) => {
   await expect(page.locator("#toast")).toHaveText("Sheet reopened");
 });
 
-test("deleting a sheet takes two taps, and the first tap wears off", async ({ page }) => {
+test("deleting a sheet takes two taps, and the first tap wears off", { tag: ["@J4"] }, async ({ page }) => {
   await page.clock.install();
   await openEcho(page);
   const del = page.getByRole("button", { name: "Delete sheet" });
@@ -103,19 +103,19 @@ test("deleting a sheet takes two taps, and the first tap wears off", async ({ pa
   await expect(page.locator("#toast")).toBeHidden();
 });
 
-test("the back button returns to the list", async ({ page }) => {
+test("the back button returns to the list", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "← All sheets" }).first().click();
   await expect(page.getByRole("button", { name: /Echo Studio/ })).toBeVisible();
 });
 
-test("an empty sheet explains how to start", async ({ page }) => {
+test("an empty sheet explains how to start", { tag: ["@J4.1"] }, async ({ page }) => {
   await openApp(page);
   await createSheet(page, "India Inc");
   await expect(page.getByText("No supplies on this sheet yet.")).toBeVisible();
 });
 
-test("edits the price and counts on a sheet line", async ({ page }) => {
+test("edits the price and counts on a sheet line", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Paper towels").click();
   await expect(modal(page).getByRole("heading", { name: "Paper towels, 6 roll" })).toBeVisible();
@@ -130,7 +130,7 @@ test("edits the price and counts on a sheet line", async ({ page }) => {
 // WebKit focuses an inserted autofocus field again a frame later, even once focus has moved
 // on, so a quick tap into the price typed into the name. The modal focuses its first field
 // itself and leaves the browser nothing to refocus.
-test("a new item's modal focuses the name without an autofocus attribute", async ({ page }) => {
+test("a new item's modal focuses the name without an autofocus attribute", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "NEW3");
   await expect(modal(page).getByLabel("Item name")).toBeFocused();
@@ -141,7 +141,7 @@ test("a new item's modal focuses the name without an autofocus attribute", async
 // browser that validates forms refuse 1.005, so the test lifts it to check the save itself.
 const anyStep = (field) => field.evaluate((el) => { el.step = "any"; });
 
-test("a typed price on a sheet line or a new item is saved rounded to cents", async ({ page }) => {
+test("a typed price on a sheet line or a new item is saved rounded to cents", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Paper towels").click();
   await anyStep(modal(page).getByLabel("Price each on this sheet ($)"));
@@ -160,7 +160,7 @@ test("a typed price on a sheet line or a new item is saved rounded to cents", as
   expect(saved).toEqual([1.01, 1.01]);
 });
 
-test("a price over the API's limit on a sheet line or a new item says so, and isn't saved", async ({ page }) => {
+test("a price over the API's limit on a sheet line or a new item says so, and isn't saved", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   const message = (field) => field.evaluate((el) => el.validationMessage);
   await lineRow(page, "Paper towels").click();
@@ -186,7 +186,7 @@ test("a price over the API's limit on a sheet line or a new item says so, and is
   await expect(lineRow(page, "Sponges")).toContainText("$999,999.99");
 });
 
-test("removes a line from a sheet with two taps", async ({ page }) => {
+test("removes a line from a sheet with two taps", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Storage bins").click();
   await modal(page).getByRole("button", { name: "Remove" }).click();
@@ -196,7 +196,7 @@ test("removes a line from a sheet with two taps", async ({ page }) => {
   await expect(lineRow(page, "Paper towels")).toBeVisible();
 });
 
-test("picks an inventory item without a barcode, with search", async ({ page }) => {
+test("picks an inventory item without a barcode, with search", { tag: ["@J4.2"] }, async ({ page }) => {
   await openApp(page, {
     seed: {
       ...usedState.seed,
@@ -226,7 +226,7 @@ test("picks an inventory item without a barcode, with search", async ({ page }) 
   expect(line).toMatchObject({ name: "Mop heads", price: 3, cost: 2, out: 1 });
 });
 
-test("a sheet's total is the sum of its rows rounded to cents", async ({ page }) => {
+test("a sheet's total is the sum of its rows rounded to cents", { tag: ["@J4"] }, async ({ page }) => {
   // Prices with more than two decimals (typed before rounding existed) round when shown
   await openApp(page, { seed: { "sheets/r": { client: "Round Co", date: "2026-09-01", status: "open", items: {
     a: { code: "", name: "Wipes", price: 0.335, out: 3, returned: 0 },
@@ -245,7 +245,7 @@ test("a sheet's total is the sum of its rows rounded to cents", async ({ page })
   expect(data).toContain("Wipes,,0.34,3,0,3,1.02\nXylene,,1.01,1,0,1,1.01\nZip ties,,0.10,3,0,3,0.30\nTotal,,,7,0,7,2.33");
 });
 
-test("picking with an empty inventory goes straight to a new item", async ({ page }) => {
+test("picking with an empty inventory goes straight to a new item", { tag: ["@J4.2"] }, async ({ page }) => {
   await openApp(page);
   await createSheet(page, "Juliet Co");
   await page.getByRole("button", { name: "Add item without a barcode" }).click();
@@ -254,7 +254,7 @@ test("picking with an empty inventory goes straight to a new item", async ({ pag
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("a new item without a barcode can skip saving to inventory", async ({ page }) => {
+test("a new item without a barcode can skip saving to inventory", { tag: ["@J4.2"] }, async ({ page }) => {
   await openApp(page);
   await createSheet(page, "Kilo Co");
   await page.getByRole("button", { name: "Add item without a barcode" }).click();
@@ -269,7 +269,7 @@ test("a new item without a barcode can skip saving to inventory", async ({ page 
   expect(saved).toEqual([]);
 });
 
-test("a new item's name can't be only spaces", async ({ page }) => {
+test("a new item's name can't be only spaces", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "NEW2");
   await modal(page).getByLabel("Item name").fill("   ");
@@ -278,14 +278,14 @@ test("a new item's name can't be only spaces", async ({ page }) => {
   expect(await page.evaluate(() => window.__mock.docs.has("products/NEW2"))).toBe(false);
 });
 
-test("a sheet created while updates arrive instantly appears once", async ({ page }) => {
+test("a sheet created while updates arrive instantly appears once", { tag: ["@J4.1"] }, async ({ page }) => {
   await openApp(page, { instantUpdates: true });
   await createSheet(page, "Oscar Two");
   await page.getByRole("button", { name: "← All sheets" }).first().click();
   await expect(page.getByRole("button", { name: /Oscar Two/ })).toHaveCount(1);
 });
 
-test("the quantity stepper counts up and down and won't check out zero", async ({ page }) => {
+test("the quantity stepper counts up and down and won't check out zero", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await expect(modal(page)).toContainText("Already on this sheet");
@@ -299,7 +299,7 @@ test("the quantity stepper counts up and down and won't check out zero", async (
   await modal(page).getByRole("button", { name: "Cancel" }).click();
 });
 
-test("scanning a barcode stored under a different key finds the item", async ({ page }) => {
+test("scanning a barcode stored under a different key finds the item", { tag: ["@J4.2"] }, async ({ page }) => {
   await openApp(page, {
     seed: { "products/legacy-1": { code: "0042", name: "Sponges", price: 1 }, ...usedState.seed },
   });
@@ -312,13 +312,13 @@ test("scanning a barcode stored under a different key finds the item", async ({ 
   expect(await page.evaluate(() => window.__mock.docs.get("products/legacy-1").stock)).toBeUndefined();
 });
 
-test("typing nothing in the barcode box does nothing", async ({ page }) => {
+test("typing nothing in the barcode box does nothing", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "  ");
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("returns an item without a barcode by picking it", async ({ page }) => {
+test("returns an item without a barcode by picking it", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await expect(page.locator("#scanLabel")).toHaveText("Scan to return");
@@ -330,7 +330,7 @@ test("returns an item without a barcode by picking it", async ({ page }) => {
   await expect(lineRow(page, "Storage bins").locator("td").nth(3)).toHaveText("1");
 });
 
-test("returning from an empty sheet says nothing was taken", async ({ page }) => {
+test("returning from an empty sheet says nothing was taken", { tag: ["@J4.3"] }, async ({ page }) => {
   await openApp(page);
   await createSheet(page, "Lima Ltd");
   await page.getByRole("button", { name: "Return", exact: true }).click();
@@ -339,7 +339,7 @@ test("returning from an empty sheet says nothing was taken", async ({ page }) =>
   await modal(page).getByRole("button", { name: "Cancel" }).click();
 });
 
-test("a return needs at least one, and can be cancelled", async ({ page }) => {
+test("a return needs at least one, and can be cancelled", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await enterBarcode(page, "SKU1");
@@ -351,7 +351,7 @@ test("a return needs at least one, and can be cancelled", async ({ page }) => {
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("returning an item that isn't on the sheet offers to check it out", async ({ page }) => {
+test("returning an item that isn't on the sheet offers to check it out", { tag: ["@J4.3"] }, async ({ page }) => {
   await openApp(page, { seed: { ...usedState.seed, "products/SKU9": { code: "SKU9", name: "Bleach", price: 4, stock: 3 } } });
   await page.getByRole("button", { name: /Echo Studio/ }).click();
   await page.getByRole("button", { name: "Return", exact: true }).click();
@@ -370,7 +370,7 @@ test("returning an item that isn't on the sheet offers to check it out", async (
   await expect(lineRow(page, "Bleach")).toBeVisible();
 });
 
-test("a sheet made without a signed-in user records who prepared it", async ({ page }) => {
+test("a sheet made without a signed-in user records who prepared it", { tag: ["@J4.1"] }, async ({ page }) => {
   await openApp(page, { unavailable: ["user"] });
   await page.getByRole("button", { name: "+ New sheet" }).click();
   await page.getByLabel("Client", { exact: true }).fill("Mike's Diner");
@@ -381,7 +381,7 @@ test("a sheet made without a signed-in user records who prepared it", async ({ p
   expect(await page.evaluate(() => window.__mock.saves[0].data)).toContain("Prepared by,Sam");
 });
 
-test("sheets from before sign-in show who prepared them, or Unknown", async ({ page }) => {
+test("sheets from before sign-in show who prepared them, or Unknown", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page, {
     unavailable: ["user"],
     seed: {
@@ -396,13 +396,13 @@ test("sheets from before sign-in show who prepared them, or Unknown", async ({ p
   expect(await page.evaluate(() => window.__mock.saves[0].data)).toContain("Prepared by,Unknown");
 });
 
-test("any other failed save asks the user to check their connection", async ({ page }) => {
+test("any other failed save asks the user to check their connection", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page, { writeError: "unavailable" });
   await page.getByRole("button", { name: "Finished Return" }).click();
   await expect(page.locator("#toast")).toHaveText("That didn't save. Check your connection and try again.");
 });
 
-test("view-only users can open a sheet but not change it", async ({ page }) => {
+test("view-only users can open a sheet but not change it", { tag: ["@J9.1"] }, async ({ page }) => {
   await openEcho(page, { canWrite: false });
   await expect(page.locator("#scanbar")).toBeHidden();
   await expect(page.getByRole("button", { name: "Edit details" })).toHaveCount(0);
@@ -410,7 +410,7 @@ test("view-only users can open a sheet but not change it", async ({ page }) => {
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("keys other than Enter don't open a line; the return count can't exceed what's left", async ({ page }) => {
+test("keys other than Enter don't open a line; the return count can't exceed what's left", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Paper towels").press("a");
   await expect(page.locator("#overlay")).toBeHidden();
@@ -424,7 +424,7 @@ test("keys other than Enter don't open a line; the return count can't exceed wha
   await expect(modal(page).locator("#sum")).toContainText("Returned 3 of 3");
 });
 
-test("barcodes that are built-in object keys check out and return like any other", async ({ page }) => {
+test("barcodes that are built-in object keys check out and return like any other", { tag: ["@J4.2", "@J4.3"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await enterBarcode(page, "constructor");
@@ -449,7 +449,7 @@ test("barcodes that are built-in object keys check out and return like any other
   expect(await page.evaluate(() => [Object.prototype.out, Object.out])).toEqual([undefined, undefined]);
 });
 
-test("a tap on the list survives a redraw, and a snapshot with no changes leaves the list alone", async ({ page }) => {
+test("a tap on the list survives a redraw, and a snapshot with no changes leaves the list alone", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page, usedState);
   await page.waitForFunction(() => { const n = document.getElementById("notice"); return n.hidden || !n.textContent.startsWith("Connecting"); });
   const echo = page.getByRole("button", { name: /Echo Studio/ });
@@ -486,7 +486,7 @@ test("a tap on the list survives a redraw, and a snapshot with no changes leaves
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("a tap on a line survives a redraw, and a snapshot with no changes leaves the sheet alone", async ({ page }) => {
+test("a tap on a line survives a redraw, and a snapshot with no changes leaves the sheet alone", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   const row = lineRow(page, "Paper towels");
   await expect(row).toBeVisible();
@@ -525,7 +525,7 @@ test("a tap on a line survives a redraw, and a snapshot with no changes leaves t
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("the sheet's buttons act on the latest copy of the sheet", async ({ page }) => {
+test("the sheet's buttons act on the latest copy of the sheet", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await page.evaluate(() => {
     window.__mock.docs.get("sheets/s1").client = "Echo Studio West";
@@ -536,7 +536,7 @@ test("the sheet's buttons act on the latest copy of the sheet", async ({ page })
   await expect(modal(page).getByLabel("Client", { exact: true })).toHaveValue("Echo Studio West");
 });
 
-test("a refused write to a sheet that's still there switches the page to view-only", async ({ page }) => {
+test("a refused write to a sheet that's still there switches the page to view-only", { tag: ["@J9"] }, async ({ page }) => {
   await openEcho(page, { writeError: "invalid_argument" });
   await page.getByRole("button", { name: "Finished Return" }).click();
   await expect(page.locator("#notice")).toContainText("view-only access");

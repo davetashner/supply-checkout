@@ -22,7 +22,7 @@ async function openEcho(page, opts = usedState) {
   await expect(page.getByRole("heading", { name: "Echo Studio" })).toBeVisible();
 }
 
-test("a slow checkout says it's saving, can't be sent twice or closed, and shows saved only once it is", async ({ page }) => {
+test("a slow checkout says it's saving, can't be sent twice or closed, and shows saved only once it is", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await hold(page);
@@ -53,7 +53,7 @@ test("a slow checkout says it's saving, can't be sent twice or closed, and shows
   expect(await writes(page)).toBe(2);
 });
 
-test("a slow return says it's saving and counts once", async ({ page }) => {
+test("a slow return says it's saving and counts once", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await enterBarcode(page, "SKU1");
@@ -68,7 +68,7 @@ test("a slow return says it's saving and counts once", async ({ page }) => {
   expect((await doc(page, "sheets/s1")).items.SKU1.returned).toBe(2);
 });
 
-test("a checkout that didn't save keeps what was entered, says so, and saves once on Try again", async ({ page }) => {
+test("a checkout that didn't save keeps what was entered, says so, and saves once on Try again", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "NEW1");
   await modal(page).getByLabel("Item name").fill("Wax");
@@ -106,7 +106,7 @@ test("a checkout that didn't save keeps what was entered, says so, and saves onc
 // again finds, so it counts once (src/moves.js). The web build's commands do this with operation
 // IDs (tests/aws-save-states.spec.js).
 const loseWrites = (page, prefix) => mock(page, (p) => { window.__mock.loseWrites = p; }, prefix);
-test("a checkout whose answer was lost counts once on Try again, on the line and in storage", async ({ page }) => {
+test("a checkout whose answer was lost counts once on Try again, on the line and in storage", { tag: ["@J4.2"] }, async ({ page }) => {
   // The line already has as many marks as it keeps: the oldest goes
   const old = Array.from({ length: 10 }, (_, i) => `o${i}`);
   const s1 = usedState.seed["sheets/s1"];
@@ -127,7 +127,7 @@ test("a checkout whose answer was lost counts once on Try again, on the line and
   expect((await doc(page, "sheets/s1")).items.SKU1).toEqual(lost);
 });
 
-test("a return whose answer was lost counts once on Try again", async ({ page }) => {
+test("a return whose answer was lost counts once on Try again", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await enterBarcode(page, "SKU1");
@@ -152,7 +152,7 @@ const qtyLocked = async (page, id) => {
   await expect(modal(page).getByRole("button", { name: "More" })).toBeDisabled();
   await expect(modal(page).getByRole("button", { name: "Fewer" })).toBeDisabled();
 };
-test("a checkout whose storage count didn't save keeps the form open, and Try again counts storage once", async ({ page }) => {
+test("a checkout whose storage count didn't save keeps the form open, and Try again counts storage once", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await failWrites(page, { prefix: "products/", code: "unavailable" });
@@ -178,7 +178,7 @@ test("a checkout whose storage count didn't save keeps the form open, and Try ag
 });
 
 // Closing the form then would leave storage uncounted, so only Cancel closes it, on a second tap
-test("a checkout whose storage count is owed warns before Cancel closes it", async ({ page }) => {
+test("a checkout whose storage count is owed warns before Cancel closes it", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await failWrites(page, { prefix: "products/", code: "unavailable" });
@@ -199,7 +199,7 @@ test("a checkout whose storage count is owed warns before Cancel closes it", asy
   expect((await doc(page, "products/SKU1")).stock).toBe(10);
 });
 
-test("a return whose storage count is owed can still be finished after Cancel warns", async ({ page }) => {
+test("a return whose storage count is owed can still be finished after Cancel warns", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await enterBarcode(page, "SKU1");
@@ -216,7 +216,7 @@ test("a return whose storage count is owed can still be finished after Cancel wa
   expect((await doc(page, "products/SKU1")).stock).toBe(11);
 });
 
-test("a return whose storage count was refused or lost is finished once by trying again", async ({ page }) => {
+test("a return whose storage count was refused or lost is finished once by trying again", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await enterBarcode(page, "SKU1");
@@ -245,7 +245,7 @@ test("a return whose storage count was refused or lost is finished once by tryin
   expect((await doc(page, "sheets/s1")).items.SKU1.returned).toBe(2);
 });
 
-test("changing the quantity after a failure names the new request on the button", async ({ page }) => {
+test("changing the quantity after a failure names the new request on the button", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await failWrites(page, "unavailable");
@@ -261,7 +261,7 @@ test("changing the quantity after a failure names the new request on the button"
   await expect(modal(page).locator("#fQty")).toHaveValue("2");
 });
 
-test("a failure after a Try again that trying again won't fix goes back to the form's own button", async ({ page }) => {
+test("a failure after a Try again that trying again won't fix goes back to the form's own button", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await enterBarcode(page, "SKU1");
@@ -274,7 +274,7 @@ test("a failure after a Try again that trying again won't fix goes back to the f
   await expect(failedNote(page)).toHaveCount(0);
 });
 
-test("offline, nothing is sent and the form says so; back online, Try again saves it once", async ({ page, context }) => {
+test("offline, nothing is sent and the form says so; back online, Try again saves it once", { tag: ["@J4.2"] }, async ({ page, context }) => {
   await openEcho(page);
   const notice = page.locator("#notice");
   await context.setOffline(true);
@@ -302,7 +302,7 @@ test("offline, nothing is sent and the form says so; back online, Try again save
   await expect.poll(() => doc(page, "products/SKU1").then((p) => p.stock)).toBe(12);
 });
 
-test("a new sheet that didn't save is the same sheet on Try again", async ({ page }) => {
+test("a new sheet that didn't save is the same sheet on Try again", { tag: ["@J4.1"] }, async ({ page }) => {
   await openApp(page, usedState);
   await page.getByRole("button", { name: "+ New sheet" }).click();
   await page.getByLabel("Client", { exact: true }).fill("Golf Clinic");
@@ -320,7 +320,7 @@ test("a new sheet that didn't save is the same sheet on Try again", async ({ pag
   expect(sheets).toHaveLength(2);
 });
 
-test("editing a sheet, a line or an item says it's saving", async ({ page }) => {
+test("editing a sheet, a line or an item says it's saving", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await hold(page);
   await page.getByRole("button", { name: "Edit details" }).click();
@@ -355,7 +355,7 @@ test("editing a sheet, a line or an item says it's saving", async ({ page }) => 
 
 // Finishing, reopening and deleting a sheet, and removing a line or deleting an item, send one
 // write however they're tapped, and say they're saving meanwhile (once() and busy() in src/main.js)
-test("finishing and reopening a sheet say they're saving, and a second tap sends nothing", async ({ page }) => {
+test("finishing and reopening a sheet say they're saving, and a second tap sends nothing", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
   await hold(page);
   await page.getByRole("button", { name: "Finished Return" }).click();
@@ -386,7 +386,7 @@ test("finishing and reopening a sheet say they're saving, and a second tap sends
   expect((await doc(page, "sheets/s1")).status).toBe("open");
 });
 
-test("deleting a sheet sends one delete, and a tap after a failed one arms it again", async ({ page }) => {
+test("deleting a sheet sends one delete, and a tap after a failed one arms it again", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await failWrites(page, "unavailable");
   await page.getByRole("button", { name: "Delete sheet" }).click();
@@ -412,7 +412,7 @@ test("deleting a sheet sends one delete, and a tap after a failed one arms it ag
   expect(await writes(page)).toBe(2);
 });
 
-test("removing a line or deleting an item keeps the form busy and writes once", async ({ page }) => {
+test("removing a line or deleting an item keeps the form busy and writes once", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Paper towels").click();
   await modal(page).getByRole("button", { name: "Remove" }).click();
@@ -456,7 +456,7 @@ test("removing a line or deleting an item keeps the form busy and writes once", 
 // claude.ai's db has no timeout, so the artifact gives up on a write after 20 s (write() in
 // src/main.js). The web build's requests time out themselves (tests/aws-save-states.spec.js).
 const WRITE_TIMEOUT = 20e3;
-test("in the artifact, a write that never answers fails after 20 seconds and can be tried again", async ({ page }) => {
+test("in the artifact, a write that never answers fails after 20 seconds and can be tried again", { tag: ["@J4"] }, async ({ page }) => {
   test.skip(currentBuild() === "web", "The web build's requests have their own timeout");
   await page.clock.install();
   await openEcho(page);
@@ -480,7 +480,7 @@ test("in the artifact, a write that never answers fails after 20 seconds and can
   await expect(page.getByRole("heading", { name: "Echo Two" })).toBeVisible();
 });
 
-test("in the artifact, a checkout that timed out and then landed counts once on Try again", async ({ page }) => {
+test("in the artifact, a checkout that timed out and then landed counts once on Try again", { tag: ["@J4.2"] }, async ({ page }) => {
   test.skip(currentBuild() === "web", "The web build's requests have their own timeout");
   await page.clock.install();
   await openEcho(page);
@@ -503,7 +503,7 @@ test("in the artifact, a checkout that timed out and then landed counts once on 
   expect(await writes(page)).toBe(before + 2);
 });
 
-test("in the artifact, a sheet action that never answers gives its button back after 20 seconds", async ({ page }) => {
+test("in the artifact, a sheet action that never answers gives its button back after 20 seconds", { tag: ["@J4"] }, async ({ page }) => {
   test.skip(currentBuild() === "web", "The web build's requests have their own timeout");
   await page.clock.install();
   await openEcho(page);
@@ -515,7 +515,7 @@ test("in the artifact, a sheet action that never answers gives its button back a
   await expect(page.getByRole("button", { name: "Finished Return" })).toBeEnabled();
 });
 
-test("in the artifact, a storage count that timed out and then landed counts once on Try again", async ({ page }) => {
+test("in the artifact, a storage count that timed out and then landed counts once on Try again", { tag: ["@J4.2"] }, async ({ page }) => {
   test.skip(currentBuild() === "web", "The web build's requests have their own timeout");
   await page.clock.install();
   await openEcho(page);

@@ -12,13 +12,13 @@ const openEcho = async (page) => {
   await page.getByRole("button", { name: /Echo Studio/ }).click();
 };
 
-test("a sheet deleted by someone else closes and returns to the list", async ({ page }) => {
+test("a sheet deleted by someone else closes and returns to the list", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await elsewhere(page, (docs) => docs.delete("sheets/s1"));
   await expect(page.getByText("Nothing is checked out right now.")).toBeVisible();
 });
 
-test("checking out again adds to the latest count", async ({ page }) => {
+test("checking out again adds to the latest count", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await elsewhere(page, (docs) => { docs.get("sheets/s1").items.SKU1.out = 5; });
@@ -26,7 +26,7 @@ test("checking out again adds to the latest count", async ({ page }) => {
   await expect(lineRow(page, "Paper towels").locator("td").nth(2)).toHaveText("6");
 });
 
-test("a return saved after someone else removed the line says so, and doesn't make a partial line", async ({ page }) => {
+test("a return saved after someone else removed the line says so, and doesn't make a partial line", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await enterBarcode(page, "SKU1");
@@ -51,7 +51,7 @@ const stillDeleted = async (page) => {
   expect(await page.evaluate(() => window.__mock.docs.has("sheets/s1"))).toBe(false);
 };
 
-test("removing a line from a sheet someone else deleted says so, and doesn't make the sheet again", async ({ page }) => {
+test("removing a line from a sheet someone else deleted says so, and doesn't make the sheet again", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Storage bins").click();
   await elsewhere(page, (docs) => docs.delete("sheets/s1"));
@@ -61,7 +61,7 @@ test("removing a line from a sheet someone else deleted says so, and doesn't mak
   await stillDeleted(page);
 });
 
-test("saving a line on a sheet someone else deleted says so", async ({ page }) => {
+test("saving a line on a sheet someone else deleted says so", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Storage bins").click();
   await elsewhere(page, (docs) => docs.delete("sheets/s1"));
@@ -69,7 +69,7 @@ test("saving a line on a sheet someone else deleted says so", async ({ page }) =
   await stillDeleted(page);
 });
 
-test("removing a line keeps what someone else changed on the sheet meanwhile", async ({ page }) => {
+test("removing a line keeps what someone else changed on the sheet meanwhile", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Storage bins").click();
   // Changed before this page hears of it
@@ -88,7 +88,7 @@ test("removing a line keeps what someone else changed on the sheet meanwhile", a
 
 // claude.ai's db has no conditional writes, so a read and then a write could save a sheet
 // deleted in between. Removing a line writes without reading first.
-test("removing a line from a sheet deleted as it saves doesn't make the sheet again", async ({ page }) => {
+test("removing a line from a sheet deleted as it saves doesn't make the sheet again", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Storage bins").click();
   await page.evaluate(() => window.__mock.hold("sheets/"));
@@ -101,7 +101,7 @@ test("removing a line from a sheet deleted as it saves doesn't make the sheet ag
   await stillDeleted(page);
 });
 
-test("a line removed as a null line doesn't show or count", async ({ page }) => {
+test("a line removed as a null line doesn't show or count", { tag: ["@J4"] }, async ({ page }) => {
   const seed = structuredClone(usedState.seed);
   seed["sheets/s1"].items["nb-bins"] = null;
   await openApp(page, { ...usedState, seed });
@@ -117,7 +117,7 @@ test("a line removed as a null line doesn't show or count", async ({ page }) => 
   expect(await page.evaluate(() => window.__mock.docs.get("sheets/s1").items["nb-bins"])).toMatchObject({ out: 1, returned: 0 });
 });
 
-test("where the runtime refuses a null value, removing a line saves the sheet without it", async ({ page }) => {
+test("where the runtime refuses a null value, removing a line saves the sheet without it", { tag: ["@J4"] }, async ({ page }) => {
   await openApp(page, { ...usedState, rejectsNull: true });
   await page.getByRole("button", { name: /Echo Studio/ }).click();
   await lineRow(page, "Storage bins").click();
@@ -128,7 +128,7 @@ test("where the runtime refuses a null value, removing a line saves the sheet wi
   await expect(lineRow(page, "Storage bins")).toHaveCount(0);
 });
 
-test("removing a line that fails for the connection keeps it", async ({ page }) => {
+test("removing a line that fails for the connection keeps it", { tag: ["@J4"] }, async ({ page }) => {
   await openEcho(page);
   await lineRow(page, "Storage bins").click();
   await page.evaluate(() => { window.__mock.failWrites = "unavailable"; });
@@ -140,7 +140,7 @@ test("removing a line that fails for the connection keeps it", async ({ page }) 
 
 // The artifact adds a checkout or return to the line as it's saved now, even before this page
 // hears of someone else's change (src/moves.js). The web build's commands add on the server.
-test("a checkout adds to the saved line when this page hasn't heard of a change yet", async ({ page }) => {
+test("a checkout adds to the saved line when this page hasn't heard of a change yet", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   await page.evaluate(() => { window.__mock.docs.get("sheets/s1").items.SKU1.out = 5; });
@@ -150,7 +150,7 @@ test("a checkout adds to the saved line when this page hasn't heard of a change 
   await expect(lineRow(page, "Paper towels").locator("td").nth(2)).toHaveText("6");
 });
 
-test("a return adds to the saved line when this page hasn't heard of a change yet", async ({ page }) => {
+test("a return adds to the saved line when this page hasn't heard of a change yet", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await enterBarcode(page, "SKU1");
@@ -160,7 +160,7 @@ test("a return adds to the saved line when this page hasn't heard of a change ye
   expect(await page.evaluate(() => [window.__mock.docs.get("sheets/s1").items.SKU1.returned, window.__mock.docs.get("products/SKU1").stock])).toEqual([3, 11]);
 });
 
-test("picking an item someone else just deleted still opens checkout", async ({ page }) => {
+test("picking an item someone else just deleted still opens checkout", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Add item without a barcode" }).click();
   await elsewhere(page, (docs) => docs.delete("products/nb-bins"));
@@ -171,7 +171,7 @@ test("picking an item someone else just deleted still opens checkout", async ({ 
 
 // The checkout and return forms save against the latest copy of the sheet, or the one they
 // opened on if it's gone. Neither brings back a sheet someone else deleted, or moves stock.
-test("a checkout on a sheet someone else deleted doesn't bring it back or move stock", async ({ page }) => {
+test("a checkout on a sheet someone else deleted doesn't bring it back or move stock", { tag: ["@J4.2"] }, async ({ page }) => {
   await openEcho(page);
   await enterBarcode(page, "SKU1");
   const stock = await page.evaluate(() => window.__mock.docs.get("products/SKU1").stock);
@@ -183,7 +183,7 @@ test("a checkout on a sheet someone else deleted doesn't bring it back or move s
   expect(await page.evaluate(() => [window.__mock.docs.has("sheets/s1"), window.__mock.docs.get("products/SKU1").stock])).toEqual([false, stock]);
 });
 
-test("a return on a sheet someone else deleted doesn't bring it back or move stock", async ({ page }) => {
+test("a return on a sheet someone else deleted doesn't bring it back or move stock", { tag: ["@J4.3"] }, async ({ page }) => {
   await openEcho(page);
   await page.getByRole("button", { name: "Return", exact: true }).click();
   await enterBarcode(page, "SKU1");

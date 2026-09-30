@@ -27,7 +27,7 @@ async function openEcho(page) {
   return backend;
 }
 
-test("a slow checkout is one request however it's tapped, and shows saved once the server answers", async ({ page }) => {
+test("a slow checkout is one request however it's tapped, and shows saved once the server answers", { tag: ["@J4.2"] }, async ({ page }) => {
   const backend = await openEcho(page);
   const release = backend.hold("POST", CHECKOUT);
   await enterBarcode(page, "SKU1");
@@ -47,7 +47,7 @@ test("a slow checkout is one request however it's tapped, and shows saved once t
   expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(9);
 });
 
-test("a return that times out, though the server saved it, counts once on Try again", async ({ page }) => {
+test("a return that times out, though the server saved it, counts once on Try again", { tag: ["@J4.3"] }, async ({ page }) => {
   await page.clock.install();
   const backend = await openEcho(page);
   await page.getByRole("button", { name: "Return", exact: true }).click();
@@ -74,7 +74,7 @@ test("a return that times out, though the server saved it, counts once on Try ag
   expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(11);
 });
 
-test("offline, nothing is sent; back online, the latest shows and Try again checks out once", async ({ page, context }) => {
+test("offline, nothing is sent; back online, the latest shows and Try again checks out once", { tag: ["@J4.2"] }, async ({ page, context }) => {
   const backend = await openEcho(page);
   await enterBarcode(page, "SKU1");
   await modal(page).getByRole("button", { name: "More" }).click();
@@ -103,7 +103,7 @@ test("offline, nothing is sent; back online, the latest shows and Try again chec
   await expect(lineRow(page, "Paper towels").locator("td").nth(2)).toHaveText("6");
 });
 
-test("a new sheet whose answer was lost is saved once on Try again", async ({ page }) => {
+test("a new sheet whose answer was lost is saved once on Try again", { tag: ["@J4.1"] }, async ({ page }) => {
   const backend = await openEcho(page);
   await page.getByRole("button", { name: "← All sheets" }).click();
   backend.on("PUT", /^\/teams\/t1\/sheets\//, { lost: true });
@@ -120,7 +120,7 @@ test("a new sheet whose answer was lost is saved once on Try again", async ({ pa
   expect([...backend.docs.keys()].filter((k) => k.startsWith("t1/sheets/"))).toHaveLength(2);
 });
 
-test("a new sheet saved again over someone else's copy of it still says so", async ({ page }) => {
+test("a new sheet saved again over someone else's copy of it still says so", { tag: ["@J4.1"] }, async ({ page }) => {
   const backend = await openEcho(page);
   await page.getByRole("button", { name: "← All sheets" }).click();
   backend.on("PUT", /^\/teams\/t1\/sheets\//, { lost: true });
@@ -136,7 +136,7 @@ test("a new sheet saved again over someone else's copy of it still says so", asy
   expect(backend.doc("t1", "sheets", id).data.client).toBe("Golf Clinic East");
 });
 
-test("a new item without a barcode whose answer was lost is saved once on Try again", async ({ page }) => {
+test("a new item without a barcode whose answer was lost is saved once on Try again", { tag: ["@J4.2"] }, async ({ page }) => {
   const backend = await openEcho(page);
   await page.getByRole("button", { name: "Inventory" }).click();
   backend.on("PUT", /^\/teams\/t1\/products\//, { lost: true });

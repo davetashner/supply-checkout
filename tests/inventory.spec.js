@@ -7,7 +7,7 @@ const openInventory = async (page, opts = {}) => {
   await page.getByRole("button", { name: "Inventory" }).click();
 };
 
-test("lists items with storage counts, value and totals", async ({ page }) => {
+test("lists items with storage counts, value and totals", { tag: ["@J2"] }, async ({ page }) => {
   await openInventory(page);
   await expect(page.locator("#main")).toContainText("2 items.");
   await expect(inventoryRow(page, "Paper towels").locator("td").nth(3)).toHaveText("—");
@@ -16,7 +16,7 @@ test("lists items with storage counts, value and totals", async ({ page }) => {
   await expect(page.locator("#main tfoot")).toContainText("$95.00");
 });
 
-test("adds an item with a barcode and a storage count", async ({ page }) => {
+test("adds an item with a barcode and a storage count", { tag: ["@J2.1", "@J2.2"] }, async ({ page }) => {
   await openInventory(page);
   await page.getByRole("button", { name: "+ Add item" }).click();
   await expect(modal(page).getByRole("heading", { name: "Add item" })).toBeVisible();
@@ -30,7 +30,7 @@ test("adds an item with a barcode and a storage count", async ({ page }) => {
   expect(await page.evaluate(() => window.__mock.docs.has("products/998877"))).toBe(true);
 });
 
-test("adds an uncounted item without a barcode", async ({ page }) => {
+test("adds an uncounted item without a barcode", { tag: ["@J2.1", "@J2.2"] }, async ({ page }) => {
   await openApp(page);
   await page.getByRole("button", { name: "Inventory" }).click();
   await expect(page.getByText("No items yet.")).toBeVisible();
@@ -46,7 +46,7 @@ test("adds an uncounted item without a barcode", async ({ page }) => {
   expect(await page.evaluate(() => Object.keys(window.__mock.docs.get([...window.__mock.docs.keys()].find(k => k.startsWith("products/")))).sort())).toEqual(["code", "name", "price", "updatedAt"]);
 });
 
-test("an item's name can't be only spaces", async ({ page }) => {
+test("an item's name can't be only spaces", { tag: ["@J2.2"] }, async ({ page }) => {
   await openInventory(page);
   await page.getByRole("button", { name: "+ Add item" }).click();
   await modal(page).getByLabel("Item name").fill("   ");
@@ -54,7 +54,7 @@ test("an item's name can't be only spaces", async ({ page }) => {
   await expect(modal(page).getByRole("heading", { name: "Add item" })).toBeVisible();
 });
 
-test("edits an item's name, price and count", async ({ page }) => {
+test("edits an item's name, price and count", { tag: ["@J2.3"] }, async ({ page }) => {
   await openInventory(page);
   await inventoryRow(page, "Storage bins").click();
   await expect(modal(page).getByRole("heading", { name: "Edit item" })).toBeVisible();
@@ -73,7 +73,7 @@ test("edits an item's name, price and count", async ({ page }) => {
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("deletes an item with two taps", async ({ page }) => {
+test("deletes an item with two taps", { tag: ["@J2.3"] }, async ({ page }) => {
   await openInventory(page);
   await inventoryRow(page, "Storage bins").click();
   await modal(page).getByRole("button", { name: "Delete" }).click();
@@ -82,14 +82,14 @@ test("deletes an item with two taps", async ({ page }) => {
   await expect(inventoryRow(page, "Storage bins")).toHaveCount(0);
 });
 
-test("view-only users see inventory but can't change it", async ({ page }) => {
+test("view-only users see inventory but can't change it", { tag: ["@J9.1"] }, async ({ page }) => {
   await openInventory(page, { canWrite: false });
   await expect(page.getByRole("button", { name: "+ Add item" })).toHaveCount(0);
   await inventoryRow(page, "Paper towels").click();
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("without shared storage, lists say they're loading and saves explain why they failed", async ({ page }) => {
+test("without shared storage, lists say they're loading and saves explain why they failed", { tag: ["@J2"] }, async ({ page }) => {
   await openApp(page, { unavailable: ["db"] });
   await expect(page.getByText("Loading sheets…")).toBeVisible();
   await page.getByRole("button", { name: "Inventory" }).click();
@@ -100,7 +100,7 @@ test("without shared storage, lists say they're loading and saves explain why th
   await expect(page.locator("#toast")).toHaveText("Not connected to shared storage.");
 });
 
-test("keys other than Enter don't open an item", async ({ page }) => {
+test("keys other than Enter don't open an item", { tag: ["@J2.3"] }, async ({ page }) => {
   await openInventory(page);
   await inventoryRow(page, "Paper towels").press("a");
   await expect(page.locator("#overlay")).toBeHidden();
@@ -115,7 +115,7 @@ const costed = {
   },
 };
 
-test("shows cost each, and values storage at cost where it's known", async ({ page }) => {
+test("shows cost each, and values storage at cost where it's known", { tag: ["@J2"] }, async ({ page }) => {
   await openInventory(page, costed);
   await expect(page.locator("#main thead")).toContainText("Cost each");
   const towels = inventoryRow(page, "Paper towels").locator("td");
@@ -132,7 +132,7 @@ test("shows cost each, and values storage at cost where it's known", async ({ pa
 });
 
 // The API takes money from 0 to 1,000,000 (ADR 0014): a form says so rather than failing to save
-test("an item's price and cost over the limit say so, and the item isn't saved until they're fixed", async ({ page }) => {
+test("an item's price and cost over the limit say so, and the item isn't saved until they're fixed", { tag: ["@J2.2"] }, async ({ page }) => {
   await openInventory(page);
   await inventoryRow(page, "Storage bins").click();
   const price = modal(page).getByLabel("Price each ($)"), cost = modal(page).getByLabel("Cost each ($)");
@@ -152,7 +152,7 @@ test("an item's price and cost over the limit say so, and the item isn't saved u
   expect(await page.evaluate(() => window.__mock.docs.get("products/nb-bins"))).toMatchObject({ price: 1000000, cost: 1000000 });
 });
 
-test("editing an item keeps its cost, pack size and any other fields", async ({ page }) => {
+test("editing an item keeps its cost, pack size and any other fields", { tag: ["@J2.3"] }, async ({ page }) => {
   await openInventory(page, costed);
   await inventoryRow(page, "Paper towels").click();
   await expect(modal(page).getByLabel("Cost each ($)")).toHaveValue("6.25");
@@ -165,7 +165,7 @@ test("editing an item keeps its cost, pack size and any other fields", async ({ 
   });
 });
 
-test("edits cost and pack size, rounds old money values, and clears them when blank", async ({ page }) => {
+test("edits cost and pack size, rounds old money values, and clears them when blank", { tag: ["@J2.3"] }, async ({ page }) => {
   await openInventory(page, costed);
   await inventoryRow(page, "Storage bins").click();
   // Values saved before rounding show, and save, rounded to cents

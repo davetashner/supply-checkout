@@ -73,6 +73,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      # Every built journey step has a test and every critical journey an alarm, and
+      # docs/journeys.md matches journeys/registry.json. It lists the Playwright tests,
+      # which load the build the lint step just made.
+      - run: npm run journeys:trace
 
   workflows:
     name: Lint GitHub workflows

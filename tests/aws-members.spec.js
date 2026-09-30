@@ -29,7 +29,7 @@ async function openMembers(page, backend) {
   return backend;
 }
 
-test("an owner sees the members and roles, changes a role and removes a member", async ({ page }) => {
+test("an owner sees the members and roles, changes a role and removes a member", { tag: ["@J3"] }, async ({ page }) => {
   const backend = new FakeBackend({ members: { t1: [ME, SAM, NOEMAIL] } });
   await openMembers(page, backend);
   await expect(dialog(page).locator(".member")).toHaveCount(3);
@@ -70,7 +70,7 @@ test("an owner sees the members and roles, changes a role and removes a member",
   await expect(page.locator("#overlay")).toBeHidden();
 });
 
-test("an owner stepping down or leaving starts again, since their access changed", async ({ page }) => {
+test("an owner stepping down or leaving starts again, since their access changed", { tag: ["@J3"] }, async ({ page }) => {
   const backend = new FakeBackend({ members: { t1: [ME, { ...SAM, role: "owner" }] } });
   await openMembers(page, backend);
   await row(page, "pat@example.com").getByRole("combobox").selectOption("viewer");
@@ -83,7 +83,7 @@ test("an owner stepping down or leaving starts again, since their access changed
   await expect.poll(() => backend.pageLoads).toBe(2);
 });
 
-test("an owner leaving forgets the team", async ({ page }) => {
+test("an owner leaving forgets the team", { tag: ["@J3"] }, async ({ page }) => {
   const backend = new FakeBackend({ members: { t1: [ME, { ...SAM, role: "owner" }] } });
   await openMembers(page, backend);
   await row(page, "pat@example.com").getByRole("button", { name: "Leave" }).click();
@@ -93,7 +93,7 @@ test("an owner leaving forgets the team", async ({ page }) => {
   expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.team"))).toBeNull();
 });
 
-test("says why a change was refused, and puts the role back", async ({ page }) => {
+test("says why a change was refused, and puts the role back", { tag: ["@J3"] }, async ({ page }) => {
   const backend = new FakeBackend({ members: { t1: [ME, { ...SAM, role: "owner" }, NOEMAIL] } });
   await openMembers(page, backend);
   const sam = row(page, "sam@example.com").getByRole("combobox");
@@ -126,7 +126,7 @@ test("says why a change was refused, and puts the role back", async ({ page }) =
   await expect(fail(page)).toBeHidden();
 });
 
-test("says so when the members don't load", async ({ page }) => {
+test("says so when the members don't load", { tag: ["@J3"] }, async ({ page }) => {
   const backend = new FakeBackend({ members: { t1: [ME] } });
   backend.on("GET", PATH, error(500, "internal"));
   await openMembers(page, backend);
@@ -134,14 +134,14 @@ test("says so when the members don't load", async ({ page }) => {
   await expect(dialog(page).locator(".member")).toHaveCount(0);
 });
 
-test("only owners see Members", async ({ page }) => {
+test("only owners see Members", { tag: ["@J3"] }, async ({ page }) => {
   await openAws(page, new FakeBackend({ teams: [{ ...TEAM, role: "contributor" }] }));
   await connected(page);
   await expect(page.locator(".teambar")).toContainText("Team: Echo Cleaning");
   await expect(page.getByRole("button", { name: "Members" })).toHaveCount(0);
 });
 
-test("fits a 320px screen", async ({ page }) => {
+test("fits a 320px screen", { tag: ["@J3"] }, async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 640 });
   await openMembers(page, new FakeBackend({ members: { t1: [ME, { ...SAM, email: "a-very-long-address-for-someone@example.com" }] } }));
   await expect(dialog(page).locator(".member")).toHaveCount(2);
@@ -149,7 +149,7 @@ test("fits a 320px screen", async ({ page }) => {
   expect(await page.locator("#modal").evaluate((m) => m.scrollWidth - m.clientWidth)).toBeLessThanOrEqual(0);
 });
 
-test.describe("seats", () => {
+test.describe("seats", { tag: ["@J7.3"] }, () => {
   const DAY = 86400e3;
   const invite = (id, email, expiresIn, extra = {}) => ({ id, email, role: "contributor", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + expiresIn).toISOString(), inviteStatus: "pending", failureReason: null, failedAt: null, ...extra });
   const seats = (page) => dialog(page).locator("#seats");
