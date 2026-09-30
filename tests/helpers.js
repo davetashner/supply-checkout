@@ -2,6 +2,7 @@ import { test as base, expect } from "@playwright/test";
 import { builtFiles, currentBuild } from "../scripts/builds.mjs";
 import { installMockClaude } from "./mock-claude.js";
 import * as coverage from "./coverage.js";
+import * as journeyVideo from "./journey-video.js";
 
 const ORIGIN = "https://supply-checkout.test/";
 // Fonts and CDN scripts, which openApp aborts to keep tests hermetic
@@ -19,7 +20,7 @@ const files = builtFiles(currentBuild());
 
 // Every test fails on an uncaught exception or console error in the page.
 export const test = base.extend({
-  page: async ({ page, browserName }, use) => {
+  page: async ({ page, browserName }, use, testInfo) => {
     const errors = [];
     page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
     page.on("console", (m) => {
@@ -29,11 +30,15 @@ export const test = base.extend({
     // Only Chromium reports JS coverage
     const measure = coverage.enabled && browserName === "chromium";
     if (measure) await page.coverage.startJSCoverage({ resetOnNavigation: false });
+    // Only while recording journey videos (JOURNEY_VIDEO=1, npm run journeys:video)
+    const video = journeyVideo.enabled ? await journeyVideo.start(page, testInfo) : null;
     await use(page);
+    if (video) await journeyVideo.finish(video, testInfo, errors);
     if (measure) await coverage.report().add(await page.coverage.stopJSCoverage());
     expect(errors, "page errors").toEqual([]);
   },
 });
+journeyVideo.wrapSteps(test);
 export { expect };
 
 export async function openApp(page, opts = {}) {

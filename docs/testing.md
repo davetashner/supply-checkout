@@ -73,31 +73,42 @@ Tests that prove a [customer journey](journeys.md) are tagged with it: `@J4.2` o
 
 ```bash
 npx playwright test --grep "@J4\b" --project=desktop-chrome   # J4's tests (\b keeps @J1 from matching @J10)
-npx playwright test --grep @J4.2 --project=desktop-chrome      # one step's
+npx playwright test --grep "@J4.2\b" --project=desktop-chrome  # one step's (\b keeps @J4.1 from matching @J4.10)
 npm run journeys:trace   # each step with its tests and alarms; fails if anything doesn't trace
 npm run journeys:docs    # regenerate docs/journeys.md's table and step lists from the registry
 ```
 
-`npm run journeys:trace` (`scripts/journeys.mjs`) lists the tests with `playwright test --list`, so it needs a build (`npm run build:artifact`). It fails when a built step of a journey that isn't phase 2 has no test (neither a tagged Playwright test nor a backend test in the registry) and no `untested` reason in the registry, when a planned step has tests tagged with it, when a critical journey has no alarm of its own, when a tag or `test.step` names a step that isn't in the registry, when an alarm the registry calls built isn't in `infra/lib/observability`, or when `docs/journeys.md` doesn't match the registry. It warns, without failing, when a step's status disagrees with its beads in `.beads/issues.jsonl`. `--json <file>` also writes the whole trace, with each step's tests by title. CI's lint job runs it, and its tests are in `scripts/journeys.test.mjs` (`npm run test:scripts`).
+`npm run journeys:trace` (`scripts/journeys.mjs`) lists the tests with `playwright test --list`, which loads the artifact build; it builds it first (`npm run build:artifact`) when `dist/artifact/` is missing, and when a spec can't be loaded it prints Playwright's own error. It fails when a built step of a journey that isn't phase 2 has no test (neither a tagged Playwright test nor a backend test in the registry) and no `untested` reason in the registry, when a planned step has tests tagged with it, when a critical journey has no alarm of its own, when a tag or `test.step` names a step that isn't in the registry, when a `test.step` named for a step is in a test that isn't tagged with that step, when an alarm the registry calls built isn't in `infra/lib/observability`, or when `docs/journeys.md` doesn't match the registry: its generated table and step lists, each journey's hand-written **Status** paragraph (which must start with the table's status), and its hand-written **Tests** paragraphs (every file they name exists, and every test they quote by title is in that file and tagged with the journey or one of its steps). It warns, without failing, when a step's status disagrees with its beads in `.beads/issues.jsonl`. `--json <file>` also writes the whole trace, with each step's tests by title. CI's lint job runs it, and its tests are in `scripts/journeys.test.mjs` (`npm run test:scripts`).
 
 ## Journey videos
 
-`npm run journeys:video` records a video of each [customer journey](journeys.md), J0 to J11 (J12 is phase 2), for people to watch rather than to test anything. A Chromium window opens and a visible cursor moves and clicks through each journey's steps as written, with a caption banner saying what each step shows or checks, and a title card and an end card listing what was shown, what was simulated and what isn't built yet. There's no narration. The videos go to `dist/journey-videos/<J#-slug>.webm` (gitignored), 1280 × 800, and each runs for about a minute.
+`npm run journeys:video` records a video of each [customer journey](journeys.md), J0 to J11 (J12 is phase 2), from the tests that prove it, so the video is evidence of what was tested rather than a demo. Every Playwright test tagged with one of the journey's steps (`@J4.2`; a test tagged only with the journey, `@J4`, isn't in it) runs against the web build, one at a time in one Chromium, and each is recorded. Over each test's page:
 
-It runs the web build against the same fakes as the tests: `FakeBackend` in `tests/fake-aws.js`, and for J5, whose AWS receipt reading isn't built yet, the claude.ai runtime stand-in in `tests/mock-claude.js`. Nothing leaves the machine: any request the fakes don't answer is refused. Where a journey hands off to an outside service (Managed Login, Stripe Checkout and the Customer Portal, email, Stripe's webhooks), the video goes up to the handoff and the caption is marked Simulated; a step that isn't built yet gets a Not built yet caption instead of made-up screens.
+- a caption banner gives the step IDs, the step's text from `journeys/registry.json`, the test's file and name, and the step's state: Running, then Passed or Failed. A `test.step` named for a step (`"J4.2 …"`) switches the caption to that step and shows its own result; otherwise the result is the test's. A failed assertion turns the banner red with the matcher and what it expected and received. A step the registry marks `simulated` says so in the banner.
+- a drawn cursor glides to each element the test clicks, types into or picks from, with a ripple on each click (Playwright's videos don't show the mouse). Only the drawing waits; each action is Playwright's own, unchanged.
+
+A title card starts each video; a card stands in for each step with nothing to show on screen (not built yet, or built and proved by backend tests only, which it names, or built with an `untested` reason); an end card lists each step's result, with the counts of steps passed, failed, simulated, not built yet and proved by backend tests only. There's no narration. It runs against the same fakes as the tests (`tests/fake-aws.js`, `tests/mock-claude.js`), never a real AWS account, Stripe or email.
 
 ```bash
 npm run journeys:video                      # every journey, in a visible browser
 npm run journeys:video -- --only J4         # one journey (or --only J4,J7)
+npm run journeys:video -- --viewport phone  # an iPhone 13's screen in Chromium's mobile emulation (default: desktop)
 npm run journeys:video -- --headless        # no window; the videos are the same
 npm run journeys:video -- --pace 0.3        # shorter pauses, for checking a change quickly
-npm run journeys:video -- --slow-mo 100     # Playwright's slowMo in ms (default 40)
+npm run journeys:video -- --slow-mo 100     # Playwright's slowMo in ms (default 0)
 npm run journeys:video -- --skip-build      # use the dist/web already built
 ```
 
-In a visible window, leave the real mouse and keyboard alone while it records: the page ignores the real pointer's movement, clicks on a dialog's backdrop and Escape, so they can't move the drawn cursor or close a dialog, but a real click on a button still counts. A journey that fails leaves a screenshot beside its video (`<J#-slug>-failed.png`).
+For each journey it writes, in `dist/journey-videos/` (gitignored):
 
-It holds the Playwright run lock (`tests/run-lock.js`) while it runs, so it waits for a test run in another worktree, and uses one browser. The scripts are in `scripts/journey-videos/`: `record.mjs` (the command), `director.mjs` (the cursor, captions and cards drawn in the page) and `journeys.mjs` (one entry per journey). When a journey or its screens change, update its entry there too; nothing in CI runs it.
+- `<J#-slug>.webm`, e.g. `J4-check-supplies-out-and-back-in.webm`: 1280 × 804 on desktop (the tests' 1280 × 720 viewport plus the banner), or 780 × 1552 on a phone (390 × 776 at twice the size), with `-phone` at the end of the name. Its length follows the number of tests: about 12 seconds a test at `--pace 1`.
+- `<J#-slug>.json`, the sidecar, for the release evidence pack: the journey; the video's name, viewport, size, build, commit and time; `duration` in seconds; `summary` (steps passed, failed, simulated, planned, backend, untested and skipped); `steps`, each with its registry text and status, `result` (`passed`, `failed`, `planned`, `backend`, `untested` or `skipped`), `simulated`, its backend tests, and its Playwright tests with each one's result, error and `at`, the second in the video where it shows that step; and `timeline`, each clip in order (`title`, `test`, `step` or `end`) with its start and end in seconds, and for a test its result and events (each step's start and end, and the test's end, in seconds into the video).
+
+The command exits 1 if any recorded test failed; the videos are still written, and show the failure.
+
+How it's put together: `scripts/journey-videos/record.mjs` takes the Playwright run lock (`tests/run-lock.js`) for the whole run, builds the web app, lists the tests and picks each journey's (`assemble.mjs`), and runs them with `--grep` under its own config, `scripts/journey-videos/playwright.config.mjs` (one worker, no retries, Playwright's video on for each test, and `JOURNEY_VIDEO=1`). While `JOURNEY_VIDEO=1` is set, the page fixture in `tests/helpers.js` adds the overlay from `tests/journey-video.js` (drawn by `director.mjs`) and attaches each test's events; without it, which is every other run and CI, nothing of it loads. Then it records the cards and joins the clips in a fixed order into one video per journey, without re-encoding (`webm.mjs`): the title card; each step's tests, each test at the first of the journey's steps it proves, ordered by file and line (a test that proves steps of two journeys is in both videos); the cards for steps without UI tests; and the end card. A test that opens a second page shows only its first. Its tests are in `scripts/journey-videos/journey-videos.test.mjs` (`npm run test:scripts`).
+
+In a visible window, leave the mouse and keyboard alone while it records: a real click or key press reaches the page under test.
 
 ## Coverage
 

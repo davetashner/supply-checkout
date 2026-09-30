@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   validateRegistry, journeyStatus, playwrightTests, stepNames, trace, generateDoc, renderTable,
-  checkHeadings, docAlarms, checkAlarms, renderTrace, main, slug, ROOT,
+  checkHeadings, docAlarms, checkAlarms, renderTrace, main, slug, ROOT, listErrors, listPlaywrightTests,
+  checkTestsLines, checkStatusLines,
 } from "./journeys.mjs";
 
 // A small registry: J0 is critical, J1 is phase 2
@@ -135,11 +136,53 @@ test("tests are read from Playwright's listing once each, with their describe ti
   assert.deepEqual(playwrightTests({ suites: [{ specs: [{ title: "x", file: "b.spec.js", line: 3 }] }] }), [{ file: "tests/b.spec.js", line: 3, title: "x", tags: [] }]);
 });
 
-test("test.step names are read for their step IDs", () => {
+test("test.step names are read for their step IDs and lines", () => {
   assert.deepEqual(stepNames({ "tests/a.spec.js": `await test.step("J0.1 Open a sheet", async () => {});\nawait test.step('setup', f);\ntest.step(\`J4.12 x\`)` }), [
-    { file: "tests/a.spec.js", id: "J0.1" },
-    { file: "tests/a.spec.js", id: "J4.12" },
+    { file: "tests/a.spec.js", id: "J0.1", line: 1 },
+    { file: "tests/a.spec.js", id: "J4.12", line: 3 },
   ]);
+});
+
+test("a test.step named for a step must be in a test tagged with that step", () => {
+  const tests = playwrightTests(listing([spec("opens", ["J0.1"], { line: 1 }), spec("scans", ["J0"], { line: 10 }), spec("tagged by its group", ["J0.2"], { describe: true, line: 20 })]));
+  const steps = [
+    { file: "tests/a.spec.js", id: "J0.1", line: 2 },
+    { file: "tests/a.spec.js", id: "J0.2", line: 12 },
+    { file: "tests/a.spec.js", id: "J0.2", line: 21 },
+    // Above every test (a shared helper): nothing to check it against
+    { file: "tests/b.spec.js", id: "J0.2", line: 1 },
+  ];
+  assert.deepEqual(trace(registry(), tests, { steps }).problems, [
+    `tests/a.spec.js:12: a test.step is named for J0.2 in "scans", which isn't tagged @J0.2`,
+  ]);
+});
+
+test("a failed listing says what Playwright said, and a missing artifact build is built first", () => {
+  const stdout = JSON.stringify({ errors: [{ message: "Error: ENOENT: dist/demo/" }, { message: "SyntaxError in a.spec.js" }] });
+  assert.equal(listErrors(stdout), "Error: ENOENT: dist/demo/\nSyntaxError in a.spec.js");
+  assert.equal(listErrors("not json"), "");
+  const root = mkdtempSync(join(tmpdir(), "journeys-list-"));
+  const calls = [];
+  const fail = (cmd, args) => {
+    calls.push([cmd, ...args].join(" "));
+    if (cmd === "npm") return "";
+    throw Object.assign(new Error("exit 1"), { stdout, stderr: "" });
+  };
+  const errors = console.error;
+  console.error = () => {};
+  try {
+    assert.throws(() => listPlaywrightTests(root, { run: fail }), /Couldn't list the Playwright tests:\nError: ENOENT: dist\/demo\/\nSyntaxError in a\.spec\.js/);
+    assert.deepEqual(calls.map((c) => c.split(" ").slice(0, 3).join(" ")), ["npm run build:artifact", "npx playwright test"]);
+    // Built already: listed straight away; errors in a listing that exits 0 fail it too
+    mkdirSync(join(root, "dist/artifact"), { recursive: true });
+    writeFileSync(join(root, "dist/artifact/index.html"), "");
+    calls.length = 0;
+    assert.deepEqual(listPlaywrightTests(root, { run: (cmd) => { calls.push(cmd); return JSON.stringify({ suites: [] }); } }), { suites: [] });
+    assert.deepEqual(calls, ["npx"]);
+    assert.throws(() => listPlaywrightTests(root, { run: () => stdout }), /SyntaxError in a\.spec\.js/);
+  } finally {
+    console.error = errors;
+  }
 });
 
 test("a built step with no test fails the trace; a tagged test or a listed file covers it", () => {
@@ -260,9 +303,48 @@ test("the alarms must agree with the doc and with infra", () => {
     "Alarm Stock drifting's infra ID stock-drifting isn't in infra/lib/observability",
     "Alarm Site down (docs/journeys.md, Which alarms exist) isn't in journeys/registry.json",
   ]);
+  // An ID is a whole string or ends an alarm name after its severity, never the tail of another ID
+  const suffix = registry();
+  suffix.alarms[0].infra = "errors";
+  assert.deepEqual(checkAlarms(doc(), suffix, infra), ["Alarm API errors's infra ID errors isn't in infra/lib/observability"]);
+  assert.deepEqual(checkAlarms(doc(), registry(), "alarmName: `supply-checkout-${env}-p1-api-errors`"), []);
   const unbuilt = registry();
   delete unbuilt.alarms[0].infra;
   assert.match(checkAlarms(doc(), unbuilt, infra).join("\n"), /Alarm API errors is in docs\/journeys\.md's "Which alarms exist" table, but the registry has no infra ID for it/);
+});
+
+test("the doc's Tests paragraphs name files and tests that exist and are tagged for the journey", () => {
+  const tests = playwrightTests(listing([spec("opens", ["J0.1"]), spec("closes", ["J1"], { line: 2 }), spec("in a group", ["J0"], { describe: true, line: 3 })]));
+  const md = `### J0. Check out
+
+**Status:** partly built.
+
+**Tests:** \`a.spec.js\`: "opens", "in a group"; \`backend/test/commands.test.ts\`, \`b.spec.js\` (all tests).
+
+### J1. Use the app
+
+Some text. **Tests:**
+- \`a.spec.js\`: "closes", "gone", "opens"
+- \`c.spec.js\`: whatever it covers; \`missing.test.ts\`
+
+## Alarms for blocked journeys
+
+**Tests:** \`nowhere.spec.js\`
+`;
+  const exists = (p) => !["tests/nowhere.spec.js", "backend/test/missing.test.ts"].includes(p);
+  assert.deepEqual(checkTestsLines(md, registry(), tests, exists), [
+    "docs/journeys.md, J0's Tests: b.spec.js has no test tagged @J0 or with one of its steps",
+    `docs/journeys.md, J1's Tests: a.spec.js has no test "gone"`,
+    `docs/journeys.md, J1's Tests: "opens" (a.spec.js) isn't tagged @J1 or with one of its steps`,
+    "docs/journeys.md, J1's Tests: c.spec.js has no test tagged @J1 or with one of its steps",
+    "docs/journeys.md, J1's Tests: missing.test.ts doesn't exist",
+  ]);
+});
+
+test("each journey's Status paragraph starts with the status the table computes", () => {
+  const md = "### J0. Check out\n\n**Status:** Partly built: most of it.\n\n### J1. Use the app\n\n**Status:** built.\n\n### J9. Gone\n\n**Status:** x\n";
+  assert.deepEqual(checkStatusLines(md, registry()), [`docs/journeys.md: J1's Status paragraph should start with "planned", as the journeys table says (it starts "built.")`]);
+  assert.deepEqual(checkStatusLines("### J0. Check out\n\nNo status here.\n", registry()), []);
 });
 
 // A repo in a temporary directory, for main()
@@ -334,4 +416,5 @@ test("the repo's own registry and doc agree", () => {
   assert.deepEqual(generated.problems, []);
   assert.equal(generated.md, md, "run npm run journeys:docs");
   assert.deepEqual(checkHeadings(md, reg), []);
+  assert.deepEqual(checkStatusLines(md, reg), []);
 });
