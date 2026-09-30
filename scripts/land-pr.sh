@@ -3,8 +3,9 @@
 #   1. brings the branch up to date with main if it's behind, again if it
 #      falls behind while CI runs, and stops if it has conflicts
 #   2. waits for CI, and prints the failing job's log if it fails
-#   3. squash-merges and deletes the remote branch, or, if main's ruleset
-#      blocks it (a missing approval, say), names the rule and stops
+#   3. squash-merges and deletes the remote branch (retrying twice after a
+#      transient GitHub error), or, if main's ruleset blocks it (a missing
+#      approval, say), names the rule and stops
 #
 #   When main's ruleset has a merge queue, steps 1 to 3 are instead: wait for
 #   the PR's CI, add the PR to the queue, and wait while the queue runs the
@@ -118,6 +119,10 @@ body="$(view body)"
 # How long to keep asking while GitHub reports the merge state as UNKNOWN,
 # which it does for a while after main moves (another PR merging, say).
 unknown_poll=5 unknown_tries=36   # 3 minutes
+
+# How many times to try the squash merge while the PR stays open and clean,
+# waiting merge_backoff seconds longer before each retry (5s, then 10s)
+max_merge_tries=3 merge_backoff=5
 
 # Prints the PR's merge state, or MERGED / CLOSED once the PR is no longer open
 # (a merged PR's merge state stays UNKNOWN forever). Progress goes to stderr.
@@ -383,13 +388,24 @@ elif [ "$state" = "OPEN" ]; then
   else
     say "Squash-merging #$pr"
     # gh can report failure after a successful merge (deleting a local branch
-    # that a worktree has checked out), so trust the PR's state instead.
-    out="$(gh pr merge "$pr" --squash --delete-branch 2>&1)" || true
-    if [ "$(view state)" != "MERGED" ]; then
+    # that a worktree has checked out), so trust the PR's state instead. A
+    # merge can also fail on a transient GitHub error (a GraphQL EOF, say):
+    # while the PR is still open and clean, try again after a short backoff.
+    merge_tries=0
+    while :; do
+      out="$(gh pr merge "$pr" --squash --delete-branch 2>&1)" || true
+      merge_tries=$((merge_tries + 1))
+      status="$(merge_state)"
+      [ "$status" != "MERGED" ] || break
       printf '%s\n' "$out"
-      [ "$(merge_state)" != "BLOCKED" ] || explain_blocked
+      if [ "$status" = "CLEAN" ] && [ "$merge_tries" -lt "$max_merge_tries" ]; then
+        echo "Retrying the merge in $(( merge_backoff * merge_tries ))s: #$pr is still open and clean (try $merge_tries of $max_merge_tries failed)."
+        sleep "$(( merge_backoff * merge_tries ))"
+        continue
+      fi
+      [ "$status" != "BLOCKED" ] || explain_blocked
       fail "Merge failed."
-    fi
+    done
   fi
 fi
 merged=1

@@ -15,6 +15,10 @@
 #                    (default 0; 1 means a check failed, as gh does)
 #   rules.json       what `gh api .../rules/branches/main` returns
 #   merge_ok         if present, `gh pr merge` marks the PR merged
+#   merge_eof        if present, the next `gh pr merge` fails with a transient
+#                    API error, without merging, and removes the file
+#   merge_lies       if present, `gh pr merge` marks the PR merged but still
+#                    fails, as gh does when a step after the merge goes wrong
 #   merge_sets       if present, a jq expression `gh pr merge` applies to
 #                    pr.json instead (for the merge queue cases)
 #   seq.queue        JSON objects, one per line, merged into pr.json by each
@@ -91,7 +95,13 @@ case "$1 $2" in
     exit "$rc" ;;
   "pr update-branch") echo "Updated branch" ;;
   "pr merge")
-    if [ -e "$FAKE/merge_sets" ]; then
+    if [ -e "$FAKE/merge_eof" ]; then
+      rm "$FAKE/merge_eof"
+      echo "Post \"https://api.github.com/graphql\": EOF" >&2; exit 1
+    elif [ -e "$FAKE/merge_lies" ]; then
+      set_field state MERGED
+      echo "failed to delete local branch feat/x: checked out in a worktree" >&2; exit 1
+    elif [ -e "$FAKE/merge_sets" ]; then
       jq "$(cat "$FAKE/merge_sets")" "$pr_json" > "$pr_json.new" && mv "$pr_json.new" "$pr_json"
       echo "! The merge strategy for main is set by the merge queue"
     elif [ -e "$FAKE/merge_ok" ]; then set_field state MERGED; else
@@ -626,8 +636,35 @@ land
 check "exits non-zero" fails
 check "prints gh's error" says "base branch policy prohibits the merge"
 check "says the merge failed" says "Merge failed."
+check "tries the merge 3 times" test "$(count "gh pr merge")" -eq 3
+check "backs off between tries" called "sleep 10"
 check "leaves the worktree and branch" untouched
 check "releases the lock" unlocked
+done_case
+
+echo "merge fails once with a transient error, then succeeds"
+scenario merge-transient
+touch "$FAKE/merge_eof"
+land
+check "exits 0" exits 0
+check "prints gh's error" says "api.github.com/graphql"
+check "says it's retrying" says "Retrying the merge"
+check "tries the merge twice" test "$(count "gh pr merge")" -eq 2
+check "reports the merge commit" says "Merged as abcdef1"
+check "removes the worktree and branch" cleaned_up
+check "closes the Closes bead" called "bd close supply-checkout-abc"
+done_case
+
+echo "merge 'fails' but the PR merged"
+scenario merge-lies
+rm "$FAKE/merge_ok"
+touch "$FAKE/merge_lies"
+land
+check "exits 0" exits 0
+check "doesn't retry" test "$(count "gh pr merge")" -eq 1
+check "doesn't say the merge failed" not_says "Merge failed."
+check "reports the merge commit" says "Merged as abcdef1"
+check "removes the worktree and branch" cleaned_up
 done_case
 
 echo "closed PR"
