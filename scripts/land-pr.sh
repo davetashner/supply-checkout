@@ -144,7 +144,10 @@ merge_state() {
 
 wait_for_ci() {
   say "Waiting for CI on #$pr ($branch)"
-  until gh pr checks "$pr" 2>/dev/null | grep -q 'CI passed'; do sleep 10; done
+  # gh pr checks exits 1 while a check fails and 8 while one is pending, and
+  # under pipefail that exit code, not grep's, would decide the loop: a failed
+  # CI would then keep this land (and the lock) waiting forever.
+  until { gh pr checks "$pr" 2>/dev/null || true; } | grep -q 'CI passed'; do sleep 10; done
   if ! gh pr checks "$pr" --watch --interval 15 >/dev/null; then
     gh pr checks "$pr" || true
     run="$(gh run list --branch "$branch" --workflow CI -L 1 --json databaseId -q '.[0].databaseId')"
