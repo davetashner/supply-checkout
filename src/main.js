@@ -6,6 +6,7 @@ import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, has
 import { lines, lineCharge, totals } from "./sheet-math.js";
 import { $, toast, openModal, closeModal, dismiss, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
+import { shrinkPhoto } from "./photo.js";
 import { RECEIPT_PROMPT, sampleErr } from "./receipt-prompt.js";
 import { sheetCsv, sheetsCsv, inventoryCsv, allJson } from "./export.js";
 import { createFirstRun } from "./first-run.js";
@@ -734,7 +735,7 @@ async function startReceipt(file) {
   $("#rStop").addEventListener("click", () => ctl.abort());
   try {
     const { prompt, ids } = receiptPrompt();
-    const res = await sampleFn.json(prompt, { images: file, signal: ctl.signal });
+    const res = await sampleFn.json(prompt, { images: await shrinkPhoto(file), signal: ctl.signal });
     const items = res && Array.isArray(res.items) ? res.items.filter(i => i && i.name).map(i => ({ ...i, match: own(ids, i.match) || "" })) : [];
     if (!items.length) { receiptError("No line items were found in that photo. Lay the receipt flat, fill the frame, and make sure the text is in focus."); return; }
     draft = newDraft({ ...res, items }); saveDraft(); renderReceipt();
