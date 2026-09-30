@@ -10,8 +10,12 @@
 #   export       what `npm run beads:export` writes to .beads/issues.jsonl
 #                (if missing, the export fails)
 #   land_rc      exit code of `npm run land` (default 0)
-#   open_prs     JSON array of open PRs (number, headRefName) that
-#                `gh pr list` returns (default [])
+#   open_prs     JSON array of open PRs that `gh pr list` returns (default
+#                []); each has number and headRefName, and defaults to an
+#                export PR: isCrossRepository false, author "me" (the gh
+#                user), the export's title, mergeStateStatus CLEAN
+#   files.<n>    JSON array of the paths PR <n> changes (default
+#                [".beads/issues.jsonl"])
 #   calls        every gh and npm call, appended by the fakes
 set -euo pipefail
 
@@ -30,18 +34,32 @@ mkdir -p "$tmp/bin"
 cat > "$tmp/bin/gh" <<'FAKE'
 #!/usr/bin/env bash
 echo "gh $*" >> "$FAKE/calls"
+# The open PRs, with an export PR's defaults filled in
+prs() {
+  jq '[.[] | {isCrossRepository: false, author: {login: "me"}, title: "chore: refresh the beads export", mergeStateStatus: "CLEAN"} + .]' \
+    "$FAKE/open_prs" 2>/dev/null > "$FAKE/prs.json" || echo '[]' > "$FAKE/prs.json"
+}
 case "$1 $2" in
   "pr create") echo "https://github.com/example/repo/pull/77" ;;
   "pr list")
     expr="."
     while [ $# -gt 0 ]; do case "$1" in -q|--jq) expr="$2"; shift 2 ;; *) shift ;; esac; done
-    if [ -e "$FAKE/open_prs" ]; then jq -r "$expr" "$FAKE/open_prs"; else echo '[]' | jq -r "$expr"; fi ;;
+    prs
+    jq -r "$expr" "$FAKE/prs.json" ;;
+  "pr view")
+    n="$3" expr="."
+    while [ $# -gt 0 ]; do case "$1" in -q|--jq) expr="$2"; shift 2 ;; *) shift ;; esac; done
+    prs
+    files="$(cat "$FAKE/files.$n" 2>/dev/null || echo '[".beads/issues.jsonl"]')"
+    jq -r --argjson n "$n" --argjson f "$files" ".[] | select(.number == \$n) | .files = [\$f[] | {path: .}] | $expr" "$FAKE/prs.json" ;;
+  "pr close") ;;
+  "api user") echo me ;;
   *) echo "fake gh: unexpected: gh $*" >&2; exit 2 ;;
 esac
 FAKE
 cat > "$tmp/bin/npm" <<'FAKE'
 #!/usr/bin/env bash
-echo "npm $* (in $(basename "$PWD"))${LAND_SKIP_BACKLOG:+ skip=$LAND_SKIP_BACKLOG}" >> "$FAKE/calls"
+echo "npm $* (in $(basename "$PWD"))${LAND_SKIP_BACKLOG:+ skip=$LAND_SKIP_BACKLOG}${LAND_PR_COPY:+ copy=$LAND_PR_COPY}" >> "$FAKE/calls"
 case "$*" in
   "run -s beads:export")
     [ -e "$FAKE/export" ] || { echo "bd: database not found" >&2; exit 1; }
@@ -200,6 +218,59 @@ check "opens no PR" not_called "gh pr create"
 check "doesn't export" not_called "npm run -s beads:export"
 check "pushes nothing" not_pushed
 check "removes the worktree and branch" tidy
+done_case
+
+echo "export PRs this flow didn't open are never landed"
+scenario not-ours
+echo '[{"number": 50, "headRefName": "chore/beads-export-1", "isCrossRepository": true},
+  {"number": 51, "headRefName": "chore/beads-export-2", "author": {"login": "someone-else"}},
+  {"number": 52, "headRefName": "chore/beads-export-3", "title": "chore: refresh the beads export and CI"},
+  {"number": 53, "headRefName": "chore/beads-export-4"}]' > "$FAKE/open_prs"
+echo '[".beads/issues.jsonl", ".github/workflows/ci.yml"]' > "$FAKE/files.53"
+run_it
+check "exits 0" exits 0
+check "doesn't land a fork's PR" not_called "npm run -s land -- 50"
+check "doesn't land another author's PR" not_called "npm run -s land -- 51"
+check "doesn't land a PR with another title" not_called "npm run -s land -- 52"
+check "doesn't land a PR that changes other files" not_called "npm run -s land -- 53"
+check "warns about the skipped PRs" says "skipping PR #50"
+check "names the extra files" says "skipping PR #53: it changes more than .beads/issues.jsonl (.beads/issues.jsonl .github/workflows/ci.yml)"
+check "closes none of them" not_called "gh pr close"
+check "carries on with the export" called "npm run -s beads:export (in beads-export-"
+done_case
+
+echo "a skipped PR doesn't hide one of ours"
+scenario fork-and-ours
+echo '[{"number": 50, "headRefName": "chore/beads-export-1", "isCrossRepository": true},
+  {"number": 60, "headRefName": "chore/beads-export-2"}]' > "$FAKE/open_prs"
+run_it
+check "exits 0" exits 0
+check "lands ours" called "npm run -s land -- 60"
+check "not the fork's" not_called "npm run -s land -- 50"
+done_case
+
+echo "an open export PR has conflicts"
+scenario open-export-dirty
+echo '[{"number": 66, "headRefName": "chore/beads-export-1", "mergeStateStatus": "DIRTY"}]' > "$FAKE/open_prs"
+echo '{"id":"supply-checkout-abc","status":"closed"}' > "$FAKE/export"
+run_it
+check "exits 0" exits 0
+check "closes it with its branch and a comment" called "gh pr close 66 --delete-branch --comment"
+check "doesn't land it" not_called "npm run -s land -- 66"
+check "opens a fresh export PR" called "gh pr create"
+check "lands the fresh one" called "npm run -s land -- 77"
+done_case
+
+echo "run by npm run land from its temporary copy"
+scenario from-land-copy
+echo '[{"number": 66, "headRefName": "chore/beads-export-1"}]' > "$FAKE/open_prs"
+echo '{"id":"supply-checkout-abc","status":"closed"}' > "$FAKE/export"
+rc=0
+out="$(cd "$repo" && LAND_PR_COPY=/tmp/land-pr.abc bash "$script" 2>&1)" || rc=$?
+check "exits 0" exits 0
+check "the nested lands run from their own copies" not_called "copy="
+check "lands the open PR" called "npm run -s land -- 66"
+check "and the new one" called "npm run -s land -- 77"
 done_case
 
 echo

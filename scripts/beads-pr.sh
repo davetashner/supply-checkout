@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Refreshes the committed beads export (.beads/issues.jsonl) through a chore PR:
-#   1. if a beads export PR is already open (a chore/beads-export-* branch,
-#      from an earlier run whose land didn't finish, say), lands that one
-#      first with npm run land instead of opening another, and stops if it
-#      doesn't land
+#   1. if a beads export PR this flow opened is already open (from an
+#      earlier run whose land didn't finish, say), lands that one first with
+#      npm run land instead of opening another, and stops if it doesn't land.
+#      One with conflicts is closed instead: the export below replaces it.
+#      Only a PR from this repo (not a fork), by the current gh user, titled
+#      as below and changing only .beads/issues.jsonl counts; any other
+#      chore/beads-export-* PR is skipped with a warning, never landed.
 #   2. runs npm run beads:export in a fresh worktree off origin/main
 #   3. if the export changed, commits it (signed off), pushes, opens a
 #      "chore: refresh the beads export" PR and lands it with npm run land
@@ -35,6 +38,39 @@ cleanup() {
   [ ! -d .claude/worktrees ] || find .claude/worktrees -mindepth 1 -type d -empty -delete
 }
 
+# Lands an export PR that's already open (the oldest, if there are several)
+# rather than opening a duplicate. Once it's merged, the export runs off the
+# new main, so it only opens a PR for what that one missed. Landing merges
+# with no review, so only a PR this flow could have opened qualifies.
+land_open_export() {
+  local me number cross author title files state
+  me="$(gh api user --jq .login)" || return 1
+  while IFS=$'\t' read -r number cross author title; do
+    if [ "$cross" != "false" ] || [ "$author" != "$me" ] || [ "$title" != "$TITLE" ]; then
+      echo "Warning: skipping PR #$number: its branch looks like a beads export, but it's not one this flow opened (from a fork, by another author, or another title)." >&2
+      continue
+    fi
+    files="$(gh pr view "$number" --json files --jq '[.files[].path] | join(" ")')"
+    if [ "$files" != ".beads/issues.jsonl" ]; then
+      echo "Warning: skipping PR #$number: it changes more than .beads/issues.jsonl ($files)." >&2
+      continue
+    fi
+    state="$(gh pr view "$number" --json mergeStateStatus --jq .mergeStateStatus)"
+    if [ "$state" = "DIRTY" ]; then
+      say "Beads export PR #$number has conflicts with main: closing it, a fresh export replaces it"
+      gh pr close "$number" --delete-branch --comment "Closed by npm run beads:pr: this export conflicts with main, and a fresh export from the beads database replaces it."
+      continue
+    fi
+    say "Beads export PR #$number is already open: landing it instead of opening another"
+    if ! npm run -s land -- "$number"; then
+      say "PR #$number didn't land. Once it can merge run: npm run land -- $number"
+      return 1
+    fi
+    return 0
+  done < <(gh pr list --state open --limit 100 --json number,headRefName,isCrossRepository,author,title \
+    --jq '[.[] | select(.headRefName | startswith("chore/beads-export-"))] | sort_by(.number) | .[] | [.number, .isCrossRepository, .author.login, .title] | @tsv')
+}
+
 # Everything runs inside beads_pr(), which bash reads in full before running it:
 # npm run land pulls main, which can rewrite this file mid-run.
 beads_pr() {
@@ -42,19 +78,10 @@ beads_pr() {
   pr="" url="" root="" wt="" branch=""
   root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
   cd "$root"
-  # Land an export PR that's already open (the oldest, if there are several)
-  # rather than opening a duplicate. Once it's merged, the export below runs
-  # off the new main, so it only opens a PR for what that one missed.
-  local open_pr
-  open_pr="$(gh pr list --state open --limit 100 --json number,headRefName \
-    --jq '[.[] | select(.headRefName | startswith("chore/beads-export-"))] | sort_by(.number) | .[0].number // empty')"
-  if [ -n "$open_pr" ]; then
-    say "Beads export PR #$open_pr is already open: landing it instead of opening another"
-    if ! npm run -s land -- "$open_pr"; then
-      say "PR #$open_pr didn't land. Once it can merge run: npm run land -- $open_pr"
-      return 1
-    fi
-  fi
+  # When npm run land runs this, its LAND_PR_COPY would make the nested land
+  # skip its own temporary copy and, on exit, delete the outer land's
+  unset LAND_PR_COPY
+  land_open_export || return 1
 
   branch="chore/beads-export-$(date +%Y%m%d-%H%M%S)"
   wt="$root/.claude/worktrees/$branch"
