@@ -721,6 +721,16 @@
               }
             },
             {
+              "Action": "sqs:SendMessage",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "SecurityNoticesDeadLetterQueue8AAFEC0D",
+                  "Arn"
+                ]
+              }
+            },
+            {
               "Action": "ses:SendEmail",
               "Condition": {
                 "StringEquals": {
@@ -895,6 +905,95 @@
         ]
       }
     },
+    "SecurityNoticesDeadLetterQueue8AAFEC0D": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "MessageRetentionPeriod": 1209600,
+        "QueueName": "supply-checkout-prod-security-notices-dlq",
+        "SqsManagedSseEnabled": true,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "email"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
+    },
+    "SecurityNoticesDeadLetterQueuePolicy64AE4CF5": {
+      "Type": "AWS::SQS::QueuePolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sqs:*",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              },
+              "Effect": "Deny",
+              "Principal": {
+                "AWS": "*"
+              },
+              "Resource": {
+                "Fn::GetAtt": [
+                  "SecurityNoticesDeadLetterQueue8AAFEC0D",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "sqs:SendMessage",
+              "Condition": {
+                "ArnEquals": {
+                  "aws:SourceArn": {
+                    "Fn::GetAtt": [
+                      "SecurityNoticeEvents30454F82",
+                      "Arn"
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "events.amazonaws.com"
+              },
+              "Resource": {
+                "Fn::GetAtt": [
+                  "SecurityNoticesDeadLetterQueue8AAFEC0D",
+                  "Arn"
+                ]
+              },
+              "Sid": "AllowEventRulesupplycheckoutproduseast1emailSecurityNoticeEventsCA8A57B4"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Queues": [
+          {
+            "Ref": "SecurityNoticesDeadLetterQueue8AAFEC0D"
+          }
+        ]
+      }
+    },
     "SecurityNoticesFunction1DD6D904": {
       "Type": "AWS::Lambda::Function",
       "Properties": {
@@ -906,6 +1005,14 @@
             "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
           },
           "S3Key": "<asset hash>.zip"
+        },
+        "DeadLetterConfig": {
+          "TargetArn": {
+            "Fn::GetAtt": [
+              "SecurityNoticesDeadLetterQueue8AAFEC0D",
+              "Arn"
+            ]
+          }
         },
         "Description": "Emails the account when its password, two-step sign-in or email is changed directly against Cognito",
         "Environment": {
@@ -1094,6 +1201,14 @@
                 "SecurityNoticesFunction1DD6D904",
                 "Arn"
               ]
+            },
+            "DeadLetterConfig": {
+              "Arn": {
+                "Fn::GetAtt": [
+                  "SecurityNoticesDeadLetterQueue8AAFEC0D",
+                  "Arn"
+                ]
+              }
             },
             "Id": "Target0",
             "RetryPolicy": {

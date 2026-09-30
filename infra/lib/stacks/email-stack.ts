@@ -59,8 +59,10 @@ const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
  *   other item has (dynamodb:Attributes), with nothing returned. IAM can't
  *   name the user or the sort key, so it's every user's partition, but only
  *   those attributes: it can't read or change a user's teams, proofs or TTL.
- * - Lambda tries a failed event twice more. A notice SES refuses isn't
- *   retried; it's counted (SecurityNoticeFailures).
+ * - Lambda tries a failed event twice more, then puts it on the security
+ *   notices dead-letter queue (SQS-encrypted, 14 days), as EventBridge does
+ *   with one it couldn't deliver, so it can be replayed. A notice SES refuses
+ *   isn't retried; it's counted (SecurityNoticeFailures).
  *
  * Deploy after the data stack (the table's key ARN, from SSM), the primary
  * region's domain stack (the topic) and the identity stack (the app pool's ID
@@ -196,6 +198,19 @@ export class EmailStack extends SupplyCheckoutStack {
       description: "Execution role for the security notices function",
     });
     role.addToPolicy(new PolicyStatement({ actions: ["logs:CreateLogStream", "logs:PutLogEvents"], resources: [logGroup.logGroupArn] }));
+    // Events the function or EventBridge gave up on, to replay: CloudTrail records (the user's sub, IP
+    // and user agent; no address or token), encrypted by SQS, kept 14 days. A lookup that fails every
+    // try is also counted in SecurityNoticeFailures, which alarms ("Security notices failing")
+    const deadLetters = new Queue(this, "SecurityNoticesDeadLetterQueue", {
+      queueName: `supply-checkout-${config.envName}-security-notices-dlq`,
+      encryption: QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      retentionPeriod: Duration.days(14),
+    });
+    Validations.of(deadLetters).acknowledge({
+      id: "AwsSolutions-SQS3",
+      reason: "This is the dead-letter queue: it holds security notice events the function or EventBridge couldn't deliver.",
+    });
     const fn = new NodejsFunction(this, "SecurityNoticesFunction", {
       role,
       logGroup,
@@ -209,6 +224,7 @@ export class EmailStack extends SupplyCheckoutStack {
       description: "Emails the account when its password, two-step sign-in or email is changed directly against Cognito",
       environment: { NODE_OPTIONS: "--enable-source-maps", TABLE_NAME: table, [SECURITY_NOTICES_ENV.userPoolId]: userPoolId },
       retryAttempts: 2,
+      deadLetterQueue: deadLetters,
       bundling,
     });
     // noreply@ only, through the configuration set (lib/email.ts)
@@ -267,7 +283,7 @@ export class EmailStack extends SupplyCheckoutStack {
         },
       },
     });
-    rule.addTarget(new LambdaFunction(fn, { retryAttempts: 4, maxEventAge: Duration.hours(6) }));
+    rule.addTarget(new LambdaFunction(fn, { retryAttempts: 4, maxEventAge: Duration.hours(6), deadLetterQueue: deadLetters }));
     return [fn, rule];
   }
 }

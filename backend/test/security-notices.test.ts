@@ -113,7 +113,7 @@ function fakeObservability(): Observability {
   };
 }
 
-const account = (over: Partial<PoolAccount> = {}): PoolAccount => ({ username: SUB, email: OWNER_EMAIL, emailVerified: true, totpEnabled: false, ...over });
+const account = (over: Partial<PoolAccount> = {}): PoolAccount => ({ username: SUB, email: OWNER_EMAIL, emailVerified: true, emailVerifiedInCognito: true, totpEnabled: false, ...over });
 
 beforeEach(() => {
   table = new MemoryTable();
@@ -293,12 +293,32 @@ describe("security notices from CloudTrail", () => {
     it("sends nothing while the new address isn't verified (the pool keeps the old one), or when nothing changed", async () => {
       await recordNoticeAddress(table.db(), SUB, OWNER_EMAIL);
       await handle(cloudTrail("UpdateUserAttributes"));
-      accounts.set(SUB, account({ email: ATTACKER_EMAIL, emailVerified: false }));
+      accounts.set(SUB, account({ email: ATTACKER_EMAIL, emailVerified: false, emailVerifiedInCognito: false }));
       await handle(cloudTrail("UpdateUserAttributes"));
       accounts.set(SUB, account({ email: "OWNER@example.com" }));
       await handle(cloudTrail("VerifyUserAttribute"));
       expect(mails.sent).toEqual([]);
       expect(await noticeAddress(table.db(), SUB)).toBe(OWNER_EMAIL);
+    });
+
+    // The account API doesn't count a linked user's new address (it isn't their recorded one), but Cognito
+    // sends codes and resets to it, so the old address must still be told; likewise a downgrade pending
+    it("tells the old address when a linked user's email is changed directly, though the account API doesn't trust the new one", async () => {
+      await recordNoticeAddress(table.db(), SUB, OWNER_EMAIL);
+      accounts.set(SUB, account({ email: ATTACKER_EMAIL, emailVerified: false, emailVerifiedInCognito: true }));
+      await handle(cloudTrail("VerifyUserAttribute"));
+      expect(mails.sent).toEqual([{ to: OWNER_EMAIL, input: { kind: "emailChanged", at: "2026-09-30T14:05:09.000Z" }, tags: {} }]);
+      // A password or two-step notice still goes only where the account API would send it
+      await handle(cloudTrail("ChangePassword"));
+      expect(mails.sent).toHaveLength(1);
+      expect(metrics.at(-1)).toEqual({ metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "passwordSet", reason: "no_address", via: "cloudtrail" } });
+    });
+
+    it("records only an address the account API trusts when it has none", async () => {
+      accounts.set(SUB, account({ emailVerified: false, emailVerifiedInCognito: true }));
+      await handle(cloudTrail("VerifyUserAttribute"));
+      expect(await noticeAddress(table.db(), SUB)).toBeUndefined();
+      expect(mails.sent).toEqual([]);
     });
 
     it("records the address of an account it hasn't seen, and tells nobody", async () => {
@@ -378,7 +398,7 @@ describe("cognitoAccounts", () => {
       ListUsers: { Users: [{ Username: "native-user", Attributes: attrs({ sub: SUB }) }] },
       AdminGetUser: { Username: "native-user", UserAttributes: attrs({ sub: SUB, email: OWNER_EMAIL, email_verified: "true" }), UserMFASettingList: ["SOFTWARE_TOKEN_MFA"] },
     });
-    expect(await find(SUB)).toEqual({ username: "native-user", email: OWNER_EMAIL, emailVerified: true, totpEnabled: true });
+    expect(await find(SUB)).toEqual({ username: "native-user", email: OWNER_EMAIL, emailVerified: true, emailVerifiedInCognito: true, totpEnabled: true });
     expect(calls).toEqual([
       { action: "ListUsers", body: { UserPoolId: POOL, Filter: `sub = "${SUB}"`, Limit: 1 } },
       { action: "AdminGetUser", body: { UserPoolId: POOL, Username: "native-user" } },
@@ -391,7 +411,13 @@ describe("cognitoAccounts", () => {
     const other = cognito({ ListUsers: { Users: [{ Username: "u" }] }, AdminGetUser: { Username: "u", UserAttributes: attrs({ sub: OTHER_SUB }) } });
     expect(await other.find(SUB)).toBeUndefined();
     const plain = cognito({ ListUsers: { Users: [{ Username: "u" }] }, AdminGetUser: { Username: "u", UserAttributes: [{ Name: "sub", Value: SUB }, { Name: 1 }, null] } });
-    expect(await plain.find(SUB)).toEqual({ username: "u", email: undefined, emailVerified: false, totpEnabled: false });
+    expect(await plain.find(SUB)).toEqual({ username: "u", email: undefined, emailVerified: false, emailVerifiedInCognito: false, totpEnabled: false });
+    // A linked user whose email isn't the recorded one: verified in Cognito, not for the account API
+    const linked = cognito({
+      ListUsers: { Users: [{ Username: "u" }] },
+      AdminGetUser: { Username: "u", UserAttributes: attrs({ sub: SUB, email: ATTACKER_EMAIL, email_verified: "true", identities: '[{"providerName":"Google","userId":"1"}]', "custom:linked_email": OWNER_EMAIL }) },
+    });
+    expect(await linked.find(SUB)).toMatchObject({ emailVerified: false, emailVerifiedInCognito: true });
   });
 
   it("refuses anything but a sub, before calling Cognito, and names only the action and error on failure", async () => {

@@ -33,8 +33,8 @@
 //   MFA methods (so turning it off, or a code checked without turning it on,
 //   sends nothing).
 // - UpdateUserAttributes, VerifyUserAttribute: `emailChanged`, to the
-//   address the account had before, when the verified address is now another
-//   one. The old address is the one recorded in NOTICE_ADDRESS
+//   address the account had before, when the address Cognito has verified
+//   (where it now sends codes and resets) is another one. The old address is the one recorded in NOTICE_ADDRESS
 //   (data/security-notices.ts), written when /me or this function first saw
 //   the account's verified address. The pool keeps the old address until the
 //   new one is verified (keepOriginal), but the event can arrive after that,
@@ -91,15 +91,18 @@ const LOOKUP_ERROR = /^(ListUsers|AdminGetUser) failed: \d{3}( [A-Za-z]+)?$/;
 
 const text = (value: unknown) => (typeof value === "string" && value ? value : undefined);
 
-/** The account's verified address, normalized, or undefined. */
-function verifiedAddress(account: PoolAccount): string | undefined {
-  if (!account.emailVerified || !account.email) return undefined;
+/** The account's address, normalized, if `verified`; otherwise undefined. */
+function addressIf(account: PoolAccount, verified: boolean): string | undefined {
+  if (!verified || !account.email) return undefined;
   try {
     return normalizeEmail(account.email);
   } catch {
     return undefined;
   }
 }
+
+/** The address the account API would send to (emailVerifiedFrom's rule). */
+const verifiedAddress = (account: PoolAccount) => addressIf(account, account.emailVerified);
 
 export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
   const { db, obs } = deps;
@@ -132,14 +135,22 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
     await send(userId, to, { kind, at });
   }
 
-  /** Tells the address the account had before that its email changed, once per change. */
+  /**
+   * Tells the address the account had before that its email changed, once per
+   * change. "Now" is Cognito's own verified address, where codes and resets go,
+   * not the account API's stricter rule: a linked user's address changed
+   * directly is verified in Cognito but isn't their recorded one, and that's a
+   * takeover the old address must hear of. The recorded address itself only
+   * ever starts as one the account API trusts.
+   */
   async function noticeEmailChange(userId: string, account: PoolAccount, at: string): Promise<void> {
-    const current = verifiedAddress(account);
-    // A new address not verified yet (keepOriginal keeps the old one until it is), or none
+    // A new address not verified yet (keepOriginal keeps the old one until it is) changes nothing
+    const current = addressIf(account, account.emailVerifiedInCognito);
     if (!current) return;
     const previous = await noticeAddress(db, userId);
     if (!previous) {
-      await recordNoticeAddress(db, userId, current, now());
+      const trusted = verifiedAddress(account);
+      if (trusted) await recordNoticeAddress(db, userId, trusted, now());
       return;
     }
     if (previous === current) return;

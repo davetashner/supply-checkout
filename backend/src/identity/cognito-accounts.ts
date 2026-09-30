@@ -12,6 +12,12 @@ export interface PoolAccount {
   readonly email?: string;
   /** As the account API decides it (emailVerifiedFrom): verified, no downgrade pending, and a linked user's recorded address. */
   readonly emailVerified: boolean;
+  /**
+   * Cognito's own `email_verified` is "true", whatever else holds: where
+   * Cognito now sends codes and password resets. For telling the old address
+   * of an email change, never a reason to send anything to this address.
+   */
+  readonly emailVerifiedInCognito: boolean;
   /** An authenticator app (TOTP) is one of the user's MFA methods, preferred or not. */
   readonly totpEnabled: boolean;
 }
@@ -49,6 +55,7 @@ export function cognitoAccounts(options: CognitoAdminOptions & { readonly userPo
       username: first.Username,
       email: attributes.email,
       emailVerified: emailVerifiedFrom(user.Username, attributes),
+      emailVerifiedInCognito: attributes.email_verified === "true",
       totpEnabled: Array.isArray(user.UserMFASettingList) && user.UserMFASettingList.includes("SOFTWARE_TOKEN_MFA"),
     };
   };

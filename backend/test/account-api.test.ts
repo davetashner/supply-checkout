@@ -731,12 +731,18 @@ describe("two-step sign-in", () => {
     });
 
     // supply-checkout-8jc.28: the CloudTrail notices function skips a kind marked in the last NOTICE_DEDUPE_MS
-    it("marks each notice's kind sent as soon as Cognito has made the change, so CloudTrail's copy of it isn't emailed again", async () => {
+    it("marks each notice's kind sent once SES has taken it, so CloudTrail's copy of the change isn't emailed again", async () => {
       expect(await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).toMatchObject({ status: 204 });
       expect(table.get(`USER#${OWNER}`, "NOTICE#passwordSet")).toEqual({ PK: `USER#${OWNER}`, SK: "NOTICE#passwordSet", noticeSentAt: at() });
       signOutFailures = 3;
       expect((await call("POST", "/me/mfa/totp/verify", { body: { code: "654321" } })).status).toBe(503);
       expect(table.get(`USER#${OWNER}`, "NOTICE#twoStepOn")).toEqual({ PK: `USER#${OWNER}`, SK: "NOTICE#twoStepOn", noticeSentAt: at() });
+    });
+
+    it("doesn't mark a notice that wasn't sent, so CloudTrail's copy of the change sends it", async () => {
+      mails.state.fail = "SendingPausedException";
+      expect(await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).toMatchObject({ status: 204 });
+      expect(table.get(`USER#${OWNER}`, "NOTICE#passwordSet")).toBeUndefined();
     });
 
     it("still sends the notice when the kind can't be marked, and logs it without the address", async () => {

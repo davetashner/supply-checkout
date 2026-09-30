@@ -126,8 +126,8 @@
 // changes (UpdateUserAttributes and VerifyUserAttribute), are told by the
 // security notices function from CloudTrail (identity/security-notices-handler.ts,
 // supply-checkout-8jc.28, 8jc.29). So that a change made here isn't emailed
-// twice, these routes mark its kind sent as soon as Cognito has made it
-// (markNotice), and /me records the account's first verified address, which
+// twice, these routes mark its kind sent once SES has taken the notice
+// (markNotice; one that wasn't sent is left to that function), and /me records the account's first verified address, which
 // an email change is told to (rememberNoticeAddress).
 //
 // Seats (supply-checkout-l50): after a membership change commits (an invite
@@ -769,6 +769,8 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
         }),
       ]);
       obs.count(BusinessMetric.SecurityNotices, 1, { kind });
+      // Only once it's sent: a notice that didn't go out leaves the CloudTrail copy to send it
+      await markNotice(userId, kind);
     } catch (error) {
       const code = error instanceof EmailNotSentError ? error.code : ((error as { name?: string } | null)?.name ?? "Unknown");
       obs.logger.warn("Security notice not sent", { userId, kind, code });
@@ -779,13 +781,14 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
   }
 
   /**
-   * Marks a notice of `kind` as sent, right after Cognito made the change, so
-   * the security notices function doesn't email it again when CloudTrail's
-   * record of the call reaches it (see "Security notices" at the top). Never
-   * throws: without the mark the account may get two emails, which is better
-   * than failing a change that's made.
+   * Marks a notice of `kind` as sent, once SES has taken it, so the security
+   * notices function doesn't email it again when CloudTrail's record of the
+   * call reaches it (see "Security notices" at the top). One that wasn't sent
+   * isn't marked, so that copy sends it. Never throws: without the mark the
+   * account may get two emails, which is better than failing a change that's
+   * made.
    */
-  async function markNotice(userId: string, kind: "passwordSet" | "twoStepOn"): Promise<void> {
+  async function markNotice(userId: string, kind: AccountNotice): Promise<void> {
     try {
       await markNoticeSent(dbFor({ userId }), userId, kind, new Date(now()));
     } catch (error) {
@@ -951,7 +954,6 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const user = await cognitoUser(event, userId);
     nativeOnly(user);
     await deps.totp.setPassword(accessToken(event), password, currentPassword);
-    await markNotice(userId, "passwordSet");
     obs.logger.info("Password set", { userId });
     await noticeAccount(user, userId, "passwordSet");
     return noContent();
@@ -973,7 +975,6 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     nativeOnly(user);
     const token = accessToken(event);
     await deps.totp.verify(token, code);
-    await markNotice(userId, "twoStepOn");
     obs.logger.info("Two-step sign-in turned on", { userId });
     try {
       // Every earlier session, this one too, began without the code: end them all. Until that

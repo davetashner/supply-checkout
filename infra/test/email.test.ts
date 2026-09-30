@@ -200,7 +200,14 @@ describe("email stack", () => {
       expect(JSON.stringify(pattern)).not.toContain("userIdentity");
       expect(JSON.stringify(pattern).length).toBeLessThan(EVENT_PATTERN_LIMIT * 0.5);
       const [fnId] = noticesFn(t);
-      expect(props.Targets).toEqual([expect.objectContaining({ Arn: { "Fn::GetAtt": [fnId, "Arn"] }, RetryPolicy: { MaximumRetryAttempts: 4, MaximumEventAgeInSeconds: 6 * 3600 } })]);
+      const [[dlqId]] = resources(t, "AWS::SQS::Queue").filter(([, q]) => q.Properties.QueueName === "supply-checkout-prod-security-notices-dlq") as [[string, Resource]];
+      expect(props.Targets).toEqual([
+        expect.objectContaining({
+          Arn: { "Fn::GetAtt": [fnId, "Arn"] },
+          RetryPolicy: { MaximumRetryAttempts: 4, MaximumEventAgeInSeconds: 6 * 3600 },
+          DeadLetterConfig: { Arn: { "Fn::GetAtt": [dlqId, "Arn"] } },
+        }),
+      ]);
       t.hasResourceProperties("AWS::Lambda::Permission", { Action: "lambda:InvokeFunction", Principal: "events.amazonaws.com", FunctionName: { "Fn::GetAtt": [fnId, "Arn"] } });
     });
 
@@ -212,6 +219,14 @@ describe("email stack", () => {
       expect(vars).toMatchObject({ TABLE_NAME: "supply-checkout-prod-app", [EMAIL_ENV.fromAddress]: "noreply@supplycheckout.com", [EMAIL_ENV.appUrl]: "https://app.supplycheckout.com" });
       expect(JSON.stringify(vars.USER_POOL_ID)).toMatch(/SsmParameterValuesupplycheckoutprodidentityuserpoolid/);
       t.hasResourceProperties("AWS::Lambda::EventInvokeConfig", { FunctionName: { Ref: Match.anyValue() }, MaximumRetryAttempts: 2 });
+      // What Lambda and EventBridge gave up on waits to be replayed, encrypted
+      const [[dlqId, dlq]] = resources(t, "AWS::SQS::Queue").filter(([, q]) => q.Properties.QueueName === "supply-checkout-prod-security-notices-dlq") as [[string, Resource]];
+      expect(dlq.Properties).toMatchObject({ SqsManagedSseEnabled: true, MessageRetentionPeriod: 14 * 86400 });
+      expect(fn.Properties.DeadLetterConfig).toEqual({ TargetArn: { "Fn::GetAtt": [dlqId, "Arn"] } });
+      t.hasResourceProperties("AWS::SQS::QueuePolicy", {
+        Queues: [{ Ref: dlqId }],
+        PolicyDocument: Match.objectLike({ Statement: Match.arrayWith([Match.objectLike({ Action: "sqs:SendMessage", Principal: { Service: "events.amazonaws.com" } })]) }),
+      });
     });
 
     it("lets the function look users up in the app pool, send only the app's email, and touch only the notices' attributes", () => {
