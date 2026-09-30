@@ -120,6 +120,7 @@ const ALARM_IDS = [
   "entitlements-drifting",
   "deletion-overdue",
   "team-closed-notices-failing",
+  "reopened-team-subscription-ended",
   "team-reopened-notices-failing",
 ];
 
@@ -624,6 +625,18 @@ describe("alarms added with the email code routes, the live update budget, team 
       TreatMissingData: "notBreaching",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
       AlarmDescription: Match.stringLikeRegexp("^P2 Team reopened emails failing \\(J11"),
+    });
+  });
+
+  it("alarms on any reopened team whose subscription was set to end as it reopened, in every region (J7, J11)", () => {
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-reopened-team-subscription-ended",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ReopenedTeamSubscriptionsEnded }), Stat: "Sum", Period: 900 }) })],
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      AlarmDescription: Match.stringLikeRegexp("^P2 Reopened team's subscription ended \\(J7, J11"),
     });
   });
 

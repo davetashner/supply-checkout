@@ -120,6 +120,7 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
           obs.logger.warn("Closed team's subscription renewed after it closed", { teamId, subscriptionId: sub.id, closedAt: team.closedAt });
         }
         if (!(await markSubscriptionEnding(db, team))) {
+          if (action !== "none") obs.count(BusinessMetric.ReopenedTeamSubscriptionsEnded, 1, { teamId, action });
           obs.logger.error("Team reopened while its subscription was being ended", { teamId, subscriptionId: sub.id, action });
           failed++;
           continue;
