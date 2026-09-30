@@ -15,6 +15,14 @@
 #                    (default 0; 1 means a check failed, as gh does)
 #   rules.json       what `gh api .../rules/branches/main` returns
 #   merge_ok         if present, `gh pr merge` marks the PR merged
+#   no_ci_check      if present, `gh pr checks` lists no CI passed check (as
+#                    while a run waits for approval) and exits 8 (pending)
+#   push_during_ci   if present, `gh pr checks --watch` moves the PR's head to
+#                    a new commit, as a push while CI runs would
+#   merge_eof        if present, the next `gh pr merge` fails with a transient
+#                    API error, without merging, and removes the file
+#   merge_lies       if present, `gh pr merge` marks the PR merged but still
+#                    fails, as gh does when a step after the merge goes wrong
 #   merge_sets       if present, a jq expression `gh pr merge` applies to
 #                    pr.json instead (for the merge queue cases)
 #   seq.queue        JSON objects, one per line, merged into pr.json by each
@@ -76,6 +84,10 @@ case "$1 $2" in
     advance "$fields"
     jq -r "$expr" "$pr_json" ;;
   "pr checks")
+    if [[ " $* " == *" --watch "* ]] && [ -e "$FAKE/push_during_ci" ]; then set_field headRefOid 2222222bbbbbbb; fi
+    if [[ " $* " != *" --watch "* ]] && [ -e "$FAKE/no_ci_check" ]; then
+      printf 'Tests\tpending\t0\thttps://example.invalid\n'; exit 8
+    fi
     if [[ " $* " == *" --watch "* ]] && [ -e "$FAKE/hold" ]; then
       touch "$FAKE/holding"
       while [ -e "$FAKE/hold" ]; do /bin/sleep 0.1; done
@@ -91,7 +103,17 @@ case "$1 $2" in
     exit "$rc" ;;
   "pr update-branch") echo "Updated branch" ;;
   "pr merge")
-    if [ -e "$FAKE/merge_sets" ]; then
+    # Like the real gh: --match-head-commit refuses once the head has moved
+    want="$(sed -n 's/.*--match-head-commit \([^ ]*\).*/\1/p' <<< "$*")"
+    if [ -n "$want" ] && [ "$want" != "$(jq -r .headRefOid "$pr_json")" ]; then
+      echo "X Head branch was modified. Review and try the merge again." >&2; exit 1
+    elif [ -e "$FAKE/merge_eof" ]; then
+      rm "$FAKE/merge_eof"
+      echo "Post \"https://api.github.com/graphql\": EOF" >&2; exit 1
+    elif [ -e "$FAKE/merge_lies" ]; then
+      set_field state MERGED
+      echo "failed to delete local branch feat/x: checked out in a worktree" >&2; exit 1
+    elif [ -e "$FAKE/merge_sets" ]; then
       jq "$(cat "$FAKE/merge_sets")" "$pr_json" > "$pr_json.new" && mv "$pr_json.new" "$pr_json"
       echo "! The merge strategy for main is set by the merge queue"
     elif [ -e "$FAKE/merge_ok" ]; then set_field state MERGED; else
@@ -176,7 +198,7 @@ scenario() {
   git -C "$repo" push -q origin main
   git -C "$repo" worktree add -q .claude/worktrees/feat/x -b feat/x
   cat > "$FAKE/pr.json" <<'EOF'
-{"state": "OPEN", "mergeStateStatus": "CLEAN", "headRefName": "feat/x",
+{"state": "OPEN", "mergeStateStatus": "CLEAN", "headRefName": "feat/x", "headRefOid": "1111111aaaaaaa",
  "body": "Does a thing.\n\nCloses supply-checkout-abc\n",
  "reviews": [], "commits": [{"authors": [{"login": "someone"}]}],
  "url": "https://github.com/example/repo/pull/42", "mergeCommit": {"oid": "abcdef1234567"}}
@@ -231,6 +253,7 @@ scenario clean
 land
 check "exits 0" exits 0
 check "squash-merges" called "gh pr merge 42 --squash --delete-branch"
+check "pins the merge to the commit CI passed on" called "--match-head-commit 1111111aaaaaaa"
 check "reports the merge commit" says "Merged as abcdef1"
 check "removes the worktree and branch" cleaned_up
 check "closes the Closes bead" called "bd close supply-checkout-abc --reason Completed in PR #42"
@@ -626,8 +649,59 @@ land
 check "exits non-zero" fails
 check "prints gh's error" says "base branch policy prohibits the merge"
 check "says the merge failed" says "Merge failed."
+check "tries the merge 3 times" test "$(count "gh pr merge")" -eq 3
+check "backs off between tries" called "sleep 10"
 check "leaves the worktree and branch" untouched
 check "releases the lock" unlocked
+done_case
+
+echo "merge fails once with a transient error, then succeeds"
+scenario merge-transient
+touch "$FAKE/merge_eof"
+land
+check "exits 0" exits 0
+check "prints gh's error" says "api.github.com/graphql"
+check "says it's retrying" says "Retrying the merge"
+check "tries the merge twice" test "$(count "gh pr merge")" -eq 2
+check "reports the merge commit" says "Merged as abcdef1"
+check "removes the worktree and branch" cleaned_up
+check "closes the Closes bead" called "bd close supply-checkout-abc"
+done_case
+
+echo "a push while CI runs"
+scenario pushed-during-ci
+touch "$FAKE/push_during_ci"
+land
+check "exits non-zero" fails
+check "doesn't merge the untested commit" [ "$(jq -r .state "$FAKE/pr.json")" = OPEN ]
+check "says the branch changed" says "feat/x changed after CI passed on 1111111"
+check "doesn't retry" test "$(count "gh pr merge")" -eq 1
+check "leaves the worktree and branch" untouched
+check "releases the lock" unlocked
+done_case
+
+echo "the CI passed check never appears"
+scenario no-ci-check
+touch "$FAKE/no_ci_check"
+land
+check "exits non-zero" fails
+check "says why" says "The CI passed check hasn't appeared on #42 after 30 minutes."
+check "polls every 10s" called "sleep 10"
+check "gives up after 180 polls" test "$(count "sleep 10")" -eq 180
+check "doesn't try to merge" not_called "gh pr merge"
+check "releases the lock" unlocked
+done_case
+
+echo "merge 'fails' but the PR merged"
+scenario merge-lies
+rm "$FAKE/merge_ok"
+touch "$FAKE/merge_lies"
+land
+check "exits 0" exits 0
+check "doesn't retry" test "$(count "gh pr merge")" -eq 1
+check "doesn't say the merge failed" not_says "Merge failed."
+check "reports the merge commit" says "Merged as abcdef1"
+check "removes the worktree and branch" cleaned_up
 done_case
 
 echo "closed PR"
@@ -659,6 +733,7 @@ check "exits 0" exits 0
 check "says main has a merge queue" says "main has a merge queue"
 check "waits for the PR's CI first" called "gh pr checks 42 --watch"
 check "enqueues with gh pr merge" called "gh pr merge 42 --squash"
+check "pins the queued merge to the commit CI passed on" called "gh pr merge 42 --squash --match-head-commit 1111111aaaaaaa"
 check "doesn't pass --delete-branch" not_called "--delete-branch"
 check "doesn't update the branch" not_called "gh pr update-branch"
 check "reports the queue position" says "In the merge queue: position 2, QUEUED"

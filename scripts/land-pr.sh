@@ -2,9 +2,11 @@
 # Lands a pull request the way this repo expects, then tidies up:
 #   1. brings the branch up to date with main if it's behind, again if it
 #      falls behind while CI runs, and stops if it has conflicts
-#   2. waits for CI, and prints the failing job's log if it fails
-#   3. squash-merges and deletes the remote branch, or, if main's ruleset
-#      blocks it (a missing approval, say), names the rule and stops
+#   2. waits for CI (up to 30 minutes for its CI passed check to appear),
+#      and prints the failing job's log if it fails
+#   3. squash-merges the commit CI passed on and deletes the remote branch
+#      (retrying twice after a transient GitHub error), or, if main's ruleset blocks it (a missing
+#      approval, say), names the rule and stops
 #
 #   When main's ruleset has a merge queue, steps 1 to 3 are instead: wait for
 #   the PR's CI, add the PR to the queue, and wait while the queue runs the
@@ -119,6 +121,10 @@ body="$(view body)"
 # which it does for a while after main moves (another PR merging, say).
 unknown_poll=5 unknown_tries=36   # 3 minutes
 
+# How many times to try the squash merge while the PR stays open and clean,
+# waiting merge_backoff seconds longer before each retry (5s, then 10s)
+max_merge_tries=3 merge_backoff=5
+
 # Prints the PR's merge state, or MERGED / CLOSED once the PR is no longer open
 # (a merged PR's merge state stays UNKNOWN forever). Progress goes to stderr.
 merge_state() {
@@ -142,12 +148,30 @@ merge_state() {
   if [ "$state" = "OPEN" ]; then printf '%s\n' "$status"; else printf '%s\n' "$state"; fi
 }
 
+# How long to wait for the CI passed check to show up at all. It never does
+# while a run waits for approval (a first-time contributor's fork, say).
+ci_appear_poll=10 ci_appear_tries=180   # 30 minutes
+
+# Waits for CI and sets head_sha to the commit it ran on. The merge is pinned
+# to that commit (--match-head-commit), so a push after CI can't be merged
+# untested. It's read before the wait: checks are always for this commit or a
+# newer one, and a newer one makes the pinned merge refuse, never merge.
+head_sha=""
 wait_for_ci() {
   say "Waiting for CI on #$pr ($branch)"
+  head_sha="$(view headRefOid)"
   # gh pr checks exits 1 while a check fails and 8 while one is pending, and
   # under pipefail that exit code, not grep's, would decide the loop: a failed
   # CI would then keep this land (and the lock) waiting forever.
-  until { gh pr checks "$pr" 2>/dev/null || true; } | grep -q 'CI passed'; do sleep 10; done
+  local tries=0
+  until { gh pr checks "$pr" 2>/dev/null || true; } | grep -q 'CI passed'; do
+    if [ "$tries" -ge "$ci_appear_tries" ]; then
+      gh pr checks "$pr" 2>&1 || true
+      fail "" "The CI passed check hasn't appeared on #$pr after $(( ci_appear_poll * ci_appear_tries / 60 )) minutes." \
+        "A run may be waiting for approval, or CI didn't start. Look at the PR's checks, then run this again."
+    fi
+    sleep "$ci_appear_poll"; tries=$((tries + 1))
+  done
   if ! gh pr checks "$pr" --watch --interval 15 >/dev/null; then
     gh pr checks "$pr" || true
     run="$(gh run list --branch "$branch" --workflow CI -L 1 --json databaseId -q '.[0].databaseId')"
@@ -342,7 +366,7 @@ if [ "$state" = "OPEN" ] && has_merge_queue; then
     say "Adding #$pr to the merge queue"
     # The queue squash-merges (its ruleset setting). --delete-branch isn't
     # used: the branch is deleted below once the queue has merged it.
-    out="$(gh pr merge "$pr" --squash 2>&1)" || true
+    out="$(gh pr merge "$pr" --squash --match-head-commit "$head_sha" 2>&1)" || true
     wait_for_queue "$out"
     if git push -q origin --delete "$branch" 2>/dev/null; then echo "Deleted remote branch $branch"; fi
   fi
@@ -383,13 +407,27 @@ elif [ "$state" = "OPEN" ]; then
   else
     say "Squash-merging #$pr"
     # gh can report failure after a successful merge (deleting a local branch
-    # that a worktree has checked out), so trust the PR's state instead.
-    out="$(gh pr merge "$pr" --squash --delete-branch 2>&1)" || true
-    if [ "$(view state)" != "MERGED" ]; then
+    # that a worktree has checked out), so trust the PR's state instead. A
+    # merge can also fail on a transient GitHub error (a GraphQL EOF, say):
+    # while the PR is still open and clean, try again after a short backoff.
+    merge_tries=0
+    while :; do
+      out="$(gh pr merge "$pr" --squash --delete-branch --match-head-commit "$head_sha" 2>&1)" || true
+      merge_tries=$((merge_tries + 1))
+      status="$(merge_state)"
+      [ "$status" != "MERGED" ] || break
       printf '%s\n' "$out"
-      [ "$(merge_state)" != "BLOCKED" ] || explain_blocked
+      if [ "$(view headRefOid)" != "$head_sha" ]; then
+        fail "$branch changed after CI passed on ${head_sha:0:7}, so it wasn't merged. Run this again to wait for CI on the new commit."
+      fi
+      if [ "$status" = "CLEAN" ] && [ "$merge_tries" -lt "$max_merge_tries" ]; then
+        echo "Retrying the merge in $(( merge_backoff * merge_tries ))s: #$pr is still open and clean (try $merge_tries of $max_merge_tries failed)."
+        sleep "$(( merge_backoff * merge_tries ))"
+        continue
+      fi
+      [ "$status" != "BLOCKED" ] || explain_blocked
       fail "Merge failed."
-    fi
+    done
   fi
 fi
 merged=1
