@@ -49,7 +49,10 @@ import {
   OPERATOR_RULE_SILENCING_EVENTS,
   OPERATOR_SELF_SERVICE_EVENTS,
   OPERATOR_USER_EVENTS,
+  OPERATOR_LOCKOUT_EVENTS,
   TABLE_KEY_EVENTS,
+  TRAIL_BUCKET_EVENTS,
+  TRAIL_KEY_EVENTS,
   TABLE_POLICY_EVENTS,
   TABLE_UPDATE_EVENTS,
   EVENT_PATTERN_LIMIT,
@@ -1088,7 +1091,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     const t = observability();
     // The deletion records watch's rules are tested with the watch
     const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch"));
-    expect(rules).toHaveLength(14);
+    expect(rules).toHaveLength(15);
     const byId = (prefix: string) => {
       // Logical IDs end in an 8-character hash
       const found = rules.find(([id]) => id.startsWith(prefix) && /^[0-9A-F]{8}$/.test(id.slice(prefix.length)));
@@ -1108,6 +1111,7 @@ describe("operator pool alerts (ADR 0015)", () => {
       snapshotChanges: byId("OperatorGroupSnapshotChanges"),
       routeChanges: byId("OperatorAlertRouteChanges"),
       keyAndTrailChanges: byId("OperatorAlertKeyAndTrailChanges"),
+      trailBucketChanges: byId("OperatorTrailBucketChanges"),
       tampering: byId("OperatorRuleTampering"),
       tamperingWatch: byId("OperatorRuleTamperingWatch"),
       deletionsTampering: byId("DeletionsRuleTampering"),
@@ -1118,7 +1122,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     const { region } = build();
     const west = Template.fromStack(region(WEST).observability);
     expect(Object.values(west.findResources("AWS::Events::Rule")).filter((r) => r.Properties.EventPattern)).toEqual([]);
-    const { t, admin, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, tampering, tamperingWatch, deletionsTampering } = operatorRules();
+    const { t, admin, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering } = operatorRules();
     const poolId = { Ref: expect.stringMatching(/identityopsuserpoolid/i) };
     expect(admin.props.EventPattern).toEqual({
       source: ["aws.cognito-idp"],
@@ -1126,10 +1130,18 @@ describe("operator pool alerts (ADR 0015)", () => {
       detail: {
         eventSource: ["cognito-idp.amazonaws.com"],
         requestParameters: { userPoolId: [poolId] },
-        $or: [{ eventName: [...OPERATOR_USER_EVENTS] }, { eventName: [...OPERATOR_POOL_CONFIG_EVENTS], userIdentity: NOT_CLOUDFORMATION }],
+        $or: [
+          { eventName: [...OPERATOR_USER_EVENTS] },
+          { eventName: [...OPERATOR_POOL_CONFIG_EVENTS], userIdentity: NOT_CLOUDFORMATION },
+          // Locking an operator out: outside a deploy (supply-checkout-6uw.16)
+          { eventName: [...OPERATOR_LOCKOUT_EVENTS], userIdentity: NOT_CLOUDFORMATION },
+        ],
       },
     });
-    for (const name of ["AdminCreateUser", "AdminAddUserToGroup", "AdminRemoveUserFromGroup", "UpdateUserPool", "SetUserPoolMfaConfig", "CreateUserPoolClient", "UpdateUserPoolClient", "AdminSetUserPassword", "AdminResetUserPassword", "AdminEnableUser", "AdminSetUserMFAPreference", "AdminUpdateUserAttributes", "CreateGroup", "UpdateGroup", "DeleteGroup", "CreateIdentityProvider", "AdminLinkProviderForUser"]) {
+    // Deleting an operator always alerts; disabling or signing one out alerts outside a deploy (supply-checkout-6uw.16)
+    expect(OPERATOR_USER_EVENTS).toContain("AdminDeleteUser");
+    expect([...OPERATOR_LOCKOUT_EVENTS]).toEqual(["AdminDisableUser", "AdminUserGlobalSignOut"]);
+    for (const name of ["AdminDeleteUser", "AdminDisableUser", "AdminUserGlobalSignOut", "AdminCreateUser", "AdminAddUserToGroup", "AdminRemoveUserFromGroup", "UpdateUserPool", "SetUserPoolMfaConfig", "CreateUserPoolClient", "UpdateUserPoolClient", "AdminSetUserPassword", "AdminResetUserPassword", "AdminEnableUser", "AdminSetUserMFAPreference", "AdminUpdateUserAttributes", "CreateGroup", "UpdateGroup", "DeleteGroup", "CreateIdentityProvider", "AdminLinkProviderForUser"]) {
       expect(OPERATOR_POOL_ADMIN_EVENTS, name).toContain(name);
     }
     expect(self.props.EventPattern).toEqual({
@@ -1142,7 +1154,7 @@ describe("operator pool alerts (ADR 0015)", () => {
       },
     });
     expect([...OPERATOR_SELF_SERVICE_EVENTS]).toHaveLength(5);
-    for (const rule of [admin, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, tampering, tamperingWatch]) {
+    for (const rule of [admin, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, trailBucketChanges, tampering, tamperingWatch]) {
       expect(rule.props.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP1/) } })]);
       expect(JSON.stringify(rule.props.Targets)).not.toContain("userIdentity");
     }
@@ -1160,7 +1172,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     expect(fromEvents).toEqual(expect.arrayContaining([
       expect.objectContaining({
         Sid: "AllowOperatorPoolAlertToPublish",
-        Condition: { ArnEquals: { "aws:SourceArn": [admin, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, tampering, tamperingWatch, deletionsTampering].map((r) => ({ "Fn::GetAtt": [r.id, "Arn"] })) } },
+        Condition: { ArnEquals: { "aws:SourceArn": [admin, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering].map((r) => ({ "Fn::GetAtt": [r.id, "Arn"] })) } },
       }),
       // The two route rules on the P2 topic, and nothing else
       expect.objectContaining({
@@ -1177,9 +1189,9 @@ describe("operator pool alerts (ADR 0015)", () => {
 
   it("never exempt CloudFormation from user, membership, password or MFA calls, only from pool, client and group configuration (supply-checkout-6uw.7)", () => {
     // The two lists split the calls, with nothing in both
-    expect([...OPERATOR_POOL_ADMIN_EVENTS].sort()).toEqual([...OPERATOR_USER_EVENTS, ...OPERATOR_POOL_CONFIG_EVENTS].sort());
-    expect(OPERATOR_USER_EVENTS.filter((e) => (OPERATOR_POOL_CONFIG_EVENTS as readonly string[]).includes(e))).toEqual([]);
-    for (const name of ["AdminCreateUser", "AdminAddUserToGroup", "AdminRemoveUserFromGroup", "AdminSetUserPassword", "AdminResetUserPassword", "AdminEnableUser", "AdminSetUserMFAPreference", "AdminUpdateUserAttributes", "AdminLinkProviderForUser"]) {
+    expect([...OPERATOR_POOL_ADMIN_EVENTS].sort()).toEqual([...OPERATOR_USER_EVENTS, ...OPERATOR_POOL_CONFIG_EVENTS, ...OPERATOR_LOCKOUT_EVENTS].sort());
+    expect(new Set(OPERATOR_POOL_ADMIN_EVENTS).size).toBe(OPERATOR_POOL_ADMIN_EVENTS.length);
+    for (const name of ["AdminDeleteUser", "AdminCreateUser", "AdminAddUserToGroup", "AdminRemoveUserFromGroup", "AdminSetUserPassword", "AdminResetUserPassword", "AdminEnableUser", "AdminSetUserMFAPreference", "AdminUpdateUserAttributes", "AdminLinkProviderForUser"]) {
       expect(OPERATOR_USER_EVENTS, name).toContain(name);
     }
     // Every exempt call configures the pool, a client, a group or a provider: none names a user
@@ -1408,6 +1420,35 @@ describe("operator pool alerts (ADR 0015)", () => {
     expect([...ALARM_KEY_EVENTS.always, ...ALARM_KEY_EVENTS.outsideDeploys]).toEqual(["DisableKey", "ScheduleKeyDeletion", "PutKeyPolicy"]);
     expect([...ALARM_KEY_ALIAS_EVENTS.always]).toEqual(["CreateAlias", "UpdateAlias"]);
     expect([...ALARM_TOPIC_RESOURCE_EVENTS.always]).toEqual(["PutDataProtectionPolicy"]);
+  });
+
+  it("tell P1 when the CloudTrail trail's bucket or key is changed so the log archive could be destroyed or cut off (supply-checkout-3sv.4)", () => {
+    const { trailBucketChanges } = operatorRules();
+    const bucket = [{ "Fn::Join": ["", [`supply-checkout-prod-trail-${EAST}-`, { Ref: "AWS::AccountId" }]] }];
+    const trailKeyArn = { Ref: expect.stringMatching(/^SsmParameterValuesupplycheckoutprodaudittrailkeyarn/) };
+    expect(trailBucketChanges.props.Name).toBe("supply-checkout-prod-operator-trail-bucket-changes");
+    expect(trailBucketChanges.props.EventPattern).toEqual({
+      source: ["aws.s3", "aws.kms"],
+      "detail-type": ["AWS API Call via CloudTrail"],
+      detail: {
+        $or: [
+          // Deleting the bucket, its policy or its encryption: whoever does it
+          { eventName: [...TRAIL_BUCKET_EVENTS.always], eventSource: ["s3.amazonaws.com"], requestParameters: { bucketName: bucket } },
+          // A one-day lifecycle rule, versioning off, a policy that cuts CloudTrail off, another key or no access logs: outside a deploy
+          { eventName: [...TRAIL_BUCKET_EVENTS.outsideDeploys], eventSource: ["s3.amazonaws.com"], requestParameters: { bucketName: bucket }, userIdentity: NOT_CLOUDFORMATION },
+          // A grant hands the trail key to someone else; rotation off: whoever does it (nothing here ever makes either)
+          { eventName: [...TRAIL_KEY_EVENTS.always], eventSource: ["kms.amazonaws.com"], resources: { ARN: [trailKeyArn] } },
+        ],
+      },
+    });
+    for (const name of ["PutBucketPolicy", "DeleteBucketPolicy", "PutBucketLifecycle", "DeleteBucketLifecycle", "PutBucketVersioning", "PutBucketEncryption", "DeleteBucketEncryption", "PutBucketLogging", "DeleteBucket"]) {
+      expect([...TRAIL_BUCKET_EVENTS.always, ...TRAIL_BUCKET_EVENTS.outsideDeploys], name).toContain(name);
+    }
+    expect([...TRAIL_BUCKET_EVENTS.always]).toEqual(["DeleteBucket", "DeleteBucketPolicy", "DeleteBucketEncryption"]);
+    expect([...TRAIL_KEY_EVENTS.always]).toEqual(["CreateGrant", "DisableKeyRotation"]);
+    const target = JSON.stringify(trailBucketChanges.props.Targets);
+    expect(target).toContain("the CloudTrail trail's bucket or key");
+    expect(target).toContain("$.detail.eventID");
   });
 });
 
@@ -1745,7 +1786,7 @@ describe("EventBridge pattern sizes (supply-checkout-pbp.17)", () => {
       ...patterns([addBackupAccount(new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [] } }), config)]),
     ];
     // The operator and deletion records rules, the backup change rules, and the backup account's
-    expect(all.length).toBeGreaterThanOrEqual(3 * 16 + 3);
+    expect(all.length).toBeGreaterThanOrEqual(3 * 17 + 3);
     for (const { where, size } of all) expect(size, where).toBeLessThan(MAX);
   });
 

@@ -22,7 +22,7 @@ export function installMockClaude(opts) {
   const clone = (o) => (o === undefined ? undefined : JSON.parse(JSON.stringify(o)));
   const docs = new Map(Object.entries(clone(seed)));
   const listeners = new Set();
-  const mock = { docs, saves: [], sampleCalls: [], failWrites: null, loseWrites: null };
+  const mock = { docs, saves: [], sampleCalls: [], sampleImages: [], failWrites: null, loseWrites: null };
   window.__mock = mock;
 
   const denied = () => ({ code: "invalid_argument", message: "write not allowed" });
@@ -134,8 +134,9 @@ export function installMockClaude(opts) {
     },
   };
   const sample = async () => ({ text: "", truncated: false, modelTierApplied: "default" });
-  sample.json = async (prompt, { signal } = {}) => {
+  sample.json = async (prompt, { images, signal } = {}) => {
     mock.sampleCalls.push(prompt);
+    mock.sampleImages.push(images);
     if (sampleHang) await new Promise((_, reject) => signal.addEventListener("abort", () => reject({ code: "cancelled", message: "cancelled" })));
     if (sampleDelay) {
       await new Promise((resolve, reject) => {

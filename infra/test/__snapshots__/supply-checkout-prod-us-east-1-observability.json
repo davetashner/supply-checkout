@@ -299,6 +299,12 @@
                     },
                     {
                       "Fn::GetAtt": [
+                        "OperatorTrailBucketChanges98DE4BC5",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
                         "OperatorRuleTamperingDB445FE1",
                         "Arn"
                       ]
@@ -6653,6 +6659,7 @@
               {
                 "eventName": [
                   "AdminCreateUser",
+                  "AdminDeleteUser",
                   "AdminAddUserToGroup",
                   "AdminRemoveUserFromGroup",
                   "AdminSetUserPassword",
@@ -6673,6 +6680,22 @@
                   "CreateUserPoolClient",
                   "UpdateUserPoolClient",
                   "CreateIdentityProvider"
+                ],
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "AdminDisableUser",
+                  "AdminUserGlobalSignOut"
                 ],
                 "userIdentity": {
                   "invokedBy": [
@@ -8197,6 +8220,144 @@
         ]
       }
     },
+    "OperatorTrailBucketChanges98DE4BC5": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The CloudTrail trail's bucket was deleted or lost its policy or encryption, or changed outside a deploy, or its key granted or rotation turned off (supply-checkout-3sv.4)",
+        "EventPattern": {
+          "source": [
+            "aws.s3",
+            "aws.kms"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "$or": [
+              {
+                "eventName": [
+                  "DeleteBucket",
+                  "DeleteBucketPolicy",
+                  "DeleteBucketEncryption"
+                ],
+                "eventSource": [
+                  "s3.amazonaws.com"
+                ],
+                "requestParameters": {
+                  "bucketName": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "supply-checkout-prod-trail-us-east-1-",
+                          {
+                            "Ref": "AWS::AccountId"
+                          }
+                        ]
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "PutBucketPolicy",
+                  "PutBucketLifecycle",
+                  "DeleteBucketLifecycle",
+                  "PutBucketVersioning",
+                  "PutBucketEncryption",
+                  "PutBucketLogging"
+                ],
+                "eventSource": [
+                  "s3.amazonaws.com"
+                ],
+                "requestParameters": {
+                  "bucketName": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "supply-checkout-prod-trail-us-east-1-",
+                          {
+                            "Ref": "AWS::AccountId"
+                          }
+                        ]
+                      ]
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "CreateGrant",
+                  "DisableKeyRotation"
+                ],
+                "eventSource": [
+                  "kms.amazonaws.com"
+                ],
+                "resources": {
+                  "ARN": [
+                    {
+                      "Ref": "SsmParameterValuesupplycheckoutprodaudittrailkeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-trail-bucket-changes",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the CloudTrail trail's bucket or key at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
     "DeletionsRuleTamperingA967EDC8": {
       "Type": "AWS::Events::Rule",
       "Properties": {
@@ -9083,7 +9244,11 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorGroupChanged\",\"Region\",\"us-east-1\",{\"label\":\"OperatorGroupChanged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorGroupBaselineReset\",\"Region\",\"us-east-1\",{\"label\":\"OperatorGroupBaselineReset (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorGroupMembers\",\"Region\",\"us-east-1\",{\"label\":\"OperatorGroupMembers (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"OperatorGroupChanged\",\"Region\",\"us-west-2\",{\"label\":\"OperatorGroupChanged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorGroupBaselineReset\",\"Region\",\"us-west-2\",{\"label\":\"OperatorGroupBaselineReset (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorGroupMembers\",\"Region\",\"us-west-2\",{\"label\":\"OperatorGroupMembers (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}}]}"
+              "\",\"metrics\":[[\"SupplyCheckout\",\"OperatorGroupChanged\",\"Region\",\"us-east-1\",{\"label\":\"OperatorGroupChanged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorGroupBaselineReset\",\"Region\",\"us-east-1\",{\"label\":\"OperatorGroupBaselineReset (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorGroupMembers\",\"Region\",\"us-east-1\",{\"label\":\"OperatorGroupMembers (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"OperatorGroupChanged\",\"Region\",\"us-west-2\",{\"label\":\"OperatorGroupChanged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorGroupBaselineReset\",\"Region\",\"us-west-2\",{\"label\":\"OperatorGroupBaselineReset (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"OperatorGroupMembers\",\"Region\",\"us-west-2\",{\"label\":\"OperatorGroupMembers (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":85,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J0: security notices emailed, and not\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"SecurityNotices\",\"Region\",\"us-east-1\",{\"label\":\"SecurityNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"SecurityNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNotices\",\"Region\",\"us-west-2\",{\"label\":\"SecurityNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"SecurityNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
             ]
           ]
         },

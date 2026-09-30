@@ -136,7 +136,7 @@ beforeEach(() => {
       verifiedNow.add(token.replace(/^token-/, ""));
     },
   };
-  handler = createAccountHandler({ dbFor, userInfo, emailCodes, totp, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, now: () => now });
+  handler = createAccountHandler({ dbFor, userInfo, emailCodes, totp, issuerUrl: ISSUER, obs: fakeObservability(), mailer: mails.mailer, deleteUser: unusedDeleteUser, deletions: unusedDeletionLog, noticeTimeoutMs: 50, now: () => now });
 });
 
 interface Request {
@@ -618,6 +618,114 @@ describe("two-step sign-in", () => {
     signOutRefusal = new ApiError(401, "unauthenticated", "Sign in again");
     expect((await call("POST", "/me/sign-out-everywhere")).status).toBe(401);
     expect(totpCalls).toEqual([["signOutEverywhere", `token-${OWNER}`]]);
+  });
+
+  // supply-checkout-8jc.15: someone who got into the account can't set a password or an
+  // authenticator without the account's verified address hearing about it
+  describe("security notices", () => {
+    beforeEach(() => {
+      mails.sent.length = 0;
+      mails.state.fail = undefined;
+    });
+    const at = () => new Date(now).toISOString();
+
+    it("emails the verified address from Cognito when a password is set, and when two-step sign-in turns on", async () => {
+      // The body can't choose where it goes: an unexpected field is refused before anything runs
+      expect((await call("POST", "/me/password", { body: { password: "Correct-Horse-9", email: "mallory@example.com" } })).status).toBe(400);
+      expect(mails.sent).toEqual([]);
+      expect(await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).toEqual({ status: 204, body: undefined });
+      expect(await call("POST", "/me/mfa/totp/verify", { body: { code: "654321" } })).toEqual({ status: 204, body: undefined });
+      expect(mails.sent).toEqual([
+        { to: "owner@example.com", input: { kind: "passwordSet", at: at() }, tags: {} },
+        { to: "owner@example.com", input: { kind: "twoStepOn", at: at() }, tags: {} },
+      ]);
+      // After every other session ended
+      expect(totpCalls.at(-1)?.[0]).toBe("signOutEverywhere");
+      expect(counts[BusinessMetric.SecurityNotices]).toBe(2);
+      expect(counts[BusinessMetric.SecurityNoticeFailures]).toBeUndefined();
+      // Normalized, as invites are: the verified address, never one from the request
+      expect(await call("POST", "/me/password", { user: PAT, body: { password: "Correct-Horse-9" } })).toMatchObject({ status: 204 });
+      expect(mails.sent.at(-1)?.to).toBe("pat@example.com");
+    });
+
+    it("still sends the two-step notice when the sign-out everywhere couldn't finish", async () => {
+      signOutFailures = 3;
+      expect(await call("POST", "/me/mfa/totp/verify", { body: { code: "654321" } })).toMatchObject({ status: 503, body: { error: { reason: "signout_failed" } } });
+      expect(mails.sent.map((m) => m.input.kind)).toEqual(["twoStepOn"]);
+      signOutFailures = 0;
+      signOutRefusal = new ApiError(401, "unauthenticated", "Sign in again");
+      expect((await call("POST", "/me/mfa/totp/verify", { body: { code: "654321" } })).status).toBe(401);
+      expect(mails.sent.map((m) => m.input.kind)).toEqual(["twoStepOn", "twoStepOn"]);
+    });
+
+    it("keeps the change when the email isn't sent, and logs it without the address", async () => {
+      mails.state.fail = "SendingPausedException";
+      expect(await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).toEqual({ status: 204, body: undefined });
+      expect(await call("POST", "/me/mfa/totp/verify", { body: { code: "654321" } })).toEqual({ status: 204, body: undefined });
+      expect(totpCalls.map((c) => c[0])).toEqual(["setPassword", "verify", "signOutEverywhere"]);
+      expect(logs).toContainEqual(["Security notice not sent", { userId: OWNER, kind: "passwordSet", code: "SendingPausedException" }]);
+      expect(logs).toContainEqual(["Security notice not sent", { userId: OWNER, kind: "twoStepOn", code: "SendingPausedException" }]);
+      expect(counts[BusinessMetric.SecurityNoticeFailures]).toBe(2);
+      expect(counts[BusinessMetric.SecurityNotices]).toBeUndefined();
+      // Nothing that names the person, or the password or code, in any log line
+      expect(JSON.stringify(logs)).not.toMatch(/owner@|example\.com|Correct-Horse|654321|token-/i);
+    });
+
+    it("counts a notice with no verified address to send it to as not sent", async () => {
+      USERS["user-no-address"] = { sub: "user-no-address", email: "gone@example.com", emailVerified: false, emailVerifiedInCognito: true, totp: false, federated: false };
+      expect(await call("POST", "/me/password", { user: "user-no-address", body: { password: "Correct-Horse-9" } })).toEqual({ status: 204, body: undefined });
+      expect(mails.sent).toEqual([]);
+      expect(logs).toContainEqual(["Security notice not sent", { userId: "user-no-address", kind: "passwordSet", code: "NoAddress" }]);
+      expect(counts[BusinessMetric.SecurityNoticeFailures]).toBe(1);
+      expect(JSON.stringify(logs)).not.toContain("gone@");
+    });
+
+    it("keeps the change when rendering or the mailer throws something else", async () => {
+      const failing = { send: async () => Promise.reject(Object.assign(new Error("owner@example.com rejected"), { name: "Weird" })) };
+      const original = mails.mailer.send;
+      mails.mailer.send = failing.send;
+      try {
+        expect(await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).toEqual({ status: 204, body: undefined });
+        mails.mailer.send = async () => Promise.reject(null);
+        expect(await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).toEqual({ status: 204, body: undefined });
+      } finally {
+        mails.mailer.send = original;
+      }
+      expect(logs).toContainEqual(["Security notice not sent", { userId: OWNER, kind: "passwordSet", code: "Weird" }]);
+      expect(logs).toContainEqual(["Security notice not sent", { userId: OWNER, kind: "passwordSet", code: "Unknown" }]);
+      expect(JSON.stringify(logs)).not.toContain("owner@");
+    });
+
+    it("answers without waiting on a slow SES, and logs the notice as timed out", async () => {
+      const original = mails.mailer.send;
+      mails.mailer.send = () => new Promise(() => {});
+      try {
+        expect(await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).toEqual({ status: 204, body: undefined });
+        expect(await call("POST", "/me/mfa/totp/verify", { body: { code: "654321" } })).toEqual({ status: 204, body: undefined });
+      } finally {
+        mails.mailer.send = original;
+      }
+      expect(logs).toContainEqual(["Security notice not sent", { userId: OWNER, kind: "passwordSet", code: "Timeout" }]);
+      expect(logs).toContainEqual(["Security notice not sent", { userId: OWNER, kind: "twoStepOn", code: "Timeout" }]);
+      expect(counts[BusinessMetric.SecurityNoticeFailures]).toBe(2);
+    });
+
+    it("sends nothing when the change itself fails", async () => {
+      totpFailure = new ApiError(400, "bad_request", "That current password isn't right", "password_mismatch");
+      expect((await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).status).toBe(400);
+      totpFailure = new Error("ChangePassword failed: 500 InternalErrorException");
+      expect((await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).status).toBe(500);
+      totpFailure = undefined;
+      expect((await call("POST", "/me/mfa/totp/verify", { body: { code: "111111" } })).status).toBe(400);
+      expect((await call("POST", "/me/password", { body: { password: "" } })).status).toBe(400);
+      expect((await call("POST", "/me/password", { user: FEDERATED, body: { password: "Correct-Horse-9" } })).status).toBe(409);
+      expect((await call("POST", "/me/mfa/totp/verify", { user: FEDERATED, body: { code: "654321" } })).status).toBe(409);
+      // Starting a setup changes nothing yet
+      expect((await call("POST", "/me/mfa/totp")).status).toBe(200);
+      expect(mails.sent).toEqual([]);
+      expect(counts[BusinessMetric.SecurityNotices]).toBeUndefined();
+      expect(counts[BusinessMetric.SecurityNoticeFailures]).toBeUndefined();
+    });
   });
 
   it("passes on Cognito's refusals, and only for the token's own user", async () => {

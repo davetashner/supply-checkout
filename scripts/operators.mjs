@@ -96,8 +96,9 @@ export function withSecretFile(body, fn, base = tmpdir()) {
 
 /**
  * The admin calls on the operator pool that alert the P1 topic (OperatorPoolChanges).
- * Keep in step with OPERATOR_USER_EVENTS in infra/lib/stacks/observability-stack.ts
- * (scripts/operators.test.mjs checks).
+ * Keep in step with OPERATOR_USER_EVENTS and OPERATOR_LOCKOUT_EVENTS in
+ * infra/lib/stacks/observability-stack.ts (scripts/operators.test.mjs checks):
+ * deleting, disabling and signing out an operator alert too (supply-checkout-6uw.16).
  */
 export const ALERTING_CALLS = {
   "admin-create-user": "AdminCreateUser",
@@ -109,6 +110,9 @@ export const ALERTING_CALLS = {
   "admin-set-user-mfa-preference": "AdminSetUserMFAPreference",
   "admin-update-user-attributes": "AdminUpdateUserAttributes",
   "admin-link-provider-for-user": "AdminLinkProviderForUser",
+  "admin-delete-user": "AdminDeleteUser",
+  "admin-disable-user": "AdminDisableUser",
+  "admin-user-global-sign-out": "AdminUserGlobalSignOut",
 };
 
 export const USAGE = `Usage: npm run operators -- <command> [options]

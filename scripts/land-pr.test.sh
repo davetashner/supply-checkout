@@ -11,7 +11,8 @@
 #   pr.json          the PR as `gh pr view --json` sees it
 #   seq.<field>      values for <field>, one per line, one taken per read that
 #                    asks for it; the last line then sticks
-#   checks_rc        exit code of `gh pr checks --watch` (default 0)
+#   checks_rc        exit code of `gh pr checks`, with or without --watch
+#                    (default 0; 1 means a check failed, as gh does)
 #   rules.json       what `gh api .../rules/branches/main` returns
 #   merge_ok         if present, `gh pr merge` marks the PR merged
 #   merge_sets       if present, a jq expression `gh pr merge` applies to
@@ -80,11 +81,14 @@ case "$1 $2" in
       while [ -e "$FAKE/hold" ]; do /bin/sleep 0.1; done
     fi
     if [[ " $* " == *" --watch "* ]]; then exit "$(cat "$FAKE/checks_rc" 2>/dev/null || echo 0)"; fi
-    if [ "$(cat "$FAKE/checks_rc" 2>/dev/null || echo 0)" = 0 ]; then
+    # Like the real gh: exit 1 when a check failed (and 8 while one is pending).
+    rc="$(cat "$FAKE/checks_rc" 2>/dev/null || echo 0)"
+    if [ "$rc" = 0 ]; then
       printf 'CI passed\tpass\t1m\thttps://example.invalid\n'
     else
       printf 'CI passed\tfail\t1m\thttps://example.invalid\nTests\tfail\t1m\thttps://example.invalid\n'
-    fi ;;
+    fi
+    exit "$rc" ;;
   "pr update-branch") echo "Updated branch" ;;
   "pr merge")
     if [ -e "$FAKE/merge_sets" ]; then

@@ -692,3 +692,120 @@ test("cases added to an existing sheet line add eaches and keep the line's price
   const sheets = await docs(page, "sheets/");
   expect(sheets["sheets/s1"].items.GL).toEqual({ code: "GL", name: "Gloves, box", price: 1.8, cost: 0.9, out: 16, returned: 1, ops: [expect.any(String)] });
 });
+
+// Receipt photos are shrunk before they're read (src/photo.js). Test photos are drawn in the
+// page: canvas JPEGs, returned as bytes
+const drawJpeg = (page, spec) => page.evaluate(async ({ w, h, kind, quality, noise = 12 }) => {
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  const g = c.getContext("2d");
+  if (kind === "halves") {
+    g.fillStyle = "#f00"; g.fillRect(0, 0, w / 2, h);
+    g.fillStyle = "#00f"; g.fillRect(w / 2, 0, w / 2, h);
+  } else {
+    // Like a phone photo of a receipt: a shaded table, a paper strip of text, and sensor noise
+    const bg = g.createLinearGradient(0, 0, w, h); bg.addColorStop(0, "#6b5a48"); bg.addColorStop(1, "#3a3026"); g.fillStyle = bg; g.fillRect(0, 0, w, h);
+    g.fillStyle = "#f4f1ea"; g.fillRect(w * 0.3, h * 0.05, w * 0.4, h * 0.9);
+    g.fillStyle = "#222"; g.font = `${Math.round(h / 60)}px monospace`;
+    for (let i = 0; i < 45; i++) g.fillText(`ITEM ${1000 + i * 37} STORAGE BIN 12QT   ${(i * 3.17).toFixed(2)}`, w * 0.32, h * 0.08 + i * h / 52);
+    const img = g.getImageData(0, 0, w, h), d = img.data;
+    let seed = 1;
+    for (let i = 0; i < d.length; i += 4) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; const n = (seed % (2 * noise + 1)) - noise; d[i] += n; d[i + 1] += n; d[i + 2] += n; }
+    g.putImageData(img, 0, 0);
+  }
+  const blob = await new Promise((r) => c.toBlob(r, "image/jpeg", quality));
+  return [...new Uint8Array(await blob.arrayBuffer())];
+}, spec).then((bytes) => Buffer.from(bytes));
+
+// An EXIF segment (APP1) with just an Orientation tag, put after the JPEG's JFIF segment (APP0)
+const withOrientation = (jpeg, orientation) => {
+  const tiff = Buffer.from([0x4d, 0x4d, 0, 0x2a, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, orientation, 0, 0, 0, 0, 0, 0]);
+  const body = Buffer.concat([Buffer.from("Exif\0\0", "binary"), tiff]);
+  const app1 = Buffer.concat([Buffer.from([0xff, 0xe1, 0, body.length + 2]), body]);
+  const at = jpeg[2] === 0xff && jpeg[3] === 0xe0 ? 4 + jpeg.readUInt16BE(4) : 2;
+  return Buffer.concat([jpeg.subarray(0, at), app1, jpeg.subarray(at)]);
+};
+
+// What the page sent to be read: its type, size and dimensions, the colour at some points, and
+// its EXIF orientation tag
+const sentImage = (page, points = []) => page.evaluate(async (pts) => {
+  const f = window.__mock.sampleImages[0];
+  const bmp = await createImageBitmap(f);
+  const c = document.createElement("canvas"); c.width = bmp.width; c.height = bmp.height;
+  const g = c.getContext("2d"); g.drawImage(bmp, 0, 0);
+  const colours = pts.map(([x, y]) => [...g.getImageData(x, y, 1, 1).data.slice(0, 3)]);
+  // A reader that ignores EXIF (as a model may) sees the pixels as stored, so they must be
+  // upright: no orientation tag, or 1 (WebKit's encoder writes one)
+  const b = new DataView(await f.arrayBuffer());
+  let orientation = 1;
+  for (let at = 2; at + 4 < b.byteLength && b.getUint8(at) === 0xff && b.getUint8(at + 1) !== 0xda; at += 2 + b.getUint16(at + 2)) {
+    if (b.getUint8(at + 1) !== 0xe1 || b.getUint32(at + 4) !== 0x45786966) continue;
+    const t = at + 10, le = b.getUint16(t) === 0x4949, ifd = t + b.getUint32(t + 4, le);
+    for (let i = 0; i < b.getUint16(ifd, le); i++) if (b.getUint16(ifd + 2 + i * 12, le) === 0x0112) orientation = b.getUint16(ifd + 2 + i * 12 + 8, le);
+  }
+  return { type: f.type, name: f.name, size: f.size, width: bmp.width, height: bmp.height, colours, orientation };
+}, points);
+const upload = async (page, buffer) => {
+  await page.setInputFiles("#receiptFile", { name: "IMG_0001.jpg", mimeType: "image/jpeg", buffer });
+  await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+};
+
+test("a 12 MP phone photo is sent as a JPEG under 600 KB, at most 1568 px on its long edge", { tag: ["@J5.1"] }, async ({ page }) => {
+  test.slow(); // drawing and encoding a 12 MP photo in the page takes a few seconds
+  await openApp(page, { ...usedState, receipt });
+  const photo = await drawJpeg(page, { w: 4032, h: 3024, kind: "photo", quality: 0.92 });
+  expect(photo.length).toBeGreaterThan(2e6);
+  await upload(page, photo);
+  const sent = await sentImage(page);
+  expect(sent).toMatchObject({ type: "image/jpeg", width: 1568, height: 1176 });
+  expect(sent.size).toBeLessThan(600 * 1024);
+});
+
+test("a photo too detailed for 600 KB at the usual quality is sent at a lower one", { tag: ["@J5.1"] }, async ({ page }) => {
+  await openApp(page, { ...usedState, receipt });
+  const photo = await drawJpeg(page, { w: 2000, h: 1500, kind: "photo", quality: 0.92, noise: 60 });
+  // Records each encoding the page makes: its quality and size
+  await page.evaluate(() => {
+    const toBlob = HTMLCanvasElement.prototype.toBlob;
+    window.__encodes = [];
+    HTMLCanvasElement.prototype.toBlob = function (cb, type, q) { toBlob.call(this, (b) => { window.__encodes.push([q, b.size]); cb(b); }, type, q); };
+  });
+  await upload(page, photo);
+  const sent = await sentImage(page);
+  expect(sent).toMatchObject({ type: "image/jpeg", width: 1568, height: 1176 });
+  // Over 600 KB at 0.8, so it's encoded again, and the smaller one is sent (this much noise
+  // can still be over at the lowest quality in some browsers, and then that's what goes)
+  const encodes = await page.evaluate(() => window.__encodes);
+  expect(encodes[0][0]).toBe(0.8);
+  expect(encodes[0][1]).toBeGreaterThan(600 * 1024);
+  expect(encodes[1][0]).toBe(0.65);
+  expect(encodes.at(-1)[1]).toBe(sent.size);
+  expect(sent.size).toBeLessThan(encodes[0][1]);
+});
+
+test("a photo stored sideways is sent upright", { tag: ["@J5.1"] }, async ({ page }) => {
+  await openApp(page, { ...usedState, receipt });
+  // Stored 200 × 100, red on the left; orientation 6 means turn it a quarter clockwise to view it,
+  // so it's 100 × 200 with red on top
+  const photo = withOrientation(await drawJpeg(page, { w: 200, h: 100, kind: "halves", quality: 0.9 }), 6);
+  await upload(page, photo);
+  const sent = await sentImage(page, [[50, 40], [50, 160]]);
+  expect(sent).toMatchObject({ type: "image/jpeg", width: 100, height: 200, orientation: 1 });
+  const [top, bottom] = sent.colours;
+  expect(top[0]).toBeGreaterThan(200); expect(top[2]).toBeLessThan(60);
+  expect(bottom[2]).toBeGreaterThan(200); expect(bottom[0]).toBeLessThan(60);
+});
+
+test("a small photo keeps its size, and a photo that can't be re-encoded is sent as it is", { tag: ["@J5.1"] }, async ({ page }) => {
+  await openApp(page, { ...usedState, receipt });
+  const photo = await drawJpeg(page, { w: 300, h: 400, kind: "halves", quality: 0.9 });
+  await upload(page, photo);
+  expect(await sentImage(page)).toMatchObject({ type: "image/jpeg", name: "receipt.jpg", width: 300, height: 400 });
+  await page.evaluate(() => { window.__mock.sampleImages.length = 0; HTMLCanvasElement.prototype.toBlob = function (cb) { cb(null); }; });
+  await page.setInputFiles("#receiptFile", { name: "IMG_0002.jpg", mimeType: "image/jpeg", buffer: photo });
+  await expect.poll(() => page.evaluate(() => window.__mock.sampleImages[0]?.name)).toBe("IMG_0002.jpg");
+});
+
+test("a file the browser can't decode is sent as it is", { tag: ["@J5.1"] }, async ({ page }) => {
+  await scanReceipt(page);
+  expect(await page.evaluate(async () => { const f = window.__mock.sampleImages[0]; return [f.name, await f.text()]; })).toEqual(["photo.jpg", "fake image"]);
+});
