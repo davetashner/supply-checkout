@@ -464,6 +464,16 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       threshold: 0,
     },
     {
+      id: "closed-team-charged",
+      title: "Closed team charged",
+      journeys: "J7, J11",
+      severity: "P2",
+      rule: "Any ClosedTeamRenewalsCharged over an hour: the hourly closed-team purge (primary region) found a closed team's subscription charged for a period that began after the team closed (a renewal or trial conversion in the hour before the purge set it to end). The log line \"Closed team's subscription renewed after it closed\" has the team and subscription IDs: refund that invoice in the Stripe Dashboard.",
+      metric: business(BusinessMetric.ClosedTeamRenewalsCharged, region, Duration.hours(1)),
+      threshold: 0,
+      primaryOnly: true,
+    },
+    {
       id: "team-reopened-notices-failing",
       title: "Team reopened emails failing",
       journeys: "J11",

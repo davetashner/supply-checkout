@@ -39,8 +39,10 @@
 // PURGE_BUDGET_MS, so a slow Stripe can't starve the purge. A team that fails
 // is logged, left unrecorded for the next run, and fails the run (the
 // Functions failing alarm). A subscription that renewed after its team closed
-// (the team closed within an hour of a renewal) is logged as a warning for a
-// refund by hand. A team reopened while Stripe was being called is logged as
+// (the team closed within an hour of a renewal) is logged as a warning and
+// counted
+// (ClosedTeamRenewalsCharged, the "Closed team charged" alarm) for a refund by
+// hand. A team reopened while Stripe was being called is logged as
 // an error: its subscription was set to end, and an owner or operator must
 // resume it (supply-checkout-85qp).
 //
@@ -118,6 +120,7 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
         const periodStart = sub.items.data[0]?.current_period_start;
         if (sub.status === "active" && typeof periodStart === "number" && periodStart * 1000 > Date.parse(team.closedAt)) {
           obs.logger.warn("Closed team's subscription renewed after it closed", { teamId, subscriptionId: sub.id, closedAt: team.closedAt });
+          obs.count(BusinessMetric.ClosedTeamRenewalsCharged, 1, { teamId });
         }
         if (!(await markSubscriptionEnding(db, team))) {
           if (action !== "none") obs.count(BusinessMetric.ReopenedTeamSubscriptionsEnded, 1, { teamId, action });

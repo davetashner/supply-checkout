@@ -301,6 +301,7 @@
     { "name": "Seat reconciliation not running", "journeys": ["J7"], "infra": "seat-reconcile-not-running" },
     { "name": "Entitlements drifting", "journeys": ["J7", "J8"], "infra": "entitlements-drifting" },
     { "name": "Reopened team's subscription ended", "journeys": ["J7", "J11"], "infra": "reopened-team-subscription-ended" },
+    { "name": "Closed team charged", "journeys": ["J7", "J11"], "infra": "closed-team-charged" },
 
     { "name": "Mass lockout", "journeys": ["J8"] },
     { "name": "Failed payments rising", "journeys": ["J8"] },

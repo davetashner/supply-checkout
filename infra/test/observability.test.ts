@@ -121,11 +121,12 @@ const ALARM_IDS = [
   "deletion-overdue",
   "team-closed-notices-failing",
   "reopened-team-subscription-ended",
+  "closed-team-charged",
   "team-reopened-notices-failing",
 ];
 
 /** Alarms on gauges that only the primary region's scheduled checks and purge send (ops-checks.ts). */
-const PRIMARY_ONLY_ALARM_IDS = ["imports-stuck", "near-sending-limit", "seat-counts-drifting", "entitlements-drifting", "deletion-overdue"];
+const PRIMARY_ONLY_ALARM_IDS = ["imports-stuck", "near-sending-limit", "seat-counts-drifting", "entitlements-drifting", "deletion-overdue", "closed-team-charged"];
 
 describe("alarm topics", () => {
   it("has a P1 and a P2 topic, encrypted with a rotating key that CloudWatch may use, refusing plain HTTP", () => {
@@ -637,6 +638,18 @@ describe("alarms added with the email code routes, the live update budget, team 
       TreatMissingData: "notBreaching",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
       AlarmDescription: Match.stringLikeRegexp("^P2 Reopened team's subscription ended \\(J7, J11"),
+    });
+  });
+
+  it("alarms on any closed team charged for a period after it closed, where the purge runs (J7, J11)", () => {
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-closed-team-charged",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ClosedTeamRenewalsCharged }), Stat: "Sum", Period: 3600 }) })],
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      AlarmDescription: Match.stringLikeRegexp("^P2 Closed team charged \\(J7, J11"),
     });
   });
 
