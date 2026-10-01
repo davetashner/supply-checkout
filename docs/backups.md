@@ -262,9 +262,56 @@ Run it after setup, then every quarter and after any change to the backup stacks
 
 A restore always creates a new table. The live table is never overwritten, and the restore role can only create tables named `supply-checkout-<env>-app-restore-*`. Putting a restored table back into service is [its own procedure](#put-a-restored-table-back-into-service).
 
-**Where.** Restore into **staging**, in a new table. Until staging exists, restore into the prod account instead (same steps, `<target env>` is `prod`). A restore into staging puts customer data in the staging account: keep access to the people running the drill, and delete the table the same day.
+**Where.** Restore into **staging**, in a new table. Until staging exists, restore into the prod account instead (same steps, `<target env>` is `prod`); the [prod drill script](#the-prod-drill-script-the-owner-before-the-pilot) does drill A that way. A restore into staging puts customer data in the staging account: keep access to the people running the drill, and delete the table the same day.
 
 Use the date for `<yyyymmdd>`, and write every time down as you go. The [drill log](#drill-log) needs them.
+
+### The prod drill script (the owner, before the pilot)
+
+The owner decided on 2026-10-01 that the first drill is in prod, run from a script: `npm run restore-drill` (`scripts/restore-drill.mjs`). It does drill A end to end:
+
+1. Prints the account the profile signs in to. It stops if `SUPPLY_CHECKOUT_EXPECTED_ACCOUNT` is set in your shell to another account.
+2. Reads the table key from `/supply-checkout/<env>/data/table-key-arn` and stops unless the live table is encrypted with it. It also stops if point-in-time recovery is off.
+3. Restores `supply-checkout-prod-app` as it was at the latest restorable time minus 5 minutes (`--minutes-back`) into a **new** table, `supply-checkout-prod-app-restore-<yyyymmdd-hhmm>` (UTC), encrypted with the same table key (`--sse-specification-override`, as in drill A).
+4. Checks every 15 seconds until the table and its indexes are `ACTIVE`, and records the time taken.
+5. Counts both tables two ways: `ItemCount` from `describe-table` (approximate, updated about every 6 hours) and a parallel `Select=COUNT` scan (4 segments, at most 200 pages each). A count that hits the page limit is marked partial.
+6. Spot-checks 20 random keys from the restored table (`--samples`) by reading each from both tables with `get-item`.
+7. Prints a short report: the recovery point, the time to restore, the key, the indexes, the counts and the spot checks. A spot check that differs is shown by its item type and a short hash, never by its key or contents.
+8. Asks `Delete the restored table …? [y/N]`. Anything but `y` keeps it, and so does `--keep`. Either way it prints the `delete-table` command.
+
+**It never writes to the live table.** Every AWS call goes through one check (`guard`) before it's run or shown. On the live table that check allows only `describe-table`, `describe-continuous-backups`, `scan`, `get-item`, and use as the source of the restore. It refuses to create or delete any table whose name isn't `supply-checkout-<env>-app-restore-<suffix>`, so `--target supply-checkout-prod-app` is refused before anything runs. `scripts/restore-drill.test.mjs` tests the guard, the refusals and a whole run against a fake AWS CLI (`npm run test:scripts`).
+
+**Without `--apply` it's a dry run.** It prints every call it would make, with placeholders for values it would read, and runs nothing.
+
+**What it needs.** Your SSO administrator permission set (AdministratorAccess) in the prod account covers everything:
+
+- `dynamodb:DescribeTable`, `DescribeContinuousBackups`, `Scan`, `GetItem` and `RestoreTableToPointInTime` on the live table.
+- The writes a restore makes into the new table (`PutItem`, `UpdateItem`, `DeleteItem`, `BatchWriteItem`, `GetItem`, `Query`, `Scan`), plus `DescribeTable` and `DeleteTable` on it.
+- `kms:DescribeKey`, `CreateGrant`, `Decrypt` and `GenerateDataKey` on the table key. Its key policy gives the account's IAM principals access, so the permission set is enough.
+- `ssm:GetParameter` and `sts:GetCallerIdentity`.
+
+The restore role (`supply-checkout-<env>-restore`) isn't used: that one is for AWS Backup restore jobs (drill B). A restore costs about $0.15 per GB, which is cents for the pilot's table.
+
+**Run it.**
+
+```bash
+aws sso login --profile supply-prod
+export SUPPLY_CHECKOUT_EXPECTED_ACCOUNT=<prod account ID>   # in your shell only, never committed
+npm run restore-drill                    # dry run: read the calls it would make
+npm run restore-drill -- --apply         # the drill: answer y at the end to delete the restored table
+```
+
+Options: `--profile` (default `supply-prod`), `--region` (default `us-east-1`), `--env` (default `prod`), `--target <name>` (must start with `supply-checkout-<env>-app-restore-`), `--minutes-back`, `--samples`, `--segments`, `--max-pages`, `--timeout <minutes>` (default 180), and `--keep`. Use `--keep` to go on to [putting a restored table back into service](#put-a-restored-table-back-into-service) (`npm run restore -- check`, `deletions` and the `copy-back` preview). Then delete the table the same day.
+
+It exits 1 if the restored table's KMS key or indexes don't match the live table's. Because the live table has changed since the recovery point, the item counts can differ by about the writes made since then, and a spot-checked item written since then can differ or be missing from live. Anything larger needs explaining before the bead is closed.
+
+**Record afterwards**, with the report in front of you:
+
+1. A row in the [drill log](#drill-log): the date, `A (PITR, script)`, the recovery point, the target table, both scanned counts, the time to restore, the result, and who ran it.
+2. A note on `supply-checkout-8x1` (the lead adds it with `bd update`): the date, the time to restore, both scanned counts and their difference, the spot checks (same, differ, not in live), whether the key and indexes matched, and that the restored table was deleted. Give counts and times only: no account ID, table contents or keys.
+3. Any `AccessDenied` from KMS in CloudTrail during the restore ([Key sharing](#key-sharing-and-what-the-first-drill-should-confirm)).
+
+The bead's acceptance ("restore drill done and time to restore recorded") is met when that note is on it. Drill B, from the backup account, isn't needed while prod runs with `backupCopy=false` (ADR 0003).
 
 ### A. Point-in-time recovery (workload account, 10 minutes)
 
