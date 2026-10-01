@@ -8,15 +8,17 @@ import {
   type DeploymentConfig,
   GITHUB_DEPLOY_ENVIRONMENT,
   GLOBAL_SERVICES_REGION,
+  type GithubRepository,
   githubRepositoryFromContext,
 } from "../lib/config.js";
-import { GITHUB_OIDC_AUDIENCE, GITHUB_OIDC_URL, githubDeployRoleName } from "../lib/stacks/github-deploy-stack.js";
+import { GITHUB_OIDC_AUDIENCE, GITHUB_OIDC_URL, githubDeployRoleName, githubDeploySubject } from "../lib/stacks/github-deploy-stack.js";
 import { addGithubDeploy } from "../lib/supply-checkout.js";
 
 // Region names live only in lib/config.ts (ADR 0010); tests use its constants.
 const [EAST, WEST] = APPROVED_REGIONS;
 const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.com", regions: [EAST], primaryRegion: EAST };
-const REPO = "example-owner/example-repo";
+const REPO: GithubRepository = { name: "example-owner/example-repo", ownerId: 1234, repositoryId: 567890 };
+const SUBJECT = "repository_owner_id:1234:repository_id:567890:environment:production";
 
 function build(overrides: Partial<DeploymentConfig> = {}, repository = REPO) {
   const app = testApp();
@@ -44,20 +46,37 @@ const bootstrapRole = (kind: string, region: string) => ({
 
 describe("GitHub repository config", () => {
   const context = (values: Record<string, unknown>) => ({ tryGetContext: (key: string) => values[key] });
+  const full = { githubRepository: REPO.name, githubOwnerId: "1234", githubRepositoryId: "567890" };
 
-  it("defaults to this repository and deploys from the production environment", () => {
-    expect(DEFAULT_GITHUB_REPOSITORY).toBe("davetashner/supply-checkout");
+  it("defaults to this repository, by name and by GitHub's immutable owner and repository IDs, and deploys from the production environment", () => {
+    // Public identifiers (gh api repos/davetashner/supply-checkout --jq '{owner_id: .owner.id, repo_id: .id}')
+    expect(DEFAULT_GITHUB_REPOSITORY).toEqual({ name: "davetashner/supply-checkout", ownerId: 5702882, repositoryId: 1388338851 });
     expect(GITHUB_DEPLOY_ENVIRONMENT).toBe("production");
-    expect(githubRepositoryFromContext(context({}))).toBe(DEFAULT_GITHUB_REPOSITORY);
-    expect(githubRepositoryFromContext(context({ githubRepository: REPO }))).toBe(REPO);
+    expect(githubRepositoryFromContext(context({}))).toEqual(DEFAULT_GITHUB_REPOSITORY);
+    expect(githubRepositoryFromContext(context(full))).toEqual(REPO);
+    // cdk.json or a test may give the IDs as numbers
+    expect(githubRepositoryFromContext(context({ ...full, githubOwnerId: 1234, githubRepositoryId: 567890 }))).toEqual(REPO);
   });
 
   it.each(["", "owner", "owner/", "/repo", "owner/repo/extra", "owner/*", "*/repo", "own*er/repo", "owner/repo:environment:x", "-owner/repo", "owner/re po"])(
-    "rejects %o",
+    "rejects the name %o",
     (value) => {
-      expect(() => githubRepositoryFromContext(context({ githubRepository: value }))).toThrow(/githubRepository/);
+      expect(() => githubRepositoryFromContext(context({ ...full, githubRepository: value }))).toThrow(/githubRepository/);
     },
   );
+
+  it.each(["", "0", "-1", "1.5", "12a", "*", "1:repository_id:2", " 12", "1e3", "0x10", "01", "99999999999999999999"])("rejects the ID %o", (value) => {
+    expect(() => githubRepositoryFromContext(context({ ...full, githubOwnerId: value }))).toThrow(/githubOwnerId/);
+    expect(() => githubRepositoryFromContext(context({ ...full, githubRepositoryId: value }))).toThrow(/githubRepositoryId/);
+  });
+
+  it("takes the name and both IDs together, so an override can't keep this repository's IDs under another name", () => {
+    for (const key of Object.keys(full)) {
+      const partial = Object.fromEntries(Object.entries(full).filter(([k]) => k !== key));
+      expect(() => githubRepositoryFromContext(context(partial)), key).toThrow(/githubRepository, githubOwnerId and githubRepositoryId together/);
+    }
+    expect(() => githubRepositoryFromContext(context({ githubOwnerId: "1" }))).toThrow(/together/);
+  });
 });
 
 describe("GitHub Actions deploy role (supply-checkout-5ik)", () => {
@@ -76,7 +95,12 @@ describe("GitHub Actions deploy role (supply-checkout-5ik)", () => {
     template.hasResourceProperties("AWS::IAM::OIDCProvider", { Url: GITHUB_OIDC_URL, ClientIdList: [GITHUB_OIDC_AUDIENCE] });
   });
 
-  it("can be assumed only with a GitHub token for this repository's production environment", () => {
+  it("builds the subject GitHub's OIDC subject customization gives: owner ID, repository ID, environment", () => {
+    expect(githubDeploySubject(REPO)).toBe(SUBJECT);
+    expect(githubDeploySubject(DEFAULT_GITHUB_REPOSITORY)).toBe("repository_owner_id:5702882:repository_id:1388338851:environment:production");
+  });
+
+  it("can be assumed only with a GitHub token for this repository's production environment, matched on immutable IDs", () => {
     const { template } = build();
     const r = role(template);
     expect(r.Properties.RoleName).toBe(githubDeployRoleName("prod"));
@@ -89,7 +113,7 @@ describe("GitHub Actions deploy role (supply-checkout-5ik)", () => {
       Condition: {
         StringEquals: {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": `repo:${REPO}:environment:production`,
+          "token.actions.githubusercontent.com:sub": SUBJECT,
         },
       },
     });
@@ -97,11 +121,15 @@ describe("GitHub Actions deploy role (supply-checkout-5ik)", () => {
     expect(others).toEqual([]);
     expect(Object.keys(trust?.Condition as object)).toEqual(["StringEquals"]);
     expect(JSON.stringify(trust)).not.toContain("*");
+    // Not the default subject keyed on the mutable owner/name
+    expect(JSON.stringify(trust)).not.toContain("repo:");
+    expect(JSON.stringify(trust)).not.toContain(REPO.name);
   });
 
   it("follows the configured repository", () => {
-    const { template } = build({}, "someone/fork");
-    expect(JSON.stringify(role(template).Properties.AssumeRolePolicyDocument)).toContain('"repo:someone/fork:environment:production"');
+    const { template } = build({}, { name: "someone/fork", ownerId: 42, repositoryId: 4242 });
+    expect(JSON.stringify(role(template).Properties.AssumeRolePolicyDocument)).toContain('"repository_owner_id:42:repository_id:4242:environment:production"');
+    expect(role(template).Properties.Description).toBe("GitHub Actions deploys from someone/fork (owner ID 42, repository ID 4242), environment production only");
     expect(githubDeployRoleName("staging")).toBe("supply-checkout-staging-github-deploy");
   });
 

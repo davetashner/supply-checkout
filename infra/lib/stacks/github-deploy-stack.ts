@@ -1,7 +1,7 @@
 import { Aws, CfnOutput, DefaultStackSynthesizer, Duration, RemovalPolicy } from "aws-cdk-lib";
 import { Effect, OidcProviderNative, PolicyStatement, Role, WebIdentityPrincipal } from "aws-cdk-lib/aws-iam";
 import type { Construct } from "constructs";
-import { type DeploymentConfig, GITHUB_DEPLOY_ENVIRONMENT, GLOBAL_SERVICES_REGION } from "../config.js";
+import { type DeploymentConfig, GITHUB_DEPLOY_ENVIRONMENT, type GithubRepository, GLOBAL_SERVICES_REGION } from "../config.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
 /** GitHub Actions' OIDC issuer. */
@@ -13,6 +13,16 @@ const ISSUER = GITHUB_OIDC_URL.replace(/^https:\/\//, "");
 
 /** The deploy role's fixed name, so a workflow can build its ARN from the account ID. */
 export const githubDeployRoleName = (envName: string) => `supply-checkout-${envName}-github-deploy`;
+
+/**
+ * The `sub` claim of a GitHub OIDC token for a job in `repository`'s
+ * production environment, once the repository's OIDC subject customization
+ * is `include_claim_keys: ["repository_owner_id", "repository_id",
+ * "environment"]` (docs/infrastructure.md). GitHub joins each claim's key and
+ * value with `:`, in that order.
+ */
+export const githubDeploySubject = (repository: GithubRepository) =>
+  `repository_owner_id:${repository.ownerId}:repository_id:${repository.repositoryId}:environment:${GITHUB_DEPLOY_ENVIRONMENT}`;
 
 /** The CDK bootstrap roles a `cdk deploy` (and `cdk diff`) assumes, by their bootstrap template names. */
 /** CDK's rule for a bootstrap qualifier (`cdk bootstrap --qualifier`). */
@@ -27,10 +37,15 @@ const BOOTSTRAP_ROLES = ["deploy", "file-publishing", "image-publishing", "looku
  * the role's short-lived credentials.
  *
  * - The role trusts only tokens with audience `sts.amazonaws.com` and subject
- *   `repo:<owner>/<name>:environment:production`, exactly (StringEquals):
- *   a job in this repository that runs in the `production` GitHub
- *   environment. A job without that environment, a pull request, or another
- *   repository gets a different subject and is refused. The environment's
+ *   `repository_owner_id:<n>:repository_id:<n>:environment:production`,
+ *   exactly (StringEquals): a job in this repository that runs in the
+ *   `production` GitHub environment, named by GitHub's immutable IDs rather
+ *   than the owner/name a rename or deletion could free up
+ *   (supply-checkout-pbp.23). GitHub sends that subject only once the
+ *   repository's OIDC subject customization is set; until then every token
+ *   has the default `repo:...` subject and is refused. A job without that
+ *   environment, a pull request, or another repository gets a different
+ *   subject and is refused. The environment's
  *   protection rules on GitHub (required reviewers, which branches and tags
  *   may deploy) decide which jobs get that subject.
  * - Its only permission is to assume this account's CDK bootstrap roles
@@ -54,7 +69,7 @@ export class GithubDeployStack extends SupplyCheckoutStack {
   readonly provider: OidcProviderNative;
   readonly role: Role;
 
-  constructor(scope: Construct, config: DeploymentConfig, region: string, repository: string) {
+  constructor(scope: Construct, config: DeploymentConfig, region: string, repository: GithubRepository) {
     // Stateful: termination protection. IAM is global, so one stack, in the primary region.
     super(scope, { config, region, component: "github-deploy", layer: "stateful" });
     if (region !== config.primaryRegion) throw new Error("The GitHub deploy stack is in the primary region only (IAM is global)");
@@ -70,11 +85,11 @@ export class GithubDeployStack extends SupplyCheckoutStack {
 
     this.role = new Role(this, "DeployRole", {
       roleName: githubDeployRoleName(config.envName),
-      description: `GitHub Actions deploys from ${repository}, environment ${GITHUB_DEPLOY_ENVIRONMENT} only`,
+      description: `GitHub Actions deploys from ${repository.name} (owner ID ${repository.ownerId}, repository ID ${repository.repositoryId}), environment ${GITHUB_DEPLOY_ENVIRONMENT} only`,
       assumedBy: new WebIdentityPrincipal(this.provider.oidcProviderArn, {
         StringEquals: {
           [`${ISSUER}:aud`]: GITHUB_OIDC_AUDIENCE,
-          [`${ISSUER}:sub`]: `repo:${repository}:environment:${GITHUB_DEPLOY_ENVIRONMENT}`,
+          [`${ISSUER}:sub`]: githubDeploySubject(repository),
         },
       }),
       maxSessionDuration: Duration.hours(1),
