@@ -121,6 +121,25 @@ describe("importing a file", () => {
     expect(product("0123")).toMatchObject({ price: 13 });
   });
 
+  it("writes an item whose barcode ends in :bought under a key that doesn't, which the API keeps for lines bought for a client", async () => {
+    const res = await post({ importId: randomUUID(), csv: "name,barcode,kind,price,cost\nStep ladder,LAD-1:bought,equipment,,120\nRope,ROPE:bought,,4,\n" });
+    expect(res.status).toBe(200);
+    expect(product(keyOfBarcode("LAD-1:bought"))).toMatchObject({ code: "LAD-1:bought", kind: "equipment" });
+    expect(product(keyOfBarcode("ROPE:bought"))).toMatchObject({ code: "ROPE:bought", price: 4 });
+    expect(products().map((p) => String(p.SK)).filter((sk) => sk.endsWith(":bought"))).toEqual([]);
+    expect(products().map((p) => String(p.key)).sort()).toEqual(["LAD-1_bought", "ROPE_bought"]);
+  });
+
+  it("imports company equipment without a price, its value in cost, and makes an item a supply again", async () => {
+    expect((await post({ importId: randomUUID(), csv: "name,barcode,kind,price,cost,stock\nStep ladder,LAD-1,equipment,,120,3\nRags,R1,,1.50,,\n" })).status).toBe(200);
+    expect(product("LAD-1")).toMatchObject({ code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, stock: 3 });
+    expect(product("LAD-1")?.price).toBeUndefined();
+    expect(product("R1")?.kind).toBeUndefined();
+    expect((await post({ importId: randomUUID(), csv: "name,barcode,price\nStep ladder,LAD-1,15\n" })).status).toBe(200);
+    expect(product("LAD-1")).toMatchObject({ price: 15, cost: 120, stock: 3 });
+    expect(product("LAD-1")?.kind).toBeUndefined();
+  });
+
   it("imports 200 rows in one request: items, stock movements, a finished job, and the summary", async () => {
     const id = randomUUID();
     const started = Date.now();
@@ -699,10 +718,43 @@ describe("parsing", () => {
     expect(parsed.rows).toEqual([
       { line: 2, name: "EXAMPLE Glass cleaner (sample row)", barcode: "EXAMPLE-0001", price: 6.5, cost: 4.25, stock: 24, packSize: 12 },
       { line: 3, name: "EXAMPLE Trash bags (sample row)", barcode: "", price: 0.4, cost: 0.25, stock: 90, packSize: 45 },
+      { line: 4, name: "EXAMPLE Step ladder (sample row)", barcode: "EXAMPLE-0002", kind: "equipment", cost: 120, stock: 2 },
     ]);
     const { planned, errors } = planImport(parsed.rows, []);
     expect(errors).toEqual([]);
-    expect(planned.map((r) => r.action)).toEqual(["create", "create"]);
+    expect(planned.map((r) => r.action)).toEqual(["create", "create", "create"]);
+  });
+
+  it("reads an optional kind column: blank or supply is a supply, equipment has no price and its cost is its value", () => {
+    const parsed = parseInventoryCsv(
+      "Name,Type,Price,Cost\nGloves,,12.5,9\nRags,Supply,2,\nLadder,Equipment,,120\nMat, company  equipment ,,35\nVacuum,equipment,199,150\nCord,tool,5,\nBins,supply,,\n",
+    );
+    expect(parsed.rows).toEqual([
+      { line: 2, name: "Gloves", barcode: "", price: 12.5, cost: 9 },
+      { line: 3, name: "Rags", barcode: "", price: 2 },
+      { line: 4, name: "Ladder", barcode: "", kind: "equipment", cost: 120 },
+      { line: 5, name: "Mat", barcode: "", kind: "equipment", cost: 35 },
+    ]);
+    expect(parsed.errors).toEqual([
+      { line: 6, column: "price", message: "Company equipment has no price; leave price blank, and put what one is worth in cost" },
+      { line: 7, column: "kind", message: "kind is supply or equipment (or blank for a supply)" },
+      { line: 8, column: "price", message: "price is required" },
+    ]);
+    // A kind that isn't one is the row's one problem, even with its price blank
+    expect(parseInventoryCsv("name,kind,price\nLadder,equipmentx,\n").errors).toEqual([{ line: 2, column: "kind", message: "kind is supply or equipment (or blank for a supply)" }]);
+    // A bad price is reported once, not also as missing
+    expect(parseInventoryCsv("name,price\nGloves,abc\n").errors).toEqual([{ line: 2, column: "price", message: expect.stringMatching(/isn't an amount/) }]);
+  });
+
+  it("planImport makes equipment of an item, and a supply of it again, and says the kind changed", () => {
+    const supply = { key: "lad", code: "LAD", name: "Ladder", price: 9, cost: 120 };
+    const toEquipment = planImport([{ line: 2, name: "Ladder", barcode: "LAD", kind: "equipment", cost: 120 }], [supply]).planned[0];
+    expect(toEquipment).toMatchObject({ action: "update", changes: ["kind", "price"] });
+    const equipment = { key: "lad", code: "LAD", name: "Ladder", kind: "equipment", cost: 120 };
+    expect(planImport([{ line: 2, name: "Ladder", barcode: "LAD", kind: "equipment", cost: 120 }], [equipment]).planned[0]).toMatchObject({ action: "unchanged", changes: [] });
+    expect(planImport([{ line: 2, name: "Ladder", barcode: "LAD", price: 9 }], [equipment]).planned[0]).toMatchObject({ action: "update", changes: ["kind", "price"] });
+    // One that says it's a supply stays as it is
+    expect(planImport([{ line: 2, name: "Rags", barcode: "", price: 2 }], [{ key: "r", code: "", name: "Rags", kind: "supply", price: 2 }]).planned[0]).toMatchObject({ action: "unchanged" });
   });
 
   it("planImport skips an item without a usable name or barcode when indexing", () => {

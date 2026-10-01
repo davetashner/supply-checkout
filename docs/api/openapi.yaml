@@ -316,14 +316,17 @@ paths:
       operationId: importProducts
       summary: Import items from a CSV file, all or nothing, with a dry-run preview. Owners only.
       description: |
-        The server reads the file (columns `name`, `barcode`, `price`, `cost`,
-        `stock`, `pack_size`, matched without regard to case or spacing; other
-        columns are left out) and validates every row against the whole
+        The server reads the file (columns `name`, `barcode`, `kind`, `price`,
+        `cost`, `stock`, `pack_size`, matched without regard to case or
+        spacing; other columns are left out) and validates every row against the whole
         inventory before it writes anything. A row matches an existing item by
         barcode, or by name when the row or the item has no barcode, and
         updates it; a re-import **sets** price, cost, pack size and stock to
         the file's values and never duplicates an item. Blank optional cells
-        keep what's there. Money may have `$` and thousands separators and is
+        keep what's there. `kind` is `supply` or `equipment` (ADR 0017); blank
+        or missing is a supply, which needs a `price`. Company equipment has no
+        price (a price for it is a row error), and its `cost` is its value; a
+        supply row makes an equipment item a supply again. Money may have `$` and thousands separators and is
         rounded to cents; stock and pack size are whole numbers (ADR 0014).
 
         - `dryRun: true`: writes nothing. 200 with `status: "preview"` (or

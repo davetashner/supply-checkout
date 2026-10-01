@@ -15,6 +15,9 @@ export const own = (obj, k) => Object.hasOwn(obj, k) ? obj[k] : undefined;
 export const int = v => Math.max(0, Math.floor(Number(v) || 0));
 export const codeText = c => c ? "Barcode " + c : "No barcode";
 export const hasStock = p => p && typeof p.stock === "number";
+// Company equipment (ADR 0017): reused, not charged, no client price; its value is its cost.
+// Any other item (no kind, or "supply") is a supply, used up and charged at its price.
+export const isEquipment = p => !!p && p.kind === "equipment";
 // A product's cost each (ADR 0014): missing means unknown
 export const hasCost = p => typeof p.cost === "number" && Number.isFinite(p.cost);
 // What one each in storage is worth: its cost where known, its price otherwise

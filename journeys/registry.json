@@ -240,6 +240,31 @@
         { "id": "J12.2", "text": "Pay on Stripe Checkout in the in-app browser with Apple Pay or Google Pay.", "status": "planned", "beads": ["supply-checkout-8jc.5"] },
         { "id": "J12.3", "text": "Return to the app.", "status": "planned", "beads": ["supply-checkout-8jc.5"] }
       ]
+    },
+    {
+      "id": "J13",
+      "name": "Take company equipment to a job and bring it back",
+      "persona": "Crew member",
+      "critical": true,
+      "steps": [
+        { "id": "J13.1", "text": "In **Inventory**, mark items that go to jobs and come back (ladders, vacuums, cords) as **Company equipment**, with what each is worth.", "status": "built", "beads": ["supply-checkout-h9to"] },
+        {
+          "id": "J13.2",
+          "text": "Check equipment out on a sheet like any item. It's listed under **Equipment (not charged)**, apart from the supplies, and isn't in the sheet's total or the client's CSV.",
+          "status": "built",
+          "beads": ["supply-checkout-h9to"],
+          "tests": ["backend/test/equipment-api.test.ts", "backend/test/equipment.test.ts"]
+        },
+        {
+          "id": "J13.3",
+          "text": "Back from the job, switch to **Return** and scan what came back.",
+          "status": "built",
+          "beads": ["supply-checkout-h9to"],
+          "tests": ["backend/test/equipment-api.test.ts", "backend/test/equipment.test.ts"]
+        },
+        { "id": "J13.4", "text": "Tap **Finished Return**: for each piece still out, say it's back, still at the job, or lost or broken (with an optional charge to the client).", "status": "planned", "beads": ["supply-checkout-h9to"] },
+        { "id": "J13.5", "text": "See what's out, on which sheet, who took it and when, in **Inventory → Equipment → Out on jobs**.", "status": "built", "beads": ["supply-checkout-h9to"] }
+      ]
     }
   ],
   "alarms": [
@@ -280,7 +305,7 @@
     { "name": "Email codes failing", "journeys": ["J3"], "infra": "email-codes-failing" },
     { "name": "Invites not accepted", "journeys": ["J3"] },
 
-    { "name": "Checkouts stopped", "journeys": ["J4"] },
+    { "name": "Checkouts stopped", "journeys": ["J4", "J13"] },
     { "name": "Writes rejected", "journeys": ["J4"], "infra": "writes-rejected" },
     { "name": "Live updates failing", "journeys": ["J4"], "infra": "live-updates-failing" },
     { "name": "Live updates delayed", "journeys": ["J4"], "infra": "live-updates-delayed" },

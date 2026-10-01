@@ -468,17 +468,20 @@ export class FakeBackend {
     const items = (sheet.data.items ||= {});
     const line = Object.hasOwn(items, key) ? items[key] : undefined;
     let delta;
+    // Company equipment (ADR 0017): its line has kind and no price, and names who took it last and when
+    const taken = { takenBy: this.user.id, takenAt: new Date().toISOString() };
     if (name === "checkout") {
-      if (line) line.out += qty;
+      if (line) { line.out += qty; if (line.kind === "equipment") Object.assign(line, taken); }
       else {
         const from = product ? product.data : oneOff;
         if (!product && (oneOff.name === undefined || oneOff.price === undefined)) return err(400, "bad_request", "This item isn't in inventory; send its name and price");
-        items[key] = { code: from.code ?? "", name: from.name ?? "", price: from.price ?? 0, ...(from.cost === undefined ? {} : { cost: from.cost }), out: qty, returned: 0 };
+        const equipment = from.kind === "equipment";
+        items[key] = { code: from.code ?? "", name: from.name ?? "", ...(equipment ? { kind: "equipment" } : { price: from.price ?? 0 }), ...(from.cost === undefined ? {} : { cost: from.cost }), out: qty, returned: 0, ...(equipment ? taken : {}) };
       }
       delta = -qty;
     } else {
       if (!line) return err(400, "bad_request", "This item isn't on this sheet");
-      const left = line.out - (line.returned || 0);
+      const left = line.out - (line.returned || 0) - (line.lost || 0);
       if (qty > left) return err(400, "bad_request", `Only ${left} of this item ${left === 1 ? "is" : "are"} left to return`);
       line.returned = (line.returned || 0) + qty;
       delta = qty;

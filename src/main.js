@@ -2,8 +2,8 @@ import "./theme.js";
 import { use, help } from "./runtime.js";
 import { WEB } from "./build.js";
 import { checkOut, recordReturn, saveItem, addLines, markOf } from "./moves.js";
-import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, newKey, uid, round2, numOrNull, MAX_MONEY } from "./format.js";
-import { lines, lineCharge, totals } from "./sheet-math.js";
+import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, isEquipment, newKey, uid, round2, numOrNull, MAX_MONEY } from "./format.js";
+import { lines, lineCharge, totals, isEquipmentLine, equipmentCounts } from "./sheet-math.js";
 import { $, toast, openModal, closeModal, dismiss, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
 import { shrinkPhoto } from "./photo.js";
@@ -15,7 +15,9 @@ let db = null, userNs = null, dl = null, myId = null, canWrite = true, connected
 // Keyed by product key, which can be any barcode's: no prototype, so a key like
 // "constructor" finds nothing until there's a product with that key
 let products = Object.create(null), sheets = [], people = {};
-const ui = { tab: "sheets", sheetId: null, mode: "out", filter: "open", receipt: false };
+// kind: the Inventory's Supplies / Equipment filter ("all" shows both); equip: with Equipment
+// picked, what's in storage ("in") or still out on open sheets ("out")
+const ui = { tab: "sheets", sheetId: null, mode: "out", filter: "open", receipt: false, kind: "all", equip: "in" };
 // The web build's first-run checklist for an owner's new team (src/first-run.js), or null
 let firstRun = null;
 
@@ -146,13 +148,24 @@ function personHTML(s) {
   return `<span class="who">${esc(s.createdByName || "Unknown")}</span>`;
 }
 function personText(s) { return s.createdBy ? ((own(people, s.createdBy) || {}).name || "Someone") : (s.createdByName || "Unknown"); }
+// Who last took a piece of equipment (ADR 0017): a user ID (the web build, or claude.ai with a
+// signed-in user), or the name typed on the sheet when there's none. Missing on older lines.
+function takerText(id) {
+  if (!id) return "—";
+  const p = own(people, id);
+  // The artifact build saves a typed name when there's no user, which has no profile
+  return p && p.name ? p.name : WEB ? "Someone" : id;
+}
+const whenText = iso => { const d = iso ? new Date(iso) : null; return d && !isNaN(d) ? d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—"; };
 
 /* ---------- render ---------- */
 let seq = 0;
 async function render() {
   const n = ++seq;
   if (userNs) {
-    const ids = [...new Set(sheets.map(s => s.createdBy).filter(Boolean))];
+    // The sheets' preparers, and who took the equipment still out (Inventory, Equipment, Out)
+    const takers = sheets.flatMap(s => lines(s).filter(isEquipmentLine).map(l => l.takenBy));
+    const ids = [...new Set([...sheets.map(s => s.createdBy), ...takers].filter(Boolean))];
     if (ids.length) { try { people = await userNs.profiles(ids); } catch {} }
   }
   if (n !== seq) return;
@@ -201,21 +214,29 @@ function drawView() {
 // elements that didn't change, so a tap in progress survives; its events are delegated
 // here instead of wired on each redraw.
 $("#main").addEventListener("click", e => {
-  const t = e.target.closest("button, tr[data-prod]");
+  const t = e.target.closest("button, tr[data-prod], tr[data-sheet]");
   if (!t) return;
+  if (t.dataset.sheet) { openSheetFromInventory(t.dataset.sheet); return; }
   if (t.id === "newSheet") newSheetModal();
   else if (t.id === "exportAll") exportAllModal();
   else if (t.id === "resume") { ui.receipt = true; draw(); renderReceipt(); window.scrollTo(0, 0); }
   else if (t.id === "addProduct") productModal(null);
   else if (t.dataset.filter) { ui.filter = t.dataset.filter; draw(); }
+  else if (t.dataset.kind) { ui.kind = t.dataset.kind; draw(); }
+  else if (t.dataset.equip) { ui.equip = t.dataset.equip; draw(); }
   else if (t.dataset.open) { ui.sheetId = t.dataset.open; draw(); window.scrollTo(0, 0); }
   else if (t.dataset.prod && canWrite) productModal(t.dataset.prod);
 });
 // preventDefault: otherwise this Enter press also submits the editor's form
 $("#main").addEventListener("keydown", e => {
-  const tr = e.key === "Enter" && canWrite && e.target.closest("tr[data-prod]");
+  if (e.key !== "Enter") return;
+  const out = e.target.closest("tr[data-sheet]");
+  if (out) { e.preventDefault(); openSheetFromInventory(out.dataset.sheet); return; }
+  const tr = canWrite && e.target.closest("tr[data-prod]");
   if (tr) { e.preventDefault(); productModal(tr.dataset.prod); }
 });
+// A row of Inventory, Equipment, Out opens the sheet the equipment is out on
+function openSheetFromInventory(id) { ui.tab = "sheets"; ui.sheetId = id; draw(); window.scrollTo(0, 0); }
 
 function drawList() {
   const shown = sheets.filter(s => ui.filter === "all" || (ui.filter === "open" ? s.status !== "closed" : s.status === "closed"));
@@ -242,13 +263,31 @@ function drawList() {
             <span class="pill ${closed ? "closed" : "open"}">${closed ? "Returned" : "Checked out"}</span>
             <span class="num">${money(closed ? t.charge : t.value)}</span>
           </div>
-          <div class="meta"><span>${esc(fmtDate(s.date))}</span>${personHTML(s)}<span>${t.count} item${t.count===1?"":"s"} · ${t.out} taken${t.ret ? ` · ${t.ret} back` : ""}</span></div>
+          <div class="meta"><span>${esc(fmtDate(s.date))}</span>${personHTML(s)}<span>${t.count} item${t.count===1?"":"s"} · ${t.out} taken${t.ret ? ` · ${t.ret} back` : ""}${t.equipmentOut ? ` · ${t.equipmentOut} equipment out` : ""}</span></div>
         </button>`; }).join("") : `<div class="empty">${connected ? (ui.filter === "open" ? "Nothing is checked out right now." : "No sheets here yet.") : "Loading sheets…"}</div>`}
     </div>`);
 }
 
+// A line's row: tapping it opens the line editor (lineModal)
+const rowAttrs = l => `class="${canWrite ? "click" : ""}" data-line="${esc(l.key)}" ${canWrite ? 'tabindex="0"' : ""}`;
+const itemCell = l => `<td>${esc(l.name || "Unnamed item")}<span class="code">${esc(codeText(l.code))}</span></td>`;
+// Company equipment on the sheet (ADR 0017): its own section below the supplies, with no price
+// or charge, since taking it to a job isn't charged. Lost or broken shows once there is any.
+function equipmentHTML(eq) {
+  if (!eq.length) return "";
+  const counts = eq.map(l => ({ l, ...equipmentCounts(l) })), anyLost = counts.some(c => c.lost);
+  return `
+    <h3 class="section-head" id="equipHead">Equipment (not charged)</h3>
+    <div class="table-wrap"><table class="equipment" aria-labelledby="equipHead">
+      <thead><tr><th>Item</th><th>Taken</th><th>Returned</th>${anyLost ? "<th>Lost or broken</th>" : ""}<th>Still out</th></tr></thead>
+      <tbody>${counts.map(({ l, o, r, lost, still }) => `
+        <tr ${rowAttrs(l)}>${itemCell(l)}<td>${o}</td><td>${r}</td>${anyLost ? `<td>${lost}</td>` : ""}<td>${still}</td></tr>`).join("")}</tbody>
+    </table></div>`;
+}
+
 function drawSheet(s) {
-  const closed = s.status === "closed", t = totals(s), ls = lines(s);
+  const closed = s.status === "closed", t = totals(s), all = lines(s);
+  const ls = all.filter(l => !isEquipmentLine(l)), eq = all.filter(isEquipmentLine);
   morph($("#sheetHead"), `
     <div class="sheet-head">
       <h2>${esc(s.client || "Untitled")}</h2>
@@ -279,13 +318,14 @@ function drawSheet(s) {
     <div class="table-wrap"><table>
       <thead><tr><th>Item</th><th>Price</th><th>Taken</th><th>Returned</th><th>Used</th><th>Charge</th></tr></thead>
       <tbody>${ls.map(l => { const o = int(l.out), r = Math.min(int(l.returned), o), u = o - r; return `
-        <tr class="${canWrite ? "click" : ""}" data-line="${esc(l.key)}" ${canWrite ? 'tabindex="0"' : ""}>
-          <td>${esc(l.name || "Unnamed item")}<span class="code">${esc(codeText(l.code))}</span></td>
+        <tr ${rowAttrs(l)}>
+          ${itemCell(l)}
           <td>${money(l.price)}</td><td>${o}</td><td>${r}</td>
           <td>${u}</td><td class="charge">${money(lineCharge(l))}</td>
         </tr>`; }).join("")}</tbody>
       <tfoot><tr><td>Total</td><td></td><td>${t.out}</td><td>${t.ret}</td><td>${t.used}</td><td>${money(t.charge)}</td></tr></tfoot>
-    </table></div>` : `<div class="empty">No supplies on this sheet yet. Scan a barcode to check one out.</div>`}
+    </table></div>` : eq.length ? "" : `<div class="empty">No supplies on this sheet yet. Scan a barcode to check one out.</div>`}
+    ${equipmentHTML(eq)}
     ${canWrite ? `<div class="sheet-actions" style="margin-top:18px">${actionButton("delSheet", "btn danger", "Delete sheet")}</div>` : ""}`);
 }
 
@@ -326,18 +366,41 @@ $("#sheetBody").addEventListener("keydown", e => {
   if (tr) { e.preventDefault(); lineModal(currentSheet(), tr.dataset.line); }
 });
 
+// Inventory: every item, or supplies or company equipment only (ADR 0017). With Equipment
+// picked, In lists what's in storage, and Out each open sheet with equipment still out on it:
+// how many, the sheet, who took it last and when (from the line, so it needs only the sheets).
+const KINDS = [["all", "All"], ["supply", "Supplies"], ["equipment", "Equipment"]];
+const chip = (attr, value, label, on) => `<button type="button" class="chip" data-${attr}="${value}" aria-pressed="${on}">${label}</button>`;
 function drawPrices() {
-  const list = Object.entries(products).map(([key, p]) => ({ key, ...p })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const all = Object.entries(products).map(([key, p]) => ({ key, ...p })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const list = ui.kind === "all" ? all : all.filter(p => isEquipment(p) === (ui.kind === "equipment"));
+  const out = ui.kind === "equipment" && ui.equip === "out";
+  const kinds = `<div class="chips" role="group" aria-label="Show">${KINDS.map(([k, label]) => chip("kind", k, label, ui.kind === k)).join("")}</div>`;
+  const where = ui.kind === "equipment" ? `<div class="chips" role="group" aria-label="Equipment">${chip("equip", "in", "In storage", !out)}${chip("equip", "out", "Out on jobs", out)}</div>` : "";
+  const n = list.length;
   morph($("#main"), `
     <div class="bar">
-      <p class="muted" style="margin:0">${list.length} item${list.length===1?"":"s"}. Storage counts go down when items are checked out and up when they're returned or bought for general inventory.</p>
+      <p class="muted" style="margin:0">${n} item${n===1?"":"s"}. Storage counts go down when items are checked out and up when they're returned or bought for general inventory.</p>
       ${canWrite ? `<button type="button" class="btn primary" id="addProduct">+ Add item</button>` : ""}
     </div>
-    ${list.length ? `<div class="table-wrap"><table class="prices">
-      <thead><tr><th>Item</th><th>In storage</th><th>Price each</th><th>Cost each</th><th>Value</th></tr></thead>
-      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || "Unnamed item")}<span class="code">${esc(codeText(p.code))}</span></td><td class="${hasStock(p) ? "" : "muted"}">${hasStock(p) ? p.stock : "—"}</td><td>${money(p.price)}</td><td class="${hasCost(p) ? "" : "muted"}">${hasCost(p) ? money(p.cost) : "—"}</td><td>${hasStock(p) ? money(storageCents(p) / 100) : "—"}</td></tr>`).join("")}</tbody>
+    <div class="bar">${kinds}${where}</div>
+    ${out ? equipmentOutHTML() : list.length ? `<div class="table-wrap"><table class="prices">
+      <thead><tr><th>Item</th><th>In storage</th><th>Price each</th><th>${ui.kind === "equipment" ? "Value each" : "Cost each"}</th><th>Value</th></tr></thead>
+      <tbody>${list.map(p => `<tr class="${canWrite ? "click" : ""}" data-prod="${esc(p.key)}" ${canWrite ? 'tabindex="0"' : ""}><td>${esc(p.name || "Unnamed item")}<span class="code">${esc(codeText(p.code))}</span>${isEquipment(p) ? `<span class="kind">Company equipment</span>` : ""}</td><td class="${hasStock(p) ? "" : "muted"}">${hasStock(p) ? p.stock : "—"}</td>${isEquipment(p) ? `<td class="muted">Not charged</td>` : `<td>${money(p.price)}</td>`}<td class="${hasCost(p) ? "" : "muted"}">${hasCost(p) ? money(p.cost) : "—"}</td><td>${hasStock(p) ? money(storageCents(p) / 100) : "—"}</td></tr>`).join("")}</tbody>
       <tfoot><tr><td>Total in storage</td><td>${list.reduce((a, p) => a + (hasStock(p) ? p.stock : 0), 0)}</td><td></td><td></td><td>${money(list.reduce((a, p) => a + storageCents(p), 0) / 100)}</td></tr></tfoot>
-    </table></div>` : `<div class="empty">${connected ? "No items yet. Add one, or scan a barcode on a sheet." : "Loading…"}</div>`}`);
+    </table></div>` : `<div class="empty">${!connected ? "Loading…" : !all.length ? "No items yet. Add one, or scan a barcode on a sheet." : ui.kind === "equipment" ? "No company equipment yet. Edit an item and choose Company equipment." : "No supplies yet."}</div>`}`);
+}
+// Inventory, Equipment, Out: one row per open sheet and piece of equipment still out on it
+function equipmentOutHTML() {
+  const rows = sheets.filter(s => s.status !== "closed")
+    .flatMap(s => lines(s).filter(isEquipmentLine).map(l => ({ s, l, still: equipmentCounts(l).still })))
+    .filter(r => r.still > 0)
+    .sort((a, b) => String(a.l.name).localeCompare(String(b.l.name)) || String(a.s.date).localeCompare(String(b.s.date)));
+  if (!rows.length) return `<div class="empty">No company equipment is out on a job right now.</div>`;
+  return `<div class="table-wrap"><table class="equipment out">
+      <thead><tr><th>Item</th><th>Out</th><th>Sheet</th><th>Taken by</th><th>When</th></tr></thead>
+      <tbody>${rows.map(({ s, l, still }) => `<tr class="click" data-sheet="${esc(s.id)}" tabindex="0"><td>${esc(l.name || "Unnamed item")}<span class="code">${esc(codeText(l.code))}</span></td><td>${still}</td><td>${esc(s.client || "Untitled")}<span class="code">${esc(fmtDate(s.date))}</span></td><td>${esc(takerText(l.takenBy))}</td><td>${esc(whenText(l.takenAt))}</td></tr>`).join("")}</tbody>
+    </table></div>`;
 }
 
 function newSheetModal(existing) {
@@ -381,7 +444,7 @@ function checkoutModal(s, code, key = keyOf(code)) {
     <h2>Check out</h2>
     <div class="code">${esc(codeText(code))}</div>
     <form id="f" style="display:grid;gap:14px">
-      ${prod ? `<div class="item-known"><strong>${esc(prod.name)}</strong><span class="num">${money(prod.price)} each</span></div>${hasStock(prod) ? `<div class="summary"><span>In storage</span><b>${prod.stock}</b></div>` : ""}`
+      ${prod ? `<div class="item-known"><strong>${esc(prod.name)}</strong><span class="num">${isEquipment(prod) ? "Company equipment · not charged" : `${money(prod.price)} each`}</span></div>${hasStock(prod) ? `<div class="summary"><span>In storage</span><b>${prod.stock}</b></div>` : ""}`
              : `<p class="hint" style="margin-top:-4px">${code ? "New barcode. Name it and set a price, and it'll be saved to inventory." : "Name the item and set a price."}</p>
                 <div class="field"><label for="fName">Item name</label><input type="text" id="fName" required data-autofocus placeholder="${code ? "e.g. Nitrile gloves, box of 100" : "e.g. Leftover storage bins"}"></div>
                 <div class="field"><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money placeholder="0.00"></div>
@@ -414,7 +477,12 @@ function checkoutModal(s, code, key = keyOf(code)) {
         const fresh = currentSheet() || s, cur = own(fresh.items || {}, key);
         // A new line copies the item's cost too (ADR 0014); an existing line keeps its snapshot
         const from = cur || prod, cost = from && hasCost(from) ? { cost: from.cost } : {};
-        const item = { code, name: cur ? cur.name : name, price: cur ? cur.price : price, ...cost, out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) };
+        const counts = { out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) };
+        // Company equipment (ADR 0017) has no price on the sheet, and says who took it last and
+        // when. The artifact build writes this line; the web build's server makes the same one.
+        const item = (cur ? isEquipmentLine(cur) : isEquipment(prod))
+          ? { code, name: cur ? cur.name : name, kind: "equipment", ...cost, ...counts, takenBy: myId || fresh.createdByName || "", takenAt: new Date().toISOString() }
+          : { code, name: cur ? cur.name : name, price: cur ? cur.price : price, ...cost, ...counts };
         return closing(write(() => checkOut(db, action, s.id, key, qty, item, oneOff), `Checked out ${qty} × ${item.name}`, s.id));
       }).then(() => owing(m, action));
     });
@@ -436,7 +504,7 @@ function pickOutModal(s) {
     const paint = () => {
       const q = find.value.trim().toLowerCase();
       const hits = all.filter(p => !q || String(p.name).toLowerCase().includes(q) || String(p.code || "").toLowerCase().includes(q));
-      box.innerHTML = hits.length ? hits.map(p => `<button type="button" data-k="${esc(p.key)}"><span>${esc(p.name)}<span class="code" style="display:block">${esc(codeText(p.code))}</span></span><span class="num">${hasStock(p) ? p.stock + " in storage" : money(p.price)}</span></button>`).join("") : `<p class="hint">No matches. Use + New item.</p>`;
+      box.innerHTML = hits.length ? hits.map(p => `<button type="button" data-k="${esc(p.key)}"><span>${esc(p.name)}<span class="code" style="display:block">${esc(codeText(p.code))}</span></span><span class="num">${hasStock(p) ? p.stock + " in storage" : isEquipment(p) ? "Equipment" : money(p.price)}</span></button>`).join("") : `<p class="hint">No matches. Use + New item.</p>`;
       box.querySelectorAll("[data-k]").forEach(b => b.addEventListener("click", () => { const p = products[b.dataset.k] || {}; checkoutModal(s, p.code || "", b.dataset.k); }));
     };
     find.addEventListener("input", paint); paint();
@@ -468,13 +536,15 @@ function returnModal(s, code, key = keyOf(code)) {
     });
     return;
   }
-  const o = int(line.out), price = Number(line.price) || 0;
-  const already = Math.min(int(line.returned), o), left = o - already;
+  // Company equipment lost or broken isn't coming back either (ADR 0017), and unreturned
+  // equipment is still out, not used, so it has no charge
+  const equip = isEquipmentLine(line), o = int(line.out), price = Number(line.price) || 0;
+  const already = Math.min(int(line.returned), o), left = equip ? equipmentCounts(line).still : o - already;
   if (!left) {
     openModal(`
       <h2>Already returned</h2>
       <div class="code">${esc(codeText(code))}</div>
-      <p style="margin:0">All ${o} of <strong>${esc(line.name)}</strong> have been returned. To correct the counts, tap the item's row on the sheet.</p>
+      <p style="margin:0">${equip ? `None of <strong>${esc(line.name)}</strong> is still out.` : `All ${o} of <strong>${esc(line.name)}</strong> have been returned.`} To correct the counts, tap the item's row on the sheet.</p>
       <div class="modal-actions"><button type="button" class="btn primary" id="cancel">Close</button></div>`, m => {
       m.querySelector("#cancel").addEventListener("click", closeModal);
     });
@@ -490,8 +560,9 @@ function returnModal(s, code, key = keyOf(code)) {
       <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save return</button></div>
     </form>`, m => {
     const paint = r => {
-      const back = already + Math.min(int(r), left);
-      setHTML(m.querySelector("#sum"), `<span>Returned <b>${back}</b> of ${o}</span><span>Used <b>${o - back}</b></span><span>Charge <b>${money((o - back) * price)}</b></span>`);
+      const now = Math.min(int(r), left), back = already + now;
+      setHTML(m.querySelector("#sum"), equip ? `<span>Returned <b>${back}</b> of ${o}</span><span>Still out <b>${left - now}</b></span>`
+        : `<span>Returned <b>${back}</b> of ${o}</span><span>Used <b>${o - back}</b></span><span>Charge <b>${money((o - back) * price)}</b></span>`);
     };
     const getR = wireStepper(m, "fRet", paint); paint(1);
     cancelling(m, action);
@@ -510,11 +581,13 @@ function returnModal(s, code, key = keyOf(code)) {
 
 function lineModal(s, key) {
   const l = own(s.items || {}, key); if (!l) return;
+  // Company equipment on loan has no price on the sheet (ADR 0017)
+  const equip = isEquipmentLine(l);
   openModal(`
     <h2>${esc(l.name || "Item")}</h2>
     <div class="code">${esc(codeText(l.code))}</div>
     <form id="f" style="display:grid;gap:14px">
-      <div class="field"><label for="fPrice">Price each on this sheet ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${Number(l.price) || 0}"></div>
+      ${equip ? `<p class="hint" style="margin:0">Company equipment: not charged.</p>` : `<div class="field"><label for="fPrice">Price each on this sheet ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${Number(l.price) || 0}"></div>`}
       <div class="row2">
         <div class="field"><label for="fOut">Taken</label><input type="number" id="fOut" min="0" inputmode="numeric" value="${int(l.out)}"></div>
         <div class="field"><label for="fRet">Returned</label><input type="number" id="fRet" min="0" inputmode="numeric" value="${int(l.returned)}"></div>
@@ -526,10 +599,11 @@ function lineModal(s, key) {
     // The form is busy until it's removed, so it's removed once
     armButton(m.querySelector("#remove"), "Tap to remove", () => busy(form, () => closing(write(() => removeLine(s.id, key), "Removed", s.id))));
     onSubmit(form, () => {
-      const out = int(m.querySelector("#fOut").value), returned = Math.min(int(m.querySelector("#fRet").value), out);
+      // Taken never below what's back and lost; returned never above what isn't lost
+      const lost = int(l.lost), out = Math.max(int(m.querySelector("#fOut").value), lost), returned = Math.min(int(m.querySelector("#fRet").value), out - lost);
       // Typed prices are kept in whole cents (ADR 0014)
-      const price = Math.max(0, round2(m.querySelector("#fPrice").value));
-      saving(form, () => closing(write(() => db.doc("sheets/" + s.id).update({ items: { [key]: { out, returned, price } } }), "Saved", s.id)));
+      const patch = equip ? { out, returned } : { out, returned, price: Math.max(0, round2(m.querySelector("#fPrice").value)) };
+      saving(form, () => closing(write(() => db.doc("sheets/" + s.id).update({ items: { [key]: patch } }), "Saved", s.id)));
     });
   });
 }
@@ -576,28 +650,42 @@ function packsText(n, size) {
   return loose ? `${packs} + ${loose} loose` : packs;
 }
 
+const SUPPLY_HINT = "Price is what a client is charged. Cost is what you paid each, before tax, and isn't shown on sheets.";
+const EQUIPMENT_HINT = "Company equipment goes to jobs and comes back. It's listed on sheets but not charged. Value is what you paid for one.";
 function productModal(key) {
   const p = key ? products[key] : null;
   // One count per form: every attempt at saving the same count is the same stock command.
   // And one key for a new item without a barcode, so trying again doesn't make a second item.
-  const action = {}, newItemKey = newKey();
+  const action = {}, newItemKey = newKey(), equip = isEquipment(p);
   openModal(`
     <h2>${p ? "Edit item" : "Add item"}</h2>
     <form id="f" style="display:grid;gap:14px">
+      <fieldset class="field kinds"><legend>What is it?</legend>
+        <label class="check"><input type="radio" name="fKind" value="supply" ${equip ? "" : "checked"}> Supply (used up, charged)</label>
+        <label class="check"><input type="radio" name="fKind" value="equipment" ${equip ? "checked" : ""}> Company equipment (reused, not charged)</label>
+      </fieldset>
       <div class="field"><label for="fCode">Barcode${p ? "" : " (optional)"}</label>
         ${p ? `<div class="code" style="margin:0">${esc(codeText(p.code))}</div>`
             : `<div class="manual"><input type="text" id="fCode" inputmode="numeric" autocomplete="off" placeholder="Type, scan, or leave blank"><label class="btn" for="fScan">Scan</label></div><input class="vh" type="file" id="fScan" accept="image/*" capture="environment">`}
       </div>
       <div class="field"><label for="fName">Item name</label><input type="text" id="fName" required value="${esc(p ? p.name : "")}" ${p ? "data-autofocus" : ""}></div>
-      <div class="field"><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p ? round2(p.price) : ""}" placeholder="0.00"></div>
-      <div class="field"><label for="fCost">Cost each ($)</label><input type="number" id="fCost" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="Leave blank if not known"></div>
+      <div class="field" id="fPriceField" ${equip ? "hidden" : ""}><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && !equip ? round2(p.price) : ""}" placeholder="0.00"></div>
+      <div class="field"><label for="fCost" id="fCostLabel">${equip ? "Value each" : "Cost each"} ($)</label><input type="number" id="fCost" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="Leave blank if not known"></div>
       <div class="field"><label for="fPack">Comes in packs of (optional)</label><input type="number" id="fPack" min="1" max="${MAX_PACK}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.packSize) ? p.packSize : ""}" placeholder="Leave blank if bought one at a time" aria-describedby="fPackHint"><p class="hint" id="fPackHint">Receipts add packs × this many to storage.</p></div>
       <div class="field"><label for="fStock">Single items in storage now</label><input type="number" id="fStock" min="0" inputmode="numeric" value="${hasStock(p) ? p.stock : ""}" placeholder="Leave blank if not counted"><p class="hint" id="fPacks" aria-live="polite" hidden></p></div>
-      <p class="hint">Price is what a client is charged. Cost is what you paid each, before tax, and isn't shown on sheets.</p>
-      ${p ? `<p class="hint">Price changes apply to new checkouts. Sheets keep the price they were checked out at; change it on a sheet by tapping the row.</p>` : ""}
+      <p class="hint" id="fKindHint">${equip ? EQUIPMENT_HINT : SUPPLY_HINT}</p>
+      ${p ? `<p class="hint">Price changes apply to new checkouts. Sheets keep the price they were checked out at; change it on a sheet by tapping the row. So does a change between supply and equipment.</p>` : ""}
       <div class="modal-actions">${p ? `<button type="button" class="btn danger" id="remove">Delete</button><span class="spacer"></span>` : ""}<button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div>
     </form>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
+    // Equipment has no client price, and its cost is its value
+    const kindOf = () => m.querySelector("input[name=fKind]:checked").value;
+    m.querySelectorAll("input[name=fKind]").forEach(r => r.addEventListener("change", () => {
+      const eq = kindOf() === "equipment";
+      m.querySelector("#fPriceField").hidden = eq;
+      m.querySelector("#fCostLabel").textContent = `${eq ? "Value each" : "Cost each"} ($)`;
+      m.querySelector("#fKindHint").textContent = eq ? EQUIPMENT_HINT : SUPPLY_HINT;
+    }));
     const scan = m.querySelector("#fScan");
     scan && scan.addEventListener("change", async () => { const c = await scanFromInput(scan); if (c) m.querySelector("#fCode").value = c; });
     const stock = m.querySelector("#fStock"), pack = m.querySelector("#fPack"), packs = m.querySelector("#fPacks");
@@ -617,6 +705,9 @@ function productModal(key) {
       // set replaces the whole item, so start from what's there: fields this form doesn't
       // manage survive an edit (ADR 0014). A blank optional field removes it.
       const body = { ...(p || {}), code, name, price, updatedAt: new Date().toISOString() };
+      // A whole-item write carries the kind (ADR 0017): equipment says so and has no price; a supply needs no kind
+      delete body.kind;
+      if (kindOf() === "equipment") { body.kind = "equipment"; delete body.price; }
       const opt = (id, field, val) => { const v = m.querySelector(id).value.trim(); if (v === "") delete body[field]; else body[field] = val(v); };
       opt("#fStock", "stock", int);
       opt("#fCost", "cost", v => Math.max(0, round2(v)));
@@ -999,6 +1090,8 @@ async function saveReceipt() {
     if (!ex && !add && !d.savePrices) continue;
     const l0 = ls[0], code = (ex && ex.code) || (ls.find(l => l.code) || {}).code || "";
     const body = { ...(ex || {}), code, name: effName(l0), price: effPrice(l0), cost: unitCost(l0), updatedAt: new Date().toISOString() };
+    // Company equipment has no client price: a receipt sets only its value, its cost (ADR 0017)
+    if (isEquipment(ex)) delete body.price;
     if (add) body.stock = (hasStock(ex) ? ex.stock : 0) + add;
     if (!await write(() => saveItem(db, null, k, body, { reason: "receipt", lines: stocked.map(stockIn) }))) { failed(); return; }
     // Written: drop its stock lines, so they can't be added twice

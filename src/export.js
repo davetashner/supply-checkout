@@ -1,8 +1,8 @@
 // Exports: one sheet as CSV, and all of a team's data as CSV or JSON. Built from the
 // documents the app already holds and shows (both collections are loaded in full to draw
 // the lists), with the same math and labels as the screens, so an export matches them.
-import { hasStock } from "./format.js";
-import { lines, lineCounts, lineCharge, totals } from "./sheet-math.js";
+import { hasStock, isEquipment, unitValue } from "./format.js";
+import { lines, lineCounts, lineCharge, totals, isEquipmentLine, equipmentCounts } from "./sheet-math.js";
 
 // One CSV cell. Text that a spreadsheet would run as a formula (=, +, -, @, tab or return
 // first) gets a leading apostrophe, so a name a team member typed can't run in the
@@ -18,25 +18,33 @@ export const toCsv = rows => rows.map(r => r.map(cell).join(",")).join("\n");
 const statusText = s => s.status === "closed" ? "Returned" : "Checked out";
 const fixed = n => (Number(n) || 0).toFixed(2);
 
-// One sheet, as its "Download CSV" button saves it
+// One sheet, as its "Download CSV" button saves it: the file that goes to the client, so
+// company equipment on loan isn't in it (ADR 0017); it isn't charged
 export function sheetCsv(s, preparedBy) {
   const t = totals(s);
   return toCsv([
     ["Client", s.client], ["Date", s.date], ["Prepared by", preparedBy], ["Status", statusText(s)], [],
     ["Item", "Barcode", "Price each", "Taken", "Returned", "Used", "Charge"],
-    ...lines(s).map(l => { const { o, r, u, p } = lineCounts(l); return [l.name, l.code || "", fixed(p), o, r, u, fixed(lineCharge(l))]; }),
+    ...lines(s).filter(l => !isEquipmentLine(l)).map(l => { const { o, r, u, p } = lineCounts(l); return [l.name, l.code || "", fixed(p), o, r, u, fixed(lineCharge(l))]; }),
     ["Total", "", "", t.out, t.ret, t.used, fixed(t.charge)],
   ]);
 }
 
-// Every sheet, one row per item, in the list's order. A sheet with no items gets one row.
+// Every sheet, one row per item, in the list's order. A sheet with no items gets one row. The
+// owner's own export keeps everything: company equipment too, with no price, used or charge,
+// and the Kind column says which rows are equipment.
 export function sheetsCsv(sheets, preparedBy) {
-  const rows = [["Client", "Date", "Prepared by", "Status", "Item", "Barcode", "Price each", "Taken", "Returned", "Used", "Charge", "Sheet ID"]];
+  const rows = [["Client", "Date", "Prepared by", "Status", "Item", "Barcode", "Price each", "Taken", "Returned", "Used", "Charge", "Sheet ID", "Kind"]];
   for (const s of sheets) {
     const head = [s.client || "Untitled", s.date || "", preparedBy(s), statusText(s)];
     const ls = lines(s);
-    if (!ls.length) rows.push([...head, "", "", "", "", "", "", "", s.id]);
-    for (const l of ls) { const { o, r, u, p } = lineCounts(l); rows.push([...head, l.name || "Unnamed item", l.code || "", fixed(p), o, r, u, fixed(lineCharge(l)), s.id]); }
+    if (!ls.length) rows.push([...head, "", "", "", "", "", "", "", s.id, ""]);
+    for (const l of ls) {
+      const name = l.name || "Unnamed item", code = l.code || "";
+      if (isEquipmentLine(l)) { const { o, r } = equipmentCounts(l); rows.push([...head, name, code, "", o, r, "", "", s.id, "Equipment"]); continue; }
+      const { o, r, u, p } = lineCounts(l);
+      rows.push([...head, name, code, fixed(p), o, r, u, fixed(lineCharge(l)), s.id, "Supply"]);
+    }
   }
   return toCsv(rows);
 }
@@ -44,12 +52,14 @@ export function sheetsCsv(sheets, preparedBy) {
 const byName = products => Object.entries(products).map(([key, p]) => ({ key, ...p })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
 // The inventory, as the Inventory tab lists it. Items nobody has counted have no count or value.
+// Company equipment has no price; its value is what the business paid for each.
 export function inventoryCsv(products) {
   return toCsv([
-    ["Item", "Barcode", "In storage", "Price each", "Value"],
+    ["Item", "Barcode", "In storage", "Price each", "Value", "Kind"],
     ...byName(products).map(p => {
-      const counted = hasStock(p);
-      return [p.name || "Unnamed item", p.code || "", counted ? p.stock : "", fixed(p.price), counted ? fixed(p.stock * (Number(p.price) || 0)) : ""];
+      const counted = hasStock(p), equipment = isEquipment(p);
+      const each = equipment ? unitValue(p) : Number(p.price) || 0;
+      return [p.name || "Unnamed item", p.code || "", counted ? p.stock : "", equipment ? "" : fixed(p.price), counted ? fixed(p.stock * each) : "", equipment ? "Equipment" : "Supply"];
     }),
   ]);
 }

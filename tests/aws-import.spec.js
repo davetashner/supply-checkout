@@ -171,7 +171,7 @@ test("offers a template with a column guide, and the template goes through the p
   await openImport(page, backend);
   const guide = dialog(page).locator("details.import-guide");
   await guide.getByText("What goes in each column").click();
-  for (const column of ["name", "price", "barcode", "cost", "stock", "pack_size"]) await expect(guide.locator("dt", { hasText: new RegExp(`^${column}$`) })).toBeVisible();
+  for (const column of ["name", "price", "barcode", "kind", "cost", "stock", "pack_size"]) await expect(guide.locator("dt", { hasText: new RegExp(`^${column}$`) })).toBeVisible();
   await expect(guide).toContainText("before tax. It isn't shown on client sheets.");
   const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
   expect(violations.map((v) => v.id)).toEqual([]);
@@ -183,8 +183,8 @@ test("offers a template with a column guide, and the template goes through the p
   const text = await readFile(await file.path(), "utf8");
   expect(text).toBe(await readFile(new URL("../src/aws/import-template.csv", import.meta.url), "utf8"));
   const lines = text.trim().split("\n");
-  expect(lines[0]).toBe("name,barcode,price,cost,stock,pack_size");
-  expect(lines).toHaveLength(3);
+  expect(lines[0]).toBe("name,barcode,kind,price,cost,stock,pack_size");
+  expect(lines).toHaveLength(4);
   expect(lines.slice(1).every((l) => l.startsWith("EXAMPLE "))).toBe(true);
 
   // Fed back unchanged, the file is sent as it is and the preview offers the import
@@ -199,4 +199,17 @@ test("only owners see Import CSV", { tag: ["@J2.4"] }, async ({ page }) => {
   await connected(page);
   await expect(page.locator(".teambar").getByRole("button", { name: "Sign out" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Import CSV" })).toHaveCount(0);
+});
+
+test("the preview shows company equipment without a price, and a change of kind", { tag: ["@J2.4", "@J13.1"] }, async ({ page }) => {
+  const backend = new FakeBackend();
+  backend.on("POST", PATH, ok({
+    ...PREVIEW,
+    rows: [{ line: 2, name: "Step ladder", barcode: "LAD-1", kind: "equipment", cost: 120, stock: 2, key: "LAD-1", action: "update", changes: ["kind", "price"] }],
+    ignoredColumns: [],
+    summary: { rows: 1, created: 0, updated: 1, unchanged: 0 },
+  }));
+  await openImport(page, backend);
+  await choose(page, "name,barcode,kind,cost,stock,price\nStep ladder,LAD-1,equipment,120,2,\n");
+  await expect(page.locator("#importResult tbody tr")).toHaveText(/Step ladder\s*LAD-1\s*Equipment\s*2\s*Update kind, price/);
 });
