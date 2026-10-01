@@ -219,8 +219,8 @@
           "Statement": [
             {
               "Action": [
-                "xray:PutTraceSegments",
-                "xray:PutTelemetryRecords"
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
               ],
               "Effect": "Allow",
               "Resource": "*"
@@ -426,8 +426,8 @@
           "Statement": [
             {
               "Action": [
-                "xray:PutTraceSegments",
-                "xray:PutTelemetryRecords"
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
               ],
               "Effect": "Allow",
               "Resource": "*"
@@ -557,15 +557,11 @@
                   "Fn::Join": [
                     "",
                     [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition"
-                      },
-                      ":ses:us-east-1:",
+                      "arn:aws:ses:us-east-1:",
                       {
                         "Ref": "AWS::AccountId"
                       },
-                      ":identity/supplycheckout.com"
+                      ":configuration-set/supply-checkout-prod-transactional"
                     ]
                   ]
                 },
@@ -573,15 +569,11 @@
                   "Fn::Join": [
                     "",
                     [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition"
-                      },
-                      ":ses:us-east-1:",
+                      "arn:aws:ses:us-east-1:",
                       {
                         "Ref": "AWS::AccountId"
                       },
-                      ":configuration-set/supply-checkout-prod-transactional"
+                      ":identity/supplycheckout.com"
                     ]
                   ]
                 }
@@ -749,8 +741,8 @@
           "Statement": [
             {
               "Action": [
-                "xray:PutTraceSegments",
-                "xray:PutTelemetryRecords"
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
               ],
               "Effect": "Allow",
               "Resource": "*"
@@ -807,12 +799,12 @@
               "Statement": [
                 {
                   "Action": [
+                    "dynamodb:ConditionCheckItem",
+                    "dynamodb:DeleteItem",
                     "dynamodb:GetItem",
                     "dynamodb:PutItem",
-                    "dynamodb:DeleteItem",
-                    "dynamodb:UpdateItem",
-                    "dynamodb:ConditionCheckItem",
-                    "dynamodb:Query"
+                    "dynamodb:Query",
+                    "dynamodb:UpdateItem"
                   ],
                   "Condition": {
                     "ForAllValues:StringEquals": {
@@ -828,11 +820,7 @@
                       "Fn::Join": [
                         "",
                         [
-                          "arn:",
-                          {
-                            "Ref": "AWS::Partition"
-                          },
-                          ":dynamodb:us-west-2:",
+                          "arn:aws:dynamodb:us-west-2:",
                           {
                             "Ref": "AWS::AccountId"
                           },
@@ -844,11 +832,7 @@
                       "Fn::Join": [
                         "",
                         [
-                          "arn:",
-                          {
-                            "Ref": "AWS::Partition"
-                          },
-                          ":dynamodb:us-west-2:",
+                          "arn:aws:dynamodb:us-west-2:",
                           {
                             "Ref": "AWS::AccountId"
                           },
@@ -886,11 +870,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":dynamodb:us-west-2:",
+                        "arn:aws:dynamodb:us-west-2:",
                         {
                           "Ref": "AWS::AccountId"
                         },
@@ -1008,12 +988,12 @@
               "Statement": [
                 {
                   "Action": [
+                    "dynamodb:ConditionCheckItem",
+                    "dynamodb:DeleteItem",
                     "dynamodb:GetItem",
                     "dynamodb:PutItem",
-                    "dynamodb:DeleteItem",
-                    "dynamodb:UpdateItem",
-                    "dynamodb:ConditionCheckItem",
-                    "dynamodb:Query"
+                    "dynamodb:Query",
+                    "dynamodb:UpdateItem"
                   ],
                   "Condition": {
                     "ForAllValues:StringEquals": {
@@ -1030,11 +1010,7 @@
                       "Fn::Join": [
                         "",
                         [
-                          "arn:",
-                          {
-                            "Ref": "AWS::Partition"
-                          },
-                          ":dynamodb:us-west-2:",
+                          "arn:aws:dynamodb:us-west-2:",
                           {
                             "Ref": "AWS::AccountId"
                           },
@@ -1046,11 +1022,7 @@
                       "Fn::Join": [
                         "",
                         [
-                          "arn:",
-                          {
-                            "Ref": "AWS::Partition"
-                          },
-                          ":dynamodb:us-west-2:",
+                          "arn:aws:dynamodb:us-west-2:",
                           {
                             "Ref": "AWS::AccountId"
                           },
@@ -1063,8 +1035,8 @@
                 },
                 {
                   "Action": [
-                    "dynamodb:UpdateItem",
-                    "dynamodb:DeleteItem"
+                    "dynamodb:DeleteItem",
+                    "dynamodb:UpdateItem"
                   ],
                   "Condition": {
                     "ForAllValues:StringEquals": {
@@ -1086,11 +1058,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":dynamodb:us-west-2:",
+                        "arn:aws:dynamodb:us-west-2:",
                         {
                           "Ref": "AWS::AccountId"
                         },
@@ -1124,11 +1092,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":dynamodb:us-west-2:",
+                        "arn:aws:dynamodb:us-west-2:",
                         {
                           "Ref": "AWS::AccountId"
                         },
@@ -1427,8 +1391,8 @@
           "Statement": [
             {
               "Action": [
-                "xray:PutTraceSegments",
-                "xray:PutTelemetryRecords"
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
               ],
               "Effect": "Allow",
               "Resource": "*"
@@ -1501,11 +1465,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":dynamodb:us-west-2:",
+                        "arn:aws:dynamodb:us-west-2:",
                         {
                           "Ref": "AWS::AccountId"
                         },
@@ -1537,11 +1497,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":dynamodb:us-west-2:",
+                        "arn:aws:dynamodb:us-west-2:",
                         {
                           "Ref": "AWS::AccountId"
                         },
@@ -1574,11 +1530,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":dynamodb:us-west-2:",
+                        "arn:aws:dynamodb:us-west-2:",
                         {
                           "Ref": "AWS::AccountId"
                         },
@@ -1612,11 +1564,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":dynamodb:us-west-2:",
+                        "arn:aws:dynamodb:us-west-2:",
                         {
                           "Ref": "AWS::AccountId"
                         },
@@ -2261,8 +2209,8 @@
           "Statement": [
             {
               "Action": [
-                "xray:PutTraceSegments",
-                "xray:PutTelemetryRecords"
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
               ],
               "Effect": "Allow",
               "Resource": "*"
@@ -2368,35 +2316,27 @@
             },
             {
               "Action": [
-                "sqs:ReceiveMessage",
                 "sqs:ChangeMessageVisibility",
-                "sqs:GetQueueUrl",
                 "sqs:DeleteMessage",
-                "sqs:GetQueueAttributes"
+                "sqs:GetQueueAttributes",
+                "sqs:GetQueueUrl",
+                "sqs:ReceiveMessage"
               ],
               "Effect": "Allow",
-              "Resource": {
-                "Fn::GetAtt": [
-                  "BillingEventsQueueFF17F8F8",
-                  "Arn"
-                ]
-              }
-            },
-            {
-              "Action": [
-                "sqs:ReceiveMessage",
-                "sqs:ChangeMessageVisibility",
-                "sqs:GetQueueUrl",
-                "sqs:DeleteMessage",
-                "sqs:GetQueueAttributes"
-              ],
-              "Effect": "Allow",
-              "Resource": {
-                "Fn::GetAtt": [
-                  "SeatSyncsQueue518F74A6",
-                  "Arn"
-                ]
-              }
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "BillingEventsQueueFF17F8F8",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::GetAtt": [
+                    "SeatSyncsQueue518F74A6",
+                    "Arn"
+                  ]
+                }
+              ]
             },
             {
               "Action": "secretsmanager:GetSecretValue",
@@ -2432,15 +2372,11 @@
                   "Fn::Join": [
                     "",
                     [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition"
-                      },
-                      ":ses:us-east-1:",
+                      "arn:aws:ses:us-east-1:",
                       {
                         "Ref": "AWS::AccountId"
                       },
-                      ":identity/supplycheckout.com"
+                      ":configuration-set/supply-checkout-prod-transactional"
                     ]
                   ]
                 },
@@ -2448,15 +2384,11 @@
                   "Fn::Join": [
                     "",
                     [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition"
-                      },
-                      ":ses:us-east-1:",
+                      "arn:aws:ses:us-east-1:",
                       {
                         "Ref": "AWS::AccountId"
                       },
-                      ":configuration-set/supply-checkout-prod-transactional"
+                      ":identity/supplycheckout.com"
                     ]
                   ]
                 }
@@ -2662,8 +2594,8 @@
           "Statement": [
             {
               "Action": [
-                "xray:PutTraceSegments",
-                "xray:PutTelemetryRecords"
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
               ],
               "Effect": "Allow",
               "Resource": "*"
@@ -2752,11 +2684,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":dynamodb:us-west-2:",
+                        "arn:aws:dynamodb:us-west-2:",
                         {
                           "Ref": "AWS::AccountId"
                         },
@@ -2788,11 +2716,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":dynamodb:us-west-2:",
+                        "arn:aws:dynamodb:us-west-2:",
                         {
                           "Ref": "AWS::AccountId"
                         },
@@ -2840,11 +2764,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":dynamodb:us-west-2:",
+                        "arn:aws:dynamodb:us-west-2:",
                         {
                           "Ref": "AWS::AccountId"
                         },
@@ -2887,11 +2807,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":dynamodb:us-west-2:",
+                        "arn:aws:dynamodb:us-west-2:",
                         {
                           "Ref": "AWS::AccountId"
                         },
@@ -3020,11 +2936,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3097,11 +3009,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3151,11 +3059,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3205,11 +3109,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3259,11 +3159,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3313,11 +3209,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3367,11 +3259,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3421,11 +3309,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3475,11 +3359,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3529,11 +3409,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3583,11 +3459,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3637,11 +3509,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3691,11 +3559,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3745,11 +3609,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3799,11 +3659,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3853,11 +3709,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3907,11 +3759,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -3974,11 +3822,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4028,11 +3872,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4082,11 +3922,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4136,11 +3972,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4190,11 +4022,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4244,11 +4072,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4298,11 +4122,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4352,11 +4172,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4406,11 +4222,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4460,11 +4272,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4514,11 +4322,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4568,11 +4372,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4622,11 +4422,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4676,11 +4472,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4730,11 +4522,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4784,11 +4572,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4838,11 +4622,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4892,11 +4672,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -4946,11 +4722,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -5013,11 +4785,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -5067,11 +4835,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -5121,11 +4885,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -5188,11 +4948,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -5252,11 +5008,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -5303,11 +5055,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },
@@ -5354,11 +5102,7 @@
           "Fn::Join": [
             "",
             [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:us-west-2:",
+              "arn:aws:execute-api:us-west-2:",
               {
                 "Ref": "AWS::AccountId"
               },

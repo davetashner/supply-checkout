@@ -1,4 +1,4 @@
-import { App } from "aws-cdk-lib";
+import { testApp } from "./cdk-app.js";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { AwsSolutionsChecks } from "cdk-nag";
 import { describe, expect, it } from "vitest";
@@ -24,13 +24,13 @@ const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.
 const TABLE = "supply-checkout-prod-app";
 
 function workload(context: Record<string, unknown> = {}, overrides: Partial<DeploymentConfig> = {}) {
-  const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [], ...context } });
+  const app = testApp(context);
   const stacks = addSupplyCheckout(app, { ...config, ...overrides });
   return { app, stacks, template: Template.fromStack(stacks.backup) };
 }
 
 function backupAccount(overrides: Partial<DeploymentConfig> = {}, context: Record<string, unknown> = {}) {
-  const app = new App({ context: { "aws:cdk:version-reporting": false, ...context } });
+  const app = testApp(context);
   const stack = addBackupAccount(app, { ...config, ...overrides });
   return { app, stack, template: Template.fromStack(stack) };
 }
@@ -210,7 +210,7 @@ describe("backup stack (workload account)", () => {
     const { template } = workload();
     const copyVault = ssmParameter(template, backupParameters("prod").copyVaultArn);
     const backupAccountRoot = {
-      "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":iam::", { "Fn::Select": [4, { "Fn::Split": [":", { Ref: copyVault }] }] }, ":root"]],
+      "Fn::Join": ["", ["arn:aws:iam::", { "Fn::Select": [4, { "Fn::Split": [":", { Ref: copyVault }] }] }, ":root"]],
     };
     const key = statements(template, "AWS::KMS::Key", (p) => p.KeyPolicy as { Statement: Statement[] });
     const viaBackup = { "kms:ViaService": { "Fn::Join": ["", ["backup.", { Ref: "AWS::Region" }, ".amazonaws.com"]] } };
@@ -678,8 +678,8 @@ describe("backup account vault stack", () => {
       ArnLike: { "aws:PrincipalArn": { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:iam::*:role/${deletionsReplicationRoleName("prod")}`]] } },
     };
     for (const st of allows) expect(st.Condition).toEqual(role);
-    expect(allows.find((st) => st.Sid === "SourceAccountsReplicateRecords")?.Action).toEqual(["s3:ReplicateObject", "s3:ObjectOwnerOverrideToBucketOwner"]);
-    expect(allows.find((st) => st.Sid === "SourceAccountsCheckTheBucket")?.Action).toEqual(["s3:GetBucketVersioning", "s3:GetBucketObjectLockConfiguration"]);
+    expect(allows.find((st) => st.Sid === "SourceAccountsReplicateRecords")?.Action).toEqual(["s3:ObjectOwnerOverrideToBucketOwner", "s3:ReplicateObject"]);
+    expect(allows.find((st) => st.Sid === "SourceAccountsCheckTheBucket")?.Action).toEqual(["s3:GetBucketObjectLockConfiguration", "s3:GetBucketVersioning"]);
     for (const st of allows) expect(actions(st).some((a) => /Delete|Put|\*/.test(a))).toBe(false);
     // Every other statement refuses anything but TLS
     for (const st of statements.filter((st) => st.Effect !== "Allow")) expect(st.Condition).toEqual({ Bool: { "aws:SecureTransport": "false" } });

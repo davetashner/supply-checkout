@@ -421,11 +421,7 @@
                   "Fn::Join": [
                     "",
                     [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition"
-                      },
-                      ":iam::",
+                      "arn:aws:iam::",
                       {
                         "Ref": "AWS::AccountId"
                       },
@@ -438,8 +434,8 @@
             },
             {
               "Action": [
-                "kms:GenerateDataKey*",
-                "kms:Decrypt"
+                "kms:Decrypt",
+                "kms:GenerateDataKey*"
               ],
               "Condition": {
                 "StringEquals": {
@@ -450,11 +446,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":ses:us-east-1:",
+                        "arn:aws:ses:us-east-1:",
                         {
                           "Ref": "AWS::AccountId"
                         },

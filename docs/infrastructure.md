@@ -742,7 +742,7 @@ Then measure the 2-second p95 and the reconnect behavior in staging as described
 
 ## Template snapshots
 
-`test/stacks.test.ts` snapshots every stack's synthesized template, one file per stack in `test/__snapshots__/<stack name>.json` (for example `supply-checkout-prod-us-east-1-api.json`), so a change to one stack only touches that stack's file. Lambda asset hashes and the function version IDs made from them are masked, because they depend on the checkout's path. When a change to a stack is intended, review the test's diff, then accept it and commit the changed files:
+`test/stacks.test.ts` snapshots every stack's synthesized template, one file per stack in `test/__snapshots__/<stack name>.json` (for example `supply-checkout-prod-us-east-1-api.json`), so a change to one stack only touches that stack's file. Every test builds its App with `testApp()` from `test/cdk-app.ts`, which carries `cdk.json`'s context, feature flags included, just as `cdk synth` does for `bin/app.ts`, so the snapshots are the templates CloudFormation gets (apart from CDK's path metadata); `test/cdk-app.test.ts` fails if the flags drift apart. A test that needs other context passes it to `testApp()` rather than building an `App` of its own. Lambda asset hashes and the function version IDs made from them are masked, because they depend on the checkout's path. When a change to a stack is intended, review the test's diff, then accept it and commit the changed files:
 
 ```bash
 cd infra

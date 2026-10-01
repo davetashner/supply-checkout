@@ -31,11 +31,7 @@
                   "Fn::Join": [
                     "",
                     [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition"
-                      },
-                      ":iam::",
+                      "arn:aws:iam::",
                       {
                         "Ref": "AWS::AccountId"
                       },
@@ -357,7 +353,6 @@
     "LogsBucket9C4D8843": {
       "Type": "AWS::S3::Bucket",
       "Properties": {
-        "AccessControl": "LogDeliveryWrite",
         "BucketEncryption": {
           "ServerSideEncryptionConfiguration": [
             {
@@ -518,6 +513,78 @@
                 ]
               },
               "Sid": "TrailBucketAccessLogs"
+            },
+            {
+              "Action": "s3:PutObject",
+              "Condition": {
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::GetAtt": [
+                      "WebBucket12880F5B",
+                      "Arn"
+                    ]
+                  }
+                },
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "logging.s3.amazonaws.com"
+              },
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    {
+                      "Fn::GetAtt": [
+                        "LogsBucket9C4D8843",
+                        "Arn"
+                      ]
+                    },
+                    "/s3/web/*"
+                  ]
+                ]
+              }
+            },
+            {
+              "Action": "s3:PutObject",
+              "Condition": {
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::GetAtt": [
+                      "DeletionsBucket16E78109",
+                      "Arn"
+                    ]
+                  }
+                },
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "logging.s3.amazonaws.com"
+              },
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    {
+                      "Fn::GetAtt": [
+                        "LogsBucket9C4D8843",
+                        "Arn"
+                      ]
+                    },
+                    "/s3/deletions/*"
+                  ]
+                ]
+              }
             }
           ],
           "Version": "2012-10-17"
@@ -1055,10 +1122,10 @@
             },
             {
               "Action": [
-                "s3:GetObjectVersionForReplication",
-                "s3:GetObjectVersionAcl",
+                "s3:GetObjectLegalHold",
                 "s3:GetObjectRetention",
-                "s3:GetObjectLegalHold"
+                "s3:GetObjectVersionAcl",
+                "s3:GetObjectVersionForReplication"
               ],
               "Effect": "Allow",
               "Resource": {
@@ -1081,8 +1148,8 @@
             },
             {
               "Action": [
-                "s3:ReplicateObject",
-                "s3:ObjectOwnerOverrideToBucketOwner"
+                "s3:ObjectOwnerOverrideToBucketOwner",
+                "s3:ReplicateObject"
               ],
               "Condition": {
                 "StringEquals": {
@@ -1135,8 +1202,8 @@
             },
             {
               "Action": [
-                "s3:GetBucketVersioning",
-                "s3:GetBucketObjectLockConfiguration"
+                "s3:GetBucketObjectLockConfiguration",
+                "s3:GetBucketVersioning"
               ],
               "Condition": {
                 "StringEquals": {

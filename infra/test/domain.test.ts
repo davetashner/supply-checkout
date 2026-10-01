@@ -1,4 +1,4 @@
-import { App } from "aws-cdk-lib";
+import { testApp } from "./cdk-app.js";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { AwsSolutionsChecks } from "cdk-nag";
 import { describe, expect, it } from "vitest";
@@ -12,7 +12,7 @@ const [EAST, WEST] = APPROVED_REGIONS;
 const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.com", regions: [EAST, WEST], primaryRegion: EAST };
 
 function build(overrides: Partial<DeploymentConfig> = {}, context: Record<string, unknown> = {}) {
-  const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [], ...context } });
+  const app = testApp(context);
   const stacks = addSupplyCheckout(app, { ...config, ...overrides });
   const domain = (region: string) => {
     const stack = stacks.domain[region];

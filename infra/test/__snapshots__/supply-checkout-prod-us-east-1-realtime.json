@@ -213,8 +213,8 @@
           "Statement": [
             {
               "Action": [
-                "xray:PutTraceSegments",
-                "xray:PutTelemetryRecords"
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
               ],
               "Effect": "Allow",
               "Resource": "*"
@@ -738,11 +738,7 @@
                 "Fn::Join": [
                   "",
                   [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition"
-                    },
-                    ":appsync:us-east-1:",
+                    "arn:aws:appsync:us-east-1:",
                     {
                       "Ref": "AWS::AccountId"
                     },
@@ -790,11 +786,7 @@
                 "Fn::Join": [
                   "",
                   [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition"
-                    },
-                    ":dynamodb:us-east-1:",
+                    "arn:aws:dynamodb:us-east-1:",
                     {
                       "Ref": "AWS::AccountId"
                     },
@@ -844,9 +836,9 @@
             },
             {
               "Action": [
-                "sqs:SendMessage",
                 "sqs:GetQueueAttributes",
-                "sqs:GetQueueUrl"
+                "sqs:GetQueueUrl",
+                "sqs:SendMessage"
               ],
               "Effect": "Allow",
               "Resource": {
@@ -948,8 +940,8 @@
           "Statement": [
             {
               "Action": [
-                "xray:PutTraceSegments",
-                "xray:PutTelemetryRecords"
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
               ],
               "Effect": "Allow",
               "Resource": "*"

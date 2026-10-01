@@ -1,4 +1,4 @@
-import { App } from "aws-cdk-lib";
+import { testApp } from "./cdk-app.js";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, routeKey, WEBHOOK_ROUTES } from "../../backend/src/api/routes.js";
@@ -29,7 +29,7 @@ const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.
 
 function api(region: string = EAST, context: Record<string, unknown> = {}, overrides: Partial<DeploymentConfig> = {}) {
   // Bundling is skipped in tests (it needs backend/node_modules); `npm run synth` bundles for real
-  const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [], ...context } });
+  const app = testApp(context);
   const stacks = addSupplyCheckout(app, { ...config, ...overrides });
   const stack = stacks.regions[region]?.api;
   if (!stack) throw new Error(`No api stack in ${region}`);
@@ -247,7 +247,7 @@ describe("data-access role (LeadingKeys)", () => {
       Sid: "TeamItemsOnly",
       Effect: "Allow",
       // UpdateItem and ConditionCheckItem: the inventory commands' transactions. No Scan, no batch writes.
-      Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:Query"],
+      Action: ["dynamodb:ConditionCheckItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"],
       Condition: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}", "TEAM#${aws:PrincipalTag/teamId}#SHEETS"] } },
     });
     const resourcesJson = JSON.stringify(items?.Resource);
@@ -299,7 +299,7 @@ describe("account-access role (LeadingKeys)", () => {
     expect(items).toMatchObject({
       Sid: "CallerItemsOnly",
       Effect: "Allow",
-      Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:Query"],
+      Action: ["dynamodb:ConditionCheckItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"],
       Condition: {
         "ForAllValues:StringEquals": {
           "dynamodb:LeadingKeys": ["USER#${aws:PrincipalTag/userId}", "TEAM#${aws:PrincipalTag/teamId}", "INVITEE#${aws:PrincipalTag/invitee}"],
@@ -315,7 +315,7 @@ describe("account-access role (LeadingKeys)", () => {
     expect(member).toMatchObject({
       Sid: "MemberSwitcherRowOnly",
       Effect: "Allow",
-      Action: ["dynamodb:UpdateItem", "dynamodb:DeleteItem"],
+      Action: ["dynamodb:DeleteItem", "dynamodb:UpdateItem"],
       Condition: {
         "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["USER#${aws:PrincipalTag/member}"], "dynamodb:Attributes": ["PK", "SK", "role"] },
         StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
@@ -912,7 +912,7 @@ describe("operator reopen function and role (supply-checkout-6uw.6)", () => {
 
 describe("no role can manage users or groups (ADR 0015)", () => {
   it("never grants creating users or changing groups in any stack, so nothing but an SSO administrator can add an operator", () => {
-    const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [] } });
+    const app = testApp();
     const stacks = addSupplyCheckout(app, config);
     for (const stack of stacks.all) {
       const template = Template.fromStack(stack);

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { App, Validations } from "aws-cdk-lib";
+import { Validations } from "aws-cdk-lib";
+import { testApp } from "./cdk-app.js";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { Code, Function as LambdaFunction, Runtime, Tracing } from "aws-cdk-lib/aws-lambda";
 import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
@@ -74,7 +75,7 @@ const [EAST, WEST] = APPROVED_REGIONS;
 const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.com", regions: [EAST, WEST], primaryRegion: EAST };
 
 function build(context: Record<string, unknown> = {}, overrides: Partial<DeploymentConfig> = {}) {
-  const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [], ...context } });
+  const app = testApp(context);
   const stacks = addSupplyCheckout(app, { ...config, ...overrides });
   const region = (r: string) => {
     const s = stacks.regions[r];
@@ -144,7 +145,7 @@ describe("alarm topics", () => {
       KeyPolicy: {
         Statement: Match.arrayWith([
           Match.objectLike({
-            Principal: { Service: "cloudwatch.amazonaws.com" },
+            Principal: { Service: ["cloudwatch.amazonaws.com", "events.amazonaws.com"] },
             Action: ["kms:Decrypt", "kms:GenerateDataKey*"],
             Condition: { StringEquals: { "aws:SourceAccount": { Ref: "AWS::AccountId" } } },
           }),
@@ -205,7 +206,9 @@ describe("alarm topics", () => {
           Statement: Match.arrayWith([
             {
               Effect: "Allow",
-              Principal: { Service: "cloudwatch.amazonaws.com" },
+              // In the primary region, EventBridge alerts publish too, and cdk.json's
+              // @aws-cdk/aws-iam:minimizePolicies merges the two services' statements
+              Principal: { Service: r === EAST ? ["cloudwatch.amazonaws.com", "events.amazonaws.com"] : "cloudwatch.amazonaws.com" },
               Action: ["kms:Decrypt", "kms:GenerateDataKey*"],
               Resource: "*",
               Condition: { StringEquals: { "aws:SourceAccount": { Ref: "AWS::AccountId" } } },
@@ -711,7 +714,7 @@ describe("scheduled checks", () => {
     expect(found.map((s) => s.Action)).toEqual([["logs:CreateLogStream", "logs:PutLogEvents"], "dynamodb:Query", ["kms:Decrypt", "kms:DescribeKey"]]);
     const query = found.find((s) => s.Action === "dynamodb:Query") as Record<string, unknown>;
     expect(query.Resource).toEqual({
-      "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app/index/GSI1"]],
+      "Fn::Join": ["", [`arn:aws:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app/index/GSI1"]],
     });
     expect(query.Condition).toEqual({
       "ForAllValues:StringEquals": {
@@ -730,7 +733,7 @@ describe("scheduled checks", () => {
       ["logs:CreateLogStream", "logs:PutLogEvents"],
       "dynamodb:Query",
       "dynamodb:Query",
-      ["dynamodb:GetItem", "dynamodb:DeleteItem"],
+      ["dynamodb:DeleteItem", "dynamodb:GetItem"],
       "dynamodb:UpdateItem",
       ["kms:Decrypt", "kms:DescribeKey"],
       "secretsmanager:GetSecretValue",
@@ -766,7 +769,7 @@ describe("scheduled checks", () => {
       StringEquals: { "dynamodb:Select": ["SPECIFIC_ATTRIBUTES", "COUNT"] },
     });
     const table = {
-      "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]],
+      "Fn::Join": ["", [`arn:aws:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]],
     };
     expect(query?.Resource).toEqual(table);
     expect(query?.Condition).toEqual({
@@ -825,7 +828,7 @@ describe("scheduled checks", () => {
     expect(found.map((s) => s.Action)).toEqual([["logs:CreateLogStream", "logs:PutLogEvents"], "dynamodb:Query", ["kms:Decrypt", "kms:DescribeKey"], "sqs:SendMessage"]);
     const query = found.find((s) => s.Action === "dynamodb:Query") as Record<string, unknown>;
     expect(query.Resource).toEqual({
-      "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app/index/GSI3"]],
+      "Fn::Join": ["", [`arn:aws:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app/index/GSI3"]],
     });
     expect(query.Condition).toEqual({
       "ForAllValues:StringEquals": {
@@ -836,7 +839,7 @@ describe("scheduled checks", () => {
     });
     const send = found.find((s) => s.Action === "sqs:SendMessage") as Record<string, unknown>;
     expect(send.Resource).toEqual({
-      "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:sqs:${EAST}:`, { Ref: "AWS::AccountId" }, ":supply-checkout-prod-seat-syncs.fifo"]],
+      "Fn::Join": ["", [`arn:aws:sqs:${EAST}:`, { Ref: "AWS::AccountId" }, ":supply-checkout-prod-seat-syncs.fifo"]],
     });
     const [fn] = functions(t).filter((f) => f.FunctionName === "supply-checkout-prod-seat-reconcile");
     expect(fn?.Timeout).toBe(300);
@@ -914,13 +917,13 @@ describe("operator group watch (supply-checkout-3sv.5)", () => {
       .flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
     expect(found.map((s) => s.Action)).toEqual([["logs:CreateLogStream", "logs:PutLogEvents"], "cognito-idp:ListUsersInGroup", ["ssm:GetParameter", "ssm:PutParameter"]]);
     expect(found[1]?.Resource).toEqual({
-      "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:cognito-idp:${EAST}:`, { Ref: "AWS::AccountId" }, ":userpool/", { Ref: expect.stringMatching(poolParam) }]],
+      "Fn::Join": ["", [`arn:aws:cognito-idp:${EAST}:`, { Ref: "AWS::AccountId" }, ":userpool/", { Ref: expect.stringMatching(poolParam) }]],
     });
     expect(JSON.stringify(found[2]?.Resource)).toContain("OperatorGroupWatchSnapshot");
     // Both only from the watch function itself: another function given this role gets neither (lambda:SourceFunctionArn)
     const onlyThisFunction = {
       ArnEquals: {
-        "lambda:SourceFunctionArn": { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:lambda:${EAST}:`, { Ref: "AWS::AccountId" }, ":function:supply-checkout-prod-operator-group-watch"]] },
+        "lambda:SourceFunctionArn": { "Fn::Join": ["", [`arn:aws:lambda:${EAST}:`, { Ref: "AWS::AccountId" }, ":function:supply-checkout-prod-operator-group-watch"]] },
       },
     };
     // Its log writes too: Lambda sets the key on the calls it makes for the function (supply-checkout-3sv.9)
@@ -1117,7 +1120,7 @@ describe("defaults for every function and log group", () => {
     });
     t.hasResourceProperties("AWS::IAM::Policy", {
       PolicyName: Match.stringLikeRegexp("XRayWrite"),
-      PolicyDocument: { Statement: [{ Action: ["xray:PutTraceSegments", "xray:PutTelemetryRecords"], Effect: "Allow", Resource: "*" }] },
+      PolicyDocument: { Statement: [{ Action: ["xray:PutTelemetryRecords", "xray:PutTraceSegments"], Effect: "Allow", Resource: "*" }] },
     });
     expect(Object.keys(t.findResources("AWS::IAM::Policy", { Properties: { PolicyName: Match.stringLikeRegexp("XRayWrite") } }))).toHaveLength(1);
   });
@@ -1402,8 +1405,8 @@ describe("operator pool alerts (ADR 0015)", () => {
     expect(groups.every((g) => g.Ref)).toBe(true);
     // One wildcard per group: two per group with both groups made EventBridge refuse the rule as too complex on deploy
     const identifier = groups.flatMap((name) => [name, { wildcard: { "Fn::Join": ["", ["*:log-group:", name, "*"]] } }]);
-    const tableArn = { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]] };
-    const streamPrefix = { prefix: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app/stream/"]] } };
+    const tableArn = { "Fn::Join": ["", [`arn:aws:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app"]] };
+    const streamPrefix = { prefix: { "Fn::Join": ["", [`arn:aws:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-prod-app/stream/"]] } };
     const table = ["supply-checkout-prod-app", tableArn];
     const key = { Ref: expect.stringMatching(/datatablekeyarn/i) };
     // The log group and the table in two rules, so each pattern stays well inside EventBridge's limit (supply-checkout-pbp.17)
@@ -1868,7 +1871,7 @@ describe("EventBridge pattern sizes (supply-checkout-pbp.17)", () => {
       ...patterns(build({ backupCopy: "false" }).stacks.all),
       // The longest environment name, since the patterns hold names built from it
       ...patterns(build({}, { envName: "a".repeat(16) }).stacks.all),
-      ...patterns([addBackupAccount(new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [] } }), config)]),
+      ...patterns([addBackupAccount(testApp(), config)]),
     ];
     // The operator and deletion records rules, the backup change rules, and the backup account's
     expect(all.length).toBeGreaterThanOrEqual(3 * 17 + 3);

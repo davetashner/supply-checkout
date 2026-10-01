@@ -41,11 +41,7 @@
             "Fn::Join": [
               "",
               [
-                "arn:",
-                {
-                  "Ref": "AWS::Partition"
-                },
-                ":ses:us-east-1:",
+                "arn:aws:ses:us-east-1:",
                 {
                   "Ref": "AWS::AccountId"
                 },

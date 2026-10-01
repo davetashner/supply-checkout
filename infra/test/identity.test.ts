@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { App, Stack } from "aws-cdk-lib";
+import { Stack } from "aws-cdk-lib";
+import { testApp } from "./cdk-app.js";
 import { HttpApi, HttpMethod } from "aws-cdk-lib/aws-apigatewayv2";
 import { HttpUrlIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import { Match, Template } from "aws-cdk-lib/assertions";
@@ -24,7 +25,7 @@ const [EAST, WEST] = APPROVED_REGIONS;
 const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.com", regions: [EAST], primaryRegion: EAST };
 
 function build(overrides: Partial<DeploymentConfig> = {}, context: Record<string, unknown> = {}) {
-  const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [], ...context } });
+  const app = testApp(context);
   const stacks = addSupplyCheckout(app, { ...config, ...overrides });
   return { app, stacks, template: Template.fromStack(stacks.identity) };
 }
@@ -367,7 +368,7 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
   it("give the guard no AWS permissions, the email_verified trigger only AdminUpdateUserAttributes and the proven email's hash, and the linking trigger only ListUsers, AdminUpdateUserAttributes and AdminLinkProviderForUser, on this pool", () => {
     const { template } = withProviders();
     const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0];
-    const xray = { Effect: "Allow", Action: ["xray:PutTraceSegments", "xray:PutTelemetryRecords"], Resource: "*" };
+    const xray = { Effect: "Allow", Action: ["xray:PutTelemetryRecords", "xray:PutTraceSegments"], Resource: "*" };
     const logs = (id: string) => ({ Effect: "Allow", Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: { "Fn::GetAtt": [Object.keys(template.findResources("AWS::Logs::LogGroup")).find((k) => k.startsWith(`${id}Logs`)), "Arn"] } });
     sameStatements(statementsOf(template, roleOf(template, "SignInGuard")), [logs("SignInGuard"), xray]);
     const setVerified = { Sid: "SetEmailVerified", Effect: "Allow", Action: "cognito-idp:AdminUpdateUserAttributes", Resource: { "Fn::GetAtt": [poolId, "Arn"] } };
@@ -375,7 +376,7 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
       Sid: "ReadProvenEmailHash",
       Effect: "Allow",
       Action: "dynamodb:GetItem",
-      Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-staging-app"]] },
+      Resource: { "Fn::Join": ["", [`arn:aws:dynamodb:${EAST}:`, { Ref: "AWS::AccountId" }, ":table/supply-checkout-staging-app"]] },
       Condition: {
         "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
         "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "verifiedEmailHash", "verifiedAt"] },
@@ -390,7 +391,7 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
       Condition: { StringEquals: { "kms:ViaService": { "Fn::Join": ["", ["dynamodb.", { Ref: "AWS::Region" }, ".amazonaws.com"]] } } },
     };
     sameStatements(statementsOf(template, roleOf(template, "EmailVerified")), [logs("EmailVerified"), xray, setVerified, provenEmail, tableKey]);
-    const link = { Sid: "LinkToExistingAccount", Effect: "Allow", Action: ["cognito-idp:ListUsers", "cognito-idp:AdminUpdateUserAttributes", "cognito-idp:AdminLinkProviderForUser"], Resource: { "Fn::GetAtt": [poolId, "Arn"] } };
+    const link = { Sid: "LinkToExistingAccount", Effect: "Allow", Action: ["cognito-idp:AdminLinkProviderForUser", "cognito-idp:AdminUpdateUserAttributes", "cognito-idp:ListUsers"], Resource: { "Fn::GetAtt": [poolId, "Arn"] } };
     sameStatements(statementsOf(template, roleOf(template, "AccountLink")), [logs("AccountLink"), xray, link]);
     for (const role of Object.values(template.findResources("AWS::IAM::Role"))) expect(role.Properties.ManagedPolicyArns).toBeUndefined();
   });
@@ -452,7 +453,7 @@ describe("outputs for the API and the web app", () => {
   });
 
   it("gives the api stack a JWT authorizer for the pool, from those parameters", () => {
-    const app = new App();
+    const app = testApp();
     const stack = new Stack(app, "Api");
     const api = new HttpApi(stack, "Api");
     api.addRoutes({
