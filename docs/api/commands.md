@@ -134,7 +134,9 @@ rather than rounding ([ADR 0014](../adr/0014-units-cost-and-rounding.md)).
     `equipmentMarkup` (team settings, 0% when unset), rounded to the cent with
     halves up. Send no `price`.
   - typed by the reviewer (`priceSet: "manual"`): send `price` and
-    `"priceSet": "manual"`.
+    `"priceSet": "manual"`. The line also gets `priceSetBy` (the caller) and
+    `priceSetAt`, so a typed price can be traced after the operation record
+    expires.
 
   A `price` for equipment without `"manual"`, `priceSet` with any other
   value, and a `productKey` ending in `:bought` are all `400`. The transaction
@@ -190,7 +192,7 @@ and needs `expectedVersion` (0 before the first save; a stale one is `409`).
 The markup is a percentage from 0 to 1,000 with at most two decimals. A change
 is written to the team's audit log in the same transaction, with who, when,
 and the old and new value. `GET` answers `{ "version": 1, "settings": {
-"equipmentMarkup": 25 } }` to owners and `{ "version": 1, "settings": {} }` to
+"equipmentMarkup": 25 } }` to owners and `{ "settings": {} }` to
 everyone else: no response a contributor or viewer gets carries the
 percentage, only the prices worked out from it.
 
@@ -340,7 +342,10 @@ before answering `409`, so `409` from contention is rare.
   line keeps `returned + lost ≤ out`. A document write can't add a line
   bought for the client or a `:bought` key, or mark or unmark one; it may
   change a bought line's counts or price, and a changed price is stored with
-  `priceSet: "manual"`. A sheet's `kind` can't be set, changed or removed by
+  `priceSet: "manual"`, `priceSetBy` (the writer) and `priceSetAt`. A bought
+  line's `returned` stays 0. `takenBy`, `takenAt`, `priceSetBy` and
+  `priceSetAt` are the server's: a document write may only repeat what's
+  stored. A sheet's `kind` can't be set, changed or removed by
   a document write. A product's `kind` is `"supply"` or `"equipment"`, and
   no new product's key ends in `:bought`.
 - **Stock can go below zero.** A checkout takes the full quantity off, even

@@ -327,9 +327,12 @@ export function parseInventoryCsv(csv: unknown): ParsedImport {
   return { rows, errors, ignoredColumns };
 }
 
-/** A barcode's product key, as the app makes it (keyOf in src/format.js). Keep the two the same. */
+/**
+ * A barcode's product key, as the app makes it (keyOf in src/format.js). Keep the two the same.
+ * Never one ending in ":bought", which is kept for lines bought for a client (ADR 0017).
+ */
 export function keyOfBarcode(code: string): string {
-  let k = code.trim().replace(/[^A-Za-z0-9_\-.~:@+]/g, "_").slice(0, 150);
+  let k = code.trim().replace(/[^A-Za-z0-9_\-.~:@+]/g, "_").slice(0, 150).replace(/:bought$/, "_bought");
   if (/^\.+$/.test(k) || k === "__proto__") k = "x" + k;
   return k;
 }

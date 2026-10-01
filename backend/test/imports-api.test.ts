@@ -716,5 +716,17 @@ describe("parsing", () => {
     expect(keyOfBarcode("..")).toBe("x..");
     expect(keyOfBarcode("__proto__")).toBe("x__proto__");
     expect(keyOfBarcode("9".repeat(200))).toHaveLength(150);
+    // Never a key the API keeps for lines bought for a client (ADR 0017), as keyOf in src/format.js
+    expect(keyOfBarcode("LAD-1:bought")).toBe("LAD-1_bought");
+    expect(keyOfBarcode(":bought:bought")).toBe(":bought_bought");
+    expect(keyOfBarcode("bought:x")).toBe("bought:x");
+  });
+
+  it("planImport never plans a new item under a key ending in :bought", () => {
+    const { planned, errors } = planImport([{ line: 2, name: "Ladder", barcode: "LAD-1:bought", price: 1 }], []);
+    expect(errors).toEqual([]);
+    expect(planned[0]).toMatchObject({ action: "create", barcode: "LAD-1:bought" });
+    expect(planned[0]?.key).toBe(keyOfBarcode("LAD-1:bought"));
+    expect(keyOfBarcode("LAD-1:bought").endsWith(":bought")).toBe(false);
   });
 });

@@ -56,6 +56,8 @@ export interface WriteOptions {
    * "only if it doesn't exist yet". Omit it for last-writer-wins.
    */
   readonly expectedVersion?: number;
+  /** The write's time, for what the server stamps on it (a typed price's `priceSetAt`). Default: now. */
+  readonly now?: Date;
 }
 
 export interface ListOptions {
@@ -153,8 +155,14 @@ function writtenMoney(value: unknown, stored: Record<string, unknown> | undefine
  * limit. `before` is the stored document, if any, for the legacy values a
  * write may carry over unchanged.
  */
-function checkDocument(collection: Collection, data: unknown, before?: StoredDocument): DocumentData {
-  return checkKinds(collection, checkFields(collection, data, before), before);
+/** Who is writing, and when: the server stamps them on what it owns (a typed price, ADR 0017). */
+interface Actor {
+  readonly userId: string;
+  readonly at: string;
+}
+
+function checkDocument(collection: Collection, data: unknown, actor: Actor, before?: StoredDocument): DocumentData {
+  return checkKinds(collection, checkFields(collection, data, before), actor, before);
 }
 
 function checkFields(collection: Collection, data: unknown, before?: StoredDocument): DocumentData {
@@ -189,9 +197,10 @@ function checkFields(collection: Collection, data: unknown, before?: StoredDocum
   return data;
 }
 
-const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 const PRODUCT_KINDS = new Set(["supply", "equipment"]);
 const PRICE_SET = new Set(["markup", "manual"]);
+/** Line fields only the server sets: who took equipment last and when (checkout), and who typed a bought line's price and when. */
+const SERVER_LINE_FIELDS = ["takenBy", "takenAt", "priceSetBy", "priceSetAt"] as const;
 const isWhole = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0;
 const counted = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 /** What's still out on an equipment line (ADR 0017): neither back nor lost. */
@@ -207,17 +216,20 @@ const stillOut = (line: Record<string, unknown> | undefined) => (line ? counted(
  *   supply-checkout-mdae): a document write can't add, change or remove it.
  * - A line's `kind` is "equipment" or missing, and can't change once the line
  *   exists. `lost` (whole eaches) and `lostCharge` (money) are only on
- *   equipment lines, and a charge only on a job sheet. `takenBy` is text up to
- *   200 characters and `takenAt` an ISO time. A changed line keeps
+ *   equipment lines, and a charge only on a job sheet. A changed line keeps
  *   `returned + lost <= out`.
+ * - `takenBy` and `takenAt` (the checkout command's), and `priceSetBy` and
+ *   `priceSetAt`, are the server's: a write may only repeat what's stored.
  * - A line bought for the client (`purchased: true`, keyed
  *   `<productKey>:bought`) is made only by the receipt's lines command, so a
- *   document write can't add one, or mark or unmark a line as bought. Its
- *   `priceSet` is the server's: a changed price is "manual".
+ *   document write can't add one, or mark or unmark a line as bought. Nothing
+ *   of it comes back, so its `returned` stays 0. Its `priceSet` is the
+ *   server's: a changed price is "manual", stamped with who changed it and
+ *   when (`priceSetBy`, `priceSetAt`), so a typed price can be traced.
  * - A sheet isn't closed (`status: "closed"`) while an equipment line has
  *   something still out: EquipmentOutError (409).
  */
-function checkKinds(collection: Collection, data: DocumentData, before?: StoredDocument): DocumentData {
+function checkKinds(collection: Collection, data: DocumentData, actor: Actor, before?: StoredDocument): DocumentData {
   const stored = before?.data;
   if (collection === "products") {
     if (Object.hasOwn(data, "kind") && !PRODUCT_KINDS.has(data.kind as string)) throw new InvalidInputError('kind is "supply" or "equipment"');
@@ -240,19 +252,25 @@ function checkKinds(collection: Collection, data: DocumentData, before?: StoredD
     }
     if (line.purchased === true && line.kind !== undefined) throw new InvalidInputError("A line bought for the client has no kind");
     if (has("priceSet") && (line.purchased !== true || !PRICE_SET.has(line.priceSet as string))) throw new InvalidInputError("priceSet is set by the server, on lines bought for the client");
+    for (const field of SERVER_LINE_FIELDS) {
+      if (!sameValue(line[field], old?.[field])) throw new InvalidInputError(`${field} is set by the server`);
+    }
     if (line.purchased === true) {
-      // A price someone changed is a typed price, whatever the request says
-      const priceSet = old && !sameValue(line.price, old.price) ? "manual" : old?.priceSet;
-      if (priceSet === undefined) delete line.priceSet;
-      else line.priceSet = priceSet;
+      if (has("returned") && line.returned !== 0) throw new InvalidInputError("Nothing bought for the client comes back, so its returned stays 0");
+      // A price someone changed is a typed price, whatever the request says, and says who typed it
+      // (Compared with the stored price as written and as rounded: re-saving a legacy price that
+      // isn't in whole cents rounds it, ADR 0014, but nobody typed it)
+      if (old && !sameValue(line.price, old.price) && !sameValue(line.price, storedMoney(old.price))) {
+        Object.assign(line, { priceSet: "manual", priceSetBy: actor.userId, priceSetAt: actor.at });
+      }
+      else if (old?.priceSet === undefined) delete line.priceSet;
+      else line.priceSet = old.priceSet;
     }
     if (has("lost") && (!equipment || !isWhole(line.lost))) throw new InvalidInputError("lost is a whole number, on company equipment lines only");
     if (has("lostCharge")) {
       if (!equipment || data.kind === "adhoc") throw new InvalidInputError("lostCharge is only on company equipment lines of a client's sheet");
       line.lostCharge = writtenMoney(line.lostCharge, old, "lostCharge");
     }
-    if (has("takenBy") && (typeof line.takenBy !== "string" || line.takenBy.length > 200)) throw new InvalidInputError("takenBy is text of up to 200 characters");
-    if (has("takenAt") && (typeof line.takenAt !== "string" || !ISO_TIME.test(line.takenAt))) throw new InvalidInputError("takenAt is an ISO time");
     // Counts the write changes: what came back and what was lost can't be more than went out
     if (!sameValue(line, old) && typeof line.out === "number" && counted(line.returned) + counted(line.lost) > line.out) {
       throw new InvalidInputError("A line's returned and lost can't add up to more than its out");
@@ -356,7 +374,7 @@ async function write(
     if (expected !== undefined && (before?.version ?? 0) !== expected) throw new ConflictError("This document changed; reload and try again");
     // Kept for the lines of equipment bought for a client (ADR 0017), which aren't products
     if (collection === "products" && !before && id.endsWith(BOUGHT_SUFFIX)) throw new InvalidInputError(`An item's key can't end in "${BOUGHT_SUFFIX}"`);
-    const data = checkDocument(collection, build(before), before);
+    const data = checkDocument(collection, build(before), { userId: ctx.userId, at: (options.now ?? new Date()).toISOString() }, before);
     const version = (before?.version ?? 0) + 1;
     // Unchanged since the read: same version and, for products, same stock
     // (every stock change gives a new version now; checking stock as well

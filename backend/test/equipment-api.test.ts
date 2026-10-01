@@ -231,6 +231,15 @@ describe("lost or broken", () => {
     expect(counts.Writes).toBe(3);
   });
 
+  it("records a charge of 0 as a charge, on the line as in the movement", async () => {
+    expect(await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1, charge: 0 })).toMatchObject({ status: 200, body: { result: { charge: 0 } } });
+    expect(items().ladder).toMatchObject({ lost: 1, lostCharge: 0 });
+    expect(movements()[0]).toMatchObject({ reason: "lost", charge: 0 });
+    await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1, charge: 12.5 });
+    await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1, charge: 0 });
+    expect(items().ladder).toMatchObject({ lost: 3, lostCharge: 12.5 });
+  });
+
   it("takes at most what's still out, equipment only, on an open sheet, and a charge only for a client", async () => {
     await call("POST", RETURN, { operationId: op(), productKey: "ladder", quantity: 2 });
     expect(await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 2 })).toMatchObject({ status: 400, body: { error: { message: "Only 1 of this item is still out" } } });
@@ -304,9 +313,8 @@ describe("Finished Return with equipment out", () => {
 describe("sheet documents and the new fields", () => {
   beforeEach(seed);
 
-  it("take an equipment line with its taker, and keep a line's kind as it was first saved", async () => {
-    const takenAt = "2026-10-01T12:00:00.000Z";
-    expect(await patchSheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0, takenBy: "Sam", takenAt } } })).toMatchObject({ status: 200 });
+  it("take an equipment line, and keep a line's kind as it was first saved", async () => {
+    expect(await patchSheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } })).toMatchObject({ status: 200 });
     expect(await patchSheet({ items: { ladder: { kind: "supply" } } })).toMatchObject({ status: 400, body: { error: { message: 'A line\'s kind is "equipment" or left out' } } });
     await call("POST", CHECKOUT, { operationId: op(), productKey: "0123", quantity: 1 });
     expect(await patchSheet({ items: { "0123": { kind: "equipment" } } })).toMatchObject({ status: 400, body: { error: { message: "A line's kind can't change" } } });
@@ -324,15 +332,30 @@ describe("sheet documents and the new fields", () => {
       [{ gloves: { name: "Gloves", price: 1, out: 1, returned: 0, lost: 1 } }, "lost is a whole number, on company equipment lines only"],
       [{ gloves: { name: "Gloves", price: 1, out: 1, returned: 0, lostCharge: 1 } }, "lostCharge is only on company equipment lines of a client's sheet"],
       [{ ladder: { lostCharge: 1.234 } }, "lostCharge must be an amount from 0 to 1000000 with at most two decimals"],
-      [{ ladder: { takenBy: "x".repeat(201) } }, "takenBy is text of up to 200 characters"],
-      [{ ladder: { takenBy: 7 } }, "takenBy is text of up to 200 characters"],
-      [{ ladder: { takenAt: "yesterday" } }, "takenAt is an ISO time"],
       [{ ladder: { returned: 2 } }, "A line's returned and lost can't add up to more than its out"],
     ] as const;
     for (const [lines, message] of refused) expect(await patchSheet({ items: lines }), message).toMatchObject({ status: 400, body: { error: { message } } });
     sheet({ kind: "adhoc", items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } }, "adhoc-1");
     expect(await call("PATCH", "/teams/team-a/sheets/adhoc-1", { data: { items: { ladder: { lost: 1 } } }, expectedVersion: 1 })).toMatchObject({ status: 200 });
     expect(await call("PATCH", "/teams/team-a/sheets/adhoc-1", { data: { items: { ladder: { lostCharge: 5 } } }, expectedVersion: 2 })).toMatchObject({ status: 400 });
+  });
+
+  it("leave who took equipment and when to the checkout command: a write may only repeat them", async () => {
+    const takenAt = "2026-10-01T12:00:00.000Z";
+    for (const [field, value] of [["takenBy", "Sam"], ["takenAt", takenAt], ["priceSetBy", OWNER], ["priceSetAt", takenAt]] as const) {
+      expect(await patchSheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0, [field]: value } } }), field).toMatchObject({ status: 400, body: { error: { message: `${field} is set by the server` } } });
+    }
+    await call("POST", CHECKOUT, { operationId: op(), productKey: "ladder", quantity: 1 });
+    expect(items().ladder).toMatchObject({ takenBy: CONTRIBUTOR, takenAt });
+    expect(await patchSheet({ items: { ladder: { takenBy: OWNER } } })).toMatchObject({ status: 400, body: { error: { message: "takenBy is set by the server" } } });
+    expect(await patchSheet({ items: { ladder: { takenAt: "2026-10-02T08:00:00.000Z" } } })).toMatchObject({ status: 400, body: { error: { message: "takenAt is set by the server" } } });
+    // Repeating them (a PATCH of other fields, or a PUT of the sheet as read) is fine; dropping them isn't
+    expect(await patchSheet({ items: { ladder: { out: 2, takenBy: CONTRIBUTOR } } })).toMatchObject({ status: 200 });
+    const whole = { client: "Echo", date: "2026-10-01", status: "open", items: items() };
+    expect(await call("PUT", "/teams/team-a/sheets/s1", { data: whole, expectedVersion: sheetVersion() })).toMatchObject({ status: 200 });
+    const { takenBy, ...dropped } = items().ladder as Line;
+    void takenBy;
+    expect(await call("PUT", "/teams/team-a/sheets/s1", { data: { ...whole, items: { ladder: dropped } }, expectedVersion: sheetVersion() })).toMatchObject({ status: 400, body: { error: { message: "takenBy is set by the server" } } });
   });
 
   it("don't hold a line the write doesn't change to returned + lost <= out", async () => {
@@ -364,7 +387,22 @@ describe("sheet documents and the new fields", () => {
     expect(await patchSheet({ items: { "ladder:bought": { priceSet: "typed" } } })).toMatchObject({ status: 400 });
     // Counts change freely; a priceSet sent without a price change stays the server's
     expect(await patchSheet({ items: { "ladder:bought": { out: 2, priceSet: "manual" } } })).toMatchObject({ status: 200, body: { data: { items: { "ladder:bought": { out: 2, priceSet: "markup" } } } } });
-    expect(await patchSheet({ items: { "ladder:bought": { price: 140 } } })).toMatchObject({ status: 200, body: { data: { items: { "ladder:bought": { price: 140, priceSet: "manual" } } } } });
+    // Nothing of it comes back
+    for (const returned of [1, -1, "0", null]) {
+      expect(await patchSheet({ items: { "ladder:bought": { returned } } }), String(returned)).toMatchObject({ status: 400, body: { error: { message: "Nothing bought for the client comes back, so its returned stays 0" } } });
+    }
+    // A changed price is a typed one, stamped with who typed it and when
+    clock += 60_000;
+    expect(await patchSheet({ items: { "ladder:bought": { price: 140 } } }, OWNER)).toMatchObject({ status: 200, body: { data: { items: { "ladder:bought": { price: 140, priceSet: "manual", priceSetBy: OWNER, priceSetAt: "2026-10-01T12:01:00.000Z" } } } } });
+    expect(await patchSheet({ items: { "ladder:bought": { priceSetBy: CONTRIBUTOR } } })).toMatchObject({ status: 400, body: { error: { message: "priceSetBy is set by the server" } } });
+    // Typed again by someone else: their name now
+    clock += 60_000;
+    expect(await patchSheet({ items: { "ladder:bought": { price: 141 } } })).toMatchObject({ status: 200, body: { data: { items: { "ladder:bought": { price: 141, priceSetBy: CONTRIBUTOR, priceSetAt: "2026-10-01T12:02:00.000Z" } } } } });
+    // Re-saving a price from before the money rule rounds it, but nobody typed it
+    sheet({ items: { "ladder:bought": { name: "Step ladder", price: 150.005, cost: 120, purchased: true, priceSet: "markup", out: 1, returned: 0 } } });
+    const legacy = await patchSheet({ items: { "ladder:bought": { out: 2 } } });
+    expect(legacy.body.data.items["ladder:bought"]).toMatchObject({ price: 150.01, priceSet: "markup", out: 2 });
+    expect(legacy.body.data.items["ladder:bought"].priceSetBy).toBeUndefined();
     // One without a priceSet (written before it) stays without one until its price changes
     sheet({ items: { "ladder:bought": bought } });
     const kept = await patchSheet({ items: { "ladder:bought": { out: 3 } } });
@@ -424,7 +462,8 @@ describe("equipment bought on a receipt for a client", () => {
     setMarkup(25);
     const typed = await call("POST", LINES, { operationId: op(), lines: [{ productKey: "ladder", quantity: 1, name: "Step ladder", cost: 100, price: 135, priceSet: "manual" }] }, OWNER);
     expect(typed.status).toBe(200);
-    expect(boughtLine()).toMatchObject({ price: 135, cost: 100, priceSet: "manual", purchased: true });
+    // Who typed it and when stay on the line after the operation record expires
+    expect(boughtLine()).toMatchObject({ price: 135, cost: 100, priceSet: "manual", purchased: true, priceSetBy: OWNER, priceSetAt: "2026-10-01T12:00:00.000Z" });
     const refused = [
       [{ productKey: "mat", quantity: 1, name: "Mat", cost: 30, price: 37.5 }, /leave its price out/],
       [{ productKey: "mat", quantity: 1, name: "Mat", cost: 30, price: 37.5, priceSet: "markup" }, /priceSet is "manual"/],
@@ -535,7 +574,9 @@ describe("team settings", () => {
     const bodies: string[] = [];
     for (const user of [CONTRIBUTOR, VIEWER]) {
       const mine = await call("GET", SETTINGS, undefined, user);
-      expect(mine).toMatchObject({ status: 200, body: { version: 1, settings: {} } });
+      // Not even the version: whether an owner ever saved them isn't theirs to know
+      expect(mine).toMatchObject({ status: 200 });
+      expect(mine.body).toEqual({ settings: {} });
       bodies.push(mine.text);
       for (const path of ["/teams/team-a/products", "/teams/team-a/sheets", "/teams/team-a/sheets/s1", "/teams/team-a/products/ladder", "/teams/team-a/products/ladder/movements"]) {
         bodies.push((await call("GET", path, undefined, user)).text);

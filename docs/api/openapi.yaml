@@ -592,9 +592,9 @@ paths:
       operationId: getTeamSettings
       summary: The team's settings, as the caller may see them.
       description: |
-        Any member may ask. Owners get every setting; contributors and viewers
-        get none of them (`settings` is empty), so the equipment markup never
-        reaches them. `version` is 0 until an owner first saves the settings.
+        Any member may ask. Owners get every setting and `version` (0 until an
+        owner first saves the settings); contributors and viewers get only an
+        empty `settings`, so the equipment markup never reaches them.
       responses:
         "200": { $ref: "#/components/responses/Settings" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
@@ -2452,10 +2452,12 @@ components:
         kind: { const: equipment, description: "Company equipment (ADR 0017), from the product at the line's first checkout; it can't change. Not charged." }
         lost: { type: integer, minimum: 0, description: Equipment only. How many were lost or broken. }
         lostCharge: { allOf: [{ $ref: "#/components/schemas/Money" }], description: Equipment on a job sheet only. What the client is charged for what was lost or broken. }
-        takenBy: { type: string, maxLength: 200, description: Who took equipment last. }
-        takenAt: { type: string, format: date-time, description: When equipment was last taken. }
+        takenBy: { type: string, maxLength: 200, description: "Who took equipment last. Set by the checkout command; a write may only repeat it." }
+        takenAt: { type: string, format: date-time, description: "When equipment was last taken. Set by the checkout command." }
         purchased: { const: true, description: "Company equipment bought for the client, on the line `<productKey>:bought` (ADR 0017, section 2a). Only the receipt's lines command adds one." }
         priceSet: { type: string, enum: [markup, manual], description: "Lines bought for the client: whether the server worked the price out from the markup, or someone typed it. Set by the server." }
+        priceSetBy: { type: string, description: "A typed price (`priceSet: manual`): who typed it. Set by the server; a write may only repeat it." }
+        priceSetAt: { type: string, format: date-time, description: "A typed price: when. Set by the server." }
     Team:
       type: object
       required: [id, name, role, plan, status, trialEndsAt, homeRegion, closedAt, deletesAt]
@@ -2718,9 +2720,9 @@ components:
         application/json:
           schema:
             type: object
-            required: [version, settings]
+            required: [settings]
             properties:
-              version: { type: integer, minimum: 0, description: 0 until an owner first saves the settings. }
+              version: { type: integer, minimum: 0, description: "Owners only: 0 until an owner first saves the settings." }
               settings:
                 type: object
                 description: Every setting for an owner; empty for anyone else.
