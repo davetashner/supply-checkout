@@ -32,7 +32,10 @@
 //    document, created only if its key is still free and the team is still
 //    open (a condition check on its META item in the same transaction). A product that tracks
 //    stock is written in one transaction with an `import` movement from 0 to
-//    its count, so the stock history adds up. Then it reads everything back
+//    its count, so the stock history adds up. Ad hoc sheets (`adhoc-<n>`, ADR
+//    0017) keep their `kind`, and the team's ADHOC item is then set from them:
+//    its count to the highest number, and its pointer to the open one, so the
+//    next quick take adds to it or starts the one after. Then it reads everything back
 //    and checks every stock count and every sheet's totals against the file.
 //
 // Resumable and idempotent rather than all or nothing: every write is a
@@ -50,7 +53,8 @@ import type { Movement } from "./commands.js";
 import { MAX_DOCUMENT_BYTES } from "./documents.js";
 import { ConflictError, InvalidInputError, TeamClosedError } from "./errors.js";
 import { MAX_NAME_LENGTH, MAX_PACK_SIZE } from "./imports.js";
-import { MAX_CODE_LENGTH, gsi1, keys, prefixes, teamPartition } from "./keys.js";
+import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
+import { MAX_CODE_LENGTH, adhocNumber, gsi1, keys, prefixes, teamPartition } from "./keys.js";
 import { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
 import { queryAll } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
@@ -97,6 +101,8 @@ export interface ArtifactLine {
 
 export interface ArtifactSheet {
   readonly id: string;
+  /** The team's ad hoc sheet (ADR 0017), `adhoc-<n>`. Absent for a client's sheet. */
+  readonly kind?: "adhoc";
   readonly client: string;
   readonly date: string;
   readonly status: "open" | "closed";
@@ -196,7 +202,7 @@ function docKey(value: unknown, field: string): string {
 }
 
 const PRODUCT_FIELDS = new Set(["key", "code", "name", "price", "cost", "packSize", "stock", "updatedAt", "ops"]);
-const SHEET_FIELDS = new Set(["id", "client", "date", "status", "createdAt", "closedAt", "createdBy", "createdByName", "preparedBy", "source", "items", "totals", "ops", "savedReceipts"]);
+const SHEET_FIELDS = new Set(["id", "kind", "client", "date", "status", "createdAt", "closedAt", "createdBy", "createdByName", "preparedBy", "source", "items", "totals", "ops", "savedReceipts"]);
 const LINE_FIELDS = new Set(["code", "name", "price", "cost", "out", "returned", "ops"]);
 
 function product(raw: unknown, ignored: (field: string) => void): ArtifactProduct {
@@ -267,6 +273,8 @@ function sheet(raw: unknown, ignored: (field: string) => void, lineErrors: Impor
   if (typeof raw.id !== "string" || !ID.test(raw.id)) throw new FieldError("id isn't a valid sheet ID");
   const date = text(raw.date, "date", 10);
   if (!DATE.test(date)) throw new FieldError("date isn't YYYY-MM-DD");
+  const adhoc = raw.kind !== undefined && raw.kind !== null;
+  if (adhoc && (raw.kind !== "adhoc" || adhocNumber(raw.id) === undefined)) throw new FieldError('kind must be "adhoc", on a sheet whose id is adhoc-<n>');
   let status: "open" | "closed" = "open";
   if (raw.status !== undefined && raw.status !== null) {
     if (raw.status !== "open" && raw.status !== "closed") throw new FieldError('status must be "open" or "closed"');
@@ -298,6 +306,7 @@ function sheet(raw: unknown, ignored: (field: string) => void, lineErrors: Impor
   const exported = exportedTotals(raw.totals);
   const out: ArtifactSheet = {
     id: raw.id,
+    ...(adhoc ? { kind: "adhoc" as const } : {}),
     client: text(raw.client, "client", MAX_NAME_LENGTH, ""),
     date,
     status,
@@ -416,7 +425,7 @@ function productContent(p: Item): Item {
 
 function sheetContent(s: Item): Item {
   const pick: Item = {};
-  for (const field of ["client", "date", "status", "createdAt", "closedAt", "createdByName", "source", "items"]) if (s[field] !== undefined) pick[field] = s[field];
+  for (const field of ["kind", "client", "date", "status", "createdAt", "closedAt", "createdByName", "source", "items"]) if (s[field] !== undefined) pick[field] = s[field];
   return pick;
 }
 
@@ -488,6 +497,8 @@ export interface ApplyResult {
   readonly alreadyThere: number;
   /** The run's operation ID, on every movement it recorded. */
   readonly operationId: string;
+  /** The open ad hoc sheet the team's ADHOC item names afterwards, if any. */
+  readonly adhocOpen?: string;
 }
 
 /** The cancellation codes of a cancelled transaction, or undefined for any other error. */
@@ -579,7 +590,35 @@ export async function applyArtifactImport(db: Db, ctx: TeamContext, plan: Import
       alreadyThere++;
     }
   }
-  return { productsCreated, sheetsCreated, movements, alreadyThere, operationId };
+  const open = await pointAdhoc(db, ctx, at);
+  return { productsCreated, sheetsCreated, movements, alreadyThere, operationId, ...(open === undefined ? {} : { adhocOpen: open }) };
+}
+
+/**
+ * Sets the team's ADHOC item (adhoc.ts) from its ad hoc sheets after an
+ * import: the count to at least the highest `adhoc-<n>`, and the pointer, if
+ * it doesn't already name an open ad hoc sheet, to the highest-numbered open
+ * one. Written only when that changes it, on the condition that it's as read
+ * (a conflict means someone took meanwhile; run the import again).
+ */
+async function pointAdhoc(db: Db, ctx: TeamContext, at: string): Promise<string | undefined> {
+  const [pointer, sheets] = await Promise.all([readAdhoc(db, ctx.teamId), queryAll<Item>(db, teamPartition(ctx.teamId), prefixes.sheet)]);
+  const adhoc = sheets
+    .filter((s) => s.kind === "adhoc")
+    .map((s) => ({ id: String(s.id), n: adhocNumber(String(s.id)) ?? 0, open: s.status !== "closed" }))
+    .sort((a, b) => b.n - a.n);
+  if (!adhoc.length) return adhocOpen(pointer);
+  const named = adhocOpen(pointer);
+  const open = adhoc.some((s) => s.open && s.id === named) ? named : adhoc.find((s) => s.open)?.id;
+  const count = Math.max(adhocCount(pointer), adhoc[0]?.n ?? 0);
+  if (pointer && count === adhocCount(pointer) && open === named) return open;
+  try {
+    await connection(db).doc.send(new TransactWriteCommand({ TransactItems: [adhocPut(db, ctx.teamId, pointer, { open, count }, at)] }));
+  } catch (error) {
+    if (cancellationCodes(error)) throw new ConflictError("The team's ad hoc sheet changed while importing. Run the import again to finish.");
+    throw error;
+  }
+  return open;
 }
 
 export interface Verification {

@@ -40,6 +40,24 @@ export function productKey(value: unknown): string {
  */
 export const BOUGHT_SUFFIX = ":bought";
 
+/** An ad hoc sheet's ID: `adhoc-<n>`, n from 1 (ADR 0017, section 4). */
+const ADHOC_ID = /^adhoc-([1-9][0-9]{0,8})$/;
+
+/** The ID of the team's `n`th ad hoc sheet. */
+export function adhocSheetId(n: number): string {
+  if (!Number.isInteger(n) || n < 1 || n > 999_999_999) throw new InvalidInputError("Invalid ad hoc sheet number");
+  return `adhoc-${n}`;
+}
+
+/** The number of an ad hoc sheet's ID (`adhoc-3` is 3), or undefined for any other ID. */
+export function adhocNumber(sheetId: string): number | undefined {
+  const match = ADHOC_ID.exec(sheetId);
+  return match ? Number(match[1]) : undefined;
+}
+
+/** True for an ID the ad hoc sheets use (`adhoc-<anything>`): no document write may create one. */
+export const isAdhocId = (sheetId: string): boolean => sheetId.startsWith("adhoc-");
+
 /** The longest barcode: the same bound as a product key, which the app makes from the barcode. */
 export const MAX_CODE_LENGTH = 256;
 
@@ -155,6 +173,15 @@ export const keys = {
   webhookNotice: (eventId: string, userId: string) => ({ PK: `WEBHOOK#${id(eventId, "webhook event ID")}`, SK: `NOTICE#${id(userId, "user ID")}` }),
   /** The team's settings (ADR 0017, section 2a): owners write it; only owners read its markup. */
   settings: (teamId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: "SETTINGS" }),
+  /**
+   * The team's ad hoc sheets (ADR 0017, section 4): `count`, how many it has
+   * made (the last is `adhoc-<count>`), and `open`, the ID of the one that's
+   * open, if any. The quick take reads it and, in the transaction that takes,
+   * adds to the open sheet or makes the next one, on the condition that its
+   * `version` is still the one read. Closing, reopening and deleting an ad hoc
+   * sheet update it in the sheet write's transaction (documents.ts).
+   */
+  adhoc: (teamId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: "ADHOC" }),
   /** A checkout, return or stock command's record, for replaying a retry (commands.ts). */
   operation: (teamId: string, operationId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `OP#${id(operationId, "operation ID")}` }),
   /** A CSV inventory import's job record: its request, plan size and progress (imports.ts). */

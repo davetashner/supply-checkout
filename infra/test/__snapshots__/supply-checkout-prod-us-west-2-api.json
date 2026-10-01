@@ -3592,6 +3592,106 @@
         }
       }
     },
+    "HttpApiPOSTteamsteamIdadhoccheckoutDataIntegrationPermission5EA442BD": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "DataFunctionLive5A545D6E"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/adhoc/checkout"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTteamsteamIdadhoccheckout0DDB9846": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /teams/{teamId}/adhoc/checkout",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETteamsteamIdproductsDataIntegration012ABD77"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTteamsteamIdsheetssheetIdmoveDataIntegrationPermission73B8CDD8": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "DataFunctionLive5A545D6E"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/sheets/{sheetId}/move"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTteamsteamIdsheetssheetIdmove3D884E5A": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /teams/{teamId}/sheets/{sheetId}/move",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETteamsteamIdproductsDataIntegration012ABD77"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiPOSTteamsteamIdsheetssheetIdlinesDataIntegrationPermission42B14AFD": {
       "Type": "AWS::Lambda::Permission",
       "Properties": {

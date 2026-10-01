@@ -22,8 +22,9 @@
 import { randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
-import { ConflictError, EquipmentOutError, InvalidInputError, NotFoundError, TooLargeError, isItemTooLarge } from "./errors.js";
-import { BOUGHT_SUFFIX, barcode, id as checkId, keys, prefixes, productKey, teamPartition } from "./keys.js";
+import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
+import { AdhocOpenError, ConflictError, EquipmentOutError, InvalidInputError, NotFoundError, TooLargeError, isCancelledAsTooLarge, isItemTooLarge } from "./errors.js";
+import { BOUGHT_SUFFIX, adhocNumber, barcode, id as checkId, isAdhocId, keys, prefixes, productKey, teamPartition } from "./keys.js";
 import { money, storedMoney } from "./money.js";
 import type { Movement } from "./commands.js";
 import { type Page, queryPage } from "./query.js";
@@ -314,6 +315,11 @@ function toItem(collection: Collection, teamId: string, docId: string, data: Doc
   };
 }
 
+/** A sheet's item as stored, with its keys and date index: for the quick take, which makes the ad hoc sheet (commands.ts). */
+export function sheetItem(teamId: string, sheetId: string, data: DocumentData, version: number): Record<string, unknown> {
+  return toItem("sheets", teamId, sheetId, data, version);
+}
+
 function fromItem(collection: Collection, item: Record<string, unknown>): StoredDocument {
   const data: DocumentData = {};
   for (const [k, v] of Object.entries(item)) if (!isReservedField(k)) data[k] = v;
@@ -353,6 +359,35 @@ export function retryDelay(attempt: number, random: () => number = Math.random):
 }
 const backoff = (attempt: number) => new Promise((resolve) => setTimeout(resolve, retryDelay(attempt)));
 
+type TransactItem = Record<string, Record<string, unknown>>;
+
+/**
+ * The change to the team's ADHOC item (adhoc.ts) that goes with a write to an
+ * ad hoc sheet, in the same transaction (ADR 0017, section 7):
+ *
+ * - Closing the open ad hoc sheet (Finished Return) clears the pointer, so
+ *   the next quick take starts the next sheet.
+ * - Reopening a finished one points at it, unless another ad hoc sheet is
+ *   open: AdhocOpenError (409). A pointer naming a sheet that's gone or
+ *   closed (which these transactions never leave, but a restore might) doesn't
+ *   count as open.
+ *
+ * Any other write, or a write to a job sheet, leaves the item alone.
+ */
+async function adhocChange(db: Db, ctx: TeamContext, id: string, before: StoredDocument | undefined, data: DocumentData, at: string): Promise<TransactItem | undefined> {
+  if (before?.data.kind !== "adhoc") return undefined;
+  const closing = data.status === "closed";
+  if ((before.data.status === "closed") === closing) return undefined;
+  const pointer = await readAdhoc(db, ctx.teamId);
+  const open = adhocOpen(pointer);
+  if (closing) return open === id ? adhocPut(db, ctx.teamId, pointer, { open: undefined, count: adhocCount(pointer) }, at) : undefined;
+  if (open !== undefined && open !== id) {
+    const other = await readItem(db, "sheets", ctx.teamId, open);
+    if (other && other.status !== "closed") throw new AdhocOpenError("Another ad hoc sheet is open. Finish it before reopening this one.");
+  }
+  return adhocPut(db, ctx.teamId, pointer, { open: id, count: adhocNumber(id) ?? 0 }, at);
+}
+
 /**
  * Reads the current item, lets `build` make the next document from it, and
  * puts it if the item hasn't changed since the read. Retries a lost race.
@@ -374,7 +409,11 @@ async function write(
     if (expected !== undefined && (before?.version ?? 0) !== expected) throw new ConflictError("This document changed; reload and try again");
     // Kept for the lines of equipment bought for a client (ADR 0017), which aren't products
     if (collection === "products" && !before && id.endsWith(BOUGHT_SUFFIX)) throw new InvalidInputError(`An item's key can't end in "${BOUGHT_SUFFIX}"`);
-    const data = checkDocument(collection, build(before), { userId: ctx.userId, at: (options.now ?? new Date()).toISOString() }, before);
+    // Kept for the ad hoc sheets, which only the quick take makes (ADR 0017, section 4)
+    if (collection === "sheets" && !before && isAdhocId(id)) throw new InvalidInputError('Sheet IDs starting "adhoc-" are kept for the ad hoc sheet, which Quick take makes');
+    const at = (options.now ?? new Date()).toISOString();
+    const data = checkDocument(collection, build(before), { userId: ctx.userId, at }, before);
+    const adhoc = collection === "sheets" ? await adhocChange(db, ctx, id, before, data, at) : undefined;
     const version = (before?.version ?? 0) + 1;
     // Unchanged since the read: same version and, for products, same stock
     // (every stock change gives a new version now; checking stock as well
@@ -390,21 +429,22 @@ async function write(
     const condition = !item
       ? "attribute_not_exists(PK)"
       : [unchanged("version"), ...(collection === "products" ? [unchanged("stock")] : [])].join(" AND ");
+    const put = {
+      TableName: db.tableName,
+      Item: storable(toItem(collection, ctx.teamId, id, data, version)),
+      ConditionExpression: condition,
+      ...(Object.keys(names).length ? { ExpressionAttributeNames: names } : {}),
+      ...(Object.keys(values).length ? { ExpressionAttributeValues: values } : {}),
+    };
     try {
-      await connection(db).doc.send(
-        new PutCommand({
-          TableName: db.tableName,
-          Item: storable(toItem(collection, ctx.teamId, id, data, version)),
-          ConditionExpression: condition,
-          ...(Object.keys(names).length ? { ExpressionAttributeNames: names } : {}),
-          ...(Object.keys(values).length ? { ExpressionAttributeValues: values } : {}),
-        }),
-      );
+      // With the ADHOC item's change, both or neither
+      if (adhoc) await connection(db).doc.send(new TransactWriteCommand({ TransactItems: [{ Put: put }, adhoc] }));
+      else await connection(db).doc.send(new PutCommand(put));
       return { before, after: { id, version, data } };
     } catch (error) {
       // DynamoDB's "Item size has exceeded the maximum allowed size"; any other ValidationException is a 500
-      if (isItemTooLarge(error)) throw new TooLargeError("This document is too large to save");
-      if (!isRace(error)) throw error;
+      if (isItemTooLarge(error) || isCancelledAsTooLarge(error)) throw new TooLargeError("This document is too large to save");
+      if (!isRace(error) && !isCancelledByRace(error)) throw error;
       if (expected !== undefined || attempt >= MAX_ATTEMPTS) throw new ConflictError("This document changed; reload and try again");
       await backoff(attempt);
     }
@@ -543,6 +583,7 @@ export async function deleteDocument(db: Db, ctx: TeamContext, collection: Colle
   const id = docId(collection, rawId);
   const expected = expectedVersion(options);
   if (collection === "products") return deleteProductDocument(db, ctx, id, expected);
+  if (isAdhocId(id)) return deleteAdhocSheet(db, ctx, id, expected);
   const conditional = expected !== undefined;
   try {
     const { Attributes } = await connection(db).doc.send(
@@ -561,6 +602,43 @@ export async function deleteDocument(db: Db, ctx: TeamContext, collection: Colle
   } catch (error) {
     if (isRace(error)) throw new ConflictError("This document changed; reload and try again");
     throw error;
+  }
+}
+
+/**
+ * An ad hoc sheet's delete (ADR 0017, section 4): reads it, then deletes it on
+ * the condition that its version hasn't changed since, and, when it's the
+ * open one, clears the team's ADHOC pointer in the same transaction, so the
+ * next quick take starts a new sheet. Stock doesn't change, as for any sheet.
+ * A lost race is retried on the fresh item unless a version was expected.
+ */
+async function deleteAdhocSheet(db: Db, ctx: TeamContext, id: string, expected: number | undefined): Promise<{ before?: StoredDocument }> {
+  for (let attempt = 1; ; attempt++) {
+    const item = await readItem(db, "sheets", ctx.teamId, id);
+    const before = item ? fromItem("sheets", item) : undefined;
+    if (expected !== undefined && (before?.version ?? 0) !== expected) throw new ConflictError("This document changed; reload and try again");
+    if (!item) return {};
+    const pointer = item.kind === "adhoc" ? await readAdhoc(db, ctx.teamId) : undefined;
+    const version = item.version;
+    const del = {
+      Delete: {
+        TableName: db.tableName,
+        Key: itemKey("sheets", ctx.teamId, id),
+        ...(typeof version === "number"
+          ? { ConditionExpression: "#version = :version", ExpressionAttributeValues: { ":version": version } }
+          : { ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(#version)" }),
+        ExpressionAttributeNames: { "#version": "version" },
+      },
+    };
+    const clear = adhocOpen(pointer) === id ? [adhocPut(db, ctx.teamId, pointer, { open: undefined, count: adhocCount(pointer) }, new Date().toISOString())] : [];
+    try {
+      await connection(db).doc.send(new TransactWriteCommand({ TransactItems: [del, ...clear] }));
+      return { before };
+    } catch (error) {
+      if (!isCancelledByRace(error)) throw error;
+      if (expected !== undefined || attempt >= MAX_ATTEMPTS) throw new ConflictError("This document changed; reload and try again");
+      await backoff(attempt);
+    }
   }
 }
 

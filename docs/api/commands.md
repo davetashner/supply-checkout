@@ -111,6 +111,68 @@ rather than rounding ([ADR 0014](../adr/0014-units-cost-and-rounding.md)).
 - A key ending in `:bought` is refused (400): those lines are bought for a
   client and never come from storage.
 
+- **Not on the ad hoc sheet**: a checkout onto a sheet with `kind: "adhoc"`
+  is `400`. Taking for no job is the quick take, below.
+
+**Quick take** ([ADR 0017](../adr/0017-company-equipment-and-ad-hoc-checkout.md),
+section 4): `POST /teams/{teamId}/adhoc/checkout`
+
+```json
+{ "operationId": "…", "productKey": "0123", "quantity": 2, "date": "2026-10-01" }
+```
+
+- A checkout without choosing a sheet. The body is a checkout's without
+  `sheetId`, plus an optional `date` (`YYYY-MM-DD`, the person's local
+  date; default today in UTC), used only when this take starts a sheet.
+- It goes on the team's open ad hoc sheet. When there's none, it starts the
+  next one, `adhoc-<n>`: `kind: "adhoc"`, `client: ""`, the `date`,
+  `status: "open"`, `createdBy` (the caller) and `createdAt`. A team has at
+  most one open ad hoc sheet.
+- The team's `ADHOC` item keeps the open sheet's ID and how many ad hoc
+  sheets it has made. The take reads it and, in the same transaction as the
+  line, stock and movement, either adds to the open sheet (checking `ADHOC`
+  is unchanged and the sheet is still an open ad hoc sheet) or creates
+  `adhoc-<n+1>` and points `ADHOC` at it (checking `ADHOC` is unchanged and
+  the sheet doesn't exist). When two people's first takes race, one
+  transaction makes the sheet and the other is cancelled, reads again, and
+  adds its line to that sheet. Neither is lost.
+- The response is a checkout's: `result.sheetId` names the ad hoc sheet,
+  `result.sheetCreated` is `true` when this take started it, `result.command`
+  is `quickTake`, and `sheet` is the ad hoc sheet as it is now. A retry with
+  the same operation ID returns the same sheet. The movement is a
+  `checkout` on the ad hoc sheet, and the `Checkouts` metric counts it.
+
+**Move an ad hoc line to a job sheet** (ADR 0017, section 5):
+`POST /teams/{teamId}/sheets/{sheetId}/move`
+
+```json
+{ "operationId": "…", "productKey": "0123", "toSheetId": "s1" }
+```
+
+- `sheetId` is the open ad hoc sheet; `toSheetId` an open job sheet (no
+  `kind`). The whole line moves, with its `out`, `returned` and `lost`.
+- One transaction: the line comes off the ad hoc sheet, on the condition
+  that the sheet's version is still the one read (so the counts moved are
+  exactly the ones removed; a return that lands meanwhile makes the command
+  read again and move the line as it is then); the counts are added to the
+  job sheet's line for the item, which keeps its own `code`, `name`, `price`
+  and `cost`, or, if the job sheet has none, the line arrives as it is, with
+  the price it was taken at; and a movement with `reason: "move"`,
+  `delta: 0`, `quantity` (the `out`), `returned`, `lost`, `sheetId` (the job
+  sheet) and `fromSheetId` (the ad hoc sheet). Both sheets get a new
+  version. For equipment, the job sheet's `takenBy` and `takenAt` become
+  the moved line's when it was taken later.
+- **Stock doesn't move**: the items left storage once, at the quick take.
+- Refused: a `sheetId` that isn't an ad hoc sheet, or a `toSheetId` that
+  isn't a job sheet (`400`); either sheet closed (`409`); no such job sheet
+  (`404`); the item not on the ad hoc sheet, or on the job sheet as the
+  other kind (supply or equipment) (`400`); a job sheet the line would take
+  past the document limit (`413`).
+- The response has `result`, `sheet` (the ad hoc sheet), `toSheet` (the job
+  sheet) and `product: null`. A retry with the same operation ID changes
+  nothing more and returns the first result, even when it races the first
+  run.
+
 **Add a receipt's lines**: `POST /teams/{teamId}/sheets/{sheetId}/lines`
 
 ```json
@@ -123,7 +185,8 @@ rather than rounding ([ADR 0014](../adr/0014-units-cost-and-rounding.md)).
   `code`, `name`, `price` and `cost` (the receipt's choices); a line already
   on the sheet keeps its copy and adds to `out`.
 - 1 to 40 lines, each product at most once. The app sends a longer receipt
-  as one request per 40, each its own operation. The sheet must be open.
+  as one request per 40, each its own operation. The sheet must be open, and
+  a client's sheet: the ad hoc sheet takes no receipt lines (`400`).
 - The response has `result` (each line, with `lineCreated`) and the `sheet`
   as it is now; there's no `product`.
 - **Company equipment bought for the client** ([ADR 0017](../adr/0017-company-equipment-and-ad-hoc-checkout.md),
@@ -319,6 +382,7 @@ movement or the operation record changed.
 | `404 not_found` | No such sheet, or (stock adjustment) no such item | Show the message (the web build handles it as for `400`) |
 | `409 aborted` | The sheet is closed ("Reopen it to …"), or the line or item changed on every retry | Show the message. Safe to retry with the same ID |
 | `409 aborted`, `reason: "equipment_out"` | A document write closing a sheet (Finished Return) while company equipment is still out on it | Ask about each piece still out (back, still at the job, or lost or broken), then close |
+| `409 aborted`, `reason: "adhoc_open"` | A document write reopening a finished ad hoc sheet while another ad hoc sheet is open | Show the message: finish the open one first |
 | `429`, `5xx`, timeout, network error | Unknown whether it ran | Retry with the same ID, with backoff |
 
 The server already retries a busy line or item several times on a fresh read
@@ -348,8 +412,15 @@ before answering `409`, so `409` from contention is rare.
   line's `returned` stays 0. `takenBy`, `takenAt`, `priceSetBy` and
   `priceSetAt` are the server's: a document write may only repeat what's
   stored. A sheet's `kind` can't be set, changed or removed by
-  a document write. A product's `kind` is `"supply"` or `"equipment"`, and
+  a document write, and no document write creates a sheet whose ID starts
+  `adhoc-`: only the quick take makes ad hoc sheets. A product's `kind` is `"supply"` or `"equipment"`, and
   no new product's key ends in `:bought`.
+- **One open ad hoc sheet.** Closing the open ad hoc sheet (`status:
+  "closed"`) or deleting it clears the team's `ADHOC` pointer in the same
+  transaction, so the next quick take starts `adhoc-<n+1>`. Reopening a
+  finished one is refused with `409 aborted`, reason `adhoc_open`, while
+  another ad hoc sheet is open, and otherwise points `ADHOC` at it. Deleting
+  an ad hoc sheet doesn't change stock, as for any sheet.
 - **Stock can go below zero.** A checkout takes the full quantity off, even
   when that's more than the count, where `bumpStock` stops at 0. A negative
   count says the storage count was wrong, and a `count` adjustment fixes it;
@@ -365,8 +436,8 @@ before answering `409`, so `409` from contention is rare.
 `GET /teams/{teamId}/products/{key}/movements?limit=50&cursor=…` returns the
 item's movements, newest first, a page at a time (up to 100). Any member can
 read it. Each movement has who (`userId`), when (`at`), why (`reason`:
-`checkout`, `return`, `receipt`, `count`, `uncount` when someone stopped counting it, `import`, `delete` when the item was deleted, or `lost` for equipment lost or broken; an uncount and a delete take its stock to 0, and a lost movement doesn't change it), the `sheetId` for checkouts,
-returns and lost equipment, the `quantity` or `count`, the change to stock (`delta`), whether the
+`checkout`, `return`, `receipt`, `count`, `uncount` when someone stopped counting it, `import`, `delete` when the item was deleted, `lost` for equipment lost or broken, or `move` for a line moved from the ad hoc sheet to a job sheet; an uncount and a delete take its stock to 0, and lost and move movements don't change it), the `sheetId` for checkouts (quick takes included),
+returns, lost equipment and moves (the job sheet; `fromSheetId` is the ad hoc sheet), the `quantity` or `count` (a move's `quantity` is the line's `out`, with its `returned` and `lost`), the change to stock (`delta`), whether the
 item tracked stock (`tracked`), the `unitCost` for receipts, any `charge` for lost equipment, and the
 `operationId`. Movements are kept as long as the team's data.
 
@@ -399,6 +470,11 @@ drifting") is a separate bead. It reconciles each item from the movements:
 - Sheet lines can be reconciled the same way: the checkout and return
   movements for a sheet and item add up to its `out` and `returned`, and its
   `lost` movements to its `lost`, unless the line was corrected with a line
-  edit. A `lost` movement's `delta` is always 0, so it never changes an
-  item's sum. Lines bought for the client (`:bought`) have no movements, as
+  edit. `move` movements count in and out: one whose `sheetId` is the sheet
+  adds its `quantity`, `returned` and `lost` to the sheet's `out`,
+  `returned` and `lost`, and one whose `fromSheetId` is the sheet takes them
+  away (the ad hoc line is gone, so it adds up to 0). A `lost` or `move`
+  movement's `delta` is always 0, so it never changes an item's sum, and a
+  move never counts stock twice: the quick take's `checkout` took it off
+  once. Lines bought for the client (`:bought`) have no movements, as
   no receipt line put on a sheet does.
