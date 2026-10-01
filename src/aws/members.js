@@ -244,6 +244,7 @@ export function openReopen(api, team, done) {
   openModal(`<h2>Reopen ${esc(team.name)}</h2>
     <p class="hint">Reopening makes the team writable again for its members, straight away, and it won't be deleted. Every owner gets an email about it.</p>
     <p class="hint">Invites that were cancelled when it closed stay cancelled, and anyone who left or was removed while it was closed isn't back: invite them again from Members.</p>
+    <p class="hint">If closing the team set its subscription to end, reopening keeps it going. A subscription that has already ended doesn't come back: the team stays read-only until you subscribe again.</p>
     <form id="reopenForm" class="close-form" novalidate>
       <div class="field"><label for="reopenName">Type the team's name, <strong>${esc(team.name)}</strong>, to reopen it</label><input type="text" id="reopenName" autocomplete="off" spellcheck="false" data-autofocus></div>
       <p class="error" role="alert" id="reopenFail" hidden></p>

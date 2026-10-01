@@ -128,6 +128,10 @@ export interface BillingTeam {
   readonly stripeSubscriptionId?: string;
   /** Read-only because its subscription ended and no comp keeps it going (isReadOnlyForBilling). */
   readonly readOnly: boolean;
+  /** Whether its subscription won't renew, as last applied (`cancelAtPeriodEnd`). */
+  readonly cancelAtPeriodEnd: boolean;
+  /** Reopened from this closure (its `closedAt`), and its subscription not yet resynced from Stripe (billing/reopening.ts). */
+  readonly resyncFor?: string;
 }
 
 /** The team's billing state, or undefined if its META item is gone (purged). */
@@ -138,7 +142,7 @@ export async function getBillingTeam(db: Db, ctx: TeamContext, now = new Date())
       TableName: db.tableName,
       Key: keys.team(ctx.teamId),
       ConsistentRead: true,
-      ProjectionExpression: "#name, #status, #plan, seats, closedAt, purging, stripeCustomerId, stripeSubscriptionId, compPlan, compUntil",
+      ProjectionExpression: "#name, #status, #plan, seats, closedAt, purging, stripeCustomerId, stripeSubscriptionId, compPlan, compUntil, cancelAtPeriodEnd, stripeResyncFor",
       ExpressionAttributeNames: { "#name": "name", "#status": "status", "#plan": "plan" },
     }),
   );
@@ -156,7 +160,36 @@ export async function getBillingTeam(db: Db, ctx: TeamContext, now = new Date())
     ...(str(Item.stripeCustomerId) ? { stripeCustomerId: Item.stripeCustomerId as string } : {}),
     ...(str(Item.stripeSubscriptionId) ? { stripeSubscriptionId: Item.stripeSubscriptionId as string } : {}),
     readOnly: isReadOnlyForBilling(Item, now),
+    cancelAtPeriodEnd: Item.cancelAtPeriodEnd === true,
+    ...(str(Item.stripeResyncFor) ? { resyncFor: Item.stripeResyncFor as string } : {}),
   };
+}
+
+/**
+ * Records that a reopened team's subscription was resynced from Stripe
+ * (billing/reopening.ts): removes `stripeResyncFor`, on the condition it's
+ * still the closure the resync read (`closedAt`). Returns false if it isn't
+ * (another reopen since, which its own resync handles, or already removed).
+ * Only the billing worker (a system context) may.
+ */
+export async function finishReopenResync(db: Db, ctx: TeamContext, closedAt: string): Promise<boolean> {
+  readable(ctx);
+  if (ctx.role !== "system") throw new ForbiddenError("Only billing resyncs a reopened team");
+  try {
+    await connection(db).doc.send(
+      new UpdateCommand({
+        TableName: db.tableName,
+        Key: keys.team(ctx.teamId),
+        UpdateExpression: "REMOVE stripeResyncFor",
+        ConditionExpression: "stripeResyncFor = :at",
+        ExpressionAttributeValues: { ":at": closedAt },
+      }),
+    );
+    return true;
+  } catch (error) {
+    if ((error as { name?: string }).name === "ConditionalCheckFailedException") return false;
+    throw error;
+  }
 }
 
 /** The team's owners and the addresses on their MEMBER items, for billing notices. Reads only their role, email and ID. */
@@ -190,6 +223,8 @@ export interface BillingAsRead {
   readonly plan: string;
   readonly seats: number;
   readonly subscriptionId?: string;
+  /** Whether it won't renew, as read: compared too when given (the nightly entitlement check). */
+  readonly cancelAtPeriodEnd?: boolean;
 }
 
 /** A subscription as the billing worker applies it to its team (ADR 0009). */
@@ -218,12 +253,12 @@ export interface SubscriptionState {
  * state twice changes nothing but `stripeSyncedAt` and the version.
  *
  * With `asRead` (the nightly entitlement check, billing/entitlements.ts),
- * also conditioned on the team's status, plan, seats and subscription being
- * as they were read, so a Stripe event applied meanwhile is almost never
- * overwritten with the older state the check fetched. It compares values,
- * not a version: a change and back (A to B to A) between the read and the
- * write, or a change only to `cancelAtPeriodEnd` or `currentPeriodEnd`, isn't
- * seen, and the next event or night corrects it.
+ * also conditioned on the team's status, plan, seats, subscription and
+ * `cancelAtPeriodEnd` being as they were read, so a Stripe event applied
+ * meanwhile is almost never overwritten with the older state the check
+ * fetched. It compares values, not a version: a change and back (A to B to
+ * A) between the read and the write, or a change only to `currentPeriodEnd`,
+ * isn't seen, and the next event or night corrects it.
  *
  * Returns "applied", or "ignored" when the team is gone, closed, being purged
  * or belongs to another customer by the time of the write. Any other failed
@@ -271,6 +306,11 @@ export async function applySubscription(db: Db, ctx: TeamContext, state: Subscri
     same("seats", ":readSeats", asRead.seats, 0);
     if (asRead.subscriptionId === undefined) unchanged.push("attribute_not_exists(stripeSubscriptionId)");
     else same("stripeSubscriptionId", ":readSub", id(asRead.subscriptionId, "Stripe subscription ID"), "");
+    if (asRead.cancelAtPeriodEnd !== undefined) {
+      // Never applied reads as false
+      values[":readCape"] = asRead.cancelAtPeriodEnd;
+      unchanged.push(asRead.cancelAtPeriodEnd ? "cancelAtPeriodEnd = :readCape" : "(cancelAtPeriodEnd = :readCape OR attribute_not_exists(cancelAtPeriodEnd))");
+    }
   }
   const subscription = state.replaces !== undefined ? "(attribute_not_exists(stripeSubscriptionId) OR stripeSubscriptionId = :sub OR stripeSubscriptionId = :replaces)" : "(attribute_not_exists(stripeSubscriptionId) OR stripeSubscriptionId = :sub)";
   if (state.replaces !== undefined) values[":replaces"] = state.replaces;

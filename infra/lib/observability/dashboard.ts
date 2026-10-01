@@ -150,7 +150,7 @@ export class OpsDashboard extends Construct {
       // The deletion records watch (primary region): any point here is a P2
       businessGraph("Backups: deletion records rewritten or deleted", [BusinessMetric.DeletionRecordRewrites]),
       // Closed teams' subscriptions ended, and purged teams' Stripe customers deleted (supply-checkout-t0en)
-      businessGraph("J7: closed teams' subscriptions ended (reopened teams', charged after closing, not found, set aside), Stripe customers deleted (already deleted)", [BusinessMetric.ClosedTeamSubscriptionsEnded, BusinessMetric.ReopenedTeamSubscriptionsEnded, BusinessMetric.ClosedTeamRenewalsCharged, BusinessMetric.ClosedTeamSubscriptionsNotFound, BusinessMetric.ClosedTeamSubscriptionsSetAside, BusinessMetric.StripeCustomersDeleted, BusinessMetric.StripeCustomersAlreadyDeleted]),
+      businessGraph("J7: closed teams' subscriptions ended (reopened teams' ended, resumed, resyncs late; charged after closing, not found, set aside), Stripe customers deleted (already deleted)", [BusinessMetric.ClosedTeamSubscriptionsEnded, BusinessMetric.ReopenedTeamSubscriptionsEnded, BusinessMetric.ReopenedTeamSubscriptionsResumed, BusinessMetric.ReopenResyncsLate, BusinessMetric.ClosedTeamRenewalsCharged, BusinessMetric.ClosedTeamSubscriptionsNotFound, BusinessMetric.ClosedTeamSubscriptionsSetAside, BusinessMetric.StripeCustomersDeleted, BusinessMetric.StripeCustomersAlreadyDeleted]),
       // The operator group watch (primary region): a change is a P1; a gap in the size means it isn't running ("Operator group watch silent")
       graph(
         "Operators: group changes, resets and size",

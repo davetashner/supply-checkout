@@ -130,6 +130,7 @@ const ALARM_IDS = [
   "deletion-overdue",
   "team-closed-notices-failing",
   "reopened-team-subscription-ended",
+  "reopen-resync-late",
   "closed-team-charged",
   "closed-team-subscription-not-found",
   "closed-team-subscription-set-aside",
@@ -146,6 +147,7 @@ const PRIMARY_ONLY_ALARM_IDS = [
   "seat-counts-drifting",
   "entitlements-drifting",
   "deletion-overdue",
+  "reopen-resync-late",
   "closed-team-charged",
   "closed-team-subscription-not-found",
   "closed-team-subscription-set-aside",
@@ -665,6 +667,18 @@ describe("alarms added with the email code routes, the live update budget, team 
       TreatMissingData: "notBreaching",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
       AlarmDescription: Match.stringLikeRegexp("^P2 Reopened team's subscription ended \\(J7, J11"),
+    });
+  });
+
+  it("alarms on any reopened team the nightly reconciliation found still waiting for its Stripe resync, where it runs (J7, J11, supply-checkout-85qp)", () => {
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-reopen-resync-late",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ReopenResyncsLate }), Stat: "Sum", Period: 3600 }) })],
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      AlarmDescription: Match.stringLikeRegexp("^P2 Reopened team's billing not resynced \\(J7, J11"),
     });
   });
 

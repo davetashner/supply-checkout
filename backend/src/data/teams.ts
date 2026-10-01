@@ -416,8 +416,17 @@ const TOO_OFTEN = `A team can be reopened ${REOPENS_PER_TEAM_PER_DAY} times a da
  * and its members get live updates again (liveUpdateRecipients). Nothing
  * the closure undid comes back: its invites stay deleted, and anyone who
  * left or was removed while it was closed stays out, so owners invite people
- * again. The Stripe subscription isn't touched: closing doesn't cancel it yet
- * either (billing, supply-checkout-x0l, will need to resume it here).
+ * again.
+ *
+ * Stripe isn't called (supply-checkout-85qp): a Stripe outage can't refuse a
+ * reopen. The same update sets `stripeResyncFor` to the closure it ends (its
+ * `closedAt`), and the seat sync the account function queues after a reopen
+ * has the billing worker resync the subscription from Stripe, resuming one
+ * the closure set to cancel (billing/reopening.ts); the nightly
+ * reconciliation finishes one that didn't happen. The closure's
+ * `stripeCancelledFor` and `stripeSetAsideFor` stay: both name that closure's
+ * `closedAt`, so nothing reads them once the team is open, and a new closure
+ * has a new one.
  *
  * Idempotent: reopening a team that isn't closed changes nothing and returns
  * it as it is, with `reopenedNow: false`.
@@ -447,7 +456,8 @@ export async function reopenTeam(
             Update: {
               TableName: db.tableName,
               Key: keys.team(ctx.teamId),
-              UpdateExpression: "REMOVE closedAt, closedBy, purgeAfter, GSI1PK, GSI1SK SET #version = #version + :one",
+              // stripeResyncFor: the billing worker resyncs (and resumes) its Stripe subscription (billing/reopening.ts)
+              UpdateExpression: "REMOVE closedAt, closedBy, purgeAfter, GSI1PK, GSI1SK SET #version = #version + :one, stripeResyncFor = :at",
               ConditionExpression: "closedAt = :at AND purgeAfter = :purge AND purgeAfter > :cutoff AND attribute_not_exists(purging) AND owners > :zero",
               ExpressionAttributeNames: { "#version": "version" },
               ExpressionAttributeValues: { ":at": current.closedAt, ":purge": current.purgeAfter, ":cutoff": cutoff, ":one": 1, ":zero": 0 },

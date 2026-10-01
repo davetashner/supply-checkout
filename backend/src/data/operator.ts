@@ -788,6 +788,10 @@ const TOO_LATE_FOR_OPS = "This team is about to be deleted and can't be reopened
  * before it deletes anything: whichever write lands first wins), and on the
  * team having an owner.
  *
+ * Like an owner's reopen, it sets `stripeResyncFor` to the closure it ends,
+ * and doesn't call Stripe: the ops function's seat sync has the billing
+ * worker resync the subscription (billing/reopening.ts).
+ *
  * Unlike an owner's reopen there's no daily limit (the route's throttle and
  * the audit are the operators' limits) and no email to owners yet. Invites
  * deleted at closing stay deleted, as for an owner's reopen.
@@ -844,7 +848,8 @@ export async function reopenOpsTeam(
       after: null,
       update: {
         Key: keys.team(teamId),
-        UpdateExpression: "REMOVE closedAt, closedBy, purgeAfter, GSI1PK, GSI1SK SET #version = #version + :one",
+        // stripeResyncFor, as an owner's reopen: the billing worker resyncs the subscription (billing/reopening.ts)
+        UpdateExpression: "REMOVE closedAt, closedBy, purgeAfter, GSI1PK, GSI1SK SET #version = #version + :one, stripeResyncFor = :at",
         // The META item, at the version and with the closure the operator saw, still ahead of the purge
         ConditionExpression: "#type = :team AND #version = :v AND closedAt = :at AND purgeAfter = :purge AND purgeAfter > :cutoff AND attribute_not_exists(purging) AND #owners > :zero",
         ExpressionAttributeNames: { "#type": "type", "#version": "version", "#owners": "owners" },

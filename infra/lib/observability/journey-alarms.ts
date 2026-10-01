@@ -508,6 +508,16 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       threshold: 0,
     },
     {
+      id: "reopen-resync-late",
+      title: "Reopened team's billing not resynced",
+      journeys: "J7, J11",
+      severity: "P2",
+      rule: "Any ReopenResyncsLate over an hour: the nightly seat reconciliation (primary region) found a team reopened before the night whose Stripe subscription still hadn't been resynced (stripeResyncFor on its META item): the reopen's seat sync wasn't queued, or failed. The billing worker then resyncs it with the night's message, resuming a subscription its closure set to cancel. If it fires again the next night, that resync is failing too: the log line \"Reopened team's subscription not yet resynced\" has the team ID, and the worker's warnings or the seat syncs dead-letter queue say why. See docs/runbooks/billing-dlq-replay.md.",
+      metric: business(BusinessMetric.ReopenResyncsLate, region, Duration.hours(1)),
+      threshold: 0,
+      primaryOnly: true,
+    },
+    {
       id: "closed-team-charged",
       title: "Closed team charged",
       journeys: "J7, J11",

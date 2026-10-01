@@ -893,8 +893,8 @@ describe("operator reopen function and role (supply-checkout-6uw.6)", () => {
         StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES", "dynamodb:ReturnValues": "NONE" },
       },
     });
-    // Nothing about the team's name, plan, status, members or data
-    expect([...REOPEN_ATTRIBUTES]).toEqual(["PK", "SK", "type", "version", "owners", "closedAt", "closedBy", "purgeAfter", "purging", "GSI1PK", "GSI1SK"]);
+    // Nothing about the team's name, plan, status, members or data: and the reopen's pending Stripe resync (supply-checkout-85qp)
+    expect([...REOPEN_ATTRIBUTES]).toEqual(["PK", "SK", "type", "version", "owners", "closedAt", "closedBy", "purgeAfter", "purging", "GSI1PK", "GSI1SK", "stripeResyncFor"]);
     expect(JSON.stringify(closure?.Resource)).not.toMatch(/index|\*/);
     expect(audit).toEqual({
       Sid: "TeamOperatorAuditAppendOnly",

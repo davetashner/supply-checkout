@@ -15,6 +15,8 @@ export interface SubscriptionLike {
   readonly cancel_at_period_end: boolean;
   /** When it's set to cancel, if it is: set with `cancel_at_period_end`, or alone (a cancellation Stripe schedules by date). */
   readonly cancel_at?: number | null;
+  /** Its metadata: a closure stamps CLOSED_AT_METADATA when it sets it to cancel (closing.ts). */
+  readonly metadata?: Readonly<Record<string, string>> | null;
   readonly trial_end: number | null;
   readonly default_payment_method: string | { readonly id: string } | null;
   readonly items: {

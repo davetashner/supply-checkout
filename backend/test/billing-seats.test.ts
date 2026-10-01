@@ -166,8 +166,9 @@ describe("a seat sync after a membership change", () => {
     // Not drift: the change is what the sync is for
     expect(counts.map(([m]) => m)).not.toContain(BusinessMetric.SeatQuantityDrift);
     expect(denied).toEqual([]);
-    // The team comes from our link for the customer, never the message
-    expect(scopes).toEqual([{ eventId: "seats-1", stripeCustomer: CUSTOMER }, { eventId: "seats-1", stripeCustomer: CUSTOMER, teamId: TEAM }]);
+    // The team comes from our link for the customer, never the message: for the reopen resync's check, then the sync
+    const scoped = [{ eventId: "seats-1", stripeCustomer: CUSTOMER }, { eventId: "seats-1", stripeCustomer: CUSTOMER, teamId: TEAM }];
+    expect(scopes).toEqual([...scoped, ...scoped]);
     // IDs and numbers only: never a name or an address
     expect(JSON.stringify(logs)).not.toMatch(/example\.com|Echo Plumbing/);
     expect(logs).toContainEqual(["info", "Seat quantity updated", { teamId: TEAM, subscriptionId: SUB, from: 5, to: 3, reason: "membership" }]);
@@ -364,7 +365,12 @@ describe("the nightly entitlement check (supply-checkout-8jc.9)", () => {
     expect(logs).toContainEqual([
       "warn",
       "Entitlement drift",
-      { teamId: TEAM, fields: "status", ours: { subscriptionId: SUB, status: "active", plan: "starter", seats: 3 }, stripe: { subscriptionId: SUB, status: "past_due", plan: "starter", seats: 3 } },
+      {
+        teamId: TEAM,
+        fields: "status",
+        ours: { subscriptionId: SUB, status: "active", plan: "starter", seats: 3, cancelAtPeriodEnd: false },
+        stripe: { subscriptionId: SUB, status: "past_due", plan: "starter", seats: 3, cancelAtPeriodEnd: false },
+      },
     ]);
     expect(meta()).toMatchObject({ status: "past_due", stripeSubscriptionId: SUB });
     expect(denied).toEqual([]);
@@ -381,6 +387,34 @@ describe("the nightly entitlement check (supply-checkout-8jc.9)", () => {
     expect(drift()).toHaveLength(1);
     expect(logs.find(([, message]) => message === "Entitlement drift")?.[2]).toMatchObject({ fields: "plan" });
     expect(meta()).toMatchObject({ plan: "starter", billingInterval: "month" });
+  });
+
+  it("records a cancellation at the period's end we never heard about (a reopened team's), and its renewal", async () => {
+    // Set to cancel while the team was closed, whose events the worker skipped
+    subs.set(SUB, subscription(3, { cancel_at_period_end: true }));
+    expect(await nightly()).toBe("in_sync");
+    expect(drift()).toHaveLength(1);
+    expect(logs.find(([, message]) => message === "Entitlement drift")?.[2]).toMatchObject({ fields: "cancelAtPeriodEnd", ours: { cancelAtPeriodEnd: false }, stripe: { cancelAtPeriodEnd: true } });
+    expect(meta()).toMatchObject({ cancelAtPeriodEnd: true, status: "active" });
+    // Renewed in the Customer Portal, and that event lost too
+    subs.set(SUB, subscription(3));
+    logs = [];
+    expect(await worker(seats("reconcile", "reconcile-2026-09-29-cus_test_1"))).toBe("in_sync");
+    expect(logs.find(([, message]) => message === "Entitlement drift")?.[2]).toMatchObject({ fields: "cancelAtPeriodEnd" });
+    expect(meta().cancelAtPeriodEnd).toBe(false);
+    expect(denied).toEqual([]);
+  });
+
+  it("doesn't overwrite a cancellation an event applied while the check was asking Stripe", async () => {
+    // The check reads the team as renewing and Stripe as renewing too, then an event records a cancellation
+    subs.set(SUB, subscription(3, { status: "past_due" }));
+    onRetrieve = () => {
+      onRetrieve = undefined;
+      patchTeam({ cancelAtPeriodEnd: true });
+    };
+    await expect(nightly()).rejects.toThrow("changed meanwhile");
+    expect(meta()).toMatchObject({ status: "active", cancelAtPeriodEnd: true });
+    expect(drift()).toEqual([]);
   });
 
   it("turns a team read-only whose subscription ended without us hearing, after looking for a newer one", async () => {
@@ -508,12 +542,13 @@ describe("the nightly entitlement check (supply-checkout-8jc.9)", () => {
     expect(meta()).toMatchObject({ status: "active" });
   });
 
-  it("compares the subscription, status, plan and seats, and leaves the plan of a price we don't sell alone", () => {
-    const team = { stripeSubscriptionId: SUB, status: "active", plan: "starter", seats: 3 };
+  it("compares the subscription, status, plan, seats and whether it's set to cancel, and leaves the plan of a price we don't sell alone", () => {
+    const team = { stripeSubscriptionId: SUB, status: "active", plan: "starter", seats: 3, cancelAtPeriodEnd: false };
     const state = { customerId: CUSTOMER, subscriptionId: SUB, status: "active", plan: "starter", seats: 3, cancelAtPeriodEnd: false };
     expect(entitlementDrift(team, state)).toEqual([]);
     expect(entitlementDrift({ ...team, plan: "trial" }, { ...state, plan: undefined })).toEqual([]);
-    expect(entitlementDrift({ stripeSubscriptionId: undefined, status: "trialing", plan: "trial", seats: 1 }, state)).toEqual(["subscription", "status", "plan", "seats"]);
+    expect(entitlementDrift({ stripeSubscriptionId: undefined, status: "trialing", plan: "trial", seats: 1, cancelAtPeriodEnd: true }, state)).toEqual(["subscription", "status", "plan", "seats", "cancelAtPeriodEnd"]);
+    expect(entitlementDrift(team, { ...state, cancelAtPeriodEnd: true })).toEqual(["cancelAtPeriodEnd"]);
   });
 });
 

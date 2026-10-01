@@ -81,22 +81,28 @@
 // ID; a run that can't count them fails. A subscription that renewed after its team closed
 // (the team closed within an hour of a renewal) is logged as a warning and
 // counted (ClosedTeamRenewalsCharged, the "Closed team charged" alarm) for a
-// refund by hand. A team reopened while Stripe was being called is logged as
-// an error: its subscription was set to end, and an owner or operator must
-// resume it (supply-checkout-85qp).
+// refund by hand. A team reopened while Stripe was being called had its
+// subscription set to end for a closure that's over, maybe after the
+// reopen's resync already ran (billing/reopening.ts, supply-checkout-85qp):
+// if the team is open and the subscription was set to cancel at the period's
+// end, the purge resumes it at once (resumeSubscription, counted in
+// ReopenedTeamSubscriptionsResumed) and warns. Otherwise (cancelled at once,
+// closed again, gone, or the resume failed) it's logged as an error, counted
+// in ReopenedTeamSubscriptionsEnded, and fails the run.
 //
 // Logs have team, subscription and customer IDs and counts, never names,
 // emails or Stripe's messages. The function's role may delete whole items
 // and name only TEAM_PURGE_ATTRIBUTES, and read only the Stripe secret key
 // (infra/lib/observability/ops-checks.ts).
 
-import { type ClosingAction, closingAction, customerOf, deleteStripeCustomer, endSubscriptionForClosedTeam, type PurgeStripe } from "../billing/closing.js";
+import { type ClosingAction, closingAction, customerOf, deleteStripeCustomer, endSubscriptionForClosedTeam, type PurgeStripe, resumeSubscription } from "../billing/closing.js";
 import { isPermanentStripeError, stripeErrorFields } from "../billing/stripe.js";
 import {
   type ClosedTeamToEnd,
   closedTeamToEnd,
   countTeamsDueBefore,
   type Db,
+  isTeamOpen,
   listClosedTeamsToEnd,
   listSetAsideTeams,
   listTeamsToPurge,
@@ -213,6 +219,12 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
           obs.count(BusinessMetric.ClosedTeamRenewalsCharged, 1, { teamId });
         }
         if (!(await markSubscriptionEnding(db, team))) {
+          // Reopened meanwhile: undo a cancellation at the period's end, which the reopen's resync may have missed
+          if (action === "cancel_at_period_end" && (await resumedAfterReopen(stripe, team, sub.id))) {
+            obs.count(BusinessMetric.ReopenedTeamSubscriptionsResumed, 1, { teamId, source: "purge" });
+            obs.logger.warn("Team reopened while its subscription was being ended: resumed", { teamId, subscriptionId: sub.id, action });
+            continue;
+          }
           if (action !== "none") obs.count(BusinessMetric.ReopenedTeamSubscriptionsEnded, 1, { teamId, action });
           obs.logger.error("Team reopened while its subscription was being ended", { teamId, subscriptionId: sub.id, action });
           failed++;
@@ -251,6 +263,22 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
     }
     obs.logger.info("Ended closed teams' subscriptions", { listed: teams.length, ended, failed, setAside });
     return failed;
+  }
+
+  /**
+   * Resumes the subscription the purge just set to cancel for `team`'s closure, if the team
+   * is open now: true if it did. False for a team closed again (that closure keeps it
+   * ending) or gone, and when Stripe or the read fails, logged, so the caller alarms.
+   */
+  async function resumedAfterReopen(stripe: PurgeStripe, team: ClosedTeamToEnd, subscriptionId: string): Promise<boolean> {
+    try {
+      if (!(await isTeamOpen(db, team.teamId))) return false;
+      await resumeSubscription(stripe, subscriptionId, team, "purge");
+      return true;
+    } catch (error) {
+      obs.logger.warn("Reopened team's subscription not resumed", { teamId: team.teamId, subscriptionId, error: errorName(error), ...stripeFields(error) });
+      return false;
+    }
   }
 
   /**

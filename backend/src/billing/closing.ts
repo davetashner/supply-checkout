@@ -30,16 +30,42 @@
 // `cancel_at_period_end` twice, or cancelling a canceled subscription (which
 // the status check skips), changes nothing.
 //
+// Setting `cancel_at_period_end` also stamps the subscription's metadata with
+// the closure (CLOSED_AT_METADATA, its `closedAt`), so a reopen can tell a
+// cancellation a closure made from one the owner made in the Customer Portal
+// (below).
+//
+// Resuming after a reopen (supply-checkout-85qp). Reopening a team
+// (data/teams.ts, reopenTeam, and data/operator.ts, reopenOpsTeam) doesn't
+// call Stripe either: it records `stripeResyncFor` (the closure it ended) on
+// the team, and the billing worker resyncs the subscription (reopening.ts).
+// A subscription set to cancel at the period's end by one of our closures
+// (`cancel_at_period_end` and CLOSED_AT_METADATA) is resumed: the update sets
+// `cancel_at_period_end` back to false and removes the stamp. One cancelled
+// at once, or that ended meanwhile, can't be resumed: the team's status says
+// it ended, and its owners subscribe again (resumeAction, "needs_payment").
+// The purge and the worker also resume one they set to cancel just as the
+// team was reopened (the "Team reopened while its subscription was being
+// ended" race), each with a key of its own, so none replays another's.
+//
 // Only IDs, statuses and actions are logged, never the key or a Stripe message.
 
 import { createHash } from "node:crypto";
+import { hasEnded } from "../data/index.js";
 import type { SubscriptionLike } from "./worker.js";
 
-/** What ending a closed team's subscription needs from the Stripe client. */
+/**
+ * The subscription metadata key a closure stamps when it sets
+ * `cancel_at_period_end`: the closure's `closedAt`. Removed when a reopen
+ * resumes the subscription.
+ */
+export const CLOSED_AT_METADATA = "supply_checkout_closed_at";
+
+/** What ending a closed team's subscription, or resuming a reopened team's, needs from the Stripe client. */
 export interface ClosingStripe {
   readonly subscriptions: {
     retrieve(id: string): PromiseLike<SubscriptionLike>;
-    update(id: string, params: { cancel_at_period_end: true }, options: { idempotencyKey: string }): PromiseLike<unknown>;
+    update(id: string, params: { cancel_at_period_end: boolean; metadata: Record<string, string> }, options: { idempotencyKey: string }): PromiseLike<unknown>;
     cancel(id: string, params: Record<string, never>, options: { idempotencyKey: string }): PromiseLike<unknown>;
   };
 }
@@ -72,7 +98,9 @@ export function closingAction(sub: Pick<SubscriptionLike, "status" | "cancel_at_
  * characters whatever the IDs.
  */
 export function closingKey(action: Exclude<ClosingAction, "none">, teamId: string, closedAt: string, subscriptionId: string): string {
-  const digest = createHash("sha256").update(`${teamId}\n${closedAt}\n${subscriptionId}`).digest("hex");
+  // The update gained the closure's metadata stamp: a new key, so a retry from before can't meet different parameters
+  const version = action === "cancel_at_period_end" ? "\nstamped" : "";
+  const digest = createHash("sha256").update(`${teamId}\n${closedAt}\n${subscriptionId}${version}`).digest("hex");
   return `team-closed-${action}-${digest}`;
 }
 
@@ -88,11 +116,51 @@ export const customerOf = (sub: Pick<SubscriptionLike, "customer">): string => (
 export async function endSubscriptionForClosedTeam(stripe: ClosingStripe, sub: SubscriptionLike, team: { readonly teamId: string; readonly closedAt: string }): Promise<ClosingAction> {
   const action = closingAction(sub);
   if (action === "cancel_at_period_end") {
-    await stripe.subscriptions.update(sub.id, { cancel_at_period_end: true }, { idempotencyKey: closingKey(action, team.teamId, team.closedAt, sub.id) });
+    await stripe.subscriptions.update(sub.id, { cancel_at_period_end: true, metadata: { [CLOSED_AT_METADATA]: team.closedAt } }, { idempotencyKey: closingKey(action, team.teamId, team.closedAt, sub.id) });
   } else if (action === "cancel_now") {
     await stripe.subscriptions.cancel(sub.id, {}, { idempotencyKey: closingKey(action, team.teamId, team.closedAt, sub.id) });
   }
   return action;
+}
+
+/** What a reopened team's subscription needs (see the top of this file). */
+export type ResumeAction = "resume" | "none" | "needs_payment";
+
+/**
+ * What a reopened team's subscription needs: resuming, if one of our closures
+ * set it to cancel at the period's end (`cancel_at_period_end` with
+ * CLOSED_AT_METADATA); nothing, if it's live and not set to cancel by us (a
+ * cancellation the owner made in the Customer Portal is theirs to undo); or,
+ * if it has ended (cancelled at closing, or since), a new subscription
+ * (`needs_payment`), which the team's status already says.
+ */
+export function resumeAction(sub: Pick<SubscriptionLike, "status" | "cancel_at_period_end" | "metadata">): ResumeAction {
+  if (hasEnded(sub.status)) return "needs_payment";
+  return sub.cancel_at_period_end && typeof sub.metadata?.[CLOSED_AT_METADATA] === "string" ? "resume" : "none";
+}
+
+/** Who resumes a reopened team's subscription: the worker's resync, or the purge or the worker that set it to cancel as the team was reopened. */
+export type ResumeSource = "resync" | "purge" | "worker";
+
+/**
+ * The Stripe idempotency key for resuming `subscriptionId` after the team was
+ * reopened from the closure `closedAt`, by `source`: one per source, so a
+ * resume that has to follow another's (the purge setting it to cancel again
+ * after the resync resumed it) is never answered from Stripe's cache.
+ */
+export function resumeKey(source: ResumeSource, teamId: string, closedAt: string, subscriptionId: string): string {
+  const digest = createHash("sha256").update(`${teamId}\n${closedAt}\n${subscriptionId}`).digest("hex");
+  return `team-reopened-${source}-${digest}`;
+}
+
+/**
+ * Resumes a subscription a closure set to cancel at the period's end: sets
+ * `cancel_at_period_end` back to false and removes the closure's stamp.
+ * Throws on a Stripe failure, for the caller to retry.
+ */
+export async function resumeSubscription(stripe: ClosingStripe, subscriptionId: string, team: { readonly teamId: string; readonly closedAt: string }, source: ResumeSource): Promise<void> {
+  // An empty value removes the key from the subscription's metadata
+  await stripe.subscriptions.update(subscriptionId, { cancel_at_period_end: false, metadata: { [CLOSED_AT_METADATA]: "" } }, { idempotencyKey: resumeKey(source, team.teamId, team.closedAt, subscriptionId) });
 }
 
 /**

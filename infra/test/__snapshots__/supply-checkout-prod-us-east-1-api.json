@@ -2740,6 +2740,8 @@
                         "stripeSubscriptionId",
                         "compPlan",
                         "compUntil",
+                        "cancelAtPeriodEnd",
+                        "stripeResyncFor",
                         "role",
                         "email",
                         "userId"
@@ -2785,7 +2787,8 @@
                         "stripeCustomerId",
                         "version",
                         "closedAt",
-                        "purging"
+                        "purging",
+                        "stripeResyncFor"
                       ]
                     },
                     "StringEqualsIfExists": {
@@ -6692,7 +6695,8 @@
                         "purgeAfter",
                         "purging",
                         "GSI1PK",
-                        "GSI1SK"
+                        "GSI1SK",
+                        "stripeResyncFor"
                       ]
                     },
                     "StringEqualsIfExists": {
