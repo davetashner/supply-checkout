@@ -522,7 +522,7 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       title: "Reopened team's subscription left to cancel",
       journeys: "J7, J11",
       severity: "P2",
-      rule: "Any ReopenedTeamSubscriptionsUndecided over an hour: the billing worker resynced a reopened team whose Stripe subscription is set to cancel at the period's end, maybe by the closure (no closure stamp, but the purge recorded ending it for that closure, from before the stamp existed) or maybe by an owner, and Stripe gave no time it was set (canceled_at), or the team has no reopen time. It left it set to cancel rather than risk charging an owner who cancelled. The log line \"Reopened team's subscription left set to cancel\" has the team and subscription IDs: a person decides, from the subscription's history in the Stripe Dashboard.",
+      rule: "Any ReopenedTeamSubscriptionsUndecided over an hour: the billing worker resynced a reopened team whose Stripe subscription is set to cancel at the period's end, maybe by the closure (no closure stamp, but the purge recorded ending it for that closure, from before the stamp existed) or maybe by an owner, and Stripe gave no time it was set (canceled_at), or the team has no reopen time. It left it set to cancel rather than risk charging an owner who cancelled. The log line \"Reopened team's subscription left set to cancel\" has the team and subscription IDs: contact the team's owners, with what the subscription's history in the Stripe Dashboard shows, and resume it only if an owner asks; don't resume it by default.",
       metric: business(BusinessMetric.ReopenedTeamSubscriptionsUndecided, region, Duration.hours(1)),
       threshold: 0,
     },

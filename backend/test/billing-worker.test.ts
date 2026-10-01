@@ -530,9 +530,45 @@ describe("resyncing a reopened team's subscription (supply-checkout-85qp)", () =
     patchTeam({ stripeResyncFor: CLOSED });
     subs.set("sub_test_1", endedByClosure({ canceled_at: NOW / 1000 }));
     await worker(sync("membership", "seats-r2"));
-    expect(updates).toHaveLength(1);
-    expect(subs.get("sub_test_1")?.cancel_at_period_end).toBe(true);
+    // Not resumed, and the leftover stamp goes with the resync: it means nothing now
+    expect(updates).toHaveLength(2);
+    expect(updates[1]).toEqual({ id: "sub_test_1", params: { metadata: { [CLOSED_AT_METADATA]: "" } }, key: expect.stringMatching(/^team-unstamp-/) });
+    expect(subs.get("sub_test_1")).toMatchObject({ cancel_at_period_end: true, metadata: {} });
     expect(counts[BusinessMetric.ReopenedTeamSubscriptionsResumed]).toBeUndefined();
+  });
+
+  it("never carries a leftover stamp onto an owner's cancellation: removed on the open team, so the next closure doesn't stamp it and its reopen doesn't resume it", async () => {
+    // C1 set it to cancel; R1's resync resumed it
+    subs.set("sub_test_1", endedByClosure());
+    await worker(sync());
+    expect(updates).toEqual([resumed]);
+    // The owner renews then cancels in the Portal, and the stamp is still on (as if the resume had left it)
+    subs.set("sub_test_1", endedByClosure({ canceled_at: NOW / 1000 - 3600 }));
+    // An event on the open team, no resync pending: any stamp of ours goes, set to cancel or not
+    expect(meta().stripeResyncFor).toBeUndefined();
+    expect(await worker(message("customer.subscription.updated", { eventId: "evt_owner_cancel" }))).toBe("applied");
+    expect(updates[1]).toEqual({ id: "sub_test_1", params: { metadata: { [CLOSED_AT_METADATA]: "" } }, key: expect.stringMatching(/^team-unstamp-/) });
+    expect(subs.get("sub_test_1")).toMatchObject({ cancel_at_period_end: true, metadata: {} });
+    // C2: unstamped and already set to cancel is the owner's, so closing doesn't stamp it
+    const c2 = new Date(NOW - 1800 * 1000).toISOString();
+    patchTeam({ closedAt: c2 });
+    expect(await worker(message("customer.subscription.updated", { eventId: "evt_c2" }))).toBe("team_closed");
+    expect(updates).toHaveLength(2);
+    // R2: not resumed
+    patchTeam({ closedAt: undefined, stripeResyncFor: c2, stripeReopenedAt: new Date(NOW - 600 * 1000).toISOString(), stripeCancelledFor: c2 });
+    await worker(sync("membership", "seats-r3"));
+    expect(updates).toHaveLength(2);
+    expect(subs.get("sub_test_1")?.cancel_at_period_end).toBe(true);
+    expect(meta()).toMatchObject({ cancelAtPeriodEnd: true });
+    expect(meta().stripeResyncFor).toBeUndefined();
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsResumed]).toBe(1);
+  });
+
+  it("keeps the stamp on a subscription set to cancel while its resync is pending", async () => {
+    subs.set("sub_test_1", endedByClosure());
+    expect(await worker(message("customer.subscription.updated", { eventId: "evt_pending" }))).toBe("applied");
+    expect(updates).toEqual([]);
+    expect(subs.get("sub_test_1")?.metadata).toEqual({ [CLOSED_AT_METADATA]: CLOSED });
   });
 
   it("resumes its own cancellation after a team is reopened, closed and reopened again: the second closure stamps it again", async () => {

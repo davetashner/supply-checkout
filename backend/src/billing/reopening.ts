@@ -119,7 +119,8 @@ export function createReopenResync(deps: ReopenResyncDeps) {
       // Maybe the closure's, maybe the owner's: a person decides (docs/journeys.md)
       obs.count(BusinessMetric.ReopenedTeamSubscriptionsUndecided, 1, { teamId });
       obs.logger.warn("Reopened team's subscription left set to cancel", { teamId, subscriptionId: sub.id, closedAt });
-    } else if (staleStamp(sub)) {
+    } else if (staleStamp(sub, action === "resume")) {
+      // Done with this resync: any stamp left (the owner's cancellation or renewal after the reopen) means nothing now
       await removeStamp(stripe, sub, teamId, id);
     }
     if (action === "resume") {

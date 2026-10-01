@@ -54,9 +54,14 @@
 // at once, or that ended meanwhile, can't be resumed: the team's status says
 // it ended, and its owners subscribe again (resumeAction, "needs_payment").
 //
-// The stamp is kept only while it means something: on an open team, a
-// subscription that's no longer set to cancel (renewed in the Customer
-// Portal) has it removed (staleStamp, removeStamp), and closing a team whose
+// The stamp is kept only while it means something, which is until the
+// resync of the reopen after its closure: on an open team with no resync
+// pending, a live subscription has any stamp of ours removed, set to cancel
+// or not (an owner who renewed and cancelled again in the Customer Portal
+// before the worker saw the renewal would otherwise carry it), and while a
+// resync is pending, one that's no longer set to cancel (renewed) has it
+// removed (staleStamp, removeStamp). An unstamped cancellation is the
+// owner's: closing never stamps it. And closing a team whose
 // subscription is already set to cancel with an earlier closure's stamp
 // stamps it again with this closure (closingAction), so a team reopened,
 // closed and reopened again still has its own cancellation resumed.
@@ -193,8 +198,15 @@ export function resumeAction(sub: Pick<SubscriptionLike, "status" | "cancel_at_p
   return "resume";
 }
 
-/** Whether a subscription that's no longer set to cancel still carries a closure's stamp (renewed in the Customer Portal): removeStamp clears it. */
-export const staleStamp = (sub: Pick<SubscriptionLike, "cancel_at_period_end" | "metadata">): boolean => !sub.cancel_at_period_end && stampOf(sub) !== undefined;
+/**
+ * Whether an open team's live subscription carries a stamp of ours that no
+ * longer means anything: any stamp once no resync is pending for the team
+ * (`pendingResync` false), or, while one is, a stamp on a subscription
+ * that's no longer set to cancel (renewed in the Customer Portal).
+ * removeStamp clears it. An ended subscription is left as it is.
+ */
+export const staleStamp = (sub: Pick<SubscriptionLike, "status" | "cancel_at_period_end" | "metadata">, pendingResync: boolean): boolean =>
+  !hasEnded(sub.status) && stampOf(sub) !== undefined && (!pendingResync || !sub.cancel_at_period_end);
 
 /**
  * Removes a stale closure stamp from an open team's subscription, so a later

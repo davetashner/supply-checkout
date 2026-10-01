@@ -283,8 +283,9 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
       }
       return done("second_subscription_canceled");
     }
-    // Renewed (in the Customer Portal) after a closure set it to cancel: its stamp goes, so a later cancellation is never taken for a closure's
-    if (staleStamp(sub)) await removeStamp(stripe, sub, teamId, eventId);
+    // A stamp that no longer means anything goes (closing.ts): with no resync pending, any; while one is, one on a renewed
+    // subscription. So an owner's later cancellation is never taken for a closure's, or stamped again at the next closing
+    if (staleStamp(sub, team.resyncFor !== undefined)) await removeStamp(stripe, sub, teamId, eventId);
     const result = await applySubscription(db, ctx, subscriptionState(sub, customer, chosen.replaces), now());
     if (result === "ignored") {
       // Closed (or gone) since it was read: a subscription it never recorded is ended here, or it would renew

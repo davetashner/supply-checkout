@@ -85,10 +85,17 @@ describe("resuming a reopened team's subscription (supply-checkout-85qp)", () =>
 
   it("removes a stale stamp with a key per message", async () => {
     const sub = { id: "sub_1", metadata: { [CLOSED_AT_METADATA]: CLOSED } };
-    expect(staleStamp({ cancel_at_period_end: false, metadata: sub.metadata })).toBe(true);
-    expect(staleStamp({ cancel_at_period_end: true, metadata: sub.metadata })).toBe(false);
-    expect(staleStamp({ cancel_at_period_end: false, metadata: { [CLOSED_AT_METADATA]: "" } })).toBe(false);
-    expect(staleStamp({ cancel_at_period_end: false })).toBe(false);
+    const stale = (cancel_at_period_end: boolean, pending: boolean, metadata?: Record<string, string>, status = "active") => staleStamp({ status, cancel_at_period_end, metadata }, pending);
+    // No resync pending: any stamp of ours, set to cancel or not
+    expect(stale(false, false, sub.metadata)).toBe(true);
+    expect(stale(true, false, sub.metadata)).toBe(true);
+    // A resync pending: only on a subscription renewed since
+    expect(stale(false, true, sub.metadata)).toBe(true);
+    expect(stale(true, true, sub.metadata)).toBe(false);
+    // No stamp, or an ended subscription: nothing to do
+    expect(stale(false, false, { [CLOSED_AT_METADATA]: "" })).toBe(false);
+    expect(stale(false, false)).toBe(false);
+    expect(stale(true, false, sub.metadata, "canceled")).toBe(false);
     await removeStamp(stripe, sub, "team-a", "evt_1");
     await removeStamp(stripe, sub, "team-a", "evt_2");
     const [a, b] = calls.splice(0);
