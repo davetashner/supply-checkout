@@ -740,6 +740,8 @@ function fakePurgeStripe() {
     down: false,
     /** Errors Stripe answers a change to a subscription with, by its ID. */
     refuse: new Map<string, unknown>(),
+    /** Errors Stripe answers fetching a subscription with, by its ID. */
+    refuseRetrieve: new Map<string, unknown>(),
     /** Runs as a subscription is fetched: after the purge re-read the team, before it records anything. */
     onRetrieve: undefined as (() => void) | undefined,
   };
@@ -752,6 +754,7 @@ function fakePurgeStripe() {
         state.retrieves.push(id);
         state.onRetrieve?.();
         failIfDown();
+        if (state.refuseRetrieve.has(id)) throw state.refuseRetrieve.get(id);
         const sub = state.subs.get(id);
         if (!sub) throw Object.assign(new Error("No such subscription"), { code: "resource_missing", statusCode: 404 });
         return sub;
@@ -1189,7 +1192,7 @@ describe("purging closed teams", () => {
     expect(meta("team-a")).toMatchObject({ stripeSetAsideFor: closedAt, stripeSetAsideReason: "PermanentError" });
     expect(meta("team-a")?.stripeCancelledFor).toBeUndefined();
     // Logged with the Stripe error's safe fields, never its message
-    expect(logs).toContainEqual(["error", "Closed team's subscription set aside", { teamId: "team-a", subscriptionId: "sub_123", error: "PermanentError", type: "StripeInvalidRequestError", code: "resource_invalid_state", status: 400, requestId: "req_9" }]);
+    expect(logs).toContainEqual(["error", "Closed team's subscription set aside", { teamId: "team-a", subscriptionId: "sub_123", error: "PermanentError", request: "cancel_at_period_end", type: "StripeInvalidRequestError", code: "resource_invalid_state", status: 400, requestId: "req_9" }]);
     expect(JSON.stringify(logs)).not.toContain("sub_secret_detail");
     expect(logs).toContainEqual(["info", "Ended closed teams' subscriptions", { listed: 2, ended: 1, failed: 0, setAside: 1 }]);
     expect(counts[BusinessMetric.ClosedTeamSubscriptionsSetAside]).toBe(1);
@@ -1200,6 +1203,40 @@ describe("purging closed teams", () => {
     expect(stripe.state.retrieves).toHaveLength(retrieves);
   });
 
+  it("vouches for a refused request only with the same request working for another team: a working update doesn't vouch for a broken cancel", async () => {
+    // team-a's subscription is unpaid, so it's cancelled at once; team-c's is set to cancel at the period's end
+    await subscribedAndClosed({ status: "unpaid" });
+    anotherSubscribedAndClosed();
+    stripe.state.refuse.set("sub_123", refusal("parameter_unknown"));
+    await expect(purge(NOW + 3_600_000)).rejects.toThrow("1 closed teams' subscriptions weren't ended");
+    expect(stripe.state.updates.map((u) => u.id)).toEqual(["sub_c"]);
+    expect(meta("team-a")?.stripeSetAsideFor).toBeUndefined();
+    expect(logs).toContainEqual(["error", "Closed team's subscription not ended", { teamId: "team-a", error: "Error", request: "cancel_now", type: "StripeInvalidRequestError", code: "parameter_unknown", status: 400, requestId: "req_9" }]);
+    // Another team's cancel works in a later run: now the refusal is about team-a's subscription
+    const purgeAfter = new Date(NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 2000).toISOString();
+    team("team-d", {}, { stripeCustomerId: "cus_d", stripeSubscriptionId: "sub_d", closedAt: new Date(NOW).toISOString(), purgeAfter, GSI1PK: "TEAMS#CLOSED", GSI1SK: `${purgeAfter}#team-d` });
+    stripe.state.subs.set("sub_d", liveSubscription({ id: "sub_d", customer: "cus_d", status: "unpaid" }));
+    expect(await purge(NOW + 2 * 3_600_000)).toMatchObject({ failed: 0 });
+    expect(stripe.state.cancels.map((c) => c.id)).toEqual(["sub_d"]);
+    expect(meta("team-a")).toMatchObject({ stripeSetAsideFor: new Date(NOW).toISOString(), stripeSetAsideReason: "PermanentError" });
+    expect(logs).toContainEqual(["error", "Closed team's subscription set aside", { teamId: "team-a", subscriptionId: "sub_123", error: "PermanentError", request: "cancel_now", type: "StripeInvalidRequestError", code: "parameter_unknown", status: 400, requestId: "req_9" }]);
+  });
+
+  it("sets aside a subscription Stripe refuses to fetch only when it fetched another team's that run", async () => {
+    await subscribedAndClosed();
+    stripe.state.refuseRetrieve.set("sub_123", refusal("parameter_invalid_string_empty"));
+    // Alone: nothing proves the fetch works
+    await expect(purge(NOW + 3_600_000)).rejects.toThrow("1 closed teams' subscriptions weren't ended");
+    expect(meta("team-a")?.stripeSetAsideFor).toBeUndefined();
+    expect(logs).toContainEqual(["error", "Closed team's subscription not ended", { teamId: "team-a", error: "Error", request: "retrieve", type: "StripeInvalidRequestError", code: "parameter_invalid_string_empty", status: 400, requestId: "req_9" }]);
+    // Another team's subscription is fetched (and already ended, so nothing is changed): that vouches for the fetch
+    anotherSubscribedAndClosed();
+    stripe.state.subs.set("sub_c", liveSubscription({ id: "sub_c", customer: "cus_c", status: "canceled" }));
+    expect(await purge(NOW + 2 * 3_600_000)).toMatchObject({ failed: 0 });
+    expect(meta("team-a")).toMatchObject({ stripeSetAsideReason: "PermanentError" });
+    expect(logs).toContainEqual(["error", "Closed team's subscription set aside", { teamId: "team-a", subscriptionId: "sub_123", error: "PermanentError", request: "retrieve", type: "StripeInvalidRequestError", code: "parameter_invalid_string_empty", status: 400, requestId: "req_9" }]);
+  });
+
   it("doesn't set aside teams Stripe refuses when it ended no other team's subscription that run: a bad key or a bug in our request refuses them all", async () => {
     const closedAt = await subscribedAndClosed();
     anotherSubscribedAndClosed();
@@ -1208,7 +1245,7 @@ describe("purging closed teams", () => {
     await expect(purge(NOW + 3_600_000)).rejects.toThrow("2 closed teams' subscriptions weren't ended");
     for (const teamId of ["team-a", "team-c"]) {
       expect(meta(teamId)?.stripeSetAsideFor).toBeUndefined();
-      expect(logs).toContainEqual(["error", "Closed team's subscription not ended", { teamId, error: "Error", type: "StripeInvalidRequestError", code: "parameter_unknown", status: 400, requestId: "req_9" }]);
+      expect(logs).toContainEqual(["error", "Closed team's subscription not ended", { teamId, error: "Error", request: "cancel_at_period_end", type: "StripeInvalidRequestError", code: "parameter_unknown", status: 400, requestId: "req_9" }]);
     }
     expect(counts[BusinessMetric.ClosedTeamSubscriptionsSetAside]).toBeUndefined();
     expect(gauges[BusinessMetric.ClosedTeamsSetAside]).toBe(0);
@@ -1266,7 +1303,7 @@ describe("purging closed teams", () => {
     stripe.state.refuse.set("sub_123", refusal("resource_invalid_state"));
     const db = table.guarded((command, input) => !(command === "UpdateCommand" && String(input.UpdateExpression).includes("stripeSetAsideFor")));
     await expect(createTeamPurgeHandler({ db, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => NOW + 3_600_000 })()).rejects.toThrow("1 closed teams' subscriptions weren't ended");
-    expect(logs).toContainEqual(["error", "Closed team's subscription not ended", { teamId: "team-a", error: "AccessDeniedException", type: "StripeInvalidRequestError", code: "resource_invalid_state", status: 400, requestId: "req_9" }]);
+    expect(logs).toContainEqual(["error", "Closed team's subscription not ended", { teamId: "team-a", error: "AccessDeniedException", request: "cancel_at_period_end", type: "StripeInvalidRequestError", code: "resource_invalid_state", status: 400, requestId: "req_9" }]);
     expect(meta("team-a")?.stripeSetAsideFor).toBeUndefined();
   });
 
