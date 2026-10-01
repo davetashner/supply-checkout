@@ -376,6 +376,38 @@ describe("stock adjust", () => {
     expect(movements()).toEqual([expect.objectContaining({ reason: "count", count: 4, delta: -6 })]);
   });
 
+  it("with expectedStock, sets the count only while the stock is still what the person saw", async () => {
+    const path = "/teams/team-a/products/0123/stock";
+    expect((await call("POST", path, { operationId: op(), reason: "count", count: 7, expectedStock: 10 })).body.result).toMatchObject({ count: 7, stockDelta: -3 });
+    // Someone else moved it from 10 to 7 meanwhile: refused, and nothing changes
+    const moved = await call("POST", path, { operationId: op(), reason: "count", count: 12, expectedStock: 10 });
+    expect(moved).toMatchObject({ status: 409, body: { error: { code: "aborted", reason: "stock_changed", message: "The count changed while you were editing: it's now 7" } } });
+    expect((await call("POST", path, { operationId: op(), reason: "uncount", expectedStock: 10 })).status).toBe(409);
+    expect(stock()).toBe(7);
+    expect(movements()).toHaveLength(1);
+    // A count that's already what's stored isn't a conflict
+    expect((await call("POST", path, { operationId: op(), reason: "count", count: 7, expectedStock: 10 })).body.result).toMatchObject({ count: 7, stockDelta: 0 });
+    // null: the person saw it not counted
+    expect((await call("POST", path, { operationId: op(), reason: "count", count: 3, expectedStock: null })).body.error).toMatchObject({ reason: "stock_changed", message: "The count changed while you were editing: it's now 7" });
+    expect((await call("POST", path, { operationId: op(), reason: "uncount", expectedStock: 7 })).body.result).toMatchObject({ reason: "uncount", stockDelta: -7 });
+    expect((await call("POST", path, { operationId: op(), reason: "count", count: 3, expectedStock: 7 })).body.error).toMatchObject({ reason: "stock_changed", message: "The count changed while you were editing: it's no longer counted" });
+    // Stopping the count of one that's no longer counted isn't a conflict either
+    expect((await call("POST", path, { operationId: op(), reason: "uncount", expectedStock: 7 })).body.result).toMatchObject({ reason: "uncount", stockDelta: 0 });
+    expect((await call("POST", path, { operationId: op(), reason: "count", count: 3, expectedStock: null })).body.result).toMatchObject({ count: 3, stockDelta: 3 });
+    expect(stock()).toBe(3);
+    // Expected refusals, not lost races: they don't feed the write-conflicts alarm
+    expect(counts.ConditionalWriteConflicts ?? 0).toBe(0);
+  });
+
+  it("replays a count sent with expectedStock, and treats another expectedStock as another request", async () => {
+    const path = "/teams/team-a/products/0123/stock", id = op();
+    const first = await call("POST", path, { operationId: id, reason: "count", count: 4, expectedStock: 10 });
+    expect((await call("POST", path, { operationId: id, reason: "count", count: 4, expectedStock: 10 })).body).toMatchObject({ replayed: true, result: first.body.result });
+    expect((await call("POST", path, { operationId: id, reason: "count", count: 4 })).status).toBe(400);
+    expect((await call("POST", path, { operationId: id, reason: "count", count: 4, expectedStock: null })).status).toBe(400);
+    expect(movements()).toHaveLength(1);
+  });
+
   it("starts tracking an item that wasn't counted", async () => {
     table.put({ PK: "TEAM#team-a", SK: "PRODUCT#nb-1", type: "product", key: "nb-1", version: 1, name: "Rags", price: 1 });
     expect((await call("POST", "/teams/team-a/products/nb-1/stock", { operationId: op(), reason: "count", count: 3 })).body.result.stockDelta).toBe(3);
@@ -621,6 +653,11 @@ describe("validation and roles", () => {
     ["an uncount with a unit cost", { operationId: op(), reason: "uncount", unitCost: 1 }],
     ["an uncount with a null count", { operationId: op(), reason: "uncount", count: null }],
     ["a reason in another case", { operationId: op(), reason: "Uncount" }],
+    ["a receipt with an expected stock", { operationId: op(), reason: "receipt", quantity: 1, unitCost: 1, expectedStock: 10 }],
+    ["a negative expected stock", { operationId: op(), reason: "count", count: 1, expectedStock: -1 }],
+    ["a fractional expected stock", { operationId: op(), reason: "count", count: 1, expectedStock: 9.5 }],
+    ["an expected stock as text", { operationId: op(), reason: "count", count: 1, expectedStock: "10" }],
+    ["an expected stock that's too big", { operationId: op(), reason: "uncount", expectedStock: 1_000_001 }],
   ])("refuses a stock adjustment with %s", async (_, body) => {
     expect((await call("POST", "/teams/team-a/products/0123/stock", body)).body.error.code).toBe("bad_request");
   });

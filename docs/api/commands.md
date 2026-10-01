@@ -35,7 +35,7 @@ the artifact's document write.
 | --- | --- | --- |
 | Check out (`checkoutModal`) | `PATCH sheets/<id>` with the whole line, then `addStock(key, -qty)` | `POST /teams/{teamId}/sheets/{sheetId}/checkout`. No `addStock`. |
 | Return (`returnModal`) | `PATCH sheets/<id>` with `returned`, then `addStock(key, back - before)` | `POST /teams/{teamId}/sheets/{sheetId}/return`. No `addStock`. |
-| Inventory form, "Single items in storage now" (`productModal`) | `PUT products/<key>` with the new `stock` | `PUT products/<key>` without `stock`, if any other field changed, then, if the count differs, `POST /teams/{teamId}/products/{key}/stock` with `reason: "count"`. A blank count on a counted item stops counting it: `reason: "uncount"`. A blank count on an item that isn't counted sends no command. |
+| Inventory form, "Single items in storage now" (`productModal`) | Reads the item, then `PUT products/<key>`: with the new `stock` if the person changed the count field, otherwise with the stock read now. A changed count over stock that moved since the form opened is refused, and the item is saved with the stock as it is | `PUT products/<key>` without `stock`, if any other field changed, then, only if the person changed the count field, `POST /teams/{teamId}/products/{key}/stock` with `reason: "count"` and `expectedStock` (the count the form opened with). A count field emptied on a counted item stops counting it: `reason: "uncount"`, with `expectedStock`. A count field left as it opened sends no command. |
 | Receipt save, General inventory lines (`saveReceipt`) | `PUT products/<key>` with `stock` plus the lines' quantities | `PUT products/<key>` without `stock` (price and name updates), if they changed, then one `POST .../products/{key}/stock` with `reason: "receipt"` per line: its quantity in eaches and its receipt price as `unitCost` |
 | Receipt save, a client's lines on an existing sheet (`saveReceipt`) | Reads the sheet, then `PATCH sheets/<id>` with the lines added to it and a mark for this receipt in `savedReceipts`; an attempt that finds its mark writes nothing | `POST /teams/{teamId}/sheets/{sheetId}/lines`, up to 40 lines each, no stock moved |
 | Item history (new) | none | `GET /teams/{teamId}/products/{key}/movements` (not used by the app yet) |
@@ -136,6 +136,7 @@ too, inside the transaction.
 { "operationId": "…", "reason": "receipt", "quantity": 24, "unitCost": 0.42 }
 { "operationId": "…", "reason": "count", "count": 17 }
 { "operationId": "…", "reason": "uncount" }
+{ "operationId": "…", "reason": "count", "count": 17, "expectedStock": 20 }
 ```
 
 The item must exist. A receipt adds to stock (an item that wasn't counted
@@ -148,6 +149,18 @@ track stock, as before its first count. An uncount of an item that isn't
 counted changes nothing, and records a movement with `delta: 0` and
 `tracked: false`, as a checkout of it does. Like any command, a retry with the
 same operation ID changes nothing more.
+
+A count or uncount can send `expectedStock`: the stock the person saw when they
+started (the inventory form sends the count it opened with), or `null` for an
+item that wasn't counted then. If the stock is something else now (a checkout
+or someone else's count got in while the form was open), the command is
+refused with `409 aborted`, reason `stock_changed`, and the message says what
+it is now: "The count changed while you were editing: it's now 8". It isn't
+refused when the stock already is what the command would leave (a count of 8
+when it's 8, an uncount of an item that's no longer counted). The check is
+made on the same read the transaction is conditional on, so it holds when the
+command commits. `expectedStock` is part of the request an operation ID
+stands for, so a retry has to send the same one.
 
 ## Responses
 

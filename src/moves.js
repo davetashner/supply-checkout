@@ -139,17 +139,44 @@ export async function addLines(db, action, sheetId, items) {
 // storage) and a receipt's general-inventory lines (stock bought in). body is the whole item,
 // with its new stock, which the artifact saves as it is. The web build's db saves the item
 // without stock (the server keeps what's stored) and sends the change as the stock command,
-// which records why stock changed (docs/api/commands.md). change: { reason: "count", count, counted } (count undefined: not
-// counted; counted: the form showed a count when it opened, so a blank one stops counting), or { reason: "receipt", lines: [{ action, quantity, unitCost }] }, one per receipt
+// which records why stock changed (docs/api/commands.md). change: { reason: "count", keep: true }
+// (the person didn't change the count field, so the stock stays as stored), { reason: "count",
+// count, counted, expected } (count undefined: not counted; counted: the form showed a count when
+// it opened, so a blank one stops counting; expected: the count it opened with, null if none), or
+// { reason: "receipt", lines: [{ action, quantity, unitCost }] }, one per receipt
 // line, each line its own action. (`||`, not a condition: the artifact runs the right side.)
 // WEB: the artifact build keeps only the right side, since claude.ai's db has no saveItem.
 export const saveItem = (db, action, key, body, change) =>
   ((WEB && db.saveItem) || ((key, body) => setItem(db, key, body, change)))(key, body, change, action);
+// What the inventory form says when the stock moved while it was open and the person changed
+// the count: what the stock is now (null: not counted). The web build's server says the first
+// part (docs/api/commands.md, `stock_changed`), and src/aws/db.js adds the rest.
+export const COUNT_NOT_SAVED = ", so your count wasn't saved. The latest is showing.";
+const countChanged = now => ({ code: "refused", message: `The count changed while you were editing: ${now === null ? "it's no longer counted" : `it's now ${now}`}${COUNT_NOT_SAVED}` });
+// The inventory form's save, in the artifact build. The form's copy of the item may be older
+// than what's stored, so the stock is the one stored now, unless the person changed the count
+// and the stock is still what the form opened with (or already what they counted). A count over
+// stock that moved isn't saved: the rest of the item is, with the stock as it is, and the save
+// is refused saying what it is now.
+async function setCount(ref, body, change) {
+  const got = await ref.get(), cur = got.exists ? got.data() : undefined;
+  const now = hasStock(cur) ? cur.stock : null, moved = !change.keep && now !== change.expected && now !== (hasStock(body) ? body.stock : null);
+  const next = { ...body };
+  if (change.keep || moved) { delete next.stock; if (now !== null) next.stock = now; }
+  // The marks are the stored ones too: one a checkout or return elsewhere added while the form
+  // was open keeps that action's retry from moving the stock again (see move above)
+  delete next.ops;
+  if (cur && Array.isArray(cur.ops)) next.ops = cur.ops;
+  await ref.set(next);
+  if (moved) throw countChanged(now);
+}
 // The artifact build's save. Stock bought in on a receipt is added to what's stored, with the
 // lines' marks (see move above): a retry after a lost answer finds them and adds nothing. The
 // lines are saved together, so finding any one's mark means they all were.
 function setItem(db, key, body, change) {
-  const ref = db.doc("products/" + key), acts = change.reason === "receipt" ? change.lines.map(l => l.action) : [];
+  const ref = db.doc("products/" + key);
+  if (change.reason === "count") return setCount(ref, body, change);
+  const acts = change.lines.map(l => l.action);
   if (!acts.length) return ref.set(body);
   const marks = acts.map(markOf);
   return attempt(acts[0], async () => {

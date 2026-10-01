@@ -23,6 +23,7 @@ import {
   NotFoundError,
   returnItems,
   setDocument,
+  StockChangedError,
   type TeamContext,
   TooLargeError,
   updateDocument,
@@ -254,6 +255,16 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
     const after = (await stock(ctx)) ?? 0;
     expect(typeof after).toBe("number");
     expect((await history(ctx)).reduce((sum, m) => sum + m.delta, 0)).toBe((after as number) - 100);
+  });
+
+  it("refuses a count over stock that moved since the person saw it, inside the transaction's read", async () => {
+    const ctx = await team();
+    await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 2 });
+    await expect(adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "count", count: 100, expectedStock: 100 })).rejects.toThrow(StockChangedError);
+    await expect(adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "uncount", expectedStock: 100 })).rejects.toThrow("it's now 98");
+    expect(await stock(ctx)).toBe(98);
+    expect((await adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "count", count: 90, expectedStock: 98 })).result.stockDelta).toBe(-8);
+    expect((await history(ctx)).map((m) => m.reason)).toEqual(["count", "checkout"]);
   });
 
   it("refuses viewers", async () => {

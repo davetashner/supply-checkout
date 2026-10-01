@@ -44,6 +44,7 @@ import {
   listSupportActions,
   NotFoundError,
   returnItems,
+  StockChangedError,
   setDocument,
   type StoredDocument,
   SubscriptionEndedError,
@@ -77,6 +78,7 @@ const SUB = /^[A-Za-z0-9_-]{1,128}$/;
 export function errorFor(error: unknown): ApiError {
   if (error instanceof InvalidInputError) return new ApiError(400, "bad_request", error.message);
   if (error instanceof NotFoundError) return new ApiError(404, "not_found", error.message);
+  if (error instanceof StockChangedError) return new ApiError(409, "aborted", error.message, "stock_changed");
   if (error instanceof ConflictError) return new ApiError(409, "aborted", error.message);
   if (error instanceof TooLargeError) return new ApiError(413, "quota_exceeded", error.message);
   if (error instanceof LimitReachedError) return new ApiError(429, "quota_exceeded", error.message);
@@ -157,7 +159,7 @@ export function sheetMovement(result: WriteResult): { checkouts: number; returns
 const CHECKOUT_FIELDS = ["operationId", "productKey", "quantity", "name", "price", "code", "cost"];
 const RETURN_FIELDS = ["operationId", "productKey", "quantity"];
 const LINES_FIELDS = ["operationId", "lines"];
-const STOCK_FIELDS = ["operationId", "reason", "quantity", "unitCost", "count"];
+const STOCK_FIELDS = ["operationId", "reason", "quantity", "unitCost", "count", "expectedStock"];
 
 /**
  * A command's response: what it did (the same on a replay), and the sheet and
@@ -345,7 +347,9 @@ export function createDataHandler(deps: DataHandlerDeps) {
     } catch (error) {
       const apiError = errorFor(error);
       status = apiError.status;
-      if (apiError.status === 409) deps.obs.count(BusinessMetric.ConditionalWriteConflicts, 1, teamId ? { teamId } : {});
+      // A count refused because the stock moved since the form opened (stock_changed) is the
+      // refusal working as meant, not a write that lost a race, so it isn't counted as one
+      if (apiError.status === 409 && apiError.reason !== "stock_changed") deps.obs.count(BusinessMetric.ConditionalWriteConflicts, 1, teamId ? { teamId } : {});
       if (apiError.status >= 500) deps.obs.logger.error("Request failed", error as Error);
       // DynamoDB's refusal behind a 413, when the data layer kept it: its name and the start of its message
       else if (error instanceof TooLargeError && error.cause !== undefined) deps.obs.logger.warn("Refused as too large", { cause: error.cause });

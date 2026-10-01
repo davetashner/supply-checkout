@@ -1,6 +1,6 @@
 // Several people use the app at once. These tests change the shared data
 // "from another device" while a form is open, and check nothing breaks.
-import { test, expect, openApp, enterBarcode, modal, lineRow } from "./helpers.js";
+import { test, expect, openApp, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
 import { usedState } from "./fixtures.js";
 
 // Acts as another user: changes the stored data, then fires live updates
@@ -194,4 +194,87 @@ test("a return on a sheet someone else deleted doesn't bring it back or move sto
   // It says the sheet was deleted, and the page stays writable
   await stillDeleted(page);
   expect(await page.evaluate(() => [window.__mock.docs.has("sheets/s1"), window.__mock.docs.get("products/SKU1").stock])).toEqual([false, stock]);
+});
+
+// The inventory form while someone else changes the item's stock: the form keeps the count it
+// opened with, and only a count the person changed is saved (src/moves.js setItem)
+test.describe("an item's count changed while its form is open", { tag: ["@J4"] }, () => {
+  const STOCK = "Single items in storage now";
+  const openItem = async (page) => {
+    await openEcho(page);
+    await page.getByRole("button", { name: "Inventory" }).click();
+    await inventoryRow(page, "Paper towels").click();
+    await expect(modal(page).getByLabel(STOCK)).toHaveValue("10");
+  };
+  const save = (page) => modal(page).getByRole("button", { name: "Save" }).click();
+  const saved = (page) => page.evaluate(() => window.__mock.docs.get("products/SKU1"));
+
+  test("an edit that doesn't touch the count keeps someone else's checkout", async ({ page }) => {
+    await openItem(page);
+    await elsewhere(page, (docs) => { docs.get("products/SKU1").stock = 8; });
+    await expect(inventoryRow(page, "Paper towels").locator("td").nth(1)).toHaveText("8");
+    await modal(page).getByLabel("Price each ($)").fill("9");
+    await save(page);
+    await expect(page.locator("#toast")).toHaveText("Saved");
+    expect(await saved(page)).toMatchObject({ price: 9, stock: 8 });
+  });
+
+  test("a form save keeps the mark of a checkout made elsewhere meanwhile, so its retry takes nothing more", async ({ page }) => {
+    await openItem(page);
+    // Another device's checkout of 2 saved its storage count with its mark, but its answer was
+    // lost, so that device will try the storage count again
+    await elsewhere(page, (docs) => { Object.assign(docs.get("products/SKU1"), { stock: 8, ops: ["other-device-mark"] }); });
+    await modal(page).getByLabel("Price each ($)").fill("9");
+    await save(page);
+    await expect(page.locator("#toast")).toHaveText("Saved");
+    // The mark is still there, so that device's retry (addStock in src/moves.js) finds it and
+    // takes nothing more
+    expect(await saved(page)).toMatchObject({ price: 9, stock: 8, ops: ["other-device-mark"] });
+  });
+
+  test("an edit that doesn't touch the count keeps a change this page hasn't heard of yet", async ({ page }) => {
+    await openItem(page);
+    // Saved, but the live update hasn't arrived
+    await page.evaluate(() => { delete window.__mock.docs.get("products/SKU1").stock; });
+    await modal(page).getByLabel("Price each ($)").fill("9");
+    await save(page);
+    await expect(page.locator("#toast")).toHaveText("Saved");
+    const item = await saved(page);
+    expect(item.price).toBe(9);
+    expect(item).not.toHaveProperty("stock");
+  });
+
+  test("a new count over stock that moved is refused, and the rest of the edit saves", async ({ page }) => {
+    await openItem(page);
+    await elsewhere(page, (docs) => { docs.get("products/SKU1").stock = 8; });
+    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByLabel(STOCK).fill("12");
+    await save(page);
+    await expect(page.locator("#toast")).toHaveText("The count changed while you were editing: it's now 8, so your count wasn't saved. The latest is showing.");
+    await expect(page.locator("#overlay")).toBeHidden();
+    expect(await saved(page)).toMatchObject({ price: 9, stock: 8 });
+  });
+
+  test("a new count on an item someone stopped counting meanwhile is refused", async ({ page }) => {
+    await openItem(page);
+    await elsewhere(page, (docs) => { delete docs.get("products/SKU1").stock; });
+    await modal(page).getByLabel(STOCK).fill("12");
+    await save(page);
+    await expect(page.locator("#toast")).toHaveText("The count changed while you were editing: it's no longer counted, so your count wasn't saved. The latest is showing.");
+    expect(await saved(page)).not.toHaveProperty("stock");
+  });
+
+  test("a new count that's what the stock moved to saves, as does one over stock that didn't move", async ({ page }) => {
+    await openItem(page);
+    await elsewhere(page, (docs) => { docs.get("products/SKU1").stock = 8; });
+    await modal(page).getByLabel(STOCK).fill("8");
+    await save(page);
+    await expect(page.locator("#toast")).toHaveText("Saved");
+    expect((await saved(page)).stock).toBe(8);
+    await inventoryRow(page, "Paper towels").click();
+    await modal(page).getByLabel(STOCK).fill("6");
+    await save(page);
+    await expect(page.locator("#toast")).toHaveText("Saved");
+    expect((await saved(page)).stock).toBe(6);
+  });
 });

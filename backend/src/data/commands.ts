@@ -37,9 +37,9 @@
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
 import { MAX_DOCUMENT_BYTES } from "./documents.js";
-import { ConflictError, InvalidInputError, NotFoundError, TooLargeError, isCancelledAsTooLarge } from "./errors.js";
+import { ConflictError, InvalidInputError, NotFoundError, StockChangedError, TooLargeError, isCancelledAsTooLarge } from "./errors.js";
 import { barcode, id as checkId, keys, movementPrefix, productKey, strip, teamPartition } from "./keys.js";
-import { count as checkCount, money, quantity as checkQuantity, storedMoney } from "./money.js";
+import { count as checkCount, MAX_QUANTITY, money, quantity as checkQuantity, storedMoney } from "./money.js";
 import { type Page, queryPage } from "./query.js";
 import { PK } from "./schema.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
@@ -151,6 +151,14 @@ export interface StockAdjustInput {
   readonly quantity?: unknown;
   readonly unitCost?: unknown;
   readonly count?: unknown;
+  /**
+   * For a count or uncount: the stock the person saw when they started (an
+   * edit form's count when it opened), or `null` for an item that wasn't
+   * counted then. When the stock is something else now, the command is
+   * refused (StockChangedError) rather than undo someone else's change, unless
+   * it already is what the count sets. Absent: no check.
+   */
+  readonly expectedStock?: unknown;
 }
 
 type Item = Record<string, unknown>;
@@ -681,7 +689,7 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
   const key = productKey(input.productKey);
   let parsed: { reason: "receipt"; qty: number; unitCost: number } | { reason: "count"; counted: number } | { reason: "uncount" };
   if (input.reason === "receipt") {
-    if (input.count !== undefined) throw new InvalidInputError("A receipt takes quantity and unitCost, not count");
+    if (input.count !== undefined || input.expectedStock !== undefined) throw new InvalidInputError("A receipt takes quantity and unitCost, not count or expectedStock");
     parsed = { reason: "receipt", qty: checkQuantity(input.quantity), unitCost: money(input.unitCost, "unitCost") };
   } else if (input.reason === "count") {
     if (input.quantity !== undefined || input.unitCost !== undefined) throw new InvalidInputError("A count takes count only");
@@ -692,7 +700,9 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
   } else {
     throw new InvalidInputError('reason must be "receipt", "count" or "uncount"');
   }
-  const request = JSON.stringify({ command: "stockAdjust", userId: ctx.userId, key, ...parsed });
+  // undefined: no check; null: the item wasn't counted; a number: the stock it had
+  const expected = input.expectedStock === undefined || input.expectedStock === null ? input.expectedStock : expectedStock(input.expectedStock);
+  const request = JSON.stringify({ command: "stockAdjust", userId: ctx.userId, key, ...parsed, ...(expected === undefined ? {} : { expectedStock: expected }) });
   const at = now.toISOString();
   const Key = keys.product(ctx.teamId, key);
 
@@ -722,6 +732,12 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
     }
     const current = product.stock;
     if (current !== undefined && typeof current !== "number") throw new InvalidInputError("This item's stock isn't a number");
+    // Moved since the person started, and not already what they're setting: refused, not
+    // undone. The writes below are conditional on `current`, so this holds when they commit.
+    const target = parsed.reason === "count" ? parsed.counted : undefined;
+    if (expected !== undefined && (current ?? null) !== expected && current !== target) {
+      throw new StockChangedError(current === undefined ? "The count changed while you were editing: it's no longer counted" : `The count changed while you were editing: it's now ${current}`);
+    }
     if (parsed.reason === "uncount") {
       const movement = { productKey: key, reason: "uncount" as const, operationId: opId, userId: ctx.userId, at };
       if (current === undefined) {
@@ -771,6 +787,12 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
       ],
     };
   });
+}
+
+/** An expectedStock that's a number, in a count's range. */
+function expectedStock(value: unknown): number {
+  if (!isCount(value) || value > MAX_QUANTITY) throw new InvalidInputError(`expectedStock must be null or a whole number from 0 to ${MAX_QUANTITY}`);
+  return value;
 }
 
 /** True for a cursor whose sort key is in this product's history (or one queryPage will reject anyway). */

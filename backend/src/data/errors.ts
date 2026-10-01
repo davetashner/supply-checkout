@@ -36,6 +36,15 @@ export class TeamDeletingError extends ConflictError {
   override readonly name = "TeamDeletingError";
 }
 
+/**
+ * A count or uncount sent with `expectedStock` (adjustStockCommand) found the
+ * item's stock already changed from it: someone else moved it while the form
+ * was open. (409, reason `stock_changed`)
+ */
+export class StockChangedError extends ConflictError {
+  override readonly name = "StockChangedError";
+}
+
 /** The change would leave the team without an owner. (409) */
 export class LastOwnerError extends ConflictError {
   override readonly name = "LastOwnerError";
