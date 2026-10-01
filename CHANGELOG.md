@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.7.0](https://github.com/davetashner/supply-checkout/compare/v1.6.0...v1.7.0) (2026-10-01)
+
+
+### Features
+
+* show a team's Stripe subscription and invoices to operators ([#348](https://github.com/davetashner/supply-checkout/issues/348)) ([5f57652](https://github.com/davetashner/supply-checkout/commit/5f57652033a0d794bc299ad7f8f572d72acd9510))
+
+
+### Bug Fixes
+
+* alarm on closed-team subscriptions Stripe doesn't have, and stop permanent failures starving the purge's cancel list ([#327](https://github.com/davetashner/supply-checkout/issues/327)) ([c17cc3b](https://github.com/davetashner/supply-checkout/commit/c17cc3b31f9484f450da70f1ef72e36c994b7103))
+* alarm on the pre token generation trigger's errors and throttles ([#358](https://github.com/davetashner/supply-checkout/issues/358)) ([68fddac](https://github.com/davetashner/supply-checkout/commit/68fddacf0b9c10eef811d80346774ec9c7e1a803))
+* alert on ops branding calls that name only the branding ID ([#326](https://github.com/davetashner/supply-checkout/issues/326)) ([a190077](https://github.com/davetashner/supply-checkout/commit/a19007730a0ff872de90f1c4345f433bd8f010f9))
+* alert when the operator pool is deleted, loses deletion protection, gains a domain or loses its branding ([#311](https://github.com/davetashner/supply-checkout/issues/311)) ([9841bd6](https://github.com/davetashner/supply-checkout/commit/9841bd6aa5ce9145ad537e2e2554dc00eb7b4d6e))
+* alert when the operator pool's client, domain or identity providers are deleted or changed ([#296](https://github.com/davetashner/supply-checkout/issues/296)) ([53734dc](https://github.com/davetashner/supply-checkout/commit/53734dc332f0181c943d5de014247d2e11f1f313))
+* alert when the SSM parameters behind the API's authorizers are changed ([#334](https://github.com/davetashner/supply-checkout/issues/334)) ([61f47f8](https://github.com/davetashner/supply-checkout/commit/61f47f88691450c88ebd525138208a9af9bde037))
+* alert when the SSM parameters the operator alerts read are changed ([#330](https://github.com/davetashner/supply-checkout/issues/330)) ([de06427](https://github.com/davetashner/supply-checkout/commit/de06427cc1f9a10404be79883f9dc5f93feb3c49))
+* don't let a stale item form undo someone else's stock change ([#322](https://github.com/davetashner/supply-checkout/issues/322)) ([16dfd3c](https://github.com/davetashner/supply-checkout/commit/16dfd3ccf802e397aa316d3e088399de540cbc30))
+* hold back the purge of closed teams set aside, and alarm on Stripe customers already deleted ([#340](https://github.com/davetashner/supply-checkout/issues/340)) ([f147ae5](https://github.com/davetashner/supply-checkout/commit/f147ae5d50ce79515943650592391760b0888cea))
+* keep alerting while closed teams are set aside, and set aside not-found and permanent Stripe errors ([#335](https://github.com/davetashner/supply-checkout/issues/335)) ([39c69f2](https://github.com/davetashner/supply-checkout/commit/39c69f2573dfa620c8c27441a4901a5cc6c41fd2))
+* let someone stop counting an item in the web build ([#316](https://github.com/davetashner/supply-checkout/issues/316)) ([9263db6](https://github.com/davetashner/supply-checkout/commit/9263db684b4f6723fede067dddb735b00c0ff0d1))
+* make the item editor's storage count and pack size clear ([#292](https://github.com/davetashner/supply-checkout/issues/292)) ([1162729](https://github.com/davetashner/supply-checkout/commit/116272944fc93dde37cc22b2e594b412a2cf1caf))
+* match the deploy role's trust on GitHub's immutable owner and repository IDs ([#344](https://github.com/davetashner/supply-checkout/issues/344)) ([fae69ba](https://github.com/davetashner/supply-checkout/commit/fae69ba6772e445684a15e6adebf329c8bd33994))
+* record each account's notice address before its email can change ([#312](https://github.com/davetashner/supply-checkout/issues/312)) ([264232a](https://github.com/davetashner/supply-checkout/commit/264232aa9237e0054529cb33a3896d6324918efc))
+* refuse billing for a session older than two-step sign-in ([#301](https://github.com/davetashner/supply-checkout/issues/301)) ([50a5c0c](https://github.com/davetashner/supply-checkout/commit/50a5c0c9c5cbc70601d1961d21f4d58fb377867c))
+* resume the Stripe subscription when a team is reopened ([#346](https://github.com/davetashner/supply-checkout/issues/346)) ([4e77c78](https://github.com/davetashner/supply-checkout/commit/4e77c78ef383f90a1e20b75563defbcfad2dd4dc))
+
 ## [1.6.0](https://github.com/davetashner/supply-checkout/compare/v1.5.0...v1.6.0) (2026-10-01)
 
 
