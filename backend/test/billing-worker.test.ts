@@ -7,9 +7,9 @@ import type { AssumeRoleCommand } from "@aws-sdk/client-sts";
 import type { SQSEvent } from "aws-lambda";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BillingMessage } from "../src/billing/webhook-handler.js";
-import { CLOSED_AT_METADATA, closingKey, resumeKey } from "../src/billing/closing.js";
+import { CLOSED_AT_METADATA, closingAction, closingKey, resumeKey } from "../src/billing/closing.js";
 import type { EntitlementStripe } from "../src/billing/entitlements.js";
-import type { SeatStripe, SeatSubscription } from "../src/billing/seats.js";
+import type { SeatStripe, SeatSubscription, SeatSyncMessage } from "../src/billing/seats.js";
 import { createBillingWorker, noticeFor, parseMessage, type SubscriptionLike, subscriptionState, type WorkerStripe } from "../src/billing/worker.js";
 import { workerScopedDbs, type WorkerScope } from "../src/billing/worker-db.js";
 import { createWorkerHandler } from "../src/billing/worker-handler.js";
@@ -45,6 +45,10 @@ let stripeClock: number;
 let stripeKeys: Set<string>;
 /** Runs as Stripe is asked for a subscription: after the worker read the team, before it writes. */
 let onRetrieve: (() => void) | undefined;
+/** Runs after Stripe takes an update: before the worker reads the team again. */
+let onUpdate: (() => void) | undefined;
+/** The table refuses the worker's reads (GetItem), as when DynamoDB throttles. */
+let readsFail: boolean;
 let denied: { command: string; input: Record<string, unknown> }[];
 let scopes: WorkerScope[];
 let counts: Record<string, number>;
@@ -94,6 +98,8 @@ beforeEach(() => {
   cancels = [];
   updates = [];
   onRetrieve = undefined;
+  onUpdate = undefined;
+  readsFail = false;
   seatUpdates = [];
   stripeDown = false;
   refuseResume = false;
@@ -129,6 +135,7 @@ function build() {
         stripeKeys.add(options.idempotencyKey);
         updates.push({ id, params, key: options.idempotencyKey });
         subs.set(id, stripeSubscriptionUpdate(subs.get(id) as SubscriptionLike, params, stripeClock));
+        onUpdate?.();
       },
       async cancel(id, _params, options) {
         cancels.push({ id, key: options.idempotencyKey });
@@ -149,7 +156,11 @@ function build() {
   worker = createBillingWorker({
     dbFor: (scope) => {
       scopes.push(scope);
-      return table.guarded(workerPolicy(scope, denied));
+      const allowed = workerPolicy(scope, denied);
+      return table.guarded((command, input) => {
+        if (readsFail && command === "GetCommand") throw Object.assign(new Error("Rate exceeded"), { name: "ThrottlingException" });
+        return allowed(command, input);
+      });
     },
     stripe: async () => stripe,
     mailer: mails.mailer,
@@ -360,6 +371,28 @@ describe("applying a subscription", () => {
     expect(updates).toHaveLength(1);
     expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBeUndefined();
     expect(counts[BusinessMetric.ClosedTeamSubscriptionsEnded]).toBe(1);
+  });
+
+  it("alarms, and retries the event, when the team can't be read again after its subscription was set to end (supply-checkout-8jc.30)", async () => {
+    const closedAt = new Date(NOW - DAY_S * 1000).toISOString();
+    patchTeam({ closedAt });
+    // Reopened while Stripe was asked, and DynamoDB refuses the re-read that would have seen it
+    onUpdate = () => {
+      onUpdate = undefined;
+      patchTeam({ closedAt: undefined, stripeResyncFor: closedAt, stripeReopenedAt: new Date(NOW - 1000).toISOString() });
+      readsFail = true;
+    };
+    await expect(worker(message("customer.subscription.updated"))).rejects.toThrow("the team wasn't read again");
+    expect(updates).toHaveLength(1);
+    // Can't tell whether the team was reopened: a person looks (the "Reopened team's subscription ended" alarm)
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBe(1);
+    expect(logs).toContainEqual(["Closed team's subscription set to end, but the team wasn't read again", { teamId: TEAM, eventId: "evt_test_1", subscriptionId: "sub_test_1", action: "cancel_at_period_end", error: "ThrottlingException" }]);
+    expect(counts[BusinessMetric.ClosedTeamSubscriptionsEnded]).toBeUndefined();
+    expect(processed()).toBeUndefined();
+    // The retry applies the event to the open team
+    readsFail = false;
+    expect(await worker(message("customer.subscription.updated"))).toBe("applied");
+    expect(processed()).toBeDefined();
   });
 
   it("never recreates a purged team", async () => {
@@ -718,6 +751,162 @@ describe("resyncing a reopened team's subscription (supply-checkout-85qp)", () =
     await worker(sync());
     expect(updates).toEqual([]);
     expect(await worker({ ...sync(), customer: "cus_test_unknown" })).toBe("unknown_customer");
+  });
+});
+
+describe("ending a subscription as the team closes (supply-checkout-8jc.30)", () => {
+  // Closing queues a seat sync with reason "closed" (account-handler.ts); the purge is the backstop an hour later
+  const closing = (id = "seats-close-1"): SeatSyncMessage => ({ kind: "seats", id, customer: CUSTOMER, reason: "closed", created: NOW / 1000 });
+  const sync = (id = "seats-reopen-1"): SeatSyncMessage => ({ kind: "seats", id, customer: CUSTOMER, reason: "membership", created: NOW / 1000 });
+  const closedAt = new Date(NOW - 60_000).toISOString();
+  const setToCancel = (key = "seats-close-1") => ({ id: "sub_test_1", params: { cancel_at_period_end: true, metadata: { [CLOSED_AT_METADATA]: closedAt } }, key: closingKey("cancel_at_period_end", TEAM, closedAt, "sub_test_1", key) });
+  /** The owner reopens the team, as reopenTeam records it. */
+  const reopen = (at = NOW) => patchTeam({ closedAt: undefined, stripeResyncFor: closedAt, stripeReopenedAt: new Date(at).toISOString() });
+
+  beforeEach(() => {
+    patchTeam({ closedAt, stripeSubscriptionId: "sub_test_1", status: "active", plan: "starter", seats: 3 });
+    subs.set("sub_test_1", subscription({ status: "active", trial_end: null }));
+  });
+
+  it("sets the team's subscription to cancel at the period's end, stamped with the closure, within the worker role and writing nothing", async () => {
+    const before = structuredClone(meta());
+    expect(await worker(closing())).toBe("closed_team_ended");
+    expect(updates).toEqual([setToCancel()]);
+    expect(subs.get("sub_test_1")).toMatchObject({ cancel_at_period_end: true, canceled_at: NOW / 1000, metadata: { [CLOSED_AT_METADATA]: closedAt } });
+    expect(counts[BusinessMetric.ClosedTeamSubscriptionsEnded]).toBe(1);
+    expect(logs).toContainEqual(["Closed team's subscription ended", { teamId: TEAM, messageId: "seats-close-1", subscriptionId: "sub_test_1", status: "active", action: "cancel_at_period_end" }]);
+    expect(logs).toContainEqual(["Seat sync", { messageId: "seats-close-1", reason: "closed", outcome: "closed_team_ended" }]);
+    expect(meta()).toEqual(before);
+    expect(seatUpdates).toEqual([]);
+    expect(denied).toEqual([]);
+    // A redelivery, or the hourly purge, finds it already ended for this closure: nothing more is sent
+    expect(await worker(closing())).toBe("nothing_to_end");
+    expect(await worker(closing("seats-close-2"))).toBe("nothing_to_end");
+    expect(updates).toHaveLength(1);
+    expect(closingAction(subs.get("sub_test_1") as SubscriptionLike, closedAt)).toBe("none");
+    // Stripe's own event for the change finds nothing to do either
+    expect(await worker(message("customer.subscription.updated"))).toBe("team_closed");
+    expect(updates).toHaveLength(1);
+  });
+
+  it("leaves a subscription to cancel at once (unpaid, paused, incomplete) to the purge, and one that's ended or ending alone", async () => {
+    for (const status of ["unpaid", "paused", "incomplete"]) {
+      subs.set("sub_test_1", subscription({ status }));
+      expect(await worker(closing(`seats-${status}`))).toBe("left_to_purge");
+    }
+    subs.set("sub_test_1", subscription({ status: "canceled" }));
+    expect(await worker(closing("seats-canceled"))).toBe("nothing_to_end");
+    // The owner's own cancellation (unstamped) isn't stamped
+    subs.set("sub_test_1", subscription({ status: "active", cancel_at_period_end: true, canceled_at: NOW / 1000 - DAY_S, metadata: {} }));
+    expect(await worker(closing("seats-owners"))).toBe("nothing_to_end");
+    expect(cancels).toEqual([]);
+    expect(updates).toEqual([]);
+    expect(counts[BusinessMetric.ClosedTeamSubscriptionsEnded]).toBeUndefined();
+  });
+
+  it("leaves it to the hourly purge, without failing the message, when Stripe can't be reached", async () => {
+    stripeDown = true;
+    expect(await worker(closing())).toBe("closed_team_deferred");
+    expect(logs).toContainEqual(["Closed team's subscription not ended at close: the purge will", { teamId: TEAM, messageId: "seats-close-1", error: "StripeConnectionError" }]);
+    expect(updates).toEqual([]);
+    expect(counts[BusinessMetric.ClosedTeamSubscriptionsEnded]).toBeUndefined();
+  });
+
+  it("leaves it to the hourly purge, without failing the message, when DynamoDB refuses its reads, so the reopen's sync behind it isn't held up", async () => {
+    readsFail = true;
+    expect(await worker(closing())).toBe("closed_team_deferred");
+    expect(logs).toContainEqual(["Closed team's subscription not ended at close: the purge will", expect.objectContaining({ messageId: "seats-close-1", error: "ThrottlingException" })]);
+    expect(retrieves).toEqual([]);
+    expect(updates).toEqual([]);
+    // Once the link is read, a failing team read is deferred too, naming the team
+    readsFail = false;
+    const original = table.guarded.bind(table);
+    table.guarded = (check) =>
+      original((command, input) => {
+        if (command === "GetCommand" && JSON.stringify(input.Key).includes(`TEAM#${TEAM}`)) throw Object.assign(new Error("Rate exceeded"), { name: "ThrottlingException" });
+        return check(command, input);
+      });
+    expect(await worker(closing("seats-close-2"))).toBe("closed_team_deferred");
+    expect(logs).toContainEqual(["Closed team's subscription not ended at close: the purge will", { teamId: TEAM, messageId: "seats-close-2", error: "ThrottlingException" }]);
+    expect(updates).toEqual([]);
+  });
+
+  it("does nothing for a team reopened before it ran, being purged or gone, with no subscription, or another customer's", async () => {
+    patchTeam({ closedAt: undefined });
+    expect(await worker(closing())).toBe("team_open");
+    patchTeam({ closedAt, purging: new Date(NOW).toISOString() });
+    expect(await worker(closing())).toBe("team_closed");
+    patchTeam({ purging: undefined, stripeSubscriptionId: undefined });
+    expect(await worker(closing())).toBe("no_subscription");
+    patchTeam({ stripeSubscriptionId: "sub_test_1", stripeCustomerId: "cus_test_other" });
+    expect(await worker(closing())).toBe("not_ours");
+    patchTeam({ stripeCustomerId: CUSTOMER });
+    expect(await worker({ ...closing(), customer: "cus_test_stranger" })).toBe("unknown_customer");
+    expect(retrieves).toEqual([]);
+    // The subscription the team names is another customer's: untouched
+    subs.set("sub_test_1", subscription({ customer: "cus_test_other" }));
+    expect(await worker(closing())).toBe("not_ours");
+    table.items.delete(`TEAM#${TEAM}\u0000META`);
+    expect(await worker(closing())).toBe("team_gone");
+    expect(updates).toEqual([]);
+    expect(denied).toEqual([]);
+  });
+
+  it("resumes the subscription when the team is reopened right after (the reopen's seat sync, behind the close's on the queue)", async () => {
+    expect(await worker(closing())).toBe("closed_team_ended");
+    // Reopened in the same second Stripe set it to cancel
+    reopen(NOW + 900);
+    await worker(sync());
+    expect(updates).toEqual([setToCancel(), { id: "sub_test_1", params: { cancel_at_period_end: false, metadata: { [CLOSED_AT_METADATA]: "" } }, key: resumeKey("resync", TEAM, closedAt, "sub_test_1") }]);
+    expect(subs.get("sub_test_1")).toMatchObject({ cancel_at_period_end: false, metadata: {} });
+    expect(meta()).toMatchObject({ cancelAtPeriodEnd: false, status: "active" });
+    expect(meta().stripeResyncFor).toBeUndefined();
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsResumed]).toBe(1);
+    expect(denied).toEqual([]);
+  });
+
+  it("resumes at once a subscription it set to cancel as the team was reopened, without failing the message", async () => {
+    onRetrieve = () => {
+      onRetrieve = undefined;
+      reopen(NOW - 1000);
+    };
+    expect(await worker(closing())).toBe("team_reopened");
+    expect(updates).toEqual([setToCancel(), { id: "sub_test_1", params: { cancel_at_period_end: false, metadata: { [CLOSED_AT_METADATA]: "" } }, key: resumeKey("worker", TEAM, closedAt, "sub_test_1") }]);
+    expect(logs).toContainEqual(["Team reopened while its subscription was being ended: resumed", { teamId: TEAM, messageId: "seats-close-1", subscriptionId: "sub_test_1", action: "cancel_at_period_end" }]);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsResumed]).toBe(1);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBeUndefined();
+    // The reopen's own sync then finds it renewing, and finishes
+    await worker(sync());
+    expect(updates).toHaveLength(2);
+    expect(meta()).toMatchObject({ cancelAtPeriodEnd: false });
+    expect(meta().stripeResyncFor).toBeUndefined();
+    // When Stripe refuses the resume, a person is alarmed
+    patchTeam({ closedAt, stripeResyncFor: undefined });
+    onRetrieve = () => {
+      onRetrieve = undefined;
+      reopen(NOW - 1000);
+      refuseResume = true;
+    };
+    expect(await worker(closing("seats-close-2"))).toBe("team_reopened");
+    expect(logs).toContainEqual(["Team reopened while its subscription was being ended", { teamId: TEAM, messageId: "seats-close-2", subscriptionId: "sub_test_1", action: "cancel_at_period_end" }]);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBe(1);
+  });
+
+  it("alarms when the team can't be read again after its subscription was set to end, since it may have been reopened", async () => {
+    onUpdate = () => {
+      onUpdate = undefined;
+      reopen(NOW - 1000);
+      readsFail = true;
+    };
+    expect(await worker(closing())).toBe("unchecked");
+    expect(updates).toEqual([setToCancel()]);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBe(1);
+    expect(logs).toContainEqual(["Closed team's subscription set to end, but the team wasn't read again", { teamId: TEAM, messageId: "seats-close-1", subscriptionId: "sub_test_1", action: "cancel_at_period_end", error: "ThrottlingException" }]);
+    expect(counts[BusinessMetric.ClosedTeamSubscriptionsEnded]).toBeUndefined();
+  });
+
+  it("refuses a closed message on the billing queue: only a seat sync can carry one", () => {
+    expect(() => parseMessage(JSON.stringify(closing()))).toThrow("Not a billing message");
   });
 });
 

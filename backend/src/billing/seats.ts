@@ -42,6 +42,10 @@
 // 5. Stripe's customer.subscription.updated then records the new seats on
 //    the team, like any other change.
 //
+// A message with reason `closed` (queued as a team closes) isn't a seat sync:
+// the worker sets the closed team's subscription to end instead (worker.ts,
+// endAtClose, supply-checkout-8jc.30).
+//
 // The worker also syncs after applying (or re-seeing) any Stripe event for a
 // subscription, so the quantity an owner chose at Checkout is corrected to
 // the billed members as soon as the subscription exists.

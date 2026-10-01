@@ -3,14 +3,20 @@
 //
 // Closing a team (data/teams.ts, closeTeam) is a DynamoDB transaction only: it
 // never waits on Stripe, so a Stripe outage can't leave a team half-closed or
-// refuse the close. Instead the closure is the pending cancellation. Two
-// places end the subscription, both through endSubscriptionForClosedTeam:
+// refuse the close. Instead the closure is the pending cancellation. Three
+// places end the subscription, all through endSubscriptionForClosedTeam:
 //
+// - The billing worker (worker.ts, endAtClose), within seconds of the
+//   closure: the account function queues a message with reason `closed` as
+//   the team closes (supply-checkout-8jc.30). Only a cancellation at the
+//   period's end, stamped (below), and best effort; nothing is written to the
+//   team, since the stamp is what a reopen needs to resume it.
 // - The closed-team purge (ops/team-purge-handler.ts), every hour, for each
 //   closed team whose subscription hasn't been set to end for this closure
 //   (no `stripeCancelledFor` equal to its `closedAt`), and then records it. A
 //   Stripe failure fails the run (the Functions failing alarm) and the next
-//   run tries again.
+//   run tries again. One the worker already set to cancel for this closure
+//   is `none` here (closingAction), so the purge only records it.
 // - The billing worker (worker.ts), for any event about a closed team's live
 //   subscription: a checkout that finished after the team closed, say, so its
 //   subscription was never recorded on the team.

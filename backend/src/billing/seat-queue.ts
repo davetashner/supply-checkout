@@ -6,8 +6,12 @@
 import { randomUUID } from "node:crypto";
 import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 
-/** Why a seat sync was queued: a membership change, the nightly reconciliation, or a Stripe event for the subscription. */
-export const SEAT_SYNC_REASONS = ["membership", "reconcile", "subscription"] as const;
+/**
+ * Why a seat sync was queued: a membership change, the nightly reconciliation, a Stripe event for the
+ * subscription, or the team just closed (`closed`: not a seat sync, the worker sets the team's
+ * subscription to end instead; worker.ts, endAtClose, supply-checkout-8jc.30).
+ */
+export const SEAT_SYNC_REASONS = ["membership", "reconcile", "subscription", "closed"] as const;
 export type SeatSyncReason = (typeof SEAT_SYNC_REASONS)[number];
 
 /** A seat sync on the seat sync queue. It names only the Stripe customer: the worker finds the team from our own link. */
