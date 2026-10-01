@@ -620,7 +620,7 @@ async function pointAdhoc(db: Db, ctx: TeamContext, at: string): Promise<string 
   const named = adhocOpen(pointer);
   const opens = adhoc.filter((s) => s.open);
   // Never leave two open (the plan refuses that; this catches a quick take made meanwhile)
-  if (opens.length > 1) throw new ConflictError(`The team has more than one open ad hoc sheet (${opens.map((s) => shown(s.id)).join(", ")}); finish all but one, then run the import again`);
+  if (opens.length > 1) throw new ConflictError(`After importing, the team has more than one open ad hoc sheet (${opens.map((s) => shown(s.id)).join(", ")}): the imported sheets are saved, but quick takes need one. Finish all but one in the app (Finished Return on each), then run the import again to set the team's ad hoc sheet`);
   const open = opens[0]?.id;
   const count = Math.max(adhocCount(pointer), adhoc[0]?.n ?? 0);
   if (pointer && count === adhocCount(pointer) && open === named) return open;

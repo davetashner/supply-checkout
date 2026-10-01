@@ -404,6 +404,28 @@ test.describe("J14. Take supplies without a job sheet", { tag: ["@J14"] }, () =>
     expect((await doc(page, "sheets/adhoc-1")).items).toEqual({});
   });
 
+  test("a take steps past an adhoc- ID that isn't an ad hoc sheet, and never counts one whose number isn't whole", { tag: ["@J14.1"] }, async ({ page }) => {
+    // A job sheet under adhoc-1 (from before the ad hoc sheet), and a finished ad hoc sheet with an odd ID
+    const odd = { ...delta, client: "Odd job" };
+    await open(page, { seed: { ...seed, "sheets/adhoc-1": odd, "sheets/adhoc-x": adhoc1({}, { status: "closed" }) } });
+    await take(page, "G1");
+    await expect(toast(page)).toHaveText("Took 1 × Nitrile gloves (ad hoc)");
+    expect((await doc(page, "sheets/adhoc-2")).items.G1.out).toBe(1);
+    expect((await doc(page, "sheets/adhoc-1")).items).toEqual({});
+    expect(await doc(page, "sheets/adhoc-NaN")).toBeUndefined();
+  });
+
+  test("the owner's sheets CSV gives the ad hoc sheet's supplies no price or charge", { tag: ["@J14.1"] }, async ({ page }) => {
+    await open(page, { seed: { ...seed, "sheets/adhoc-1": adhoc1({ G1: { code: "G1", name: "Nitrile gloves", price: 12.5, out: 3, returned: 1 } }) } });
+    await page.getByRole("button", { name: "Export data" }).click();
+    await modal(page).getByRole("button", { name: "Sheets (CSV)" }).click();
+    await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
+    const rows = (await page.evaluate(() => window.__mock.saves[0].data)).split("\n");
+    expect(rows).toContain("Ad hoc,2026-09-30,Test User,Checked out,Nitrile gloves,G1,,3,1,2,,adhoc-1,Supply");
+    // A job sheet's rows keep theirs
+    expect(rows).toContain("Echo Studio,2026-09-24,Test User,Checked out,Paper towels,SKU1,9.00,2,0,2,18.00,s1,Supply");
+  });
+
   test("receipts list job sheets only, and Inventory's Out view names the ad hoc sheet", async ({ page }) => {
     const draft = { store: "", receiptDate: "2026-09-30", date: "2026-09-30", savePrices: true, by: "", dests: [{ id: "d1", sheetId: "", client: "" }], lines: [{ id: "l1", name: "Tape", raw: "", qty: 1, price: 2, dest: "d1", code: "", match: "", suggested: false, useName: "inv", usePrice: "", perEach: false }] };
     await page.addInitScript((d) => localStorage.setItem("supplyCheckout.receiptDraft", JSON.stringify(d)), draft);

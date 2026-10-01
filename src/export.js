@@ -2,7 +2,7 @@
 // documents the app already holds and shows (both collections are loaded in full to draw
 // the lists), with the same math and labels as the screens, so an export matches them.
 import { hasStock, isEquipment, unitValue } from "./format.js";
-import { lines, lineCounts, lineCharge, totals, isEquipmentLine, equipmentCounts, lostCharge, lostRows, lineLabel, sheetTitle } from "./sheet-math.js";
+import { lines, lineCounts, lineCharge, totals, isEquipmentLine, equipmentCounts, lostCharge, lostRows, lineLabel, sheetTitle, isAdhoc } from "./sheet-math.js";
 
 // One CSV cell. Text that a spreadsheet would run as a formula (=, +, -, @, tab or return
 // first) gets a leading apostrophe, so a name a team member typed can't run in the
@@ -52,7 +52,9 @@ export function sheetsCsv(sheets, preparedBy) {
         continue;
       }
       const { o, r, u, p } = lineCounts(l);
-      rows.push([...head, name, code, fixed(p), o, r, u, fixed(lineCharge(l)), s.id, "Supply"]);
+      // Nothing on the ad hoc sheet is charged (ADR 0017, section 4): no price or charge
+      const free = isAdhoc(s);
+      rows.push([...head, name, code, free ? "" : fixed(p), o, r, u, free ? "" : fixed(lineCharge(l)), s.id, "Supply"]);
     }
   }
   return toCsv(rows);

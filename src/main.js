@@ -146,7 +146,8 @@ const openAdhoc = () => sheets.find(s => isAdhoc(s) && s.status !== "closed");
 // The sheet a quick take aims at: the open ad hoc sheet, or the next adhoc-<n> after every one this page holds
 function adhocStart() {
   const open = openAdhoc(), date = todayISO();
-  const n = Math.max(0, ...sheets.filter(isAdhoc).map(s => Number(s.id.slice(6)))) + 1;
+  // Only adhoc-<integer> IDs count, so it's never adhoc-NaN
+  const n = Math.max(0, ...sheets.filter(isAdhoc).map(s => Number(s.id.slice(6))).filter(Number.isInteger)) + 1;
   return { id: open ? open.id : `adhoc-${n}`, date, body: { kind: "adhoc", client: "", date, createdBy: myId, createdAt: new Date().toISOString(), status: "open", items: {} } };
 }
 // Open sheets where an item still has something out, the ad hoc sheet first, then newest first (as held):

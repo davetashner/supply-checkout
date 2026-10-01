@@ -134,7 +134,8 @@ export async function quickTake(db, action, key, qty, item, oneOff, start) {
     const got = await db.doc("sheets/" + id).get();
     if (!got.exists) await db.doc("sheets/" + id).set(start.body);
     // Finished by someone else meanwhile: the next one
-    else if (got.data().status === "closed") { id = "adhoc-" + (Number(id.slice(6)) + 1); continue; }
+    // (or a sheet under that ID that isn't an ad hoc sheet): the next one
+    else if (got.data().status === "closed" || got.data().kind !== "adhoc") { id = "adhoc-" + (Number(id.slice(6)) + 1); continue; }
     break;
   }
   action.sheetId = id;
