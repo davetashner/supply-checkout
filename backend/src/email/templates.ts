@@ -306,6 +306,8 @@ function content(input: EmailInput, appUrl: string): Content {
         paragraphs: [
           `An owner of ${team} reopened the team, so it won't be deleted. Its members can change its sheets and inventory again.`,
           "Invites that were cancelled when it closed stay cancelled, and anyone who left or was removed while it was closed isn't back. Owners can invite them again in the app.",
+          // Sent as the team reopens, before the billing worker resyncs its subscription (billing/reopening.ts), so it can't know which
+          "If closing the team set its subscription to end, we're resuming it, so it renews as before. If its subscription had already ended, an owner can subscribe again in the app.",
           "You're getting this because you're an owner of the team. If you didn't expect it to reopen, check with its other owners, and make sure nobody else can sign in to your account.",
         ],
         button: { label: "Open Supply Checkout", url: appLink(appUrl, "/") },

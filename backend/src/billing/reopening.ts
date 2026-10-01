@@ -11,7 +11,9 @@
 // queues a seat sync for the team's customer (seats.ts). The billing worker
 // runs this before every seat sync, so the reopen's own sync does it within
 // seconds, and the nightly reconciliation's does it for any team still
-// waiting.
+// waiting. It uses the team the worker found for the seat sync (findSeatTeam),
+// and when it did anything the worker reads the team again before the seat
+// sync, so that sees what it applied (supply-checkout-8jc.39).
 //
 // For a team that's open and has `stripeResyncFor` (found from our own link
 // for the customer, never from the message):
@@ -47,10 +49,11 @@
 // Logged: team, subscription and message IDs, statuses and outcomes. Never a
 // name, an email or the Stripe key.
 
-import { applySubscription, finishReopenResync, getBillingTeam, stripeCustomerTeam, teamContextForStripeCustomer } from "../data/index.js";
+import { applySubscription, finishReopenResync } from "../data/index.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import { type ClosingStripe, customerOf, removeStamp, resumeAction, resumeSubscription, staleStamp } from "./closing.js";
 import type { SeatSyncMessage } from "./seat-queue.js";
+import type { SeatTeam, SeatTeamMissing } from "./seats.js";
 import { type SubscriptionLike, subscriptionState } from "./subscription.js";
 import type { DbForWorker } from "./worker-db.js";
 
@@ -62,7 +65,7 @@ export interface ReopenResyncDeps {
 }
 
 /**
- * What one resync did: nothing to do (`none`: no team, or nothing pending),
+ * What one resync did: nothing to do (`none`: no team, or nothing pending; the worker reads the team again after any other),
  * the subscription resumed and applied, applied as it was (`synced`), applied
  * as ended (`needs_payment`), no subscription to resync, or left pending for a
  * person (`missing`, `not_ours`) or for a later reopen (`team_closed`).
@@ -76,17 +79,13 @@ export function createReopenResync(deps: ReopenResyncDeps) {
   const { obs } = deps;
   const now = () => new Date((deps.now ?? Date.now)());
 
-  async function resync(message: SeatSyncMessage): Promise<ResyncOutcome> {
+  async function resync(message: SeatSyncMessage, found: SeatTeam | SeatTeamMissing): Promise<ResyncOutcome> {
+    if (typeof found === "string") return "none";
     const { id, customer } = message;
-    const own = deps.dbFor({ eventId: id, stripeCustomer: customer });
-    const teamId = await stripeCustomerTeam(own, customer);
-    if (!teamId) return "none";
-    const db = deps.dbFor({ eventId: id, stripeCustomer: customer, teamId });
-    const ctx = await teamContextForStripeCustomer(db, customer);
-    if (!ctx || ctx.teamId !== teamId) return "none";
-    const team = await getBillingTeam(db, ctx, now());
-    const closedAt = team?.resyncFor;
-    if (!team || !closedAt) return "none";
+    const { db, ctx, team } = found;
+    const { teamId } = ctx;
+    const closedAt = team.resyncFor;
+    if (!closedAt) return "none";
     // Closed again: that closure ends it, and the next reopen records itself
     if (team.closed || team.purging) return "team_closed";
     if (team.stripeCustomerId !== customer) {
@@ -136,8 +135,9 @@ export function createReopenResync(deps: ReopenResyncDeps) {
     return action === "resume" ? "resumed" : action === "none" ? "synced" : action;
   }
 
-  return async (message: SeatSyncMessage): Promise<ResyncOutcome> => {
-    const outcome = await resync(message);
+  /** `found` is the seat sync's team for the message (seats.ts, findSeatTeam): its link, context and team aren't read again here. */
+  return async (message: SeatSyncMessage, found: SeatTeam | SeatTeamMissing): Promise<ResyncOutcome> => {
+    const outcome = await resync(message, found);
     if (outcome !== "none") obs.logger.info("Reopen resync", { messageId: message.id, reason: message.reason, outcome });
     return outcome;
   };

@@ -72,7 +72,7 @@
 // name, an email or the Stripe key.
 
 import { createHash } from "node:crypto";
-import { countBilledMembers, getBillingTeam, hasEnded, MEMBERS_PER_TEAM, stripeCustomerTeam, teamContextForStripeCustomer } from "../data/index.js";
+import { type BillingTeam, countBilledMembers, type Db, getBillingTeam, hasEnded, MEMBERS_PER_TEAM, stripeCustomerTeam, type TeamContext, teamContextForStripeCustomer } from "../data/index.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import { planForLookupKey } from "./catalog.js";
 import type { SeatSyncMessage } from "./seat-queue.js";
@@ -129,21 +129,49 @@ const idOf = (value: string | { readonly id: string }) => (typeof value === "str
 /** Subscription statuses whose quantity isn't ours to change: ended, or not started (the first payment hasn't gone through). */
 const unchangeable = (status: string) => hasEnded(status) || status === "incomplete";
 
+/**
+ * The team a seat sync message is for, found from our own link for the customer (never from the
+ * message), with the handle and context to reach it. The worker reads it once per message, for the
+ * reopen resync (reopening.ts) and the seat sync both (supply-checkout-8jc.39).
+ */
+export interface SeatTeam {
+  readonly db: Db;
+  readonly ctx: TeamContext;
+  readonly team: BillingTeam;
+}
+
+/** What finding the team can end in instead. */
+export type SeatTeamMissing = "unknown_customer" | "team_gone";
+
+/** Finds the team for a seat sync message: the link, the team context and the team. */
+export async function findSeatTeam(dbFor: DbForWorker, message: SeatSyncMessage, now: Date): Promise<SeatTeam | SeatTeamMissing> {
+  const { id, customer } = message;
+  const teamId = await stripeCustomerTeam(dbFor({ eventId: id, stripeCustomer: customer }), customer);
+  if (!teamId) return "unknown_customer";
+  const db = dbFor({ eventId: id, stripeCustomer: customer, teamId });
+  const ctx = await teamContextForStripeCustomer(db, customer);
+  if (!ctx || ctx.teamId !== teamId) return "team_gone";
+  const team = await getBillingTeam(db, ctx, now);
+  return team ? { db, ctx, team } : "team_gone";
+}
+
+/** The same team read again, after something may have changed it: one read, with the link and context already found. */
+export async function readSeatTeamAgain(found: SeatTeam | SeatTeamMissing, now: Date): Promise<SeatTeam | SeatTeamMissing> {
+  if (typeof found === "string") return found;
+  const team = await getBillingTeam(found.db, found.ctx, now);
+  return team ? { ...found, team } : "team_gone";
+}
+
 /** Applies one seat sync (see the top of this file). Throws on a Stripe or DynamoDB failure, so the message is retried. */
 export function createSeatSync(deps: SeatSyncDeps) {
   const { obs } = deps;
   const now = () => new Date((deps.now ?? Date.now)());
 
-  async function sync(message: SeatSyncMessage, delivery: string | undefined): Promise<SeatOutcome> {
+  async function sync(message: SeatSyncMessage, delivery: string | undefined, found: SeatTeam | SeatTeamMissing): Promise<SeatOutcome> {
+    if (typeof found === "string") return found;
     const { id, customer } = message;
-    const own = deps.dbFor({ eventId: id, stripeCustomer: customer });
-    const teamId = await stripeCustomerTeam(own, customer);
-    if (!teamId) return "unknown_customer";
-    const db = deps.dbFor({ eventId: id, stripeCustomer: customer, teamId });
-    const ctx = await teamContextForStripeCustomer(db, customer);
-    if (!ctx || ctx.teamId !== teamId) return "team_gone";
-    const team = await getBillingTeam(db, ctx, now());
-    if (!team) return "team_gone";
+    const { db, ctx, team } = found;
+    const { teamId } = ctx;
     if (team.closed || team.purging) return "team_closed";
     // The link names this team, but the team names another customer: leave both alone
     if (team.stripeCustomerId !== customer) {
@@ -187,9 +215,12 @@ export function createSeatSync(deps: SeatSyncDeps) {
     return "updated";
   }
 
-  /** `delivery` is the SQS message ID that delivered it, when a queue did (see "Idempotency" at the top). */
-  return async (message: SeatSyncMessage, delivery?: string): Promise<SeatOutcome> => {
-    const outcome = await sync(message, delivery);
+  /**
+   * `delivery` is the SQS message ID that delivered it, when a queue did (see "Idempotency" at the top).
+   * `found` is the team as the worker last read it for this message (findSeatTeam); without it, it's found here.
+   */
+  return async (message: SeatSyncMessage, delivery?: string, found?: SeatTeam | SeatTeamMissing): Promise<SeatOutcome> => {
+    const outcome = await sync(message, delivery, found ?? (await findSeatTeam(deps.dbFor, message, now())));
     obs.logger.info("Seat sync", { messageId: message.id, reason: message.reason, outcome });
     return outcome;
   };
