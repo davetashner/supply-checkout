@@ -9,8 +9,9 @@
 // sub, not their username, in additionalEventData. The table is the in-memory one,
 // behind a stand-in for the function's IAM policy.
 
-import { beforeEach, describe, expect, it } from "vitest";
-import { claimEmailChangeNotice, claimNotice, EMAIL_CHANGE_CLAIM_MS, emailChangeClaimedAt, emailSeenHash, markNoticeSent, moveNoticeAddress, NOTICE_DEDUPE_MS, noticeAddress, recordNoticeAddress, releaseEmailChangeNotice } from "../src/data/index.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { keys } from "../src/data/keys.js";
+import { claimEmailChangeNotice, claimNotice, clearTotpOn, EMAIL_CHANGE_CLAIM_MS, emailChangeClaimedAt, emailSeenHash, markNoticeSent, moveNoticeAddress, NOTICE_DEDUPE_MS, noticeAddress, recordNoticeAddress, recordTotpOn, releaseEmailChangeNotice, totpOnAt } from "../src/data/index.js";
 import { SECURITY_NOTICE_ATTRIBUTES } from "../src/data/schema.js";
 import { cognitoAccounts, type PoolAccount } from "../src/identity/cognito-accounts.js";
 import { SECURITY_NOTICE_EVENTS } from "../src/identity/names.js";
@@ -161,6 +162,7 @@ describe("security notices from CloudTrail", () => {
       ChangePassword: "passwordSet",
       VerifySoftwareToken: "twoStepOn",
       SetUserMFAPreference: "twoStepOn",
+      AdminSetUserMFAPreference: "twoStepOn",
       UpdateUserAttributes: "emailChanged",
       VerifyUserAttribute: "emailChanged",
     });
@@ -197,6 +199,103 @@ describe("security notices from CloudTrail", () => {
     expect(mails.sent).toEqual([{ to: OWNER_EMAIL, input: { kind: "twoStepOn", at: "2026-09-30T14:05:09.000Z" }, tags: {} }]);
     expect(logs.some((l) => l[0] === "Security notice already sent")).toBe(true);
     expect(denied).toEqual([]);
+  });
+
+  describe("when TOTP was turned on, for billing (supply-checkout-8jc.14)", () => {
+    const record = () => table.get(`USER#${SUB}`, "TOTP_ON")?.totpOnAt;
+
+    it("records the event's time when an authenticator is on, however the change was made, and never moves it back", async () => {
+      accounts.set(SUB, account({ totpEnabled: true }));
+      await handle(cloudTrail("VerifySoftwareToken"));
+      expect(record()).toBe("2026-09-30T14:05:09.000Z");
+      await handle(cloudTrail("SetUserMFAPreference", { eventTime: "2026-09-30T14:05:11Z" }));
+      expect(record()).toBe("2026-09-30T14:05:11.000Z");
+      // A late or replayed event: the later time stands
+      await handle(cloudTrail("VerifySoftwareToken", { eventTime: "2026-09-30T13:00:00Z" }));
+      expect(record()).toBe("2026-09-30T14:05:11.000Z");
+      // The account API's time, a moment after the call, stands too
+      table.put({ PK: `USER#${SUB}`, SK: "TOTP_ON", totpOnAt: "2026-09-30T14:05:11.300Z" });
+      await handle(cloudTrail("SetUserMFAPreference", { eventTime: "2026-09-30T14:05:11Z" }));
+      expect(record()).toBe("2026-09-30T14:05:11.300Z");
+      expect(denied).toEqual([]);
+    });
+
+    it("uses the time it runs when the event's time isn't a date (later, so stricter)", async () => {
+      accounts.set(SUB, account({ totpEnabled: true }));
+      await handle(cloudTrail("SetUserMFAPreference", { eventTime: "soon" }));
+      expect(record()).toBe(new Date(NOW).toISOString());
+    });
+
+    it("removes a record older than an event that shows it turned off, and only an older one", async () => {
+      table.put({ PK: `USER#${SUB}`, SK: "TOTP_ON", totpOnAt: "2026-09-30T14:05:10.000Z" });
+      // Turned on again after this event (the API recorded it): kept
+      await handle(cloudTrail("SetUserMFAPreference"));
+      expect(record()).toBe("2026-09-30T14:05:10.000Z");
+      await handle(cloudTrail("SetUserMFAPreference", { eventTime: "2026-09-30T14:05:30Z" }));
+      expect(record()).toBeUndefined();
+      // Nothing to remove: nothing written
+      await handle(cloudTrail("SetUserMFAPreference", { eventTime: "2026-09-30T14:05:40Z" }));
+      expect(record()).toBeUndefined();
+      expect(mails.sent).toEqual([]);
+      expect(denied).toEqual([]);
+    });
+
+    it("records nothing for a password or email change, a failed call, or a user who isn't in the pool", async () => {
+      accounts.set(SUB, account({ totpEnabled: true }));
+      await handle(cloudTrail("ChangePassword"));
+      await handle(cloudTrail("UpdateUserAttributes"));
+      await handle(cloudTrail("SetUserMFAPreference", { errorCode: "CodeMismatchException" }));
+      await handle(cloudTrail("SetUserMFAPreference", { additionalEventData: { sub: OTHER_SUB, userPoolId: POOL } }));
+      expect(record()).toBeUndefined();
+      expect(table.get(`USER#${OTHER_SUB}`, "TOTP_ON")).toBeUndefined();
+    });
+
+    it("records it even when the email change notice can't be sent yet", async () => {
+      accounts.set(SUB, account({ totpEnabled: true, email: ATTACKER_EMAIL }));
+      table.put({ PK: `USER#${SUB}`, SK: "NOTICE_ADDRESS", noticeAddress: OWNER_EMAIL, noticeSeenHash: emailSeenHash(OWNER_EMAIL) });
+      mails.state.fail = "Throttling";
+      await expect(handle(cloudTrail("SetUserMFAPreference"))).rejects.toBeDefined();
+      expect(record()).toBe("2026-09-30T14:05:09.000Z");
+    });
+
+    it("counts a write DynamoDB refuses, and throws so Lambda tries again", async () => {
+      accounts.set(SUB, account({ totpEnabled: true }));
+      const refusing = createSecurityNoticesHandler({
+        userPoolId: POOL,
+        findAccount: async () => account({ totpEnabled: true }),
+        db: table.guarded((command, input) => !(command === "UpdateCommand" && (input.Key as { SK?: string }).SK === "TOTP_ON")),
+        mailer: mails.mailer,
+        obs: fakeObservability(),
+        now: () => NOW,
+      });
+      await expect(refusing(cloudTrail("SetUserMFAPreference"))).rejects.toMatchObject({ name: "AccessDeniedException" });
+      // Counted on its own, and the notice still goes out: it's the main defence
+      expect(metrics).toEqual([
+        { metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "twoStepOn", reason: "totp_record", via: "cloudtrail" } },
+        { metric: BusinessMetric.SecurityNotices, metadata: { kind: "twoStepOn", via: "cloudtrail" } },
+      ]);
+      expect(logs).toContainEqual(["Two-step sign-in time not recorded", { userId: SUB, code: "AccessDeniedException", via: "cloudtrail" }]);
+      expect(logs.some((l) => l[0] === "Security notice not sent")).toBe(false);
+      expect(mails.sent).toEqual([{ to: OWNER_EMAIL, input: { kind: "twoStepOn", at: "2026-09-30T14:05:09.000Z" }, tags: {} }]);
+      // Lambda's retry records it, and doesn't email again
+      await expect(handle(cloudTrail("SetUserMFAPreference"))).resolves.toBeUndefined();
+      expect(table.get(`USER#${SUB}`, "TOTP_ON")?.totpOnAt).toBe("2026-09-30T14:05:09.000Z");
+      expect(mails.sent).toHaveLength(1);
+    });
+
+    it("records or clears it for an administrator's AdminSetUserMFAPreference on the app pool", async () => {
+      const admin = { userIdentity: { type: "AssumedRole", principalId: "test-admin-session" }, requestParameters: { userPoolId: POOL, username: HIDDEN, softwareTokenMfaSettings: { enabled: true, preferredMfa: true } } };
+      accounts.set(SUB, account({ totpEnabled: true }));
+      await handle(cloudTrail("AdminSetUserMFAPreference", admin));
+      expect(table.get(`USER#${SUB}`, "TOTP_ON")?.totpOnAt).toBe("2026-09-30T14:05:09.000Z");
+      accounts.set(SUB, account({ totpEnabled: false }));
+      await handle(cloudTrail("AdminSetUserMFAPreference", { ...admin, eventTime: "2026-09-30T14:06:00Z" }));
+      expect(table.get(`USER#${SUB}`, "TOTP_ON")?.totpOnAt).toBeUndefined();
+      // The operator pool's (`npm run operators -- reset`) is ignored
+      await handle(cloudTrail("AdminSetUserMFAPreference", { ...admin, requestParameters: { userPoolId: OPS_POOL, username: HIDDEN } }));
+      expect(lookups).toEqual([SUB, SUB]);
+      expect(denied).toEqual([]);
+    });
   });
 
   it("sends nothing for a change the account API already emailed, and again once the window has passed", async () => {
@@ -546,8 +645,61 @@ describe("security notice records", () => {
     expect(await emailChangeClaimedAt(db, SUB)).toEqual(new Date(NOW));
   });
 
+  it("keeps when TOTP was turned on: only ever later, removed only by a later turn-off, and refuses a time that isn't one", async () => {
+    const db = table.db();
+    expect(await totpOnAt(db, SUB)).toBeUndefined();
+    expect(await clearTotpOn(db, SUB, new Date(NOW))).toBe(false);
+    expect(await recordTotpOn(db, SUB, new Date(NOW))).toBe(true);
+    expect(await recordTotpOn(db, SUB, new Date(NOW))).toBe(false);
+    expect(await recordTotpOn(db, SUB, new Date(NOW - 1))).toBe(false);
+    expect(await totpOnAt(db, SUB)).toBe(NOW);
+    expect(await recordTotpOn(db, SUB, new Date(NOW + 1))).toBe(true);
+    expect(await clearTotpOn(db, SUB, new Date(NOW + 1))).toBe(false);
+    expect(await totpOnAt(db, SUB)).toBe(NOW + 1);
+    expect(await clearTotpOn(db, SUB, new Date(NOW + 2))).toBe(true);
+    expect(await totpOnAt(db, SUB)).toBeUndefined();
+    await expect(recordTotpOn(db, SUB, new Date(Number.NaN))).rejects.toThrow("Not a time");
+    await expect(clearTotpOn(db, SUB, new Date(Number.NaN))).rejects.toThrow("Not a time");
+    // Something that isn't a time reads as no record
+    table.put({ PK: `USER#${SUB}`, SK: "TOTP_ON", totpOnAt: "soon" });
+    expect(await totpOnAt(db, SUB)).toBeUndefined();
+  });
+
+  it("never creates or touches any item but the TOTP_ON record (IAM can't limit the sort key)", async () => {
+    const row = { PK: `USER#${SUB}`, SK: "TEAM#team-a", type: "userTeam", teamId: "team-a", totpOnAt: new Date(NOW - 1).toISOString() };
+    table.put(row);
+    const sent: Record<string, unknown>[] = [];
+    const watched = table.guarded((_, input) => {
+      sent.push(input);
+      return true;
+    });
+    // A key that isn't the record's is refused before any call
+    const spy = vi.spyOn(keys, "totpOn").mockReturnValue({ PK: `USER#${SUB}`, SK: "TEAM#team-a" });
+    try {
+      await expect(recordTotpOn(watched, SUB, new Date(NOW))).rejects.toThrow("Not the two-step sign-in record");
+      await expect(clearTotpOn(watched, SUB, new Date(NOW))).rejects.toThrow("Not the two-step sign-in record");
+      await expect(totpOnAt(watched, SUB)).rejects.toThrow("Not the two-step sign-in record");
+      spy.mockReturnValue({ PK: `USER#${OTHER_SUB}`, SK: "TOTP_ON" });
+      await expect(recordTotpOn(watched, SUB, new Date(NOW))).rejects.toThrow("Not the two-step sign-in record");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sent).toEqual([]);
+    expect(table.get(`USER#${SUB}`, "TEAM#team-a")).toEqual(row);
+    // And each update's condition names the record's sort key
+    await recordTotpOn(watched, SUB, new Date(NOW));
+    await clearTotpOn(watched, SUB, new Date(NOW + 1));
+    for (const input of sent.filter((i) => i.UpdateExpression)) {
+      expect(input.ConditionExpression).toMatch(/#sk = :sk/);
+      expect(input.ExpressionAttributeValues).toMatchObject({ ":sk": "TOTP_ON" });
+    }
+    expect(sent.filter((i) => i.UpdateExpression)).toHaveLength(2);
+  });
+
   it("passes on errors other than a failed condition", async () => {
     const broken = table.guarded(() => false);
+    await expect(recordTotpOn(broken, SUB, new Date(NOW))).rejects.toThrow("not authorized");
+    await expect(clearTotpOn(broken, SUB, new Date(NOW))).rejects.toThrow("not authorized");
     await expect(claimNotice(broken, SUB, "passwordSet")).rejects.toThrow("not authorized");
     await expect(claimEmailChangeNotice(broken, SUB, "a")).rejects.toThrow("not authorized");
     await expect(releaseEmailChangeNotice(broken, SUB, "a")).rejects.toThrow("not authorized");

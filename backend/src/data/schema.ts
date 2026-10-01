@@ -278,12 +278,30 @@ export const NOTICE_ADDRESS_SK = "NOTICE_ADDRESS";
 /**
  * The only attributes the security notices function may name, read or write
  * (GetItem and UpdateItem, in `USER#` partitions): its IAM policy allows
- * exactly these (dynamodb:Attributes); its one ConditionCheckItem (the
+ * exactly these (dynamodb:Attributes), `totpOnAt` for recording when two-step
+ * sign-in was turned on directly against Cognito (TOTP_ON_SK); its one ConditionCheckItem (the
  * DELETING mark, recordNoticeAddress) names only the keys. No other item has
  * any but the keys, so it can't read a user's teams or proofs, and with no
  * `expiresAt` it can't set a TTL that would delete one of their rows.
  */
-export const SECURITY_NOTICE_ATTRIBUTES = [PK, SK, "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash"] as const;
+export const SECURITY_NOTICE_ATTRIBUTES = [PK, SK, "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash", "totpOnAt"] as const;
+
+/**
+ * The sort key of the item in a user's own `USER#<sub>` partition that holds
+ * when two-step sign-in (an authenticator app, TOTP) was last turned on
+ * (supply-checkout-8jc.14, two-step.ts): the billing routes refuse a session
+ * that began before it. Not a `LIMIT#` key, so deleting an account removes it.
+ */
+export const TOTP_ON_SK = "TOTP_ON";
+
+/**
+ * The only attributes the billing-access role may name in the caller's own
+ * `USER#<sub>` partition (GetItem and UpdateItem, dynamodb:Attributes): the
+ * keys and `totpOnAt`, which no other item has. So the billing function can't
+ * read or change a user's teams, proofs or notices, or set a TTL. The security
+ * notices function writes it too (SECURITY_NOTICE_ATTRIBUTES includes it).
+ */
+export const TOTP_RECORD_ATTRIBUTES = [PK, SK, "totpOnAt"] as const;
 
 /**
  * The partition prefix of a Stripe customer's link to its team:

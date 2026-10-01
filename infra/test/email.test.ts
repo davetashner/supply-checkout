@@ -191,7 +191,7 @@ describe("email stack", () => {
       expect(pattern["detail-type"]).toEqual(["AWS API Call via CloudTrail"]);
       expect(pattern.detail.eventSource).toEqual(["cognito-idp.amazonaws.com"]);
       expect(pattern.detail.eventName).toEqual(Object.keys(SECURITY_NOTICE_EVENTS));
-      expect(pattern.detail.eventName).toEqual(["ChangePassword", "VerifySoftwareToken", "SetUserMFAPreference", "UpdateUserAttributes", "VerifyUserAttribute"]);
+      expect(pattern.detail.eventName).toEqual(["ChangePassword", "VerifySoftwareToken", "SetUserMFAPreference", "AdminSetUserMFAPreference", "UpdateUserAttributes", "VerifyUserAttribute"]);
       // The app pool, wherever CloudTrail puts its ID, or none named; never the operator pool's parameter
       const or = pattern.detail.$or as Record<string, { userPoolId: unknown[] }>[];
       expect(or).toHaveLength(3);
@@ -243,7 +243,7 @@ describe("email stack", () => {
           Action: "dynamodb:GetItem",
           Condition: {
             "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
-            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash", "totpOnAt"] },
             StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
           },
         }),
@@ -252,7 +252,7 @@ describe("email stack", () => {
           Action: ["dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"],
           Condition: {
             "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
-            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash", "totpOnAt"] },
             StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
           },
         }),

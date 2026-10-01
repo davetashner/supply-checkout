@@ -47,7 +47,8 @@ const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
  *
  * - A rule on CloudTrail's management events (the audit stack's trail) sends
  *   the app pool's ChangePassword, VerifySoftwareToken, SetUserMFAPreference,
- *   UpdateUserAttributes and VerifyUserAttribute calls (SECURITY_NOTICE_EVENTS)
+ *   AdminSetUserMFAPreference (supply-checkout-8jc.14), UpdateUserAttributes
+ *   and VerifyUserAttribute calls (SECURITY_NOTICE_EVENTS)
  *   to the security notices function. CloudTrail puts the pool ID in
  *   requestParameters or additionalEventData, so the rule matches either, and
  *   an event naming no pool too: the function looks the user up in the app
@@ -59,6 +60,9 @@ const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
  *   other item has (dynamodb:Attributes), with nothing returned. IAM can't
  *   name the user or the sort key, so it's every user's partition, but only
  *   those attributes: it can't read or change a user's teams, proofs or TTL.
+ *   They include `totpOnAt` (supply-checkout-8jc.14): when two-step sign-in
+ *   was turned on, from the VerifySoftwareToken and SetUserMFAPreference
+ *   events, which the billing routes compare with a session's auth_time.
  * - Lambda tries a failed event twice more, then puts it on the security
  *   notices dead-letter queue (SQS-encrypted, 14 days), as EventBridge does
  *   with one it couldn't deliver, so it can be replayed. A notice SES refuses

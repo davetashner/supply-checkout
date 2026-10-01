@@ -573,6 +573,36 @@ describe("two-step sign-in", () => {
   it("signs nobody out for a wrong code", async () => {
     expect(await call("POST", "/me/mfa/totp/verify", { body: { code: "111111" } })).toMatchObject({ status: 400, body: { error: { reason: "code_mismatch" } } });
     expect(totpCalls.map((c) => c[0])).toEqual(["verify"]);
+    expect(table.get(`USER#${OWNER}`, "TOTP_ON")).toBeUndefined();
+  });
+
+  it("records when TOTP was turned on, in the caller's own partition, keeping a later time (supply-checkout-8jc.14)", async () => {
+    expect(await call("POST", "/me/mfa/totp/verify", { body: { code: "654321" } })).toEqual({ status: 204, body: undefined });
+    expect(table.get(`USER#${OWNER}`, "TOTP_ON")).toEqual({ PK: `USER#${OWNER}`, SK: "TOTP_ON", totpOnAt: new Date(now).toISOString() });
+    const later = new Date(now + 60_000).toISOString();
+    table.put({ PK: `USER#${OWNER}`, SK: "TOTP_ON", totpOnAt: later });
+    expect((await call("POST", "/me/mfa/totp/verify", { body: { code: "654321" } })).status).toBe(204);
+    expect(table.get(`USER#${OWNER}`, "TOTP_ON")?.totpOnAt).toBe(later);
+  });
+
+  it("still signs the caller out everywhere when the time can't be recorded, and logs it", async () => {
+    const refusing = createAccountHandler({
+      dbFor: () => table.guarded((command) => command !== "UpdateCommand"),
+      userInfo: async () => ({ sub: OWNER, email: "owner@example.com", emailVerified: true, emailVerifiedInCognito: true, totp: false, federated: false }),
+      emailCodes: { send: async () => {}, verify: async () => {} },
+      totp: { setPassword: async () => {}, associate: async () => "", verify: async () => {}, signOutEverywhere: async (token) => void totpCalls.push(["signOutEverywhere", token]) },
+      issuerUrl: ISSUER,
+      obs: fakeObservability(),
+      mailer: mails.mailer,
+      deleteUser: unusedDeleteUser,
+      deletions: unusedDeletionLog,
+      noticeTimeoutMs: 50,
+      now: () => now,
+    });
+    const response = await refusing(event("POST", "/me/mfa/totp/verify", { body: { code: "654321" } }));
+    expect(response.statusCode).toBe(204);
+    expect(totpCalls).toEqual([["signOutEverywhere", `token-${OWNER}`]]);
+    expect(logs).toContainEqual(["Two-step sign-in time not recorded", { userId: OWNER, code: "AccessDeniedException" }]);
   });
 
   it("checks the request before calling Cognito", async () => {

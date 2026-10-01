@@ -28,10 +28,20 @@
 //
 // What:
 // - ChangePassword: `passwordSet`, to the account's verified address.
-// - VerifySoftwareToken, SetUserMFAPreference: `twoStepOn`, to the verified
+// - VerifySoftwareToken, SetUserMFAPreference, AdminSetUserMFAPreference (an
+//   administrator's call on the app pool): `twoStepOn`, to the verified
 //   address, when AdminGetUser shows an authenticator app among the user's
 //   MFA methods (so turning it off, or a code checked without turning it on,
 //   sends nothing).
+// - The same three, first of all: when TOTP was
+//   turned on (supply-checkout-8jc.14, data/two-step.ts), which the billing
+//   routes compare with a session's auth_time. With an authenticator among
+//   the user's MFA methods, the event's time is recorded unless a later one
+//   is; without one (turned off), a record older than the event is removed,
+//   so if it's turned on again directly, billing finds none until that
+//   event arrives, and refuses. A failed write is logged ("Two-step sign-in
+//   time not recorded") and counted (`totp_record`), the notices are still
+//   sent, and then it's thrown, so Lambda tries again.
 // - Every event, and UpdateUserAttributes and VerifyUserAttribute only for
 //   this: `emailChanged`, to the address the account had before, when the
 //   address Cognito has verified (where it now sends codes and resets) is
@@ -64,6 +74,7 @@
 import {
   claimEmailChangeNotice,
   claimNotice,
+  clearTotpOn,
   type Db,
   emailChangeClaimedAt,
   emailSeenHash,
@@ -71,6 +82,7 @@ import {
   normalizeEmail,
   noticeAddress,
   recordNoticeAddress,
+  recordTotpOn,
   releaseEmailChangeNotice,
 } from "../data/index.js";
 import { EmailNotSentError, type Mailer } from "../email/mailer.js";
@@ -83,7 +95,7 @@ export interface SecurityNoticesDeps {
   /** The app pool: events that name another pool are ignored. */
   readonly userPoolId: string;
   readonly findAccount: FindAccount;
-  /** The app table, as the function's role reaches it (GetItem and UpdateItem of SECURITY_NOTICE_ATTRIBUTES in USER# partitions). */
+  /** The app table, as the function's role reaches it (GetItem and UpdateItem of SECURITY_NOTICE_ATTRIBUTES, totpOnAt among them, in USER# partitions). */
   readonly db: Db;
   readonly mailer: Mailer;
   readonly obs: Observability;
@@ -247,7 +259,9 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
     if (!sub || !SUB.test(sub)) return failed(undefined, kind, "no_user", "NoSub");
     seen.sub = sub;
     const eventTime = Date.parse(String(detail.eventTime));
-    const at = (Number.isFinite(eventTime) ? new Date(eventTime) : now()).toISOString();
+    // CloudTrail's time is in whole seconds, rounded down: never later than the call
+    const when = Number.isFinite(eventTime) ? new Date(eventTime) : now();
+    const at = when.toISOString();
 
     let account: PoolAccount | undefined;
     try {
@@ -260,6 +274,27 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
     }
     // Not an app user: another pool's (the event didn't name it), or since deleted
     if (!account) return;
+    // When TOTP was turned on, for the billing check, before anything below can fail. A failed
+    // write is counted on its own, and the notices still go out (they're the main defence)
+    // before it's thrown for Lambda to try again
+    const recordFailed = kind === "twoStepOn" ? await recordTwoStep(sub, account, when) : undefined;
+    await notices(sub, account, kind, at);
+    if (recordFailed) throw new CountedError(recordFailed.error);
+  }
+
+  /** Records or clears when TOTP was turned on (see "What" at the top). Never throws: a failure is logged, counted and returned. */
+  async function recordTwoStep(userId: string, account: PoolAccount, when: Date): Promise<{ error: unknown } | undefined> {
+    try {
+      await (account.totpEnabled ? recordTotpOn(db, userId, when) : clearTotpOn(db, userId, when));
+      return undefined;
+    } catch (error) {
+      obs.logger.error("Two-step sign-in time not recorded", { userId, code: errorCode(error), via: "cloudtrail" });
+      obs.count(BusinessMetric.SecurityNoticeFailures, 1, { kind: "twoStepOn", reason: "totp_record", via: "cloudtrail" });
+      return { error };
+    }
+  }
+
+  async function notices(sub: string, account: PoolAccount, kind: Kind, at: string): Promise<void> {
     // On every event, so a later one catches an email change whose own events were missed or dead-lettered
     await noticeEmailChange(sub, account, at);
     if (kind === "emailChanged") return;

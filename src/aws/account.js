@@ -12,7 +12,7 @@
 // two-step sign-in (an authenticator app, mfa.js), which Account sets up; when the server
 // refuses billing for want of it, the setup opens.
 import { esc } from "../format.js";
-import { armButton, closeModal, toast } from "../dom.js";
+import { armButton, closeModal, openModal, toast } from "../dom.js";
 import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, firstRunKey, forgetLocal, local, tab } from "./session.js";
 import { createDb } from "./db.js";
 import { openImport } from "./import.js";
@@ -138,11 +138,11 @@ export async function start(config) {
   // The button is off while it runs, so it can't be pressed again meanwhile.
   // The owner mark isn't watched meanwhile: signing out removes it, and the reload that would
   // set off (the tab hidden before Managed Login's page loads) would replace the sign-out there
-  async function signOut(e) {
+  async function signOut(e, keep = false) {
     const button = e.currentTarget, was = owner;
     button.disabled = true;
     owner = null;
-    if (await session.signOut()) { if (db) db.stop(); }
+    if (await session.signOut(keep)) { if (db) db.stop(); }
     else { owner = was; button.disabled = false; toast("Couldn't sign out. Try again.", 5000); }
   }
 
@@ -418,8 +418,21 @@ export async function start(config) {
   // makes the page; a link to it replaces the button, so the owner goes to Stripe with one
   // more tap (and a retry gets the same page).
   let checkoutKey = null;
+  // Billing refused this session as older than two-step sign-in (mfa_sign_in_again,
+  // supply-checkout-8jc.14): sign out here and of Managed Login, whose session would
+  // otherwise sign straight back in without the code, and sign in again. The team, drafts and
+  // owner mark are kept for the same person.
+  function signInAgain() {
+    openModal(`<h2>Sign in again</h2>
+      <p>To manage billing, sign in again with your email, your password and a code from your authenticator app. This session began before two-step sign-in was turned on.</p>
+      <div class="modal-actions"><button type="button" class="btn" id="signInAgainCancel">Cancel</button> <button type="button" class="btn primary" id="signInAgainGo" data-autofocus>Sign in again</button></div>`, (m) => {
+      m.querySelector("#signInAgainCancel").addEventListener("click", closeModal);
+      m.querySelector("#signInAgainGo").addEventListener("click", (e) => signOut(e, true));
+    });
+  }
   // Billing refused for want of two-step sign-in: set it up, saying why
   const needsTwoStep = (me, e) => {
+    if (e.reason === "mfa_sign_in_again") { signInAgain(); return true; }
     if (e.reason !== "mfa_required") return false;
     twoStep(me, { why: "To manage billing, turn on two-step sign-in first. It keeps someone who gets hold of your email from changing how your team pays." });
     return true;

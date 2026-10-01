@@ -1457,12 +1457,14 @@
               "Condition": {
                 "StringLike": {
                   "aws:RequestTag/teamId": "?*",
-                  "aws:RequestTag/stripeCustomer": "?*"
+                  "aws:RequestTag/stripeCustomer": "?*",
+                  "aws:RequestTag/userId": "?*"
                 },
                 "ForAllValues:StringEquals": {
                   "aws:TagKeys": [
                     "teamId",
-                    "stripeCustomer"
+                    "stripeCustomer",
+                    "userId"
                   ]
                 }
               },
@@ -1479,7 +1481,7 @@
           ],
           "Version": "2012-10-17"
         },
-        "Description": "Assumed by the billing function per request, tagged with the team and its Stripe customer: reads the team, counts its members' roles, and links the customer",
+        "Description": "Assumed by the billing function per request, tagged with the team, its Stripe customer and the caller: reads the team, counts its members' roles, links the customer, and reads and records when the caller turned TOTP on",
         "MaxSessionDuration": 3600,
         "Policies": [
           {
@@ -1623,6 +1625,78 @@
                     ]
                   },
                   "Sid": "StripeLinkOnly"
+                },
+                {
+                  "Action": "dynamodb:GetItem",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "USER#${aws:PrincipalTag/userId}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "totpOnAt"
+                      ]
+                    },
+                    "StringEqualsIfExists": {
+                      "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "CallerTotpRecordRead"
+                },
+                {
+                  "Action": "dynamodb:UpdateItem",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "USER#${aws:PrincipalTag/userId}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "totpOnAt"
+                      ]
+                    },
+                    "StringEqualsIfExists": {
+                      "dynamodb:ReturnValues": "NONE"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":dynamodb:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "CallerTotpRecordUpdate"
                 },
                 {
                   "Action": [

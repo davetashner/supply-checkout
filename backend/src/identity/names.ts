@@ -74,13 +74,16 @@ export const LOG_CORRELATION_KEY_ENV = "LOG_CORRELATION_KEY";
  * function tells the account about (supply-checkout-8jc.28, 8jc.29), and the
  * notice each sends. A user's own access token can make each of them directly
  * (the web client has the aws.cognito.signin.user.admin scope), not only
- * through the account API. The identity rule in the email stack matches these
+ * through the account API, except AdminSetUserMFAPreference, an
+ * administrator's call with IAM credentials. The identity rule in the email stack matches these
  * names on the app pool.
  */
 export const SECURITY_NOTICE_EVENTS = {
   ChangePassword: "passwordSet",
   VerifySoftwareToken: "twoStepOn",
   SetUserMFAPreference: "twoStepOn",
+  // An administrator's (supply-checkout-8jc.14): turning TOTP on or off records or clears when it was turned on
+  AdminSetUserMFAPreference: "twoStepOn",
   UpdateUserAttributes: "emailChanged",
   VerifyUserAttribute: "emailChanged",
 } as const;

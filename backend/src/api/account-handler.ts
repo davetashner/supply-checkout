@@ -109,7 +109,11 @@
 // (signing in only through their provider) have nothing to set up: the
 // provider's sign-in stands in for it, as it does when a user with a provider
 // linked signs in through it (docs/infrastructure.md, Sign-in). Passwords,
-// secrets and codes are never logged.
+// secrets and codes are never logged. Once TOTP is on, and before the
+// sign-out, the time is recorded in the caller's own partition (TOTP_ON,
+// data/two-step.ts), and the billing routes also refuse a session that began
+// before it (supply-checkout-8jc.14): that covers a Managed Login session
+// cookie from before, which GlobalSignOut doesn't end.
 //
 // Security notices (supply-checkout-8jc.15): setting up two-step sign-in is
 // trust on first use, so someone who got into an account could set a password
@@ -180,6 +184,7 @@ import {
   emailSeenHash,
   noticeAddress,
   recordNoticeAddress,
+  recordTotpOn,
   hasEnded,
   isReadOnlyForBilling,
   liveComp,
@@ -981,6 +986,8 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const token = accessToken(event);
     await deps.totp.verify(token, code);
     obs.logger.info("Two-step sign-in turned on", { userId });
+    // Before the sign-out, so no session from before it can pass the billing check meanwhile
+    await recordTwoStepOn(userId);
     try {
       // Every earlier session, this one too, began without the code: end them all. Until that
       // works they'd pass the billing check, so it's tried again, and if it still fails the app
@@ -991,6 +998,22 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
       await noticeAccount(user, userId, "twoStepOn");
     }
     return noContent();
+  }
+
+  /**
+   * Records when TOTP was turned on (data/two-step.ts): the billing routes
+   * refuse a session that began before it. Never throws, since TOTP is on
+   * either way: CloudTrail's record of the same change records it too
+   * (identity/security-notices-handler.ts), and billing records one when it
+   * finds none. Logged as an error, since until then an older record could
+   * let a Managed Login session cookie from before it reach billing.
+   */
+  async function recordTwoStepOn(userId: string): Promise<void> {
+    try {
+      await recordTotpOn(dbFor({ userId }), userId, new Date(now()));
+    } catch (error) {
+      obs.logger.error("Two-step sign-in time not recorded", { userId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+    }
   }
 
   async function endEverySession(token: string, userId: string): Promise<void> {

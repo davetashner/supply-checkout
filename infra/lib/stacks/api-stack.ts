@@ -64,6 +64,7 @@ import {
   STRIPE_LINK_READ_ATTRIBUTES,
   STUCK_IMPORT_ATTRIBUTES,
   tableName,
+  TOTP_RECORD_ATTRIBUTES,
   WEBHOOK_RECORD_ATTRIBUTES,
   WEBHOOK_RECORD_PREFIX,
 } from "../../../backend/src/data/schema.js";
@@ -527,8 +528,14 @@ export class ApiStack extends SupplyCheckoutStack {
    *   `stripeCustomerId`, returning nothing (linking the customer).
    * - PutItem in `STRIPE#<stripeCustomer>` naming only the link's
    *   attributes, returning nothing.
+   * - GetItem and UpdateItem in `USER#<userId>`, the caller's own `sub`,
+   *   naming only the keys and `totpOnAt` (TOTP_RECORD_ATTRIBUTES), reads
+   *   projected and updates returning nothing: when the caller turned
+   *   two-step sign-in on (supply-checkout-8jc.14), which the billing routes
+   *   compare with the token's auth_time, and record when there's none.
+   *   `userId` is the unused marker otherwise.
    *
-   * No other Query, no Scan or DeleteItem, and no other team's partition.
+   * No other Query, no Scan or DeleteItem, and no other team's or user's partition.
    */
   private addBilling(config: DeploymentConfig, table: string, tableArn: string, region: string, appOrigin: string, issuerUrl: string, tableKeyStatement: () => PolicyStatement) {
     const mode = stripeModeOf(config);
@@ -548,12 +555,13 @@ export class ApiStack extends SupplyCheckoutStack {
     const tag = (key: string) => `\${aws:PrincipalTag/${key}}`;
     const tags = Object.values(BILLING_SESSION_TAGS);
     const team = `TEAM#${tag(BILLING_SESSION_TAGS.teamId)}`;
+    const user = `USER#${tag(BILLING_SESSION_TAGS.userId)}`;
     const role = new Role(this, "BillingAccessRole", {
-      description: "Assumed by the billing function per request, tagged with the team and its Stripe customer: reads the team, counts its members' roles, and links the customer",
+      description: "Assumed by the billing function per request, tagged with the team, its Stripe customer and the caller: reads the team, counts its members' roles, links the customer, and reads and records when the caller turned TOTP on",
       maxSessionDuration: Duration.hours(1),
       assumedBy: new ArnPrincipal(fnRole.roleArn)
         .withConditions({
-          // Every session names a team and a customer (or the unused marker), and nothing else
+          // Every session names a team, a customer and a user (or the unused marker), and nothing else
           StringLike: Object.fromEntries(tags.map((key) => [`aws:RequestTag/${key}`, "?*"])),
           "ForAllValues:StringEquals": { "aws:TagKeys": tags },
         })
@@ -602,6 +610,28 @@ export class ApiStack extends SupplyCheckoutStack {
                   "dynamodb:LeadingKeys": [`${STRIPE_LINK_PREFIX}${tag(BILLING_SESSION_TAGS.stripeCustomer)}`],
                   "dynamodb:Attributes": [...STRIPE_LINK_ATTRIBUTES],
                 },
+                StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+              },
+            }),
+            // When the caller turned two-step sign-in on (supply-checkout-8jc.14): only
+            // that attribute, only in their own partition (the tag is the verified sub)
+            new PolicyStatement({
+              sid: "CallerTotpRecordRead",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:GetItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [user], "dynamodb:Attributes": [...TOTP_RECORD_ATTRIBUTES] },
+                StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+              },
+            }),
+            new PolicyStatement({
+              sid: "CallerTotpRecordUpdate",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:UpdateItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [user], "dynamodb:Attributes": [...TOTP_RECORD_ATTRIBUTES] },
                 StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
               },
             }),

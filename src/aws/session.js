@@ -207,8 +207,10 @@ export function createSession(config, { onSignedOut, onRefreshed, onUserChanged 
     // Revokes the refresh token, forgets sign-in's saved state, the chosen team, every
     // team's receipt draft and whose they were, then signs out of Managed Login too. False, still signed in, when the API couldn't be
     // reached. A refresh already in flight finishes first: with refresh-token rotation, its
-    // response would otherwise set a new refresh cookie after sign-out cleared it.
-    async signOut() {
+    // response would otherwise set a new refresh cookie after sign-out cleared it. With `keep`
+    // (signing in again for billing, account.js), nothing of theirs is forgotten: the same
+    // person signs straight back in and keeps their team and drafts.
+    async signOut(keep = false) {
       signingOut = true;
       clearTimeout(timer);
       if (refreshing) await refreshing.catch(() => {});
@@ -217,7 +219,7 @@ export function createSession(config, { onSignedOut, onRefreshed, onUserChanged 
       try { await post("/auth/sign-out"); } catch { signingOut = false; timer = setTimeout(background, 60_000); return false; }
       tokens = null;
       clearTimeout(timer);
-      forget();
+      if (!keep) forget();
       location.assign(logoutUrl());
       return true;
     },
