@@ -184,7 +184,7 @@ If Sonnet wins the eval, 200 receipts a month is too generous for $9. Bedrock se
 
 - **Timeout.** An API Gateway HTTP API stops waiting after 30 seconds. The ADR's 60-second timeout can't happen through it. Set the model call to about 25 seconds, or use a Lambda function URL or an async job for slow reads.
 - **Caching.** Haiku 4.5 only caches a prefix of 4,096 tokens or more. `RECEIPT_PROMPT` alone is well under that, so "instructions first with a cache breakpoint" won't cache on Haiku. Put the breakpoint after the inventory list, and check `cache_read_input_tokens` in the eval.
-- The team setting to keep photos in S3 has no bead. Fine to defer.
+- The team setting to keep photos in S3 has no bead. Fine to defer. (Dropped from the MVP on 2026-10-01; a possible phase-2 feature.)
 
 **Recommendation: Accept with changes.**
 
