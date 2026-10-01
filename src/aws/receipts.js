@@ -41,6 +41,8 @@ export function receiptsFor(api, team) {
       // src/main.js passes the one photo src/photo.js made
       if (!MEDIA_TYPES.includes(images.type) || images.size > MAX_IMAGE_BYTES) throw { code: "image_rejected", message: "Not a JPEG or PNG photo the endpoint takes" };
       const image = { mediaType: images.type, data: await base64(images) };
+      // Stop tapped while the photo was being read: nothing is sent, so no receipt is used
+      if (signal.aborted) throw { code: "cancelled", message: "cancelled" };
       try {
         // byKey: `match` is a product key, not one of the prompt's ids (src/main.js)
         return { ...await api("POST", path, { image }, undefined, { timeout: RECEIPT_TIMEOUT, signal }), byKey: true };

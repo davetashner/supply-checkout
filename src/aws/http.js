@@ -13,6 +13,8 @@ export async function request(url, init, { timeout = TIMEOUT, signal } = {}) {
   const timer = setTimeout(() => abort.abort(), timeout);
   const stop = () => abort.abort();
   signal?.addEventListener("abort", stop);
+  // Stopped before the request starts (while a refresh ran, say): it never goes out
+  if (signal?.aborted) abort.abort();
   const gone = () => signal?.aborted ? { code: "cancelled", message: "cancelled" } : { code: "unavailable", message: "Timed out" };
   try {
     let res;

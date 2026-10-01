@@ -135,6 +135,48 @@ test.describe("reading a receipt on the receipt endpoint", { tag: ["@J5", "@J5.1
     release();
   });
 
+  test("Stop while the photo is still being read sends nothing", { tag: ["@J5.1"] }, async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded(), receipt });
+    // Holds the photo step (src/aws/receipts.js reads the photo's bytes) until the test lets it go
+    await page.addInitScript(() => {
+      const read = Blob.prototype.arrayBuffer;
+      Blob.prototype.arrayBuffer = function () {
+        return new Promise((resolve) => { window.__releasePhoto = () => resolve(read.call(this)); });
+      };
+    });
+    await scan(page, backend);
+    await expect(page.getByRole("heading", { name: "Reading receipt…" })).toBeVisible();
+    await page.waitForFunction(() => typeof window.__releasePhoto === "function");
+    await page.getByRole("button", { name: "Stop" }).click();
+    // The photo step finishes, finds it was stopped, and goes back without a request
+    await page.evaluate(() => window.__releasePhoto());
+    await expect(page.getByRole("heading", { name: "Reading receipt…" })).toHaveCount(0);
+    await expect(page.getByText("Scan receipt")).toBeVisible();
+    await page.waitForTimeout(200);
+    expect(backend.requests("POST", READ)).toEqual([]);
+    expect(backend.receiptsRead).toEqual({});
+  });
+
+  test("Stop while the session is being refreshed doesn't send the read again", { tag: ["@J5.1"] }, async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded(), receipt });
+    // The first try finds the token expired; the refresh waits
+    backend.on("POST", READ, { status: 401, body: { message: "Unauthorized" } });
+    await openAws(page, backend);
+    await connected(page);
+    const release = backend.hold("POST", "/auth/refresh");
+    await page.setInputFiles("#receiptFile", photo);
+    await expect.poll(() => backend.requests("POST", READ).length).toBe(1);
+    await expect.poll(() => backend.requests("POST", "/auth/refresh").length).toBe(2);
+    await page.getByRole("button", { name: "Stop" }).click();
+    release();
+    await expect(page.getByRole("heading", { name: "Reading receipt…" })).toHaveCount(0);
+    await expect(page.getByText("Scan receipt")).toBeVisible();
+    await page.waitForTimeout(200);
+    expect(backend.requests("POST", READ)).toHaveLength(1);
+    expect(backend.receiptsRead).toEqual({});
+    await expect(page.getByRole("heading", { name: "Review receipt" })).toHaveCount(0);
+  });
+
   test("isn't offered to a viewer", { tag: ["@J9"] }, async ({ page }) => {
     await openAws(page, new FakeBackend({ docs: seeded(), teams: [{ ...TEAM, role: "viewer" }] }));
     await connected(page);
