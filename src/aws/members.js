@@ -111,7 +111,7 @@ function openParts(team) {
     <p class="error" role="alert" id="invitesFail" hidden></p>
     <div id="invitesList" aria-live="polite"><p class="muted" role="status">Loading invites…</p></div>
     <h3>Close the team</h3>
-    <p class="hint">Closing makes the team read-only for everyone, straight away, and nobody can join. Owners can still export its data for 30 days; then everything in it is deleted. It can't be undone. If the team pays yearly, closing it doesn't refund the unused months.</p>
+    <p class="hint">Closing makes the team read-only for everyone, straight away, and nobody can join. Owners can still export its data for 30 days; then everything in it is deleted. It can't be undone. If the team pays yearly, closing it doesn't refund the unused months, except within 14 days of a yearly charge (see the Terms).</p>
     <form id="closeForm" class="close-form" novalidate>
       <div class="field"><label for="closeName">Type the team's name, <strong>${esc(team.name)}</strong>, to close it</label><input type="text" id="closeName" autocomplete="off" spellcheck="false"></div>
       <p class="error" role="alert" id="closeFail" hidden></p>
