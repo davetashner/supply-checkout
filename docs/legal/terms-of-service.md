@@ -1,7 +1,9 @@
 # Terms of Service
 
-> **DRAFT — not reviewed by a lawyer / owner; not in effect.**
+> **DRAFT — not reviewed by a lawyer / owner; not in effect, except as pilot terms (below).**
 > Placeholders in `[BRACKETS]` must be filled in before publishing. See [Open questions](#open-questions-for-the-owner--lawyer) at the end.
+>
+> **Pilot terms.** During the supervised pilot, this draft applies as one of the pilot terms, as the [Pilot Agreement](pilot-agreement.md) (section 1) describes: except sections 4 to 7 (trial, subscriptions, cancelling, refunds), 10 (service levels), 13, 14 and 16 (disclaimers, liability, governing law), which the Pilot Agreement replaces. Where they disagree, the Pilot Agreement wins. A lawyer reviews this draft before public launch.
 
 - Last updated: [DATE]
 - Effective: [DATE]
@@ -99,7 +101,7 @@ If a payment fails, we email the owner and show a banner in the app. The team ke
 - **You own your data.** "Your data" means everything your team puts into the Service: inventory, sheets, client names, prices, receipt photos, and receipt results after you save them.
 - You give us permission to store, copy, process and display your data only as needed to run, secure, back up and support the Service for you, and as the Privacy Policy describes. We don't sell your data. We don't use it to train AI models.
 - **Export**: owners can export the team's data as CSV and JSON at any time, including during the 30-day read-only period after cancellation.
-- **Deletion**: owners can close the team and delete its data. A closed team's data is deleted 30 days after it's closed. When a member deletes their own account, we delete it straight away; what they added to a team stays with the team.
+- **Deletion**: owners can close the team and delete its data. A closed team's data is deleted 30 days after it's closed, or up to 44 days in rare cases where its subscription can't be ended. When a member deletes their own account, we delete it straight away; what they added to a team stays with the team.
 - **Backups**: we keep backups so we can recover from mistakes and outages. Deleted data stays in them for up to **35 days** after we delete it, then the backups holding it expire. We don't use backups for anything but recovery. If we ever restore from a backup, we delete again every account and team that was deleted after that backup was taken, so they don't come back.
 - You are responsible for having the right to put your data into the Service, including any information about your clients.
 - We may use anonymous, combined usage figures (for example, how many receipts are read each month in total) to run and improve the Service. These can't identify you, your team or your clients.

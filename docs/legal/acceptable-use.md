@@ -1,7 +1,9 @@
 # Acceptable Use Policy
 
-> **DRAFT — not reviewed by a lawyer / owner; not in effect.**
+> **DRAFT — not reviewed by a lawyer / owner; not in effect, except as pilot terms (below).**
 > Placeholders in `[BRACKETS]` must be filled in before publishing.
+>
+> **Pilot terms.** During the supervised pilot, this draft applies in full as one of the pilot terms ([Pilot Agreement](pilot-agreement.md), section 1). Where they disagree, the Pilot Agreement wins. A lawyer reviews this draft before public launch.
 
 - Last updated: [DATE]
 
