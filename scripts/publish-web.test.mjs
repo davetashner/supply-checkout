@@ -4,18 +4,19 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { IMMUTABLE, REVALIDATE, VERSION, checkRouterResult, configParameterNames, defaultVersion, main, parseArgs, routerChecks, routerTestEvent, uploadCommands } from "./publish-web.mjs";
+import { APPROVED_REGIONS, DEFAULT_REGION, DOMAIN, IMMUTABLE, REVALIDATE, VERSION, checkRouterResult, configParameterNames, defaultVersion, envDomain, main, parseArgs, routerChecks, routerTestEvent, uploadCommands } from "./publish-web.mjs";
 
 const STORE = "arn:aws:cloudfront::000000000000:key-value-store/example"; // public-safety: allow
+const POOL_UUID = "11111111-2222-4333-8444-555555555555";
 const APP_CONFIG = {
-  apiUrl: "https://api.example.test",
-  authUrl: "https://auth.example.test",
+  apiUrl: `https://api.${DOMAIN}`,
+  authUrl: `https://auth.${DOMAIN}`,
   clientId: "client-1",
-  realtimeUrl: "wss://realtime.example.test/event/realtime",
-  realtimeHost: "realtime.example.test",
-  rumAppMonitorId: "monitor-1",
-  rumIdentityPoolId: "rum-region-1:pool-1",
-  rumRegion: "rum-region-1",
+  realtimeUrl: `wss://realtime.${DOMAIN}/event/realtime`,
+  realtimeHost: `realtime.${DOMAIN}`,
+  rumAppMonitorId: "0f1e2d3c-4b5a-4678-9abc-def012345678",
+  rumIdentityPoolId: `${DEFAULT_REGION}:${POOL_UUID}`,
+  rumRegion: DEFAULT_REGION,
 };
 const PARAMS = {
   "/supply-checkout/prod/web/bucket-name": "releases-bucket",
@@ -114,15 +115,65 @@ test("config prints the app's config.json, and needs the stacks deployed", () =>
   assert.throws(() => main(["config", "--env", "staging"], bare.deps), /realtime and web stacks first\): \/supply-checkout\/staging\/api\/url/);
 });
 
-test("config refuses a sign-in URL that isn't auth. on the API's domain (supply-checkout-6uw.23)", () => {
+test("the domain and regions match the deployment config in infra/lib/config.ts", () => {
+  const source = readFileSync(new URL("../infra/lib/config.ts", import.meta.url), "utf8");
+  assert.equal(DOMAIN, /DEFAULT_DOMAIN_NAME = "([^"]+)"/.exec(source)?.[1]);
+  const approved = /APPROVED_REGIONS = \[([^\]]*)\]/.exec(source)?.[1] ?? "";
+  assert.deepEqual(APPROVED_REGIONS, [...approved.matchAll(/"([^"]+)"/g)].map((m) => m[1]));
+  assert.equal(DEFAULT_REGION, /GLOBAL_SERVICES_REGION = "([^"]+)"/.exec(source)?.[1]);
+  // The environment's domain, as envDomain in infra/lib/domain.ts builds it
+  assert.equal(envDomain("prod"), DOMAIN);
+  assert.equal(envDomain("staging"), `staging.${DOMAIN}`);
+  for (const env of ["", "Prod", "a.b", "-x", "x/y", "a".repeat(17)]) assert.throws(() => envDomain(env), /--env/, env);
+});
+
+/** `config` with one SSM value changed refuses, naming that parameter. */
+function refuses(key, value, env = "prod") {
+  const names = configParameterNames(env);
+  const domain = envDomain(env);
+  const own = { ...APP_CONFIG, apiUrl: `https://api.${domain}`, authUrl: `https://auth.${domain}`, realtimeUrl: `wss://realtime.${domain}/event/realtime`, realtimeHost: `realtime.${domain}` };
+  const params = { ...Object.fromEntries(Object.entries(names).map(([k, name]) => [name, own[k]])), [names[key]]: value };
+  const aws = fakeAws({ params });
+  assert.throws(() => main(["config", "--env", env], aws.deps), (e) => e.message.includes(names[key]), `${key} ${JSON.stringify(value)}`);
+}
+
+test("config trusts only the hosts the deployment config names, never a host from SSM (supply-checkout-6uw.23)", () => {
+  // The browser signs in at authUrl, and sends its tokens to apiUrl and realtimeUrl
+  const https = (label) => [`https://${label}.evil.example`, `https://${label}.${DOMAIN}.evil.example`, `https://${label}.evil.${DOMAIN}`, `http://${label}.${DOMAIN}`, `https://${label}.${DOMAIN}/`, `https://${label}.${DOMAIN}/x`, `https://${label}.${DOMAIN}:8443`, `https://x${label}.${DOMAIN}`, ""];
+  for (const v of https("api")) refuses("apiUrl", v);
+  for (const v of [...https("auth"), `https://ops-auth.${DOMAIN}`]) refuses("authUrl", v);
+  // An API URL on another domain doesn't vouch for a sign-in URL on that domain
   const names = configParameterNames("prod");
-  for (const authUrl of ["https://auth.evil.example", "https://auth.example.test.evil.example", "http://auth.example.test", "https://auth.example.test/", "https://ops-auth.example.test"]) {
-    const aws = fakeAws({ params: { ...PARAMS, [names.authUrl]: authUrl } });
-    assert.throws(() => main(["config"], aws.deps), /identity\/auth-url must be https:\/\/auth\.<the API's domain>/, authUrl);
+  const moved = fakeAws({ params: { ...PARAMS, [names.apiUrl]: "https://api.evil.example", [names.authUrl]: "https://auth.evil.example" } });
+  assert.throws(() => main(["config"], moved.deps), /api\/url/);
+  const host = `realtime.${DOMAIN}`;
+  for (const v of ["wss://realtime.evil.example/event/realtime", `wss://${host}.evil.example/event/realtime`, `ws://${host}/event/realtime`, `https://${host}/event/realtime`, `wss://${host}/event/realtime/`, `wss://${host}/event`, `wss://${host}/event/realtime?x=1`, `wss://${host}:444/event/realtime`, `wss://${host}`, ""]) {
+    refuses("realtimeUrl", v);
   }
-  // An API URL that isn't https://api.<domain> leaves nothing to check it against
-  const aws = fakeAws({ params: { ...PARAMS, [names.apiUrl]: "https://evil.example" } });
-  assert.throws(() => main(["config"], aws.deps), /identity\/auth-url must be/);
+  for (const v of ["realtime.evil.example", `${host}.evil.example`, `${host}:443`, `${host}/`, `x${host}`, `wss://${host}`, ""]) refuses("realtimeHost", v);
+  // Another environment's hosts are on its own domain
+  const stagingNames = configParameterNames("staging");
+  const own = { ...APP_CONFIG, apiUrl: `https://api.staging.${DOMAIN}`, authUrl: `https://auth.staging.${DOMAIN}`, realtimeUrl: `wss://realtime.staging.${DOMAIN}/event/realtime`, realtimeHost: `realtime.staging.${DOMAIN}` };
+  const staging = fakeAws({ params: Object.fromEntries(Object.entries(stagingNames).map(([k, name]) => [name, own[k]])) });
+  main(["config", "--env", "staging"], staging.deps);
+  assert.deepEqual(JSON.parse(staging.log[0]), own);
+  refuses("apiUrl", `https://api.${DOMAIN}`, "staging");
+  refuses("realtimeHost", host, "staging");
+});
+
+test("config checks the RUM values: the web stack's region, and AWS's ID formats (supply-checkout-6uw.23)", () => {
+  const other = APPROVED_REGIONS.find((r) => r !== DEFAULT_REGION);
+  for (const v of ["", "evil-region-1", other, `${DEFAULT_REGION} `, DEFAULT_REGION.toUpperCase()]) refuses("rumRegion", v);
+  for (const v of ["", "monitor-1", APP_CONFIG.rumAppMonitorId.toUpperCase(), APP_CONFIG.rumAppMonitorId.slice(1), `${APP_CONFIG.rumAppMonitorId}0`, APP_CONFIG.rumAppMonitorId.replace(/-/g, "")]) {
+    refuses("rumAppMonitorId", v);
+  }
+  for (const v of ["", "pool-1", POOL_UUID, `${other}:${POOL_UUID}`, `${DEFAULT_REGION}:pool-1`, `${DEFAULT_REGION}:${POOL_UUID}:x`]) refuses("rumIdentityPoolId", v);
+  // --region says where the web stack is, so the RUM region must follow it, and be an approved region
+  const names = configParameterNames("prod");
+  const moved = fakeAws({ params: { ...PARAMS, [names.rumRegion]: other, [names.rumIdentityPoolId]: `${other}:${POOL_UUID}` } });
+  main(["config", "--region", other], moved.deps);
+  assert.equal(JSON.parse(moved.log[0]).rumRegion, other);
+  assert.throws(() => main(["config", "--region", "evil-region-1"], fakeAws({ params: { ...PARAMS, [names.rumRegion]: "evil-region-1", [names.rumIdentityPoolId]: `evil-region-1:${POOL_UUID}` } }).deps), /rum-region/);
 });
 
 test("publish needs a built folder", () => {

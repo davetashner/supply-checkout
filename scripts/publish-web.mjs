@@ -42,9 +42,21 @@ import { fileURLToPath } from "node:url";
 export const CHANNELS = ["app", "demo"];
 // Same pattern as infra/lib/web/router.js, which refuses anything else
 export const VERSION = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-// Where the web stack, its SSM parameters and the KeyValueStore are. Keep in step with
-// GLOBAL_SERVICES_REGION in infra/lib/config.ts.
-const DEFAULT_REGION = "us-east-1";
+// The deployment config, in step with infra/lib/config.ts (publish-web.test.mjs checks):
+// where the web stack, its SSM parameters and the KeyValueStore are (GLOBAL_SERVICES_REGION),
+// the regions an environment may use (APPROVED_REGIONS), and the domain (DEFAULT_DOMAIN_NAME).
+// config.json's hosts come from these, not from SSM (supply-checkout-6uw.23).
+export const DEFAULT_REGION = "us-east-1";
+export const APPROVED_REGIONS = ["us-east-1", "us-west-2"];
+export const DOMAIN = "supplycheckout.com";
+// envName in infra/lib/config.ts validateConfig
+const ENV = /^[a-z][a-z0-9-]{0,15}$/;
+
+/** The environment's domain, as envDomain in infra/lib/domain.ts builds it. */
+export function envDomain(envName) {
+  if (!ENV.test(envName)) throw new Error(`--env must be lowercase letters, digits or dashes (got "${envName}")`);
+  return envName === "prod" ? DOMAIN : `${envName}.${DOMAIN}`;
+}
 
 /** Hashed files: cached for a year everywhere. */
 export const IMMUTABLE = "public, max-age=31536000, immutable";
@@ -142,6 +154,7 @@ export const configParameterNames = (envName) => ({
 
 /** The web build's config.json for an environment (src/aws/main.js reads it). */
 export function appConfig(aws, envName) {
+  const domain = envDomain(envName);
   const names = configParameterNames(envName);
   const res = aws.read(["ssm", "get-parameters", "--names", ...Object.values(names)]);
   const values = Object.fromEntries((res?.Parameters ?? []).map((p) => [p.Name, p.Value]));
@@ -150,11 +163,25 @@ export function appConfig(aws, envName) {
     throw new Error(`Missing SSM parameters (deploy the api, identity, realtime and web stacks first): ${missing.join(", ")}`);
   }
   const config = Object.fromEntries(Object.entries(names).map(([key, name]) => [key, values[name]]));
-  // The browser goes to authUrl to sign in, so a rewritten parameter mustn't send people elsewhere (supply-checkout-6uw.23):
-  // it must be auth. on the API's own domain
-  const domain = /^https:\/\/api\.([a-z0-9-]+(?:\.[a-z0-9-]+)+)$/.exec(config.apiUrl)?.[1];
-  if (!domain || config.authUrl !== `https://auth.${domain}`) {
-    throw new Error(`${names.authUrl} must be https://auth.<the API's domain> (the API is ${config.apiUrl}); check both parameters`);
+  // The browser signs in at authUrl and sends the user's tokens to apiUrl and realtimeUrl, so a rewritten parameter
+  // mustn't point any of them elsewhere (supply-checkout-6uw.23). Each host is the one the stacks build from the
+  // deployment config (infra/lib/domain.ts hostNames), never one taken from SSM
+  const expected = {
+    apiUrl: `https://api.${domain}`,
+    authUrl: `https://auth.${domain}`,
+    realtimeUrl: `wss://realtime.${domain}/event/realtime`,
+    realtimeHost: `realtime.${domain}`,
+    // RUM reports to the web stack's region, the one these parameters were read from
+    rumRegion: aws.region,
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    if (config[key] !== value) throw new Error(`${names[key]} must be ${value} (got ${JSON.stringify(config[key])})`);
+  }
+  if (!APPROVED_REGIONS.includes(config.rumRegion)) throw new Error(`${names.rumRegion} must be one of ${APPROVED_REGIONS.join(", ")} (got ${JSON.stringify(config.rumRegion)})`);
+  const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+  if (!new RegExp(`^${uuid}$`).test(config.rumAppMonitorId)) throw new Error(`${names.rumAppMonitorId} must be an app monitor ID (a lowercase UUID)`);
+  if (!new RegExp(`^${config.rumRegion}:${uuid}$`).test(config.rumIdentityPoolId)) {
+    throw new Error(`${names.rumIdentityPoolId} must be an identity pool ID in ${config.rumRegion} (${config.rumRegion}:<UUID>)`);
   }
   return config;
 }
