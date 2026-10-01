@@ -5977,6 +5977,27 @@
               }
             },
             {
+              "Action": "secretsmanager:GetSecretValue",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":secretsmanager:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":secret:supply-checkout/prod/stripe/test-ops-restricted-key-??????"
+                  ]
+                ]
+              },
+              "Sid": "ReadOpsStripeKey"
+            },
+            {
               "Action": "lambda:InvokeFunction",
               "Effect": "Allow",
               "Resource": {
@@ -6047,6 +6068,8 @@
             "SEAT_QUEUE_URL": {
               "Ref": "SeatSyncsQueue518F74A6"
             },
+            "STRIPE_MODE": "test",
+            "STRIPE_OPS_KEY_SECRET_ID": "supply-checkout/prod/stripe/test-ops-restricted-key",
             "SUPPLY_CHECKOUT_ENV": "prod",
             "TABLE_NAME": "supply-checkout-prod-app"
           }

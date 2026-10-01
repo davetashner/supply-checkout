@@ -218,6 +218,37 @@ test("shows one team, and the audit, and prints JSON when asked", async () => {
   assert.equal(JSON.parse(json.logs[0]).team.id, "team-a");
 });
 
+test("shows a team's Stripe subscription and invoices, or why it can't (supply-checkout-6uw.4)", async () => {
+  const stripe = {
+    customerId: "cus_A1",
+    subscription: { id: "sub_1", status: "active", lookupKey: "supply_checkout_starter_monthly", plan: "starter", interval: "month", seats: 3, currentPeriodEnd: "2026-10-01T00:00:00.000Z", cancelAtPeriodEnd: true, cancelAt: "2026-10-01T00:00:00.000Z", trialEnd: null, createdAt: "2026-08-01T00:00:00.000Z" },
+    subscriptionCount: 2,
+    invoices: [{ id: "in_1", number: "ABC-0001", status: "paid", createdAt: "2026-09-01T00:00:00.000Z", currency: "usd", total: 2700, amountDue: 2700, amountPaid: 2700 }],
+    hasMoreInvoices: true,
+  };
+  const team = { ...TEAM, stripeCustomerId: "cus_A1" };
+  const show = async (body) => {
+    const h = harness({ routes: { "GET /ops/teams/team-a": { status: 200, body: { team, ...body } } } });
+    await main(["team", "team-a"], h.deps);
+    return h.logs[0];
+  };
+  const full = await show({ stripe });
+  assert.match(full, /subscription sub_1 active, starter\/month \(supply_checkout_starter_monthly\), 3 seats, period ends 2026-10-01, cancels at period end/);
+  assert.match(full, /2 subscriptions for this customer/);
+  assert.match(full, /invoice ABC-0001\s+paid\s+27\.00 USD\s+2026-09-01/);
+  assert.match(full, /older invoices in Stripe/);
+  const none = await show({ stripe: { ...stripe, subscription: null, subscriptionCount: 0, invoices: [], hasMoreInvoices: false } });
+  assert.match(none, /no subscription/);
+  assert.match(none, /no invoices/);
+  const unknown = await show({ stripe: { ...stripe, subscription: { ...stripe.subscription, plan: null, interval: null, lookupKey: null, cancelAtPeriodEnd: false, cancelAt: null, currentPeriodEnd: null, trialEnd: "2026-10-05T00:00:00.000Z" }, subscriptionCount: 1, invoices: [{ ...stripe.invoices[0], number: null }] } });
+  assert.match(unknown, /subscription sub_1 active, unknown price, 3 seats, trial ends 2026-10-05$/m);
+  assert.match(unknown, /invoice in_1/);
+  assert.match(await show({ stripe: { error: "unavailable" } }), /Stripe: unavailable/);
+  assert.doesNotMatch(await show({ stripe: null }), /Stripe:|subscription/);
+  // An older API with no Stripe part
+  assert.doesNotMatch(await show({}), /Stripe:|subscription/);
+});
+
 test("refuses bad usage before calling anything", async () => {
   for (const argv of [["frobnicate"], ["team"], ["team", "bad id"], ["comp", "team-a", "--plan", "free", "--until", "2026-12-31"], ["comp", "team-a", "--reason", "x"], ["comp", "team-a", "--plan", "free", "--until", "2026-12-31", "--reason", "x", "--seats", "two"], ["audit", "--team", "t", "--month", "2026-09"]]) {
     const { deps, requests } = harness();

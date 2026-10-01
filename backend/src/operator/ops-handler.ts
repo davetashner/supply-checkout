@@ -3,7 +3,9 @@
 //   GET    /ops/teams?q=&cursor=        Teams in team ID order, or those matching q
 //                                       (name or ID), with their owners' emails;
 //                                       each request reads a bounded number of them
-//   GET    /ops/teams/{teamId}          One team's account record and owners (audited)
+//   GET    /ops/teams/{teamId}          One team's account record and owners (audited),
+//                                       with its Stripe subscription and latest invoices
+//                                       on the ops restricted key (stripe-detail.ts)
 //   PUT    /ops/teams/{teamId}/comp     Comp a team or change or extend its comp
 //   DELETE /ops/teams/{teamId}/comp     End a comp early
 //   POST   /ops/teams/{teamId}/reopen   Reopen a closed team, through the
@@ -71,6 +73,7 @@ import { IDEMPOTENCY_HEADER, OPS_ROUTES, type OpsRoute, routeKey } from "../api/
 import type { OperatorDirectory } from "./cognito.js";
 import type { Reopener } from "./reopen-client.js";
 import type { DbForOps } from "./ops-db.js";
+import { type OpsStripe, opsStripeDetail } from "./stripe-detail.js";
 
 export type OpsEvent = APIGatewayProxyEventV2WithJWTAuthorizer;
 
@@ -81,6 +84,14 @@ export interface OpsHandlerDeps {
   readonly reopen: Reopener;
   /** Queues a seat sync after a reopen (see the top). */
   readonly seats?: SeatSyncQueue;
+  /**
+   * The Stripe client on the ops restricted key, read from Secrets Manager on
+   * first use (stripe-detail.ts). Without it, or if reading it fails, a team's
+   * detail comes back with `stripe: { error: "unavailable" }`.
+   */
+  readonly stripe?: () => Promise<OpsStripe>;
+  /** How long a team's detail waits for Stripe (OPS_STRIPE_DEADLINE_MS by default). */
+  readonly stripeDeadlineMs?: number;
   /** The operator pool's issuer URL. */
   readonly issuerUrl: string;
   /** The operator pool's `ops` client ID. */
@@ -224,7 +235,9 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
       const teamId = teamIdFrom(event);
       const at = new Date(now());
       const { team, owners } = await getOpsTeam(deps.dbFor(op.sub), op, teamId, at);
-      return { teamId, response: json(200, { team: opsTeamBody(team, at, owners) }) };
+      // The customer on the team's index entry, never one from the request; never throws
+      const stripe = await opsStripeDetail(teamId, team.stripeCustomerId, { stripe: deps.stripe, obs, deadlineMs: deps.stripeDeadlineMs });
+      return { teamId, response: json(200, { team: opsTeamBody(team, at, owners), stripe }) };
     },
     async setComp(event, op) {
       const teamId = teamIdFrom(event);

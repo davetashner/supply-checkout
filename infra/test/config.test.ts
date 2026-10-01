@@ -8,6 +8,7 @@ import {
   GLOBAL_SERVICES_REGION,
   configFromContext,
   stripeModeOf,
+  stripeOpsKeySecretArn,
   stripeSecretArn,
   stripeWebhookSecretArn,
   validateConfig,
@@ -106,5 +107,7 @@ describe("Stripe mode and secret", () => {
     expect(stripeSecretArn(where, "prod", "test")).toBe(`arn:aws:secretsmanager:${EAST}:\${AWS::AccountId}:secret:supply-checkout/prod/stripe/test-secret-key-??????`);
     expect(stripeWebhookSecretArn(where, "prod", "test")).toBe(`arn:aws:secretsmanager:${EAST}:\${AWS::AccountId}:secret:supply-checkout/prod/stripe/test-webhook-secret-??????`);
     expect(stripeSecretArn({ ...where, region: WEST }, "staging", "live")).toBe(`arn:aws:secretsmanager:${WEST}:\${AWS::AccountId}:secret:supply-checkout/staging/stripe/live-secret-key-??????`);
+    // The ops function's restricted key (supply-checkout-6uw.4): its own secret, never the billing key's
+    expect(stripeOpsKeySecretArn(where, "prod", "test")).toBe(`arn:aws:secretsmanager:${EAST}:\${AWS::AccountId}:secret:supply-checkout/prod/stripe/test-ops-restricted-key-??????`);
   });
 });

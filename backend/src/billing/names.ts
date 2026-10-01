@@ -28,6 +28,23 @@ export const stripeSecretName = (envName: string, mode: StripeMode) => `supply-c
  */
 export const stripeWebhookSecretName = (envName: string, mode: StripeMode) => `supply-checkout/${envName}/stripe/${mode}-webhook-secret`;
 
+/**
+ * The Secrets Manager secret holding the ops function's own Stripe restricted
+ * key (`rk_<mode>_…`, ADR 0015 §2, supply-checkout-6uw.4): read customers,
+ * subscriptions and invoices, write coupons and promotion codes, nothing
+ * else. Separate from stripeSecretName so the ops function never holds the
+ * billing functions' full key, and only the ops function may read it. The
+ * owner creates the key in the Stripe Dashboard and stores it here
+ * (docs/infrastructure.md, "Operators"); nothing in the repo does.
+ */
+export const stripeOpsKeySecretName = (envName: string, mode: StripeMode) => `supply-checkout/${envName}/stripe/${mode}-ops-restricted-key`;
+
+/** Environment variables the ops function reads for Stripe (with STRIPE_ENV.mode; set by the api stack). */
+export const OPS_STRIPE_ENV = {
+  /** The ops restricted key's secret, by name (stripeOpsKeySecretName). */
+  secretId: "STRIPE_OPS_KEY_SECRET_ID",
+} as const;
+
 /** Environment variables the webhook and the billing worker read (set by the api stack). */
 export const BILLING_ENV = {
   /** The webhook's signing secret, by name (stripeWebhookSecretName). */

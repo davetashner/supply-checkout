@@ -422,7 +422,7 @@ describe("billing function and billing-access role (ADR 0009)", () => {
     expect(env(api(EAST, {}, { stripeMode: "live" }).template)).toMatchObject({ STRIPE_SECRET_ID: "supply-checkout/prod/stripe/live-secret-key", STRIPE_MODE: "live" });
   });
 
-  it("lets only the billing function and worker read the Stripe secret key, and only the webhook its signing secret, each one secret in its own region", () => {
+  it("lets only the billing function and worker read the Stripe secret key, only the webhook its signing secret, and only the ops function the ops restricted key, each one secret in its own region", () => {
     for (const region of [EAST, WEST]) {
       const { template } = api(region);
       const reads = resources(template, "AWS::IAM::Policy").flatMap(([id, p]) =>
@@ -431,10 +431,13 @@ describe("billing function and billing-access role (ADR 0009)", () => {
       // Secrets Manager's six random characters, and nothing else: no account ID written down
       const secret = (name: string) => ({ "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:secretsmanager:${region}:`, { Ref: "AWS::AccountId" }, `:secret:supply-checkout/prod/stripe/${name}-??????`]] });
       const key = { Sid: "ReadStripeSecretKey", Effect: "Allow", Action: "secretsmanager:GetSecretValue", Resource: secret("test-secret-key") };
+      // The ops function (primary region only) reads its own restricted key, and no other function can (supply-checkout-6uw.4)
+      const opsKey = [expect.stringMatching(/^OpsFunctionRole/), { Sid: "ReadOpsStripeKey", Effect: "Allow", Action: "secretsmanager:GetSecretValue", Resource: secret("test-ops-restricted-key") }];
       expect(reads).toEqual([
         [expect.stringMatching(/^BillingFunctionRole/), key],
         [expect.stringMatching(/^BillingWebhookFunctionRole/), { Sid: "ReadStripeWebhookSecret", Effect: "Allow", Action: "secretsmanager:GetSecretValue", Resource: secret("test-webhook-secret") }],
         [expect.stringMatching(/^BillingWorkerFunctionRole/), key],
+        ...(region === EAST ? [opsKey] : []),
       ]);
       // No role reaches any secret
       expect(resources(template, "AWS::IAM::Role").filter(([, r]) => JSON.stringify(r.Properties).includes("secretsmanager:"))).toEqual([]);
@@ -823,6 +826,12 @@ describe("operator-access role (ADR 0015)", () => {
     const env = (resources(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("OpsFunction"))?.[1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
     expect(env).toMatchObject({ SEAT_QUEUE_URL: { Ref: expect.stringMatching(/^SeatSyncsQueue/) } });
     expect(env).not.toHaveProperty("BILLING_QUEUE_URL");
+    // Its Stripe key is the ops restricted key, read by name: never the billing functions' secret key (supply-checkout-6uw.4)
+    expect(env).toMatchObject({ STRIPE_OPS_KEY_SECRET_ID: "supply-checkout/prod/stripe/test-ops-restricted-key", STRIPE_MODE: "test" });
+    expect(env).not.toHaveProperty("STRIPE_SECRET_ID");
+    expect(JSON.stringify(statements)).not.toMatch(/secret-key|webhook-secret|kms:/);
+    const live = (resources(api(EAST, {}, { stripeMode: "live" }).template, "AWS::Lambda::Function").find(([id]) => id.startsWith("OpsFunction"))?.[1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    expect(live).toMatchObject({ STRIPE_OPS_KEY_SECRET_ID: "supply-checkout/prod/stripe/live-ops-restricted-key", STRIPE_MODE: "live" });
   });
 
   it("gives the ops function the operator pool's settings and its role", () => {
