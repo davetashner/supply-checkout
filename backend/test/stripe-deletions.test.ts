@@ -9,7 +9,7 @@ import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import type { PurgeStripe } from "../src/billing/closing.js";
 import { connection } from "../src/data/client.js";
-import { CLOSED_TEAM_RETENTION_DAYS, closeTeam, createTeam, linkStripeCustomer, listStripeCustomerDeletions, queueStripeCustomerDeletion, removeStripeCustomerDeletion } from "../src/data/index.js";
+import { CLOSED_TEAM_RETENTION_DAYS, closeTeam, createTeam, isTeamPurgedOrPurging, linkStripeCustomer, listStripeCustomerDeletions, queueStripeCustomerDeletion, removeStripeCustomerDeletion } from "../src/data/index.js";
 import { STRIPE_DELETIONS_PARTITION } from "../src/data/schema.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { createTeamPurgeHandler } from "../src/ops/team-purge-handler.js";
@@ -49,6 +49,12 @@ describe.skipIf(!endpoint)("queued Stripe customer deletions (DynamoDB Local)", 
     await expect(queueStripeCustomerDeletion(table.db, { teamId: "team q", stripeCustomerId: "cus_q", queuedAt: "2026-09-01T00:00:00.000Z" })).rejects.toThrow("Invalid team ID");
     await expect(queueStripeCustomerDeletion(table.db, { teamId: "team-q", stripeCustomerId: "cus q", queuedAt: "2026-09-01T00:00:00.000Z" })).rejects.toThrow("Invalid Stripe customer ID");
     await expect(queueStripeCustomerDeletion(table.db, { teamId: "team-q", stripeCustomerId: "cus_q", queuedAt: "soon" })).rejects.toThrow("Invalid queuedAt");
+    await expect(queueStripeCustomerDeletion(table.db, { teamId: "team-q", stripeCustomerId: "acct_q", queuedAt: "2026-09-01T00:00:00.000Z" })).rejects.toThrow("Invalid Stripe customer ID");
+    await expect(queueStripeCustomerDeletion(table.db, { teamId: "team-q", stripeCustomerId: "cus_q-1", queuedAt: "2026-09-01T00:00:00.000Z" })).rejects.toThrow("Invalid Stripe customer ID");
+    // Written by something else: counted, not listed
+    await connection(table.db).doc.send(new UpdateCommand({ TableName: table.db.tableName, Key: { PK: STRIPE_DELETIONS_PARTITION, SK: "team-r" }, UpdateExpression: "SET teamId = :t, stripeCustomerId = :c, queuedAt = :q", ExpressionAttributeValues: { ":t": "team-r", ":c": "cus_", ":q": "2026-09-01T00:00:00.000Z" } }));
+    expect(await listStripeCustomerDeletions(table.db)).toEqual({ deletions: [], invalid: 1 });
+    await removeStripeCustomerDeletion(table.db, "team-r");
   });
 
   it("purges a closed team on schedule while Stripe is down, and deletes its Stripe customer from the queue once Stripe is back", async () => {
@@ -87,7 +93,10 @@ describe.skipIf(!endpoint)("queued Stripe customer deletions (DynamoDB Local)", 
     const purge = (at: number) => createTeamPurgeHandler({ db: table.db, obs, deletions: deletions.log, stripe: async () => client, now: () => at })();
 
     const due = closedAt.getTime() + CLOSED_TEAM_RETENTION_DAYS * DAY + 1000;
+    // Still there: a queue entry naming it would be refused
+    expect(await isTeamPurgedOrPurging(table.db, team.teamId)).toBe(false);
     expect(await purge(due)).toMatchObject({ purged: 1, failed: 0 });
+    expect(await isTeamPurgedOrPurging(table.db, team.teamId)).toBe(true);
     // The data's gone on schedule, the Stripe customer isn't, and its deletion is queued with the IDs its deletion record keeps
     expect(await partition(`TEAM#${team.teamId}`)).toEqual([]);
     expect(await partition(`STRIPE#${customerId}`)).toEqual([]);

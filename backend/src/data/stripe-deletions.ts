@@ -28,6 +28,14 @@ export interface StripeDeletion {
 
 const keyOf = (teamId: string) => ({ PK: STRIPE_DELETIONS_PARTITION, SK: id(teamId, "team ID") });
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+/** A Stripe customer ID: only these are ever queued, or sent to Stripe from the queue. */
+const CUSTOMER = /^cus_[A-Za-z0-9]+$/;
+
+/** The Stripe customer ID, checked: `cus_` and letters and digits only. Throws on anything else. */
+function customerId(value: unknown): string {
+  if (typeof value !== "string" || !CUSTOMER.test(id(value, "Stripe customer ID"))) throw new Error("Invalid Stripe customer ID");
+  return value;
+}
 
 /**
  * Queues the deletion of a purged team's Stripe customer. Written once: a
@@ -41,7 +49,7 @@ export async function queueStripeCustomerDeletion(db: Db, deletion: StripeDeleti
     await connection(db).doc.send(
       new PutCommand({
         TableName: db.tableName,
-        Item: { ...keyOf(deletion.teamId), teamId: deletion.teamId, stripeCustomerId: id(deletion.stripeCustomerId, "Stripe customer ID"), queuedAt: deletion.queuedAt },
+        Item: { ...keyOf(deletion.teamId), teamId: deletion.teamId, stripeCustomerId: customerId(deletion.stripeCustomerId), queuedAt: deletion.queuedAt },
         ConditionExpression: "attribute_not_exists(PK)",
       }),
     );
@@ -52,8 +60,9 @@ export async function queueStripeCustomerDeletion(db: Db, deletion: StripeDeleti
 
 /**
  * Every queued deletion, the oldest first (by `queuedAt`), and how many
- * entries it couldn't read (not something this module wrote: left for a
- * person, never sent to Stripe). Every page: the partition holds only the
+ * entries it couldn't read (not something this module wrote, or a customer
+ * ID that isn't `cus_` and letters and digits: left for a person, never sent
+ * to Stripe). Every page: the partition holds only the
  * deletions Stripe hasn't confirmed, normally none.
  */
 export async function listStripeCustomerDeletions(db: Db): Promise<{ deletions: StripeDeletion[]; invalid: number }> {
@@ -76,7 +85,7 @@ export async function listStripeCustomerDeletions(db: Db): Promise<{ deletions: 
       const { SK, teamId, stripeCustomerId, queuedAt } = item;
       try {
         if (SK !== teamId || typeof queuedAt !== "string" || !ISO.test(queuedAt)) throw new Error("Not a queued deletion");
-        deletions.push({ teamId: id(teamId, "team ID"), stripeCustomerId: id(stripeCustomerId, "Stripe customer ID"), queuedAt });
+        deletions.push({ teamId: id(teamId, "team ID"), stripeCustomerId: customerId(stripeCustomerId), queuedAt });
       } catch {
         invalid++;
       }

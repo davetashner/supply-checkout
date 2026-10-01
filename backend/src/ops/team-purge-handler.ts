@@ -134,6 +134,7 @@ import {
   countTeamsDueBefore,
   type Db,
   isTeamOpen,
+  isTeamPurgedOrPurging,
   listClosedTeamsToEnd,
   listSetAsideTeams,
   listStripeCustomerDeletions,
@@ -387,6 +388,11 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
         const result = await deleteStripeCustomer(await deps.stripe(), customerId);
         run.stripeFailures = 0;
         customerDeleted(teamId, customerId, result, "purge");
+        // Best effort: an entry an earlier, stopped run queued would otherwise be retried and found
+        // already deleted, a false sign of a key or mode mismatch
+        await removeStripeCustomerDeletion(db, teamId).catch((error: unknown) => {
+          obs.logger.warn("Queued Stripe customer deletion not cleared after the purge deleted it", { teamId, customerId, error: errorName(error) });
+        });
         return;
       } catch (error) {
         run.stripeFailures++;
@@ -403,7 +409,8 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
   /**
    * Retries the queued Stripe customer deletions, oldest first, until the run's budget is
    * spent or Stripe has failed STRIPE_FAILURES_BEFORE_QUEUEING times in a row, removing each
-   * one Stripe confirms. Then sends the StripeCustomerDeletionsPending and
+   * one Stripe confirms. An entry whose team is still there and not being purged is refused,
+   * never sent to Stripe, and fails the run like an entry it can't read. Then sends the StripeCustomerDeletionsPending and
    * StripeCustomerDeletionOldestHours gauges (the "Stripe customer deletion retrying" and
    * "stuck" alarms). A deletion Stripe still refuses is only logged: the gauges alarm on it
    * if it keeps failing. Returns how many failed for another reason (the queue couldn't be
@@ -426,6 +433,21 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
       const { teamId, stripeCustomerId: customerId, queuedAt } = queued;
       if (run.stripeFailures >= STRIPE_FAILURES_BEFORE_QUEUEING || now() - started > PURGE_BUDGET_MS) {
         left.push(queued);
+        continue;
+      }
+      // Only for a team that's gone or being purged: an entry naming a team still there is refused
+      let purged: boolean;
+      try {
+        purged = await isTeamPurgedOrPurging(db, teamId);
+      } catch (error) {
+        failures++;
+        left.push(queued);
+        obs.logger.error("Queued Stripe customer deletion not checked", { teamId, customerId, error: errorName(error) });
+        continue;
+      }
+      if (!purged) {
+        failures++;
+        obs.logger.error("Queued Stripe customer deletion refused: the team isn't purged", { teamId, customerId });
         continue;
       }
       let result: "deleted" | "already_deleted";
@@ -516,7 +538,7 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
     // A run that failed anywhere fails, so the Lambda errors alarm sees it
     if (failed) throw new Error(`${failed} of ${due.length} closed teams weren't purged`);
     if (endFailures) throw new Error(`${endFailures} closed teams' subscriptions weren't ended`);
-    if (retryFailures) throw new Error(`${retryFailures} queued Stripe customer deletions couldn't be read or cleared`);
+    if (retryFailures) throw new Error(`${retryFailures} queued Stripe customer deletions couldn't be read, were refused or couldn't be cleared`);
     return { purged, failed, due: due.length, overdue };
   };
 }

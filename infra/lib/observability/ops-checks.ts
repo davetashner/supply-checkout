@@ -272,7 +272,10 @@ export class OpsChecks extends Construct {
     this.teamPurge.addToRolePolicy(
       new PolicyStatement({
         sid: "TableKeyThroughDynamoDb",
-        // Reads and deletes only: nothing it sends is encrypted, so no Encrypt or GenerateDataKey
+        // DynamoDB encrypts and decrypts items with its cached table key, so reads, deletes and writes
+        // (the UpdateItem marks, and the PutItem of a queued Stripe customer deletion) need only Decrypt.
+        // Checked after the first deploy: KMS AccessDenied for this role in CloudTrail would mean adding
+        // kms:Encrypt and kms:GenerateDataKey here, with the same ViaService condition (docs/journeys.md, J11)
         actions: ["kms:Decrypt", "kms:DescribeKey"],
         resources: [tableKey],
         conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },

@@ -874,7 +874,7 @@ describe.skipIf(!endpoint)("re-applying deletions on DynamoDB Local", () => {
   it("queues the Stripe customer of a team it purges again for the scheduled purge to delete, so a queue entry the restore lost comes back (supply-checkout-8jc.42)", async () => {
     const db = table.db;
     const t = await team(db, newUser());
-    const customerId = `cus_${t.teamId.slice(5, 13)}`;
+    const customerId = `cus_${t.teamId.replace(/[^A-Za-z0-9]/g, "").slice(0, 12)}`;
     await linkStripeCustomer(db, t.context, customerId);
     const plan = await planDeletions(db, [{ kind: "team", id: t.teamId, deletedAt: NOW.toISOString(), stripeCustomerId: customerId }]);
     expect(plan.teamsToPurge).toEqual([t.teamId]);

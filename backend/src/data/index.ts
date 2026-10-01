@@ -49,7 +49,7 @@ export * from "./documents.js";
 export * from "./commands.js";
 export * from "./imports.js";
 export * from "./accounts.js";
-export { type ClosedTeamToEnd, closedTeamToEnd, countTeamsDueBefore, isTeamOpen, listClosedTeamsToEnd, listSetAsideTeams, listTeamsToPurge, markSubscriptionEnding, markSubscriptionSetAside, purgeTeam, type PurgedStripeIds, type PurgeResult, type SetAsideReason, type SetAsideTeam, type TeamDue } from "./team-purge.js";
+export { type ClosedTeamToEnd, closedTeamToEnd, countTeamsDueBefore, isTeamOpen, isTeamPurgedOrPurging, listClosedTeamsToEnd, listSetAsideTeams, listTeamsToPurge, markSubscriptionEnding, markSubscriptionSetAside, purgeTeam, type PurgedStripeIds, type PurgeResult, type SetAsideReason, type SetAsideTeam, type TeamDue } from "./team-purge.js";
 export { listStripeCustomerDeletions, queueStripeCustomerDeletion, removeStripeCustomerDeletion, type StripeDeletion } from "./stripe-deletions.js";
 export * from "./email-codes.js";
 export * from "./verified-email.js";
