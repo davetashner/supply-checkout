@@ -1102,7 +1102,10 @@ async function startReceipt(file) {
   try {
     const { prompt, ids } = receiptPrompt();
     const res = await sampleFn.json(prompt, { images: await shrinkPhoto(file), signal: ctl.signal });
-    const items = res && Array.isArray(res.items) ? res.items.filter(i => i && i.name).map(i => ({ ...i, match: own(ids, i.match) || "" })) : [];
+    // The AWS runtime's server names the matched product by its key (src/aws/receipts.js sets
+    // byKey); claude.ai's model by the prompt's ids
+    const matchOf = m => res.byKey ? (typeof m === "string" && own(products, m) ? m : "") : own(ids, m) || "";
+    const items = res && Array.isArray(res.items) ? res.items.filter(i => i && i.name).map(i => ({ ...i, match: matchOf(i.match) })) : [];
     if (!items.length) { receiptError("No line items were found in that photo. Lay the receipt flat, fill the frame, and make sure the text is in focus."); return; }
     draft = newDraft({ ...res, items }); saveDraft();
     await refreshMarkup(); renderReceipt();

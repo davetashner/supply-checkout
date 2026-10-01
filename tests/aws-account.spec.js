@@ -47,8 +47,8 @@ test.describe("sign-in", { tag: ["@J0"] }, () => {
     await expect(page.getByRole("button", { name: /Echo Studio/ })).toContainText("Someone");
     await expect(page.getByRole("button", { name: /Mine/ })).toContainText("Pat Lee");
     await expect(page.locator(".teambar")).toContainText("Team: Echo Cleaning");
-    // No receipt reading until its endpoint exists
-    await expect(page.getByText("Scan receipt")).toHaveCount(0);
+    // Receipt reading, on the receipt endpoint (tests/aws-receipts.spec.js)
+    await expect(page.getByText("Scan receipt")).toBeVisible();
     expect(await page.evaluate(() => localStorage.getItem("supplyCheckout.team"))).toBe("t1");
 
     const me = backend.requests("GET", "/me")[0];

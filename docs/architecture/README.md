@@ -23,7 +23,7 @@ The design below is partly built. This table says which parts are on `main` toda
 | Billing: Stripe products and prices by script, Checkout Sessions (beads `8jc.10`, `x0l`) | Built, in the Stripe sandbox | [Billing](../infrastructure.md#billing) |
 | Billing: webhook, SQS FIFO queue and worker, read-only when a subscription ends (bead `2kl`) | Built, in the Stripe sandbox | [Billing](../infrastructure.md#billing) |
 | Billing: grace period for past-due teams, deleting canceled teams (bead `qdx`) | Planned | |
-| Receipt reading with Bedrock: the `receipts` function and route (bead `kx8`) | Built; the web app is wired to it next | [Receipt reading](../infrastructure.md#receipt-reading) |
+| Receipt reading with Bedrock: the `receipts` function and route (bead `kx8`) | Built, and the web app uses it | [Receipt reading](../infrastructure.md#receipt-reading) |
 | Synthetics canaries, automated deploys to staging and prod | Planned | |
 | Faster cut-off of live updates for removed members and canceled teams: a channel per member (bead `4zn`, [ADR 0016](../adr/0016-per-member-live-update-channels.md)) | Built | |
 | iOS and Android apps, us-west-2 | Phase 2 | |

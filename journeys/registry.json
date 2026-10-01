@@ -124,7 +124,7 @@
           "tests": ["backend/test/equipment-api.test.ts", "backend/test/equipment.test.ts"]
         }
       ],
-      "planned": [{ "what": "reading receipts in the web app (the Bedrock endpoint is built)", "beads": ["supply-checkout-kx8", "supply-checkout-wxx"] }]
+      "planned": [{ "what": "per-plan receipt limits and per-user rate limits", "beads": ["supply-checkout-wxx"] }]
     },
     {
       "id": "J6",

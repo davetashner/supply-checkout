@@ -189,12 +189,13 @@ export function createSession(config, { onSignedOut, onRefreshed, onUserChanged 
     // Once the session has ended (signed out, or a refresh found it over) there's no token:
     // a call then, such as a save while the Managed Login sign-out page loads, is refused
     // as unauthenticated without reaching the API.
-    async api(method, path, body, headers) {
+    // `options` are request()'s: a longer timeout, and the caller's abort signal.
+    async api(method, path, body, headers, options) {
       if (!tokens) throw ENDED;
       const send = () => {
         const init = body ? json(method, body, headers) : { method, headers: { ...headers } };
         init.headers.authorization = "Bearer " + tokens.accessToken;
-        return request(config.apiUrl + path, init);
+        return request(config.apiUrl + path, init, options);
       };
       try { return await send(); }
       catch (e) {

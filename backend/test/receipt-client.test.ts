@@ -48,6 +48,16 @@ describe("the receipt model client", () => {
     expect(() => receiptModelClient({ AWS_REGION: "https://x" })).toThrow(/AWS_REGION/);
   });
 
+  it("refuses to start with extra headers for every request, passed in or in the process environment", () => {
+    expect(() => receiptModelClient({ AWS_REGION: REGION, ANTHROPIC_CUSTOM_HEADERS: "x-forwarded-to: elsewhere" })).toThrow(/ANTHROPIC_CUSTOM_HEADERS/);
+    vi.stubEnv("ANTHROPIC_CUSTOM_HEADERS", "x-forwarded-to: elsewhere");
+    try {
+      expect(() => receiptModelClient({ AWS_REGION: REGION })).toThrow(/ANTHROPIC_CUSTOM_HEADERS/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("refuses a bearer token that reached the client from the process environment", () => {
     vi.stubEnv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-api-key");
     try {
