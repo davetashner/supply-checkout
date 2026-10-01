@@ -991,7 +991,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
   const editStock = async (page, value) => {
     await page.getByRole("button", { name: "Inventory" }).click();
     await inventoryRow(page, "Paper towels").click();
-    await modal(page).getByLabel("In storage now").fill(value);
+    await modal(page).getByLabel("Single items in storage now").fill(value);
     await modal(page).getByRole("button", { name: "Save" }).click();
   };
   const stockCell = (page, name) => inventoryRow(page, name).locator("td").nth(1);
@@ -1013,7 +1013,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     await page.getByRole("button", { name: "Inventory" }).click();
     await inventoryRow(page, "Paper towels").click();
     await modal(page).getByLabel("Price each ($)").fill("9");
-    await modal(page).getByLabel("In storage now").fill("7");
+    await modal(page).getByLabel("Single items in storage now").fill("7");
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(toast(page)).toHaveText("Saved");
     expect(backend.requests("PUT", "/teams/t1/products/SKU1").map((r) => r.body)).toEqual([
@@ -1028,7 +1028,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     await page.getByRole("button", { name: "Inventory" }).click();
     await inventoryRow(page, "Paper towels").click();
     await modal(page).getByLabel("Price each ($)").fill("9");
-    await modal(page).getByLabel("In storage now").fill("7");
+    await modal(page).getByLabel("Single items in storage now").fill("7");
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
     expect(backend.doc("t1", "products", "SKU1")).toMatchObject({ version: 3, data: { price: 9, stock: 7 } });
@@ -1051,7 +1051,7 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     await page.getByRole("button", { name: "+ Add item" }).click();
     await modal(page).getByLabel("Barcode (optional)").fill("MOP1");
     await modal(page).getByLabel("Item name").fill("Mop heads");
-    await modal(page).getByLabel("In storage now").fill("5");
+    await modal(page).getByLabel("Single items in storage now").fill("5");
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(stockCell(page, "Mop heads")).toHaveText("5");
     const key = backend.requests("PUT", /^\/teams\/t1\/products\//)[0].path.split("/").pop();

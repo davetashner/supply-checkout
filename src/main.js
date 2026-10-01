@@ -567,6 +567,14 @@ function liveSheet(d) {
 // its price each where the cost isn't known
 const MAX_PACK = 10000;
 const storageCents = p => hasStock(p) ? Math.round(p.stock * round2(unitValue(p)) * 100) : 0;
+const packInput = v => Math.min(MAX_PACK, Math.max(1, int(v)));
+// A count of single items as full packs and loose ones, for the line under the count
+function packsText(n, size) {
+  const full = Math.floor(n / size), loose = n % size;
+  if (!full) return `= ${loose} loose, less than a full pack`;
+  const packs = `= ${full} full pack${full === 1 ? "" : "s"}`;
+  return loose ? `${packs} + ${loose} loose` : packs;
+}
 
 function productModal(key) {
   const p = key ? products[key] : null;
@@ -583,15 +591,22 @@ function productModal(key) {
       <div class="field"><label for="fName">Item name</label><input type="text" id="fName" required value="${esc(p ? p.name : "")}" ${p ? "data-autofocus" : ""}></div>
       <div class="field"><label for="fPrice">Price each ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p ? round2(p.price) : ""}" placeholder="0.00"></div>
       <div class="field"><label for="fCost">Cost each ($)</label><input type="number" id="fCost" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${p && hasCost(p) ? round2(p.cost) : ""}" placeholder="Leave blank if not known"></div>
-      <div class="field"><label for="fStock">In storage now</label><input type="number" id="fStock" min="0" inputmode="numeric" value="${hasStock(p) ? p.stock : ""}" placeholder="Leave blank if not counted"></div>
-      <div class="field"><label for="fPack">Comes in packs of</label><input type="number" id="fPack" min="1" max="${MAX_PACK}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.packSize) ? p.packSize : ""}" placeholder="1"></div>
-      <p class="hint">Price is what a client is charged. Cost is what you paid each, before tax, and isn't shown on sheets. Storage counts single items, not packs.</p>
+      <div class="field"><label for="fPack">Comes in packs of (optional)</label><input type="number" id="fPack" min="1" max="${MAX_PACK}" step="1" inputmode="numeric" value="${p && Number.isInteger(p.packSize) ? p.packSize : ""}" placeholder="Leave blank if bought one at a time" aria-describedby="fPackHint"><p class="hint" id="fPackHint">Receipts add packs × this many to storage.</p></div>
+      <div class="field"><label for="fStock">Single items in storage now</label><input type="number" id="fStock" min="0" inputmode="numeric" value="${hasStock(p) ? p.stock : ""}" placeholder="Leave blank if not counted"><p class="hint" id="fPacks" aria-live="polite" hidden></p></div>
+      <p class="hint">Price is what a client is charged. Cost is what you paid each, before tax, and isn't shown on sheets.</p>
       ${p ? `<p class="hint">Price changes apply to new checkouts. Sheets keep the price they were checked out at; change it on a sheet by tapping the row.</p>` : ""}
       <div class="modal-actions">${p ? `<button type="button" class="btn danger" id="remove">Delete</button><span class="spacer"></span>` : ""}<button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div>
     </form>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     const scan = m.querySelector("#fScan");
     scan && scan.addEventListener("change", async () => { const c = await scanFromInput(scan); if (c) m.querySelector("#fCode").value = c; });
+    const stock = m.querySelector("#fStock"), pack = m.querySelector("#fPack"), packs = m.querySelector("#fPacks");
+    const paintPacks = () => {
+      const n = int(stock.value), size = packInput(pack.value);
+      packs.hidden = !(n > 0 && size > 1);
+      packs.textContent = packs.hidden ? "" : packsText(n, size);
+    };
+    stock.addEventListener("input", paintPacks); pack.addEventListener("input", paintPacks); paintPacks();
     const rm = m.querySelector("#remove"), form = m.querySelector("#f");
     rm && armButton(rm, "Tap to delete", () => busy(form, () => closing(write(() => db.doc("products/" + key).delete(), "Item deleted"))));
     onSubmit(form, () => {
@@ -605,7 +620,7 @@ function productModal(key) {
       const opt = (id, field, val) => { const v = m.querySelector(id).value.trim(); if (v === "") delete body[field]; else body[field] = val(v); };
       opt("#fStock", "stock", int);
       opt("#fCost", "cost", v => Math.max(0, round2(v)));
-      opt("#fPack", "packSize", v => Math.min(MAX_PACK, Math.max(1, int(v))));
+      opt("#fPack", "packSize", packInput);
       saving(form, () => closing(write(() => saveItem(db, action, docKey, body, { reason: "count", count: body.stock }), "Saved")));
     });
   });
