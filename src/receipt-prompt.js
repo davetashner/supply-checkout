@@ -19,4 +19,6 @@ export const sampleErr = code => ({
   images_unavailable: "Receipt reading isn't available in this view.",
   invalid_json: "The receipt couldn't be read cleanly. Try again, or take a sharper photo.",
   session_expired: "Your sign-in expired. Reload the page and sign in again.",
+  receipt_limit: "Your team has read all the receipts included this month. Enter the items by hand, or ask an owner about your plan.",
+  timeout: "Reading the receipt took too long. Try again, or take a sharper photo.",
 }[code] || "Reading the receipt failed. Check your connection and try again.");

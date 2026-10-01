@@ -17,6 +17,7 @@ import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, firstRunKey, 
 import { createDb } from "./db.js";
 import { openImport } from "./import.js";
 import { openSettings, settingsFor } from "./settings.js";
+import { receiptsFor } from "./receipts.js";
 import { openMembers, openReopen } from "./members.js";
 import { openDeleteAccount } from "./delete-account.js";
 import { openVerifyEmail } from "./verify-email.js";
@@ -570,6 +571,8 @@ export async function start(config) {
       firstRun: fr,
       // The team settings (the equipment markup, ADR 0017): owners only, null for anyone else
       settings: settingsFor(session.api, team),
+      // Receipt reading on Bedrock (ADR 0008); the app offers it only to those who can write
+      sample: receiptsFor(session.api, team),
     };
   }
 

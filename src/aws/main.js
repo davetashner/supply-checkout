@@ -12,10 +12,10 @@ import { start } from "./account.js";
 // of package.json is bundled
 import { version } from "../../package.json";
 
-// Receipt reading (use("sample")) needs the receipt endpoint, supply-checkout-kx8. Until
-// it's built, sample is null and the app hides "Scan receipt". Switch this on when that
-// endpoint's client is added to the capabilities in account.js.
-export const RECEIPT_READING = false;
+// Receipt reading (use("sample")): the receipt endpoint, POST /teams/{teamId}/receipts/read
+// (src/aws/receipts.js, supply-checkout-kx8). Switched off, sample is null and the app hides
+// "Scan receipt".
+export const RECEIPT_READING = true;
 
 const FIELDS = ["apiUrl", "authUrl", "clientId", "realtimeUrl", "realtimeHost"];
 

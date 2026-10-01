@@ -6,7 +6,8 @@
 // logged: the endpoint is set here (not ANTHROPIC_BEDROCK_BASE_URL), the
 // SDK's logging is off (not ANTHROPIC_LOG, whose debug level logs request
 // bodies), and the function refuses to start with a Bedrock bearer token
-// (AWS_BEARER_TOKEN_BEDROCK), which would replace the role's signature.
+// (AWS_BEARER_TOKEN_BEDROCK), which would replace the role's signature, or with
+// ANTHROPIC_CUSTOM_HEADERS, which the SDK adds to every request.
 
 import AnthropicBedrock from "@anthropic-ai/bedrock-sdk";
 
@@ -19,6 +20,8 @@ export function receiptModelClient(env: NodeJS.ProcessEnv = process.env): Anthro
   const region = env.AWS_REGION;
   if (!region || !REGION.test(region)) throw new Error("AWS_REGION is not set to a region");
   if (env.AWS_BEARER_TOKEN_BEDROCK) throw new Error("AWS_BEARER_TOKEN_BEDROCK is set: receipts are signed with the function's role only");
+  // The SDK reads it from process.env itself, so that's checked too
+  if (env.ANTHROPIC_CUSTOM_HEADERS || process.env.ANTHROPIC_CUSTOM_HEADERS) throw new Error("ANTHROPIC_CUSTOM_HEADERS is set: the receipts function sends no extra headers");
   // Retries and timeouts are per call (readReceipt)
   const client = new AnthropicBedrock({ awsRegion: region, baseURL: bedrockRuntimeUrl(region), logLevel: "off", maxRetries: 0 });
   // SigV4 only: no bearer token from anywhere

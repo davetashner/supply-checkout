@@ -273,7 +273,7 @@ test.describe("data", () => {
         one: [one.exists, one.data().client], again,
         can: [await user.can("data.write"), await user.can("billing.manage")], id: await user.id(),
         profiles: await user.profiles(["u-pat", "u-other"]),
-        sample: await window.claude.use("sample"), other: await window.claude.use("clipboard"),
+        sample: typeof (await window.claude.use("sample")).json, other: await window.claude.use("clipboard"),
       };
     });
     expect(result).toMatchObject({
@@ -284,7 +284,7 @@ test.describe("data", () => {
       one: [true, "A"], again: 2,
       can: [true, false], id: "u-pat",
       profiles: { "u-pat": { id: "u-pat", name: "Pat Lee", isMe: true } },
-      sample: null, other: null,
+      sample: "function", other: null,
     });
     expect(backend.requests("PUT", /^\/teams\/t1\/notes\//)).toHaveLength(1);
   });

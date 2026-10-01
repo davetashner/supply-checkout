@@ -88,8 +88,12 @@ export class FakeBackend {
   // the invites its owners see there (invites is the signed-in user's own, for /me)
   // supportActions: { "<teamId>": [{ eventId, ts, actor, action, reason, before, after }] }, newest first
   // settings: { "<teamId>": { equipmentMarkup, version } }, the team settings (ADR 0017)
-  constructor({ teams = [TEAM], invites = [], members = {}, teamInvites = {}, supportActions = {}, settings = {}, user = USER, docs = {}, signedIn = true, claims = { given_name: "Pat", family_name: "Lee", email: USER.email }, config = CONFIG, expiresIn = 3600 } = {}) {
-    Object.assign(this, { teams: clone(teams), invites: clone(invites), members: clone(members), teamInvites: clone(teamInvites), supportActions: clone(supportActions), settings: clone(settings), user, signedIn, claims, config, expiresIn });
+  // receipt: what POST /teams/{teamId}/receipts/read answers (the lines, with `match` as
+  // product keys); receiptLimit: the team's receipts a month (RECEIPTS_PER_TEAM_PER_MONTH)
+  constructor({ teams = [TEAM], invites = [], members = {}, teamInvites = {}, supportActions = {}, settings = {}, user = USER, docs = {}, signedIn = true, claims = { given_name: "Pat", family_name: "Lee", email: USER.email }, config = CONFIG, expiresIn = 3600, receipt = { store: null, date: null, items: [], subtotal: null, tax: null, total: null }, receiptLimit = 200 } = {}) {
+    Object.assign(this, { teams: clone(teams), invites: clone(invites), members: clone(members), teamInvites: clone(teamInvites), supportActions: clone(supportActions), settings: clone(settings), user, signedIn, claims, config, expiresIn, receipt: clone(receipt), receiptLimit });
+    // Receipts read per team, as the API counts them (backend/src/data/usage.ts)
+    this.receiptsRead = {};
     // Invites for the user's address that /me lists once they verify it (the email routes)
     this.pendingInvites = [];
     // An address a provider rewrites the user's email to while a code is being sent: that
@@ -287,6 +291,9 @@ export class FakeBackend {
     m = path.match(/^\/teams\/([^/]+)\/settings$/);
     if (m) return this.teamSettings(decodeURIComponent(m[1]), method, call.body, err);
 
+    m = path.match(/^\/teams\/([^/]+)\/receipts\/read$/);
+    if (m && method === "POST") return this.readReceipt(decodeURIComponent(m[1]), call.body, err);
+
     m = path.match(/^\/teams\/([^/]+)\/members(?:\/([^/]+))?$/);
     if (m) return this.member(decodeURIComponent(m[1]), m[2] && decodeURIComponent(m[2]), method, call.body, err);
 
@@ -388,6 +395,22 @@ export class FakeBackend {
     const all = this.supportActions[team] || [], from = Number(query.cursor || 0), limit = Number(query.limit || 100);
     const actions = all.slice(from, from + limit);
     return [200, from + limit < all.length ? { actions, cursor: String(from + limit) } : { actions }];
+  }
+
+  // Reading a receipt as the API runs it (backend/src/api/receipts-handler.ts): contributors
+  // and owners; a JPEG or PNG as base64 whose bytes are that type; one read counted against the
+  // team's month before the model answers with this.receipt
+  readReceipt(team, body, err) {
+    const mine = this.teams.find((t) => t.id === team);
+    if (!mine) return err(403, "permission_denied", "not_member");
+    if (mine.role === "viewer") return err(403, "permission_denied", "view_only");
+    const image = body && body.image;
+    const bytes = image && typeof image.data === "string" ? Buffer.from(image.data, "base64") : Buffer.alloc(0);
+    const magic = { "image/jpeg": [0xff, 0xd8, 0xff], "image/png": [0x89, 0x50, 0x4e, 0x47] }[image && image.mediaType];
+    if (Object.keys(body || {}).join() !== "image" || !magic || magic.some((b, i) => bytes[i] !== b)) return err(400, "bad_request", "image_rejected");
+    if ((this.receiptsRead[team] || 0) >= this.receiptLimit) return [429, { error: { code: "quota_exceeded", message: `This team has read all ${this.receiptLimit} receipts included this month.`, reason: "receipt_limit" } }];
+    this.receiptsRead[team] = (this.receiptsRead[team] || 0) + 1;
+    return [200, { ...clone(this.receipt), usage: { month: "2026-09", used: this.receiptsRead[team], limit: this.receiptLimit } }];
   }
 
   // The team settings as the API runs them (backend/src/data/settings.ts): owners get the
