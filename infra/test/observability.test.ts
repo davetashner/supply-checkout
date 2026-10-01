@@ -692,21 +692,32 @@ describe("alarms added with the email code routes, the live update budget, team 
     });
   });
 
-  it("alarms on any closed team's subscription Stripe doesn't have, or that the purge set aside, where the purge runs (J7, J11, supply-checkout-8jc.17)", () => {
-    for (const [id, metric, title] of [
-      ["closed-team-subscription-not-found", BusinessMetric.ClosedTeamSubscriptionsNotFound, "Closed-team subscription not found in Stripe"],
-      ["closed-team-subscription-set-aside", BusinessMetric.ClosedTeamSubscriptionsSetAside, "Closed-team subscription set aside"],
-    ]) {
-      observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
-        AlarmName: `supply-checkout-prod-p2-${id}`,
-        Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: metric }), Stat: "Sum", Period: 3600 }) })],
-        Threshold: 0,
-        ComparisonOperator: "GreaterThanThreshold",
-        TreatMissingData: "notBreaching",
-        AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
-        AlarmDescription: Match.stringLikeRegexp(`^P2 ${title} \\(J7, J11`),
-      });
-    }
+  it("alarms on any closed team's subscription Stripe doesn't have, where the purge runs (J7, J11, supply-checkout-8jc.17)", () => {
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-closed-team-subscription-not-found",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ClosedTeamSubscriptionsNotFound }), Stat: "Sum", Period: 3600 }) })],
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      AlarmDescription: Match.stringLikeRegexp("^P2 Closed-team subscription not found in Stripe \\(J7, J11"),
+    });
+  });
+
+  it("alarms while any closed team is set aside, on the purge's gauge, over periods that always hold a run (J7, J11, supply-checkout-8jc.36)", () => {
+    const t = observability();
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-closed-team-subscription-set-aside",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ClosedTeamsSetAside }), Stat: "Maximum", Period: 2 * PURGE_EVERY_HOURS * 3600 }) })],
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      AlarmDescription: Match.stringLikeRegexp("^P2 Closed-team subscription set aside \\(J7, J11.*stays on until each team is handled"),
+    });
+    // Not on the one-off count, which goes quiet the hour after a team is set aside
+    const onCount = Object.values(t.findResources("AWS::CloudWatch::Alarm")).filter((a) => JSON.stringify(a.Properties.Metrics ?? a.Properties.MetricName ?? "").includes(`"${BusinessMetric.ClosedTeamSubscriptionsSetAside}"`));
+    expect(onCount).toEqual([]);
   });
 
   it("alarms on any closed team overdue for deletion, over periods that always hold a purge run (J11)", () => {
@@ -813,7 +824,7 @@ describe("scheduled checks", () => {
       STRIPE_SECRET_ID: "supply-checkout/prod/stripe/test-secret-key",
       STRIPE_MODE: "test",
     });
-    const attributes = ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "purgeAfter", "purging", "stripeCustomerId", "stripeSubscriptionId", "stripeCancelledFor", "stripeSetAsideFor", "teamId"];
+    const attributes = ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "purgeAfter", "purging", "stripeCustomerId", "stripeSubscriptionId", "stripeCancelledFor", "stripeSetAsideFor", "stripeSetAsideReason", "teamId"];
     const [, index, query, items, mark] = found as Record<string, unknown>[];
     expect(index?.Condition).toEqual({
       "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAMS#CLOSED"], "dynamodb:Attributes": attributes },
@@ -840,7 +851,7 @@ describe("scheduled checks", () => {
     expect(mark?.Resource).toEqual(table);
     expect(mark?.Condition).toEqual({
       "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
-      "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "purgeAfter", "purging", "stripeCancelledFor", "stripeSetAsideFor"] },
+      "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "purgeAfter", "purging", "stripeCancelledFor", "stripeSetAsideFor", "stripeSetAsideReason"] },
       StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
     });
   });

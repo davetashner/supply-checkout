@@ -3166,7 +3166,7 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Closed-team subscription not found in Stripe (J7, J11, us-east-1). Any ClosedTeamSubscriptionsNotFound over an hour: the hourly closed-team purge (primary region) asked Stripe for a closed team's subscription, Stripe said it doesn't exist, and the purge recorded it as nothing to end. Usually the subscription went with its customer, but a Stripe key or mode mismatch looks the same for every closed team, with none cancelled. The log line \"Closed team's subscription not found in Stripe\" has the team and subscription IDs: look the subscription up in the Stripe Dashboard, in the purge's mode. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmDescription": "P2 Closed-team subscription not found in Stripe (J7, J11, us-east-1). Any ClosedTeamSubscriptionsNotFound over an hour: the hourly closed-team purge (primary region) asked Stripe for a closed team's subscription, Stripe said it doesn't exist, and the purge set the team aside (stripeSetAsideFor, reason NotFound) rather than retry it every hour. Usually the subscription went with its customer, but a Stripe key or mode mismatch looks the same for every closed team, with none cancelled. The log line \"Closed team's subscription not found in Stripe\" has the team and subscription IDs: look the subscription up in the Stripe Dashboard, in the purge's mode. Once the key or mode is fixed, removing stripeSetAsideFor from each team's META item has the next run end its subscription. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-closed-team-subscription-not-found",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
@@ -3231,7 +3231,7 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Closed-team subscription set aside (J7, J11, us-east-1). Any ClosedTeamSubscriptionsSetAside over an hour: the hourly closed-team purge (primary region) found a closed team's recorded subscription belongs to another Stripe customer, so it didn't end it and won't try again for this closure. The log line \"Closed team's subscription set aside\" has the team and subscription IDs: find which subscription the team really pays with and end it in the Stripe Dashboard. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmDescription": "P2 Closed-team subscription set aside (J7, J11, us-east-1). ClosedTeamsSetAside above 0 at its maximum over 2 hours: closed teams whose subscription the hourly closed-team purge (primary region) won't end or retry for this closure, until a person deals with each one: it belongs to another Stripe customer (CustomerMismatch), Stripe doesn't have it (NotFound), or Stripe refused to end it with an error retrying won't change (PermanentError). The purge sends the gauge every run, so this stays on until each team is handled (stripeSetAsideFor removed, or the team purged), and logs \"Closed team's subscription still set aside\" with each team's ID and reason. See docs/journeys.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-closed-team-subscription-set-aside",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
@@ -3239,7 +3239,7 @@
         "Metrics": [
           {
             "Id": "m1",
-            "Label": "ClosedTeamSubscriptionsSetAside (us-east-1)",
+            "Label": "ClosedTeamsSetAside (us-east-1)",
             "MetricStat": {
               "Metric": {
                 "Dimensions": [
@@ -3248,11 +3248,11 @@
                     "Value": "us-east-1"
                   }
                 ],
-                "MetricName": "ClosedTeamSubscriptionsSetAside",
+                "MetricName": "ClosedTeamsSetAside",
                 "Namespace": "SupplyCheckout"
               },
-              "Period": 3600,
-              "Stat": "Sum"
+              "Period": 7200,
+              "Stat": "Maximum"
             },
             "ReturnData": true
           }
@@ -4425,6 +4425,7 @@
                     "stripeSubscriptionId",
                     "stripeCancelledFor",
                     "stripeSetAsideFor",
+                    "stripeSetAsideReason",
                     "teamId"
                   ]
                 },
@@ -4473,6 +4474,7 @@
                     "stripeSubscriptionId",
                     "stripeCancelledFor",
                     "stripeSetAsideFor",
+                    "stripeSetAsideReason",
                     "teamId"
                   ]
                 },
@@ -4521,6 +4523,7 @@
                     "stripeSubscriptionId",
                     "stripeCancelledFor",
                     "stripeSetAsideFor",
+                    "stripeSetAsideReason",
                     "teamId"
                   ]
                 },
@@ -4558,7 +4561,8 @@
                     "purgeAfter",
                     "purging",
                     "stripeCancelledFor",
-                    "stripeSetAsideFor"
+                    "stripeSetAsideFor",
+                    "stripeSetAsideReason"
                   ]
                 },
                 "StringEqualsIfExists": {
@@ -10549,11 +10553,11 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamsReopened\",\"Region\",\"us-east-1\",{\"label\":\"TeamsReopened (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNotices\",\"Region\",\"us-east-1\",{\"label\":\"TeamReopenedNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"TeamReopenedNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsReopened\",\"Region\",\"us-west-2\",{\"label\":\"TeamsReopened (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNotices\",\"Region\",\"us-west-2\",{\"label\":\"TeamReopenedNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"TeamReopenedNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":61,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J11: closed teams overdue for deletion\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"TeamsReopened\",\"Region\",\"us-east-1\",{\"label\":\"TeamsReopened (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNotices\",\"Region\",\"us-east-1\",{\"label\":\"TeamReopenedNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"TeamReopenedNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamsReopened\",\"Region\",\"us-west-2\",{\"label\":\"TeamsReopened (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNotices\",\"Region\",\"us-west-2\",{\"label\":\"TeamReopenedNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"TeamReopenedNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"TeamReopenedNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":61,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J11: closed teams overdue for deletion; J7: set aside\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"ClosedTeamsOverdue\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamsOverdue (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"ClosedTeamsOverdue\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamsOverdue (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":67,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email codes not sent or checked (5xx)\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"ClosedTeamsOverdue\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamsOverdue (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"ClosedTeamsSetAside\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamsSetAside (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"ClosedTeamsOverdue\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamsOverdue (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"ClosedTeamsSetAside\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamsSetAside (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":67,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J3: email codes not sent or checked (5xx)\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },

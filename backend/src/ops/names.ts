@@ -30,6 +30,9 @@ export const PURGE_BUDGET_MS = 4 * 60_000;
  */
 export const CLOSED_TEAMS_TO_END_PER_RUN = 100;
 
+/** The most teams set aside for a person that one purge run logs by ID; its gauge (ClosedTeamsSetAside) counts them all. */
+export const MAX_LOGGED_SET_ASIDE = 25;
+
 /**
  * A closed team still there this long after its deletion date is overdue:
  * the purge's gauge (ClosedTeamsOverdue) counts them, and the "Deletion
