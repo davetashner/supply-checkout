@@ -150,7 +150,7 @@ Acceptance: a change on one device shows on another within 2 seconds at p95 in s
 2. Writer: as user B, `PUT /teams/{teamId}/sheets/latency-<n>` 200 times, one every 2 seconds, recording the local time each request was **sent**.
 3. Latency for each write = event arrival − request sent, matched on the sheet ID and version. Take the 95th percentile. It includes the API write, the stream, the consumer and AppSync's fan-out: everything a crew member waits for. Running both on one machine keeps the clocks the same.
 
-**Server side, all the time.** The consumer logs one `Batch` line per invocation with `lagMs` (now minus the oldest record's stream time, which is to the second), and the `Live updates delayed` alarm watches its `IteratorAge`. In Logs Insights, on `/aws/lambda/supply-checkout-<env>-live-updates`:
+**Server side, all the time.** The consumer logs one `Batch` line per invocation with `lagMs` (now minus the oldest record's stream time, which is to the second), and the `Live updates delayed` alarm watches its `IteratorAge`. In Logs Insights, on the log group of `supply-checkout-<env>-live-updates` (the realtime stack's `PublisherLogs`; [Finding a function's log group](../journeys.md#finding-a-functions-log-group)):
 
 ```
 filter message = "Batch" | stats pct(lagMs, 95) as p95, count() by bin(1h)

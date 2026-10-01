@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { Validations } from "aws-cdk-lib";
 import { testApp } from "./cdk-app.js";
 import { Match, Template } from "aws-cdk-lib/assertions";
@@ -1302,6 +1302,27 @@ describe("defaults for every function and log group", () => {
       }
     }
     expect(count).toBeGreaterThan(0);
+  });
+
+  // Functions log to a LogGroup of their own with a generated name, not
+  // /aws/lambda/<function name>, so a runbook naming that path sends an
+  // operator to a group that doesn't exist (supply-checkout-3sv.17).
+  it("has every /aws/lambda/ log group the docs name", () => {
+    const { stacks } = build({ [MANAGED_LOG_GROUPS]: true });
+    const named = new Set<string>();
+    for (const stack of stacks.all) {
+      for (const group of Object.values(Template.fromStack(stack).findResources("AWS::Logs::LogGroup"))) {
+        if (typeof group.Properties?.LogGroupName === "string") named.add(group.Properties.LogGroupName);
+      }
+    }
+    const docs = readdirSync(new URL("../../docs", import.meta.url), { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".md"));
+    const missing = docs.flatMap((file) =>
+      [...readFileSync(new URL(`../../docs/${file}`, import.meta.url), "utf8").matchAll(/\/aws\/lambda\/[\w<>.-]+/g)]
+        .map(([path]) => path.replaceAll("<env>", "prod"))
+        .filter((path) => !named.has(path))
+        .map((path) => `${file}: ${path}`),
+    );
+    expect(missing).toEqual([]);
   });
 
   it("leaves nothing for cdk-nag to find", () => {
