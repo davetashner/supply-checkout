@@ -5,7 +5,7 @@ import { assertRestoreTarget, canonical, defaultTarget, describeKey, guard, main
 
 const LIVE = "supply-checkout-prod-app";
 const TARGET = "supply-checkout-prod-app-restore-20261001-1200";
-const KEY = "arn:aws:kms:us-east-1:000000000000:key/test-key"; // public-safety: allow
+const KEY = "test-table-key";
 const NOW = Date.parse("2026-10-01T12:00:30Z");
 const INDEXES = [{ IndexName: "GSI1", IndexStatus: "ACTIVE" }, { IndexName: "GSI2", IndexStatus: "ACTIVE" }, { IndexName: "GSI3", IndexStatus: "ACTIVE" }];
 const ITEMS = [
@@ -30,7 +30,7 @@ function harness({ answers = ["y"], liveItems = ITEMS, restoredItems = ITEMS, li
     const [service, op] = args;
     const table = flag(args, "--table-name");
     const items = table === LIVE ? liveItems : restoredItems;
-    if (service === "sts") return JSON.stringify({ Account: "000000000000", Arn: "arn:aws:sts::000000000000:assumed-role/AWSReservedSSO_Admin_x/owner" }); // public-safety: allow
+    if (service === "sts") return JSON.stringify({ Account: "test-account", Arn: "assumed-role/AWSReservedSSO_Admin_x/owner" });
     if (service === "ssm") return JSON.stringify({ Parameter: { Value: KEY } });
     if (op === "describe-continuous-backups") {
       return JSON.stringify({ ContinuousBackupsDescription: { PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: pitr, EarliestRestorableDateTime: "2026-09-01T00:00:00Z", LatestRestorableDateTime: "2026-10-01T11:59:00Z" } } });
@@ -248,7 +248,7 @@ test("refuses before restoring when the key, PITR or account is wrong", async ()
   await assert.rejects(main(["--apply"], noPitr.deps), /Point-in-time recovery isn't on/);
 
   const account = harness();
-  account.deps.env = { SUPPLY_CHECKOUT_EXPECTED_ACCOUNT: "111111111111" }; // public-safety: allow
+  account.deps.env = { SUPPLY_CHECKOUT_EXPECTED_ACCOUNT: "other-account" };
   await assert.rejects(main(["--apply"], account.deps), RefusedError);
   assert.equal(account.calls.length, 1);
 
