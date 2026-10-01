@@ -528,6 +528,7 @@ The purge lists at most 100 closed teams' subscriptions a run (`CLOSED_TEAMS_TO_
 | **Team closure emails failing** | `TeamClosedNoticeFailures`: owners of a team that just closed who weren't emailed the day it will be deleted (SES refused, no address on file, or the owners couldn't be listed). The team closes anyway | any, over 15 minutes | P2 |
 | **Team reopened emails failing** | `TeamReopenedNoticeFailures`: owners of a team that was just reopened who weren't told it will no longer be deleted (SES refused, no address on file, or the owners couldn't be listed). The team reopens anyway | any, over 15 minutes | P2 |
 | **Reopened team's subscription ended** | See J7 | | P2 |
+| **Reopened team's billing not resynced** | See J7 | | P2 |
 | **Closed team charged** | See J7 | | P2 |
 | **Closed-team subscription not found in Stripe** | See J7 | | P2 |
 | **Closed-team subscription set aside** | See J7 | | P2 |
