@@ -45,9 +45,11 @@ Until the pipeline in [ADR 0012](adr/0012-cicd-releases-rollbacks.md) takes over
 aws sso login --profile supply-prod
 cd infra
 npx cdk bootstrap --profile supply-prod        # once per account and region; bootstraps every region in the app
-npx cdk diff --profile supply-prod
-npx cdk deploy --all --profile supply-prod
+npx cdk diff --profile supply-prod -c backupCopy=false
+npx cdk deploy --all --profile supply-prod -c backupCopy=false
 ```
+
+`--all` includes the data and backup stacks, so keep `-c backupCopy=false` on both commands until [step 4 of the backup setup](backups.md#setting-it-up) is done (why: [The CloudTrail trail](#the-cloudtrail-trail)).
 
 ## GitHub Actions deploy role
 
@@ -205,9 +207,9 @@ The app sends invites and account notices itself (`supply-checkout-5hx`); Cognit
   3. Set a password through the app, and confirm only one email arrives.
   4. Load the app once, change the account's email with `update-user-attributes` and `verify-user-attribute`, and confirm the old address gets the `emailChanged` email.
   5. Confirm the function logs no `AccessDeniedException` (`reason: error`): DynamoDB Local doesn't enforce the `dynamodb:Attributes` conditions.
-- **Deploying.** Deploy the primary region's `domain` stack first (it adds the configuration set, and changes the identity's default to it), then `data`, then `email`:
+- **Deploying.** Deploy the primary region's `domain` stack first (it adds the configuration set, and changes the identity's default to it), then `data`, then `email`. Deploying `email` deploys `data` too, so keep `-c backupCopy=false` until [step 4 of the backup setup](backups.md#setting-it-up) ([why](#the-cloudtrail-trail)):
   ```bash
-  npx cdk deploy supply-checkout-prod-us-east-1-domain supply-checkout-prod-us-east-1-email --profile supply-prod
+  npx cdk deploy supply-checkout-prod-us-east-1-domain supply-checkout-prod-us-east-1-email --profile supply-prod -c backupCopy=false
   ```
   Then send a test message to the SES mailbox simulator and check the event reaches the function's log: `aws sesv2 send-email --profile supply-prod --region us-east-1 --from-email-address noreply@supplycheckout.com --destination ToAddresses=bounce@simulator.amazonses.com --configuration-set-name supply-checkout-prod-transactional --content 'Simple={Subject={Data=Bounce test},Body={Text={Data=Test}}}'`. <!-- public-safety: allow -->
   The function's IAM conditions (`dynamodb:Attributes`, `dynamodb:Select`, `dynamodb:ReturnValues`) aren't enforced by DynamoDB Local, so check them once in the deployed stack: create a test invite for `bounce@simulator.amazonses.com` in a test team, send the same message with `--email-tags Name=kind,Value=invite Name=teamId,Value=<team ID> Name=inviteId,Value=<invite ID>`, and confirm the invite item gets `status: failed` and the function logs no `AccessDeniedException`. Then delete the test team's items. <!-- public-safety: allow -->
@@ -283,10 +285,10 @@ The stack publishes `user-pool-id`, `user-pool-arn`, `web-client-id`, `issuer-ur
 1. The `domain` stack in `GLOBAL_SERVICES_REGION` must be deployed: it publishes the `auth.` certificate's ARN, which this stack reads (`/supply-checkout/<env>/domain/auth-certificate-arn`). If the primary region is ever not `GLOBAL_SERVICES_REGION`, copy that parameter into the primary region first.
 2. The SES domain identity must be verified (see [Domain and email](#domain-and-email)). While SES is in the sandbox, codes only reach verified addresses.
 3. The apex must resolve: Cognito refuses a custom domain whose parent domain has no A record. The identity stack depends on the `web` stack, whose alias records make it resolve, so `cdk deploy` deploys `web` first. (`dig +short supplycheckout.com A` should answer.)
-4. Deploy, then wait for the domain (Cognito provisions a CloudFront distribution; it can take up to an hour):
+4. Deploy, then wait for the domain (Cognito provisions a CloudFront distribution; it can take up to an hour). Deploying `identity` deploys `data` and `web` too, so keep `-c backupCopy=false` until [step 4 of the backup setup](backups.md#setting-it-up) ([why](#the-cloudtrail-trail)):
    ```bash
    cd infra
-   npx cdk deploy supply-checkout-prod-us-east-1-identity --profile supply-prod
+   npx cdk deploy supply-checkout-prod-us-east-1-identity --profile supply-prod -c backupCopy=false
    aws cognito-idp describe-user-pool-domain --profile supply-prod --region us-east-1 \
      --domain auth.supplycheckout.com --query DomainDescription.Status   # ACTIVE
    ```
@@ -360,14 +362,14 @@ These routes write outside any team the caller is in (a new team, or the team th
 
 **Latency.** Functions run Node.js 24 on arm64, bundled by esbuild (ESM, minified, the AWS SDK v3 clients tree-shaken into the bundle) with their clients created once per container. The data function has 1 GB of memory, for CPU. A warm read is a membership check (one `TransactGetItems`) and one `GetItem` or `Query`; a write adds a `PutItem`.
 
-**Deploying.** The api stack reads, from SSM in its region: the `api.` certificate (the domain stack), the table's KMS key ARN (the data stack) and the issuer, web client ID and auth URL (the identity stack). So deploy those first. The synth bundles the handlers, so install the backend's dependencies too:
+**Deploying.** The api stack reads, from SSM in its region: the `api.` certificate (the domain stack), the table's KMS key ARN (the data stack) and the issuer, web client ID and auth URL (the identity stack). So deploy those first. The synth bundles the handlers, so install the backend's dependencies too. Deploying `api` and `observability` deploys the stacks they depend on (data and audit among them), so keep `-c backupCopy=false` until [step 4 of the backup setup](backups.md#setting-it-up) ([why](#the-cloudtrail-trail)):
 
 ```bash
 aws sso login --profile supply-prod
 (cd backend && npm ci)
 cd infra && npm ci
-npx cdk diff supply-checkout-prod-us-east-1-api --profile supply-prod
-npx cdk deploy supply-checkout-prod-us-east-1-api supply-checkout-prod-us-east-1-observability --profile supply-prod
+npx cdk diff supply-checkout-prod-us-east-1-api --profile supply-prod -c backupCopy=false
+npx cdk deploy supply-checkout-prod-us-east-1-api supply-checkout-prod-us-east-1-observability --profile supply-prod -c backupCopy=false
 # No token: API Gateway answers 401 {"message":"Unauthorized"}
 curl -si https://api.supplycheckout.com/teams/t/products | head -1
 ```
@@ -559,14 +561,14 @@ Then check the watch's own alarms, in a non-production environment only (they wr
 
 Field names that aren't verified yet, to look at in the CloudTrail event if a message doesn't arrive: the event source mapping's `requestParameters.uUID`; `requestParameters.functionName` as a name, a full ARN or a qualified ARN, and Lambda's versioned event names (matched by prefix); KMS's `resources[].ARN` for a call by key ID, key ARN, alias name or alias ARN, and `requestParameters.targetKeyId` as an ID or ARN; `requestParameters.subscriptionArn` on `Unsubscribe`, including an unsubscribe from the link in an SNS email (which may be recorded with no caller identity, or not as a management event at all); `alarmNames` as a list on `DisableAlarmActions` and `DeleteAlarms`; CloudWatch Logs' `requestParameters.logGroupName` on `DeleteLogGroup`, `logGroupIdentifier` as a name or ARN on the transformer and data protection calls, and `policyType` on `PutAccountPolicy`; DynamoDB's `requestParameters.resourceArn` on the resource policy calls, `tableName` as a name or ARN on `UpdateTable`, and `streamSpecification.streamEnabled`; and SNS's `requestParameters.resourceArn` on `PutDataProtectionPolicy`. Adjust the pattern and its test to what the event holds.
 
-**Deploying.** In order: the `domain` stack in `GLOBAL_SERVICES_REGION` (the `ops-auth.` certificate), `data` (adds GSI3; DynamoDB builds it in the background, and queries on it fail until it's `ACTIVE`), `identity` (the pool; its domain can take up to an hour, like `auth.`), then `api` and `observability`:
+**Deploying.** In order: the `domain` stack in `GLOBAL_SERVICES_REGION` (the `ops-auth.` certificate), `data` (adds GSI3; DynamoDB builds it in the background, and queries on it fail until it's `ACTIVE`), `identity` (the pool; its domain can take up to an hour, like `auth.`), then `api` and `observability`. Keep `-c backupCopy=false` on both deploys until [step 4 of the backup setup](backups.md#setting-it-up) ([why](#the-cloudtrail-trail)):
 
 ```bash
 cd infra
-npx cdk deploy supply-checkout-prod-us-east-1-domain supply-checkout-prod-us-east-1-data --profile supply-prod
+npx cdk deploy supply-checkout-prod-us-east-1-domain supply-checkout-prod-us-east-1-data --profile supply-prod -c backupCopy=false
 aws dynamodb describe-table --profile supply-prod --region us-east-1 --table-name supply-checkout-prod-app \
   --query "Table.GlobalSecondaryIndexes[?IndexName=='GSI3'].IndexStatus"   # ACTIVE
-npx cdk deploy supply-checkout-prod-us-east-1-identity supply-checkout-prod-us-east-1-api supply-checkout-prod-us-east-1-observability --profile supply-prod
+npx cdk deploy supply-checkout-prod-us-east-1-identity supply-checkout-prod-us-east-1-api supply-checkout-prod-us-east-1-observability --profile supply-prod -c backupCopy=false
 ```
 
 Teams created before GSI3 existed have no `GSI3PK`, so the ops routes don't list them until they're backfilled (see "Backfills" below).
@@ -724,11 +726,11 @@ The `realtime` stack (`lib/stacks/realtime-stack.ts`, [ADR 0006](adr/0006-api-an
 - **Cutting off removed members, and canceled and closed teams.** The consumer reads a team's members, billing status and closure with `liveUpdateRecipients` and caches them for 30 seconds, forgetting them as soon as the stream shows a `META` or `MEMBER#` write for that team. So a removed member, or every member of a team whose status is `canceled`, `unpaid` or `incomplete_expired`, stops getting notices at once in practice and within 30 seconds at worst. Its table permission is `GetItem` and `Query` on `TEAM#*` partitions for `LIVE_AUDIENCE_ATTRIBUTES` only (`PK`, `SK`, `userId`, `role`, `status`, `closedAt`, `compPlan`, `compUntil`; `dynamodb:Attributes`), so it can't read documents or emails through the table. It does see whole items in the stream images it's handed (a `MEMBER#` item has the member's email), and it never logs a record, an image or an event: its logs have team IDs, counts and error messages only (`backend/test/realtime-publisher.test.ts` checks). It reads a team's members again before each chunk of 5 events (from its cache, normally), so the 30-second bound holds however long an invocation runs; a read that takes over 2 seconds fails and is retried with the batch (`AUDIENCE_READ_TIMEOUT_MS`), and each DynamoDB request has a 1-second timeout (`CONSUMER_DB_REQUEST_TIMEOUT_MS`). A batch with more than 10 changes to one team's collection (`COLLECTION_EVENT_AFTER`, an import) publishes one "re-list" event for them instead ([docs/api/realtime.md](api/realtime.md#collection-events)). Partial batch failures are retried from the first unsent record; a batch that keeps failing goes to `supply-checkout-<env>-live-updates-dlq`. Batches are 25 records (`STREAM_BATCH_SIZE`), and one invocation makes at most 2,500 publish requests and starts them for at most 5 seconds, each with a 3-second timeout, inside the function's 10 seconds (`PUBLISHES_PER_INVOCATION`, `PUBLISH_BUDGET_MS`, `PUBLISH_TIMEOUT_MS` in `backend/src/realtime/channels.ts`). Past the budget it stops and reports the earliest unfinished record, and Lambda carries on from there, so a big, busy team can't hold up the other teams on its shard for longer than that. Requests go out earliest record first, and the batch's first chunk (the earliest document record's team, up to 5 events) always goes to every member at once, outside the budget and the concurrency limit, so it finishes within one publish timeout and every invocation moves the shard forward by at least one record, however big the team or slow AppSync. A full batch of teams at the member cap (100) fits the budget; a budget stop is logged as a warning, in the `Batch` line's `deferred` and in the `LiveUpdatesDeferred` metric, not counted in `LiveUpdateFailures`. **Retries and budget stops.** A response that reports a record is, to the event source mapping, a failed invocation: AWS retries "up to the retry limit" and doesn't document the count resetting when the checkpoint moves forward (only bisecting a batch is said not to use it), so we assume every budget stop spends one of the mapping's `MaximumRetryAttempts`. That's why it is `STREAM_RETRY_ATTEMPTS` (25, at least `STREAM_BATCH_SIZE`): each stop moves at least one record, so stops alone always drain a batch before its retries run out. Real failures retry that many times too, inside the one-hour maximum record age, then go to the dead-letter queue. Alarms: Live updates failing, delayed, dropped and deferred ([docs/journeys.md](journeys.md)).
 - **Regions.** The custom domain is added where its certificate is (`GLOBAL_SERVICES_REGION`). The consumer runs in the primary region, which has the table's stream; the second region's consumer is phase 2.
 
-**Deploying.** The realtime stack reads, from SSM in its region: the table's stream and key ARNs (data stack), the user pool ID and web client ID (identity stack) and the `realtime.` certificate (the domain stack in `GLOBAL_SERVICES_REGION`). Deploy it after those, and before observability:
+**Deploying.** The realtime stack reads, from SSM in its region: the table's stream and key ARNs (data stack), the user pool ID and web client ID (identity stack) and the `realtime.` certificate (the domain stack in `GLOBAL_SERVICES_REGION`). Deploy it after those, and before observability. Deploying it deploys the data stack too, so keep `-c backupCopy=false` until that environment has done [step 4 of the backup setup](backups.md#setting-it-up) ([why](#the-cloudtrail-trail)):
 
 ```bash
-npx cdk diff supply-checkout-staging-us-east-1-realtime --profile <staging profile>
-npx cdk deploy supply-checkout-staging-us-east-1-realtime supply-checkout-staging-us-east-1-observability --profile <staging profile>
+npx cdk diff supply-checkout-staging-us-east-1-realtime --profile <staging profile> -c backupCopy=false
+npx cdk deploy supply-checkout-staging-us-east-1-realtime supply-checkout-staging-us-east-1-observability --profile <staging profile> -c backupCopy=false
 ```
 
 Then measure the 2-second p95 and the reconnect behavior in staging as described in [docs/api/realtime.md](api/realtime.md#measuring-after-a-deploy).
