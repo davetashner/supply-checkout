@@ -144,7 +144,7 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 
 ## Releases
 
-`.github/workflows/release.yml` uses [release-please](https://github.com/googleapis/release-please). It keeps a release pull request open with the next version number and changelog, and starts CI on it (pull requests opened by GitHub Actions don't start CI on their own). Merging that PR tags the version, re-runs the full CI suite, then builds the artifact from the tag and attaches it to the GitHub Release as `index.html`, along with an SPDX JSON SBOM (`supply-checkout-<tag>.spdx.json`).
+`.github/workflows/release.yml` uses [release-please](https://github.com/googleapis/release-please). It keeps a release pull request open with the next version number and changelog, and starts CI on it (pull requests opened by GitHub Actions don't start CI on their own). Merging that PR tags the version, re-runs the full CI suite, then builds the artifact from the tag and attaches it to the GitHub Release as `index.html`, along with an SPDX JSON SBOM (`supply-checkout-<tag>.spdx.json`) and the [journey evidence pack](docs/releases.md#journey-evidence-pack): a report of each customer journey's steps and their tests, with one video per journey and the tests' traces, recorded against the test suite's fakes.
 
 Before publishing a release, check scanning on real phones ([Real-device check](docs/releases.md#real-device-check)). Publishing the artifact to claude.ai is a manual step ([Publishing to claude.ai](docs/releases.md#publishing-to-claudeai)).
 

@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { planVideos, grepFor, readReport, stepResults, clipsFor, sidecar, summarize, journeySlug, testKey } from "./assemble.mjs";
+import { planVideos, grepFor, readReport, stepResults, clipsFor, sidecar, summarize, journeySlug, testKey, evidenceFiles } from "./assemble.mjs";
 import { parseWebm, concatWebm, webmDuration } from "./webm.mjs";
 import { errorSummary, frame, plain, titleCard, stepCard, endCard } from "./director.mjs";
 import { parseArgs } from "./record.mjs";
@@ -132,6 +132,56 @@ test("each step's result comes from its test.step, else its tests; the cards and
   assert.equal(data.steps[2].at, 14);
 });
 
+test("with --evidence, each test's trace and end-of-step screenshots are copied out and named in the sidecar", () => {
+  const withEvidence = report();
+  const both = withEvidence.suites[0].specs[1].tests[0].results[0];
+  both.attachments = [
+    { name: "video", path: "/v/both.webm" },
+    { name: "trace", path: "/r/both/trace.zip" },
+    { name: "journey-shot-0", path: "/r/both/journey-shot-0.jpg" },
+    { name: "journey-shot-1", path: "/r/both/journey-shot-1.jpg" },
+    { name: "journey-shot-2", path: "/r/both/journey-shot-2.jpg" },
+    events([
+      { t: 100, type: "step-start", id: "J0.1" }, { t: 900, type: "step-end", id: "J0.1", status: "passed", shot: 0 },
+      { t: 1000, type: "step-start", id: "J0.2" }, { t: 2500, type: "step-end", id: "J0.2", status: "failed", error: "Expected: \"3\"", shot: 1 },
+      { t: 3000, type: "test-end", status: "failed", error: "boom", shot: 2 },
+    ]),
+  ];
+  // "opens" has a screenshot at its end only
+  const opens = withEvidence.suites[0].specs[0].tests[0].results[0];
+  opens.attachments = [{ name: "video", path: "/v/opens.webm" }, { name: "journey-shot-0", path: "/r/opens/journey-shot-0.jpg" }, events([{ t: 0, type: "test-end", status: "passed", shot: 0 }])];
+  const raw = readReport(withEvidence);
+  assert.equal(raw.get("tests/a.spec.js:9:opens and scans").trace, "/r/both/trace.zip");
+  assert.deepEqual(raw.get("tests/a.spec.js:9:opens and scans").shots, { 0: "/r/both/journey-shot-0.jpg", 1: "/r/both/journey-shot-1.jpg", 2: "/r/both/journey-shot-2.jpg" });
+  // A test without evidence has neither key
+  assert.deepEqual(Object.keys(raw.get("tests/c.spec.js:2:timed out")), ["status", "error", "video", "events"]);
+
+  const { copies, results } = evidenceFiles(raw);
+  assert.deepEqual(copies, [
+    ["/r/opens/journey-shot-0.jpg", "evidence/t1-shot-0.jpg"],
+    ["/r/both/trace.zip", "evidence/t2-trace.zip"],
+    ["/r/both/journey-shot-0.jpg", "evidence/t2-shot-0.jpg"],
+    ["/r/both/journey-shot-1.jpg", "evidence/t2-shot-1.jpg"],
+    ["/r/both/journey-shot-2.jpg", "evidence/t2-shot-2.jpg"],
+  ]);
+  // The originals are left as they were
+  assert.equal(raw.get("tests/a.spec.js:9:opens and scans").trace, "/r/both/trace.zip");
+  assert.equal(results.get("tests/a.spec.js:9:opens and scans").trace, "evidence/t2-trace.zip");
+
+  const all = tests().map((x) => (x.title === "scans" ? { ...x, title: "group › scans" } : x));
+  const [plan] = planVideos(registry(), all, ["J0"]);
+  const steps = stepResults(plan, results);
+  const clips = clipsFor(plan, steps, results);
+  const data = sidecar({ plan, steps, clips, starts: [0, 5, 9, 14, 19, 24], duration: 32, results, video: "J0.webm", meta: {} });
+  const timelineTest = data.timeline.find((x) => x.title === "opens and scans");
+  assert.equal(timelineTest.trace, "evidence/t2-trace.zip");
+  assert.deepEqual(timelineTest.events.map((e) => e.shot), [undefined, "evidence/t2-shot-0.jpg", undefined, "evidence/t2-shot-1.jpg", "evidence/t2-shot-2.jpg"]);
+  assert.equal(data.timeline.find((x) => x.title === "opens").trace, undefined);
+  // Each step's test: the screenshot at the end of its test.step, else at the end of the test
+  assert.deepEqual(data.steps[0].tests.map((x) => [x.title, x.shot, x.trace]), [["opens", "evidence/t1-shot-0.jpg", undefined], ["opens and scans", "evidence/t2-shot-0.jpg", "evidence/t2-trace.zip"]]);
+  assert.deepEqual(data.steps[1].tests.map((x) => [x.title, x.shot]), [["opens and scans", "evidence/t2-shot-1.jpg"], ["group › scans", undefined]]);
+});
+
 test("a step with no UI test and an untested reason, or tests that didn't run, is said so", () => {
   const reg = registry();
   reg.journeys[0].steps[2] = { id: "J0.3", text: "Pay.", status: "built", untested: "needs a real card" };
@@ -168,8 +218,8 @@ test("the viewports and the command's options", () => {
   assert.deepEqual(frame("phone").page, { width: 390, height: 776 });
   assert.deepEqual(frame("phone").video, { width: 780, height: 1552 });
   assert.throws(() => frame("tv"), /desktop or phone/);
-  assert.deepEqual(parseArgs([]), { headless: false, only: null, pace: 1, slowMo: 0, build: true, viewport: "desktop" });
-  assert.deepEqual(parseArgs(["--only", "j4,J7", "--only=J1", "--headless", "--pace=0.3", "--slow-mo", "50", "--viewport", "phone", "--skip-build"]), { headless: true, only: ["J4", "J7", "J1"], pace: 0.3, slowMo: 50, build: false, viewport: "phone" });
+  assert.deepEqual(parseArgs([]), { headless: false, only: null, pace: 1, slowMo: 0, build: true, viewport: "desktop", evidence: false });
+  assert.deepEqual(parseArgs(["--only", "j4,J7", "--only=J1", "--headless", "--pace=0.3", "--slow-mo", "50", "--viewport", "phone", "--skip-build", "--evidence"]), { headless: true, only: ["J4", "J7", "J1"], pace: 0.3, slowMo: 50, build: false, viewport: "phone", evidence: true });
   assert.deepEqual(parseArgs(["-h"]), { help: true });
   assert.throws(() => parseArgs(["--pace", "0"]), /--pace must be a number above 0/);
   assert.throws(() => parseArgs(["--slow-mo", "-1"]), /--slow-mo must be 0 or more/);

@@ -50,7 +50,14 @@ export function readReport(report, longest = (videos) => videos[0]) {
       const end = events.find((e) => e.type === "test-end");
       const status = end?.status ?? (run.status === "passed" ? "passed" : run.status === "skipped" ? "skipped" : "failed");
       const error = end?.error ?? errorSummary(run.errors?.[0]?.message ?? run.error?.message);
-      results.set(testKey({ file: `tests/${spec.file}`, line: spec.line, title }), { status, error: status === "failed" ? error || run.status : undefined, video, events });
+      // With --evidence: Playwright's trace, and the fixture's screenshots at the end of each step
+      // and of the test (journey-shot-<n>, named by the events' `shot`)
+      const trace = run.attachments?.find((a) => a.name === "trace" && a.path)?.path;
+      const shots = Object.fromEntries((run.attachments || []).filter((a) => /^journey-shot-\d+$/.test(a.name) && a.path).map((a) => [a.name.slice(13), a.path]));
+      results.set(testKey({ file: `tests/${spec.file}`, line: spec.line, title }), {
+        status, error: status === "failed" ? error || run.status : undefined, video, events,
+        ...(trace ? { trace } : {}), ...(Object.keys(shots).length ? { shots } : {}),
+      });
     }
     for (const child of suite.suites || []) walk(child, [...titles, child.title]);
   };
@@ -113,6 +120,32 @@ export function clipsFor(plan, steps, results) {
   return clips;
 }
 
+// The traces and screenshots to keep (they're in the run's scratch folder): each test's files
+// named evidence/t<n>-trace.zip and evidence/t<n>-shot-<k>.jpg, n counting the tests from 1.
+// Returns the copies to make, [from, to], and the results with those names in place of the paths.
+export function evidenceFiles(results) {
+  const copies = [];
+  const out = new Map();
+  let n = 0;
+  for (const [key, r] of results) {
+    n++;
+    const next = { ...r };
+    if (r.trace) {
+      next.trace = `evidence/t${n}-trace.zip`;
+      copies.push([r.trace, next.trace]);
+    }
+    if (r.shots) {
+      next.shots = Object.fromEntries(Object.entries(r.shots).map(([k, path]) => {
+        const to = `evidence/t${n}-shot-${k}.jpg`;
+        copies.push([path, to]);
+        return [k, to];
+      }));
+    }
+    out.set(key, next);
+  }
+  return { copies, results: out };
+}
+
 const round = (n) => Math.round(n * 100) / 100;
 
 // The sidecar: the journey, each step's result with its tests and where each shows in the video,
@@ -126,9 +159,21 @@ export function sidecar({ plan, steps, clips, starts, duration, results, video, 
     const r = results.get(testKey(c.test));
     return {
       kind: "test", file: c.test.file, line: c.test.line, title: c.test.title, steps: c.test.ids, result: r.status, ...(r.error ? { error: r.error } : {}), ...at,
-      events: r.events.map((e) => ({ at: round(starts[k] + e.t / 1000), type: e.type, ...(e.id ? { step: e.id } : {}), ...(e.status ? { status: e.status } : {}), ...(e.error ? { error: e.error } : {}) })),
+      ...(r.trace ? { trace: r.trace } : {}),
+      events: r.events.map((e) => ({
+        at: round(starts[k] + e.t / 1000), type: e.type, ...(e.id ? { step: e.id } : {}), ...(e.status ? { status: e.status } : {}), ...(e.error ? { error: e.error } : {}),
+        ...(e.shot !== undefined && r.shots?.[e.shot] ? { shot: r.shots[e.shot] } : {}),
+      })),
     };
   });
+  // A step's screenshot in a test: at the end of its test.step, else at the end of the test
+  const evidenceFor = (step, test) => {
+    const r = results.get(testKey(test));
+    if (!r) return {};
+    const shotEvent = r.events.find((e) => e.type === "step-end" && e.id === step && e.shot !== undefined) ?? r.events.find((e) => e.type === "test-end" && e.shot !== undefined);
+    const shot = shotEvent && r.shots?.[shotEvent.shot];
+    return { ...(shot ? { shot } : {}), ...(r.trace ? { trace: r.trace } : {}) };
+  };
   const atFor = (step, test) => timeline.find((x) => x.kind === "test" && x.file === test.file && x.line === test.line && x.title === test.title)
     ?.events.find((e) => e.type === "step-start" && e.step === step)?.at
     ?? timeline.find((x) => x.kind === "test" && x.file === test.file && x.line === test.line && x.title === test.title)?.start;
@@ -141,7 +186,7 @@ export function sidecar({ plan, steps, clips, starts, duration, results, video, 
     steps: steps.map((s) => ({
       ...s,
       ...(timeline.find((x) => x.kind === "step" && x.step === s.id) ? { at: timeline.find((x) => x.kind === "step" && x.step === s.id).start } : {}),
-      tests: s.tests.map((t) => ({ ...t, ...(atFor(s.id, t) !== undefined ? { at: atFor(s.id, t) } : {}) })),
+      tests: s.tests.map((t) => ({ ...t, ...(atFor(s.id, t) !== undefined ? { at: atFor(s.id, t) } : {}), ...evidenceFor(s.id, t) })),
     })),
     timeline,
   };

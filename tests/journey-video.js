@@ -36,6 +36,8 @@ class Recorder {
     this.ids = testInfo.tags.map((t) => t.replace(/^@/, "")).filter((t) => STEP.test(t));
     this.test = `${testInfo.file.split(/[\\/]/).pop()}: ${testInfo.titlePath.slice(1).join(" › ")}`;
     this.state = this.caption(this.ids, "running");
+    this.testInfo = testInfo;
+    this.shots = [];
   }
 
   caption(ids, state, note) {
@@ -56,7 +58,23 @@ class Recorder {
   }
 
   event(e) {
-    this.events.push({ t: Date.now() - this.started, ...e });
+    const event = { t: Date.now() - this.started, ...e };
+    this.events.push(event);
+    return event;
+  }
+
+  // With --evidence (the release evidence pack), a screenshot of the page, caption and all, as a
+  // step or the test ends. The event names it by its number: attachment journey-shot-<n>
+  async shot(event) {
+    if (!options.evidence) return;
+    const path = this.testInfo.outputPath(`journey-shot-${this.shots.length}.jpg`);
+    try {
+      await this.page.screenshot({ path, type: "jpeg", quality: 55, scale: "css" });
+    } catch {
+      return; // The page has closed or is navigating: the video still shows it
+    }
+    event.shot = this.shots.length;
+    this.shots.push(path);
   }
 
   async stepStart(id, title) {
@@ -66,8 +84,9 @@ class Recorder {
   }
 
   async stepEnd(id, title, error) {
-    this.event({ type: "step-end", id, title, status: error ? "failed" : "passed", ...(error ? { error: firstLine(error) } : {}) });
+    const event = this.event({ type: "step-end", id, title, status: error ? "failed" : "passed", ...(error ? { error: firstLine(error) } : {}) });
     await this.show(this.caption([id], error ? "failed" : "passed", error ? firstLine(error) : undefined));
+    await this.shot(event);
     await sleep(ms(error ? 2000 : 900));
   }
 
@@ -76,8 +95,10 @@ class Recorder {
     const passed = !skipped && testInfo.status === testInfo.expectedStatus && !pageErrors.length;
     const status = skipped ? "skipped" : passed ? "passed" : "failed";
     const error = status === "failed" ? firstLine(testInfo.errors[0]?.message || testInfo.error?.message || pageErrors[0] || testInfo.status) : "";
-    this.event({ type: "test-end", status, ...(error ? { error } : {}) });
+    const event = this.event({ type: "test-end", status, ...(error ? { error } : {}) });
     await this.show(this.caption(this.ids, status, error || undefined));
+    await this.shot(event);
+    for (const [n, path] of this.shots.entries()) await testInfo.attach(`journey-shot-${n}`, { path, contentType: "image/jpeg" });
     await sleep(ms(status === "failed" ? 3000 : 1500));
     await testInfo.attach("journey-video-events", { contentType: "application/json", body: JSON.stringify({ test: this.test, ids: this.ids, events: this.events }) });
   }
