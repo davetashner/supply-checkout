@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/davetashner/supply-checkout/compare/v1.5.0...v1.6.0) (2026-10-01)
+
+
+### Features
+
+* email the account when its password, two-step sign-in or email is changed directly against Cognito ([#278](https://github.com/davetashner/supply-checkout/issues/278)) ([0965d0a](https://github.com/davetashner/supply-checkout/commit/0965d0aeccc5bf4065a64cd4defca78c82399136))
+
 ## [1.5.0](https://github.com/davetashner/supply-checkout/compare/v1.4.0...v1.5.0) (2026-10-01)
 
 
