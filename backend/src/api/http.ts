@@ -48,6 +48,7 @@ export type ErrorReason =
   | "team_closed"
   | "team_deleting"
   | "stock_changed"
+  | "equipment_out"
   | "code_mismatch"
   | "code_expired"
   | "already_verified"

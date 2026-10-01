@@ -3542,6 +3542,56 @@
         }
       }
     },
+    "HttpApiPOSTteamsteamIdsheetssheetIdlostDataIntegrationPermission7A243DD0": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "DataFunctionLive5A545D6E"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/sheets/{sheetId}/lost"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTteamsteamIdsheetssheetIdlost819D1AAE": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /teams/{teamId}/sheets/{sheetId}/lost",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETteamsteamIdproductsDataIntegration012ABD77"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiPOSTteamsteamIdsheetssheetIdlinesDataIntegrationPermission42B14AFD": {
       "Type": "AWS::Lambda::Permission",
       "Properties": {
@@ -3729,6 +3779,106 @@
           "Ref": "HttpApiCognitoJwt4B02D8E4"
         },
         "RouteKey": "POST /teams/{teamId}/imports",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETteamsteamIdproductsDataIntegration012ABD77"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiGETteamsteamIdsettingsDataIntegrationPermission4FA7661D": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "DataFunctionLive5A545D6E"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/settings"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiGETteamsteamIdsettingsCBFE68AA": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "GET /teams/{teamId}/settings",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETteamsteamIdproductsDataIntegration012ABD77"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPUTteamsteamIdsettingsDataIntegrationPermission26D8991C": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "DataFunctionLive5A545D6E"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/settings"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPUTteamsteamIdsettingsB0CF63D9": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "PUT /teams/{teamId}/settings",
         "Target": {
           "Fn::Join": [
             "",

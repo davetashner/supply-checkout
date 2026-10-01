@@ -71,7 +71,10 @@ function seed() {
     client: "Echo",
     date: "2026-09-26",
     status: "open",
-    items: { "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 2, returned: 0 } },
+    items: {
+      "0123": { code: "0123", name: "Nitrile gloves", price: 12.5, out: 2, returned: 0 },
+      ladder: { code: "", name: "Ladder", kind: "equipment", cost: 120, out: 1, returned: 0 },
+    },
   });
   dataHandler = createDataHandler({
     dbForTeam: (teamId) => {
@@ -139,6 +142,9 @@ const DATA_CASES: Record<string, Omit<Case, "minRole">> = {
   "POST /teams/{teamId}/sheets/{sheetId}/checkout": { method: "POST", path: "/teams/team-a/sheets/s1/checkout", body: { operationId: randomUUID(), productKey: "0123", quantity: 1 } },
   "POST /teams/{teamId}/sheets/{sheetId}/lines": { method: "POST", path: "/teams/team-a/sheets/s1/lines", body: { operationId: randomUUID(), lines: [{ productKey: "k-1", quantity: 1, name: "Rags", price: 1.5 }] } },
   "POST /teams/{teamId}/sheets/{sheetId}/return": { method: "POST", path: "/teams/team-a/sheets/s1/return", body: { operationId: randomUUID(), productKey: "0123", quantity: 1 } },
+  "POST /teams/{teamId}/sheets/{sheetId}/lost": { method: "POST", path: "/teams/team-a/sheets/s1/lost", body: { operationId: randomUUID(), productKey: "ladder", quantity: 1, charge: 50 } },
+  "GET /teams/{teamId}/settings": { method: "GET", path: "/teams/team-a/settings" },
+  "PUT /teams/{teamId}/settings": { method: "PUT", path: "/teams/team-a/settings", body: { equipmentMarkup: 25, expectedVersion: 0 } },
   "POST /teams/{teamId}/products/{key}/stock": { method: "POST", path: "/teams/team-a/products/0123/stock", body: { operationId: randomUUID(), reason: "count", count: 4 } },
   "GET /teams/{teamId}/products/{key}/movements": { method: "GET", path: "/teams/team-a/products/0123/movements" },
   "POST /teams/{teamId}/imports": { method: "POST", path: "/teams/team-a/imports", body: { importId: randomUUID(), csv: "name,price\nRags,1.5\n" } },
@@ -189,13 +195,14 @@ describe("the role matrix", () => {
     expect(Object.keys(MEMBER_CASES).sort()).toEqual(TEAM_ACCOUNT_ROUTES.map(routeKey).sort());
   });
 
-  it("needs at least contributor for every data route that isn't a read, and owner for the import and support actions", () => {
+  it("needs at least contributor for every data route that isn't a read, and owner for the import, support actions and settings writes", () => {
     for (const route of DATA_ROUTES) {
       if (route.method !== "GET") expect(hasRole("viewer", route.minRole), routeKey(route)).toBe(false);
       else if (route.operation !== "supportActions") expect(route.minRole, routeKey(route)).toBe("viewer");
     }
     expect(DATA_ROUTES.find((r) => r.operation === "importProducts")?.minRole).toBe("owner");
     expect(DATA_ROUTES.find((r) => r.operation === "supportActions")?.minRole).toBe("owner");
+    expect(DATA_ROUTES.find((r) => r.operation === "setSettings")?.minRole).toBe("owner");
   });
 
   for (const [key, c, fn] of cases) {

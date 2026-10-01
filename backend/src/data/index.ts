@@ -7,7 +7,7 @@
 // The Db handle is opaque: it exposes no DynamoDB client.
 
 export { closeDb, createDb, type Db, type DbOptions } from "./client.js";
-export { ConflictError, ForbiddenError, InvalidInputError, LastOwnerError, LimitReachedError, NotFoundError, StockChangedError, SubscriptionEndedError, TeamClosedError, TeamDeletingError, TeamFullError, TooLargeError } from "./errors.js";
+export { ConflictError, EquipmentOutError, ForbiddenError, InvalidInputError, LastOwnerError, LimitReachedError, NotFoundError, StockChangedError, SubscriptionEndedError, TeamClosedError, TeamDeletingError, TeamFullError, TooLargeError } from "./errors.js";
 export { localRegion, writeRegionFor, type HomedTeam } from "./region.js";
 export {
   acceptInvite,
@@ -48,6 +48,7 @@ export { BILLED_ROLES, countBilledMembers, isBilledRole, listTeamsToReconcile, t
 export * from "./documents.js";
 export * from "./commands.js";
 export * from "./imports.js";
+export * from "./settings.js";
 export * from "./accounts.js";
 export { type ClosedTeamToEnd, closedTeamToEnd, countTeamsDueBefore, isTeamOpen, listClosedTeamsToEnd, listSetAsideTeams, listTeamsToPurge, markSubscriptionEnding, markSubscriptionSetAside, purgeTeam, type PurgedStripeIds, type PurgeResult, type SetAsideReason, type SetAsideTeam, type TeamDue } from "./team-purge.js";
 export * from "./email-codes.js";

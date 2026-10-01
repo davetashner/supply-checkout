@@ -22,8 +22,8 @@
 import { randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
-import { ConflictError, InvalidInputError, NotFoundError, TooLargeError, isItemTooLarge } from "./errors.js";
-import { barcode, id as checkId, keys, prefixes, productKey, teamPartition } from "./keys.js";
+import { ConflictError, EquipmentOutError, InvalidInputError, NotFoundError, TooLargeError, isItemTooLarge } from "./errors.js";
+import { BOUGHT_SUFFIX, barcode, id as checkId, keys, prefixes, productKey, teamPartition } from "./keys.js";
 import { money, storedMoney } from "./money.js";
 import type { Movement } from "./commands.js";
 import { type Page, queryPage } from "./query.js";
@@ -143,7 +143,7 @@ const sameValue = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === J
  * so it doesn't block the write: it's rounded to cents, as ADR 0014 says it
  * is "when next saved", or kept as it is if it isn't an amount at all.
  */
-function writtenMoney(value: unknown, stored: Record<string, unknown> | undefined, field: "price" | "cost"): unknown {
+function writtenMoney(value: unknown, stored: Record<string, unknown> | undefined, field: "price" | "cost" | "lostCharge"): unknown {
   if (stored && Object.hasOwn(stored, field) && sameValue(stored[field], value)) return storedMoney(value) ?? value;
   return money(value, field);
 }
@@ -154,6 +154,10 @@ function writtenMoney(value: unknown, stored: Record<string, unknown> | undefine
  * write may carry over unchanged.
  */
 function checkDocument(collection: Collection, data: unknown, before?: StoredDocument): DocumentData {
+  return checkKinds(collection, checkFields(collection, data, before), before);
+}
+
+function checkFields(collection: Collection, data: unknown, before?: StoredDocument): DocumentData {
   if (!isMap(data)) throw new InvalidInputError("A document is a JSON object");
   checkValue(data, 0);
   for (const field of Object.keys(data)) {
@@ -181,6 +185,87 @@ function checkDocument(collection: Collection, data: unknown, before?: StoredDoc
   }
   if (Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_DOCUMENT_BYTES) {
     throw new TooLargeError(`Documents are limited to ${MAX_DOCUMENT_BYTES} bytes`);
+  }
+  return data;
+}
+
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+const PRODUCT_KINDS = new Set(["supply", "equipment"]);
+const PRICE_SET = new Set(["markup", "manual"]);
+const isWhole = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0;
+const counted = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+/** What's still out on an equipment line (ADR 0017): neither back nor lost. */
+const stillOut = (line: Record<string, unknown> | undefined) => (line ? counted(line.out) - counted(line.returned) - counted(line.lost) : 0);
+
+/**
+ * Company equipment and the lines that carry it (ADR 0017, section 7):
+ *
+ * - A product's `kind` is "supply" or "equipment", or missing (a supply).
+ *   No new product's key ends in ":bought", which is kept for lines bought
+ *   for a client.
+ * - A sheet's `kind` is set only by the server (the ad hoc sheet's quick take,
+ *   supply-checkout-mdae): a document write can't add, change or remove it.
+ * - A line's `kind` is "equipment" or missing, and can't change once the line
+ *   exists. `lost` (whole eaches) and `lostCharge` (money) are only on
+ *   equipment lines, and a charge only on a job sheet. `takenBy` is text up to
+ *   200 characters and `takenAt` an ISO time. A changed line keeps
+ *   `returned + lost <= out`.
+ * - A line bought for the client (`purchased: true`, keyed
+ *   `<productKey>:bought`) is made only by the receipt's lines command, so a
+ *   document write can't add one, or mark or unmark a line as bought. Its
+ *   `priceSet` is the server's: a changed price is "manual".
+ * - A sheet isn't closed (`status: "closed"`) while an equipment line has
+ *   something still out: EquipmentOutError (409).
+ */
+function checkKinds(collection: Collection, data: DocumentData, before?: StoredDocument): DocumentData {
+  const stored = before?.data;
+  if (collection === "products") {
+    if (Object.hasOwn(data, "kind") && !PRODUCT_KINDS.has(data.kind as string)) throw new InvalidInputError('kind is "supply" or "equipment"');
+    return data;
+  }
+  if (!sameValue(data.kind, stored?.kind)) throw new InvalidInputError("A sheet's kind is set by the server");
+  const storedLines = isMap(stored?.items) ? stored.items : {};
+  const lines = isMap(data.items) ? data.items : {};
+  for (const [key, line] of Object.entries(lines)) {
+    if (!isMap(line)) continue;
+    const old = Object.hasOwn(storedLines, key) && isMap(storedLines[key]) ? storedLines[key] : undefined;
+    const has = (field: string) => Object.hasOwn(line, field);
+    if (has("kind") && line.kind !== "equipment") throw new InvalidInputError('A line\'s kind is "equipment" or left out');
+    if (old && !sameValue(line.kind, old.kind)) throw new InvalidInputError("A line's kind can't change");
+    const equipment = line.kind === "equipment";
+    // Bought for the client: only addLines marks a line so, and the mark stays
+    if (has("purchased") && line.purchased !== true) throw new InvalidInputError("purchased is true or left out");
+    if (!sameValue(line.purchased, old?.purchased) || (key.endsWith(BOUGHT_SUFFIX) && line.purchased !== true)) {
+      throw new InvalidInputError("Only a receipt's lines (POST .../sheets/{sheetId}/lines) add a line bought for the client");
+    }
+    if (line.purchased === true && line.kind !== undefined) throw new InvalidInputError("A line bought for the client has no kind");
+    if (has("priceSet") && (line.purchased !== true || !PRICE_SET.has(line.priceSet as string))) throw new InvalidInputError("priceSet is set by the server, on lines bought for the client");
+    if (line.purchased === true) {
+      // A price someone changed is a typed price, whatever the request says
+      const priceSet = old && !sameValue(line.price, old.price) ? "manual" : old?.priceSet;
+      if (priceSet === undefined) delete line.priceSet;
+      else line.priceSet = priceSet;
+    }
+    if (has("lost") && (!equipment || !isWhole(line.lost))) throw new InvalidInputError("lost is a whole number, on company equipment lines only");
+    if (has("lostCharge")) {
+      if (!equipment || data.kind === "adhoc") throw new InvalidInputError("lostCharge is only on company equipment lines of a client's sheet");
+      line.lostCharge = writtenMoney(line.lostCharge, old, "lostCharge");
+    }
+    if (has("takenBy") && (typeof line.takenBy !== "string" || line.takenBy.length > 200)) throw new InvalidInputError("takenBy is text of up to 200 characters");
+    if (has("takenAt") && (typeof line.takenAt !== "string" || !ISO_TIME.test(line.takenAt))) throw new InvalidInputError("takenAt is an ISO time");
+    // Counts the write changes: what came back and what was lost can't be more than went out
+    if (!sameValue(line, old) && typeof line.out === "number" && counted(line.returned) + counted(line.lost) > line.out) {
+      throw new InvalidInputError("A line's returned and lost can't add up to more than its out");
+    }
+  }
+  if (data.status === "closed") {
+    // Closing, or changing a closed sheet so that more is out: every piece of equipment must be accounted for first
+    const wasClosed = stored?.status === "closed";
+    for (const [key, line] of Object.entries(lines)) {
+      if (!isMap(line) || line.kind !== "equipment" || stillOut(line) <= 0) continue;
+      const old = Object.hasOwn(storedLines, key) && isMap(storedLines[key]) ? storedLines[key] : undefined;
+      if (!wasClosed || stillOut(line) > stillOut(old)) throw new EquipmentOutError("Equipment is still out on this sheet");
+    }
   }
   return data;
 }
@@ -269,6 +354,8 @@ async function write(
     const item = await readItem(db, collection, ctx.teamId, id);
     const before = item ? fromItem(collection, item) : undefined;
     if (expected !== undefined && (before?.version ?? 0) !== expected) throw new ConflictError("This document changed; reload and try again");
+    // Kept for the lines of equipment bought for a client (ADR 0017), which aren't products
+    if (collection === "products" && !before && id.endsWith(BOUGHT_SUFFIX)) throw new InvalidInputError(`An item's key can't end in "${BOUGHT_SUFFIX}"`);
     const data = checkDocument(collection, build(before), before);
     const version = (before?.version ?? 0) + 1;
     // Unchanged since the read: same version and, for products, same stock

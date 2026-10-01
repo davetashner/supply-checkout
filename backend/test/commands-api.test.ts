@@ -221,7 +221,8 @@ describe("add lines", () => {
     expect(res.body.sheet.data.items).toEqual(items());
     expect(stock()).toBe(10);
     expect(movements()).toEqual([]);
-    expect(table.transactions).toEqual([2]);
+    // The operation record, the sheet, and a check per line that its product is still a supply (ADR 0017)
+    expect(table.transactions).toEqual([4]);
     expect(operations()).toEqual([expect.objectContaining({ SK: `OP#${id}`, command: "addLines" })]);
     expect(counts).toMatchObject({ ReceiptLines: 6, Writes: 1 });
     expect(counts).not.toHaveProperty("Checkouts");
