@@ -226,6 +226,12 @@
                     },
                     {
                       "Fn::GetAtt": [
+                        "OperatorBrandingChanges887A4D02",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
                         "OperatorSelfServiceChanges0E27141E",
                         "Arn"
                       ]
@@ -7241,6 +7247,96 @@
         ]
       }
     },
+    "OperatorBrandingChanges887A4D02": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Operator pool: its managed login branding changed or deleted outside a deploy, by branding ID (supply-checkout-6uw.21)",
+        "EventPattern": {
+          "source": [
+            "aws.cognito-idp"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "cognito-idp.amazonaws.com"
+            ],
+            "eventName": [
+              "DeleteManagedLoginBranding",
+              "UpdateManagedLoginBranding"
+            ],
+            "requestParameters": {
+              "managedLoginBrandingId": [
+                {
+                  "Ref": "SsmParameterValuesupplycheckoutprodidentityopsbrandingidC96584B6F00A464EAD1953AFF4B05118Parameter"
+                }
+              ],
+              "userPoolId": [
+                {
+                  "exists": false
+                },
+                {
+                  "anything-but": {
+                    "Ref": "SsmParameterValuesupplycheckoutprodidentityopsuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter"
+                  }
+                }
+              ]
+            },
+            "userIdentity": {
+              "invokedBy": [
+                {
+                  "exists": false
+                },
+                {
+                  "anything-but": "cloudformation.amazonaws.com"
+                }
+              ]
+            }
+          }
+        },
+        "Name": "supply-checkout-prod-operator-branding-changes",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the operator pool's managed login branding at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
     "OperatorSelfServiceChanges0E27141E": {
       "Type": "AWS::Events::Rule",
       "Properties": {
@@ -9831,6 +9927,10 @@
     "SsmParameterValuesupplycheckoutprodidentityopsuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter": {
       "Type": "AWS::SSM::Parameter::Value<String>",
       "Default": "/supply-checkout/prod/identity/ops-user-pool-id"
+    },
+    "SsmParameterValuesupplycheckoutprodidentityopsbrandingidC96584B6F00A464EAD1953AFF4B05118Parameter": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/supply-checkout/prod/identity/ops-branding-id"
     },
     "SsmParameterValuesupplycheckoutprodaudittrailkeyarnC96584B6F00A464EAD1953AFF4B05118Parameter": {
       "Type": "AWS::SSM::Parameter::Value<String>",

@@ -73,6 +73,15 @@ export const OPERATOR_POOL_CONFIG_EVENTS = [
 ] as const;
 
 /**
+ * The ops client's managed login branding calls (supply-checkout-6uw.21):
+ * UpdateManagedLoginBranding takes UserPoolId as optional, so a call naming
+ * only the branding ID logs no requestParameters.userPoolId and
+ * OperatorPoolChanges can't see it. OperatorBrandingChanges matches these by
+ * the branding's ID instead. Both are in OPERATOR_POOL_CONFIG_EVENTS too.
+ */
+export const OPERATOR_BRANDING_EVENTS = ["DeleteManagedLoginBranding", "UpdateManagedLoginBranding"] as const;
+
+/**
  * The operator pool itself (supply-checkout-6uw.20): DeleteUserPool, and an
  * UpdateUserPool that leaves deletion protection anything but ACTIVE (an
  * UpdateUserPool resets a setting it isn't given to its default, which for
@@ -128,6 +137,7 @@ export const operatorRuleName = (envName: string, suffix: string) => `${operator
 export const OPERATOR_RULE_SUFFIXES = {
   OperatorPoolChanges: "pool-changes",
   OperatorPoolProtection: "pool-protection",
+  OperatorBrandingChanges: "branding-changes",
   OperatorSelfServiceChanges: "self-service-changes",
   OperatorAuditWatchChanges: "audit-watch-changes",
   OperatorAuditWatchRoleChanges: "audit-watch-role",
@@ -407,6 +417,12 @@ export class ObservabilityStack extends SupplyCheckoutStack {
    *   matches; once the pool is gone, the userPoolId matches above are moot.
    *   A rule of its own, since the extra requestParameters condition would
    *   otherwise share a key with OperatorPoolChanges' pool ID.
+   * - `OperatorBrandingChanges` (supply-checkout-6uw.21): the branding calls
+   *   in OPERATOR_BRANDING_EVENTS on the ops branding, by its ID, unless
+   *   CloudFormation made them for a deploy, as in OperatorPoolChanges. Only
+   *   when they don't name the ops pool (no userPoolId, or another one): a
+   *   call that names it already alerts through OperatorPoolChanges. A rule
+   *   of its own, so OperatorPoolChanges' pattern stays as it is.
    * - `OperatorSelfServiceChanges`: what an operator's own access token can
    *   do with the aws.cognito.signin.user.admin scope (OPERATOR_SELF_SERVICE_EVENTS):
    *   replace their TOTP, turn MFA settings, change attributes or delete
@@ -507,6 +523,18 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         },
       },
     );
+    // A branding call that names only the branding (UpdateManagedLoginBranding's UserPoolId is optional, supply-checkout-6uw.21)
+    const brandingId = StringParameter.valueForStringParameter(this, identityOutputParameters(envName).opsBrandingId);
+    const branding = operatorRule("OperatorBrandingChanges", "Operator pool: its managed login branding changed or deleted outside a deploy, by branding ID (supply-checkout-6uw.21)", {
+      ...base,
+      detail: {
+        eventSource: ["cognito-idp.amazonaws.com"],
+        eventName: [...OPERATOR_BRANDING_EVENTS],
+        // A call that names the ops pool alerts through OperatorPoolChanges already, so it isn't paged twice
+        requestParameters: { managedLoginBrandingId: [brandingId], userPoolId: [{ exists: false }, { "anything-but": poolId }] },
+        userIdentity: NOT_CLOUDFORMATION,
+      },
+    });
     const selfService = operatorRule("OperatorSelfServiceChanges", "Operator pool: an operator's token replaced TOTP, changed MFA or attributes, or deleted the user (ADR 0015)", {
       ...base,
       detail: {
@@ -696,7 +724,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       "The same as OperatorRuleTampering, which it watches in turn, so neither can be removed first unseen (supply-checkout-6uw.11)",
       tamperingPattern(watched),
     );
-    const rules = [admin, protection, selfService, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering];
+    const rules = [admin, protection, branding, selfService, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering];
     const topic = this.topics.topics.P1;
     // EventBridge publishes to the encrypted topic: it may use the key, for this account's rules only
     this.topics.key.addToResourcePolicy(
@@ -724,6 +752,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     const messages = new Map([
       [admin, message("the operator pool")],
       [protection, message("the operator pool itself (deletion or deletion protection)")],
+      [branding, message("the operator pool's managed login branding")],
       [selfService, message("the operator pool")],
       [watchChanges, message("the operator audit watch")],
       [roleChanges, message("the operator audit watch's role")],

@@ -53,6 +53,7 @@ import {
   OPERATOR_SELF_SERVICE_EVENTS,
   OPERATOR_USER_EVENTS,
   OPERATOR_LOCKOUT_EVENTS,
+  OPERATOR_BRANDING_EVENTS,
   TABLE_KEY_EVENTS,
   TRAIL_BUCKET_EVENTS,
   TRAIL_KEY_EVENTS,
@@ -1187,6 +1188,35 @@ describe("defaults for every function and log group", () => {
   });
 });
 
+/**
+ * Whether an EventBridge pattern matches an event, for the few operators the
+ * operator rules use: lists of values (a CloudFormation reference stands for
+ * its value, and matches only the same reference), `exists`, `anything-but`
+ * and `$or`. Not a full implementation; enough to show which rules a record
+ * reaches.
+ */
+function eventMatches(pattern: unknown, event: unknown): boolean {
+  const isReference = (v: object) => Object.keys(v).some((k) => k === "Ref" || k.startsWith("Fn::"));
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const valueMatches = (rule: unknown, value: unknown): boolean => {
+    if (rule && typeof rule === "object" && !isReference(rule)) {
+      const r = rule as Record<string, unknown>;
+      if ("exists" in r) return r.exists === (value !== undefined);
+      if ("anything-but" in r) return value !== undefined && !same(value, r["anything-but"]);
+      throw new Error(`Unsupported operator ${JSON.stringify(rule)}`);
+    }
+    return value !== undefined && same(rule, value);
+  };
+  const p = pattern as Record<string, unknown>;
+  const e = (event ?? {}) as Record<string, unknown>;
+  return Object.entries(p).every(([key, rule]) => {
+    if (key === "$or") return (rule as unknown[]).some((branch) => eventMatches(branch, event));
+    const value = e[key];
+    if (Array.isArray(rule)) return rule.some((r) => (Array.isArray(value) ? value.some((v) => valueMatches(r, v)) : valueMatches(r, value)));
+    return value !== undefined && typeof value === "object" && eventMatches(rule, value);
+  });
+}
+
 describe("operator pool alerts (ADR 0015)", () => {
   const NOT_CLOUDFORMATION = { invokedBy: [{ exists: false }, { "anything-but": "cloudformation.amazonaws.com" }] };
 
@@ -1194,7 +1224,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     const t = observability();
     // The deletion records watch's rules are tested with the watch
     const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch"));
-    expect(rules).toHaveLength(16);
+    expect(rules).toHaveLength(17);
     const byId = (prefix: string) => {
       // Logical IDs end in an 8-character hash
       const found = rules.find(([id]) => id.startsWith(prefix) && /^[0-9A-F]{8}$/.test(id.slice(prefix.length)));
@@ -1205,6 +1235,7 @@ describe("operator pool alerts (ADR 0015)", () => {
       t,
       admin: byId("OperatorPoolChanges"),
       protection: byId("OperatorPoolProtection"),
+      branding: byId("OperatorBrandingChanges"),
       self: byId("OperatorSelfServiceChanges"),
       watchChanges: byId("OperatorAuditWatchChanges"),
       roleChanges: byId("OperatorAuditWatchRoleChanges"),
@@ -1226,7 +1257,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     const { region } = build();
     const west = Template.fromStack(region(WEST).observability);
     expect(Object.values(west.findResources("AWS::Events::Rule")).filter((r) => r.Properties.EventPattern)).toEqual([]);
-    const { t, admin, protection, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering } = operatorRules();
+    const { t, admin, protection, branding, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering } = operatorRules();
     const poolId = { Ref: expect.stringMatching(/identityopsuserpoolid/i) };
     expect(admin.props.EventPattern).toEqual({
       source: ["aws.cognito-idp"],
@@ -1284,7 +1315,7 @@ describe("operator pool alerts (ADR 0015)", () => {
       },
     });
     expect([...OPERATOR_SELF_SERVICE_EVENTS]).toHaveLength(5);
-    for (const rule of [admin, protection, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, trailBucketChanges, tampering, tamperingWatch]) {
+    for (const rule of [admin, protection, branding, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, trailBucketChanges, tampering, tamperingWatch]) {
       expect(rule.props.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP1/) } })]);
       expect(JSON.stringify(rule.props.Targets)).not.toContain("userIdentity");
     }
@@ -1302,7 +1333,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     expect(fromEvents).toEqual(expect.arrayContaining([
       expect.objectContaining({
         Sid: "AllowOperatorPoolAlertToPublish",
-        Condition: { ArnEquals: { "aws:SourceArn": [admin, protection, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering].map((r) => ({ "Fn::GetAtt": [r.id, "Arn"] })) } },
+        Condition: { ArnEquals: { "aws:SourceArn": [admin, protection, branding, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering].map((r) => ({ "Fn::GetAtt": [r.id, "Arn"] })) } },
       }),
       // The two route rules on the P2 topic, and nothing else
       expect.objectContaining({
@@ -1336,6 +1367,51 @@ describe("operator pool alerts (ADR 0015)", () => {
     const branches = pattern.detail.$or as { eventName: string[]; userIdentity?: unknown }[];
     const always = branches.filter((b) => b.userIdentity === undefined).flatMap((b) => b.eventName);
     expect(always).toEqual([...OPERATOR_USER_EVENTS]);
+  });
+
+  it("tell P1 about calls on the ops branding by its branding ID, even without the pool ID, outside a deploy (supply-checkout-6uw.21)", () => {
+    const { admin, branding } = operatorRules();
+    const poolId = { Ref: expect.stringMatching(/identityopsuserpoolid/i) };
+    const brandingId = { Ref: expect.stringMatching(/identityopsbrandingid/i) };
+    expect([...OPERATOR_BRANDING_EVENTS]).toEqual(["DeleteManagedLoginBranding", "UpdateManagedLoginBranding"]);
+    for (const name of OPERATOR_BRANDING_EVENTS) expect(OPERATOR_POOL_CONFIG_EVENTS, name).toContain(name);
+    expect(branding.props.EventPattern).toEqual({
+      source: ["aws.cognito-idp"],
+      "detail-type": ["AWS API Call via CloudTrail"],
+      detail: {
+        eventSource: ["cognito-idp.amazonaws.com"],
+        eventName: ["DeleteManagedLoginBranding", "UpdateManagedLoginBranding"],
+        // A call that names the ops pool alerts through OperatorPoolChanges already, so it isn't paged twice
+        requestParameters: { managedLoginBrandingId: [brandingId], userPoolId: [{ exists: false }, { "anything-but": poolId }] },
+        userIdentity: NOT_CLOUDFORMATION,
+      },
+    });
+    expect(branding.props.Name).toBe(operatorRuleName("prod", OPERATOR_RULE_SUFFIXES.OperatorBrandingChanges));
+    expect(branding.props.State).toBe("ENABLED");
+    expect(JSON.stringify(branding.props.Targets)).toContain("the operator pool's managed login branding");
+
+    // Between them, the two rules page exactly once for a branding call on the ops branding, whichever IDs it carries
+    const pool = (admin.props.EventPattern as { detail: { requestParameters: { userPoolId: unknown[] } } }).detail.requestParameters.userPoolId[0];
+    const ours = (branding.props.EventPattern as { detail: { requestParameters: { managedLoginBrandingId: unknown[] } } }).detail.requestParameters.managedLoginBrandingId[0];
+    const record = (eventName: string, requestParameters: Record<string, unknown>, invokedBy?: string) => ({
+      source: "aws.cognito-idp",
+      "detail-type": "AWS API Call via CloudTrail",
+      detail: { eventSource: "cognito-idp.amazonaws.com", eventName, requestParameters, userIdentity: { type: "AssumedRole", ...(invokedBy ? { invokedBy } : {}) } },
+    });
+    const pages = (event: unknown) => [admin, branding].filter((r) => eventMatches(r.props.EventPattern, event)).length;
+    for (const eventName of OPERATOR_BRANDING_EVENTS) {
+      expect(pages(record(eventName, { managedLoginBrandingId: ours })), `${eventName} by branding ID only`).toBe(1);
+      expect(pages(record(eventName, { userPoolId: pool })), `${eventName} by pool ID only`).toBe(1);
+      expect(pages(record(eventName, { userPoolId: pool, managedLoginBrandingId: ours })), `${eventName} by both`).toBe(1);
+      expect(pages(record(eventName, { userPoolId: { Ref: "another pool" }, managedLoginBrandingId: ours })), `${eventName} naming another pool`).toBe(1);
+      // Another branding in another pool, and a deploy's own calls, don't page
+      expect(pages(record(eventName, { userPoolId: { Ref: "another pool" }, managedLoginBrandingId: { Ref: "another branding" } })), `${eventName} on another branding`).toBe(0);
+      expect(pages(record(eventName, { managedLoginBrandingId: { Ref: "another branding" } })), `${eventName} on another branding, no pool`).toBe(0);
+      expect(pages(record(eventName, { managedLoginBrandingId: ours }, "cloudformation.amazonaws.com")), `${eventName} by a deploy`).toBe(0);
+      expect(pages(record(eventName, { userPoolId: pool, managedLoginBrandingId: ours }, "cloudformation.amazonaws.com")), `${eventName} by a deploy, both IDs`).toBe(0);
+    }
+    // Other calls carrying the branding ID aren't this rule's
+    expect(eventMatches(branding.props.EventPattern, record("DescribeManagedLoginBranding", { managedLoginBrandingId: ours }))).toBe(false);
   });
 
   it("tell P1 when an operator alert rule is deleted, disabled or loses its target, whoever does it, or is rewritten outside a deploy, with two rules watching each other (supply-checkout-6uw.11)", () => {
