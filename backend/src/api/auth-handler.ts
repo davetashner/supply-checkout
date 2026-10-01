@@ -74,8 +74,26 @@ interface TokenResponse {
   readonly expires_in?: number;
 }
 
+const APP_ORIGIN = /^https:\/\/app\.([a-z0-9-]+(?:\.[a-z0-9-]+)+)$/;
+
+/**
+ * The only sign-in endpoint this function may send a grant or a refresh token
+ * to (supply-checkout-6uw.23): `https://auth.<D>`, where `https://app.<D>` is
+ * the first such origin in ALLOWED_ORIGINS. Both come from the template, not
+ * from SSM, so a rewritten parameter can't point the function elsewhere.
+ */
+export function expectedAuthUrl(allowedOrigins: readonly string[]): string {
+  for (const origin of allowedOrigins) {
+    const match = APP_ORIGIN.exec(origin);
+    if (match) return `https://auth.${match[1]}`;
+  }
+  throw new Error("ALLOWED_ORIGINS has no https://app.<domain> origin to check AUTH_URL against");
+}
+
 export function createAuthHandler(deps: AuthHandlerDeps) {
   const { config, obs } = deps;
+  // Refuse to start rather than send anyone's grant or refresh token to another host
+  if (config.authUrl !== expectedAuthUrl(config.allowedOrigins)) throw new Error("AUTH_URL must be https://auth.<the app's domain>");
   const doFetch = deps.fetch ?? fetch;
   const origins = new Set(config.allowedOrigins);
 

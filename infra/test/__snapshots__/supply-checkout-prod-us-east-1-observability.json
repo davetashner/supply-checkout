@@ -310,6 +310,42 @@
                     },
                     {
                       "Fn::GetAtt": [
+                        "OperatorAuthorizerIssuerUrl3F9DAA1A",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorAuthorizerWebClientId352A3C3D",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorAuthorizerUserPoolId67DCE30A",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorAuthorizerOpsIssuerUrl3712026F",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorAuthorizerOpsClientId7781C6EA",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorAuthorizerAuthUrlBD484BB4",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
                         "OperatorAlertRouteChangesB6D06886",
                         "Arn"
                       ]
@@ -9152,6 +9188,654 @@
                 "detail-eventID": "$.detail.eventID"
               },
               "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the SSM parameter /supply-checkout/prod/data/table-stream-arn, which the operator alerts read at deploy time at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorAuthorizerIssuerUrl3F9DAA1A": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The SSM parameter /supply-checkout/prod/identity/issuer-url, which sign-in or the API's and realtime authorizers read at deploy or publish time, was changed or deleted outside a deploy (supply-checkout-6uw.23)",
+        "EventPattern": {
+          "source": [
+            "aws.ssm"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "ssm.amazonaws.com"
+            ],
+            "$or": [
+              {
+                "eventName": [
+                  "PutParameter",
+                  "DeleteParameter",
+                  "LabelParameterVersion",
+                  "UnlabelParameterVersion"
+                ],
+                "requestParameters": {
+                  "name": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/identity/issuer-url*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "DeleteParameters"
+                ],
+                "requestParameters": {
+                  "names": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/identity/issuer-url*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-authz-issuer-url",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the SSM parameter /supply-checkout/prod/identity/issuer-url, which sign-in or the API's and realtime authorizers read at deploy or publish time at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorAuthorizerWebClientId352A3C3D": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The SSM parameter /supply-checkout/prod/identity/web-client-id, which sign-in or the API's and realtime authorizers read at deploy or publish time, was changed or deleted outside a deploy (supply-checkout-6uw.23)",
+        "EventPattern": {
+          "source": [
+            "aws.ssm"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "ssm.amazonaws.com"
+            ],
+            "$or": [
+              {
+                "eventName": [
+                  "PutParameter",
+                  "DeleteParameter",
+                  "LabelParameterVersion",
+                  "UnlabelParameterVersion"
+                ],
+                "requestParameters": {
+                  "name": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/identity/web-client-id*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "DeleteParameters"
+                ],
+                "requestParameters": {
+                  "names": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/identity/web-client-id*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-authz-web-client-id",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the SSM parameter /supply-checkout/prod/identity/web-client-id, which sign-in or the API's and realtime authorizers read at deploy or publish time at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorAuthorizerUserPoolId67DCE30A": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The SSM parameter /supply-checkout/prod/identity/user-pool-id, which sign-in or the API's and realtime authorizers read at deploy or publish time, was changed or deleted outside a deploy (supply-checkout-6uw.23)",
+        "EventPattern": {
+          "source": [
+            "aws.ssm"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "ssm.amazonaws.com"
+            ],
+            "$or": [
+              {
+                "eventName": [
+                  "PutParameter",
+                  "DeleteParameter",
+                  "LabelParameterVersion",
+                  "UnlabelParameterVersion"
+                ],
+                "requestParameters": {
+                  "name": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/identity/user-pool-id*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "DeleteParameters"
+                ],
+                "requestParameters": {
+                  "names": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/identity/user-pool-id*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-authz-user-pool-id",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the SSM parameter /supply-checkout/prod/identity/user-pool-id, which sign-in or the API's and realtime authorizers read at deploy or publish time at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorAuthorizerOpsIssuerUrl3712026F": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The SSM parameter /supply-checkout/prod/identity/ops-issuer-url, which sign-in or the API's and realtime authorizers read at deploy or publish time, was changed or deleted outside a deploy (supply-checkout-6uw.23)",
+        "EventPattern": {
+          "source": [
+            "aws.ssm"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "ssm.amazonaws.com"
+            ],
+            "$or": [
+              {
+                "eventName": [
+                  "PutParameter",
+                  "DeleteParameter",
+                  "LabelParameterVersion",
+                  "UnlabelParameterVersion"
+                ],
+                "requestParameters": {
+                  "name": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/identity/ops-issuer-url*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "DeleteParameters"
+                ],
+                "requestParameters": {
+                  "names": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/identity/ops-issuer-url*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-authz-ops-issuer-url",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the SSM parameter /supply-checkout/prod/identity/ops-issuer-url, which sign-in or the API's and realtime authorizers read at deploy or publish time at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorAuthorizerOpsClientId7781C6EA": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The SSM parameter /supply-checkout/prod/identity/ops-client-id, which sign-in or the API's and realtime authorizers read at deploy or publish time, was changed or deleted outside a deploy (supply-checkout-6uw.23)",
+        "EventPattern": {
+          "source": [
+            "aws.ssm"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "ssm.amazonaws.com"
+            ],
+            "$or": [
+              {
+                "eventName": [
+                  "PutParameter",
+                  "DeleteParameter",
+                  "LabelParameterVersion",
+                  "UnlabelParameterVersion"
+                ],
+                "requestParameters": {
+                  "name": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/identity/ops-client-id*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "DeleteParameters"
+                ],
+                "requestParameters": {
+                  "names": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/identity/ops-client-id*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-authz-ops-client-id",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the SSM parameter /supply-checkout/prod/identity/ops-client-id, which sign-in or the API's and realtime authorizers read at deploy or publish time at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorAuthorizerAuthUrlBD484BB4": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The SSM parameter /supply-checkout/prod/identity/auth-url, which sign-in or the API's and realtime authorizers read at deploy or publish time, was changed or deleted outside a deploy (supply-checkout-6uw.23)",
+        "EventPattern": {
+          "source": [
+            "aws.ssm"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "ssm.amazonaws.com"
+            ],
+            "$or": [
+              {
+                "eventName": [
+                  "PutParameter",
+                  "DeleteParameter",
+                  "LabelParameterVersion",
+                  "UnlabelParameterVersion"
+                ],
+                "requestParameters": {
+                  "name": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/identity/auth-url*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "DeleteParameters"
+                ],
+                "requestParameters": {
+                  "names": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/identity/auth-url*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-authz-auth-url",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the SSM parameter /supply-checkout/prod/identity/auth-url, which sign-in or the API's and realtime authorizers read at deploy or publish time at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
             }
           }
         ]
