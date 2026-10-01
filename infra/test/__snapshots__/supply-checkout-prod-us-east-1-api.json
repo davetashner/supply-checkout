@@ -1596,11 +1596,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":dynamodb:us-east-1:",
+                        "arn:aws:dynamodb:us-east-1:",
                         {
                           "Ref": "AWS::AccountId"
                         },
@@ -1632,11 +1628,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":dynamodb:us-east-1:",
+                        "arn:aws:dynamodb:us-east-1:",
                         {
                           "Ref": "AWS::AccountId"
                         },
