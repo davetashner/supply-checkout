@@ -60,6 +60,13 @@ export interface JourneyAlarmsProps {
 /** Invites sent in an hour, across every team, that "Invite surge" alarms above. */
 export const INVITE_SURGE_PER_HOUR = 300;
 
+/**
+ * Closed teams set aside at once that "Many closed-team subscriptions set
+ * aside" treats as an incident (P1): more than a one-off, most likely a Stripe
+ * key or mode mismatch setting every closed team aside (supply-checkout-8jc.37).
+ */
+export const SET_ASIDE_INCIDENT_AT = 5;
+
 const TEN_MINUTES = Duration.minutes(10);
 const FIFTEEN_MINUTES = Duration.minutes(15);
 /** Two of the hourly purge's runs, so every period holds at least one gauge reading. */
@@ -525,8 +532,28 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       title: "Closed-team subscription set aside",
       journeys: "J7, J11",
       severity: "P2",
-      rule: `ClosedTeamsSetAside above 0 at its maximum over ${2 * PURGE_EVERY_HOURS} hours: closed teams whose subscription the hourly closed-team purge (primary region) won't end or retry for this closure, until a person deals with each one: it belongs to another Stripe customer (CustomerMismatch), Stripe doesn't have it (NotFound), or Stripe refused to end it with an error retrying won't change (PermanentError). The purge sends the gauge every run, so this stays on until each team is handled (stripeSetAsideFor removed, or the team purged), and logs "Closed team's subscription still set aside" with each team's ID and reason. See docs/journeys.md.`,
+      rule: `ClosedTeamsSetAside above 0 at its maximum over ${2 * PURGE_EVERY_HOURS} hours: closed teams whose subscription the hourly closed-team purge (primary region) won't end or retry for this closure, until a person deals with each one: it belongs to another Stripe customer (CustomerMismatch), Stripe doesn't have it (NotFound), or Stripe refused to end it with an error retrying won't change (PermanentError). The purge sends the gauge every run, so this stays on until each team is handled (stripeSetAsideFor removed), and logs "Closed team's subscription still set aside" with each team's ID and reason. A team set aside isn't purged, even past its deletion date (Deletion overdue leaves it out), so deal with each one before then. See docs/journeys.md.`,
       metric: business(BusinessMetric.ClosedTeamsSetAside, region, TWO_PURGE_RUNS, "Maximum"),
+      threshold: 0,
+      primaryOnly: true,
+    },
+    {
+      id: "closed-team-subscriptions-set-aside-many",
+      title: "Many closed-team subscriptions set aside",
+      journeys: "J7, J11",
+      severity: "P1",
+      rule: `ClosedTeamsSetAside at ${SET_ASIDE_INCIDENT_AT} or more at its maximum over ${2 * PURGE_EVERY_HOURS} hours: that many closed teams set aside at once is most likely a Stripe key or mode mismatch (every closed team's subscription not found), under which no closed team's subscription is ended and none of those teams is purged. Check the purge's Stripe key and mode first. See docs/journeys.md, "Closed-team subscription not found in Stripe".`,
+      metric: business(BusinessMetric.ClosedTeamsSetAside, region, TWO_PURGE_RUNS, "Maximum"),
+      threshold: SET_ASIDE_INCIDENT_AT - 1,
+      primaryOnly: true,
+    },
+    {
+      id: "stripe-customer-already-deleted",
+      title: "Stripe customer already deleted",
+      journeys: "J7, J11",
+      severity: "P2",
+      rule: "Any StripeCustomersAlreadyDeleted over an hour: the hourly closed-team purge (primary region) asked Stripe to delete a purged team's customer and was told it doesn't exist, took it as deleted and purged the team. A run that stopped after deleting the customer does that, but so does a Stripe key or mode mismatch, under which the real customer keeps its details and any subscription keeps billing. The log line \"Stripe customer already deleted\" has the team and customer IDs, and the team's deletion record keeps its customer and subscription IDs: look the customer up in the Stripe Dashboard, in both modes.",
+      metric: business(BusinessMetric.StripeCustomersAlreadyDeleted, region, Duration.hours(1)),
       threshold: 0,
       primaryOnly: true,
     },

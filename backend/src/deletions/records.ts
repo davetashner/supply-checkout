@@ -1,6 +1,9 @@
 // Deletion records (supply-checkout-0ic7): one small S3 object per deleted
 // account or team, holding IDs and a time only, never emails, names or team
-// data. Deleted data lives on in the table's backups (35 days of PITR and
+// data. A team's also holds its Stripe customer and subscription IDs, if it
+// had them (supply-checkout-8jc.37): the purge deletes the customer in Stripe
+// and the table's link to it, and a customer Stripe said was already gone
+// (maybe a Stripe key or mode mismatch) can still be found by its ID. Deleted data lives on in the table's backups (35 days of PITR and
 // daily backups, 90 days of copies, docs/backups.md), and the purge also
 // deletes a team's audit trail, so after a restore nothing in the table says
 // what had been deleted since. These records do, for longer than any backup
@@ -27,7 +30,13 @@ export interface DeletionRecord {
   readonly deletedAt: string;
   /** A user's only: the teams they were alone in, which their deletion closed (the purge deletes them later). */
   readonly teamsClosed?: readonly string[];
+  /** A team's only: its Stripe customer, if it had one when it was purged. */
+  readonly stripeCustomerId?: string;
+  /** A team's only: its Stripe subscription, if it had one when it was purged. */
+  readonly stripeSubscriptionId?: string;
 }
+
+const STRIPE_FIELDS = ["stripeCustomerId", "stripeSubscriptionId"] as const;
 
 /** Writes deletion records. */
 export interface DeletionLog {
@@ -62,7 +71,14 @@ export function validRecord(value: unknown): DeletionRecord {
       throw new Error(`Invalid teamsClosed in ${key}`);
     }
   }
-  return { kind: r.kind as DeletionKind, id: r.id as string, deletedAt: r.deletedAt, ...(r.teamsClosed?.length ? { teamsClosed: [...r.teamsClosed] } : {}) };
+  const stripe: { stripeCustomerId?: string; stripeSubscriptionId?: string } = {};
+  for (const field of STRIPE_FIELDS) {
+    const value = r[field];
+    if (value === undefined) continue;
+    if (r.kind !== "team" || typeof value !== "string" || !ID.test(value)) throw new Error(`Invalid ${field} in ${key}`);
+    stripe[field] = value;
+  }
+  return { kind: r.kind as DeletionKind, id: r.id as string, deletedAt: r.deletedAt, ...(r.teamsClosed?.length ? { teamsClosed: [...r.teamsClosed] } : {}), ...stripe };
 }
 
 const errorName = (error: unknown) => (error as { name?: string } | null)?.name;
@@ -195,9 +211,15 @@ const PREFIX_ORDER = Object.values(DELETION_PREFIXES);
 // Every key was listed under one of the prefixes, so findIndex never returns -1 here
 const kindOrder = (key: string) => PREFIX_ORDER.findIndex((p) => key.startsWith(p));
 
-/** Two valid versions of one key: the earlier time (a survivor is judged from the first deletion), and every closed team either lists. */
+/** Two valid versions of one key: the earlier time (a survivor is judged from the first deletion), every closed team either lists, and the earlier version's Stripe IDs (else the other's). */
 function merge(a: DeletionRecord, b: DeletionRecord): DeletionRecord {
   const teamsClosed = [...new Set([...(a.teamsClosed ?? []), ...(b.teamsClosed ?? [])])].sort();
-  const deletedAt = Date.parse(b.deletedAt) < Date.parse(a.deletedAt) ? b.deletedAt : a.deletedAt;
-  return { kind: a.kind, id: a.id, deletedAt, ...(teamsClosed.length ? { teamsClosed } : {}) };
+  const bFirst = Date.parse(b.deletedAt) < Date.parse(a.deletedAt);
+  const [first, second] = bFirst ? [b, a] : [a, b];
+  const stripe: { stripeCustomerId?: string; stripeSubscriptionId?: string } = {};
+  for (const field of STRIPE_FIELDS) {
+    const value = first[field] ?? second[field];
+    if (value !== undefined) stripe[field] = value;
+  }
+  return { kind: a.kind, id: a.id, deletedAt: first.deletedAt, ...(teamsClosed.length ? { teamsClosed } : {}), ...stripe };
 }

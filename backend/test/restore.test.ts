@@ -92,6 +92,9 @@ describe("deletion records", () => {
     // Unknown fields are dropped, and an empty list isn't kept
     expect(validRecord({ kind: "user", id: "u1", deletedAt: at, teamsClosed: [], email: "x@example.com" })).toEqual({ kind: "user", id: "u1", deletedAt: at });
     expect(validRecord({ kind: "team", id: "t1", deletedAt: "2026-09-27T12:00:00Z" })).toEqual({ kind: "team", id: "t1", deletedAt: "2026-09-27T12:00:00Z" });
+    // A team's Stripe IDs survive its purge in its record (supply-checkout-8jc.37)
+    expect(validRecord({ kind: "team", id: "t1", deletedAt: at, stripeCustomerId: "cus_1", stripeSubscriptionId: "sub_1" })).toEqual({ kind: "team", id: "t1", deletedAt: at, stripeCustomerId: "cus_1", stripeSubscriptionId: "sub_1" });
+    expect(validRecord({ kind: "team", id: "t1", deletedAt: at, stripeCustomerId: "cus_1" })).toEqual({ kind: "team", id: "t1", deletedAt: at, stripeCustomerId: "cus_1" });
     for (const bad of [
       null,
       "user",
@@ -102,6 +105,10 @@ describe("deletion records", () => {
       { kind: "user", id: "u1", deletedAt: at, teamsClosed: ["bad id"] },
       { kind: "user", id: "u1", deletedAt: at, teamsClosed: Array.from({ length: 1001 }, (_, i) => `t${i}`) },
       { kind: "user", id: "bad id", deletedAt: at },
+      { kind: "user", id: "u1", deletedAt: at, stripeCustomerId: "cus_1" },
+      { kind: "team", id: "t1", deletedAt: at, stripeCustomerId: "cus 1" },
+      { kind: "team", id: "t1", deletedAt: at, stripeSubscriptionId: 5 },
+      { kind: "team", id: "t1", deletedAt: at, stripeSubscriptionId: "x".repeat(129) },
     ]) {
       expect(() => validRecord(bad)).toThrow();
     }
@@ -185,12 +192,16 @@ describe("deletion records", () => {
     bucket.objects.set("users/u1.json", JSON.stringify({ kind: "user", id: "u1", deletedAt: later }));
     bucket.objects.set("users/u2.json", JSON.stringify({ kind: "user", id: "u2", deletedAt: later }));
     bucket.objects.set("users/u2.json", JSON.stringify({ kind: "user", id: "u2", deletedAt: later }));
+    // A team's Stripe IDs: the earliest version's, else any other's
+    bucket.objects.set("teams/t1.json", JSON.stringify({ kind: "team", id: "t1", deletedAt: later, stripeCustomerId: "cus_late", stripeSubscriptionId: "sub_late" }));
+    bucket.objects.set("teams/t1.json", JSON.stringify({ kind: "team", id: "t1", deletedAt: NOW.toISOString(), stripeCustomerId: "cus_first" }));
     const read = await readDeletionRecords(bucket.s3, "b");
     expect(read.records).toEqual([
       { kind: "user", id: "u1", deletedAt: NOW.toISOString(), teamsClosed: ["t1", "t2"] },
       { kind: "user", id: "u2", deletedAt: later },
+      { kind: "team", id: "t1", deletedAt: NOW.toISOString(), stripeCustomerId: "cus_first", stripeSubscriptionId: "sub_late" },
     ]);
-    expect(read).toMatchObject({ invalid: [], rewritten: 2 });
+    expect(read).toMatchObject({ invalid: [], rewritten: 3 });
   });
 
   it("with before, leaves out versions written at or after it, and sets aside a version with no time", async () => {

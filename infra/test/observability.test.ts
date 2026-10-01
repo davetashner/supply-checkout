@@ -11,7 +11,7 @@ import { BusinessMetric } from "../../backend/src/observability/names.js";
 import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { alarmContactParameter, alarmContactsFromContext } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
-import { journeyAlarmSpecs } from "../lib/observability/journey-alarms.js";
+import { journeyAlarmSpecs, SET_ASIDE_INCIDENT_AT } from "../lib/observability/journey-alarms.js";
 import { ROUTER_FAILING_ABOVE, RUM_EVENTS_FLOOD_PER_HOUR, RUM_EVENTS_SURGE_PER_HOUR, SITE_DOWN_MIN_REQUESTS, SITE_DOWN_PERCENT } from "../lib/observability/web-alarms.js";
 import { rumAppMonitorName } from "../lib/web/rum.js";
 import { webOutputParameters } from "../lib/stacks/web-stack.js";
@@ -133,6 +133,8 @@ const ALARM_IDS = [
   "closed-team-charged",
   "closed-team-subscription-not-found",
   "closed-team-subscription-set-aside",
+  "closed-team-subscriptions-set-aside-many",
+  "stripe-customer-already-deleted",
   "team-reopened-notices-failing",
 ];
 
@@ -147,6 +149,8 @@ const PRIMARY_ONLY_ALARM_IDS = [
   "closed-team-charged",
   "closed-team-subscription-not-found",
   "closed-team-subscription-set-aside",
+  "closed-team-subscriptions-set-aside-many",
+  "stripe-customer-already-deleted",
 ];
 
 describe("alarm topics", () => {
@@ -719,6 +723,32 @@ describe("alarms added with the email code routes, the live update budget, team 
     // Not on the one-off count, which goes quiet the hour after a team is set aside
     const onCount = Object.values(t.findResources("AWS::CloudWatch::Alarm")).filter((a) => JSON.stringify(a.Properties.Metrics ?? a.Properties.MetricName ?? "").includes(`"${BusinessMetric.ClosedTeamSubscriptionsSetAside}"`));
     expect(onCount).toEqual([]);
+  });
+
+  it("treats many closed teams set aside at once as an incident, P1, on the same gauge (J7, J11, supply-checkout-8jc.37)", () => {
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p1-closed-team-subscriptions-set-aside-many",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ClosedTeamsSetAside }), Stat: "Maximum", Period: 2 * PURGE_EVERY_HOURS * 3600 }) })],
+      // At SET_ASIDE_INCIDENT_AT or more
+      Threshold: SET_ASIDE_INCIDENT_AT - 1,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP1") }],
+      AlarmDescription: Match.stringLikeRegexp("^P1 Many closed-team subscriptions set aside \\(J7, J11.*key or mode mismatch"),
+    });
+    expect(SET_ASIDE_INCIDENT_AT).toBe(5);
+  });
+
+  it("alarms on any purged team's Stripe customer Stripe says was already deleted, where the purge runs (J7, J11, supply-checkout-8jc.37)", () => {
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-stripe-customer-already-deleted",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.StripeCustomersAlreadyDeleted }), Stat: "Sum", Period: 3600 }) })],
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      AlarmDescription: Match.stringLikeRegexp("^P2 Stripe customer already deleted \\(J7, J11.*deletion record"),
+    });
   });
 
   it("alarms on any closed team overdue for deletion, over periods that always hold a purge run (J11)", () => {
