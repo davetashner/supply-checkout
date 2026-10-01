@@ -254,6 +254,18 @@ function recordForClosure(db: Db, team: Pick<ClosedTeamToEnd, "teamId" | "closed
     );
 }
 
+/**
+ * Whether the team is purged or being purged: its META item is gone, or
+ * marked `purging` (a consistent read, naming only closure fields). The
+ * purge checks it before deleting a queued Stripe customer
+ * (stripe-deletions.ts), so a queue entry naming a team that's still there
+ * never deletes that team's customer.
+ */
+export async function isTeamPurgedOrPurging(db: Db, teamId: string): Promise<boolean> {
+  const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: keys.team(id(teamId, "team ID")), ConsistentRead: true, ProjectionExpression: "closedAt, purgeAfter, purging" }));
+  return Item === undefined || Item.purging !== undefined;
+}
+
 /** Whether a team's META item is set aside for its current closure: held back from the purge until a person deals with it. */
 const isSetAside = (item: Record<string, unknown>) => typeof item.closedAt === "string" && item.stripeSetAsideFor === item.closedAt;
 

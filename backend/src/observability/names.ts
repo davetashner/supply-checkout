@@ -138,6 +138,12 @@ export const BusinessMetric = {
   StripeCustomersAlreadyDeleted: "StripeCustomersAlreadyDeleted",
   /** Closed teams held back from the purge (their subscription set aside for a person) that it purged anyway HELD_PURGE_GRACE_DAYS after their deletion date, the subscription unresolved: a person ends it by hand in Stripe, from the IDs in the team's deletion record (supply-checkout-8jc.40, J7, J11). */
   HeldTeamsPurged: "HeldTeamsPurged",
+  /** Purged teams whose Stripe customer couldn't be deleted when their data was (Stripe down, say): the data was deleted on schedule anyway and the customer's deletion queued for the next runs to retry (supply-checkout-8jc.42, J7, J11). */
+  StripeCustomerDeletionsQueued: "StripeCustomerDeletionsQueued",
+  /** Gauge, every purge run that can read the queue: the Stripe customer deletions still queued. */
+  StripeCustomerDeletionsPending: "StripeCustomerDeletionsPending",
+  /** Gauge, every purge run that can read the queue: how many hours the oldest queued Stripe customer deletion has waited (0 with none). "Stripe customer deletion retrying" (P2) and "stuck" (P1) read it (supply-checkout-8jc.42). */
+  StripeCustomerDeletionOldestHours: "StripeCustomerDeletionOldestHours",
   /** Operator audit items (OPAUDIT#) changed or deleted other than by their TTL: the audit trail was tampered with (ADR 0015). From the operator audit watch (primary region). */
   OperatorAuditChanged: "OperatorAuditChanged",
   /** Heartbeats the operator audit watch read from the table's stream (OPERATOR_AUDIT_HEARTBEAT): none for a while means it isn't reading the stream, or its metrics aren't arriving. */

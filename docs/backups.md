@@ -517,7 +517,7 @@ For each record it finds in the restored table:
 
 | Found | What it does |
 | --- | --- |
-| A deleted team, or a team a deleted account's deletion closed | Marks it closed and due, and purges it the way the scheduled purge does: every item, its members' team-switcher rows, its Stripe link |
+| A deleted team, or a team a deleted account's deletion closed | Marks it closed and due, and purges it the way the scheduled purge does: every item, its members' team-switcher rows, its Stripe link. Its Stripe customer, if it has one, is queued for the scheduled purge to delete (`PURGE#STRIPE_DELETIONS`, `supply-checkout-8jc.42`), never called from here: a queue entry the restore lost comes back, and the purge clears one Stripe already deleted |
 | A team whose only members are deleted accounts | Purges it too (the account deletion closed it, and the purge followed) |
 | A team a deleted account's record says its deletion closed, but that has members who aren't deleted, or that the account isn't in and isn't closed | Nothing: left for a person (the record and the table disagree) |
 | A recorded account that outlived its record: still in the environment's user pool | Nothing at all. A deletion that wrote its record and then failed, where the user never retried, leaves one; they're counted, not named. The pool is read from `/supply-checkout/<env>/identity/user-pool-id`, never given on the command line, and it alone decides: an account the pool no longer has is deleted even if it joined or made teams after its record's time (a first deletion that failed, a return, then a real deletion). Only without AWS (`--endpoint`) do the timestamps decide instead |

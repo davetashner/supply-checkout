@@ -312,6 +312,8 @@
     { "name": "Many closed-team subscriptions set aside", "journeys": ["J7", "J11"], "infra": "closed-team-subscriptions-set-aside-many" },
     { "name": "Stripe customer already deleted", "journeys": ["J7", "J11"], "infra": "stripe-customer-already-deleted" },
     { "name": "Held team purged with its subscription unresolved", "journeys": ["J7", "J11"], "infra": "held-team-purged" },
+    { "name": "Stripe customer deletion retrying", "journeys": ["J7", "J11"], "infra": "stripe-customer-deletion-retrying" },
+    { "name": "Stripe customer deletion stuck", "journeys": ["J7", "J11"], "infra": "stripe-customer-deletion-stuck" },
 
     { "name": "Mass lockout", "journeys": ["J8"] },
     { "name": "Failed payments rising", "journeys": ["J8"] },

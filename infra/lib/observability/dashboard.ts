@@ -139,7 +139,11 @@ export class OpsDashboard extends Construct {
       businessGraph("Accounts: owners emailed that their team closed, and not", [BusinessMetric.TeamClosedNotices, BusinessMetric.TeamClosedNoticeFailures]),
       businessGraph("Accounts: teams reopened, owners emailed about it, and not", [BusinessMetric.TeamsReopened, BusinessMetric.TeamReopenedNotices, BusinessMetric.TeamReopenedNoticeFailures]),
       // The purge's gauges (primary region), at their maximum
-      graph("J11: closed teams overdue for deletion; J7: set aside", each((r) => [BusinessMetric.ClosedTeamsOverdue, BusinessMetric.ClosedTeamsSetAside].map((name) => business(name, r, FIVE_MINUTES, "Maximum"))), WIDTH / 4),
+      graph(
+        "J11: closed teams overdue for deletion; J7: set aside, Stripe customer deletions queued (oldest, hours)",
+        each((r) => [BusinessMetric.ClosedTeamsOverdue, BusinessMetric.ClosedTeamsSetAside, BusinessMetric.StripeCustomerDeletionsPending, BusinessMetric.StripeCustomerDeletionOldestHours].map((name) => business(name, r, FIVE_MINUTES, "Maximum"))),
+        WIDTH / 4,
+      ),
       businessGraph("J3: email codes not sent or checked (5xx)", [BusinessMetric.EmailCodeSendFailures, BusinessMetric.EmailCodeVerifyFailures]),
     );
     this.dashboard.addWidgets(
@@ -150,7 +154,7 @@ export class OpsDashboard extends Construct {
       // The deletion records watch (primary region): any point here is a P2
       businessGraph("Backups: deletion records rewritten or deleted", [BusinessMetric.DeletionRecordRewrites]),
       // Closed teams' subscriptions ended, and purged teams' Stripe customers deleted (supply-checkout-t0en)
-      businessGraph("J7: closed teams' subscriptions ended (reopened teams' ended, resumed, resyncs late, left to cancel; charged after closing, not found, set aside), Stripe customers deleted (already deleted); held teams purged unresolved", [BusinessMetric.ClosedTeamSubscriptionsEnded, BusinessMetric.ReopenedTeamSubscriptionsEnded, BusinessMetric.ReopenedTeamSubscriptionsResumed, BusinessMetric.ReopenResyncsLate, BusinessMetric.ReopenedTeamSubscriptionsUndecided, BusinessMetric.ClosedTeamRenewalsCharged, BusinessMetric.ClosedTeamSubscriptionsNotFound, BusinessMetric.ClosedTeamSubscriptionsSetAside, BusinessMetric.StripeCustomersDeleted, BusinessMetric.StripeCustomersAlreadyDeleted, BusinessMetric.HeldTeamsPurged]),
+      businessGraph("J7: closed teams' subscriptions ended (reopened teams' ended, resumed, resyncs late, left to cancel; charged after closing, not found, set aside), Stripe customers deleted (already deleted, queued); held teams purged unresolved", [BusinessMetric.ClosedTeamSubscriptionsEnded, BusinessMetric.ReopenedTeamSubscriptionsEnded, BusinessMetric.ReopenedTeamSubscriptionsResumed, BusinessMetric.ReopenResyncsLate, BusinessMetric.ReopenedTeamSubscriptionsUndecided, BusinessMetric.ClosedTeamRenewalsCharged, BusinessMetric.ClosedTeamSubscriptionsNotFound, BusinessMetric.ClosedTeamSubscriptionsSetAside, BusinessMetric.StripeCustomersDeleted, BusinessMetric.StripeCustomersAlreadyDeleted, BusinessMetric.StripeCustomerDeletionsQueued, BusinessMetric.HeldTeamsPurged]),
       // The operator group watch (primary region): a change is a P1; a gap in the size means it isn't running ("Operator group watch silent")
       graph(
         "Operators: group changes, resets and size",

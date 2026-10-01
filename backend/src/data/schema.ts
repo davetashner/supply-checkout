@@ -70,6 +70,25 @@ export const TEAM_PURGE_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "closedAt", "purge
 export const TEAM_PURGE_MARK_ATTRIBUTES = [PK, SK, "purgeAfter", "purging", "stripeCancelledFor", "stripeSetAsideFor", "stripeSetAsideReason"] as const;
 
 /**
+ * The partition of the Stripe customer deletions the team purge still owes
+ * (supply-checkout-8jc.42): one item per purged team whose Stripe customer
+ * couldn't be deleted when its data was (Stripe down, say), sort key the team
+ * ID, holding only that team's ID, its Stripe customer's ID and when it was
+ * queued. The team's data is purged on schedule anyway, and each later run
+ * retries these until Stripe deletes the customer (data/stripe-deletions.ts).
+ * Its own fixed partition: never a team's, a user's or a Stripe link's.
+ */
+export const STRIPE_DELETIONS_PARTITION = "PURGE#STRIPE_DELETIONS";
+
+/**
+ * The only attributes the team purge may name in STRIPE_DELETIONS_PARTITION
+ * (dynamodb:Attributes): the keys, the team, its Stripe customer and when it
+ * was queued. Its IAM policy allows PutItem, Query and DeleteItem there with
+ * exactly these.
+ */
+export const STRIPE_DELETION_ATTRIBUTES = [PK, SK, "teamId", "stripeCustomerId", "queuedAt"] as const;
+
+/**
  * The only attributes the stuck-import check may name or read (ADR 0005): the
  * table and GSI1 keys (the team is in PK, the import in SK, the start time in
  * GSI1SK) and the job's progress. Its IAM policy allows exactly these

@@ -17,6 +17,8 @@ import {
   GSI3,
   OPS_TEAMS_PARTITION,
   SEAT_RECONCILE_ATTRIBUTES,
+  STRIPE_DELETION_ATTRIBUTES,
+  STRIPE_DELETIONS_PARTITION,
   STUCK_IMPORT_ATTRIBUTES,
   TEAM_PURGE_ATTRIBUTES,
   TEAM_PURGE_MARK_ATTRIBUTES,
@@ -94,6 +96,13 @@ export interface OpsChecksProps {
  *   supply-checkout-8jc.17, supply-checkout-8jc.36), counts those on the same
  *   index for its ClosedTeamsSetAside gauge, and may read the one Stripe secret key for this
  *   environment and mode (secretsmanager:GetSecretValue on its ARN only).
+ *   When Stripe can't delete a purged team's customer, it still deletes the
+ *   team's data and queues the customer's deletion (supply-checkout-8jc.42):
+ *   PutItem, Query (SPECIFIC_ATTRIBUTES) and DeleteItem on the one
+ *   STRIPE_DELETIONS_PARTITION only, naming only STRIPE_DELETION_ATTRIBUTES
+ *   (keys, the team, its Stripe customer, when it was queued). Its
+ *   StripeCustomerDeletionOldestHours gauge has its own alarms
+ *   ("Stripe customer deletion retrying" and "stuck", journey-alarms.ts).
  *
  * - `seatReconcile` (supply-checkout-l50): nightly at SEAT_RECONCILE_HOUR_UTC,
  *   it queues a seat check on the seat sync queue for every open team with a
@@ -169,7 +178,7 @@ export class OpsChecks extends Construct {
       "team-purge",
       {
         functionName: names.teamPurgeFunction,
-        description: "Ends closed teams' Stripe subscriptions, and deletes closed teams (and their Stripe customers) once their 30-day read-only period ends",
+        description: "Ends closed teams' Stripe subscriptions, deletes closed teams once their 30-day read-only period ends, and deletes their Stripe customers (retrying those Stripe couldn't)",
         environment: { [OPS_ENV.tableName]: props.tableName, [STRIPE_ENV.secretId]: stripeSecretName(props.envName, props.stripeMode), [STRIPE_ENV.mode]: props.stripeMode },
       },
       { every: Duration.hours(PURGE_EVERY_HOURS), timeout: Duration.millis(PURGE_BUDGET_MS + 60_000) },
@@ -234,10 +243,39 @@ export class OpsChecks extends Construct {
         },
       }),
     );
+    // The Stripe customer deletions it still owes (supply-checkout-8jc.42): one fixed partition, a
+    // team's ID, its customer's and a time, so it can't reach a team's or anyone's other items here
+    const stripeDeletions = { "dynamodb:LeadingKeys": [STRIPE_DELETIONS_PARTITION], "dynamodb:Attributes": [...STRIPE_DELETION_ATTRIBUTES] };
+    this.teamPurge.addToRolePolicy(
+      new PolicyStatement({
+        sid: "QueueStripeCustomerDeletions",
+        // Queued before a team's items go when Stripe can't delete its customer, removed once it has
+        actions: ["dynamodb:PutItem", "dynamodb:DeleteItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringEquals": stripeDeletions,
+          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        },
+      }),
+    );
+    this.teamPurge.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ListStripeCustomerDeletions",
+        actions: ["dynamodb:Query"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringEquals": stripeDeletions,
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
     this.teamPurge.addToRolePolicy(
       new PolicyStatement({
         sid: "TableKeyThroughDynamoDb",
-        // Reads and deletes only: nothing it sends is encrypted, so no Encrypt or GenerateDataKey
+        // DynamoDB encrypts and decrypts items with its cached table key, so reads, deletes and writes
+        // (the UpdateItem marks, and the PutItem of a queued Stripe customer deletion) need only Decrypt.
+        // Checked after the first deploy: KMS AccessDenied for this role in CloudTrail would mean adding
+        // kms:Encrypt and kms:GenerateDataKey here, with the same ViaService condition (docs/journeys.md, J11)
         actions: ["kms:Decrypt", "kms:DescribeKey"],
         resources: [tableKey],
         conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
