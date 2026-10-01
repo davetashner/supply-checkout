@@ -31,6 +31,8 @@ export const identityOutputParameters = (envName: string) => {
     opsIssuerUrl: `${prefix}/ops-issuer-url`,
     /** `https://ops-auth.<env domain>`: the operator pool's Managed Login and OAuth endpoints. */
     opsAuthUrl: `${prefix}/ops-auth-url`,
+    /** The ops client's managed login branding: OperatorBrandingChanges matches calls that name only it (supply-checkout-6uw.21). */
+    opsBrandingId: `${prefix}/ops-branding-id`,
   };
 };
 

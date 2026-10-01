@@ -1221,6 +1221,27 @@
         "Type": "String",
         "Value": "https://ops-auth.supplycheckout.com"
       }
+    },
+    "OpsBrandingIdParam79FB52B5": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "Operator pool's managed login branding ID: what the branding alerts match (supply-checkout-6uw.21)",
+        "Name": "/supply-checkout/prod/identity/ops-branding-id",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "identity",
+          "env": "prod",
+          "layer": "stateful",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Fn::GetAtt": [
+            "OpsBranding",
+            "ManagedLoginBrandingId"
+          ]
+        }
+      }
     }
   },
   "Parameters": {

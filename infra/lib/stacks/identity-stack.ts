@@ -283,6 +283,7 @@ export class IdentityStack extends SupplyCheckoutStack {
     publish("OpsClientIdParam", outputs.opsClientId, ops.client.userPoolClientId, "Operator pool's ops client ID (public, PKCE): the ops authorizer's audience");
     publish("OpsIssuerUrlParam", outputs.opsIssuerUrl, ops.pool.userPoolProviderUrl, "JWT issuer for the ops authorizer");
     publish("OpsAuthUrlParam", outputs.opsAuthUrl, `https://${names.opsAuth}`, "Operator pool's Managed Login and OAuth endpoints");
+    publish("OpsBrandingIdParam", outputs.opsBrandingId, ops.branding.attrManagedLoginBrandingId, "Operator pool's managed login branding ID: what the branding alerts match (supply-checkout-6uw.21)");
   }
 
   /**
@@ -383,12 +384,12 @@ export class IdentityStack extends SupplyCheckoutStack {
       refreshTokenValidity: Duration.hours(8),
       refreshTokenRotationGracePeriod: Duration.seconds(10),
     });
-    new CfnManagedLoginBranding(this, "OpsBranding", {
+    const branding = new CfnManagedLoginBranding(this, "OpsBranding", {
       userPoolId: pool.userPoolId,
       clientId: client.userPoolClientId,
       useCognitoProvidedValues: true,
     });
-    return { pool, client, domain, group };
+    return { pool, client, domain, group, branding };
   }
 
   private addSocialProviders(secrets: ReturnType<typeof identityProviderSecrets>): IUserPoolIdentityProvider[] {

@@ -587,5 +587,9 @@ describe("operator pool (ADR 0015)", () => {
     const out = identityOutputParameters("prod");
     for (const name of [out.opsUserPoolId, out.opsUserPoolArn, out.opsClientId, out.opsIssuerUrl]) template.hasResourceProperties("AWS::SSM::Parameter", { Name: name });
     template.hasResourceProperties("AWS::SSM::Parameter", { Name: out.opsAuthUrl, Value: "https://ops-auth.supplycheckout.com" });
+    // The ops branding's ID, so OperatorBrandingChanges can match branding calls that name only it (supply-checkout-6uw.21)
+    const [brandingId] = Object.keys(template.findResources("AWS::Cognito::ManagedLoginBranding")).filter((id) => id.startsWith("Ops"));
+    expect(out.opsBrandingId).toBe("/supply-checkout/prod/identity/ops-branding-id");
+    template.hasResourceProperties("AWS::SSM::Parameter", { Name: out.opsBrandingId, Value: { "Fn::GetAtt": [brandingId, "ManagedLoginBrandingId"] } });
   });
 });
