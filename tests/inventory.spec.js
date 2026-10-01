@@ -22,7 +22,7 @@ test("adds an item with a barcode and a storage count", { tag: ["@J2.1", "@J2.2"
   await expect(modal(page).getByRole("heading", { name: "Add item" })).toBeVisible();
   await modal(page).getByPlaceholder("Type, scan, or leave blank").fill("  998877 ");
   await modal(page).getByLabel("Item name").fill("Glass cleaner");
-  await modal(page).getByLabel("In storage now").fill("6");
+  await modal(page).getByLabel("Single items in storage now").fill("6");
   await modal(page).getByRole("button", { name: "Save" }).click();
   await expect(inventoryRow(page, "Glass cleaner")).toContainText("Barcode 998877");
   await expect(inventoryRow(page, "Glass cleaner").locator("td").nth(1)).toHaveText("6");
@@ -62,7 +62,7 @@ test("edits an item's name, price and count", { tag: ["@J2.3"] }, async ({ page 
   await expect(modal(page)).toContainText("Price changes apply to new checkouts");
   await modal(page).getByLabel("Item name").fill("Storage bins, 16 qt");
   await modal(page).getByLabel("Price each ($)").fill("7");
-  await modal(page).getByLabel("In storage now").fill("");
+  await modal(page).getByLabel("Single items in storage now").fill("");
   await modal(page).getByRole("button", { name: "Save" }).click();
   await expect(inventoryRow(page, "Storage bins, 16 qt").locator("td").nth(1)).toHaveText("—");
   await expect(inventoryRow(page, "Storage bins, 16 qt").locator("td").nth(2)).toHaveText("$7.00");
@@ -192,10 +192,59 @@ test("edits cost and pack size, rounds old money values, and clears them when bl
   await modal(page).getByLabel("Item name").fill("Trash bags, case");
   await modal(page).getByLabel("Price each ($)").fill("0.75");
   await modal(page).getByLabel("Cost each ($)").fill("0.5");
-  await modal(page).getByLabel("In storage now").fill("90");
+  await modal(page).getByLabel("Single items in storage now").fill("90");
   await modal(page).getByLabel("Comes in packs of").fill("45");
   await modal(page).getByRole("button", { name: "Save" }).click();
   await expect(inventoryRow(page, "Trash bags").locator("td").nth(4)).toHaveText("$45.00");
   const bags = await page.evaluate(() => [...window.__mock.docs.entries()].find(([, d]) => d.name === "Trash bags, case")[1]);
   expect(bags).toEqual({ code: "", name: "Trash bags, case", price: 0.75, cost: 0.5, stock: 90, packSize: 45, updatedAt: expect.any(String) });
+});
+
+// ADR 0014: storage counts single items; pack size only matters when buying
+test("asks for the pack size first, as optional, and says the count is single items", { tag: ["@J2.1"] }, async ({ page }) => {
+  await openInventory(page);
+  await page.getByRole("button", { name: "+ Add item" }).click();
+  const labels = await modal(page).locator(".field label").allTextContents();
+  expect(labels.indexOf("Comes in packs of (optional)")).toBeGreaterThan(-1);
+  expect(labels.indexOf("Comes in packs of (optional)")).toBeLessThan(labels.indexOf("Single items in storage now"));
+  await expect(modal(page).getByLabel("Comes in packs of")).toHaveAttribute("placeholder", "Leave blank if bought one at a time");
+  await expect(modal(page).locator("#fPackHint")).toHaveText("Receipts add packs × this many to storage.");
+  await expect(modal(page).getByLabel("Comes in packs of")).toHaveAttribute("aria-describedby", "fPackHint");
+  await expect(modal(page)).not.toContainText("not packs");
+  await expect(modal(page).locator("#fPacks")).toBeHidden();
+});
+
+test("shows a count as full packs and loose items while either field changes", { tag: ["@J2.3"] }, async ({ page }) => {
+  await openInventory(page, costed);
+  await inventoryRow(page, "Paper towels").click();
+  const packs = modal(page).locator("#fPacks"), count = modal(page).getByLabel("Single items in storage now"), size = modal(page).getByLabel("Comes in packs of");
+  // Packs of 12 with 10 counted: no full pack yet
+  await expect(packs).toBeVisible();
+  await expect(packs).toHaveText("= 10 loose, less than a full pack");
+  for (const [n, text] of [["26", "= 2 full packs + 2 loose"], ["24", "= 2 full packs"], ["13", "= 1 full pack + 1 loose"], ["12", "= 1 full pack"], ["1", "= 1 loose, less than a full pack"]]) {
+    await count.fill(n);
+    await expect(packs).toHaveText(text);
+  }
+  // Hidden with no count, a count of 0, no pack size, or packs of 1
+  await count.fill("");
+  await expect(packs).toBeHidden();
+  await count.fill("0");
+  await expect(packs).toBeHidden();
+  await count.fill("6");
+  await size.fill("4");
+  await expect(packs).toHaveText("= 1 full pack + 2 loose");
+  await size.fill("1");
+  await expect(packs).toBeHidden();
+  await size.fill("");
+  await expect(packs).toBeHidden();
+  await size.fill("3");
+  await expect(packs).toHaveText("= 2 full packs");
+  // Showing it changes nothing that's saved
+  await modal(page).getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("#overlay")).toBeHidden();
+  expect(await page.evaluate(() => window.__mock.docs.get("products/SKU1"))).toMatchObject({ packSize: 3, stock: 6 });
+
+  // An item with no pack size never shows it
+  await inventoryRow(page, "Storage bins").click();
+  await expect(modal(page).locator("#fPacks")).toBeHidden();
 });
