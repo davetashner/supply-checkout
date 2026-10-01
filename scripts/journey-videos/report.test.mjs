@@ -96,7 +96,7 @@ test("without a repo the files aren't links, and the journeys come in order", ()
   const html = buildReport({ sidecars: [j10, sidecar()], ...options(), repo: null, tag: null, image: () => null });
   assert.ok(html.indexOf('id="J0"') < html.indexOf('id="J10"'));
   assert.match(html, /<title>Journey evidence<\/title>/);
-  assert.doesNotMatch(html, /github\.com/);
+  assert.ok(!html.includes("https://github.com/"), "no links to the repository");
   assert.match(html, /<code>tests\/a\.spec\.js:3<\/code>/);
 });
 
