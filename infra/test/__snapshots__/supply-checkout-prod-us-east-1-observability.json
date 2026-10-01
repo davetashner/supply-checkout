@@ -3122,6 +3122,136 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmsclosedteamsubscriptionnotfound8172904A": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Closed-team subscription not found in Stripe (J7, J11, us-east-1). Any ClosedTeamSubscriptionsNotFound over an hour: the hourly closed-team purge (primary region) asked Stripe for a closed team's subscription, Stripe said it doesn't exist, and the purge recorded it as nothing to end. Usually the subscription went with its customer, but a Stripe key or mode mismatch looks the same for every closed team, with none cancelled. The log line \"Closed team's subscription not found in Stripe\" has the team and subscription IDs: look the subscription up in the Stripe Dashboard, in the purge's mode. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-closed-team-subscription-not-found",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "ClosedTeamSubscriptionsNotFound (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "ClosedTeamSubscriptionsNotFound",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 3600,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsclosedteamsubscriptionsetasideBDCC2570": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Closed-team subscription set aside (J7, J11, us-east-1). Any ClosedTeamSubscriptionsSetAside over an hour: the hourly closed-team purge (primary region) found a closed team's recorded subscription belongs to another Stripe customer, so it didn't end it and won't try again for this closure. The log line \"Closed team's subscription set aside\" has the team and subscription IDs: find which subscription the team really pays with and end it in the Stripe Dashboard. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-closed-team-subscription-set-aside",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "ClosedTeamSubscriptionsSetAside (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "ClosedTeamSubscriptionsSetAside",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 3600,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmsteamreopenednoticesfailingFE94270D": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -4258,6 +4388,7 @@
                     "stripeCustomerId",
                     "stripeSubscriptionId",
                     "stripeCancelledFor",
+                    "stripeSetAsideFor",
                     "teamId"
                   ]
                 },
@@ -4305,6 +4436,7 @@
                     "stripeCustomerId",
                     "stripeSubscriptionId",
                     "stripeCancelledFor",
+                    "stripeSetAsideFor",
                     "teamId"
                   ]
                 },
@@ -4352,6 +4484,7 @@
                     "stripeCustomerId",
                     "stripeSubscriptionId",
                     "stripeCancelledFor",
+                    "stripeSetAsideFor",
                     "teamId"
                   ]
                 },
@@ -4388,7 +4521,8 @@
                     "SK",
                     "purgeAfter",
                     "purging",
-                    "stripeCancelledFor"
+                    "stripeCancelledFor",
+                    "stripeSetAsideFor"
                   ]
                 },
                 "StringEqualsIfExists": {
@@ -9502,6 +9636,20 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
+                  "JourneyAlarmsclosedteamsubscriptionnotfound8172904A",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmsclosedteamsubscriptionsetasideBDCC2570",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
                   "JourneyAlarmsteamreopenednoticesfailingFE94270D",
                   "Arn"
                 ]
@@ -9757,11 +9905,11 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-east-1\",{\"label\":\"DeletionRecordRewrites (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-west-2\",{\"label\":\"DeletionRecordRewrites (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":73,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: closed teams' subscriptions ended (reopened teams', charged after closing), Stripe customers deleted\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-east-1\",{\"label\":\"DeletionRecordRewrites (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-west-2\",{\"label\":\"DeletionRecordRewrites (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":73,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: closed teams' subscriptions ended (reopened teams', charged after closing, not found, set aside), Stripe customers deleted\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"ClosedTeamSubscriptionsEnded\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamSubscriptionsEnded (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsEnded\",\"Region\",\"us-east-1\",{\"label\":\"ReopenedTeamSubscriptionsEnded (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamRenewalsCharged\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamRenewalsCharged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersDeleted\",\"Region\",\"us-east-1\",{\"label\":\"StripeCustomersDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsEnded\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamSubscriptionsEnded (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsEnded\",\"Region\",\"us-west-2\",{\"label\":\"ReopenedTeamSubscriptionsEnded (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamRenewalsCharged\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamRenewalsCharged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersDeleted\",\"Region\",\"us-west-2\",{\"label\":\"StripeCustomersDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":79,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: group changes, resets and size\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"ClosedTeamSubscriptionsEnded\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamSubscriptionsEnded (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsEnded\",\"Region\",\"us-east-1\",{\"label\":\"ReopenedTeamSubscriptionsEnded (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamRenewalsCharged\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamRenewalsCharged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsNotFound\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamSubscriptionsNotFound (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsSetAside\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamSubscriptionsSetAside (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersDeleted\",\"Region\",\"us-east-1\",{\"label\":\"StripeCustomersDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsEnded\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamSubscriptionsEnded (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsEnded\",\"Region\",\"us-west-2\",{\"label\":\"ReopenedTeamSubscriptionsEnded (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamRenewalsCharged\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamRenewalsCharged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsNotFound\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamSubscriptionsNotFound (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsSetAside\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamSubscriptionsSetAside (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersDeleted\",\"Region\",\"us-west-2\",{\"label\":\"StripeCustomersDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":79,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: group changes, resets and size\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },

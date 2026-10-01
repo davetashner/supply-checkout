@@ -35,10 +35,19 @@
 // to end for its closure (listClosedTeamsToEnd), it re-reads the team, fetches
 // the subscription, sets it to cancel at the period's end (or cancels it, if
 // nothing is being paid for; endSubscriptionForClosedTeam), and records that
-// (markSubscriptionEnding). It starts no new team after half of
-// PURGE_BUDGET_MS, so a slow Stripe can't starve the purge. A team that fails
-// is logged, left unrecorded for the next run, and fails the run (the
-// Functions failing alarm). A subscription that renewed after its team closed
+// (markSubscriptionEnding). It lists at most CLOSED_TEAMS_TO_END_PER_RUN,
+// soonest due first, and warns when it lists that many. It starts no new team
+// after half of PURGE_BUDGET_MS, so a slow Stripe can't starve the purge. A
+// team that fails is logged, left unrecorded for the next run, and fails the
+// run (the Functions failing alarm). A subscription Stripe doesn't have is
+// recorded as nothing to end, and counted (ClosedTeamSubscriptionsNotFound,
+// the "Closed-team subscription not found in Stripe" alarm): a Stripe key or
+// mode mismatch would look like that for every team. One that belongs to
+// another customer won't ever end here, so it's set aside for a person
+// (markSubscriptionSetAside, counted in ClosedTeamSubscriptionsSetAside, the
+// "Closed-team subscription set aside" alarm) and left out of later listings,
+// rather than failing every run and filling the listing ahead of newer
+// closures (supply-checkout-8jc.17). A subscription that renewed after its team closed
 // (the team closed within an hour of a renewal) is logged as a warning and
 // counted (ClosedTeamRenewalsCharged, the "Closed team charged" alarm) for a
 // refund by hand. A team reopened while Stripe was being called is logged as
@@ -52,10 +61,10 @@
 
 import { customerOf, deleteStripeCustomer, endSubscriptionForClosedTeam, type PurgeStripe } from "../billing/closing.js";
 import { stripeErrorFields } from "../billing/stripe.js";
-import { closedTeamToEnd, countTeamsDueBefore, type Db, listClosedTeamsToEnd, listTeamsToPurge, markSubscriptionEnding, purgeTeam } from "../data/index.js";
+import { closedTeamToEnd, countTeamsDueBefore, type Db, listClosedTeamsToEnd, listTeamsToPurge, markSubscriptionEnding, markSubscriptionSetAside, purgeTeam } from "../data/index.js";
 import type { DeletionLog } from "../deletions/records.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
-import { PURGE_BUDGET_MS, PURGE_OVERDUE_AFTER_HOURS } from "./names.js";
+import { CLOSED_TEAMS_TO_END_PER_RUN, PURGE_BUDGET_MS, PURGE_OVERDUE_AFTER_HOURS } from "./names.js";
 
 export interface TeamPurgeDeps {
   readonly db: Db;
@@ -86,13 +95,16 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
   async function endSubscriptions(started: number): Promise<number> {
     let teams;
     try {
-      teams = await listClosedTeamsToEnd(db);
+      teams = await listClosedTeamsToEnd(db, CLOSED_TEAMS_TO_END_PER_RUN);
     } catch (error) {
       obs.logger.error("Closed teams' subscriptions not listed", { error: errorName(error) });
       return 1;
     }
+    // More may be waiting behind these: a backlog the hourly runs should work through, or failures piling up
+    if (teams.length >= CLOSED_TEAMS_TO_END_PER_RUN) obs.logger.warn("Closed teams' subscriptions listed at the limit", { listed: teams.length, limit: CLOSED_TEAMS_TO_END_PER_RUN });
     let ended = 0;
     let failed = 0;
+    let setAside = 0;
     for (const listed of teams) {
       if (now() - started > END_BUDGET_MS) break;
       const { teamId } = listed;
@@ -110,10 +122,23 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
           },
         );
         if (!sub) {
-          if (await markSubscriptionEnding(db, team)) obs.logger.warn("Closed team's subscription not found in Stripe", { teamId, subscriptionId: team.stripeSubscriptionId });
+          // Counted for its own alarm: a Stripe key or mode mismatch would record every closed team this way, none cancelled
+          if (await markSubscriptionEnding(db, team)) {
+            obs.count(BusinessMetric.ClosedTeamSubscriptionsNotFound, 1, { teamId });
+            obs.logger.warn("Closed team's subscription not found in Stripe", { teamId, subscriptionId: team.stripeSubscriptionId });
+          }
           continue;
         }
-        if (customerOf(sub) !== team.stripeCustomerId) throw Object.assign(new Error("The team's subscription belongs to another customer"), { name: "CustomerMismatch" });
+        if (customerOf(sub) !== team.stripeCustomerId) {
+          // Retrying won't change whose it is: set aside for a person (its own alarm), so it isn't
+          // listed again ahead of newer closures. Untouched in Stripe. A team reopened meanwhile isn't recorded
+          if (await markSubscriptionSetAside(db, team)) {
+            setAside++;
+            obs.count(BusinessMetric.ClosedTeamSubscriptionsSetAside, 1, { teamId });
+            obs.logger.error("Closed team's subscription set aside", { teamId, subscriptionId: team.stripeSubscriptionId, error: "CustomerMismatch" });
+          }
+          continue;
+        }
         const action = await endSubscriptionForClosedTeam(stripe, sub, team);
         // Charged for a period that began after the team closed: a person refunds it
         const periodStart = sub.items.data[0]?.current_period_start;
@@ -137,7 +162,7 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
         obs.logger.error("Closed team's subscription not ended", { teamId, error: errorName(error), ...stripeFields(error) });
       }
     }
-    obs.logger.info("Ended closed teams' subscriptions", { listed: teams.length, ended, failed });
+    obs.logger.info("Ended closed teams' subscriptions", { listed: teams.length, ended, failed, setAside });
     return failed;
   }
 

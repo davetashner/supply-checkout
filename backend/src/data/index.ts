@@ -49,7 +49,7 @@ export * from "./documents.js";
 export * from "./commands.js";
 export * from "./imports.js";
 export * from "./accounts.js";
-export { type ClosedTeamToEnd, closedTeamToEnd, countTeamsDueBefore, listClosedTeamsToEnd, listTeamsToPurge, markSubscriptionEnding, purgeTeam, type PurgeResult, type TeamDue } from "./team-purge.js";
+export { type ClosedTeamToEnd, closedTeamToEnd, countTeamsDueBefore, listClosedTeamsToEnd, listTeamsToPurge, markSubscriptionEnding, markSubscriptionSetAside, purgeTeam, type PurgeResult, type TeamDue } from "./team-purge.js";
 export * from "./email-codes.js";
 export * from "./verified-email.js";
 export * from "./security-notices.js";

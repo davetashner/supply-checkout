@@ -23,6 +23,14 @@ export const PURGE_EVERY_HOURS = 1;
 export const PURGE_BUDGET_MS = 4 * 60_000;
 
 /**
+ * The most closed teams one purge run lists to end their Stripe
+ * subscriptions, the soonest due first. Teams it sets aside for a person
+ * (supply-checkout-8jc.17) aren't listed, so they can't fill it; a run that
+ * lists this many logs a warning.
+ */
+export const CLOSED_TEAMS_TO_END_PER_RUN = 100;
+
+/**
  * A closed team still there this long after its deletion date is overdue:
  * the purge's gauge (ClosedTeamsOverdue) counts them, and the "Deletion
  * overdue" alarm fires on any. A day leaves room for 24 hourly runs to have
