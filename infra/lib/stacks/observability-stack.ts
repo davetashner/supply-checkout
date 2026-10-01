@@ -151,6 +151,7 @@ export const OPERATOR_RULE_SUFFIXES = {
   OperatorRuleTamperingWatch: "rule-tampering-watch",
   OperatorGroupWatchAlarmChanges: "group-watch-alarms",
   OperatorGroupSnapshotChanges: "group-snapshot",
+  OperatorRuleInputChanges: "rule-input-params",
 } as const;
 
 /**
@@ -167,6 +168,38 @@ export const OPERATOR_GROUP_WATCH_RULE_SUFFIX = "group-watch";
  * CloudFormation made them. DeleteParameters names it in a list.
  */
 export const GROUP_SNAPSHOT_EVENTS = ["PutParameter", "DeleteParameter", "LabelParameterVersion", "UnlabelParameterVersion"] as const;
+
+/**
+ * SSM calls that change or remove a parameter the operator rules and watches
+ * read at deploy time (supply-checkout-6uw.22): P1 unless CloudFormation made
+ * them. Each names the parameter in `requestParameters.name`, and
+ * DeleteParameters in the list `names`; none of them takes a parameter's ARN
+ * (the SSM API reference), so the rule matches the names exactly.
+ */
+export const RULE_INPUT_PARAMETER_EVENTS = GROUP_SNAPSHOT_EVENTS;
+
+/**
+ * The SSM parameters the operator rules and watches read at deploy time
+ * (supply-checkout-6uw.22), each published by the stack that owns the
+ * resource: the ops pool's ID (OperatorPoolChanges, OperatorPoolProtection,
+ * OperatorBrandingChanges, OperatorSelfServiceChanges and the operator group
+ * watch), the ops branding's ID (OperatorBrandingChanges), the trail key's ARN
+ * (OperatorAlertKeyAndTrailChanges, OperatorTrailBucketChanges), the table
+ * key's ARN (OperatorAuditWatchTableChanges and the audit watch's role) and
+ * the table stream's ARN (the audit watch's event source mapping). Rewritten,
+ * the next observability deploy would point those at something else, through
+ * CloudFormation's own PutRule, which the tampering rules exempt.
+ */
+export const operatorRuleInputParameters = (envName: string) => {
+  const identity = identityOutputParameters(envName);
+  return [
+    identity.opsUserPoolId,
+    identity.opsBrandingId,
+    auditOutputParameters(envName).trailKeyArn,
+    `/supply-checkout/${envName}/data/table-key-arn`,
+    `/supply-checkout/${envName}/data/table-stream-arn`,
+  ];
+};
 
 /**
  * The state of OperatorPoolChanges: EventBridge also matches CloudTrail
@@ -453,6 +486,11 @@ export class ObservabilityStack extends SupplyCheckoutStack {
    *   above, and any change to or deletion of its snapshot parameter that
    *   neither its own role nor CloudFormation made. Its function, role and log
    *   group are in the three rules above.
+   * - `OperatorRuleInputChanges` (supply-checkout-6uw.22): PutParameter,
+   *   DeleteParameter(s) or (Un)LabelParameterVersion on an SSM parameter
+   *   these rules or the watches read at deploy time
+   *   (operatorRuleInputParameters), outside a deploy. A rewritten ID would
+   *   otherwise retarget them at the next ordinary deploy, unseen.
    * - `OperatorAlertRouteChanges`: deleting either alarm topic, or taking
    *   its permissions away, whoever does it; changing its attributes (its
    *   policy or key) or a subscription to it, including unsubscribing,
@@ -650,6 +688,21 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         ],
       },
     });
+    // What the rules and watches read at deploy time: a rewritten value retargets them at the next deploy (supply-checkout-6uw.22).
+    // CloudFormation is exempt, as in the snapshot rule: the identity, audit and data stacks write these when they deploy
+    const inputNames = operatorRuleInputParameters(envName);
+    const ruleInputChanges = operatorRule("OperatorRuleInputChanges", "An SSM parameter the operator alerts read at deploy time was changed or deleted outside a deploy (supply-checkout-6uw.22)", {
+      source: ["aws.ssm"],
+      ...cloudTrail,
+      detail: {
+        eventSource: ["ssm.amazonaws.com"],
+        $or: [
+          { eventName: [...RULE_INPUT_PARAMETER_EVENTS], requestParameters: { name: inputNames }, userIdentity: NOT_CLOUDFORMATION },
+          // DeleteParameters names them in a list
+          { eventName: ["DeleteParameters"], requestParameters: { names: inputNames }, userIdentity: NOT_CLOUDFORMATION },
+        ],
+      },
+    });
     const topics = Object.values(this.topics.topics);
     const topicArns = topics.map((t) => t.topicArn);
     const routeChanges = operatorRule("OperatorAlertRouteChanges", "An alarm topic or a subscription to one was deleted, lost its permissions or was changed outside a deploy (supply-checkout-6uw.11)", {
@@ -724,7 +777,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       "The same as OperatorRuleTampering, which it watches in turn, so neither can be removed first unseen (supply-checkout-6uw.11)",
       tamperingPattern(watched),
     );
-    const rules = [admin, protection, branding, selfService, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering];
+    const rules = [admin, protection, branding, selfService, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, ruleInputChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering];
     const topic = this.topics.topics.P1;
     // EventBridge publishes to the encrypted topic: it may use the key, for this account's rules only
     this.topics.key.addToResourcePolicy(
@@ -761,6 +814,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       [alarmChanges, message("an operator audit alarm")],
       [groupAlarmChanges, message("an operator group watch alarm")],
       [snapshotChanges, message("the operator group watch's snapshot")],
+      [ruleInputChanges, message("an SSM parameter the operator alerts read at deploy time")],
       [routeChanges, message("the alarm topics")],
       [keyAndTrailChanges, message("the alarm topics' key or CloudTrail")],
       [trailBucketChanges, message("the CloudTrail trail's bucket or key")],

@@ -65,6 +65,8 @@ import {
   OPERATOR_POOL_RULE_STATE,
   GROUP_SNAPSHOT_EVENTS,
   GROUP_WATCH_ROLE_FUNCTION_EVENTS,
+  RULE_INPUT_PARAMETER_EVENTS,
+  operatorRuleInputParameters,
   deletionsRuleTamperingName,
   operatorRuleName,
   operatorRulePrefix,
@@ -1253,7 +1255,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     const t = observability();
     // The deletion records watch's rules are tested with the watch
     const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch"));
-    expect(rules).toHaveLength(17);
+    expect(rules).toHaveLength(18);
     const byId = (prefix: string) => {
       // Logical IDs end in an 8-character hash
       const found = rules.find(([id]) => id.startsWith(prefix) && /^[0-9A-F]{8}$/.test(id.slice(prefix.length)));
@@ -1273,6 +1275,7 @@ describe("operator pool alerts (ADR 0015)", () => {
       alarmChanges: byId("OperatorAlarmChanges"),
       groupAlarmChanges: byId("OperatorGroupWatchAlarmChanges"),
       snapshotChanges: byId("OperatorGroupSnapshotChanges"),
+      ruleInputChanges: byId("OperatorRuleInputChanges"),
       routeChanges: byId("OperatorAlertRouteChanges"),
       keyAndTrailChanges: byId("OperatorAlertKeyAndTrailChanges"),
       trailBucketChanges: byId("OperatorTrailBucketChanges"),
@@ -1286,7 +1289,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     const { region } = build();
     const west = Template.fromStack(region(WEST).observability);
     expect(Object.values(west.findResources("AWS::Events::Rule")).filter((r) => r.Properties.EventPattern)).toEqual([]);
-    const { t, admin, protection, branding, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering } = operatorRules();
+    const { t, admin, protection, branding, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, ruleInputChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering } = operatorRules();
     const poolId = { Ref: expect.stringMatching(/identityopsuserpoolid/i) };
     expect(admin.props.EventPattern).toEqual({
       source: ["aws.cognito-idp"],
@@ -1344,7 +1347,7 @@ describe("operator pool alerts (ADR 0015)", () => {
       },
     });
     expect([...OPERATOR_SELF_SERVICE_EVENTS]).toHaveLength(5);
-    for (const rule of [admin, protection, branding, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, trailBucketChanges, tampering, tamperingWatch]) {
+    for (const rule of [admin, protection, branding, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, trailBucketChanges, ruleInputChanges, tampering, tamperingWatch]) {
       expect(rule.props.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP1/) } })]);
       expect(JSON.stringify(rule.props.Targets)).not.toContain("userIdentity");
     }
@@ -1362,7 +1365,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     expect(fromEvents).toEqual(expect.arrayContaining([
       expect.objectContaining({
         Sid: "AllowOperatorPoolAlertToPublish",
-        Condition: { ArnEquals: { "aws:SourceArn": [admin, protection, branding, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering].map((r) => ({ "Fn::GetAtt": [r.id, "Arn"] })) } },
+        Condition: { ArnEquals: { "aws:SourceArn": [admin, protection, branding, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, ruleInputChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering].map((r) => ({ "Fn::GetAtt": [r.id, "Arn"] })) } },
       }),
       // The two route rules on the P2 topic, and nothing else
       expect.objectContaining({
@@ -1441,6 +1444,78 @@ describe("operator pool alerts (ADR 0015)", () => {
     }
     // Other calls carrying the branding ID aren't this rule's
     expect(eventMatches(branding.props.EventPattern, record("DescribeManagedLoginBranding", { managedLoginBrandingId: ours }))).toBe(false);
+  });
+
+  it("tell P1 when an SSM parameter an operator rule or watch reads at deploy time is changed or deleted outside a deploy (supply-checkout-6uw.22)", () => {
+    const { t, ruleInputChanges } = operatorRules();
+    const names = [
+      "/supply-checkout/prod/identity/ops-user-pool-id",
+      "/supply-checkout/prod/identity/ops-branding-id",
+      "/supply-checkout/prod/audit/trail-key-arn",
+      "/supply-checkout/prod/data/table-key-arn",
+      "/supply-checkout/prod/data/table-stream-arn",
+    ];
+    expect(operatorRuleInputParameters("prod")).toEqual(names);
+    expect([...RULE_INPUT_PARAMETER_EVENTS]).toEqual(["PutParameter", "DeleteParameter", "LabelParameterVersion", "UnlabelParameterVersion"]);
+    // By name only: these calls refuse a parameter's ARN (the SSM API reference), so no ARN wildcard is needed
+    expect(ruleInputChanges.props.EventPattern).toEqual({
+      source: ["aws.ssm"],
+      "detail-type": ["AWS API Call via CloudTrail"],
+      detail: {
+        eventSource: ["ssm.amazonaws.com"],
+        $or: [
+          { eventName: [...RULE_INPUT_PARAMETER_EVENTS], requestParameters: { name: names }, userIdentity: NOT_CLOUDFORMATION },
+          // DeleteParameters names them in a list
+          { eventName: ["DeleteParameters"], requestParameters: { names }, userIdentity: NOT_CLOUDFORMATION },
+        ],
+      },
+    });
+    expect(ruleInputChanges.props.Name).toBe(operatorRuleName("prod", OPERATOR_RULE_SUFFIXES.OperatorRuleInputChanges));
+    expect(ruleInputChanges.props.Name).toBe("supply-checkout-prod-operator-rule-input-params");
+    expect(ruleInputChanges.props.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP1/) } })]);
+    expect(JSON.stringify(ruleInputChanges.props.Targets)).toContain("an SSM parameter the operator alerts read");
+
+    // Every SSM parameter an operator rule's pattern, or either watch, reads at deploy time is one of them
+    const parameters = (t.toJSON().Parameters ?? {}) as Record<string, { Type?: string; Default?: string }>;
+    const ssmRefs = (value: unknown): string[] => {
+      if (Array.isArray(value)) return value.flatMap(ssmRefs);
+      if (!value || typeof value !== "object") return [];
+      const v = value as Record<string, unknown>;
+      if (typeof v.Ref === "string" && parameters[v.Ref]?.Type?.startsWith("AWS::SSM::Parameter::Value")) return [String(parameters[v.Ref].Default)];
+      return Object.values(v).flatMap(ssmRefs);
+    };
+    const operatorRuleResources = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch"));
+    const watchResources = [
+      ...Object.entries(t.findResources("AWS::Lambda::EventSourceMapping")),
+      ...Object.entries(t.findResources("AWS::Lambda::Function")).filter(([id]) => id.startsWith("OperatorAuditWatch") || id.startsWith("OperatorGroupWatch")),
+      ...Object.entries(t.findResources("AWS::IAM::Policy")).filter(([id]) => id.startsWith("OperatorAuditWatch") || id.startsWith("OperatorGroupWatch")),
+    ];
+    const read = new Set([...operatorRuleResources, ...watchResources].flatMap(([, r]) => ssmRefs(r.Properties)));
+    expect([...read].sort()).toEqual([...names].sort());
+
+    // Each call on each parameter pages, unless CloudFormation made it; nothing else does
+    const record = (eventName: string, requestParameters: Record<string, unknown>, invokedBy?: string) => ({
+      source: "aws.ssm",
+      "detail-type": "AWS API Call via CloudTrail",
+      detail: { eventSource: "ssm.amazonaws.com", eventName, requestParameters, userIdentity: { type: "AssumedRole", ...(invokedBy ? { invokedBy } : {}) } },
+    });
+    const pages = (event: unknown) => eventMatches(ruleInputChanges.props.EventPattern, event);
+    for (const name of names) {
+      for (const eventName of RULE_INPUT_PARAMETER_EVENTS) {
+        expect(pages(record(eventName, { name, overwrite: true })), `${eventName} ${name}`).toBe(true);
+        expect(pages(record(eventName, { name }, "cloudformation.amazonaws.com")), `${eventName} ${name} by a deploy`).toBe(false);
+      }
+      expect(pages(record("DeleteParameters", { names: ["/supply-checkout/prod/other", name] })), `DeleteParameters ${name}`).toBe(true);
+      expect(pages(record("DeleteParameters", { names: [name] }, "cloudformation.amazonaws.com")), `DeleteParameters ${name} by a deploy`).toBe(false);
+      // Reading one isn't a change, and DeleteParameter's name isn't in `names`
+      expect(pages(record("GetParameter", { name })), `GetParameter ${name}`).toBe(false);
+      expect(pages(record("DeleteParameter", { names: [name] })), `DeleteParameter with names ${name}`).toBe(false);
+    }
+    // Another environment's parameter, or a sibling the rules don't read
+    for (const name of ["/supply-checkout/staging/identity/ops-user-pool-id", "/supply-checkout/prod/identity/user-pool-id", "/supply-checkout/prod/identity/ops-client-id"]) {
+      expect(pages(record("PutParameter", { name })), name).toBe(false);
+      expect(pages(record("DeleteParameters", { names: [name] })), name).toBe(false);
+    }
   });
 
   it("tell P1 when an operator alert rule is deleted, disabled or loses its target, whoever does it, or is rewritten outside a deploy, with two rules watching each other (supply-checkout-6uw.11)", () => {
