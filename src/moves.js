@@ -123,17 +123,32 @@ export const markLost = (db, action, sheetId, key, q, charge) =>
 //   each line (see move above). An attempt that finds its mark on any of them was already saved
 //   by an earlier one whose answer was lost, and writes nothing.
 export const MAX_LINES = 40;
-export async function addLines(db, action, sheetId, items) {
-  const entries = Object.entries(items);
+//
+// bought: company equipment bought for the client (ADR 0017, section 2a), { [productKey]: { code,
+// name, cost: the receipt price each, out, typed?: a price the reviewer typed, by?: who typed it } }.
+// Each goes on a line of its own, `<productKey>:bought`, marked purchased, apart from the same
+// item on loan. The web build sends the receipt price, and a price only with priceSet "manual":
+// the server works out the team's markup itself. The artifact build has no markup: the line
+// is charged the receipt price, or the typed price, which says who typed it and when.
+export async function addLines(db, action, sheetId, items, bought = {}) {
   // WEB: the artifact build leaves this path out, since claude.ai's db has no commands (src/build.js)
   if (WEB && db.addLines) {
+    const lines = [
+      ...Object.entries(items).map(([productKey, l]) => ({ productKey, quantity: l.out, code: l.code, name: l.name, price: l.price, cost: l.cost })),
+      ...Object.entries(bought).map(([productKey, b]) => ({ productKey, quantity: b.out, code: b.code, name: b.name, cost: b.cost, ...(b.typed === undefined ? {} : { price: b.typed, priceSet: "manual" }) })),
+    ];
     const parts = (action.parts ||= []);
-    for (let i = 0; i < entries.length; i += MAX_LINES) {
-      const lines = entries.slice(i, i + MAX_LINES).map(([productKey, l]) => ({ productKey, quantity: l.out, code: l.code, name: l.name, price: l.price, cost: l.cost }));
-      await db.addLines(sheetId, lines, (parts[i / MAX_LINES] ||= {}));
-    }
+    for (let i = 0; i < lines.length; i += MAX_LINES) await db.addLines(sheetId, lines.slice(i, i + MAX_LINES), (parts[i / MAX_LINES] ||= {}));
     return;
   }
+  const at = new Date().toISOString();
+  const entries = [
+    ...Object.entries(items),
+    ...Object.entries(bought).map(([key, b]) => [`${key}:bought`, {
+      code: b.code, name: b.name, cost: b.cost, price: b.typed ?? b.cost, purchased: true,
+      ...(b.typed === undefined ? {} : { priceSet: "manual", priceSetBy: b.by, priceSetAt: at }), out: b.out, returned: 0,
+    }]),
+  ];
   const ref = db.doc("sheets/" + sheetId), mark = markOf(action);
   return attempt(action, async () => {
     const got = await ref.get();

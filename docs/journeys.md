@@ -91,6 +91,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 - **J2.2** Type or scan a barcode (or leave it blank), then enter the name, price and how many are in storage.
 - **J2.3** Edit or delete items later by tapping their row.
 - **J2.4** Or import an existing inventory: **Import CSV** in **Inventory** checks the file, shows a preview, and imports it.
+- **J2.5** In the web app, an owner sets the markup charged on company equipment bought for a client in **Team settings** (0% until set). Only owners see it.
 <!-- /journeys:steps J2 -->
 
 **Expected:** items appear in the list with storage counts, value per item and totals. Items without a barcode can be found by name when checking out.
@@ -143,10 +144,10 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 <!-- journeys:steps J5 -->
 - **J5.1** Tap **Scan receipt** and photograph the receipt.
 - **J5.2** Check each line: name, quantity, price, and the suggested inventory match.
-- **J5.3** Assign each line to a client (a new or existing sheet) or to **General inventory**, then tap **Save**.
+- **J5.3** Assign each line to a client (a new or existing sheet) or to **General inventory**, then tap **Save**. Company equipment bought for a client is charged on their sheet (the receipt price plus the team's markup, or a price typed instead); in General inventory it adds to storage and isn't charged.
 <!-- /journeys:steps J5 -->
 
-**Expected:** lines appear within 60 seconds. Nothing is saved until **Save**. An item that comes in packs of n shows "1 case = n each" and adds eaches (cases × n) at a cost of the case price ÷ n, rounded to cents, unless the line is switched to **Priced per each**. Where the price differs from the item's, the line offers **Charge the receipt price** or **Keep the client price**, and keeps the client price by default when the item's cost is below its price (ADR 0014). Client items go on the sheets at the chosen price, with the receipt's cost; storage items raise storage counts; and the receipt's cost each is saved to the item. If reading fails, the person can enter the items by hand.
+**Expected:** lines appear within 60 seconds. Nothing is saved until **Save**. A line that matches company equipment, assigned to a client, says "Company equipment · bought for this client" and goes on their sheet as its own charged line, "<item> (bought for this client)", never returned or asked about at Finished Return; in the web app the server charges the receipt price plus the team's markup (only owners see the percentage), and in the claude.ai app the receipt price; the reviewer can type a price instead, and the sheet says who typed it ([ADR 0017](adr/0017-company-equipment-and-ad-hoc-checkout.md), section 2a). In General inventory it adds to storage and isn't charged. An item that comes in packs of n shows "1 case = n each" and adds eaches (cases × n) at a cost of the case price ÷ n, rounded to cents, unless the line is switched to **Priced per each**. Where the price differs from the item's, the line offers **Charge the receipt price** or **Keep the client price**, and keeps the client price by default when the item's cost is below its price (ADR 0014). Client items go on the sheets at the chosen price, with the receipt's cost; storage items raise storage counts; and the receipt's cost each is saved to the item. If reading fails, the person can enter the items by hand.
 
 **Status:** tested with claude.ai receipt reading. The Bedrock version is planned: `supply-checkout-kx8` (receipt Lambda), `supply-checkout-wxx` (limits).
 

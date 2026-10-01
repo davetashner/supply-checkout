@@ -49,6 +49,13 @@
           "text": "Or import an existing inventory: **Import CSV** in **Inventory** checks the file, shows a preview, and imports it.",
           "status": "built",
           "tests": ["backend/test/imports-api.test.ts", "backend/test/imports.test.ts"]
+        },
+        {
+          "id": "J2.5",
+          "text": "In the web app, an owner sets the markup charged on company equipment bought for a client in **Team settings** (0% until set). Only owners see it.",
+          "status": "built",
+          "beads": ["supply-checkout-h9to"],
+          "tests": ["backend/test/equipment-api.test.ts", "backend/test/equipment.test.ts", "backend/test/roles.test.ts"]
         }
       ]
     },
@@ -110,7 +117,12 @@
           "simulated": "Receipt reading is claude.ai's, faked by tests/mock-claude.js"
         },
         { "id": "J5.2", "text": "Check each line: name, quantity, price, and the suggested inventory match.", "status": "built" },
-        { "id": "J5.3", "text": "Assign each line to a client (a new or existing sheet) or to **General inventory**, then tap **Save**.", "status": "built" }
+        {
+          "id": "J5.3",
+          "text": "Assign each line to a client (a new or existing sheet) or to **General inventory**, then tap **Save**. Company equipment bought for a client is charged on their sheet (the receipt price plus the team's markup, or a price typed instead); in General inventory it adds to storage and isn't charged.",
+          "status": "built",
+          "tests": ["backend/test/equipment-api.test.ts", "backend/test/equipment.test.ts"]
+        }
       ],
       "planned": [{ "what": "reading receipts in the web app, on Bedrock", "beads": ["supply-checkout-kx8", "supply-checkout-wxx"] }]
     },
