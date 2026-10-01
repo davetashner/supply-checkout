@@ -16,6 +16,7 @@ import { armButton, closeModal, openModal, toast } from "../dom.js";
 import { createSession, INVITE_KEY, TEAM_KEY, OWNER_KEY, draftKey, firstRunKey, forgetLocal, local, tab } from "./session.js";
 import { createDb } from "./db.js";
 import { openImport } from "./import.js";
+import { openSettings, settingsFor } from "./settings.js";
 import { openMembers, openReopen } from "./members.js";
 import { openDeleteAccount } from "./delete-account.js";
 import { openVerifyEmail } from "./verify-email.js";
@@ -382,7 +383,7 @@ export async function start(config) {
     const ended = !team.closedAt && team.subscriptionEnded;
     // The Customer Portal: owners of an open team that has a Stripe customer
     const billing = owner && !team.closedAt && team.billingAccount;
-    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">Billing</button><button type="button" class="btn ghost" id="invoices">Invoices</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}<button type="button" class="btn ghost" id="accountOpen">Account</button><button type="button" class="btn ghost" id="signOut">Sign out</button>`
+    bar.innerHTML = `<span class="team-pick"></span><span class="spacer"></span>${unverified(me) ? `<button type="button" class="btn ghost" id="verifyEmail">Verify email</button>` : ""}${owner ? `<button type="button" class="btn ghost" id="members">Members</button>${billing ? `<button type="button" class="btn ghost" id="manageBilling">Billing</button><button type="button" class="btn ghost" id="invoices">Invoices</button>` : ""}${team.closedAt || ended ? "" : `<button type="button" class="btn ghost" id="importInventory">Import CSV</button><button type="button" class="btn ghost" id="teamSettings">Team settings</button>`}` : `<button type="button" class="btn ghost" id="leaveTeam">Leave team</button>`}<button type="button" class="btn ghost" id="accountOpen">Account</button><button type="button" class="btn ghost" id="signOut">Sign out</button>`
       + (team.closedAt ? `<p class="closed-note" role="status">This team was closed on ${esc(day(team.closedAt))}. It's read-only, and everything in it will be deleted on ${esc(day(team.deletesAt))}.${owner ? " Use Export data to keep a copy." : ""}${reopenBy}</p>${owner ? `<button type="button" class="btn" id="reopenTeam">Reopen team</button>` : ""}` : "")
       + (!team.closedAt && !ended && team.cancelsAt ? `<p class="closed-note" role="status" id="cancelNote">This team's subscription was canceled. Everything works until ${esc(day(team.cancelsAt))}; then the team becomes read-only.${billing ? " To keep it, renew it from Billing." : " Ask an owner to renew it to keep it."}</p>` : "")
       + (ended ? `<p class="closed-note" role="status">This team's subscription has ended, so it's read-only. Nothing has been deleted: everyone can still see it${owner ? ", and you can export it. Subscribe to make changes again." : ". Ask an owner to subscribe to make changes again."}</p>${owner ? `<button type="button" class="btn" id="subscribe">Subscribe</button>` : ""}` : "");
@@ -401,7 +402,10 @@ export async function start(config) {
         bar.querySelector("#invoices").addEventListener("click", () => openInvoices(session.api, team, (e) => needsTwoStep(me, e)));
       }
       if (ended) bar.querySelector("#subscribe").addEventListener("click", (e) => subscribe(me, team, e.currentTarget));
-      else if (!team.closedAt) bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id, download));
+      else if (!team.closedAt) {
+        bar.querySelector("#importInventory").addEventListener("click", () => openImport(session.api, team.id, download));
+        bar.querySelector("#teamSettings").addEventListener("click", () => openSettings(settingsFor(session.api, team)));
+      }
       else {
         bar.querySelector("#reopenTeam").addEventListener("click", () => openReopen(session.api, team, changed));
         if (team.reopenBy) reopenWindow(bar, team);
@@ -564,6 +568,8 @@ export async function start(config) {
       // finishing just before the storage event can't either
       drafts: { get key() { return session.token() && (!owner || local.get(OWNER_KEY) === owner) ? draftKey(team.id) : null; } },
       firstRun: fr,
+      // The team settings (the equipment markup, ADR 0017): owners only, null for anyone else
+      settings: settingsFor(session.api, team),
     };
   }
 

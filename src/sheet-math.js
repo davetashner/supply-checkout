@@ -11,6 +11,9 @@ export function lines(sheet) {
 // Company equipment on loan (ADR 0017): its line says so, from the item when it was first taken.
 // It's reused, so it isn't charged and unreturned isn't "used": it's still out, or lost.
 export const isEquipmentLine = l => !!l && l.kind === "equipment";
+// A line's name as the sheet and its CSV show it: equipment bought for the client says so
+// (ADR 0017, section 2a). It's charged like a supply, with them.
+export const lineLabel = l => `${l.name || "Unnamed item"}${l.purchased === true ? " (bought for this client)" : ""}`;
 // A line's counts as the sheet shows them (returned never above taken), and its price each in cents
 export function lineCounts(l) {
   const o = int(l.out), r = Math.min(int(l.returned), o);
