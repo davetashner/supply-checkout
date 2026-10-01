@@ -1,7 +1,8 @@
 # 0017. Company equipment and the ad hoc checkout
 
-- Status: Proposed
-- Date: 2026-09-30
+- Status: Accepted (2026-10-01)
+- Date: 2026-10-01 (proposed 2026-09-30)
+- Note: The owner accepted this on 2026-10-01, after answering its open questions and confirming section 2a's equipment markup as written. The decisions are listed at the end.
 - Amends: [ADR 0014](0014-units-cost-and-rounding.md), sections 1 and 2 (every line has a client price; whatever isn't returned was used)
 
 ## Context
@@ -55,7 +56,7 @@ The owner decided how both should work on 2026-09-30 (bead `supply-checkout-2jra
 **The markup.**
 
 1. **One team-wide percentage, set by an owner.** `equipmentMarkup` in the team's settings: a number from 0 to 1,000 (percent), with at most two decimals. Missing means 0, so a team that never sets it bills equipment at the receipt price. Markups per item or per category wait for the pilot to ask for them.
-2. **Only equipment bought for a client.** Supplies on a receipt keep [ADR 0014](0014-units-cost-and-rounding.md)'s section 2 rules: the item's client price or the receipt price, chosen in the review. This amends ADR 0014's "No markup percentage in the MVP" with one exception, the equipment markup. A markup for supplies is still ADR 0014's open question 1, and could reuse this setting later.
+2. **Only equipment bought for a client.** Supplies on a receipt keep [ADR 0014](0014-units-cost-and-rounding.md)'s section 2 rules: the item's client price or the receipt price, chosen in the review. This amends ADR 0014's "No markup percentage in the MVP" with one exception, the equipment markup. The owner turned down a markup for supplies (decision 10 at the end).
 3. **Only the percentage is hidden.** Owners see and set it. Contributors and viewers never get it: the settings route returns it to owners only, and no other response carries it (lines store the resulting `price`, not the percentage). The marked-up price and the charge are shown to everyone who can see the sheet, as every line's price and charge are today; the sheet is what the client is billed, so hiding them would break J6 and J9. It isn't a secret from someone determined: a contributor who read the receipt and sees the line's price can work the percentage out. Hiding margins in general is ADR 0014's open question 3.
 4. **Rounding** follows [ADR 0014](0014-units-cost-and-rounding.md), section 3: the price each is worked out once, `round2(cost × (1 + equipmentMarkup / 100))` with the cent-safe helper (halves up), and the charge is `used × price` in whole cents. With a pack size, `cost` is already the price of one each (receipt price ÷ pack size, rounded) before the markup is applied.
 5. **Stored in a team settings item**, `SETTINGS` in the team's partition ([ADR 0005](0005-multi-tenant-dynamodb.md)), next to the team's META item. Owners write it through `PUT /teams/{teamId}/settings`; the server refuses contributors and viewers (403). `GET` returns the whole item to owners, and to everyone else only what they may see (none of it, for now). **The claude.ai artifact build has no markup**: claude.ai's db has no per-role reads or writes, so a `settings` document would be readable, and changeable, by every member who can write. That was ADR 0014's reason for not adding a markup at all. In the artifact build the line is charged the receipt price, and the reviewer can type a price, as today. Team settings doesn't appear there.
@@ -219,13 +220,15 @@ The **Checkouts stopped** alarm counts quick takes as checkouts. The stock-drift
 
 ## Decisions on the open questions
 
-The owner answered the open questions on 2026-10-01:
+The owner answered the open questions, and confirmed section 2a, on 2026-10-01:
 
 1. **Equipment still out on the ad hoc sheet** keeps the ad hoc sheet open, so later quick takes keep landing on it. Nothing carries over to the next ad hoc sheet.
 2. **Equipment's value is the `cost` field**, labeled "Value each", so a receipt that buys equipment updates its value.
 3. **The charge for lost or broken equipment** is one amount per line, starting empty, with the item's value shown as a guide.
-4. **Changed:** teams do buy equipment on a receipt for a client and bill it. A receipt line that matches equipment can go onto a client's sheet as a charged "bought for this client" line (section 2a). The owner added that the charge should be the receipt price plus a markup defined by the team's owner, not necessarily shown to the team member. Section 2a proposes the defaults for that, for the owner to confirm.
+4. **Changed:** teams do buy equipment on a receipt for a client and bill it. A receipt line that matches equipment can go onto a client's sheet as a charged "bought for this client" line (section 2a). The owner added that the charge should be the receipt price plus a markup defined by the team's owner, not necessarily shown to the team member. The owner confirmed section 2a as written: one team-wide markup percentage, for equipment bought for a client only, hidden from everyone but owners while the price and charge stay visible, a typed price per line allowed, and no markup in the claude.ai artifact build.
 5. **The ad hoc sheet shows no money**: no prices, charges or cost of used supplies.
 6. **Only a whole ad hoc line moves** to a job sheet; there's no splitting.
 7. **Lost equipment that turns up** is put back with a recount. There's no "Found it" action.
 8. **Changing an item's kind** leaves lines already on sheets as they are, open sheets included.
+9. **Turned down: hiding the price and charge from the crew.** Contributors and viewers keep seeing every line's price and charge, including marked-up equipment; only the markup percentage is hidden.
+10. **Turned down: applying the markup to supplies.** The markup applies only to equipment bought on a receipt for a client. Supplies keep [ADR 0014](0014-units-cost-and-rounding.md)'s section 2 price rules.

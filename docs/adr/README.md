@@ -22,6 +22,6 @@ A record starts as **Proposed**. Change it to **Accepted** once we agree, or **S
 | [0014](0014-units-cost-and-rounding.md) | Count in eaches, keep cost apart from client price, and round money to cents | Accepted |
 | [0015](0015-platform-operator-role.md) | A platform operator role, separate from teams | Accepted |
 | [0016](0016-per-member-live-update-channels.md) | A live-update channel per member, not per team | Accepted |
-| [0017](0017-company-equipment-and-ad-hoc-checkout.md) | Company equipment is checked out without charging; supplies taken without a job go on the team's one ad hoc sheet (amends 0014) | Proposed |
+| [0017](0017-company-equipment-and-ad-hoc-checkout.md) | Company equipment is checked out without charging; supplies taken without a job go on the team's one ad hoc sheet (amends 0014) | Accepted |
 
 The architecture overview and diagrams are in [`docs/architecture/`](../architecture/README.md). The backlog that implements these decisions lives in beads (`bd list`, `bd ready`).

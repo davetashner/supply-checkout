@@ -2,7 +2,7 @@
 
 - Status: Accepted (2026-09-26)
 - Date: 2026-09-26
-- Amended by: [ADR 0017](0017-company-equipment-and-ad-hoc-checkout.md) (proposed), which adds company equipment: it has no client price and isn't "used" when it doesn't come back, so sections 1 and 2 hold for supplies only. It also makes one exception to section 2's "no markup": a team-wide markup on equipment bought on a receipt for a client
+- Amended by: [ADR 0017](0017-company-equipment-and-ad-hoc-checkout.md) (accepted 2026-10-01), which adds company equipment: it has no client price and isn't "used" when it doesn't come back, so sections 1 and 2 hold for supplies only. It also makes one exception to section 2's "no markup": a team-wide markup on equipment bought on a receipt for a client
 
 ## Context
 
