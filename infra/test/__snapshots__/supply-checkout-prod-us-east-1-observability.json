@@ -220,6 +220,12 @@
                     },
                     {
                       "Fn::GetAtt": [
+                        "OperatorPoolProtection66332FF1",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
                         "OperatorSelfServiceChanges0E27141E",
                         "Arn"
                       ]
@@ -6990,6 +6996,9 @@
                   "DeleteUserPoolClient",
                   "UpdateUserPoolDomain",
                   "DeleteUserPoolDomain",
+                  "CreateUserPoolDomain",
+                  "DeleteManagedLoginBranding",
+                  "UpdateManagedLoginBranding",
                   "CreateIdentityProvider",
                   "UpdateIdentityProvider",
                   "DeleteIdentityProvider"
@@ -7061,6 +7070,84 @@
                 "detail-eventID": "$.detail.eventID"
               },
               "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the operator pool at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorPoolProtection66332FF1": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Operator pool: deleted, or its deletion protection turned off, even by a deploy (supply-checkout-6uw.20)",
+        "EventPattern": {
+          "source": [
+            "aws.cognito-idp"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "cognito-idp.amazonaws.com"
+            ],
+            "eventName": [
+              "DeleteUserPool",
+              "UpdateUserPool"
+            ],
+            "requestParameters": {
+              "userPoolId": [
+                {
+                  "Ref": "SsmParameterValuesupplycheckoutprodidentityopsuserpoolidC96584B6F00A464EAD1953AFF4B05118Parameter"
+                }
+              ],
+              "deletionProtection": [
+                {
+                  "exists": false
+                },
+                {
+                  "anything-but": "ACTIVE"
+                }
+              ]
+            }
+          }
+        },
+        "Name": "supply-checkout-prod-operator-pool-protection",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the operator pool itself (deletion or deletion protection) at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
             }
           }
         ]
