@@ -3,12 +3,12 @@
 > **Pilot draft — not reviewed by a lawyer.**
 > For the supervised pilot only. Placeholders in `[BRACKETS]` are filled in for each pilot team before it's sent; `[SUPPORT EMAIL]` is the Supply Checkout support mailbox on the supplycheckout.com domain. See [Open questions](#open-questions-for-the-owner) at the end.
 
-- Version: pilot-2026-10-01
+- Version: pilot-2026-10-02
 - Pilot team: [TEAM BUSINESS NAME]
 - Pilot contact (the team's owner): [NAME]
-- Pilot starts: [START DATE]. Pilot ends: [END DATE] (about 90 days), unless it's extended in writing (email is enough) or ended earlier (section 7).
+- Pilot starts: [START DATE]. Pilot ends: [END DATE], 90 days later, unless it's extended by email or ended earlier (section 7).
 
-This agreement is between **Main Street Logic**, which runs Supply Checkout ("we", "us"), and the business named above ("you", "your team"). It covers your team's use of Supply Checkout during the pilot: the web app at supplycheckout.com and anything we give you to try with it (together, "the Service").
+This agreement is between **[OWNER NAME]**, doing business as Supply Checkout ("we", "us"), and the business named above ("you", "your team"). When Main Street Logic LLC is formed, this agreement passes to it, and the company takes our place from then on. We'll tell you by email when that happens. It covers your team's use of Supply Checkout during the pilot: the web app at supplycheckout.com and anything we give you to try with it (together, "the Service").
 
 ## 1. The pilot terms
 
@@ -19,7 +19,7 @@ During the pilot, these documents apply, in this order if they disagree:
 3. the draft [Privacy Policy](privacy-policy.md), in full, except where section 4 below says otherwise;
 4. the draft [Terms of Service](terms-of-service.md), except the sections about trials, subscriptions, renewals, prices, cancelling and refunds (sections 4 to 7), service levels (section 10), and disclaimers, liability and governing law (sections 13, 14 and 16), which this agreement replaces.
 
-Together these are the **pilot terms**. They are drafts: we will have them reviewed by a lawyer before Supply Checkout launches publicly, and they may change then (section 8). Where they say `[COMPANY LEGAL NAME]` they mean Main Street Logic, `[DOMAIN]` means supplycheckout.com, and every support, privacy or security contact (`[SUPPORT EMAIL]`, `[PRIVACY EMAIL]`, `[SECURITY CONTACT]`) means our support mailbox, [SUPPORT EMAIL].
+Together these are the **pilot terms**. They are drafts: we will have them reviewed by a lawyer before Supply Checkout launches publicly, and they may change then (section 8). Where they say `[COMPANY LEGAL NAME]` they mean us (as this agreement names us), `[DOMAIN]` means supplycheckout.com, and every support, privacy or security contact (`[SUPPORT EMAIL]`, `[PRIVACY EMAIL]`, `[SECURITY CONTACT]`) means our support mailbox, [SUPPORT EMAIL].
 
 ## 2. Free during the pilot
 
@@ -57,7 +57,8 @@ We'd like to hear what works and what doesn't. You don't have to give feedback, 
 - **At the end of the pilot**, whether on the end date or earlier, you choose one of these:
   - **Move to a paid plan.** An owner chooses a plan in the app under **Billing**. Your data stays as it is. The Terms of Service in force then apply from that point, and we'll send them to you before you're asked to pay.
   - **Close the team.** An owner exports what they want and closes the team, and its data is deleted as section 4 describes.
-- We'll email the owner at least 14 days before the end date to ask which you'd like. If we haven't heard from you **30 days** after the end date, we may close the team for you after one more reminder, and its data is then deleted as section 4 describes.
+- We'll email the owner at least 14 days before the end date to ask which you'd like.
+- **If you haven't chosen by the end date**, your team keeps working, free, until we start billing pilot teams. We'll email the owner at least **30 days** before that, with the price. Nothing is charged until an owner chooses a plan in the app and enters payment details. An owner can export and close the team at any time instead.
 
 ## 8. Changes to these terms
 
@@ -80,30 +81,31 @@ To the extent the law allows:
 - This agreement and the documents in section 1 are the whole agreement between us about the pilot.
 - Notices are by email: ours to the pilot contact's email address, yours to [SUPPORT EMAIL].
 - Sections 4, 5, 9, 10 and 11 continue after the pilot ends, for as long as we hold your team's data.
-- Governing law: [STATE]. [To be confirmed; see open question 3.]
+- Governing law: this agreement is governed by the laws of the Commonwealth of Virginia. Any dispute goes to the state or federal courts in Virginia, and both sides agree to those courts' jurisdiction. Neither side has to arbitrate.
+- This agreement passes to Main Street Logic LLC when it's formed (see the start of this agreement), and we may also transfer it as part of a sale of the business. You may not transfer it without our consent.
 
 ## 12. Contact
 
-Main Street Logic, for Supply Checkout
+[OWNER NAME], doing business as Supply Checkout
 [SUPPORT EMAIL]
 
 ## Accepting this agreement
 
-The team's owner accepts by replying to the email that sent this agreement with "I agree to the Supply Checkout pilot agreement (version pilot-2026-10-01) for [TEAM BUSINESS NAME]", and confirms they can agree for the business.
+The team's owner accepts by replying to the email that sent this agreement with "I agree to the Supply Checkout pilot agreement (version pilot-2026-10-02) for [TEAM BUSINESS NAME]", and confirms they can agree for the business.
 
-### How acceptance works (for Main Street Logic, not part of the agreement)
+### How acceptance works (for us, not part of the agreement)
 
 The app has no terms checkbox yet: that comes with the public sign-up (bead `supply-checkout-21q`). For the pilot:
 
-1. Fill in the placeholders above and send the agreement, with the three drafts as they are at the version's commit (as PDFs or links to them on GitHub), from the support mailbox to the pilot team's owner.
+1. Fill in the placeholders above, including `[OWNER NAME]` (the owner's legal name; never commit it here), and send the agreement, with the three drafts as they are at the version's commit (as PDFs or links to them on GitHub), from the support mailbox to the pilot team's owner.
 2. Keep their reply in the support mailbox. It is the record of acceptance: who, when and which version. Don't copy their name or email into this repository.
 3. Once they've accepted and created their team, comp it for the pilot with the ops CLI, naming the version and the date accepted in the reason (it's audited, and owners see it under **Members → Support activity**):
 
    ```bash
-   npm run ops -- comp <teamId> --plan free --until <END DATE> --reason "Pilot, agreement pilot-2026-10-01 accepted <YYYY-MM-DD>"
+   npm run ops -- comp <teamId> --plan free --until <END DATE> --reason "Pilot, agreement pilot-2026-10-02 accepted <YYYY-MM-DD>"
    ```
 
-4. When the pilot ends, end the comp (`npm run ops -- uncomp <teamId> --reason "Pilot over"`) once the team has chosen a plan or closed.
+4. When the pilot ends, extend the comp (`comp` again with a later `--until`) for a team that hasn't chosen yet. Once it has chosen a plan or closed, or 30 days after the billing notice in section 7, end it: `npm run ops -- uncomp <teamId> --reason "Pilot over"`.
 
 Don't comp a team until its owner has accepted.
 
@@ -111,14 +113,17 @@ Don't comp a team until its owner has accepted.
 
 ## Open questions for the owner
 
-1. **Legal entity.** Is "Main Street Logic" a registered business (LLC, corporation) or a trade name you use personally? If it isn't formed yet (bead `supply-checkout-ar0`), the agreement is with you personally trading as Main Street Logic, and your personal liability is only limited by section 10. Should the agreement name you and the state?
-2. **Pilot length.** About 90 days (the business plan's 3-month pilot)? Comps can run up to 12 months. Step 3 uses `--plan free`, the plan the ops docs use for a pilot; should pilot teams also get a seat limit (`--seats`)?
-3. **Governing law.** The owner's decision for the full Terms is courts in your home state with no arbitration. Use the same state here?
-4. **Liability cap of $100** for a free pilot. Acceptable? Do you want insurance before the pilot, given that the pilot team's data may end up on its clients' bills?
-5. **Notice periods.** 14 days to end the pilot, 30 days' notice if we stop the pilot altogether, and 30 days after the end date before we may close an undecided team. Right lengths?
-6. **Closing an undecided team.** Operators can't close a team today, and nothing deletes a team whose trial or comp ended (bead `supply-checkout-qdx`). Until that's built, closing a team for the pilot team means asking its owner to do it. Keep the promise in section 7, or drop the last bullet?
-7. **Confidentiality.** Should pilot teams keep the pre-release product and its problems confidential? This draft doesn't ask them to.
-8. **Testimonials.** Section 6 says we won't name the business without permission. Do you want to ask for permission in the agreement itself (a tick-box line)?
-9. **Support response target** of 2 business days during the pilot. Realistic?
-10. **Support mailbox.** The pilot needs a working support mailbox on supplycheckout.com before the first team is sent this. The repository's public-safety check allows only the no-reply address today, so these drafts write it as `[SUPPORT EMAIL]`. Once the support-email change (bead `supply-checkout-6qd`) allows the support address, replace the placeholder here and in the drafts.
-11. **Delivery.** Send the drafts as PDFs (fixed, easy to keep) or as links to the public repository at the version's commit (always the exact text, but shows the open questions)? This draft allows either.
+*Decided by the owner on 2026-10-01, and written in above:*
+
+- *The party is the owner personally, doing business as Supply Checkout, until Main Street Logic LLC is formed (bead `supply-checkout-ar0`). The agreement then passes to the company.*
+- *Virginia law and Virginia courts, with no arbitration.*
+- *The pilot is 90 days and can be extended by email. The liability cap is $100. Either side can end the pilot with 14 days' notice. Support replies within 2 business days.*
+- *A team that hasn't chosen by the end date keeps working until billing starts, with 30 days' notice before it does. Its owner closes it if they don't want to pay. Operators can't close teams, so the agreement doesn't promise they will.*
+
+Still open, each with a recommended default (the draft follows the default):
+
+1. **Confidentiality.** Should pilot teams keep the pre-release product and its problems confidential? *Default: no clause.* The agreement already says the software is pre-release, and a confidentiality clause is one more thing for a small business to worry about before signing.
+2. **Testimonials.** Should the agreement itself ask permission to name the business? *Default: no.* Keep section 6's promise not to name them, and ask by email near the end of a pilot that went well.
+3. **Delivery.** Send the drafts as PDFs, or as links to the public repository at the version's commit? *Default: PDFs*, made from the version's commit, with that commit named in the email. They're fixed, easy to keep, and don't show these open questions.
+4. **Seats.** Should pilot comps cap seats (`--seats`)? *Default: no cap.* Pilot teams are small, and the member cap still applies.
+5. **Support mailbox.** The pilot needs a working support mailbox on supplycheckout.com before the first team is sent this. These drafts write it as `[SUPPORT EMAIL]` until the support-email change (bead `supply-checkout-6qd`) lets the repository's public-safety check allow it. Then replace the placeholder here and in the drafts.
