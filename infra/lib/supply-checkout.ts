@@ -1,6 +1,6 @@
 import { type App, AspectPriority, Aspects, Tags, Validations } from "aws-cdk-lib";
 import { AwsSolutionsChecks } from "cdk-nag";
-import { type DeploymentConfig, GLOBAL_SERVICES_REGION } from "./config.js";
+import { type DeploymentConfig, type GithubRepository, GLOBAL_SERVICES_REGION } from "./config.js";
 import { ObservabilityDefaults } from "./observability/defaults.js";
 import { ApiStack } from "./stacks/api-stack.js";
 import { AuditStack } from "./stacks/audit-stack.js";
@@ -158,7 +158,7 @@ export function addBackupAccount(app: App, config: DeploymentConfig): BackupAcco
  * the main app never changes the role it deploys with by accident. That isn't
  * a security boundary (see GithubDeployStack).
  */
-export function addGithubDeploy(app: App, config: DeploymentConfig, repository: string): GithubDeployStack {
+export function addGithubDeploy(app: App, config: DeploymentConfig, repository: GithubRepository): GithubDeployStack {
   Tags.of(app).add("app", "supply-checkout");
   Tags.of(app).add("managed-by", "cdk");
   Validations.of(app).addPlugins(new AwsSolutionsChecks(app, { verbose: true }));

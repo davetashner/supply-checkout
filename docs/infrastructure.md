@@ -56,27 +56,43 @@ npx cdk deploy --all --profile supply-prod -c backupCopy=false
 `infra/lib/stacks/github-deploy-stack.ts`, bead `supply-checkout-5ik` ([ADR 0003](adr/0003-aws-account-structure.md), [ADR 0012](adr/0012-cicd-releases-rollbacks.md)). It lets a GitHub Actions job deploy to the prod account with short-lived credentials and no stored AWS keys. The MVP has one account, so there is one provider and one role, in `supply-checkout-prod`. The stack, `supply-checkout-<env>-<primary region>-github-deploy`, holds:
 
 - An IAM OIDC provider for `https://token.actions.githubusercontent.com`, audience `sts.amazonaws.com` only. IAM fetches GitHub's certificate thumbprint itself.
-- The role `supply-checkout-<env>-github-deploy`. Its trust policy has one statement: `sts:AssumeRoleWithWebIdentity` from that provider, with `StringEquals` on `aud` = `sts.amazonaws.com` and `sub` = `repo:<owner>/<name>:environment:production`. Only a job in this repository that runs in the `production` GitHub environment gets that subject. A pull request, a push without the environment, a fork or another repository gets a different one and is refused. There are no wildcards.
+- The role `supply-checkout-<env>-github-deploy`. Its trust policy has one statement: `sts:AssumeRoleWithWebIdentity` from that provider, with `StringEquals` on `aud` = `sts.amazonaws.com` and `sub` = `repo:<owner>@<owner ID>/<name>@<repository ID>:environment:production`. Only a job in this repository that runs in the `production` GitHub environment gets that subject. A pull request, a push without the environment, a fork or another repository gets a different one and is refused. There are no wildcards.
+- That subject is GitHub's immutable subject (bead `supply-checkout-pbp.23`): it carries GitHub's numeric owner and repository IDs next to the names. The older default, `repo:<owner>/<name>:environment:production`, would match whoever holds the name: if the account were renamed or deleted and the name registered again, a new repository with a `production` environment would get the trusted subject. An owner or repository ID is never reused, so it doesn't. GitHub turns immutable subjects on by default for repositories created after 2026-07-15, this one included, so no repository setting is needed (check it in step 1 below). A rename changes the subject: deploys from GitHub fail closed until the stack is deployed again with the new name (the IDs stay). A transfer to another owner changes the owner ID too.
 - Its one permission: `sts:AssumeRole` and `sts:TagSession` on this account's CDK bootstrap roles (`cdk-<qualifier>-{deploy,file-publishing,image-publishing,lookup}-role-<account>-<region>`), in each deployed region and `GLOBAL_SERVICES_REGION`. `cdk deploy` and `cdk diff` do everything else through those roles, exactly as a deploy from a laptop does. No managed policy, one-hour sessions, and cdk-nag passes with no suppressions.
 - The output `DeployRoleArn`, for `role-to-assume` in `aws-actions/configure-aws-credentials`.
 
-The repository comes from `DEFAULT_GITHUB_REPOSITORY` in `lib/config.ts` (override it with `-c githubRepository=<owner>/<name>`), and the environment name from `GITHUB_DEPLOY_ENVIRONMENT`. No account ID is written down: the ARNs are built from CloudFormation's `AWS::AccountId`.
+The repository comes from `DEFAULT_GITHUB_REPOSITORY` in `lib/config.ts`: its `owner/name` (for the role's description) and its owner and repository IDs (for the trust). They are public identifiers, read with `gh api repos/davetashner/supply-checkout --jq '{owner_id: .owner.id, repo_id: .id}'`. Override all three together with `-c githubRepository=<owner>/<name> -c githubOwnerId=<n> -c githubRepositoryId=<n>`; the synth refuses some without the others, names outside GitHub's rules (so no `:`, `@` or wildcard), and IDs that aren't plain positive integers. The environment name comes from `GITHUB_DEPLOY_ENVIRONMENT`. No account ID is written down: the ARNs are built from CloudFormation's `AWS::AccountId`.
 
 It is a separate CDK app, `bin/github-deploy.ts`, like the backup account's vault. `cdk deploy --all` never includes it, so a pipeline deploying the main app never changes the role it deploys with by accident. That is not a security boundary: a job with this role can assume the bootstrap deploy role and, through CloudFormation's execution role, update this stack or the role's trust too. The real boundary is the `production` environment's rules on GitHub, plus a narrower CloudFormation execution policy (bead `supply-checkout-3x3.2`; see [What it doesn't limit](#what-it-doesnt-limit)). The stack is prod only (the trust always names the `production` GitHub environment, so the synth refuses any other `envName`), and a bootstrap qualifier from context (`@aws-cdk/core:bootstrapQualifier`) must match CDK's own rule, 1 to 10 letters, digits, `_` or `-`, so it can't widen the role ARNs. The stack has termination protection, and the provider and role are retained if it's deleted.
 
 **Revoking access.** Because the provider and role are retained, deleting the stack does not revoke GitHub's access. To cut it off, delete the role by hand (`aws iam delete-role-policy` for its policy, then `aws iam delete-role --role-name supply-checkout-prod-github-deploy`), or replace its trust policy with one that allows nothing (`aws iam update-assume-role-policy`). Deleting the OIDC provider also stops every role that trusts it.
 
-**Deploying it (the owner, once).** CDK must already be bootstrapped in the account and regions (see [Deploying](#deploying)).
+**Deploying it (the owner, once).** CDK must already be bootstrapped in the account and regions (see [Deploying](#deploying)), and the `production` environment set up on GitHub (below). Then, in this order:
 
-```bash
-aws sso login --profile supply-prod
-cd infra
-npm run synth:github-deploy                               # cdk-nag runs here too
-npx cdk diff --app "npx tsx bin/github-deploy.ts" -o cdk.out/github-deploy --profile supply-prod
-npm run deploy:github-deploy -- --profile supply-prod     # CDK asks to confirm the IAM changes
-```
+1. **Confirm the repository uses immutable subjects.** A read-only check:
 
-An account can have only one OIDC provider for GitHub's URL. If one already exists (made by hand or another tool), the deploy fails: delete it first if nothing else uses it, or bring it into the stack with `cdk import`. Deploy the stack again when a region is added to `DEFAULT_REGIONS` (phase 2), so the role may assume that region's bootstrap roles, and after the repository is renamed or transferred (with the new `-c githubRepository`).
+   ```bash
+   gh api repos/davetashner/supply-checkout/actions/oidc/customization/sub \
+     --jq '[.use_default, .use_immutable_subject, .sub_claim_prefix]'
+   ```
+
+   It must print `[true,true,"repo:davetashner@5702882/supply-checkout@1388338851"]`: the default template, with immutable subjects on, and the prefix the trust expects (the role's `sub` is that prefix plus `:environment:production`). If it doesn't, stop: the trust won't match, and the subject setting is to be looked at before deploying.
+
+2. **Deploy the stack.**
+
+   ```bash
+   aws sso login --profile supply-prod
+   cd infra
+   npm run synth:github-deploy                               # cdk-nag runs here too
+   npx cdk diff --app "npx tsx bin/github-deploy.ts" -o cdk.out/github-deploy --profile supply-prod
+   npm run deploy:github-deploy -- --profile supply-prod     # CDK asks to confirm the IAM changes
+   ```
+
+3. **Check it with a dry job.** Run a `workflow_dispatch` job with `environment: production` and `permissions: id-token: write` that only runs `aws-actions/configure-aws-credentials` with `role-to-assume` set to the `DeployRoleArn` output, then `aws sts get-caller-identity`. It must print the deploy role's assumed-role ARN. The same job without `environment: production` must fail in `configure-aws-credentials` with `Not authorized to perform sts:AssumeRoleWithWebIdentity`. Until the deploy workflow exists (`supply-checkout-qq7`), this is the first job to add.
+
+**If the subject doesn't match, it fails closed.** If the repository's subject setting is changed (a custom template, or immutable subjects turned off) or the repository is renamed or transferred, tokens carry a different `sub` and the role refuses them until the stack is deployed again to match. Nothing is opened up in between, and nothing deploys from GitHub yet anyway.
+
+An account can have only one OIDC provider for GitHub's URL. If one already exists (made by hand or another tool), the deploy fails: delete it first if nothing else uses it, or bring it into the stack with `cdk import`. Deploy the stack again when a region is added to `DEFAULT_REGIONS` (phase 2), so the role may assume that region's bootstrap roles, and after the repository is renamed (the name in the subject changes; the IDs stay) or transferred to another owner (the owner name and ID change). Until then, deploys from GitHub fail closed.
 
 **Setting up the `production` environment on GitHub (the owner, once, before the first deploy of this stack).** The environment's rules decide which jobs get the trusted subject, so set them before the role exists. In the repository's Settings, Environments, create `production` with:
 
@@ -95,9 +111,12 @@ gh api repos/davetashner/supply-checkout/environments/production/deployment-bran
 
 `deployment_branch_policy` must not be `null` (null means any branch may deploy), with `custom_branch_policies: true`; the second command must list only `main` (type `branch`) and `v*` (type `tag`); and `rules` must include `required_reviewers`. Don't deploy the stack until it does.
 
-**What it enables.** The CI/CD bead (`supply-checkout-qq7`) adds the deploy workflow. Its deploy job runs with `environment: production` and `permissions: id-token: write`, and uses `aws-actions/configure-aws-credentials` with `role-to-assume` set to the `DeployRoleArn` output (keep it in a `production` environment variable, not in the repository). Nothing deploys from GitHub until then.
+**What it enables.** The CI/CD bead (`supply-checkout-qq7`) adds the deploy workflow. Its deploy job runs with `environment: production` and `permissions: id-token: write`, and uses `aws-actions/configure-aws-credentials` with `role-to-assume` set to the `DeployRoleArn` output (keep it in a `production` environment variable, not in the repository). Nothing deploys from GitHub until then. Its review must also check:
 
-To check the trust after deploying: `aws iam get-role --role-name supply-checkout-prod-github-deploy --profile supply-prod` shows the one statement above, and a job that runs without the `production` environment fails in `configure-aws-credentials` with `Not authorized to perform sts:AssumeRoleWithWebIdentity`.
+- **Protect the release tags.** The `production` environment lets `v*` tags deploy, so whoever can push a `v*` tag can start a prod deploy (still behind the required reviewers). Add a tag ruleset for `refs/tags/v*` that restricts creation, update and deletion to release-please and the owner.
+- **Never give `environment: production` to a `pull_request_target` or `workflow_run` job.** Both run with the base repository's context and secrets, yet can be triggered from a fork's pull request and may check out or act on its code. A job of either kind in the `production` environment would hand a fork's code the deploy role. Deploy jobs run only on `push` of a `v*` tag, `release`, or `workflow_dispatch`.
+
+To check the trust after deploying: `aws iam get-role --role-name supply-checkout-prod-github-deploy --profile supply-prod` shows the one statement above, with the immutable `sub`, and a job that runs without the `production` environment fails in `configure-aws-credentials` with `Not authorized to perform sts:AssumeRoleWithWebIdentity`.
 
 ### What it doesn't limit
 

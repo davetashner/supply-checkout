@@ -132,11 +132,29 @@ export function configFromContext(
 }
 
 /**
- * The GitHub repository whose Actions workflows may deploy (supply-checkout-5ik),
- * as `owner/name`. Override it with `-c githubRepository=owner/name` (a fork,
- * or after a transfer or rename). It's public, so it's fine to commit.
+ * A GitHub repository whose Actions workflows may deploy (supply-checkout-5ik):
+ * its `owner/name`, and GitHub's numeric IDs for its owner and for the
+ * repository. The deploy role's trust matches GitHub's immutable subject,
+ * which has both (supply-checkout-pbp.23): a name can be freed by a rename or
+ * deletion and registered again by someone else, an ID never is.
  */
-export const DEFAULT_GITHUB_REPOSITORY = "davetashner/supply-checkout";
+export interface GithubRepository {
+  readonly name: string;
+  readonly ownerId: number;
+  readonly repositoryId: number;
+}
+
+/**
+ * This repository. Override all three together with
+ * `-c githubRepository=owner/name -c githubOwnerId=<n> -c githubRepositoryId=<n>`
+ * (a fork, or after a transfer). They're public identifiers, fine to commit:
+ * `gh api repos/<owner>/<name> --jq '{owner_id: .owner.id, repo_id: .id}'`.
+ */
+export const DEFAULT_GITHUB_REPOSITORY: GithubRepository = {
+  name: "davetashner/supply-checkout",
+  ownerId: 5702882,
+  repositoryId: 1388338851,
+};
 
 /**
  * The GitHub environment a deploy job must run in to assume the deploy role
@@ -147,14 +165,38 @@ export const GITHUB_DEPLOY_ENVIRONMENT = "production";
 
 // GitHub's own rules: an owner is 1-39 letters, digits or single dashes, not
 // starting with a dash; a repository name is letters, digits, `.`, `_` and `-`.
-// Nothing else, so the value can't widen the role's `sub` condition.
+// Nothing else (no `:`, `@` or wildcard), so the value can't widen or reshape
+// the role's `sub` condition.
 const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
 
-/** The repository from `-c githubRepository=owner/name`, or DEFAULT_GITHUB_REPOSITORY. */
-export function githubRepositoryFromContext(node: ContextReader): string {
-  const value = String(node.tryGetContext("githubRepository") ?? DEFAULT_GITHUB_REPOSITORY);
-  if (!GITHUB_REPOSITORY_PATTERN.test(value)) {
-    throw new Error(`githubRepository must be a GitHub owner/name like octo-org/octo-repo (got "${value}")`);
+// A GitHub ID: a positive integer in decimal, no sign, no leading zero, and
+// small enough to be exact. Nothing else, so it can't widen the `sub` condition.
+const GITHUB_ID_PATTERN = /^[1-9][0-9]{0,14}$/;
+
+function githubId(key: string, value: unknown): number {
+  const text = String(value);
+  if (!GITHUB_ID_PATTERN.test(text)) throw new Error(`${key} must be a GitHub numeric ID, a positive integer (got "${text}")`);
+  return Number(text);
+}
+
+/**
+ * The repository from `-c githubRepository=owner/name -c githubOwnerId=<n>
+ * -c githubRepositoryId=<n>` (all three or none), or DEFAULT_GITHUB_REPOSITORY.
+ */
+export function githubRepositoryFromContext(node: ContextReader): GithubRepository {
+  const keys = ["githubRepository", "githubOwnerId", "githubRepositoryId"] as const;
+  const given = keys.filter((key) => node.tryGetContext(key) !== undefined);
+  if (given.length === 0) return DEFAULT_GITHUB_REPOSITORY;
+  if (given.length !== keys.length) {
+    throw new Error(`Give githubRepository, githubOwnerId and githubRepositoryId together, or none of them (got only ${given.join(", ")})`);
   }
-  return value;
+  const name = String(node.tryGetContext("githubRepository"));
+  if (!GITHUB_REPOSITORY_PATTERN.test(name)) {
+    throw new Error(`githubRepository must be a GitHub owner/name like octo-org/octo-repo (got "${name}")`);
+  }
+  return {
+    name,
+    ownerId: githubId("githubOwnerId", node.tryGetContext("githubOwnerId")),
+    repositoryId: githubId("githubRepositoryId", node.tryGetContext("githubRepositoryId")),
+  };
 }
