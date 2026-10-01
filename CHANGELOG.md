@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.7.1](https://github.com/davetashner/supply-checkout/compare/v1.7.0...v1.7.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* alert P2 on any change to who the alarms reach ([#368](https://github.com/davetashner/supply-checkout/issues/368)) ([2496d92](https://github.com/davetashner/supply-checkout/commit/2496d92aa677be27ba063958d024b0e9b65ffbbb))
+* purge a held closed team 14 days after its deletion date ([#370](https://github.com/davetashner/supply-checkout/issues/370)) ([6c3a7ea](https://github.com/davetashner/supply-checkout/commit/6c3a7eaddef25bc53ee95739cf61ea6d4d047247))
+* say what happens to billing in the reopen email, and read the team once per seat sync ([#362](https://github.com/davetashner/supply-checkout/issues/362)) ([830d561](https://github.com/davetashner/supply-checkout/commit/830d561e2877ef8299f8d9949449fcd274214fac))
+
 ## [1.7.0](https://github.com/davetashner/supply-checkout/compare/v1.6.0...v1.7.0) (2026-10-01)
 
 
