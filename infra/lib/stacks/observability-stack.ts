@@ -163,6 +163,7 @@ export const OPERATOR_RULE_SUFFIXES = {
   OperatorAuthorizerUserPoolId: "authz-user-pool-id",
   OperatorAuthorizerOpsIssuerUrl: "authz-ops-issuer-url",
   OperatorAuthorizerOpsClientId: "authz-ops-client-id",
+  OperatorAuthorizerAuthUrl: "authz-auth-url",
 } as const;
 
 /**
@@ -239,8 +240,11 @@ export const operatorRuleInputParameters = (envName: string) => {
  * opsJwtAuthorizer, and the ops function's own token check). Rewritten, the
  * next api or realtime deploy would accept another pool's or client's tokens,
  * through CloudFormation, which these rules exempt. The operator pool's ID,
- * which the ops function also reads, is OperatorInputOpsPoolId's. The rules
- * are named under the operator prefix, so the rule-tampering rules watch them.
+ * which the ops function also reads, is OperatorInputOpsPoolId's. Also the
+ * customer sign-in URL, which scripts/publish-web.mjs writes into the web
+ * app's config.json (where the browser goes to sign in); the auth function no
+ * longer reads it from SSM. The rules are named under the operator prefix, so
+ * the rule-tampering rules watch them.
  */
 export const authorizerInputParameters = (envName: string) => {
   const identity = identityOutputParameters(envName);
@@ -250,6 +254,7 @@ export const authorizerInputParameters = (envName: string) => {
     OperatorAuthorizerUserPoolId: identity.userPoolId,
     OperatorAuthorizerOpsIssuerUrl: identity.opsIssuerUrl,
     OperatorAuthorizerOpsClientId: identity.opsClientId,
+    OperatorAuthorizerAuthUrl: identity.authUrl,
   } as const satisfies Partial<Record<keyof typeof OPERATOR_RULE_SUFFIXES, string>>;
 };
 
@@ -548,7 +553,8 @@ export class ObservabilityStack extends SupplyCheckoutStack {
    *   parameter the API's JWT authorizers, the ops function's token check or
    *   the realtime authorizer read at deploy time (authorizerInputParameters):
    *   a rewritten issuer, client or pool would change which tokens they accept
-   *   at the next api or realtime deploy.
+   *   at the next api or realtime deploy; and the sign-in URL the web publish
+   *   writes into the app's config.
    * - `OperatorAlertRouteChanges`: deleting either alarm topic, or taking
    *   its permissions away, whoever does it; changing its attributes (its
    *   policy or key) or a subscription to it, including unsubscribing,
@@ -754,8 +760,8 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     const parameterRules = (parameters: Partial<Record<keyof typeof OPERATOR_RULE_SUFFIXES, string>>, readBy: string, bead: string) =>
       (Object.entries(parameters) as [keyof typeof OPERATOR_RULE_SUFFIXES, string][]).map(([id, name]) => {
         const names = [ssmParameterNameMatch(name)];
-        const what = `the SSM parameter ${name}, which ${readBy} at deploy time`;
-        const rule = operatorRule(id, `The SSM parameter ${name}, which ${readBy} at deploy time, was changed or deleted outside a deploy (${bead})`, {
+        const what = `the SSM parameter ${name}, which ${readBy}`;
+        const rule = operatorRule(id, `The SSM parameter ${name}, which ${readBy}, was changed or deleted outside a deploy (${bead})`, {
           source: ["aws.ssm"],
           ...cloudTrail,
           detail: {
@@ -770,8 +776,8 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         return { rule, what };
       });
     const inputRules = [
-      ...parameterRules(operatorRuleInputParameters(envName), "the operator alerts read", "supply-checkout-6uw.22"),
-      ...parameterRules(authorizerInputParameters(envName), "the API's and realtime authorizers read", "supply-checkout-6uw.23"),
+      ...parameterRules(operatorRuleInputParameters(envName), "the operator alerts read at deploy time", "supply-checkout-6uw.22"),
+      ...parameterRules(authorizerInputParameters(envName), "sign-in or the API's and realtime authorizers read at deploy or publish time", "supply-checkout-6uw.23"),
     ];
     const topics = Object.values(this.topics.topics);
     const topicArns = topics.map((t) => t.topicArn);

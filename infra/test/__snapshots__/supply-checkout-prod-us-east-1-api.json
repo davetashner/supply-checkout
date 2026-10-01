@@ -351,9 +351,7 @@
         "Environment": {
           "Variables": {
             "ALLOWED_ORIGINS": "https://app.supplycheckout.com",
-            "AUTH_URL": {
-              "Ref": "SsmParameterValuesupplycheckoutprodidentityauthurlC96584B6F00A464EAD1953AFF4B05118Parameter"
-            },
+            "AUTH_URL": "https://auth.supplycheckout.com",
             "CLIENT_ID": {
               "Ref": "SsmParameterValuesupplycheckoutprodidentitywebclientidC96584B6F00A464EAD1953AFF4B05118Parameter"
             },
@@ -6950,10 +6948,6 @@
     }
   },
   "Parameters": {
-    "SsmParameterValuesupplycheckoutprodidentityauthurlC96584B6F00A464EAD1953AFF4B05118Parameter": {
-      "Type": "AWS::SSM::Parameter::Value<String>",
-      "Default": "/supply-checkout/prod/identity/auth-url"
-    },
     "SsmParameterValuesupplycheckoutprodidentitywebclientidC96584B6F00A464EAD1953AFF4B05118Parameter": {
       "Type": "AWS::SSM::Parameter::Value<String>",
       "Default": "/supply-checkout/prod/identity/web-client-id"

@@ -1342,7 +1342,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     const t = observability();
     // The deletion records watch's rules are tested with the watch
     const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch"));
-    expect(rules).toHaveLength(27);
+    expect(rules).toHaveLength(28);
     const byId = (prefix: string) => {
       // Logical IDs end in an 8-character hash
       const found = rules.find(([id]) => id.startsWith(prefix) && /^[0-9A-F]{8}$/.test(id.slice(prefix.length)));
@@ -1363,7 +1363,7 @@ describe("operator pool alerts (ADR 0015)", () => {
       groupAlarmChanges: byId("OperatorGroupWatchAlarmChanges"),
       snapshotChanges: byId("OperatorGroupSnapshotChanges"),
       inputs: ["OperatorInputOpsPoolId", "OperatorInputOpsBrandingId", "OperatorInputTrailKeyArn", "OperatorInputTableKeyArn", "OperatorInputTableStreamArn"].map(byId),
-      authorizers: ["OperatorAuthorizerIssuerUrl", "OperatorAuthorizerWebClientId", "OperatorAuthorizerUserPoolId", "OperatorAuthorizerOpsIssuerUrl", "OperatorAuthorizerOpsClientId"].map(byId),
+      authorizers: ["OperatorAuthorizerIssuerUrl", "OperatorAuthorizerWebClientId", "OperatorAuthorizerUserPoolId", "OperatorAuthorizerOpsIssuerUrl", "OperatorAuthorizerOpsClientId", "OperatorAuthorizerAuthUrl"].map(byId),
       routeChanges: byId("OperatorAlertRouteChanges"),
       keyAndTrailChanges: byId("OperatorAlertKeyAndTrailChanges"),
       trailBucketChanges: byId("OperatorTrailBucketChanges"),
@@ -1595,7 +1595,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     expectEachParameterPagesItsOwnRule(ruleFor, ["/supply-checkout/staging/identity/ops-user-pool-id", "/supply-checkout/prod/identity/user-pool-id", "/supply-checkout/prod/identity/ops-client-id", "/supply-checkout/prod/data/table-arn"]);
   });
 
-  it("tell P1 when an SSM parameter the API's or realtime authorizers read at deploy time is changed or deleted outside a deploy, however its name is padded (supply-checkout-6uw.23)", () => {
+  it("tell P1 when an SSM parameter sign-in or the API's or realtime authorizers read is changed or deleted outside a deploy, however its name is padded (supply-checkout-6uw.23)", () => {
     const { authorizers } = operatorRules();
     const expected = {
       OperatorAuthorizerIssuerUrl: "/supply-checkout/prod/identity/issuer-url",
@@ -1603,6 +1603,7 @@ describe("operator pool alerts (ADR 0015)", () => {
       OperatorAuthorizerUserPoolId: "/supply-checkout/prod/identity/user-pool-id",
       OperatorAuthorizerOpsIssuerUrl: "/supply-checkout/prod/identity/ops-issuer-url",
       OperatorAuthorizerOpsClientId: "/supply-checkout/prod/identity/ops-client-id",
+      OperatorAuthorizerAuthUrl: "/supply-checkout/prod/identity/auth-url",
     };
     expect(authorizerInputParameters("prod")).toEqual(expected);
     expect(authorizers).toHaveLength(Object.keys(expected).length);
@@ -1628,24 +1629,33 @@ describe("operator pool alerts (ADR 0015)", () => {
       expect(rule.props.Name).toBe(operatorRuleName("prod", OPERATOR_RULE_SUFFIXES[id as keyof typeof OPERATOR_RULE_SUFFIXES]));
       expect(String(rule.props.Name).startsWith(operatorRulePrefix("prod"))).toBe(true);
       expect(rule.props.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP1/) } })]);
-      expect(JSON.stringify(rule.props.Targets)).toContain(`the SSM parameter ${name}, which the API's and realtime authorizers read at deploy time`);
+      expect(JSON.stringify(rule.props.Targets)).toContain(`the SSM parameter ${name}, which sign-in or the API's and realtime authorizers read at deploy or publish time`);
     }
-    expectEachParameterPagesItsOwnRule(ruleFor, ["/supply-checkout/staging/identity/issuer-url", "/supply-checkout/prod/identity/ops-user-pool-id", "/supply-checkout/prod/identity/auth-url", "/supply-checkout/prod/identity/user-pool-arn"]);
+    expectEachParameterPagesItsOwnRule(ruleFor, ["/supply-checkout/staging/identity/issuer-url", "/supply-checkout/prod/identity/ops-user-pool-id", "/supply-checkout/prod/identity/ops-auth-url", "/supply-checkout/prod/identity/user-pool-arn"]);
 
-    // Every SSM parameter that feeds an authorizer is watched by one of these rules or an OperatorInput* rule: the API's
-    // JWT authorizers (issuer and audience), the ops function's own token check, and the realtime authorizer's function
+    // Every identity parameter anything in the api or realtime stack reads (authorizers, functions' environments, policies)
+    // is watched by one of these rules or OperatorInputOpsPoolId, but the operator pool's ARN: it's only an IAM resource (the
+    // ops function's AdminListGroupsForUser), so a rewritten one narrows a permission and fails closed
     const { region } = build();
     const api = Template.fromStack(region(EAST).api);
     const realtime = Template.fromStack(region(EAST).realtime);
+    const identityReads = (t: Template) => ssmReads(t).ssmRefs((t.toJSON() as { Resources: unknown }).Resources).filter((n) => n.startsWith("/supply-checkout/prod/identity/"));
+    const read = new Set([...identityReads(api), ...identityReads(realtime)]);
+    const watched = new Set([...Object.values(expected), operatorRuleInputParameters("prod").OperatorInputOpsPoolId]);
+    const failClosed = ["/supply-checkout/prod/identity/ops-user-pool-arn"];
+    expect([...read].filter((n) => !watched.has(n)).sort()).toEqual(failClosed);
+    // The JWT authorizers, the ops function and the realtime authorizer function are among what's read
     const fed = (t: Template, resources: [string, { Properties?: unknown }][]) => resources.flatMap(([, r]) => ssmReads(t).ssmRefs(r.Properties));
     const jwtAuthorizers = Object.entries(api.findResources("AWS::ApiGatewayV2::Authorizer"));
     expect(jwtAuthorizers.map(([, r]) => r.Properties.AuthorizerType)).toEqual(["JWT", "JWT"]);
     const opsFunction = Object.entries(api.findResources("AWS::Lambda::Function")).filter(([id]) => /^OpsFunction[0-9A-F]{8}$/.test(id));
     const realtimeAuthorizer = Object.entries(realtime.findResources("AWS::Lambda::Function")).filter(([id]) => /^Authorizer[0-9A-F]{8}$/.test(id));
     expect([opsFunction, realtimeAuthorizer].map((f) => f.length)).toEqual([1, 1]);
-    const read = new Set([...fed(api, jwtAuthorizers), ...fed(api, opsFunction), ...fed(realtime, realtimeAuthorizer)]);
-    const watched = [...Object.values(expected), operatorRuleInputParameters("prod").OperatorInputOpsPoolId];
-    expect([...read].sort()).toEqual([...watched].sort());
+    const tokenChecks = new Set([...fed(api, jwtAuthorizers), ...fed(api, opsFunction), ...fed(realtime, realtimeAuthorizer)]);
+    expect([...tokenChecks].sort()).toEqual([...watched].filter((n) => !n.endsWith("/auth-url")).sort());
+    // The auth function's sign-in URL is fixed in the template, not read from SSM; publish-web.mjs still reads auth-url
+    // into the web app's config, which is why it's watched
+    expect([...read]).not.toContain("/supply-checkout/prod/identity/auth-url");
     for (const t of [api, realtime]) expect(JSON.stringify(t.toJSON())).not.toMatch(/resolve:ssm/);
   });
 

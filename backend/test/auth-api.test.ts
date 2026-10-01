@@ -3,7 +3,7 @@
 
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { clearedCookie, cookieToken, createAuthHandler, refreshCookie } from "../src/api/auth-handler.js";
+import { clearedCookie, cookieToken, createAuthHandler, expectedAuthUrl, refreshCookie } from "../src/api/auth-handler.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 
 const APP = "https://app.example.com";
@@ -61,6 +61,30 @@ async function call(path: string, options: Parameters<typeof event>[1] = {}) {
 }
 
 const session = { code: "abc-123", codeVerifier: VERIFIER, redirectUri: `${APP}/` };
+
+describe("the sign-in endpoint (supply-checkout-6uw.23)", () => {
+  // The grant and the refresh token go to AUTH_URL, so it must be auth. on the app's own domain, or the function won't start
+  const create = (authUrl: string, allowedOrigins: string[] = [APP, "http://localhost:5173"]) => () => createAuthHandler({ config: { authUrl, clientId: "web-client", allowedOrigins }, obs });
+
+  it("is auth. on the app's domain", () => {
+    expect(expectedAuthUrl([APP])).toBe(AUTH);
+    expect(expectedAuthUrl(["http://localhost:5173", "https://app.staging.example.com"])).toBe("https://auth.staging.example.com");
+    expect(create(AUTH)).not.toThrow();
+  });
+
+  it("refuses to start with any other AUTH_URL", () => {
+    for (const authUrl of ["https://auth.evil.example", "https://auth.example.com.evil.example", "http://auth.example.com", "https://auth.example.com/", "https://auth.example.com/x", "https://ops-auth.example.com", ""]) {
+      expect(create(authUrl), authUrl).toThrow(/AUTH_URL/);
+    }
+  });
+
+  it("refuses to start without an https://app. origin to check it against", () => {
+    expect(() => expectedAuthUrl(["http://localhost:5173"])).toThrow(/ALLOWED_ORIGINS/);
+    expect(create(AUTH, ["http://localhost:5173"])).toThrow(/ALLOWED_ORIGINS/);
+    expect(create(AUTH, ["http://app.example.com"])).toThrow(/ALLOWED_ORIGINS/);
+    expect(create(AUTH, [])).toThrow(/ALLOWED_ORIGINS/);
+  });
+});
 
 describe("POST /auth/session", () => {
   it("redeems the code with PKCE and keeps the refresh token in a locked-down cookie", async () => {

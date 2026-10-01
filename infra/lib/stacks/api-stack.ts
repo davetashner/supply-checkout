@@ -204,7 +204,9 @@ export class ApiStack extends SupplyCheckoutStack {
       memorySize: 256,
       description: "Sign-in sessions: code exchange, refresh and sign-out with an HttpOnly cookie",
       environment: {
-        [API_ENV.authUrl]: ssm(identity.authUrl),
+        // Fixed here, not read from SSM (identity.authUrl): the function sends the sign-in grant and the refresh token
+        // there, and refuses to start unless it's auth. on the app's domain (supply-checkout-6uw.23)
+        [API_ENV.authUrl]: `https://${names.auth}`,
         [API_ENV.clientId]: ssm(identity.webClientId),
         [API_ENV.allowedOrigins]: origins.join(","),
       },

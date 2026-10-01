@@ -114,6 +114,17 @@ test("config prints the app's config.json, and needs the stacks deployed", () =>
   assert.throws(() => main(["config", "--env", "staging"], bare.deps), /realtime and web stacks first\): \/supply-checkout\/staging\/api\/url/);
 });
 
+test("config refuses a sign-in URL that isn't auth. on the API's domain (supply-checkout-6uw.23)", () => {
+  const names = configParameterNames("prod");
+  for (const authUrl of ["https://auth.evil.example", "https://auth.example.test.evil.example", "http://auth.example.test", "https://auth.example.test/", "https://ops-auth.example.test"]) {
+    const aws = fakeAws({ params: { ...PARAMS, [names.authUrl]: authUrl } });
+    assert.throws(() => main(["config"], aws.deps), /identity\/auth-url must be https:\/\/auth\.<the API's domain>/, authUrl);
+  }
+  // An API URL that isn't https://api.<domain> leaves nothing to check it against
+  const aws = fakeAws({ params: { ...PARAMS, [names.apiUrl]: "https://evil.example" } });
+  assert.throws(() => main(["config"], aws.deps), /identity\/auth-url must be/);
+});
+
 test("publish needs a built folder", () => {
   const aws = fakeAws();
   const empty = mkdtempSync(path.join(tmpdir(), "publish-web-"));

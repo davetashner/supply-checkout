@@ -149,7 +149,14 @@ export function appConfig(aws, envName) {
   if (missing.length) {
     throw new Error(`Missing SSM parameters (deploy the api, identity, realtime and web stacks first): ${missing.join(", ")}`);
   }
-  return Object.fromEntries(Object.entries(names).map(([key, name]) => [key, values[name]]));
+  const config = Object.fromEntries(Object.entries(names).map(([key, name]) => [key, values[name]]));
+  // The browser goes to authUrl to sign in, so a rewritten parameter mustn't send people elsewhere (supply-checkout-6uw.23):
+  // it must be auth. on the API's own domain
+  const domain = /^https:\/\/api\.([a-z0-9-]+(?:\.[a-z0-9-]+)+)$/.exec(config.apiUrl)?.[1];
+  if (!domain || config.authUrl !== `https://auth.${domain}`) {
+    throw new Error(`${names.authUrl} must be https://auth.<the API's domain> (the API is ${config.apiUrl}); check both parameters`);
+  }
+  return config;
 }
 
 /** Where check-router finds the router and the distribution's hosts: the web stack's outputs. */

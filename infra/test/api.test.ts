@@ -195,7 +195,9 @@ describe("functions", () => {
       ISSUER_URL: { Ref: expect.stringMatching(/issuerurl/i) },
       ACCOUNT_ROLE_ARN: { "Fn::GetAtt": [expect.stringMatching(/^AccountAccessRole/), "Arn"] },
     });
-    expect(env("AuthFunction")).toMatchObject({ AUTH_URL: { Ref: expect.stringMatching(/authurl/i) }, CLIENT_ID: { Ref: expect.stringMatching(/webclientid/i) }, ALLOWED_ORIGINS: "https://app.supplycheckout.com" });
+    // AUTH_URL is fixed when the template is built, not read from SSM: the function sends the sign-in grant and the
+    // refresh token there, so a rewritten parameter mustn't be able to move it (supply-checkout-6uw.23)
+    expect(env("AuthFunction")).toMatchObject({ AUTH_URL: "https://auth.supplycheckout.com", CLIENT_ID: { Ref: expect.stringMatching(/webclientid/i) }, ALLOWED_ORIGINS: "https://app.supplycheckout.com" });
   });
 
   it("don't give any function's own role DynamoDB access", () => {
