@@ -875,7 +875,8 @@ let settingsCap = null, markup = null;
 async function refreshMarkup() {
   // WEB: the artifact build has no markup (claude.ai's db can't keep it from the crew)
   if (!(WEB && settingsCap)) return;
-  try { markup = (await settingsCap.get()).settings.equipmentMarkup; } catch { markup = null; }
+  // Anything but a number (an owner demoted meanwhile gets an empty settings) is no markup
+  try { const v = (await settingsCap.get()).settings.equipmentMarkup; markup = typeof v === "number" && Number.isFinite(v) ? v : null; } catch { markup = null; }
 }
 const stored = fn => { const k = draftKeyNow(); if (WEB && !k) return; try { fn(k); } catch {} };
 const loadDraft = () => stored(k => { draft = JSON.parse(localStorage.getItem(k) || "null"); });
@@ -921,6 +922,9 @@ function chargedText(l) {
   if (!WEB) return `Charged: ${money(unitCost(l))} each, the receipt price`;
   return markup !== null ? `Charged: ${money(boughtPrice(l))} each (receipt price + ${markup}% markup)` : "Charged: receipt price + team markup";
 }
+// The server adds a markup this page doesn't know (web build, not an owner), so the total is short of the charge
+const preMarkup = l => WEB && markup === null && isBought(l) && typedPrice(l) === undefined;
+const totalText = l => money(charge(l)) + (preMarkup(l) ? " (before markup)" : "");
 const effPrice = l => { const p = lineProd(l); return isBought(l) ? boughtPrice(l) : p && priceChoice(l) === "inv" ? round2(p.price) : unitCost(l); };
 const charge = l => round2(eaches(l) * effPrice(l));
 const lineNote = l => packOf(l) > 1 ? `${eaches(l)} each, cost ${money(unitCost(l))} each` : "";
@@ -1051,7 +1055,7 @@ function lineHTML(l) {
         <label class="grow">For<select data-f="dest" id="d-${l.id}">${destOptions(l.dest)}</select></label>
       </div>
       <p class="hint" data-note>${lineNote(l)}</p>
-      <div class="ractions"><span class="num" data-total>${money(charge(l))}</span><span class="spacer"></span><button type="button" class="btn ghost" data-split>Split</button><button type="button" class="btn ghost" data-del>Remove</button></div>
+      <div class="ractions"><span class="num" data-total>${totalText(l)}</span><span class="spacer"></span><button type="button" class="btn ghost" data-split>Split</button><button type="button" class="btn ghost" data-del>Remove</button></div>
     </div>`;
 }
 function setCode(l, code) {
@@ -1064,12 +1068,12 @@ function setCode(l, code) {
 function paintSum() {
   const d = draft, el = $("#rSum"); if (!d || !el) return;
   const rows = [...d.dests.map((x, i) => ({ id: x.id, label: destLabel(x, i) })), { id: "stock", label: "General inventory" }]
-    .map(r => { const ls = d.lines.filter(l => l.dest === r.id); return { ...r, n: ls.reduce((a, l) => a + eaches(l), 0), $: ls.reduce((a, l) => a + Math.round(charge(l) * 100), 0) / 100 }; })
+    .map(r => { const ls = d.lines.filter(l => l.dest === r.id); return { ...r, n: ls.reduce((a, l) => a + eaches(l), 0), $: ls.reduce((a, l) => a + Math.round(charge(l) * 100), 0) / 100, pre: ls.some(preMarkup) }; })
     .filter(r => r.n || r.id !== "stock");
   // At the receipt's prices, to compare with its subtotal
   const all = d.lines.reduce((a, l) => a + Math.round(int(l.qty) * round2(l.price) * 100), 0) / 100;
   el.innerHTML = `<h3>Summary</h3><table class="sumtable"><tbody>
-    ${rows.map(r => `<tr><td>${esc(r.label)}</td><td>${r.n} item${r.n === 1 ? "" : "s"}</td><td>${money(r.$)}</td></tr>`).join("")}
+    ${rows.map(r => `<tr><td>${esc(r.label)}</td><td>${r.n} item${r.n === 1 ? "" : "s"}</td><td>${money(r.$)}${r.pre ? " (before markup)" : ""}</td></tr>`).join("")}
     <tr class="strong"><td>Items total</td><td></td><td>${money(all)}</td></tr>
     ${d.subtotal != null ? `<tr><td>Receipt subtotal</td><td></td><td>${money(d.subtotal)}</td></tr>` : ""}
     ${d.tax != null ? `<tr><td>Tax on receipt (not added)</td><td></td><td>${money(d.tax)}</td></tr>` : ""}
@@ -1098,7 +1102,7 @@ $("#rBody").addEventListener("input", e => {
     if (t.dataset.f === "code" || t.dataset.f === "match") return;
     const charged = row.querySelector("[data-charged]");
     if (charged) charged.textContent = chargedText(l);
-    row.querySelector("[data-total]").textContent = money(charge(l));
+    row.querySelector("[data-total]").textContent = totalText(l);
     row.querySelector("[data-note]").textContent = lineNote(l);
     paintSum();
   } else if (t.id === "rDate") d.date = t.value;

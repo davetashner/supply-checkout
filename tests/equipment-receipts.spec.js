@@ -45,9 +45,13 @@ test.describe("equipment bought on a receipt for a client", { tag: ["@J5.3", "@J
     // The claude.ai build has no markup; the web build's page doesn't know it here (no team settings)
     await expect(rline(page).locator("[data-charged]")).toHaveText(currentBuild() === "web" ? "Charged: receipt price + team markup" : "Charged: $130.00 each, the receipt price");
     await expect(rline(page).getByRole("button", { name: /Charge the receipt price/ })).toHaveCount(0);
+    // The web build's total is short of the markup it doesn't know, and says so
+    await expect(rline(page).locator("[data-total]")).toHaveText(currentBuild() === "web" ? "$130.00 (before markup)" : "$130.00");
+    await expect(page.locator("#rSum tr").first().locator("td").last()).toHaveText(currentBuild() === "web" ? "$130.00 (before markup)" : "$130.00");
     await rline(page).getByLabel("Charge a different price ($)").fill("150");
     await expect(rline(page).locator("[data-charged]")).toHaveText("Charged: $150.00 each, the price you typed");
     await expect(rline(page).locator("[data-total]")).toHaveText("$150.00");
+    await expect(page.locator("#rSum tr").first().locator("td").last()).toHaveText("$150.00");
     await rline(page).getByLabel("Charge a different price ($)").fill("");
     await rline(page).getByLabel("For").selectOption("stock");
     await expect(rline(page)).toContainText("Company equipment · added to storage, not charged");
@@ -144,6 +148,31 @@ test.describe("the web build: the server prices it, and only owners have the mar
     expect(backend.doc("t1", "sheets", id).data.items["LAD-1:bought"]).toMatchObject({ price: 31, priceSet: "manual", priceSetBy: USER.id });
     // Stock didn't move
     expect(backend.doc("t1", "products", "LAD-1").data.stock).toBe(3);
+  });
+
+  test("an owner demoted meanwhile gets the contributor's wording, never an undefined markup", { tag: ["@J2.5"] }, async ({ page }) => {
+    const backend = new FakeBackend({ docs: docs(), settings: { t1: { equipmentMarkup: 25, version: 3 } } });
+    await openAws(page, backend, local(draftOf([{ price: 130 }], [{ id: "d1", sheetId: "s1", client: "" }])));
+    await connected(page);
+    backend.teams[0].role = "contributor";
+    await page.getByRole("button", { name: "Continue review" }).click();
+    await expect(rline(page).locator("[data-charged]")).toHaveText("Charged: receipt price + team markup");
+    await expect(rline(page).locator("[data-total]")).toHaveText("$130.00 (before markup)");
+    await expect(page.locator("#rSum tr").first().locator("td").last()).toHaveText("$130.00 (before markup)");
+    expect(await page.evaluate(() => document.body.innerText.includes("undefined"))).toBe(false);
+    // Team settings can't show or save a markup it didn't get
+    await page.locator(".teambar").getByRole("button", { name: "Team settings" }).click();
+    await expect(modal(page).locator("#settingsFail")).toHaveText("Couldn't load the settings. Check your connection, then open them again.");
+    await expect(modal(page).getByLabel("Markup on company equipment bought for a client (%)")).toHaveValue("");
+    await expect(modal(page).getByRole("button", { name: "Save" })).toBeDisabled();
+    await modal(page).getByRole("button", { name: "Cancel" }).click();
+    // Nor one without its version
+    backend.teams[0].role = "owner";
+    backend.on("GET", "/teams/t1/settings", { status: 200, body: { settings: { equipmentMarkup: 25 } } });
+    await page.locator(".teambar").getByRole("button", { name: "Team settings" }).click();
+    await expect(modal(page).locator("#settingsFail")).toHaveText("Couldn't load the settings. Check your connection, then open them again.");
+    await expect(modal(page).getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(backend.requests("PUT", "/teams/t1/settings")).toEqual([]);
   });
 
   test("a contributor never asks for the markup, and the page never has it", { tag: ["@J2.5"] }, async ({ page }) => {

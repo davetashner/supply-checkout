@@ -31,8 +31,11 @@ export function openSettings(settings) {
     let version = 0;
     try {
       const got = await settings.get();
+      // An owner demoted meanwhile gets an empty settings: never show or save on "undefined"
+      const markup = got.settings.equipmentMarkup;
+      if (typeof markup !== "number" || !Number.isFinite(markup) || typeof got.version !== "number") throw new Error("no settings");
       version = got.version;
-      field.value = String(got.settings.equipmentMarkup);
+      field.value = String(markup);
       field.disabled = false;
       save.disabled = false;
     } catch {
