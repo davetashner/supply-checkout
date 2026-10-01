@@ -154,3 +154,28 @@ export function stripeErrorFields(error: unknown): Record<string, string | numbe
   if (error.requestId) fields.requestId = error.requestId;
   return fields;
 }
+
+/**
+ * Invalid-request codes that say something about the key, the account or the
+ * moment rather than the one object asked about: a wrong or expired key, the
+ * wrong mode, a lock or rate limit. Every request would get them, so they're
+ * never taken as one object's permanent error.
+ */
+const NOT_ABOUT_THE_OBJECT = new Set(["api_key_expired", "secret_key_required", "livemode_mismatch", "testmode_charges_only", "account_invalid", "platform_api_key_expired", "lock_timeout", "rate_limit", "idempotency_key_in_use"]);
+
+/**
+ * Whether retrying the same request won't change Stripe's answer: an
+ * invalid-request error (400 or 404) about the object asked for, such as a
+ * subscription that can't be changed in its state. Never a connection, API,
+ * rate-limit, authentication, permission or idempotency error, a 429 or 5xx,
+ * or an invalid-request code about the key, account or a lock
+ * (NOT_ABOUT_THE_OBJECT). A bad key or a bug in our request also gets
+ * invalid-request errors, for every object alike, so a caller acting on this
+ * must check that the same requests work for other objects
+ * (ops/team-purge-handler.ts).
+ */
+export function isPermanentStripeError(error: unknown): boolean {
+  if (!(error instanceof Stripe.errors.StripeInvalidRequestError)) return false;
+  if (error.statusCode !== 400 && error.statusCode !== 404) return false;
+  return !(error.code && NOT_ABOUT_THE_OBJECT.has(error.code));
+}

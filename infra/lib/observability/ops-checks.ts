@@ -90,7 +90,9 @@ export interface OpsChecksProps {
  *   `stripeCancelledFor`), records each with the same UpdateItem grant
  *   (TEAM_PURGE_MARK_ATTRIBUTES includes `stripeCancelledFor`, still never
  *   `closedAt`), records one it sets aside for a person the same way
- *   (`stripeSetAsideFor`, in both lists, supply-checkout-8jc.17), and may read the one Stripe secret key for this
+ *   (`stripeSetAsideFor` and `stripeSetAsideReason`, in both lists,
+ *   supply-checkout-8jc.17, supply-checkout-8jc.36), counts those on the same
+ *   index for its ClosedTeamsSetAside gauge, and may read the one Stripe secret key for this
  *   environment and mode (secretsmanager:GetSecretValue on its ARN only).
  *
  * - `seatReconcile` (supply-checkout-l50): nightly at SEAT_RECONCILE_HOUR_UTC,
@@ -220,8 +222,8 @@ export class OpsChecks extends Construct {
         sid: "MarkClosedTeamPurging",
         // Two updates, each conditioned on the META item's purgeAfter: `purging`, before
         // anything is deleted, so reopenTeam refuses it from then on, and
-        // `stripeCancelledFor`, once its subscription is set to end (or `stripeSetAsideFor`, once
-        // it's set aside for a person). Not closedAt: this
+        // `stripeCancelledFor`, once its subscription is set to end (or `stripeSetAsideFor` and
+        // `stripeSetAsideReason`, once it's set aside for a person). Not closedAt: this
         // grant can't close or reopen a team
         actions: ["dynamodb:UpdateItem"],
         resources: [tableArn],

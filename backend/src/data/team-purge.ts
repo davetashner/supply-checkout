@@ -28,8 +28,11 @@
 // to end for its closure, closedTeamToEnd re-reads one before Stripe is
 // called, and markSubscriptionEnding records it (`stripeCancelledFor`, the
 // closure's `closedAt`), so later runs skip it. markSubscriptionSetAside
-// records one the purge won't end or retry (`stripeSetAsideFor`), which later
-// runs skip too, so it can't crowd newer closures out. purgeTeam's
+// records one the purge won't end or retry (`stripeSetAsideFor`, with why in
+// `stripeSetAsideReason`), which later runs skip too, so it can't crowd newer
+// closures out; a person removing `stripeSetAsideFor` lists it again.
+// listSetAsideTeams counts the teams set aside for their current closure, for
+// the purge's gauge (supply-checkout-8jc.36). purgeTeam's
 // `deleteStripeCustomer` deletes a team's Stripe customer before any of its
 // items go.
 
@@ -115,6 +118,14 @@ export interface ClosedTeamToEnd {
 
 const TO_END = "closedAt, purgeAfter, purging, stripeCustomerId, stripeSubscriptionId, stripeCancelledFor, stripeSetAsideFor";
 
+/**
+ * Why the purge set a closed team's subscription aside for a person
+ * (`stripeSetAsideReason`): it belongs to another customer, Stripe doesn't
+ * have it (maybe a Stripe key or mode mismatch), or Stripe refused to end it
+ * with an error that retrying won't change.
+ */
+export type SetAsideReason = "CustomerMismatch" | "NotFound" | "PermanentError";
+
 /** The team as ClosedTeamToEnd, if it's closed, not being purged, has a subscription, and it isn't recorded as ended or set aside for this closure. */
 function toEnd(teamId: string, item: Record<string, unknown> | undefined): ClosedTeamToEnd | undefined {
   if (!item || item.purging !== undefined) return undefined;
@@ -181,31 +192,33 @@ export async function closedTeamToEnd(db: Db, teamId: string): Promise<ClosedTea
  * reopened, or reopened and closed again, while Stripe was being called.
  */
 export function markSubscriptionEnding(db: Db, team: Pick<ClosedTeamToEnd, "teamId" | "closedAt" | "purgeAfter">): Promise<boolean> {
-  return recordForClosure(db, team, "stripeCancelledFor");
+  return recordForClosure(db, team, "SET stripeCancelledFor = :at");
 }
 
 /**
  * Records that the purge won't end the team's subscription, or try again,
- * for this closure (`stripeSetAsideFor`, its `closedAt`): a person has to look
- * (another customer's subscription, say). listClosedTeamsToEnd leaves it out
- * from then on; a new closure lists it again. On the same condition as
- * markSubscriptionEnding, and false the same way.
+ * for this closure (`stripeSetAsideFor`, its `closedAt`, and why in
+ * `stripeSetAsideReason`): a person has to look. listClosedTeamsToEnd leaves
+ * it out from then on, and listSetAsideTeams counts it until a person removes
+ * `stripeSetAsideFor` (which lists it again) or the team is purged; a new
+ * closure lists it again too. On the same condition as markSubscriptionEnding,
+ * and false the same way.
  */
-export function markSubscriptionSetAside(db: Db, team: Pick<ClosedTeamToEnd, "teamId" | "closedAt" | "purgeAfter">): Promise<boolean> {
-  return recordForClosure(db, team, "stripeSetAsideFor");
+export function markSubscriptionSetAside(db: Db, team: Pick<ClosedTeamToEnd, "teamId" | "closedAt" | "purgeAfter">, reason: SetAsideReason): Promise<boolean> {
+  return recordForClosure(db, team, "SET stripeSetAsideFor = :at, stripeSetAsideReason = :reason", { ":reason": reason });
 }
 
-/** Sets `attribute` to the team's `closedAt`, on the condition it's still that closure. False if it isn't. */
-function recordForClosure(db: Db, team: Pick<ClosedTeamToEnd, "teamId" | "closedAt" | "purgeAfter">, attribute: "stripeCancelledFor" | "stripeSetAsideFor"): Promise<boolean> {
+/** Runs `update` (which sets an attribute to `:at`, the team's `closedAt`) on the condition it's still that closure. False if it isn't. */
+function recordForClosure(db: Db, team: Pick<ClosedTeamToEnd, "teamId" | "closedAt" | "purgeAfter">, update: string, values: Record<string, string> = {}): Promise<boolean> {
   return connection(db)
     .doc.send(
       new UpdateCommand({
         TableName: db.tableName,
         Key: keys.team(id(team.teamId, "team ID")),
-        UpdateExpression: `SET ${attribute} = :at`,
+        UpdateExpression: update,
         // purgeAfter is set with closedAt and goes with it (see the mark below): still this closure
         ConditionExpression: "purgeAfter = :purge",
-        ExpressionAttributeValues: { ":at": team.closedAt, ":purge": team.purgeAfter },
+        ExpressionAttributeValues: { ":at": team.closedAt, ":purge": team.purgeAfter, ...values },
       }),
     )
     .then(
@@ -215,6 +228,50 @@ function recordForClosure(db: Db, team: Pick<ClosedTeamToEnd, "teamId" | "closed
         throw error;
       },
     );
+}
+
+/** A closed team set aside for its current closure, and why. */
+export interface SetAsideTeam {
+  readonly teamId: string;
+  /** Missing on a team set aside before reasons were recorded. */
+  readonly reason?: string;
+}
+
+/**
+ * The closed teams whose subscription is set aside for their current closure
+ * (`stripeSetAsideFor` equal to `closedAt`), however many there are: `count`
+ * is all of them, and `teams` the first `limit`, soonest due first, for the
+ * log. Read from the closed-teams index, every page: it holds only teams
+ * closed in the last CLOSED_TEAM_RETENTION_DAYS, and a team leaves it when
+ * it's purged or reopened. The purge sends `count` as a gauge every run, so
+ * its alarm keeps firing until a person has dealt with each one.
+ */
+export async function listSetAsideTeams(db: Db, limit = 25): Promise<{ count: number; teams: SetAsideTeam[] }> {
+  const teams: SetAsideTeam[] = [];
+  let count = 0;
+  let ExclusiveStartKey: Record<string, unknown> | undefined;
+  do {
+    const page = await connection(db).doc.send(
+      new QueryCommand({
+        TableName: db.tableName,
+        IndexName: GSI1,
+        KeyConditionExpression: "GSI1PK = :pk",
+        Select: "SPECIFIC_ATTRIBUTES",
+        ProjectionExpression: "PK, SK, closedAt, stripeSetAsideFor, stripeSetAsideReason",
+        ExpressionAttributeValues: { ":pk": CLOSED_TEAMS_PARTITION },
+        ExclusiveStartKey,
+      }),
+    );
+    for (const item of page.Items ?? []) {
+      const pk = String(item.PK);
+      const { closedAt, stripeSetAsideFor, stripeSetAsideReason } = item;
+      if (item.SK !== "META" || !pk.startsWith("TEAM#") || typeof closedAt !== "string" || stripeSetAsideFor !== closedAt) continue;
+      count++;
+      if (teams.length < limit) teams.push({ teamId: pk.slice("TEAM#".length), ...(typeof stripeSetAsideReason === "string" ? { reason: stripeSetAsideReason } : {}) });
+    }
+    ExclusiveStartKey = page.LastEvaluatedKey;
+  } while (ExclusiveStartKey);
+  return { count, teams };
 }
 
 /** What purgeTeam did: `skipped` when the team isn't closed or isn't due (it was, or it's gone). */

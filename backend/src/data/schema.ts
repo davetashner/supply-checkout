@@ -45,12 +45,13 @@ export const CLOSED_TEAMS_PARTITION = "TEAMS#CLOSED";
  * deletes), the META item's closure fields (with `purging`, the mark it sets
  * before deleting anything), its Stripe customer and subscription and
  * `stripeCancelledFor` (the closure its subscription was set to end for,
- * billing/closing.ts) and `stripeSetAsideFor` (the closure whose subscription
- * it set aside for a person), and the Stripe link's team. Its IAM policy
+ * billing/closing.ts), `stripeSetAsideFor` (the closure whose subscription
+ * it set aside for a person) and `stripeSetAsideReason` (why), and the Stripe
+ * link's team. Its IAM policy
  * allows exactly these (dynamodb:Attributes), so it deletes whole items
  * without reading documents, emails or names.
  */
-export const TEAM_PURGE_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "closedAt", "purgeAfter", "purging", "stripeCustomerId", "stripeSubscriptionId", "stripeCancelledFor", "stripeSetAsideFor", "teamId"] as const;
+export const TEAM_PURGE_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "closedAt", "purgeAfter", "purging", "stripeCustomerId", "stripeSubscriptionId", "stripeCancelledFor", "stripeSetAsideFor", "stripeSetAsideReason", "teamId"] as const;
 
 /**
  * The only attributes the team purge's updates may name: the META item's
@@ -58,13 +59,15 @@ export const TEAM_PURGE_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "closedAt", "purge
  * closed, since closeTeam sets it with `closedAt` and reopenTeam removes both
  * in one transaction), the `purging` mark it sets before deleting anything,
  * `stripeCancelledFor`, which records that a closed team's subscription
- * was set to end for this closure, and `stripeSetAsideFor`, which records that
- * it won't be ended or retried for this closure (another customer's
- * subscription), so it leaves the purge's listing. Its IAM policy allows
+ * was set to end for this closure, and `stripeSetAsideFor` and
+ * `stripeSetAsideReason`, which record that it won't be ended or retried for
+ * this closure, and why (another customer's subscription, not found in
+ * Stripe, or an error retrying won't change), so it leaves the purge's
+ * listing. Its IAM policy allows
  * UpdateItem with exactly these, so a buggy update can't close or reopen a
  * team: `closedAt` isn't among them.
  */
-export const TEAM_PURGE_MARK_ATTRIBUTES = [PK, SK, "purgeAfter", "purging", "stripeCancelledFor", "stripeSetAsideFor"] as const;
+export const TEAM_PURGE_MARK_ATTRIBUTES = [PK, SK, "purgeAfter", "purging", "stripeCancelledFor", "stripeSetAsideFor", "stripeSetAsideReason"] as const;
 
 /**
  * The only attributes the stuck-import check may name or read (ADR 0005): the

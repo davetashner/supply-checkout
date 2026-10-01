@@ -39,15 +39,29 @@
 // soonest due first, and warns when it lists that many. It starts no new team
 // after half of PURGE_BUDGET_MS, so a slow Stripe can't starve the purge. A
 // team that fails is logged, left unrecorded for the next run, and fails the
-// run (the Functions failing alarm). A subscription Stripe doesn't have is
-// recorded as nothing to end, and counted (ClosedTeamSubscriptionsNotFound,
-// the "Closed-team subscription not found in Stripe" alarm): a Stripe key or
-// mode mismatch would look like that for every team. One that belongs to
-// another customer won't ever end here, so it's set aside for a person
-// (markSubscriptionSetAside, counted in ClosedTeamSubscriptionsSetAside, the
-// "Closed-team subscription set aside" alarm) and left out of later listings,
-// rather than failing every run and filling the listing ahead of newer
-// closures (supply-checkout-8jc.17). A subscription that renewed after its team closed
+// run (the Functions failing alarm). Three kinds of team are set aside for a
+// person instead (markSubscriptionSetAside, with the reason, counted in
+// ClosedTeamSubscriptionsSetAside) and left out of later listings, rather
+// than failing every run and filling the listing ahead of newer closures
+// (supply-checkout-8jc.17, supply-checkout-8jc.36):
+// - CustomerMismatch: the subscription belongs to another customer, so it
+//   won't ever end here.
+// - NotFound: Stripe doesn't have it, also counted
+//   (ClosedTeamSubscriptionsNotFound, the "Closed-team subscription not found
+//   in Stripe" alarm). Usually it went with its customer, but a Stripe key or
+//   mode mismatch looks like that for every team, so it isn't recorded as
+//   done: once the key is fixed, removing `stripeSetAsideFor` lists it again.
+// - PermanentError: Stripe refused it with an error retrying won't change
+//   (isPermanentStripeError: an invalid-request error about the object, never
+//   a key, mode, permission, rate-limit or connection error). A bug in our
+//   request would get that for every team, so a team is set aside for it only
+//   when the same run had Stripe accept the same request (the retrieve, the
+//   cancel_at_period_end update or the cancel) for another team; until then
+//   it fails the run like any other error and stays listed.
+// Every run then counts the teams set aside for their current closure, sends
+// the ClosedTeamsSetAside gauge (the "Closed-team subscription set aside"
+// alarm, on while it's above 0) and logs up to MAX_LOGGED_SET_ASIDE of them by
+// ID; a run that can't count them fails. A subscription that renewed after its team closed
 // (the team closed within an hour of a renewal) is logged as a warning and
 // counted (ClosedTeamRenewalsCharged, the "Closed team charged" alarm) for a
 // refund by hand. A team reopened while Stripe was being called is logged as
@@ -59,12 +73,24 @@
 // and name only TEAM_PURGE_ATTRIBUTES, and read only the Stripe secret key
 // (infra/lib/observability/ops-checks.ts).
 
-import { customerOf, deleteStripeCustomer, endSubscriptionForClosedTeam, type PurgeStripe } from "../billing/closing.js";
-import { stripeErrorFields } from "../billing/stripe.js";
-import { closedTeamToEnd, countTeamsDueBefore, type Db, listClosedTeamsToEnd, listTeamsToPurge, markSubscriptionEnding, markSubscriptionSetAside, purgeTeam } from "../data/index.js";
+import { type ClosingAction, closingAction, customerOf, deleteStripeCustomer, endSubscriptionForClosedTeam, type PurgeStripe } from "../billing/closing.js";
+import { isPermanentStripeError, stripeErrorFields } from "../billing/stripe.js";
+import {
+  type ClosedTeamToEnd,
+  closedTeamToEnd,
+  countTeamsDueBefore,
+  type Db,
+  listClosedTeamsToEnd,
+  listSetAsideTeams,
+  listTeamsToPurge,
+  markSubscriptionEnding,
+  markSubscriptionSetAside,
+  purgeTeam,
+  type SetAsideReason,
+} from "../data/index.js";
 import type { DeletionLog } from "../deletions/records.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
-import { CLOSED_TEAMS_TO_END_PER_RUN, PURGE_BUDGET_MS, PURGE_OVERDUE_AFTER_HOURS } from "./names.js";
+import { CLOSED_TEAMS_TO_END_PER_RUN, MAX_LOGGED_SET_ASIDE, PURGE_BUDGET_MS, PURGE_OVERDUE_AFTER_HOURS } from "./names.js";
 
 export interface TeamPurgeDeps {
   readonly db: Db;
@@ -84,6 +110,9 @@ function stripeFields(error: unknown): Record<string, string | number> {
   const fields = stripeErrorFields(error);
   return "type" in fields ? fields : {};
 }
+
+/** A request the purge makes of Stripe for a closed team's subscription. */
+type StripeRequest = "retrieve" | Exclude<ClosingAction, "none">;
 
 /** The share of the run's budget ending subscriptions may take before the purge starts. */
 const END_BUDGET_MS = PURGE_BUDGET_MS / 2;
@@ -105,12 +134,29 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
     let ended = 0;
     let failed = 0;
     let setAside = 0;
+    // Requests Stripe accepted this run, by kind: proof the key, the mode and that request work
+    const worked: Record<StripeRequest, number> = { retrieve: 0, cancel_at_period_end: 0, cancel_now: 0 };
+    // Teams Stripe refused with an error retrying won't change, and the request it refused: set
+    // aside below if the same request worked for another team
+    const refused: { team: ClosedTeamToEnd; error: unknown; request: StripeRequest }[] = [];
+    /** Sets the team aside for a person, counted. False, logged at info, if it was reopened (or closed again) meanwhile. */
+    const setTeamAside = async (team: ClosedTeamToEnd, reason: SetAsideReason): Promise<boolean> => {
+      if (!(await markSubscriptionSetAside(db, team, reason))) {
+        obs.logger.info("Closed team's subscription not set aside: the team was reopened meanwhile", { teamId: team.teamId, subscriptionId: team.stripeSubscriptionId, reason });
+        return false;
+      }
+      setAside++;
+      obs.count(BusinessMetric.ClosedTeamSubscriptionsSetAside, 1, { teamId: team.teamId, reason });
+      return true;
+    };
     for (const listed of teams) {
       if (now() - started > END_BUDGET_MS) break;
       const { teamId } = listed;
+      let team: ClosedTeamToEnd | undefined;
+      let request: StripeRequest = "retrieve";
       try {
         // The index may lag: the team as it is now, still closed, still not done
-        const team = await closedTeamToEnd(db, teamId);
+        team = await closedTeamToEnd(db, teamId);
         if (!team) continue;
         const stripe = await deps.stripe();
         const sub = await stripe.subscriptions.retrieve(team.stripeSubscriptionId).then(
@@ -121,25 +167,28 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
             throw error;
           },
         );
+        if (sub) worked.retrieve++;
         if (!sub) {
-          // Counted for its own alarm: a Stripe key or mode mismatch would record every closed team this way, none cancelled
-          if (await markSubscriptionEnding(db, team)) {
+          // Set aside, not recorded as done: a Stripe key or mode mismatch would look like this for every
+          // closed team, none cancelled, and once it's fixed a person lists them again. Counted for its own alarm
+          if (await setTeamAside(team, "NotFound")) {
             obs.count(BusinessMetric.ClosedTeamSubscriptionsNotFound, 1, { teamId });
             obs.logger.warn("Closed team's subscription not found in Stripe", { teamId, subscriptionId: team.stripeSubscriptionId });
           }
           continue;
         }
         if (customerOf(sub) !== team.stripeCustomerId) {
-          // Retrying won't change whose it is: set aside for a person (its own alarm), so it isn't
-          // listed again ahead of newer closures. Untouched in Stripe. A team reopened meanwhile isn't recorded
-          if (await markSubscriptionSetAside(db, team)) {
-            setAside++;
-            obs.count(BusinessMetric.ClosedTeamSubscriptionsSetAside, 1, { teamId });
+          // Retrying won't change whose it is: set aside for a person, so it isn't
+          // listed again ahead of newer closures. Untouched in Stripe
+          if (await setTeamAside(team, "CustomerMismatch")) {
             obs.logger.error("Closed team's subscription set aside", { teamId, subscriptionId: team.stripeSubscriptionId, error: "CustomerMismatch" });
           }
           continue;
         }
+        const planned = closingAction(sub);
+        if (planned !== "none") request = planned;
         const action = await endSubscriptionForClosedTeam(stripe, sub, team);
+        if (action !== "none") worked[action]++;
         // Charged for a period that began after the team closed: a person refunds it
         const periodStart = sub.items.data[0]?.current_period_start;
         if (sub.status === "active" && typeof periodStart === "number" && periodStart * 1000 > Date.parse(team.closedAt)) {
@@ -158,12 +207,48 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
         }
         obs.logger.info("Closed team's subscription ended", { teamId, subscriptionId: sub.id, status: sub.status, action });
       } catch (error) {
+        if (team && isPermanentStripeError(error)) {
+          refused.push({ team, error, request });
+          continue;
+        }
         failed++;
         obs.logger.error("Closed team's subscription not ended", { teamId, error: errorName(error), ...stripeFields(error) });
       }
     }
+    for (const { team, error, request } of refused) {
+      const { teamId } = team;
+      // Only once Stripe took the same request for another team this run: a bad key, the wrong mode
+      // or a bug in that request would refuse every team, and those stay listed and fail the run instead
+      const vouched = worked[request] > 0;
+      try {
+        if (vouched && (await setTeamAside(team, "PermanentError"))) {
+          obs.logger.error("Closed team's subscription set aside", { teamId, subscriptionId: team.stripeSubscriptionId, error: "PermanentError", request, ...stripeFields(error) });
+        } else if (!vouched) {
+          failed++;
+          obs.logger.error("Closed team's subscription not ended", { teamId, error: errorName(error), request, ...stripeFields(error) });
+        }
+      } catch (markError) {
+        failed++;
+        obs.logger.error("Closed team's subscription not ended", { teamId, error: errorName(markError), request, ...stripeFields(error) });
+      }
+    }
     obs.logger.info("Ended closed teams' subscriptions", { listed: teams.length, ended, failed, setAside });
     return failed;
+  }
+
+  /** Sends the ClosedTeamsSetAside gauge and logs the first of them by ID. Returns 1 if they couldn't be counted, else 0. */
+  async function gaugeSetAside(): Promise<number> {
+    let found;
+    try {
+      found = await listSetAsideTeams(db, MAX_LOGGED_SET_ASIDE);
+    } catch (error) {
+      obs.logger.error("Closed teams set aside not counted", { error: errorName(error) });
+      return 1;
+    }
+    obs.gauge(BusinessMetric.ClosedTeamsSetAside, found.count);
+    for (const team of found.teams) obs.logger.warn("Closed team's subscription still set aside", { teamId: team.teamId, reason: team.reason ?? "Unknown" });
+    if (found.count) obs.logger.warn("Closed teams' subscriptions set aside", { count: found.count, logged: found.teams.length });
+    return 0;
   }
 
   /** Deletes a purged team's Stripe customer, before any of its items go. */
@@ -175,7 +260,7 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
 
   return async (): Promise<{ purged: number; failed: number; due: number; overdue: number }> => {
     const started = now();
-    const endFailures = await endSubscriptions(started);
+    const endFailures = (await endSubscriptions(started)) + (await gaugeSetAside());
     const overdueBefore = new Date(started - PURGE_OVERDUE_AFTER_HOURS * 3_600_000).toISOString();
     // Counted before the listing, from the same index: every overdue team is also due, and they list first
     const overdueAtStart = await countTeamsDueBefore(db, new Date(overdueBefore));

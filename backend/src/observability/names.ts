@@ -94,6 +94,8 @@ export const BusinessMetric = {
   SeatReconcileTeams: "SeatReconcileTeams",
   /** Gauge: closed teams still not deleted more than a day after their deletion date, from the hourly purge (J11). */
   ClosedTeamsOverdue: "ClosedTeamsOverdue",
+  /** Gauge: closed teams whose subscription the purge set aside for a person for their current closure, from every hourly purge run, so the alarm stays on until each is dealt with (supply-checkout-8jc.36, J7, J11). */
+  ClosedTeamsSetAside: "ClosedTeamsSetAside",
   /** Teams an owner closed (or that closed with their only member's account). */
   TeamsClosed: "TeamsClosed",
   /** Owners emailed that their team closed, with the day it'll be deleted. */
@@ -122,7 +124,7 @@ export const BusinessMetric = {
   ClosedTeamRenewalsCharged: "ClosedTeamRenewalsCharged",
   /** Closed teams whose subscription Stripe doesn't have, found by the purge and recorded as nothing to end. Any at all may be a Stripe key or mode mismatch, under which every closed team would be recorded this way with none cancelled (supply-checkout-8jc.17, J7, J11). */
   ClosedTeamSubscriptionsNotFound: "ClosedTeamSubscriptionsNotFound",
-  /** Closed teams' subscriptions the purge won't end and won't retry (another customer's subscription): set aside for a person, so they don't crowd newer closures out of the purge's listing (supply-checkout-8jc.17, J7, J11). */
+  /** Closed teams' subscriptions the purge won't end and won't retry (another customer's subscription, not found in Stripe, or an error retrying won't change), as it sets each aside for a person, so they don't crowd newer closures out of the purge's listing (supply-checkout-8jc.17, J7, J11). The alarm reads the ClosedTeamsSetAside gauge. */
   ClosedTeamSubscriptionsSetAside: "ClosedTeamSubscriptionsSetAside",
   /** Purged teams' Stripe customers deleted (their name, email, address and cards). */
   StripeCustomersDeleted: "StripeCustomersDeleted",
