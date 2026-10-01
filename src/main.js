@@ -621,7 +621,8 @@ function productModal(key) {
       opt("#fStock", "stock", int);
       opt("#fCost", "cost", v => Math.max(0, round2(v)));
       opt("#fPack", "packSize", packInput);
-      saving(form, () => closing(write(() => saveItem(db, action, docKey, body, { reason: "count", count: body.stock }), "Saved")));
+      // `counted`: the form showed a count when it opened, so a blank one means stop counting
+      saving(form, () => closing(write(() => saveItem(db, action, docKey, body, { reason: "count", count: body.stock, counted: !!hasStock(p) }), "Saved")));
     });
   });
 }

@@ -139,8 +139,8 @@ export async function addLines(db, action, sheetId, items) {
 // storage) and a receipt's general-inventory lines (stock bought in). body is the whole item,
 // with its new stock, which the artifact saves as it is. The web build's db saves the item
 // without stock (the server keeps what's stored) and sends the change as the stock command,
-// which records why stock changed (docs/api/commands.md). change: { reason: "count", count } (count undefined: not
-// counted), or { reason: "receipt", lines: [{ action, quantity, unitCost }] }, one per receipt
+// which records why stock changed (docs/api/commands.md). change: { reason: "count", count, counted } (count undefined: not
+// counted; counted: the form showed a count when it opened, so a blank one stops counting), or { reason: "receipt", lines: [{ action, quantity, unitCost }] }, one per receipt
 // line, each line its own action. (`||`, not a condition: the artifact runs the right side.)
 // WEB: the artifact build keeps only the right side, since claude.ai's db has no saveItem.
 export const saveItem = (db, action, key, body, change) =>

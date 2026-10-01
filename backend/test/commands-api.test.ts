@@ -389,6 +389,45 @@ describe("stock adjust", () => {
 
   it("needs the item to exist", async () => {
     expect((await call("POST", "/teams/team-a/products/nope/stock", { operationId: op(), reason: "count", count: 1 })).status).toBe(404);
+    expect((await call("POST", "/teams/team-a/products/nope/stock", { operationId: op(), reason: "uncount" })).status).toBe(404);
+  });
+
+  it("stops counting an item, recording the count it had as the change, once per operation", async () => {
+    const id = op();
+    const res = await call("POST", "/teams/team-a/products/0123/stock", { operationId: id, reason: "uncount" });
+    expect(res).toMatchObject({ status: 200, body: { replayed: false, result: { command: "stockAdjust", reason: "uncount", productKey: "0123", stockDelta: -10 } } });
+    expect(res.body.result).not.toHaveProperty("count");
+    expect(res.body.product).toMatchObject({ version: 4, data: { code: "0123", name: "Nitrile gloves", price: 12.5, cost: 9.99 } });
+    expect(res.body.product.data).not.toHaveProperty("stock");
+    expect(table.get("TEAM#team-a", "PRODUCT#0123")).not.toHaveProperty("stock");
+    expect(movements()).toEqual([expect.objectContaining({ reason: "uncount", delta: -10, tracked: true, productKey: "0123", operationId: id })]);
+    expect(movements()[0]).not.toHaveProperty("count");
+    // A retry replays the first result and changes nothing
+    const again = await call("POST", "/teams/team-a/products/0123/stock", { operationId: id, reason: "uncount" });
+    expect(again.body).toMatchObject({ replayed: true, result: res.body.result, product: { version: 4 } });
+    expect(movements()).toHaveLength(1);
+    // The same ID for a count is another request
+    expect((await call("POST", "/teams/team-a/products/0123/stock", { operationId: id, reason: "count", count: 1 })).status).toBe(400);
+    // Counted again, it starts from 0, so its movements still add up to its stock
+    expect((await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "count", count: 4 })).body.result.stockDelta).toBe(4);
+    expect(10 + movements().reduce((sum, m) => sum + (m.delta as number), 0)).toBe(stock());
+  });
+
+  it("leaves an item that isn't counted as it is when told to stop counting it, with a movement that changed nothing", async () => {
+    seed({ product: { code: "0123", name: "Nitrile gloves", price: 12.5 } });
+    const res = await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "uncount" });
+    expect(res).toMatchObject({ status: 200, body: { result: { reason: "uncount", stockDelta: 0 }, product: { version: 3 } } });
+    expect(stock()).toBeUndefined();
+    expect(movements()).toEqual([expect.objectContaining({ reason: "uncount", delta: 0, tracked: false })]);
+  });
+
+  it("refuses to stop counting an item whose stored stock isn't a number", async () => {
+    seed({ product: { ...gloves, stock: "10" } });
+    expect(await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "uncount" })).toMatchObject({
+      status: 400,
+      body: { error: { code: "bad_request", message: "This item's stock isn't a number" } },
+    });
+    expect(movements()).toEqual([]);
   });
 });
 
@@ -426,6 +465,7 @@ describe("edits after a command", () => {
       ["/teams/team-a/sheets/s1/return", { productKey: "0123", quantity: 1 }],
       ["/teams/team-a/products/0123/stock", { reason: "count", count: 3 }],
       ["/teams/team-a/products/0123/stock", { reason: "receipt", quantity: 1, unitCost: 1 }],
+      ["/teams/team-a/products/0123/stock", { reason: "uncount" }],
     ] as const) {
       expect(await call("POST", path, { operationId: op(), ...body })).toMatchObject({ status: 400, body: { error: { code: "bad_request", message: "This item's version isn't a number" } } });
     }
@@ -576,6 +616,11 @@ describe("validation and roles", () => {
     ["a receipt cost with three decimals", { operationId: op(), reason: "receipt", quantity: 1, unitCost: 0.425 }],
     ["a negative count", { operationId: op(), reason: "count", count: -1 }],
     ["a count with a quantity", { operationId: op(), reason: "count", count: 1, quantity: 1 }],
+    ["an uncount with a count", { operationId: op(), reason: "uncount", count: 0 }],
+    ["an uncount with a quantity", { operationId: op(), reason: "uncount", quantity: 1 }],
+    ["an uncount with a unit cost", { operationId: op(), reason: "uncount", unitCost: 1 }],
+    ["an uncount with a null count", { operationId: op(), reason: "uncount", count: null }],
+    ["a reason in another case", { operationId: op(), reason: "Uncount" }],
   ])("refuses a stock adjustment with %s", async (_, body) => {
     expect((await call("POST", "/teams/team-a/products/0123/stock", body)).body.error.code).toBe("bad_request");
   });
@@ -595,6 +640,7 @@ describe("validation and roles", () => {
       ["/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 }],
       ["/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "0123", quantity: 1 }],
       ["/teams/team-a/products/0123/stock", { operationId: op(), reason: "count", count: 1 }],
+      ["/teams/team-a/products/0123/stock", { operationId: op(), reason: "uncount" }],
     ] as const) {
       expect(await call("POST", path, body, VIEWER)).toMatchObject({ status: 403, body: { error: { code: "permission_denied", reason: "view_only" } } });
     }
@@ -612,6 +658,8 @@ describe("validation and roles", () => {
     await call("POST", "/teams/team-a/sheets/s1/checkout", { operationId: op(), productKey: "0123", quantity: 1 });
     await call("POST", "/teams/team-a/sheets/s1/return", { operationId: op(), productKey: "0123", quantity: 1 });
     await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "count", count: 1 });
+    await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "uncount" });
+    expect(await call("POST", "/teams/team-a/products/0123/stock", { operationId: op(), reason: "uncount" }, OUTSIDER)).toMatchObject({ status: 403 });
     await call("GET", "/teams/team-a/products/0123/movements");
     expect(table.calls.map((c) => c.command)).toContain("TransactWriteCommand");
     expect(new Set(table.calls.flatMap((c) => c.partitions))).toEqual(new Set(["TEAM#team-a"]));
@@ -628,6 +676,8 @@ describe("stock history", () => {
       ["/teams/team-a/products/0123/stock", { reason: "receipt", quantity: 12, unitCost: 0.5 }],
       ["/teams/team-a/sheets/s1/checkout", { productKey: "0123", quantity: 2 }],
       ["/teams/team-a/products/0123/stock", { reason: "count", count: 15 }],
+      ["/teams/team-a/products/0123/stock", { reason: "uncount" }],
+      ["/teams/team-a/products/0123/stock", { reason: "count", count: 6 }],
       ["/teams/team-a/products/0123%23x/stock", { reason: "receipt", quantity: 1, unitCost: 1 }],
     ];
     for (const [path, body] of steps) {
@@ -641,9 +691,11 @@ describe("stock history", () => {
     const rest = await call("GET", "/teams/team-a/products/0123/movements", undefined, VIEWER, { cursor: first.body.cursor });
     const all = [...first.body.movements, ...rest.body.movements];
     expect(rest.body.cursor).toBeUndefined();
-    expect(all).toHaveLength(5);
+    expect(all).toHaveLength(7);
     expect(all.every((m: { productKey: string }) => m.productKey === "0123")).toBe(true);
-    expect(all.map((m: { reason: string }) => m.reason)).toEqual(["count", "checkout", "receipt", "return", "checkout"]);
+    expect(all.map((m: { reason: string }) => m.reason)).toEqual(["count", "uncount", "count", "checkout", "receipt", "return", "checkout"]);
+    // Across an uncount and a new count too
+    expect(stock()).toBe(6);
     expect(all.reduce((sum: number, m: { delta: number }) => sum + m.delta, 0)).toBe((stock() as number) - 10);
     expect(all[0]).not.toHaveProperty("PK");
 

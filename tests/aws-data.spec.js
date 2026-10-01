@@ -1070,13 +1070,86 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     expect(backend.requests("POST", STOCK)).toHaveLength(1);
   });
 
-  test("clearing the count of a counted item leaves its stock as it is", async ({ page }) => {
+  test("clearing the count of a counted item stops counting it, with an uncount command", async ({ page }) => {
     const backend = await open(page);
     await editStock(page, "");
     await expect(toast(page)).toHaveText("Saved");
     expect(backend.requests("PUT", "/teams/t1/products/SKU1")).toEqual([]);
+    expect(backend.requests("POST", STOCK).map((r) => r.body)).toEqual([{ operationId: expect.stringMatching(/^[0-9a-f-]{36}$/), reason: "uncount" }]);
+    expect(backend.doc("t1", "products", "SKU1").version).toBe(2);
+    expect(backend.doc("t1", "products", "SKU1").data).not.toHaveProperty("stock");
+    expect([...backend.operations.values()][0].result).toMatchObject({ reason: "uncount", stockDelta: -10 });
+    await expect(stockCell(page, "Paper towels")).toHaveText("—");
+    // Opened again, the form shows it isn't counted
+    await page.getByRole("button", { name: "Inventory" }).click();
+    await inventoryRow(page, "Paper towels").click();
+    await expect(modal(page).getByLabel("Single items in storage now")).toHaveValue("");
+  });
+
+  test("saving again after an uncount's answer was lost stops counting once, without a conflict", async ({ page }) => {
+    const backend = await open(page);
+    backend.on("POST", STOCK, { lost: true });
+    await page.getByRole("button", { name: "Inventory" }).click();
+    await inventoryRow(page, "Paper towels").click();
+    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByLabel("Single items in storage now").fill("");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
+    await hideToast(page);
+    await modal(page).getByRole("button", { name: "Try again" }).click();
+    await expect(toast(page)).toHaveText("Saved");
+    expect(backend.requests("PUT", "/teams/t1/products/SKU1")).toHaveLength(1);
+    const [lost, again] = backend.requests("POST", STOCK).map((r) => r.body);
+    expect(again).toEqual(lost);
+    expect(backend.operations.size).toBe(1);
+    expect(backend.doc("t1", "products", "SKU1")).toMatchObject({ version: 3, data: { price: 9 } });
+    expect(backend.doc("t1", "products", "SKU1").data).not.toHaveProperty("stock");
+  });
+
+  test("a blank count on an item that isn't counted sends no stock command", async ({ page }) => {
+    const docs = seeded();
+    docs["t1/products/SKU1"] = { ...docs["t1/products/SKU1"], stock: undefined };
+    const backend = await open(page, new FakeBackend({ docs }));
+    await editStock(page, "");
+    await expect(toast(page)).toHaveText("Saved");
     expect(backend.requests("POST", STOCK)).toEqual([]);
-    await expect(stockCell(page, "Paper towels")).toHaveText("10");
+  });
+
+  test("a price edit to an item someone counted while the form was open leaves their count alone", async ({ page }) => {
+    const docs = seeded();
+    docs["t1/products/SKU1"] = { ...docs["t1/products/SKU1"], stock: undefined };
+    const backend = await open(page, new FakeBackend({ docs }));
+    await page.getByRole("button", { name: "Inventory" }).click();
+    await inventoryRow(page, "Paper towels").click();
+    await expect(modal(page).getByLabel("Single items in storage now")).toHaveValue("");
+    // Someone else counts it at 50, and the live update arrives while the form is open
+    const item = { ...docs["t1/products/SKU1"] }; delete item.stock;
+    const version = backend.write("t1", "products", "SKU1", { ...item, stock: 50 });
+    await page.evaluate((e) => window.__sockets.at(-1).event(e), { v: 1, teamId: "t1", collection: "products", id: "SKU1", op: "put", version });
+    await expect.poll(() => backend.requests("GET", "/teams/t1/products/SKU1").length).toBe(1);
+    await expect(stockCell(page, "Paper towels")).toHaveText("50");
+    // This form showed no count, so its blank count isn't a request to stop counting
+    await modal(page).getByLabel("Price each ($)").fill("9");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(toast(page)).toHaveText("Saved");
+    expect(backend.requests("POST", STOCK)).toEqual([]);
+    expect(backend.doc("t1", "products", "SKU1").data).toMatchObject({ price: 9, stock: 50 });
+    await expect(stockCell(page, "Paper towels")).toHaveText("50");
+  });
+
+  test("clearing a count someone else already stopped while the form was open sends nothing", async ({ page }) => {
+    const backend = await open(page);
+    await page.getByRole("button", { name: "Inventory" }).click();
+    await inventoryRow(page, "Paper towels").click();
+    await expect(modal(page).getByLabel("Single items in storage now")).toHaveValue("10");
+    const item = { ...backend.doc("t1", "products", "SKU1").data }; delete item.stock;
+    const version = backend.write("t1", "products", "SKU1", item);
+    await page.evaluate((e) => window.__sockets.at(-1).event(e), { v: 1, teamId: "t1", collection: "products", id: "SKU1", op: "put", version });
+    await expect(stockCell(page, "Paper towels")).toHaveText("—");
+    await modal(page).getByLabel("Single items in storage now").fill("");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(toast(page)).toHaveText("Saved");
+    expect(backend.requests("POST", STOCK)).toEqual([]);
   });
 
   test("counting an item that wasn't counted starts its stock", async ({ page }) => {
