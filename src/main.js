@@ -1,9 +1,9 @@
 import "./theme.js";
 import { use, help } from "./runtime.js";
 import { WEB } from "./build.js";
-import { checkOut, recordReturn, saveItem, addLines, markOf } from "./moves.js";
+import { checkOut, recordReturn, markLost, saveItem, addLines, markOf } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, isEquipment, newKey, uid, round2, numOrNull, MAX_MONEY } from "./format.js";
-import { lines, lineCharge, totals, isEquipmentLine, equipmentCounts } from "./sheet-math.js";
+import { lines, lineCharge, totals, isEquipmentLine, equipmentCounts, lostRows } from "./sheet-math.js";
 import { $, toast, openModal, closeModal, dismiss, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
 import { shrinkPhoto } from "./photo.js";
@@ -54,6 +54,9 @@ async function write(fn, okMsg, sheetId) {
     else if (e && e.code === "quota_exceeded") toast("Storage is full. Delete old sheets or items to make room.");
     // Someone else saved this first (the web build's versioned writes, ADR 0006). Close the
     // editor so the latest values show, rather than an edit made on the old ones.
+    // Finished Return on a sheet with equipment out that this page didn't know about (someone
+    // took more meanwhile): the server refuses to close it (ADR 0017, docs/api/commands.md)
+    else if (WEB && e && e.reason === "equipment_out") { closeModal(); toast("Equipment is still out on this sheet, so it wasn't finished. Tap Finished Return again to say where each piece is."); }
     else if (e && e.code === "aborted") { closeModal(); toast("Someone else changed this just now, so your change wasn't saved. The latest is showing; make your change again if it's still needed."); }
     // Refused for what's saved now, such as returning more than are left (the web build's
     // checkout and return commands, src/aws/db.js): the message says why. The latest is showing.
@@ -286,7 +289,7 @@ function equipmentHTML(eq) {
 }
 
 function drawSheet(s) {
-  const closed = s.status === "closed", t = totals(s), all = lines(s);
+  const closed = s.status === "closed", t = totals(s), all = lines(s), lost = lostRows(s);
   const ls = all.filter(l => !isEquipmentLine(l)), eq = all.filter(isEquipmentLine);
   morph($("#sheetHead"), `
     <div class="sheet-head">
@@ -314,7 +317,7 @@ function drawSheet(s) {
       <div><div class="k">Used</div><div class="v">${t.used}</div></div>
       <div><div class="k">Charge</div><div class="v charge">${money(t.charge)}</div></div>
     </div>
-    ${ls.length ? `
+    ${ls.length || lost.length ? `
     <div class="table-wrap"><table>
       <thead><tr><th>Item</th><th>Price</th><th>Taken</th><th>Returned</th><th>Used</th><th>Charge</th></tr></thead>
       <tbody>${ls.map(l => { const o = int(l.out), r = Math.min(int(l.returned), o), u = o - r; return `
@@ -322,7 +325,8 @@ function drawSheet(s) {
           ${itemCell(l)}
           <td>${money(l.price)}</td><td>${o}</td><td>${r}</td>
           <td>${u}</td><td class="charge">${money(lineCharge(l))}</td>
-        </tr>`; }).join("")}</tbody>
+        </tr>`; }).join("")}${lost.map(r => `
+        <tr ${rowAttrs(r)}>${itemCell(r)}<td></td><td></td><td></td><td>${r.used}</td><td class="charge">${money(r.charge)}</td></tr>`).join("")}</tbody>
       <tfoot><tr><td>Total</td><td></td><td>${t.out}</td><td>${t.ret}</td><td>${t.used}</td><td>${money(t.charge)}</td></tr></tfoot>
     </table></div>` : eq.length ? "" : `<div class="empty">No supplies on this sheet yet. Scan a barcode to check one out.</div>`}
     ${equipmentHTML(eq)}
@@ -340,12 +344,76 @@ async function once(id, fn) {
   pending = null; draw();
 }
 
+const finish = id => write(() => db.doc("sheets/" + id).update({ status: "closed", closedAt: new Date().toISOString() }), "Return finished", id);
+
+// Before you finish: for each piece of equipment still out, how many are back, how many were
+// lost or broken (with what to charge the client for them, if anything), and the rest are still
+// at the job. Backs are returns and losses are the lost command (src/moves.js), each its own
+// action per line, so Try again after a failure saves each once. The sheet closes only when
+// nothing is left out; otherwise it stays open, and the next Finished Return asks again.
+function finishModal(s, out) {
+  const acts = out.map(() => ({ back: {}, lost: {} }));
+  openModal(`
+    <h2>Before you finish</h2>
+    <p class="hint" style="margin-top:-6px">Some company equipment is still out. For each piece, say how many are back and how many were lost or broken; the rest stay out, still at the job, and the sheet stays open.</p>
+    <form id="f" style="display:grid;gap:14px">
+      ${out.map((l, i) => { const still = equipmentCounts(l).still; return `
+      <fieldset class="field finish" data-i="${i}"><legend>${esc(l.name || "Unnamed item")} · ${still} still out</legend>
+        <div class="row2">
+          <div class="field"><label for="fBack${i}">It's back</label>${stepperHTML(`fBack${i}`, 0, still)}</div>
+          <div class="field"><label for="fLost${i}">Lost or broken</label>${stepperHTML(`fLost${i}`, 0, still)}</div>
+        </div>
+        <p class="hint" data-left aria-live="polite">Still at the job: ${still}</p>
+        <div class="field" data-charge hidden><label for="fCharge${i}">Charge the client for what was lost or broken ($, optional)</label>
+          <input type="number" id="fCharge${i}" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money placeholder="Leave blank to not charge">
+          <p class="hint">${hasCost(l) ? `Worth ${money(l.cost)} each.` : "Its value isn't known."} The amount is for all of them, not each.</p></div>
+      </fieldset>`; }).join("")}
+      <div class="modal-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div>
+    </form>`, m => {
+    m.querySelector("#cancel").addEventListener("click", closeModal);
+    const counts = out.map((l, i) => {
+      const box = m.querySelector(`[data-i="${i}"]`), still = equipmentCounts(l).still;
+      const paint = () => {
+        const back = int(box.querySelector(`#fBack${i}`).value), lost = int(box.querySelector(`#fLost${i}`).value);
+        setText(box.querySelector("[data-left]"), back + lost > still ? `That's more than the ${still} still out.` : `Still at the job: ${still - back - lost}`);
+        box.querySelector("[data-charge]").hidden = !lost;
+      };
+      // Each stepper wired within its own box, since the form has several
+      const stepper = id => wireStepper(box.querySelector("#" + id).closest(".stepper"), id, paint);
+      return { back: stepper(`fBack${i}`), lost: stepper(`fLost${i}`), still };
+    });
+    const form = m.querySelector("#f");
+    onSubmit(form, () => {
+      const plans = out.map((l, i) => {
+        const raw = m.querySelector(`#fCharge${i}`).value.trim();
+        return { l, back: counts[i].back(), lost: counts[i].lost(), still: counts[i].still, charge: raw === "" ? undefined : Math.max(0, round2(raw)), act: acts[i] };
+      });
+      const over = plans.find(p => p.back + p.lost > p.still);
+      if (over) { toast(`That's more ${over.l.name || "of that item"} than are still out.`); return; }
+      const left = plans.reduce((a, p) => a + p.still - p.back - p.lost, 0);
+      saving(form, async () => {
+        for (const p of plans) {
+          if (p.back && !(await write(() => recordReturn(db, p.act.back, s.id, p.l.key, p.back), undefined, s.id))) return false;
+          if (p.lost && !(await write(() => markLost(db, p.act.lost, s.id, p.l.key, p.lost, p.charge), undefined, s.id))) return false;
+        }
+        if (left) { closeModal(); toast(`Saved. ${left} still at the job, so the sheet stays open.`); return true; }
+        return closing(finish(s.id));
+      });
+    });
+  });
+}
+
 // The sheet view is redrawn on every snapshot, with morph() like #main. Its events are
 // delegated here, and each looks up the sheet when it runs, so it acts on the latest copy.
 const sheetAction = {
   exportCsv: () => exportCsv(currentSheet()),
   editSheet: () => newSheetModal(currentSheet()),
-  closeSheet: () => once("closeSheet", () => write(() => db.doc("sheets/" + ui.sheetId).update({ status: "closed", closedAt: new Date().toISOString() }), "Return finished", ui.sheetId)),
+  // Company equipment still out stops it until each piece is accounted for (ADR 0017, section 3)
+  closeSheet: () => {
+    const s = currentSheet(), out = lines(s).filter(l => isEquipmentLine(l) && equipmentCounts(l).still > 0);
+    if (out.length) finishModal(s, out);
+    else once("closeSheet", () => finish(s.id));
+  },
   reopen: () => once("reopen", () => write(() => db.doc("sheets/" + ui.sheetId).update({ status: "open" }), "Sheet reopened", ui.sheetId)),
   delSheet: b => arm(b, "Tap again to delete", () => once("delSheet", async () => {
     const id = ui.sheetId;

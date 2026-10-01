@@ -24,12 +24,26 @@ export function equipmentCounts(l) {
 // What the client is charged for a supply's line: used × price each, in whole cents. Equipment
 // on loan isn't charged, so it's never asked for one (totals and the CSVs leave it out).
 export const lineCharge = l => { const { u, p } = lineCounts(l); return cents(u * p) / 100; };
+// Equipment lost or broken that the client is charged for (ADR 0017, section 3): a row of its
+// own with the supplies, "<name> (lost or broken)", with how many in Used and the amount (for the
+// lot, not each) in Charge, in the sheet's total and its CSV. Lost without a charge isn't one.
+export const lostCharge = l => isEquipmentLine(l) ? cents(Math.max(0, Number(l.lostCharge) || 0)) / 100 : 0;
+export function lostRows(sheet) {
+  return lines(sheet).filter(l => lostCharge(l) > 0)
+    .map(l => ({ key: l.key, name: `${l.name || "Unnamed item"} (lost or broken)`, code: l.code, used: equipmentCounts(l).lost, charge: lostCharge(l) }));
+}
 // Totals add the rounded row charges, so the total always equals the sum of the rows. They count
-// supplies only (and lines bought for the client); equipment on loan is apart, as `equipmentOut`.
+// supplies (and lines bought for the client) and charges for equipment lost or broken; equipment
+// on loan is apart, as `equipmentOut`.
 export function totals(sheet) {
   let out = 0, ret = 0, used = 0, charge = 0, value = 0, count = 0, equipmentOut = 0;
   for (const l of lines(sheet)) {
-    if (isEquipmentLine(l)) { equipmentOut += equipmentCounts(l).still; continue; }
+    if (isEquipmentLine(l)) {
+      const c = equipmentCounts(l), lc = lostCharge(l);
+      equipmentOut += c.still;
+      if (lc > 0) { used += c.lost; charge += cents(lc); }
+      continue;
+    }
     const { o, r, u, p } = lineCounts(l);
     out += o; ret += r; used += u; charge += cents(u * p); value += cents(o * p); count++;
   }

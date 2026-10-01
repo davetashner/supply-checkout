@@ -17,7 +17,7 @@
 // Each resolves, once the sheet and the storage count have saved, to { quantity, line }: for a
 // return, how many came back and the line as it is now.
 import { WEB } from "./build.js";
-import { int, own, uid, hasStock } from "./format.js";
+import { int, own, uid, hasStock, round2 } from "./format.js";
 
 // claude.ai's db has no transactions or conditional writes, so the artifact build makes each
 // action's write detectable instead: it saves a mark for the action (a random ID) in the same
@@ -43,7 +43,8 @@ function attempt(action, fn) {
 // plan(cur): what the artifact writes, from the line as it's saved now (cur, undefined if there's
 // none), so the quantity is added to the latest line even if this page hasn't heard of someone
 // else's change yet: { patch, delta } (the line's change and the storage count's), and for a
-// return what it resolves to. partial: a return, which changes part of the line.
+// return what it resolves to. partial: what a change to part of the line is called (a return),
+// which doesn't make a line someone else removed again; false for a checkout.
 async function move(db, action, command, sheetId, body, partial, plan) {
   // WEB: the artifact build leaves this path out, since claude.ai's db has no commands (src/build.js)
   if (WEB && db.command) return db.command(command, sheetId, body, action);
@@ -58,7 +59,7 @@ async function move(db, action, command, sheetId, body, partial, plan) {
     // Saved already: what's left is what that attempt left to do, its storage count
     if (!marked(cur, mark)) {
       // A return changes part of the line, so it doesn't make a line someone else removed again
-      if (!cur && partial) throw { code: "refused", message: "Someone else removed this item from the sheet, so the return wasn't saved." };
+      if (!cur && partial) throw { code: "refused", message: `Someone else removed this item from the sheet, so the ${partial} wasn't saved.` };
       const local = plan(cur);
       saved.set(action, local);
       await ref.update({ items: { [key]: { ...local.patch, ops: remember(cur, mark) } } });
@@ -91,11 +92,23 @@ export const checkOut = (db, action, sheetId, key, qty, item, oneOff) =>
 // than are left. The artifact writes the line's new returned count, added to the line as it's
 // saved now, in case someone else recorded a return meanwhile.
 export const recordReturn = (db, action, sheetId, key, r) =>
-  move(db, action, "return", sheetId, { productKey: key, quantity: r }, true, cur => {
+  move(db, action, "return", sheetId, { productKey: key, quantity: r }, "return", cur => {
     // Never past what's neither back nor lost (company equipment lost or broken, ADR 0017)
     const out = int(cur.out), before = Math.min(int(cur.returned), out), back = Math.max(before, Math.min(out - int(cur.lost), before + r));
     return { patch: { returned: back }, delta: back - before, quantity: back - before, line: { out, returned: back } };
   });
+// Company equipment lost or broken on the job (ADR 0017, section 3): q of the line's pieces
+// still out, and what the client is charged for them (charge, dollars for the lot; undefined:
+// nothing). Stock doesn't move: it went down when they were taken. The web build's db sends
+// the lost command; the artifact writes the line's lost and lostCharge, added to the line as
+// it's saved now, never past what's still out, with the action's mark (see move above).
+export const markLost = (db, action, sheetId, key, q, charge) =>
+  move(db, action, "lost", sheetId, { productKey: key, quantity: q, ...(charge === undefined ? {} : { charge }) }, "change", cur => {
+    const out = int(cur.out), back = Math.min(int(cur.returned), out), before = Math.min(int(cur.lost), out - back);
+    const lost = Math.min(out - back, before + q);
+    return { patch: { lost, ...(charge === undefined ? {} : { lostCharge: round2((Number(cur.lostCharge) || 0) + charge) }) }, delta: 0, quantity: lost - before };
+  });
+
 // A receipt's lines for a client, added to a sheet that already exists (saveReceipt in
 // src/main.js). items: { [key]: line }, each as a new line would be ({ code, name, price, cost
 // each from the receipt, out: how many were bought, returned: 0 }). A line already on the sheet keeps its name, price

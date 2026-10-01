@@ -289,7 +289,7 @@ export class FakeBackend {
     m = path.match(/^\/teams\/([^/]+)\/invites(?:\/([^/]+)(\/resend)?)?$/);
     if (m) return this.teamInvite(decodeURIComponent(m[1]), m[2] && decodeURIComponent(m[2]), !!m[3], method, call.body, err);
 
-    m = path.match(/^\/teams\/([^/]+)\/sheets\/([^/]+)\/(checkout|return)$/);
+    m = path.match(/^\/teams\/([^/]+)\/sheets\/([^/]+)\/(checkout|return|lost)$/);
     if (m && method === "POST") return this.command(decodeURIComponent(m[1]), decodeURIComponent(m[2]), m[3], call.body);
 
     m = path.match(/^\/teams\/([^/]+)\/sheets\/([^/]+)\/lines$/);
@@ -330,6 +330,11 @@ export class FakeBackend {
     const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
     const badCost = coll === "sheets" && Object.values(data.items || {}).some((l) => l && typeof l === "object" && "cost" in l && !cents(l.cost));
     if (badCost) return err(400, "bad_request");
+    // No sheet closes while company equipment is still out on it (ADR 0017, documents.ts)
+    const stillOut = (l) => l && l.kind === "equipment" && (l.out || 0) - (l.returned || 0) - (l.lost || 0) > 0;
+    if (coll === "sheets" && data.status === "closed" && cur?.data.status !== "closed" && Object.values(data.items || {}).some(stillOut)) {
+      return [409, { error: { code: "aborted", message: "Equipment is still out on this sheet", reason: "equipment_out" } }];
+    }
     this.write(team, coll, id, data);
     return [200, out()];
   }
@@ -479,8 +484,17 @@ export class FakeBackend {
         items[key] = { code: from.code ?? "", name: from.name ?? "", ...(equipment ? { kind: "equipment" } : { price: from.price ?? 0 }), ...(from.cost === undefined ? {} : { cost: from.cost }), out: qty, returned: 0, ...(equipment ? taken : {}) };
       }
       delta = -qty;
+    } else if (name === "lost") {
+      // Company equipment lost or broken (ADR 0017): no stock moves, and a charge adds up on the line
+      if (!line || line.kind !== "equipment") return err(400, "bad_request", "Only company equipment is recorded as lost or broken");
+      const left = line.out - (line.returned || 0) - (line.lost || 0);
+      if (qty > left) return err(400, "bad_request", `Only ${left} of this item ${left === 1 ? "is" : "are"} still out`);
+      line.lost = (line.lost || 0) + qty;
+      if (body.charge !== undefined) line.lostCharge = Math.round(((line.lostCharge || 0) + body.charge) * 100) / 100;
+      delta = 0;
     } else {
       if (!line) return err(400, "bad_request", "This item isn't on this sheet");
+      if (line.purchased) return err(400, "bad_request", "This was bought for the client, so it doesn't come back");
       const left = line.out - (line.returned || 0) - (line.lost || 0);
       if (qty > left) return err(400, "bad_request", `Only ${left} of this item ${left === 1 ? "is" : "are"} left to return`);
       line.returned = (line.returned || 0) + qty;
@@ -488,7 +502,7 @@ export class FakeBackend {
     }
     sheet.version++;
     const tracked = !!product && typeof product.data.stock === "number";
-    if (tracked) { product.data.stock += delta; product.version++; }
+    if (tracked && delta) { product.data.stock += delta; product.version++; }
     const result = { operationId, command: name, reason: name, productKey: key, sheetId, quantity: qty, stockDelta: tracked ? delta : 0, userId: this.user.id, at: new Date().toISOString() };
     this.operations.set(`${team}/${operationId}`, { request, result });
     return answer(result, false);
