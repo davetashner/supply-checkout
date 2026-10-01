@@ -55,7 +55,7 @@ new_repo() {
   git init -q --bare -b main "$tmp/origin.git"
   git init -q -b main "$tmp/repo"
   mkdir -p "$tmp/repo/scripts" "$tmp/repo/backend" "$tmp/repo/infra"
-  cp "$script" "$tmp/repo/scripts/deploy.sh"
+  cp "$script" "$here/deploy-stacks.mjs" "$here/publish-web.mjs" "$tmp/repo/scripts/"
   (cd "$tmp/repo" && git add -A && git commit -qm init && git remote add origin "$tmp/origin.git" && git push -q origin main)
 }
 
@@ -113,8 +113,8 @@ check unpushed "refuses a main that isn't origin/main" '[[ $rc == 1 && "$out" ==
 
 answers all ""
 run_case all all app api --yes
-check all "deploys web, then api and observability, then publishes the app, each once" '[[ $rc == 0 ]] && [[ "$(grep -E "cdk deploy|publish --channel" <<< "$calls" | sed -E "s/ --exclusively.*//; s/ --dir.*//")" == "npx cdk deploy supply-checkout-prod-*-web
-npx cdk deploy supply-checkout-prod-*-api supply-checkout-prod-*-observability
+check all "deploys web, then api, realtime and observability, then publishes the app, each once" '[[ $rc == 0 ]] && [[ "$(grep -E "cdk deploy|publish --channel" <<< "$calls" | sed -E "s/ --exclusively.*//; s/ --dir.*//")" == "npx cdk deploy supply-checkout-prod-*-web
+npx cdk deploy supply-checkout-prod-*-api supply-checkout-prod-*-realtime supply-checkout-prod-*-observability
 npm run -s publish:web -- publish --channel app" ]]'
 check all "deploys only the named stacks, asking CDK about IAM, with backupCopy=false while there's no copy vault" 'has "--exclusively --require-approval broadening --profile supply-prod -c envName=prod -c backupCopy=false"'
 check all "installs each folder's dependencies once" '[[ $(count "npm ci --no-audit --no-fund --loglevel=error (in backend)") == 1 && $(count "(in infra)") -ge 1 && $(count "npm ci --no-audit --no-fund --loglevel=error (in infra)") == 1 && $(count "npm ci --no-audit --no-fund --loglevel=error (in repo)") == 1 ]]'
