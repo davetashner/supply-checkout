@@ -349,7 +349,7 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
     const source = readFileSync(new URL("../lib/stacks/identity-stack.ts", import.meta.url), "utf8");
     expect(source).toContain("src/identity/${name}.ts");
     expect(source).toMatch(/trigger\("SignInGuard", "sign-in-guard"/);
-    expect(source).toMatch(/trigger\("EmailVerified", "email-verified"/);
+    expect(source).toMatch(/trigger\(\s*"EmailVerified",\s*"email-verified"/);
     expect(source).toMatch(/trigger\("AccountLink", "account-link"/);
     expect(source).toMatch(/trigger\(\s*"PostConfirmation",\s*"post-confirmation"/);
   });
@@ -454,6 +454,10 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
     expect(env("PostConfirmation").TABLE_NAME).toBe("supply-checkout-staging-app");
     // A fixed name, for the Sign-up trigger failing alarm
     expect(template.toJSON().Resources[fnId(template, "PostConfirmation")].Properties.FunctionName).toBe("supply-checkout-staging-post-confirmation");
+    // And for the pre token generation trigger, for the Sign-in trigger failing alarm (supply-checkout-3sv.16)
+    expect(template.toJSON().Resources[fnId(template, "EmailVerified")].Properties.FunctionName).toBe("supply-checkout-staging-email-verified");
+    expect(template.toJSON().Resources[fnId(template, "SignInGuard")].Properties.FunctionName).toBeUndefined();
+    expect(template.toJSON().Resources[fnId(template, "AccountLink")].Properties.FunctionName).toBeUndefined();
     template.hasParameter("*", ssmParameter("/supply-checkout/staging/data/table-key-arn"));
     const primary = stacks.regions[stacks.identity.region];
     expect(stacks.identity.dependencies).toContain(primary?.data);

@@ -94,8 +94,11 @@ export const SECURITY_NOTICES_ENV = { userPoolId: "USER_POOL_ID" } as const;
 /**
  * Fixed names of the identity stack's resources that alarms watch
  * (infra/lib/observability/journey-alarms.ts): the post confirmation trigger
- * (post-confirmation-handler.ts, supply-checkout-8jc.31).
+ * (post-confirmation-handler.ts, supply-checkout-8jc.31) and the pre token
+ * generation trigger (email-verified-handler.ts, supply-checkout-3sv.16),
+ * which exists only while Google or Apple sign-in is on.
  */
 export const identityResourceNames = (envName: string) => ({
   postConfirmationFunction: `supply-checkout-${envName}-post-confirmation`,
+  emailVerifiedFunction: `supply-checkout-${envName}-email-verified`,
 });

@@ -104,6 +104,7 @@ const ALARM_IDS = [
   "sign-out-not-revoking",
   "security-notices-failing",
   "security-notices-dropped",
+  "sign-in-trigger-failing",
   "sign-up-trigger-failing",
   "imports-stuck",
   "email-verification-not-saved",
@@ -140,8 +141,9 @@ const ALARM_IDS = [
   "team-reopened-notices-failing",
 ];
 
-/** Alarms on gauges that only the primary region's scheduled checks and purge send (ops-checks.ts), and on the user pool's trigger, which is there alone. */
+/** Alarms on gauges that only the primary region's scheduled checks and purge send (ops-checks.ts), and on the user pool's triggers, which are there alone. */
 const PRIMARY_ONLY_ALARM_IDS = [
+  "sign-in-trigger-failing",
   "sign-up-trigger-failing",
   "imports-stuck",
   "near-sending-limit",
@@ -707,6 +709,23 @@ describe("alarms added with the email code routes, the live update budget, team 
       TreatMissingData: "notBreaching",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP1") }],
       AlarmDescription: Match.stringLikeRegexp("^P1 Sign-up trigger failing \\(J1"),
+    });
+  });
+
+  it("alarms on any error or throttle of the pre token generation trigger, P1, where the user pool is (J0, supply-checkout-3sv.16)", () => {
+    const fn = { Name: "FunctionName", Value: "supply-checkout-prod-email-verified" };
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p1-sign-in-trigger-failing",
+      Metrics: Match.arrayWith([
+        Match.objectLike({ Expression: "FILL(e, 0) + FILL(t, 0)" }),
+        Match.objectLike({ Id: "e", MetricStat: Match.objectLike({ Metric: { Namespace: "AWS/Lambda", MetricName: "Errors", Dimensions: [fn] }, Stat: "Sum", Period: 300 }) }),
+        Match.objectLike({ Id: "t", MetricStat: Match.objectLike({ Metric: { Namespace: "AWS/Lambda", MetricName: "Throttles", Dimensions: [fn] }, Stat: "Sum", Period: 300 }) }),
+      ]),
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP1") }],
+      AlarmDescription: Match.stringLikeRegexp("^P1 Sign-in trigger failing \\(J0"),
     });
   });
 

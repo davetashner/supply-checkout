@@ -491,10 +491,17 @@ export class IdentityStack extends SupplyCheckoutStack {
       reason: "Only a log correlation key, not a credential: rotating it would only stop older logs' handles matching. Rotate by hand (replace the secret and redeploy) if it leaks.",
     });
     const table = tableName(this.config.envName);
-    const emailVerified = this.trigger("EmailVerified", "email-verified", "Sets email_verified for Google and Apple users from the provider's own claim", {
-      [LOG_CORRELATION_KEY_ENV]: correlationKey.secretValue.unsafeUnwrap(),
-      TABLE_NAME: table,
-    });
+    // A fixed name, for the "Sign-in trigger failing" alarm (journey-alarms.ts,
+    // supply-checkout-3sv.16). Changing a live function's name replaces it, which
+    // briefly swaps the pool's trigger and its invoke permission: it was set
+    // before Google or Apple sign-in was first turned on in prod, so don't change it.
+    const emailVerified = this.trigger(
+      "EmailVerified",
+      "email-verified",
+      "Sets email_verified for Google and Apple users from the provider's own claim",
+      { [LOG_CORRELATION_KEY_ENV]: correlationKey.secretValue.unsafeUnwrap(), TABLE_NAME: table },
+      identityResourceNames(this.config.envName).emailVerifiedFunction,
+    );
     this.userPool.addTrigger(UserPoolOperation.PRE_TOKEN_GENERATION, emailVerified);
     new Policy(this, "EmailVerifiedUpdateUser", {
       roles: [emailVerified.role as Role],
