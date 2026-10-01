@@ -12,7 +12,7 @@ import { billingResourceNames } from "../../../backend/src/billing/names.js";
 import { emailResourceNames } from "../../../backend/src/email/names.js";
 import { identityResourceNames } from "../../../backend/src/identity/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
-import { PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS } from "../../../backend/src/ops/names.js";
+import { HELD_PURGE_GRACE_DAYS, PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS } from "../../../backend/src/ops/names.js";
 import { realtimeResourceNames } from "../../../backend/src/realtime/channels.js";
 import type { AlarmTopics, Severity } from "./alarm-topics.js";
 import { apiGateway, business, dynamoDbSystemErrors, dynamoDbThrottles, FIVE_MINUTES, lambda } from "./metrics.js";
@@ -502,7 +502,7 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       title: "Deletion overdue",
       journeys: "J11",
       severity: "P2",
-      rule: `ClosedTeamsOverdue above 0 at its maximum over ${2 * PURGE_EVERY_HOURS} hours: a closed team is still there more than ${PURGE_OVERDUE_AFTER_HOURS} hours after the day it was due to be deleted, which the privacy policy promises. The hourly closed-team purge (primary region) sends the gauge every run and logs each failed team's ID.`,
+      rule: `ClosedTeamsOverdue above 0 at its maximum over ${2 * PURGE_EVERY_HOURS} hours: a closed team is still there more than ${PURGE_OVERDUE_AFTER_HOURS} hours after the day it was due to be deleted, which the privacy policy promises. The hourly closed-team purge (primary region) sends the gauge every run and logs each failed team's ID. A team held because its subscription is set aside counts too, until the purge deletes it anyway ${HELD_PURGE_GRACE_DAYS} days after its deletion date (then "Held team purged with its subscription unresolved" fires). See docs/journeys.md.`,
       metric: business(BusinessMetric.ClosedTeamsOverdue, region, TWO_PURGE_RUNS, "Maximum"),
       threshold: 0,
       primaryOnly: true,
@@ -569,7 +569,7 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       title: "Closed-team subscription set aside",
       journeys: "J7, J11",
       severity: "P2",
-      rule: `ClosedTeamsSetAside above 0 at its maximum over ${2 * PURGE_EVERY_HOURS} hours: closed teams whose subscription the hourly closed-team purge (primary region) won't end or retry for this closure, until a person deals with each one: it belongs to another Stripe customer (CustomerMismatch), Stripe doesn't have it (NotFound), or Stripe refused to end it with an error retrying won't change (PermanentError). The purge sends the gauge every run, so this stays on until each team is handled (stripeSetAsideFor removed), and logs "Closed team's subscription still set aside" with each team's ID and reason. A team set aside isn't purged, even past its deletion date (when Deletion overdue fires for it too), so deal with each one before then. See docs/journeys.md.`,
+      rule: `ClosedTeamsSetAside above 0 at its maximum over ${2 * PURGE_EVERY_HOURS} hours: closed teams whose subscription the hourly closed-team purge (primary region) won't end or retry for this closure, until a person deals with each one: it belongs to another Stripe customer (CustomerMismatch), Stripe doesn't have it (NotFound), or Stripe refused to end it with an error retrying won't change (PermanentError). The purge sends the gauge every run, so this stays on until each team is handled (stripeSetAsideFor removed), and logs "Closed team's subscription still set aside" with each team's ID and reason. A team set aside isn't purged until ${HELD_PURGE_GRACE_DAYS} days past its deletion date (Deletion overdue fires for it from a day past), and then it's purged with its subscription unresolved, so deal with each one before its deletion date. See docs/journeys.md.`,
       metric: business(BusinessMetric.ClosedTeamsSetAside, region, TWO_PURGE_RUNS, "Maximum"),
       threshold: 0,
       primaryOnly: true,
@@ -591,6 +591,16 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       severity: "P2",
       rule: "Any StripeCustomersAlreadyDeleted over an hour: the hourly closed-team purge (primary region) asked Stripe to delete a purged team's customer and was told it doesn't exist, took it as deleted and purged the team. A run that stopped after deleting the customer does that, but so does a Stripe key or mode mismatch, under which the real customer keeps its details and any subscription keeps billing. The log line \"Stripe customer already deleted\" has the team and customer IDs, and the team's deletion record keeps its customer and subscription IDs: look the customer up in the Stripe Dashboard, in both modes.",
       metric: business(BusinessMetric.StripeCustomersAlreadyDeleted, region, Duration.hours(1)),
+      threshold: 0,
+      primaryOnly: true,
+    },
+    {
+      id: "held-team-purged",
+      title: "Held team purged with its subscription unresolved",
+      journeys: "J7, J11",
+      severity: "P2",
+      rule: `Any HeldTeamsPurged over an hour: the hourly closed-team purge (primary region) deleted a closed team held because its Stripe subscription was set aside (another customer's, not found in Stripe, or an error retrying won't change), ${HELD_PURGE_GRACE_DAYS} days after its deletion date, with nobody having dealt with it. Its subscription may still be live and billing. The log line "Held team purged with its subscription unresolved" has the team, customer and subscription IDs and the reason, and the team's deletion record keeps the Stripe IDs: end the subscription by hand in the Stripe Dashboard (check both modes). See docs/journeys.md.`,
+      metric: business(BusinessMetric.HeldTeamsPurged, region, Duration.hours(1)),
       threshold: 0,
       primaryOnly: true,
     },

@@ -34,7 +34,10 @@
 // listSetAsideTeams counts the teams set aside for their current closure, for
 // the purge's gauge (supply-checkout-8jc.36). Those teams aren't purged until
 // a person deals with them (supply-checkout-8jc.37): listTeamsToPurge leaves
-// them out, and purgeTeam holds them. purgeTeam's
+// them out, and purgeTeam holds them, unless their `purgeAfter` is at or
+// before the caller's `heldDueBefore` cutoff (the purge passes its deletion
+// date less HELD_PURGE_GRACE_DAYS, supply-checkout-8jc.40): then they're
+// listed and purged like any other, and purgeTeam says so. purgeTeam's
 // `deleteStripeCustomer` deletes a team's Stripe customer before any of its
 // items go.
 
@@ -54,10 +57,12 @@ export interface TeamDue {
  * `limit`, leaving out teams set aside for their current closure
  * (`stripeSetAsideFor` equal to `closedAt`): purgeTeam holds those back until
  * a person deals with them, so they mustn't fill the listing ahead of teams
- * it can delete.
+ * it can delete. Unless their `purgeAfter` is at or before `heldDueBefore`:
+ * purgeTeam, given the same cutoff, purges those anyway.
  */
-export async function listTeamsToPurge(db: Db, now: Date, limit = 100): Promise<TeamDue[]> {
+export async function listTeamsToPurge(db: Db, now: Date, limit = 100, heldDueBefore?: Date): Promise<TeamDue[]> {
   const out: TeamDue[] = [];
+  const cutoff = heldDueBefore?.toISOString();
   let ExclusiveStartKey: Record<string, unknown> | undefined;
   do {
     const page = await connection(db).doc.send(
@@ -77,9 +82,10 @@ export async function listTeamsToPurge(db: Db, now: Date, limit = 100): Promise<
       const sk = String(item.GSI1SK);
       const at = sk.lastIndexOf("#");
       const pk = String(item.PK);
-      if (item.SK !== "META" || !pk.startsWith("TEAM#") || isSetAside(item)) continue;
+      const purgeAfter = sk.slice(0, at);
+      if (item.SK !== "META" || !pk.startsWith("TEAM#") || (isSetAside(item) && !(cutoff !== undefined && purgeAfter <= cutoff))) continue;
       try {
-        out.push({ teamId: id(pk.slice("TEAM#".length), "team ID"), purgeAfter: sk.slice(0, at) });
+        out.push({ teamId: id(pk.slice("TEAM#".length), "team ID"), purgeAfter });
       } catch {
         // Not a key this app wrote: leave it for a person to look at
       }
@@ -302,21 +308,24 @@ export async function listSetAsideTeams(db: Db, limit = 25, overdueBefore?: Date
   return { count, teams, overdue };
 }
 
+/** A purged team's Stripe customer and subscription, as its META item had them, for its deletion record. */
+export interface PurgedStripeIds {
+  readonly stripeCustomerId?: string;
+  readonly stripeSubscriptionId?: string;
+}
+
 /**
  * What purgeTeam did: `skipped` when the team isn't closed or isn't due (it
  * was, or it's gone), or is held: `held` when it's set aside for its current
- * closure.
+ * closure. `forced` when it was purged although set aside, past the
+ * `heldDueBefore` cutoff: its Stripe IDs and why it was set aside, so a
+ * person can end its subscription by hand.
  */
 export interface PurgeResult {
   readonly deleted: number;
   readonly skipped: boolean;
   readonly held?: true;
-}
-
-/** A purged team's Stripe customer and subscription, as its META item had them, for its deletion record. */
-export interface PurgedStripeIds {
-  readonly stripeCustomerId?: string;
-  readonly stripeSubscriptionId?: string;
+  readonly forced?: PurgedStripeIds & { readonly reason?: string };
 }
 
 /** Runs `fn` over `items`, `concurrency` at a time. */
@@ -348,6 +357,13 @@ const CONCURRENCY = 10;
  * condition holds it too, if it's set aside after the read (a re-read then
  * tells a held team from one reopened or gone).
  *
+ * With `heldDueBefore`, a team set aside whose `purgeAfter` is at or before
+ * it isn't held: it's marked (the mark's condition allows it, by the same
+ * cutoff) and purged like any other, and the result's `forced` has its Stripe
+ * IDs and the reason it was set aside (supply-checkout-8jc.40). A team set
+ * aside between the read and the mark, past the cutoff, is purged without
+ * `forced`: the set-aside was counted and logged as it was recorded.
+ *
  * `beforeDelete` runs once the team is marked and before anything is deleted
  * (the purge writes the team's deletion record there, with the team's Stripe
  * IDs, which it's given): after the mark, so a
@@ -360,7 +376,12 @@ export async function purgeTeam(
   db: Db,
   teamId: string,
   now: Date,
-  options: { readonly beforeDelete?: (stripe: PurgedStripeIds) => Promise<void>; readonly deleteStripeCustomer?: (customerId: string) => Promise<void> } = {},
+  options: {
+    readonly beforeDelete?: (stripe: PurgedStripeIds) => Promise<void>;
+    readonly deleteStripeCustomer?: (customerId: string) => Promise<void>;
+    /** Purge a team set aside for its closure anyway if its `purgeAfter` is at or before this. */
+    readonly heldDueBefore?: Date;
+  } = {},
 ): Promise<PurgeResult> {
   const { doc } = connection(db);
   const pk = teamPartition(id(teamId, "team ID"));
@@ -369,13 +390,16 @@ export async function purgeTeam(
       TableName: db.tableName,
       Key: keys.team(teamId),
       ConsistentRead: true,
-      ProjectionExpression: "closedAt, purgeAfter, stripeCustomerId, stripeSubscriptionId, stripeSetAsideFor",
+      ProjectionExpression: "closedAt, purgeAfter, stripeCustomerId, stripeSubscriptionId, stripeSetAsideFor, stripeSetAsideReason",
     }),
   );
+  const heldBefore = options.heldDueBefore?.toISOString();
   // Only a closed team, and only once it's due: the index is a hint, the META item decides
   if (!meta || typeof meta.closedAt !== "string" || typeof meta.purgeAfter !== "string" || meta.purgeAfter > now.toISOString()) return { deleted: 0, skipped: true };
-  // Set aside for this closure: held for a person
-  if (isSetAside(meta)) return { deleted: 0, skipped: true, held: true };
+  // Set aside for this closure: held for a person, until the cutoff
+  const setAside = isSetAside(meta);
+  const forced = setAside && heldBefore !== undefined && meta.purgeAfter <= heldBefore;
+  if (setAside && !forced) return { deleted: 0, skipped: true, held: true };
   // Mark it before deleting anything, if it's still closed and due: from here reopenTeam refuses it.
   // A team reopened since the read above fails the condition and is left alone.
   const marked = await doc
@@ -386,9 +410,10 @@ export async function purgeTeam(
         UpdateExpression: "SET purging = :now",
         // purgeAfter exists exactly while the team is closed (closeTeam and reopenTeam set and remove it
         // with closedAt), so this is "still closed and due" without naming closedAt (TEAM_PURGE_MARK_ATTRIBUTES).
-        // And not set aside since the read for the closure it read (a new closure moves purgeAfter past now)
-        ConditionExpression: "attribute_exists(purgeAfter) AND purgeAfter <= :now AND (attribute_not_exists(stripeSetAsideFor) OR stripeSetAsideFor <> :closedAt)",
-        ExpressionAttributeValues: { ":now": now.toISOString(), ":closedAt": meta.closedAt },
+        // And not set aside since the read for the closure it read (a new closure moves purgeAfter past now),
+        // unless it's held no longer: due at or before the cutoff (a value, so no attribute is named for it)
+        ConditionExpression: `attribute_exists(purgeAfter) AND purgeAfter <= :now AND (attribute_not_exists(stripeSetAsideFor) OR stripeSetAsideFor <> :closedAt${heldBefore === undefined ? "" : " OR purgeAfter <= :heldBefore"})`,
+        ExpressionAttributeValues: { ":now": now.toISOString(), ":closedAt": meta.closedAt, ...(heldBefore === undefined ? {} : { ":heldBefore": heldBefore }) },
       }),
     )
     .then(
@@ -454,5 +479,6 @@ export async function purgeTeam(
   await doc.send(new DeleteCommand({ TableName: db.tableName, Key: keys.team(teamId), ConditionExpression: "attribute_exists(closedAt)" })).catch((error: unknown) => {
     if ((error as { name?: string } | null)?.name !== "ConditionalCheckFailedException") throw error;
   });
-  return { deleted: deleted + 1, skipped: false };
+  if (!forced) return { deleted: deleted + 1, skipped: false };
+  return { deleted: deleted + 1, skipped: false, forced: { ...stripeIds, ...(typeof meta.stripeSetAsideReason === "string" ? { reason: meta.stripeSetAsideReason } : {}) } };
 }

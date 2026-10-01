@@ -35,15 +35,22 @@
 // and counted (StripeCustomersAlreadyDeleted, the "Stripe customer already
 // deleted" alarm, supply-checkout-8jc.37).
 //
-// A team set aside for its current closure (below) isn't purged at all until
-// a person deals with it (supply-checkout-8jc.37): listTeamsToPurge leaves it
+// A team set aside for its current closure (below) isn't purged until a
+// person deals with it (supply-checkout-8jc.37), or until HELD_PURGE_GRACE_DAYS
+// after its deletion date (supply-checkout-8jc.40): listTeamsToPurge leaves it
 // out and purgeTeam holds it, so a subscription Stripe couldn't find (maybe
-// the same mismatch) isn't followed by deleting the team and every trace of
-// its Stripe IDs. A held team past its deletion date still counts in
-// ClosedTeamsOverdue: its data is being kept past the date its owners were
-// told, so "Deletion overdue" fires for it too, and the responder clears the
-// set-aside so the purge can run. Each run also logs how many held teams are
-// past that line ("Closed teams held past their deletion date").
+// the same mismatch) isn't followed straight away by deleting the team. A held
+// team past its deletion date still counts in ClosedTeamsOverdue: its data is
+// being kept past the date its owners were told, so "Deletion overdue" fires
+// for it too, and the responder clears the set-aside so the purge can run.
+// Each run also logs how many held teams are past that line ("Closed teams
+// held past their deletion date"). Once the grace period is over, both list
+// and purge it like any other team (the owner's decision: its data isn't kept
+// indefinitely), its Stripe IDs kept in its deletion record, and the run logs
+// it as an error ("Held team purged with its subscription unresolved", with
+// the team ID, the Stripe IDs and the set-aside reason only) and counts it
+// (HeldTeamsPurged, its own P2 alarm), so a person ends the subscription by
+// hand in Stripe.
 //
 // Before any purging, each run ends closed teams' Stripe subscriptions
 // (supply-checkout-t0en): closing a team doesn't call Stripe, so the closure
@@ -119,7 +126,7 @@ import {
 } from "../data/index.js";
 import type { DeletionLog } from "../deletions/records.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
-import { CLOSED_TEAMS_TO_END_PER_RUN, MAX_LOGGED_SET_ASIDE, PURGE_BUDGET_MS, PURGE_OVERDUE_AFTER_HOURS } from "./names.js";
+import { CLOSED_TEAMS_TO_END_PER_RUN, HELD_PURGE_GRACE_DAYS, MAX_LOGGED_SET_ASIDE, PURGE_BUDGET_MS, PURGE_OVERDUE_AFTER_HOURS } from "./names.js";
 
 export interface TeamPurgeDeps {
   readonly db: Db;
@@ -335,7 +342,9 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
     const endFailures = ended + (await gaugeSetAside(new Date(overdueBefore)));
     // Counted before the listing, from the same index: every overdue team is also due, and they list first
     const overdueAtStart = await countTeamsDueBefore(db, new Date(overdueBefore));
-    const due = await listTeamsToPurge(db, new Date(started));
+    // Held teams due at or before this are purged anyway: their grace period is over
+    const heldDueBefore = new Date(started - HELD_PURGE_GRACE_DAYS * 86_400_000);
+    const due = await listTeamsToPurge(db, new Date(started), undefined, heldDueBefore);
     let purged = 0;
     let failed = 0;
     // Teams this run deleted, or found weren't due after all
@@ -347,6 +356,7 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
         const result = await purgeTeam(db, team.teamId, at, {
           beforeDelete: (stripeIds) => deps.deletions.record({ kind: "team", id: team.teamId, deletedAt: at.toISOString(), ...stripeIds }),
           deleteStripeCustomer: (customerId) => deleteCustomer(team.teamId, customerId),
+          heldDueBefore,
         });
         if (result.held) {
           // Set aside since the listing (or since purgeTeam read it): the set-aside gauge counts it from the next run
@@ -357,6 +367,12 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
         if (result.skipped) continue;
         purged++;
         obs.logger.info("Team purged", { teamId: team.teamId, purgeAfter: team.purgeAfter, items: result.deleted });
+        if (result.forced) {
+          // Its subscription may still be live (another customer's, or under a Stripe key or mode mismatch): a person ends it by hand
+          const { stripeCustomerId, stripeSubscriptionId, reason } = result.forced;
+          obs.count(BusinessMetric.HeldTeamsPurged, 1, { teamId: team.teamId });
+          obs.logger.error("Held team purged with its subscription unresolved", { teamId: team.teamId, customerId: stripeCustomerId, subscriptionId: stripeSubscriptionId, reason: reason ?? "Unknown" });
+        }
       } catch (error) {
         failed++;
         obs.logger.error("Team purge failed", { teamId: team.teamId, error: errorName(error), ...stripeFields(error) });

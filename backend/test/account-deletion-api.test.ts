@@ -14,7 +14,7 @@ import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, DATA_ROUTES, routeKey } from "../src/api/routes.js";
 import { authorizeTeam, CLOSED_TEAM_RETENTION_DAYS, createInvite, REOPEN_CUTOFF_MINUTES, hashEmail, listTeamsToPurge, liveUpdateRecipients, purgeTeam, recordReceiptRead, startAccountDeletion, TeamClosedError, updateTeam } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
-import { CLOSED_TEAMS_TO_END_PER_RUN, MAX_LOGGED_SET_ASIDE, PURGE_BUDGET_MS } from "../src/ops/names.js";
+import { CLOSED_TEAMS_TO_END_PER_RUN, HELD_PURGE_GRACE_DAYS, MAX_LOGGED_SET_ASIDE, PURGE_BUDGET_MS } from "../src/ops/names.js";
 import { createTeamPurgeHandler } from "../src/ops/team-purge-handler.js";
 import { CLOSED_AT_METADATA, closingKey, type PurgeStripe, resumeKey } from "../src/billing/closing.js";
 import type { SubscriptionLike } from "../src/billing/worker.js";
@@ -879,7 +879,7 @@ describe("purging closed teams", () => {
       // Never closedAt: the updates can't close or reopen a team. The purging mark, or the record that the subscription was ended
       if (command === "UpdateCommand") {
         expect([
-          { UpdateExpression: "SET purging = :now", ConditionExpression: "attribute_exists(purgeAfter) AND purgeAfter <= :now AND (attribute_not_exists(stripeSetAsideFor) OR stripeSetAsideFor <> :closedAt)" },
+          { UpdateExpression: "SET purging = :now", ConditionExpression: "attribute_exists(purgeAfter) AND purgeAfter <= :now AND (attribute_not_exists(stripeSetAsideFor) OR stripeSetAsideFor <> :closedAt OR purgeAfter <= :heldBefore)" },
           { UpdateExpression: "SET stripeCancelledFor = :at", ConditionExpression: "purgeAfter = :purge" },
           { UpdateExpression: "SET stripeSetAsideFor = :at, stripeSetAsideReason = :reason", ConditionExpression: "purgeAfter = :purge" },
         ]).toContainEqual({ UpdateExpression: input.UpdateExpression, ConditionExpression: input.ConditionExpression });
@@ -1517,6 +1517,63 @@ describe("purging closed teams", () => {
     expect(gauges[BusinessMetric.ClosedTeamsSetAside]).toBe(0);
     expect(counts[BusinessMetric.StripeCustomersAlreadyDeleted]).toBe(1);
     expect(deletions.records).toEqual([{ kind: "team", id: "team-a", deletedAt: new Date(overdueAt + 3_600_000).toISOString(), stripeCustomerId: "cus_123", stripeSubscriptionId: "sub_123" }]);
+  });
+
+  it("purges a held team HELD_PURGE_GRACE_DAYS after its deletion date, counted and logged with its Stripe IDs, and Deletion overdue fires until then (supply-checkout-8jc.40)", async () => {
+    expect(HELD_PURGE_GRACE_DAYS).toBe(14);
+    // A Stripe key or mode mismatch: Stripe has neither the subscription nor the customer
+    const closedAt = await subscribedAndClosed();
+    stripe.state.subs.delete("sub_123");
+    stripe.state.customers.delete("cus_123");
+    await purge(NOW + 3_600_000);
+    expect(meta("team-a")).toMatchObject({ stripeSetAsideFor: closedAt, stripeSetAsideReason: "NotFound" });
+    const purgeAfter = Date.parse(meta("team-a")?.purgeAfter as string);
+    const items = partition("TEAM#team-a").length;
+    // A day past its deletion date, and just short of the grace period: held, and overdue
+    for (const at of [purgeAfter + DAY + 1000, purgeAfter + HELD_PURGE_GRACE_DAYS * DAY - 1000]) {
+      expect(await purge(at)).toEqual({ purged: 0, failed: 0, due: 0, overdue: 1 });
+      expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(1);
+      expect(partition("TEAM#team-a")).toHaveLength(items);
+      expect(meta("team-a")?.purging).toBeUndefined();
+    }
+    expect(counts[BusinessMetric.HeldTeamsPurged]).toBeUndefined();
+    expect(deletions.records).toEqual([]);
+    // Once the grace period is over: purged as normal, its Stripe IDs kept in its deletion record
+    const forcedAt = purgeAfter + HELD_PURGE_GRACE_DAYS * DAY;
+    expect(await purge(forcedAt)).toEqual({ purged: 1, failed: 0, due: 1, overdue: 0 });
+    expect(partition("TEAM#team-a")).toEqual([]);
+    expect([...table.items.values()].some((i) => i.PK === "STRIPE#cus_123")).toBe(false);
+    expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(0);
+    expect(deletions.records).toEqual([{ kind: "team", id: "team-a", deletedAt: new Date(forcedAt).toISOString(), stripeCustomerId: "cus_123", stripeSubscriptionId: "sub_123" }]);
+    // Counted for its alarm, and logged with the team ID, the Stripe IDs and the reason only, for a person to end the subscription by hand
+    expect(counts[BusinessMetric.HeldTeamsPurged]).toBe(1);
+    expect(logs).toContainEqual(["error", "Held team purged with its subscription unresolved", { teamId: "team-a", customerId: "cus_123", subscriptionId: "sub_123", reason: "NotFound" }]);
+    expect(counts[BusinessMetric.StripeCustomersAlreadyDeleted]).toBe(1);
+    // Not set aside any more: the next run's gauge is back to zero
+    await purge(forcedAt + 3_600_000);
+    expect(gauges[BusinessMetric.ClosedTeamsSetAside]).toBe(0);
+    expect(counts[BusinessMetric.HeldTeamsPurged]).toBe(1);
+  });
+
+  it("finishes a forced purge that stopped part-way at the next run, counting it once, and doesn't count a team set aside only for an earlier closure", async () => {
+    const closedAt = await subscribedAndClosed();
+    table.put({ ...(meta("team-a") as Record<string, unknown>), stripeSetAsideFor: closedAt, stripeSetAsideReason: "CustomerMismatch" });
+    await close("team-b");
+    // team-b was set aside for an earlier closure only: not held, so not forced
+    table.put({ ...(meta("team-b") as Record<string, unknown>), stripeSetAsideFor: "2026-01-01T00:00:00.000Z", stripeSetAsideReason: "NotFound" });
+    const forcedAt = Date.parse(meta("team-a")?.purgeAfter as string) + HELD_PURGE_GRACE_DAYS * DAY + 1000;
+    // Stops at its first delete of team-a's items
+    const stopping = table.guarded((command, input) => !(command === "DeleteCommand" && String((input.Key as { PK?: string } | undefined)?.PK).startsWith("USER#")));
+    await expect(createTeamPurgeHandler({ db: stopping, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => forcedAt })()).rejects.toThrow("weren't purged");
+    expect(meta("team-a")).toMatchObject({ purging: new Date(forcedAt).toISOString() });
+    expect(counts[BusinessMetric.HeldTeamsPurged]).toBeUndefined();
+    expect(await purge(forcedAt + 3_600_000)).toMatchObject({ failed: 0 });
+    expect(meta("team-a")).toBeUndefined();
+    expect(meta("team-b")).toBeUndefined();
+    expect(counts[BusinessMetric.HeldTeamsPurged]).toBe(1);
+    expect(logs.filter(([, message]) => message === "Held team purged with its subscription unresolved")).toEqual([
+      ["error", "Held team purged with its subscription unresolved", { teamId: "team-a", customerId: "cus_123", subscriptionId: "sub_123", reason: "CustomerMismatch" }],
+    ]);
   });
 
   it("counts a held team overdue even in a run that can't count the teams set aside, and still purges the others", async () => {

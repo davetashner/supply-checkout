@@ -42,6 +42,19 @@ export const MAX_LOGGED_SET_ASIDE = 25;
 export const PURGE_OVERDUE_AFTER_HOURS = 24;
 
 /**
+ * A closed team held back from the purge because its Stripe subscription was
+ * set aside for a person (`stripeSetAsideFor` equal to `closedAt`:
+ * CustomerMismatch, NotFound or PermanentError) is purged anyway this many
+ * days after its deletion date (`purgeAfter`), its subscription unresolved
+ * (supply-checkout-8jc.40, the owner's decision): its data isn't kept
+ * indefinitely past the date its owners were told. Until then "Deletion
+ * overdue" fires for it; the forced purge counts HeldTeamsPurged ("Held team
+ * purged with its subscription unresolved"), and a person ends the
+ * subscription by hand in Stripe from the team's deletion record.
+ */
+export const HELD_PURGE_GRACE_DAYS = 14;
+
+/**
  * No ClosedTeamsOverdue sample from the purge for this long alarms ("Deletion
  * job not running"): three hourly runs missed, so one slow or skipped run
  * doesn't page anyone.

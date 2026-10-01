@@ -136,6 +136,8 @@ export const BusinessMetric = {
   StripeCustomersDeleted: "StripeCustomersDeleted",
   /** Purged teams' Stripe customers Stripe said were already gone (404). A purge run that stopped after deleting one also gets this, but so does every team under a Stripe key or mode mismatch, whose real customer keeps its details and any subscription; the team's Stripe IDs are kept in its deletion record (supply-checkout-8jc.37, J7, J11). */
   StripeCustomersAlreadyDeleted: "StripeCustomersAlreadyDeleted",
+  /** Closed teams held back from the purge (their subscription set aside for a person) that it purged anyway HELD_PURGE_GRACE_DAYS after their deletion date, the subscription unresolved: a person ends it by hand in Stripe, from the IDs in the team's deletion record (supply-checkout-8jc.40, J7, J11). */
+  HeldTeamsPurged: "HeldTeamsPurged",
   /** Operator audit items (OPAUDIT#) changed or deleted other than by their TTL: the audit trail was tampered with (ADR 0015). From the operator audit watch (primary region). */
   OperatorAuditChanged: "OperatorAuditChanged",
   /** Heartbeats the operator audit watch read from the table's stream (OPERATOR_AUDIT_HEARTBEAT): none for a while means it isn't reading the stream, or its metrics aren't arriving. */
