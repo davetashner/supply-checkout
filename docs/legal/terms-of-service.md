@@ -108,7 +108,7 @@ If a payment fails, we email the owner and show a banner in the app. The team ke
 
 - The Service uses AI models (Claude, run on Amazon Bedrock) to read receipt photos and suggest matches to your inventory.
 - **Results can be wrong.** They may misread items, quantities, prices or totals. The review screen shows every line before anything is saved. You are responsible for checking the results before you save them or use them to charge your clients.
-- Receipt photos are not stored after reading, unless an owner turns on photo storage for the team.
+- Receipt photos are not stored after reading.
 - Plans include a monthly receipt limit. When a team reaches it, receipt reading pauses until the next month or an upgrade. Everything else keeps working.
 
 ## 10. Service levels
