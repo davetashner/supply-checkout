@@ -4,7 +4,7 @@
 // failed (and only that invite) without logging an address.
 
 import type { SNSEvent } from "aws-lambda";
-import { SendEmailCommand } from "@aws-sdk/client-sesv2";
+import { SendEmailCommand, SESv2Client } from "@aws-sdk/client-sesv2";
 import { beforeEach, describe, expect, it } from "vitest";
 import { type Invite, type Member, type Team, hashEmail, markInviteFailed, teamContextForEmailEvent } from "../src/data/index.js";
 import { createEmailEventsHandler } from "../src/email/events-handler.js";
@@ -314,8 +314,17 @@ describe("mailer", () => {
   });
 
   // supply-checkout-8jc.28 review: a hung SES call mustn't run a function into its timeout
-  it("bounds every SES call: 2 seconds to connect, 5 to answer, 2 tries", () => {
-    expect(sesClientConfig("test-local-1")).toEqual({ region: "test-local-1", maxAttempts: 2, requestHandler: { connectionTimeout: 2_000, requestTimeout: 5_000 } });
+  it("bounds every SES call: 2 seconds to connect, 5 to answer (failing the call, not only warning), 2 tries", async () => {
+    expect(sesClientConfig("test-local-1")).toEqual({
+      region: "test-local-1",
+      maxAttempts: 2,
+      requestHandler: { connectionTimeout: 2_000, requestTimeout: 5_000, throwOnRequestTimeout: true },
+    });
+    // As the SDK's own HTTP handler resolves it
+    const client = new SESv2Client(sesClientConfig("test-local-1"));
+    const handler = client.config.requestHandler as unknown as { configProvider: Promise<Record<string, unknown>> };
+    expect(await handler.configProvider).toMatchObject({ connectionTimeout: 2_000, requestTimeout: 5_000, throwOnRequestTimeout: true });
+    client.destroy();
   });
 });
 

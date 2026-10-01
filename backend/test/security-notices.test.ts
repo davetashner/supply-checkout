@@ -10,11 +10,11 @@
 // behind a stand-in for the function's IAM policy.
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { claimEmailChangeNotice, claimNotice, EMAIL_CHANGE_CLAIM_MS, emailSeenHash, markNoticeSent, moveNoticeAddress, NOTICE_DEDUPE_MS, noticeAddress, recordNoticeAddress, releaseEmailChangeNotice } from "../src/data/index.js";
+import { claimEmailChangeNotice, claimNotice, EMAIL_CHANGE_CLAIM_MS, emailChangeClaimedAt, emailSeenHash, markNoticeSent, moveNoticeAddress, NOTICE_DEDUPE_MS, noticeAddress, recordNoticeAddress, releaseEmailChangeNotice } from "../src/data/index.js";
 import { SECURITY_NOTICE_ATTRIBUTES } from "../src/data/schema.js";
 import { cognitoAccounts, type PoolAccount } from "../src/identity/cognito-accounts.js";
 import { SECURITY_NOTICE_EVENTS } from "../src/identity/names.js";
-import { createSecurityNoticesHandler } from "../src/identity/security-notices-handler.js";
+import { createSecurityNoticesHandler, PENDING_COUNT_AFTER_MS } from "../src/identity/security-notices-handler.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { fakeMailer, REGION } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -413,6 +413,21 @@ describe("security notices from CloudTrail", () => {
       expectNothingPersonal();
     });
 
+    it("throws without counting while the held claim is young (another attempt is likely still sending)", async () => {
+      await recorded();
+      accounts.set(SUB, account({ email: ATTACKER_EMAIL }));
+      expect(await claimEmailChangeNotice(table.db(), SUB, emailSeenHash(ATTACKER_EMAIL), new Date(now))).toBe(true);
+      now += PENDING_COUNT_AFTER_MS - 1;
+      await expect(handle(cloudTrail("VerifyUserAttribute"))).rejects.toThrow("claimed but not sent");
+      expect(metrics).toEqual([]);
+      expect(logs).toContainEqual(["Security notice being sent", { userId: SUB, kind: "emailChanged", via: "cloudtrail" }]);
+      // Once it's that old, it's counted
+      now += 1;
+      await expect(handle(cloudTrail("VerifyUserAttribute"))).rejects.toThrow("claimed but not sent");
+      expect(metrics).toEqual([{ metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "emailChanged", reason: "pending", via: "cloudtrail" } }]);
+      expect(denied).toEqual([]);
+    });
+
     it("gives the claim up when SES takes too long, counts it, and throws for the retry", async () => {
       await recorded();
       accounts.set(SUB, account({ email: ATTACKER_EMAIL }));
@@ -446,7 +461,8 @@ describe("security notices from CloudTrail", () => {
       now += EMAIL_CHANGE_CLAIM_MS + 1;
       await handle(cloudTrail("VerifyUserAttribute"));
       expect(mails.sent.map((m) => m.to)).toEqual([OWNER_EMAIL]);
-      expect(metrics.map((m) => m.metadata.reason)).toEqual(["not_sent", "pending", undefined]);
+      // The try right after found a young claim: thrown, not counted (the SES refusal already was)
+      expect(metrics.map((m) => m.metadata.reason)).toEqual(["not_sent", undefined]);
     });
 
     it("counts a notice SES refused and throws, keeping the record, so Lambda's retry (or a later event) still tells the old address", async () => {
@@ -521,6 +537,13 @@ describe("security notice records", () => {
   it("hashes Cognito's address only trimmed and lowered", () => {
     expect(emailSeenHash(" Owner@Example.COM ")).toBe(emailSeenHash("owner@example.com"));
     expect(emailSeenHash("\uFF4Fwner@example.com")).not.toBe(emailSeenHash("owner@example.com"));
+  });
+
+  it("reads when the email change notice was last claimed", async () => {
+    const db = table.db();
+    expect(await emailChangeClaimedAt(db, SUB)).toBeUndefined();
+    await claimEmailChangeNotice(db, SUB, "a", new Date(NOW));
+    expect(await emailChangeClaimedAt(db, SUB)).toEqual(new Date(NOW));
   });
 
   it("passes on errors other than a failed condition", async () => {

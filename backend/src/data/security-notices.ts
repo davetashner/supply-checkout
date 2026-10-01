@@ -196,6 +196,21 @@ export async function claimEmailChangeNotice(db: Db, userId: string, seen: strin
   }
 }
 
+/** When the email change notice was last claimed, if it was (strongly consistent). */
+export async function emailChangeClaimedAt(db: Db, userId: string): Promise<Date | undefined> {
+  const { Item } = await connection(db).doc.send(
+    new GetCommand({
+      TableName: db.tableName,
+      Key: keys.noticeSent(id(userId, "user ID"), "emailChanged"),
+      ProjectionExpression: "#at",
+      ExpressionAttributeNames: { "#at": "noticeSentAt" },
+      ConsistentRead: true,
+    }),
+  );
+  const at = Date.parse(String(Item?.noticeSentAt));
+  return Number.isFinite(at) ? new Date(at) : undefined;
+}
+
 /** Gives up a claim on the email change notice about `seen` that couldn't be sent, so a retry can send it. */
 export async function releaseEmailChangeNotice(db: Db, userId: string, seen: string): Promise<void> {
   try {

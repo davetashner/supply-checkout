@@ -65,6 +65,7 @@ import {
   claimEmailChangeNotice,
   claimNotice,
   type Db,
+  emailChangeClaimedAt,
   emailSeenHash,
   moveNoticeAddress,
   normalizeEmail,
@@ -93,6 +94,9 @@ export interface SecurityNoticesDeps {
 
 /** How long an email change notice waits on SES before its claim is given up and the event retried. */
 const SEND_TIMEOUT_MS = 10_000;
+
+/** How old a held email change claim must be to count as `pending`: past one attempt's SEND_TIMEOUT_MS, so likely a dead one. */
+export const PENDING_COUNT_AFTER_MS = 15_000;
 
 /** The parts of a CloudTrail record this reads (EventBridge's `detail`). */
 interface CloudTrailDetail {
@@ -179,8 +183,8 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
    * timeout, EMAIL_CHANGE_CLAIM_MS), sent, and only then is the record moved
    * on. If SES refuses it or takes over SEND_TIMEOUT_MS, the claim is given up
    * and the error thrown, so Lambda tries again (then the dead-letter queue).
-   * An attempt that finds the claim held and the record not moved counts it
-   * (`pending`) and throws too, so an attempt that died holding the claim
+   * An attempt that finds the claim held and the record not moved throws too,
+   * counting it (`pending`) once the claim is PENDING_COUNT_AFTER_MS old, so an attempt that died holding the claim
    * isn't taken for a sent notice: the retry, after the claim lapses, sends it.
    */
   async function noticeEmailChange(userId: string, account: PoolAccount, at: string): Promise<void> {
@@ -199,7 +203,11 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
       // have died with it: count it and throw, so the retry (after the claim lapses) or the
       // dead-letter queue sees it through
       if ((await noticeAddress(db, userId))?.seen === seen) return;
-      failed(userId, "emailChanged", "pending", "ClaimHeld");
+      // Counted only once the claim is old enough that its attempt has likely died: a younger one is
+      // usually another event's attempt still sending, which the retry finds done
+      const claimedAt = await emailChangeClaimedAt(db, userId);
+      if (!claimedAt || now().getTime() - claimedAt.getTime() >= PENDING_COUNT_AFTER_MS) failed(userId, "emailChanged", "pending", "ClaimHeld");
+      else obs.logger.info("Security notice being sent", { userId, kind: "emailChanged", via: "cloudtrail" });
       throw new CountedError(new Error("An email change notice is claimed but not sent yet"));
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
