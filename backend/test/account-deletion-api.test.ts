@@ -1024,6 +1024,7 @@ describe("purging closed teams", () => {
     await subscribedAndClosed();
     stripe.state.subs.delete("sub_123");
     expect(await purge(NOW + 3_600_000)).toMatchObject({ failed: 0 });
+    expect(counts[BusinessMetric.ClosedTeamRenewalsCharged]).toBeUndefined();
     expect(meta("team-a")?.stripeCancelledFor).toBe(new Date(NOW).toISOString());
     expect(logs).toContainEqual(["warn", "Closed team's subscription not found in Stripe", { teamId: "team-a", subscriptionId: "sub_123" }]);
     expect(stripe.state.updates).toEqual([]);
@@ -1033,6 +1034,8 @@ describe("purging closed teams", () => {
     await subscribedAndClosed({ items: { data: [{ quantity: 3, current_period_start: NOW / 1000 + 60, current_period_end: NOW / 1000 + 31 * 86400, price: { lookup_key: null, recurring: null } }] } });
     await purge(NOW + 3_600_000);
     expect(logs).toContainEqual(["warn", "Closed team's subscription renewed after it closed", { teamId: "team-a", subscriptionId: "sub_123", closedAt: new Date(NOW).toISOString() }]);
+    // Counted, for the "Closed team charged" alarm
+    expect(counts[BusinessMetric.ClosedTeamRenewalsCharged]).toBe(1);
   });
 
   it("leaves open teams, teams without a subscription and teams being purged to the purge, and refuses another customer's subscription", async () => {
