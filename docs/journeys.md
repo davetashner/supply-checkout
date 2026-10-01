@@ -165,9 +165,11 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 
 **Expected:** a CSV named after the client and date, with each item's price, taken, returned, used and charge, and a total row. Company equipment on loan isn't in it: it isn't charged (J13).
 
+The sheet list has a search box that matches a sheet's client ("Ad hoc" for the ad hoc sheet), who prepared it, or an item on it, in any filter, and says when nothing matches. On **Returned** and **All**, finished sheets are grouped by month under year headings, newest first, each with its count of sheets and, for owners, its total charge (the ad hoc sheet is counted but never charged). This year (or the newest year) is open; older years open and close with the keyboard, and stay as they were left for the session. A year filter beside the chips narrows the list to one year, and the owner's **Export data** button then says the year ("Export 2026") and its sheets CSV has only that year's sheets; the inventory CSV and the JSON stay whole. Out now and the open ad hoc card work as before.
+
 **Status:** tested. Owners can also export all of a team's data: on the sheet list, **Export data** offers every sheet (one CSV row per item), the inventory (CSV), or everything (JSON, each document as stored plus each sheet's totals). It's built in the browser from the collections the app has already loaded, so it matches the screens and needs no server route; 1,000 sheets take well under a second once listed. It shows for owners only (`user.isOwner()`), whether or not they can write, so it keeps working while a team is read-only.
 
-**Tests:** `app.spec.js`: "exports a sheet as CSV"; `startup.spec.js`: "CSV export quotes commas and quotes, and names untitled sheets", "a declined download is silent", "a failed download explains"; `export.spec.js` (all tests); `aws-data.spec.js`: "an owner exports 1,000 sheets, listed page by page, as a JSON download", "members who aren't owners get no Export data".
+**Tests:** `app.spec.js`: "exports a sheet as CSV"; `startup.spec.js`: "CSV export quotes commas and quotes, and names untitled sheets", "a declined download is silent", "a failed download explains"; `export.spec.js` (all tests); `find-sheets.spec.js` (search, year and month groups, the year filter and the export it scopes); `aws-data.spec.js`: "an owner exports 1,000 sheets, listed page by page, as a JSON download", "members who aren't owners get no Export data".
 
 ### J7. Subscribe, add seats and see invoices
 

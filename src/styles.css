@@ -128,6 +128,15 @@ select{background:var(--ground);border:1px solid var(--line);border-radius:9px;p
 .pill.closed{background:var(--accent-soft);color:var(--accent)}
 .who{display:inline-flex;align-items:center;gap:6px}
 .who img{width:18px;height:18px;border-radius:50%}
+.search-row{margin-block:-4px 14px}
+.year-filter{border-radius:999px;padding:3px 10px;font-size:13px;font-weight:600;color:var(--ink)}
+.year-group{margin-top:20px}
+.year-head{margin:0 0 10px;font-size:22px}
+.year-toggle{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 12px;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);padding:8px 2px;cursor:pointer;font:inherit;color:inherit}
+.year-toggle>span:first-child::before{content:"";display:inline-block;width:0;height:0;margin-right:8px;vertical-align:middle;border-block:5px solid transparent;border-left:7px solid currentColor;transition:transform .15s}
+.year-toggle[aria-expanded="true"]>span:first-child::before{transform:rotate(90deg)}
+.month-head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px;font-size:17px;color:var(--muted);margin:6px 2px -2px}
+.group-meta{font-family:system-ui,sans-serif;font-size:13px;font-weight:600;color:var(--muted);letter-spacing:0}
 .empty{border:1.5px dashed var(--line);border-radius:12px;padding:28px 18px;text-align:center;color:var(--muted)}
 
 /* Sheet detail */

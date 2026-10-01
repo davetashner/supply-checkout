@@ -17,7 +17,9 @@ let db = null, userNs = null, dl = null, myId = null, canWrite = true, connected
 let products = Object.create(null), sheets = [], people = {};
 // kind: the Inventory's Supplies / Equipment filter ("all" shows both); equip: with Equipment
 // picked, what's in storage ("in") or still out on open sheets ("out")
-const ui = { tab: "sheets", sheetId: null, mode: "out", filter: "open", receipt: false, kind: "all", equip: "in" };
+// q: the sheet list's search; year: its year filter ("" for all years); years: the year groups
+// someone opened (true) or closed (false) on the sheet list, for the session
+const ui = { tab: "sheets", sheetId: null, mode: "out", filter: "open", receipt: false, kind: "all", equip: "in", q: "", year: "", years: {} };
 // The web build's first-run checklist for an owner's new team (src/first-run.js), or null
 let firstRun = null;
 
@@ -249,6 +251,7 @@ $("#main").addEventListener("click", e => {
   else if (t.id === "resume") { ui.receipt = true; draw(); refreshMarkup().then(renderReceipt); window.scrollTo(0, 0); }
   else if (t.id === "addProduct") productModal(null);
   else if (t.dataset.filter) { ui.filter = t.dataset.filter; draw(); }
+  else if (t.dataset.year) { const b = t.getAttribute("aria-expanded") === "true"; ui.years[t.dataset.year] = !b; draw(); }
   else if (t.dataset.kind) { ui.kind = t.dataset.kind; draw(); }
   else if (t.dataset.equip) { ui.equip = t.dataset.equip; draw(); }
   else if (t.dataset.open) { ui.sheetId = t.dataset.open; draw(); window.scrollTo(0, 0); }
@@ -289,29 +292,88 @@ function cardHTML(s) {
         </button>`;
 }
 
+// Finding a sheet on the list (supply-checkout-005.5): a search over each sheet's client ("Ad
+// hoc" for the ad hoc sheet), who prepared it and its items' names; and a year filter, which
+// also scopes the owner's sheets CSV (exportAllModal). Finished sheets, on Returned and All,
+// are grouped by month under year headings, newest first. This year's group is open, and the
+// newest group too (early in January, when this year has none yet); an older one opens when
+// it's picked in the year filter or searched. ui.years keeps the years someone opened or
+// closed, for the session.
+const yearOf = s => /^\d{4}-(0[1-9]|1[0-2])/.test(s.date || "") ? s.date.slice(0, 4) : "";
+const sheetYears = () => [...new Set(sheets.map(yearOf).filter(Boolean))].sort().reverse();
+// The year picked in the year filter, while a sheet has it
+const pickedYear = () => sheetYears().includes(ui.year) ? ui.year : "";
+const matches = (s, q) => [sheetTitle(s), personText(s), ...lines(s).map(lineLabel)].join("\n").toLowerCase().includes(q);
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+// A group's count, and for owners its total charge (the ad hoc sheet is never charged)
+function groupMeta(list) {
+  const cents = list.filter(s => !isAdhoc(s)).reduce((a, s) => a + Math.round(totals(s).charge * 100), 0);
+  return `${plural(list.length, "sheet")}${isOwner ? ` · ${money(cents / 100)}` : ""}`;
+}
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+function groupedHTML(closed) {
+  const years = new Map();
+  const day = s => String(s.date || "");
+  [...closed].sort((a, b) => day(b).localeCompare(day(a))).forEach(s => {
+    const y = yearOf(s) || "No date";
+    years.set(y, [...(years.get(y) || []), s]);
+  });
+  const thisYear = todayISO().slice(0, 4);
+  return [...years].map(([y, list], i) => {
+    const open = ui.years[y] ?? (i === 0 || y === thisYear || y === ui.year || !!ui.q), id = `yr-${y.replace(/\W/g, "")}`;
+    const months = new Map();
+    list.forEach(s => { const m = yearOf(s) ? MONTHS[Number(s.date.slice(5, 7)) - 1] : "No date"; months.set(m, [...(months.get(m) || []), s]); });
+    return `
+      <section class="year-group" aria-labelledby="${id}-h">
+        <h2 class="year-head" id="${id}-h"><button type="button" class="year-toggle" data-year="${esc(y)}" aria-expanded="${open}" aria-controls="${id}"><span>${esc(y)}</span><span class="group-meta">${groupMeta(list)}</span></button></h2>
+        <div class="list" id="${id}"${open ? "" : " hidden"}>${open ? [...months].map(([m, ms]) => `
+          <h3 class="month-head"><span>${m}</span><span class="group-meta">${groupMeta(ms)}</span></h3>
+          ${ms.map(cardHTML).join("")}`).join("") : ""}
+        </div>
+      </section>`;
+  }).join("");
+}
+
 function drawList() {
-  const adhoc = ui.filter === "closed" ? undefined : openAdhoc();
-  const shown = sheets.filter(s => s !== adhoc && (ui.filter === "all" || (ui.filter === "open" ? s.status !== "closed" : s.status === "closed")));
+  const q = ui.q.trim().toLowerCase(), year = pickedYear(), years = sheetYears();
+  const found = s => !q || matches(s, q);
+  const adhocOpen = ui.filter === "closed" ? undefined : openAdhoc();
+  const adhoc = adhocOpen && found(adhocOpen) ? adhocOpen : undefined;
+  const shown = sheets.filter(s => s !== adhocOpen && (ui.filter === "all" || (ui.filter === "open" ? s.status !== "closed" : s.status === "closed")) && (!year || yearOf(s) === year) && found(s));
   const openCount = sheets.filter(s => s.status !== "closed").length;
+  // Out now is a flat list, as it always was; finished sheets are grouped by year and month
+  const flat = shown.filter(s => s.status !== "closed"), grouped = shown.filter(s => s.status === "closed");
   morph($("#main"), `
     <div class="bar">
-      <div class="chips" role="group" aria-label="Filter sheets">
-        <button type="button" class="chip" data-filter="open" aria-pressed="${ui.filter==="open"}">Out now (${openCount})</button>
-        <button type="button" class="chip" data-filter="closed" aria-pressed="${ui.filter==="closed"}">Returned</button>
-        <button type="button" class="chip" data-filter="all" aria-pressed="${ui.filter==="all"}">All</button>
+      <div class="chips">
+        <div class="chips" role="group" aria-label="Filter sheets">
+          <button type="button" class="chip" data-filter="open" aria-pressed="${ui.filter==="open"}">Out now (${openCount})</button>
+          <button type="button" class="chip" data-filter="closed" aria-pressed="${ui.filter==="closed"}">Returned</button>
+          <button type="button" class="chip" data-filter="all" aria-pressed="${ui.filter==="all"}">All</button>
+        </div>
+        ${years.length ? `<select id="yearFilter" class="year-filter" aria-label="Year"><option value="">All years</option>${years.map(y => `<option value="${y}"${y === year ? " selected" : ""}>${y}</option>`).join("")}</select>` : ""}
       </div>
       <div class="chips">
         ${canWrite && receiptOK ? `<label class="btn" for="receiptFile">Scan receipt</label>` : ""}
-        ${dl && isOwner && connected ? `<button type="button" class="btn" id="exportAll">Export data</button>` : ""}
+        ${dl && isOwner && connected ? `<button type="button" class="btn" id="exportAll">${year ? `Export ${year}` : "Export data"}</button>` : ""}
         ${canWrite ? `<button type="button" class="btn" id="returnAny">Return</button><button type="button" class="btn" id="quickTake">Quick take</button><button type="button" class="btn primary" id="newSheet">+ New sheet</button>` : ""}
       </div>
     </div>
+    <div class="search-row"><input type="search" id="sheetSearch" aria-label="Search sheets" placeholder="Search by client, who prepared it, or item" autocomplete="off"></div>
     ${draft && canWrite ? `<div class="notice resume"><span>You have a receipt that hasn't been saved yet.</span><button type="button" class="btn" id="resume">Continue review</button></div>` : ""}
     <div class="list">
       ${adhoc ? cardHTML(adhoc) : ""}
-      ${shown.length ? shown.map(cardHTML).join("") : adhoc ? "" : `<div class="empty">${connected ? (ui.filter === "open" ? "Nothing is checked out right now." : "No sheets here yet.") : "Loading sheets…"}</div>`}
-    </div>`);
+      ${flat.map(cardHTML).join("")}
+      ${shown.length || adhoc ? "" : `<div class="empty">${!connected ? "Loading sheets…" : q ? `No sheets match “${esc(ui.q.trim())}”.` : ui.filter === "open" ? "Nothing is checked out right now." : "No sheets here yet."}</div>`}
+    </div>
+    ${groupedHTML(grouped)}`);
+  // Not in the HTML, so a redraw while someone types leaves the field (and its caret) alone;
+  // set here when the list is drawn afresh (back from the Inventory)
+  const box = $("#sheetSearch");
+  if (box.value !== ui.q) box.value = ui.q;
 }
+$("#main").addEventListener("input", e => { if (e.target.id === "sheetSearch") { ui.q = e.target.value; draw(); } });
+$("#main").addEventListener("change", e => { if (e.target.id === "yearFilter") { ui.year = e.target.value; draw(); } });
 
 // A line's row: tapping it opens the line editor (lineModal)
 const rowAttrs = l => `class="${canWrite ? "click" : ""}" data-line="${esc(l.key)}" ${canWrite ? 'tabindex="0"' : ""}`;
@@ -973,13 +1035,16 @@ function exportCsv(s) {
 
 // Owners download every sheet and the inventory, whatever their write access (a team
 // that's read-only after cancelling can still take its data)
+// The sheets CSV has the sheets of the year picked in the sheet list's year filter, if one
+// is; the inventory and the JSON (a backup) are always whole
 function exportAllModal() {
+  const year = pickedYear(), inYear = year ? sheets.filter(s => yearOf(s) === year) : sheets;
   const n = sheets.length, k = Object.keys(products).length;
   openModal(`
     <h2>Export all data</h2>
     <p class="hint" style="margin-top:-6px">${n} sheet${n === 1 ? "" : "s"} and ${k} inventory item${k === 1 ? "" : "s"}, as the app shows them. CSV files open in a spreadsheet; the JSON file has everything, for a backup or another tool.</p>
     <div style="display:grid;gap:10px">
-      <button type="button" class="btn" data-export="sheets">Sheets (CSV)</button>
+      <button type="button" class="btn" data-export="sheets">${year ? `Sheets from ${year} (CSV, ${plural(inYear.length, "sheet")})` : "Sheets (CSV)"}</button>
       <button type="button" class="btn" data-export="inventory">Inventory (CSV)</button>
       <button type="button" class="btn" data-export="json">Everything (JSON)</button>
     </div>
@@ -988,7 +1053,7 @@ function exportAllModal() {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     const day = todayISO();
     const files = {
-      sheets: () => [`Supply Checkout sheets ${day}.csv`, sheetsCsv(sheets, personText)],
+      sheets: () => [`Supply Checkout sheets ${year ? year + " " : ""}${day}.csv`, sheetsCsv(inYear, personText)],
       inventory: () => [`Supply Checkout inventory ${day}.csv`, inventoryCsv(products)],
       json: () => [`Supply Checkout export ${day}.json`, allJson(products, sheets, personText)],
     };

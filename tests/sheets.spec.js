@@ -54,7 +54,7 @@ test("filters sheets by open and returned, and shows what each is worth", { tag:
       },
     },
   });
-  const list = page.locator(".list");
+  const list = page.locator("#main");
   await expect(list.locator(".sheet-card")).toHaveCount(1);
   await expect(list).toContainText("2 items · 5 taken · 1 back");
   await expect(list).toContainText("$35.50");
