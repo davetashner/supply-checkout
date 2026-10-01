@@ -36,6 +36,23 @@ export const ALL_REGIONS = "all";
  */
 export const DEFAULT_DOMAIN_NAME = "supplycheckout.com";
 
+// Claude on Amazon Bedrock for receipt reading (ADR 0008, supply-checkout-fy9).
+// Both are US cross-region inference profiles (the `us.` prefix): Bedrock may
+// route a request to any US region the profile covers, and never outside the
+// US. A `global.` profile could route it anywhere, so it isn't used.
+//
+// Invoking a profile needs bedrock:InvokeModel on the inference-profile ARN
+// and on the underlying foundation-model ARN in every region it routes to.
+
+/** The model receipt reading uses: Claude Haiku 4.5. */
+export const RECEIPT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
+
+/**
+ * The model the receipt eval benchmarks against: Claude Sonnet 4.6. Sonnet 5
+ * and 5.5 weren't available to the account on 2026-10-01 (ADR 0008).
+ */
+export const RECEIPT_BENCHMARK_MODEL_ID = "us.anthropic.claude-sonnet-4-6";
+
 export interface DeploymentConfig {
   /** Environment name, e.g. prod, staging, dev. Part of every stack name. */
   readonly envName: string;

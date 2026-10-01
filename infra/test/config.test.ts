@@ -6,6 +6,8 @@ import {
   DEFAULT_DOMAIN_NAME,
   DEFAULT_REGIONS,
   GLOBAL_SERVICES_REGION,
+  RECEIPT_BENCHMARK_MODEL_ID,
+  RECEIPT_MODEL_ID,
   configFromContext,
   stripeModeOf,
   stripeOpsKeySecretArn,
@@ -24,6 +26,14 @@ describe("region constants", () => {
     expect(APPROVED_REGIONS).toHaveLength(2);
     expect(DEFAULT_REGIONS).toEqual([EAST]);
     expect(GLOBAL_SERVICES_REGION).toBe(EAST);
+  });
+});
+
+describe("receipt reading models", () => {
+  it("pins the Bedrock model IDs to US cross-region inference profiles (ADR 0008)", () => {
+    expect(RECEIPT_MODEL_ID).toBe("us.anthropic.claude-haiku-4-5-20251001-v1:0");
+    expect(RECEIPT_BENCHMARK_MODEL_ID).toBe("us.anthropic.claude-sonnet-4-6");
+    for (const id of [RECEIPT_MODEL_ID, RECEIPT_BENCHMARK_MODEL_ID]) expect(id).toMatch(/^us\.anthropic\./);
   });
 });
 
