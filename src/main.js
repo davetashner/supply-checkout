@@ -3,7 +3,7 @@ import { use, help } from "./runtime.js";
 import { WEB } from "./build.js";
 import { checkOut, recordReturn, markLost, saveItem, addLines, markOf } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, isEquipment, newKey, uid, round2, numOrNull, MAX_MONEY } from "./format.js";
-import { lines, lineCharge, totals, isEquipmentLine, equipmentCounts, lostRows } from "./sheet-math.js";
+import { lines, lineCharge, totals, isEquipmentLine, equipmentCounts, lostRows, lineLabel } from "./sheet-math.js";
 import { $, toast, openModal, closeModal, dismiss, arm, armButton, stepperHTML, setText, setHTML, setAttr, morph, wireStepper } from "./dom.js";
 import { scanFromInput } from "./barcode.js";
 import { shrinkPhoto } from "./photo.js";
@@ -168,7 +168,8 @@ async function render() {
   if (userNs) {
     // The sheets' preparers, and who took the equipment still out (Inventory, Equipment, Out)
     const takers = sheets.flatMap(s => lines(s).filter(isEquipmentLine).map(l => l.takenBy));
-    const ids = [...new Set([...sheets.map(s => s.createdBy), ...takers].filter(Boolean))];
+    const typers = sheets.flatMap(s => lines(s).map(l => l.priceSetBy));
+    const ids = [...new Set([...sheets.map(s => s.createdBy), ...takers, ...typers].filter(Boolean))];
     if (ids.length) { try { people = await userNs.profiles(ids); } catch {} }
   }
   if (n !== seq) return;
@@ -222,7 +223,7 @@ $("#main").addEventListener("click", e => {
   if (t.dataset.sheet) { openSheetFromInventory(t.dataset.sheet); return; }
   if (t.id === "newSheet") newSheetModal();
   else if (t.id === "exportAll") exportAllModal();
-  else if (t.id === "resume") { ui.receipt = true; draw(); renderReceipt(); window.scrollTo(0, 0); }
+  else if (t.id === "resume") { ui.receipt = true; draw(); refreshMarkup().then(renderReceipt); window.scrollTo(0, 0); }
   else if (t.id === "addProduct") productModal(null);
   else if (t.dataset.filter) { ui.filter = t.dataset.filter; draw(); }
   else if (t.dataset.kind) { ui.kind = t.dataset.kind; draw(); }
@@ -273,7 +274,9 @@ function drawList() {
 
 // A line's row: tapping it opens the line editor (lineModal)
 const rowAttrs = l => `class="${canWrite ? "click" : ""}" data-line="${esc(l.key)}" ${canWrite ? 'tabindex="0"' : ""}`;
-const itemCell = l => `<td>${esc(l.name || "Unnamed item")}<span class="code">${esc(codeText(l.code))}</span></td>`;
+// A typed price on a line bought for the client says who typed it and when (priceSetBy, priceSetAt)
+const typedNote = l => l.priceSet === "manual" && l.priceSetBy ? `<span class="code">Price typed by ${esc(takerText(l.priceSetBy))}, ${esc(whenText(l.priceSetAt))}</span>` : "";
+const itemCell = l => `<td>${esc(lineLabel(l))}<span class="code">${esc(codeText(l.code))}</span>${typedNote(l)}</td>`;
 // Company equipment on the sheet (ADR 0017): its own section below the supplies, with no price
 // or charge, since taking it to a job isn't charged. Lost or broken shows once there is any.
 function equipmentHTML(eq) {
@@ -580,7 +583,8 @@ function pickOutModal(s) {
 }
 
 function pickReturnModal(s) {
-  const ls = lines(s);
+  // Not what was bought for the client: it isn't coming back
+  const ls = lines(s).filter(l => l.purchased !== true);
   openModal(`
     <h2>Return an item</h2>
     <p class="hint" style="margin-top:-6px">Pick the item you're bringing back.</p>
@@ -650,15 +654,15 @@ function returnModal(s, code, key = keyOf(code)) {
 function lineModal(s, key) {
   const l = own(s.items || {}, key); if (!l) return;
   // Company equipment on loan has no price on the sheet (ADR 0017)
-  const equip = isEquipmentLine(l);
+  const equip = isEquipmentLine(l), bought = l.purchased === true;
   openModal(`
-    <h2>${esc(l.name || "Item")}</h2>
+    <h2>${esc(bought ? lineLabel(l) : l.name || "Item")}</h2>
     <div class="code">${esc(codeText(l.code))}</div>
     <form id="f" style="display:grid;gap:14px">
       ${equip ? `<p class="hint" style="margin:0">Company equipment: not charged.</p>` : `<div class="field"><label for="fPrice">Price each on this sheet ($)</label><input type="number" id="fPrice" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${Number(l.price) || 0}"></div>`}
       <div class="row2">
         <div class="field"><label for="fOut">Taken</label><input type="number" id="fOut" min="0" inputmode="numeric" value="${int(l.out)}"></div>
-        <div class="field"><label for="fRet">Returned</label><input type="number" id="fRet" min="0" inputmode="numeric" value="${int(l.returned)}"></div>
+        ${bought ? "" : `<div class="field"><label for="fRet">Returned</label><input type="number" id="fRet" min="0" inputmode="numeric" value="${int(l.returned)}"></div>`}
       </div>
       <div class="modal-actions"><button type="button" class="btn danger" id="remove">Remove</button><span class="spacer"></span><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div>
     </form>`, m => {
@@ -668,9 +672,12 @@ function lineModal(s, key) {
     armButton(m.querySelector("#remove"), "Tap to remove", () => busy(form, () => closing(write(() => removeLine(s.id, key), "Removed", s.id))));
     onSubmit(form, () => {
       // Taken never below what's back and lost; returned never above what isn't lost
-      const lost = int(l.lost), out = Math.max(int(m.querySelector("#fOut").value), lost), returned = Math.min(int(m.querySelector("#fRet").value), out - lost);
-      // Typed prices are kept in whole cents (ADR 0014)
-      const patch = equip ? { out, returned } : { out, returned, price: Math.max(0, round2(m.querySelector("#fPrice").value)) };
+      // Bought for the client: nothing comes back, so there's no returned to change
+      const lost = int(l.lost), out = Math.max(int(m.querySelector("#fOut").value), lost);
+      const returned = bought ? 0 : Math.min(int(m.querySelector("#fRet").value), out - lost);
+      // Typed prices are kept in whole cents (ADR 0014); the server records who typed one on a bought line
+      const price = equip ? {} : { price: Math.max(0, round2(m.querySelector("#fPrice").value)) };
+      const patch = bought ? { out, ...price } : { out, returned, ...price };
       saving(form, () => closing(write(() => db.doc("sheets/" + s.id).update({ items: { [key]: patch } }), "Saved", s.id)));
     });
   });
@@ -799,7 +806,7 @@ function handleCode(code) {
   const s = currentSheet(); if (!s || !code) return;
   if (ui.mode === "out") { checkoutModal(s, code, keyForCode(code)); return; }
   const items = s.items || {};
-  const onSheet = Object.keys(items).find(k => k === keyOf(code) || items[k].code === code);
+  const onSheet = Object.keys(items).find(k => items[k].purchased !== true && (k === keyOf(code) || items[k].code === code));
   returnModal(s, code, onSheet || keyForCode(code));
 }
 
@@ -861,6 +868,15 @@ const DKEY = "supplyCheckout.receiptDraft";
 let draftKeyNow = () => DKEY;
 // rSaving: a receipt is being saved (saveReceipt)
 let sampleFn = null, receiptOK = false, draft = null, rSaving = false;
+// The web build's team settings, for owners only (src/aws/settings.js; null for anyone else and in
+// the artifact build), and the equipment markup read from them: an owner sees the price it gives
+// equipment bought for a client. Nobody else's page ever has the percentage (ADR 0017, 2a).
+let settingsCap = null, markup = null;
+async function refreshMarkup() {
+  // WEB: the artifact build has no markup (claude.ai's db can't keep it from the crew)
+  if (!(WEB && settingsCap)) return;
+  try { markup = (await settingsCap.get()).settings.equipmentMarkup; } catch { markup = null; }
+}
 const stored = fn => { const k = draftKeyNow(); if (WEB && !k) return; try { fn(k); } catch {} };
 const loadDraft = () => stored(k => { draft = JSON.parse(localStorage.getItem(k) || "null"); });
 if (!WEB) loadDraft();
@@ -893,7 +909,19 @@ const eaches = l => int(l.qty) * packOf(l);
 const unitCost = l => Math.max(0, round2((Number(l.price) || 0) / packOf(l)));
 // Keep the client price by default when the item has a cost and its price is above it (a markup)
 const priceChoice = l => { const p = lineProd(l); return l.usePrice || (p && hasCost(p) && p.price > p.cost ? "inv" : "receipt"); };
-const effPrice = l => { const p = lineProd(l); return p && priceChoice(l) === "inv" ? round2(p.price) : unitCost(l); };
+// Company equipment bought for a client (ADR 0017, 2a): the line's own price, if the reviewer
+// typed one; otherwise the server adds the team's markup to the receipt price, which the review
+// shows an owner (who has the markup), and the artifact build charges the receipt price
+const isBought = l => isEquipment(lineProd(l)) && l.dest !== "stock";
+const typedPrice = l => l.typed === undefined || l.typed === "" ? undefined : Math.max(0, round2(l.typed));
+const boughtPrice = l => typedPrice(l) ?? (WEB && markup !== null ? round2(unitCost(l) * (1 + markup / 100)) : unitCost(l));
+function chargedText(l) {
+  const typed = typedPrice(l);
+  if (typed !== undefined) return `Charged: ${money(typed)} each, the price you typed`;
+  if (!WEB) return `Charged: ${money(unitCost(l))} each, the receipt price`;
+  return markup !== null ? `Charged: ${money(boughtPrice(l))} each (receipt price + ${markup}% markup)` : "Charged: receipt price + team markup";
+}
+const effPrice = l => { const p = lineProd(l); return isBought(l) ? boughtPrice(l) : p && priceChoice(l) === "inv" ? round2(p.price) : unitCost(l); };
 const charge = l => round2(eaches(l) * effPrice(l));
 const lineNote = l => packOf(l) > 1 ? `${eaches(l)} each, cost ${money(unitCost(l))} each` : "";
 let rScanLine = null;
@@ -920,7 +948,8 @@ async function startReceipt(file) {
     const res = await sampleFn.json(prompt, { images: await shrinkPhoto(file), signal: ctl.signal });
     const items = res && Array.isArray(res.items) ? res.items.filter(i => i && i.name).map(i => ({ ...i, match: own(ids, i.match) || "" })) : [];
     if (!items.length) { receiptError("No line items were found in that photo. Lay the receipt flat, fill the frame, and make sure the text is in focus."); return; }
-    draft = newDraft({ ...res, items }); saveDraft(); renderReceipt();
+    draft = newDraft({ ...res, items }); saveDraft();
+    await refreshMarkup(); renderReceipt();
   } catch (e) {
     if (e && e.code === "cancelled") { ui.receipt = false; draw(); return; }
     receiptError(sampleErr(e && e.code));
@@ -980,6 +1009,13 @@ function invOptions(sel) {
   const all = Object.entries(products).sort((a, b) => String(a[1].name).localeCompare(String(b[1].name)));
   return `<option value="">New item (not in inventory yet)</option>` + all.map(([k, p]) => `<option value="${esc(k)}" ${sel === k ? "selected" : ""}>${esc(p.name)}${p.code ? " · " + esc(p.code) : ""}</option>`).join("");
 }
+// A receipt line for company equipment: where it goes says what it is, and a bought one's price
+function receiptEquipmentHTML(l) {
+  if (l.dest === "stock") return `<p class="hint equip">Company equipment · added to storage, not charged</p>`;
+  return `<p class="hint equip">Company equipment · bought for this client: charged on their sheet, not kept in storage</p>
+        <p class="hint" data-charged>${esc(chargedText(l))}</p>
+        <label class="lbl">Charge a different price ($)<input type="number" data-f="typed" id="t-${l.id}" min="0" max="${MAX_MONEY}" step="0.01" inputmode="decimal" data-money value="${esc(l.typed ?? "")}" placeholder="Leave blank"></label>`;
+}
 function lineHTML(l) {
   const p = lineProd(l);
   const priceDiff = p && Math.abs((Number(p.price) || 0) - unitCost(l)) > 0.004, pack = packSizeOf(p), use = priceChoice(l);
@@ -998,7 +1034,7 @@ function lineHTML(l) {
         </div>` : ""}
         ${pack > 1 ? `<div class="pack"><span>1 case = ${pack} each</span>
           <label class="check"><input type="checkbox" data-f="perEach" ${l.perEach ? "checked" : ""}> Priced per each</label></div>` : ""}
-        ${priceDiff ? `<div class="choice warn" role="group" aria-label="Price to charge">
+        ${isEquipment(p) ? receiptEquipmentHTML(l) : priceDiff ? `<div class="choice warn" role="group" aria-label="Price to charge">
           <span class="lbl">Price changed</span>
           <button type="button" data-price="receipt" aria-pressed="${use === "receipt"}">${money(unitCost(l))}<small>Charge the receipt price</small></button>
           <button type="button" data-price="inv" aria-pressed="${use === "inv"}">${money(p.price)}<small>Keep the client price</small></button>
@@ -1055,10 +1091,13 @@ $("#rBody").addEventListener("input", e => {
     if (t.dataset.f === "name") l.name = t.value;
     if (t.dataset.f === "qty") l.qty = int(t.value);
     if (t.dataset.f === "price") l.price = Math.max(0, Number(t.value) || 0);
+    if (t.dataset.f === "typed") l.typed = t.value.trim();
     if (t.dataset.f === "dest") l.dest = t.value;
     if (t.dataset.f === "code") l.code = t.value.trim();
     if (t.dataset.f === "perEach") { l.perEach = t.checked; saveDraft(); rerenderLine(l); return; }
     if (t.dataset.f === "code" || t.dataset.f === "match") return;
+    const charged = row.querySelector("[data-charged]");
+    if (charged) charged.textContent = chargedText(l);
     row.querySelector("[data-total]").textContent = money(charge(l));
     row.querySelector("[data-note]").textContent = lineNote(l);
     paintSum();
@@ -1069,7 +1108,11 @@ $("#rBody").addEventListener("input", e => {
 $("#rBody").addEventListener("change", e => {
   const d = draft, t = e.target; if (!editable(t)) return;
   if (t.matches("[data-dsel]")) { const x = d.dests.find(x => x.id === t.closest("[data-d]").dataset.d); x.sheetId = t.value; saveDraft(); renderReceipt(); }
-  else if (t.dataset.f === "dest") { d.lines.find(l => l.id === t.closest("[data-l]").dataset.l).dest = t.value; saveDraft(); paintSum(); }
+  else if (t.dataset.f === "dest") {
+    const l = d.lines.find(l => l.id === t.closest("[data-l]").dataset.l); l.dest = t.value; saveDraft();
+    // Equipment says what it is where it goes: bought for a client, or into storage
+    if (isEquipment(lineProd(l))) rerenderLine(l); else paintSum();
+  }
   else if (t.dataset.f === "match") { const l = d.lines.find(l => l.id === t.closest("[data-l]").dataset.l); l.match = t.value; l.suggested = false; l.useName = "inv"; l.usePrice = ""; l.perEach = false; saveDraft(); rerenderLine(l); }
   else if (t.dataset.f === "code") { const l = d.lines.find(l => l.id === t.closest("[data-l]").dataset.l); const before = l.match; setCode(l, t.value); saveDraft(); if (l.match !== before) rerenderLine(l); }
   else if (t.id === "rScanFile") { const f = t; (async () => { const c = await scanFromInput(f); const l = d.lines.find(l => l.id === rScanLine); if (c && l) { setCode(l, c); saveDraft(); rerenderLine(l); } })(); }
@@ -1168,10 +1211,18 @@ async function saveReceipt() {
 
   const savedIds = [];
   for (const x of usedDests) {
-    const ls = lines.filter(l => l.dest === x.id), items = {};
+    // Equipment bought for the client goes on lines of its own (bought), added after the rest
+    const ls = lines.filter(l => l.dest === x.id), items = {}, bought = {};
     for (const l of ls) {
-      const k = keyOfLine[l.id];
-      const it = own(items, k) || (items[k] = { code: (products[k] && products[k].code) || l.code || "", name: effName(l), price: effPrice(l), cost: unitCost(l), out: 0, returned: 0 });
+      const k = keyOfLine[l.id], code = (products[k] && products[k].code) || l.code || "";
+      if (isBought(l)) {
+        // The receipt price each, and the reviewer's price if they typed one; never a markup price
+        const typed = typedPrice(l);
+        const b = own(bought, k) || (bought[k] = { code, name: effName(l), cost: unitCost(l), out: 0, ...(typed === undefined ? {} : { typed, by: myId || d.by.trim() }) });
+        b.out += eaches(l);
+        continue;
+      }
+      const it = own(items, k) || (items[k] = { code, name: effName(l), price: effPrice(l), cost: unitCost(l), out: 0, returned: 0 });
       it.out += eaches(l);
     }
     let ok;
@@ -1181,7 +1232,7 @@ async function saveReceipt() {
         d.lines = d.lines.filter(l => !usedDests.slice(0, usedDests.indexOf(x)).some(y => y.id === l.dest));
         retryable = false; failed(); return;
       }
-      ok = await write(() => addLines(db, x, x.sheetId, items), undefined, x.sheetId);
+      ok = await write(() => addLines(db, x, x.sheetId, items, bought), undefined, x.sheetId);
       if (ok) savedIds.push(x.sheetId);
     } else {
       // One new sheet per destination, whatever the attempt: its ID and creation time are kept
@@ -1195,7 +1246,11 @@ async function saveReceipt() {
       const body = { client: x.client.trim(), date: d.date, createdBy: myId || null, createdAt: x.createdAt, status: "open", items };
       if (!myId) body.createdByName = d.by.trim();
       if (d.store) body.source = { store: d.store, receiptDate: d.receiptDate };
-      ok = await write(async () => { if (!tried || !(await ref.get()).exists) await ref.set(body); });
+      // A line bought for the client is added to the new sheet once it exists, as to any sheet
+      ok = await write(async () => {
+        if (!tried || !(await ref.get()).exists) await ref.set(body);
+        if (Object.keys(bought).length) await addLines(db, x, ref.id, {}, bought);
+      });
       if (ok) addLocalSheet(ref.id, body);
       if (ok) savedIds.push(ref.id);
     }
@@ -1229,6 +1284,7 @@ draw();
   if (WEB) {
     const drafts = await use("drafts"); if (drafts) draftKeyNow = () => drafts.key; loadDraft();
     const fr = await use("firstRun");
+    settingsCap = await use("settings");
     if (fr) firstRun = createFirstRun(fr, { addItem: () => { ui.tab = "prices"; draw(); productModal(null); }, newSheet: () => { ui.tab = "sheets"; draw(); newSheetModal(); }, redraw: draw });
   }
   if (sampleFn) { try { const lim = await sampleFn.limits(); receiptOK = !!(lim && lim.images); } catch {} }

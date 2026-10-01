@@ -2,7 +2,7 @@
 // documents the app already holds and shows (both collections are loaded in full to draw
 // the lists), with the same math and labels as the screens, so an export matches them.
 import { hasStock, isEquipment, unitValue } from "./format.js";
-import { lines, lineCounts, lineCharge, totals, isEquipmentLine, equipmentCounts, lostCharge, lostRows } from "./sheet-math.js";
+import { lines, lineCounts, lineCharge, totals, isEquipmentLine, equipmentCounts, lostCharge, lostRows, lineLabel } from "./sheet-math.js";
 
 // One CSV cell. Text that a spreadsheet would run as a formula (=, +, -, @, tab or return
 // first) gets a leading apostrophe, so a name a team member typed can't run in the
@@ -26,7 +26,7 @@ export function sheetCsv(s, preparedBy) {
   return toCsv([
     ["Client", s.client], ["Date", s.date], ["Prepared by", preparedBy], ["Status", statusText(s)], [],
     ["Item", "Barcode", "Price each", "Taken", "Returned", "Used", "Charge"],
-    ...lines(s).filter(l => !isEquipmentLine(l)).map(l => { const { o, r, u, p } = lineCounts(l); return [l.name, l.code || "", fixed(p), o, r, u, fixed(lineCharge(l))]; }),
+    ...lines(s).filter(l => !isEquipmentLine(l)).map(l => { const { o, r, u, p } = lineCounts(l); return [l.purchased === true ? lineLabel(l) : l.name, l.code || "", fixed(p), o, r, u, fixed(lineCharge(l))]; }),
     ...lostRows(s).map(r => [r.name, r.code || "", "", "", "", r.used, fixed(r.charge)]),
     ["Total", "", "", t.out, t.ret, t.used, fixed(t.charge)],
   ]);
@@ -42,7 +42,7 @@ export function sheetsCsv(sheets, preparedBy) {
     const ls = lines(s);
     if (!ls.length) rows.push([...head, "", "", "", "", "", "", "", s.id, ""]);
     for (const l of ls) {
-      const name = l.name || "Unnamed item", code = l.code || "";
+      const name = lineLabel(l), code = l.code || "";
       if (isEquipmentLine(l)) {
         const { o, r, lost } = equipmentCounts(l), lc = lostCharge(l);
         rows.push([...head, name, code, "", o, r, "", "", s.id, "Equipment"]);

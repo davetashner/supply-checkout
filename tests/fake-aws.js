@@ -87,8 +87,9 @@ export class FakeBackend {
   // teamInvites: { "<teamId>": [{ id, email, role, createdAt, expiresAt, inviteStatus, failureReason, failedAt }] },
   // the invites its owners see there (invites is the signed-in user's own, for /me)
   // supportActions: { "<teamId>": [{ eventId, ts, actor, action, reason, before, after }] }, newest first
-  constructor({ teams = [TEAM], invites = [], members = {}, teamInvites = {}, supportActions = {}, user = USER, docs = {}, signedIn = true, claims = { given_name: "Pat", family_name: "Lee", email: USER.email }, config = CONFIG, expiresIn = 3600 } = {}) {
-    Object.assign(this, { teams: clone(teams), invites: clone(invites), members: clone(members), teamInvites: clone(teamInvites), supportActions: clone(supportActions), user, signedIn, claims, config, expiresIn });
+  // settings: { "<teamId>": { equipmentMarkup, version } }, the team settings (ADR 0017)
+  constructor({ teams = [TEAM], invites = [], members = {}, teamInvites = {}, supportActions = {}, settings = {}, user = USER, docs = {}, signedIn = true, claims = { given_name: "Pat", family_name: "Lee", email: USER.email }, config = CONFIG, expiresIn = 3600 } = {}) {
+    Object.assign(this, { teams: clone(teams), invites: clone(invites), members: clone(members), teamInvites: clone(teamInvites), supportActions: clone(supportActions), settings: clone(settings), user, signedIn, claims, config, expiresIn });
     // Invites for the user's address that /me lists once they verify it (the email routes)
     this.pendingInvites = [];
     // An address a provider rewrites the user's email to while a code is being sent: that
@@ -283,6 +284,9 @@ export class FakeBackend {
     m = path.match(/^\/teams\/([^/]+)\/support-actions$/);
     if (m) return this.support(decodeURIComponent(m[1]), call.query, err);
 
+    m = path.match(/^\/teams\/([^/]+)\/settings$/);
+    if (m) return this.teamSettings(decodeURIComponent(m[1]), method, call.body, err);
+
     m = path.match(/^\/teams\/([^/]+)\/members(?:\/([^/]+))?$/);
     if (m) return this.member(decodeURIComponent(m[1]), m[2] && decodeURIComponent(m[2]), method, call.body, err);
 
@@ -375,6 +379,22 @@ export class FakeBackend {
     const all = this.supportActions[team] || [], from = Number(query.cursor || 0), limit = Number(query.limit || 100);
     const actions = all.slice(from, from + limit);
     return [200, from + limit < all.length ? { actions, cursor: String(from + limit) } : { actions }];
+  }
+
+  // The team settings as the API runs them (backend/src/data/settings.ts): owners get the
+  // equipment markup and its version, anyone else an empty settings; only owners save, on the
+  // version they read
+  teamSettings(team, method, body, err) {
+    const mine = this.teams.find((t) => t.id === team);
+    if (!mine) return err(403, "permission_denied", "not_member");
+    const cur = this.settings[team] || { equipmentMarkup: 0, version: 0 };
+    if (method === "GET") return [200, mine.role === "owner" ? { version: cur.version, settings: { equipmentMarkup: cur.equipmentMarkup } } : { settings: {} }];
+    if (mine.role !== "owner") return err(403, "permission_denied", "owners_only");
+    const m = body.equipmentMarkup;
+    if (typeof m !== "number" || m < 0 || m > 1000 || Math.abs(Math.round(m * 100) - m * 100) > 1e-6) return err(400, "bad_request");
+    if (body.expectedVersion !== cur.version) return err(409, "aborted");
+    this.settings[team] = { equipmentMarkup: m, version: cur.version + 1 };
+    return [200, { version: cur.version + 1, settings: { equipmentMarkup: m } }];
   }
 
   // Closing a team as the API runs it: owners, typing its name (any case, spaces around);
@@ -520,7 +540,8 @@ export class FakeBackend {
     const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
     const valid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId) && !Object.keys(rest).length && Array.isArray(lines) && lines.length >= 1 && lines.length <= 40
       && new Set(lines.map((l) => l.productKey)).size === lines.length
-      && lines.every((l) => typeof l.productKey === "string" && Number.isInteger(l.quantity) && l.quantity >= 1 && typeof l.name === "string" && l.name.trim() && cents(l.price) && (l.cost === undefined || cents(l.cost)));
+      && lines.every((l) => typeof l.productKey === "string" && Number.isInteger(l.quantity) && l.quantity >= 1 && typeof l.name === "string" && l.name.trim() && (l.price === undefined || cents(l.price)) && (l.cost === undefined || cents(l.cost))
+        && (l.priceSet === undefined || (l.priceSet === "manual" && l.price !== undefined)));
     if (!valid) return err(400, "bad_request");
     const sheetKey = `${team}/sheets/${sheetId}`;
     const answer = (result, replayed) => {
@@ -534,11 +555,25 @@ export class FakeBackend {
     if (!sheet) return err(404, "not_found", "No such sheet");
     if (sheet.data.status === "closed") return err(409, "aborted", "This sheet is closed. Reopen it to add to it.");
     const items = (sheet.data.items ||= {});
-    const done = lines.map(({ productKey: key, quantity, code = "", name, price, cost }) => {
+    // Company equipment bought for the client (ADR 0017, section 2a): its own line, priced by the
+    // server from the receipt price and the team's markup, or at a typed price ("manual")
+    const markup = (this.settings[team] || { equipmentMarkup: 0 }).equipmentMarkup;
+    const plans = [];
+    for (const { productKey, quantity, code = "", name, price, cost, priceSet } of lines) {
+      const product = this.docs.get(`${team}/products/${productKey}`);
+      const equipment = product?.data.kind === "equipment";
+      if (equipment ? price !== undefined && priceSet !== "manual" : price === undefined) return err(400, "bad_request");
+      if (equipment && priceSet !== "manual" && cost === undefined) return err(400, "bad_request");
+      const key = equipment ? `${productKey}:bought` : productKey;
+      const each = equipment && priceSet !== "manual" ? Math.round(cost * (1 + markup / 100) * 100) / 100 : price;
+      const fresh = { code, name: name.trim(), price: each, ...(cost === undefined ? {} : { cost }), ...(equipment ? { purchased: true, priceSet: priceSet === "manual" ? "manual" : "markup", ...(priceSet === "manual" ? { priceSetBy: this.user.id, priceSetAt: new Date().toISOString() } : {}) } : {}), out: quantity, returned: 0 };
+      plans.push({ key, quantity, fresh, result: { productKey, quantity, ...(equipment ? { lineKey: key, purchased: true } : {}) } });
+    }
+    const done = plans.map(({ key, quantity, fresh, result }) => {
       const line = Object.hasOwn(items, key) ? items[key] : undefined;
       if (line) line.out += quantity;
-      else items[key] = { code, name: name.trim(), price, ...(cost === undefined ? {} : { cost }), out: quantity, returned: 0 };
-      return { productKey: key, quantity, lineCreated: !line };
+      else items[key] = fresh;
+      return { ...result, lineCreated: !line };
     });
     sheet.version++;
     const result = { operationId, command: "addLines", sheetId, lines: done, userId: this.user.id, at: new Date().toISOString() };
