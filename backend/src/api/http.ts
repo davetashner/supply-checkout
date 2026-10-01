@@ -31,7 +31,9 @@ export type ErrorCode =
  * `no_billing_account`: the team has no Stripe customer yet (no owner has
  * started a checkout), so there's no Customer Portal to open. `mfa_required`:
  * a billing route for an owner without two-step sign-in (an authenticator
- * app) on. Setting it up: `password_invalid` (the password policy),
+ * app) on. `mfa_sign_in_again`: a billing route for an owner whose session
+ * began before two-step sign-in was turned on, so they sign in again with
+ * the password and the code. Setting it up: `password_invalid` (the password policy),
  * `password_mismatch` (the current password is wrong or missing) and
  * `federated_sign_in` (a Google or Apple user, who has nothing to set up), and
  * `signout_failed` (it's on, but the user's other sessions weren't ended yet:
@@ -54,6 +56,7 @@ export type ErrorReason =
   | "subscription_ended"
   | "no_billing_account"
   | "mfa_required"
+  | "mfa_sign_in_again"
   | "password_invalid"
   | "password_mismatch"
   | "federated_sign_in"

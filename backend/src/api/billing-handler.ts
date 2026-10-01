@@ -49,8 +49,17 @@
 //    (TOTP) on and preferred, or a Google or Apple user (whose provider's
 //    sign-in counts for it); otherwise 403 `mfa_required`. GetUser also
 //    refuses a revoked token (401), and turning TOTP on in the app signs the
-//    user out everywhere (account-handler.ts), so a session from before it
-//    can't pass: every one that does began with the authenticator's code.
+//    user out everywhere (account-handler.ts).
+// 2b. Then, for TOTP, the session must have begun after it was turned on
+//    (supply-checkout-8jc.14): the access token's `auth_time` must be later
+//    than the user's TOTP_ON record (data/two-step.ts), which the account API,
+//    the security notices function (from CloudTrail, so TOTP turned on
+//    directly against Cognito counts too) and this check keep. With no record
+//    (TOTP on from before it was kept, or a CloudTrail event not processed
+//    yet), this records the time now, which is after TOTP was on. Otherwise
+//    403 `mfa_sign_in_again`: sign in again, with the password and the code.
+//    The record is read, and written, on a session tagged with the caller's
+//    own sub, which may name only `totpOnAt` in `USER#<sub>`.
 // 3. Every DynamoDB call runs on a billing-access role session tagged with
 //    that team and, when linking, the customer Stripe returned (billing-db.ts):
 //    IAM refuses any other partition, and any attribute but the link's. The
@@ -78,9 +87,11 @@ import {
   getTeam,
   hasEnded,
   linkStripeCustomer,
+  recordTotpOn,
   type Team,
   TeamClosedError,
   type TeamContext,
+  totpOnAt,
   TRIAL_DAYS,
 } from "../data/index.js";
 import { BusinessMetric, type BusinessMetricName, type Observability } from "../observability/index.js";
@@ -248,7 +259,7 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
   const now = deps.now ?? Date.now;
   const { dbFor, obs } = deps;
 
-  /** The caller's context for the path's team, as its owner with two-step sign-in on, or 403 (`not_member` for a team that doesn't exist, `mfa_required`). */
+  /** The caller's context for the path's team, as its owner with two-step sign-in on, or 403 (`not_member` for a team that doesn't exist, `mfa_required`, `mfa_sign_in_again`). */
   async function ownerContext(event: DataEvent, userId: string, route: BillingRoute): Promise<TeamContext> {
     const teamId = event.pathParameters?.teamId;
     if (typeof teamId !== "string" || !ID.test(teamId)) throw new ApiError(400, "bad_request", "Invalid team ID");
@@ -257,20 +268,45 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
       throw error;
     });
     requireRole(ctx.role, route.minRole);
-    await requireMfa(event, userId);
+    await requireMfa(event, userId, ctx.teamId);
     return ctx;
   }
 
-  /** Two-step sign-in on (see 2a at the top), or 403 `mfa_required`. */
-  async function requireMfa(event: DataEvent, userId: string): Promise<void> {
+  /** Two-step sign-in on (see 2a at the top), or 403 `mfa_required`; for TOTP, in a session that began after it was on (2b), or 403 `mfa_sign_in_again`. */
+  async function requireMfa(event: DataEvent, userId: string, teamId: string): Promise<void> {
     const user = await deps.userInfo(accessToken(event)).catch((error: unknown) => {
       // Cognito couldn't answer: not Stripe's failure, so not counted as one
       throw error instanceof ApiError ? error : new MfaCheckError(error);
     });
     // The same user API Gateway verified, or something is badly wrong
     if (user.sub !== userId) throw new ApiError(401, "unauthenticated", "Sign in again");
-    if (user.totp || user.federated) return;
-    throw new ApiError(403, "permission_denied", "Turn on two-step sign-in with an authenticator app (Account, in the team bar) before managing billing", "mfa_required");
+    if (user.federated) return;
+    if (!user.totp) throw new ApiError(403, "permission_denied", "Turn on two-step sign-in with an authenticator app (Account, in the team bar) before managing billing", "mfa_required");
+    const after = await sessionAfterTotp(event, userId, teamId).catch((error: unknown) => {
+      // DynamoDB couldn't answer: as for Cognito above
+      throw new MfaCheckError(error);
+    });
+    if (!after) {
+      throw new ApiError(403, "permission_denied", "Sign in again, with your password and a code from your authenticator app, before managing billing: this session began before two-step sign-in was turned on", "mfa_sign_in_again");
+    }
+  }
+
+  /**
+   * Whether the token's session began after TOTP was last turned on (2b at
+   * the top). `auth_time` is when the user signed in, in whole seconds
+   * (rounded down), so a later second is needed; a token without one fails.
+   */
+  async function sessionAfterTotp(event: DataEvent, userId: string, teamId: string): Promise<boolean> {
+    const db = dbFor({ teamId, userId });
+    const on = await totpOnAt(db, userId);
+    if (on === undefined) {
+      // TOTP is on (GetUser just said so), so now is no earlier than when it was turned on
+      await recordTotpOn(db, userId, new Date(now()));
+      obs.logger.info("Two-step sign-in time recorded", { userId });
+      return false;
+    }
+    const authTime = Number(event.requestContext.authorizer.jwt.claims.auth_time);
+    return Number.isInteger(authTime) && authTime * 1000 > on;
   }
 
   /** The body's plan and interval, checked against the catalog. Nothing else: the seat quantity is the server's. */

@@ -201,9 +201,12 @@ export const WEBHOOK_ROUTES: readonly WebhookRoute[] = [{ method: "POST", path: 
  * and the team), update only the META item's `stripeCustomerId` there, and
  * put only the Stripe link `STRIPE#<stripeCustomer>`. `stripeCustomer` is
  * BILLING_TAG_UNUSED until Stripe has made the team's customer, so a session
- * can only ever link the customer Stripe returned.
+ * can only ever link the customer Stripe returned. `userId` is the caller's
+ * own `sub` (from the verified token), set only for the two-step sign-in
+ * check: the session may then read and update only `totpOnAt` in
+ * `USER#<userId>` (supply-checkout-8jc.14). Otherwise it's BILLING_TAG_UNUSED.
  */
-export const BILLING_SESSION_TAGS = { teamId: "teamId", stripeCustomer: "stripeCustomer" } as const;
+export const BILLING_SESSION_TAGS = { teamId: "teamId", stripeCustomer: "stripeCustomer", userId: "userId" } as const;
 export const BILLING_TAG_UNUSED = ".";
 
 export interface OpsRoute {

@@ -32,6 +32,14 @@
 //   address, when AdminGetUser shows an authenticator app among the user's
 //   MFA methods (so turning it off, or a code checked without turning it on,
 //   sends nothing).
+// - VerifySoftwareToken, SetUserMFAPreference, first of all: when TOTP was
+//   turned on (supply-checkout-8jc.14, data/two-step.ts), which the billing
+//   routes compare with a session's auth_time. With an authenticator among
+//   the user's MFA methods, the event's time is recorded unless a later one
+//   is; without one (turned off), a record older than the event is removed,
+//   so if it's turned on again directly, billing finds none until that
+//   event arrives, and refuses. A failed write is counted (`error`) and
+//   thrown, so Lambda tries again.
 // - Every event, and UpdateUserAttributes and VerifyUserAttribute only for
 //   this: `emailChanged`, to the address the account had before, when the
 //   address Cognito has verified (where it now sends codes and resets) is
@@ -64,6 +72,7 @@
 import {
   claimEmailChangeNotice,
   claimNotice,
+  clearTotpOn,
   type Db,
   emailChangeClaimedAt,
   emailSeenHash,
@@ -71,6 +80,7 @@ import {
   normalizeEmail,
   noticeAddress,
   recordNoticeAddress,
+  recordTotpOn,
   releaseEmailChangeNotice,
 } from "../data/index.js";
 import { EmailNotSentError, type Mailer } from "../email/mailer.js";
@@ -83,7 +93,7 @@ export interface SecurityNoticesDeps {
   /** The app pool: events that name another pool are ignored. */
   readonly userPoolId: string;
   readonly findAccount: FindAccount;
-  /** The app table, as the function's role reaches it (GetItem and UpdateItem of SECURITY_NOTICE_ATTRIBUTES in USER# partitions). */
+  /** The app table, as the function's role reaches it (GetItem and UpdateItem of SECURITY_NOTICE_ATTRIBUTES, totpOnAt among them, in USER# partitions). */
   readonly db: Db;
   readonly mailer: Mailer;
   readonly obs: Observability;
@@ -247,7 +257,9 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
     if (!sub || !SUB.test(sub)) return failed(undefined, kind, "no_user", "NoSub");
     seen.sub = sub;
     const eventTime = Date.parse(String(detail.eventTime));
-    const at = (Number.isFinite(eventTime) ? new Date(eventTime) : now()).toISOString();
+    // CloudTrail's time is in whole seconds, rounded down: never later than the call
+    const when = Number.isFinite(eventTime) ? new Date(eventTime) : now();
+    const at = when.toISOString();
 
     let account: PoolAccount | undefined;
     try {
@@ -260,6 +272,8 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
     }
     // Not an app user: another pool's (the event didn't name it), or since deleted
     if (!account) return;
+    // When TOTP was turned on, for the billing check, before anything below can fail
+    if (kind === "twoStepOn") await (account.totpEnabled ? recordTotpOn(db, sub, when) : clearTotpOn(db, sub, when));
     // On every event, so a later one catches an email change whose own events were missed or dead-lettered
     await noticeEmailChange(sub, account, at);
     if (kind === "emailChanged") return;

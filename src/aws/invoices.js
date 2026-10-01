@@ -4,7 +4,8 @@
 // Stripe emails invoices and receipts itself, and prints the billing name, address and tax
 // ID on them; owners change those, and see older invoices, in Billing (the Customer Portal).
 // The route needs two-step sign-in like the rest of billing: refused for want of it, the
-// screen closes and `needsTwoStep` opens the setup.
+// screen closes and `needsTwoStep` opens the setup, or asks to sign in again when the
+// session began before it was turned on (`mfa_sign_in_again`).
 import { esc } from "../format.js";
 import { openModal, closeModal } from "../dom.js";
 
@@ -48,7 +49,7 @@ export function openInvoices(api, team, needsTwoStep) {
         list.innerHTML = (page.invoices.length ? `<ul class="invoices">${page.invoices.map(invoiceHTML).join("")}</ul>` : `<p class="muted">No invoices yet.</p>`)
           + (page.hasMore ? `<p class="hint" id="olderInvoices">Older invoices are in Billing.</p>` : "");
       } catch (e) {
-        if (e.reason === "mfa_required") {
+        if (e.reason === "mfa_required" || e.reason === "mfa_sign_in_again") {
           closeModal();
           needsTwoStep(e);
           return;

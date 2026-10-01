@@ -243,7 +243,7 @@ describe("email stack", () => {
           Action: "dynamodb:GetItem",
           Condition: {
             "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
-            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash", "totpOnAt"] },
             StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
           },
         }),
@@ -252,7 +252,7 @@ describe("email stack", () => {
           Action: ["dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"],
           Condition: {
             "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
-            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash", "totpOnAt"] },
             StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
           },
         }),

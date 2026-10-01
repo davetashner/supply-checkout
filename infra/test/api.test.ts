@@ -7,6 +7,7 @@ import {
   BILLING_UPDATE_ATTRIBUTES,
   COMP_ATTRIBUTES,
   CUSTOMER_LINK_TEAM_ATTRIBUTES,
+  TOTP_RECORD_ATTRIBUTES,
   IMPORT_INDEX_ATTRIBUTES,
   INVITE_LIMIT_ATTRIBUTES,
   MEMBER_ROW_ATTRIBUTES,
@@ -438,7 +439,7 @@ describe("billing function and billing-access role (ADR 0009)", () => {
     }
   });
 
-  it("can be assumed only by the billing function's role, with the team and customer tags and no others", () => {
+  it("can be assumed only by the billing function's role, with the team, customer and user tags and no others", () => {
     const r = role();
     expect(r.MaxSessionDuration).toBe(3600);
     const [trust, ...rest] = r.AssumeRolePolicyDocument.Statement;
@@ -448,16 +449,16 @@ describe("billing function and billing-access role (ADR 0009)", () => {
       Action: ["sts:AssumeRole", "sts:TagSession"],
       Principal: { AWS: { "Fn::GetAtt": [expect.stringMatching(/^BillingFunctionRole/), "Arn"] } },
       Condition: {
-        StringLike: { "aws:RequestTag/teamId": "?*", "aws:RequestTag/stripeCustomer": "?*" },
-        "ForAllValues:StringEquals": { "aws:TagKeys": ["teamId", "stripeCustomer"] },
+        StringLike: { "aws:RequestTag/teamId": "?*", "aws:RequestTag/stripeCustomer": "?*", "aws:RequestTag/userId": "?*" },
+        "ForAllValues:StringEquals": { "aws:TagKeys": ["teamId", "stripeCustomer", "userId"] },
       },
     });
   });
 
-  it("reads only the tagged team, counts only its members' roles, updates only its Stripe customer, and puts only the tagged customer's link", () => {
+  it("reads only the tagged team, counts only its members' roles, updates only its Stripe customer, puts only the tagged customer's link, and reads and updates only the tagged user's totpOnAt", () => {
     const [policy, ...others] = role().Policies;
     expect(others).toEqual([]);
-    const [read, members, update, link, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    const [read, members, update, link, totpRead, totpUpdate, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
     expect(rest).toEqual([]);
     expect(read).toEqual({
       Sid: "TeamReadOnly",
@@ -497,11 +498,33 @@ describe("billing function and billing-access role (ADR 0009)", () => {
         StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
       },
     });
+    // When the caller turned two-step sign-in on (supply-checkout-8jc.14): their own partition, that attribute only
+    expect(totpRead).toEqual({
+      Sid: "CallerTotpRecordRead",
+      Effect: "Allow",
+      Action: "dynamodb:GetItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["USER#${aws:PrincipalTag/userId}"], "dynamodb:Attributes": ["PK", "SK", "totpOnAt"] },
+        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
+    });
+    expect(totpUpdate).toEqual({
+      Sid: "CallerTotpRecordUpdate",
+      Effect: "Allow",
+      Action: "dynamodb:UpdateItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["USER#${aws:PrincipalTag/userId}"], "dynamodb:Attributes": ["PK", "SK", "totpOnAt"] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+      },
+    });
     // The same lists the handler's requests are tested against (backend/test/billing-policy.ts)
+    expect([...TOTP_RECORD_ATTRIBUTES]).toEqual(["PK", "SK", "totpOnAt"]);
     expect([...CUSTOMER_LINK_TEAM_ATTRIBUTES]).toEqual(["PK", "SK", "stripeCustomerId", "closedAt"]);
     expect([...STRIPE_LINK_ATTRIBUTES]).toEqual(["PK", "SK", "type", "customerId", "teamId"]);
     expect([...MEMBER_SEAT_ATTRIBUTES]).toEqual(["PK", "SK", "role"]);
-    for (const s of [read, members, update, link]) {
+    for (const s of [read, members, update, link, totpRead, totpUpdate]) {
       expect(JSON.stringify(s?.Resource)).toContain(":table/supply-checkout-prod-app");
       expect(JSON.stringify(s?.Resource)).not.toMatch(/index|\*/);
     }

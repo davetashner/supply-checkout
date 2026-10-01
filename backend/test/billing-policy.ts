@@ -2,7 +2,7 @@
 // the in-memory table runs before each call. The infra tests check the real
 // policy; this keeps the billing handler's and worker's requests inside them.
 
-import { BILLING_READ_ATTRIBUTES, BILLING_UPDATE_ATTRIBUTES, CUSTOMER_LINK_TEAM_ATTRIBUTES, MEMBER_SEAT_ATTRIBUTES, STRIPE_LINK_ATTRIBUTES, STRIPE_LINK_READ_ATTRIBUTES, WEBHOOK_RECORD_ATTRIBUTES } from "../src/data/schema.js";
+import { BILLING_READ_ATTRIBUTES, BILLING_UPDATE_ATTRIBUTES, CUSTOMER_LINK_TEAM_ATTRIBUTES, MEMBER_SEAT_ATTRIBUTES, STRIPE_LINK_ATTRIBUTES, STRIPE_LINK_READ_ATTRIBUTES, TOTP_RECORD_ATTRIBUTES, WEBHOOK_RECORD_ATTRIBUTES } from "../src/data/schema.js";
 import type { BillingScope } from "../src/api/billing-db.js";
 import { namedAttributes } from "./helpers.js";
 
@@ -21,15 +21,19 @@ export function billingPolicy(scope: BillingScope, denied: { command: string; in
   const link = `STRIPE#${scope.stripeCustomer ?? "."}`;
   const update = (input: Input) => partitionKey(input) === team && only(input, CUSTOMER_LINK_TEAM_ATTRIBUTES) && returnsNothing(input);
   const put = (input: Input) => partitionKey(input) === link && only(input, STRIPE_LINK_ATTRIBUTES) && returnsNothing(input);
+  // The caller's own two-step sign-in record (supply-checkout-8jc.14): totpOnAt only, projected reads, nothing returned
+  const user = `USER#${scope.userId ?? "."}`;
+  const projected = (input: Input) => typeof input.ProjectionExpression === "string" && (input.Select === undefined || input.Select === "SPECIFIC_ATTRIBUTES");
+  const totpRecord = (input: Input) => partitionKey(input) === user && only(input, TOTP_RECORD_ATTRIBUTES);
   return (command: string, input: Input): boolean => {
     const ok = (() => {
       switch (command) {
         case "GetCommand":
-          return partitionKey(input) === team;
+          return partitionKey(input) === team || (totpRecord(input) && projected(input));
         case "TransactGetCommand":
           return (input.TransactItems as { Get: Input }[]).every((op) => partitionKey(op.Get) === team);
         case "UpdateCommand":
-          return update(input);
+          return update(input) || (totpRecord(input) && returnsNothing(input));
         case "PutCommand":
           return put(input);
         case "TransactWriteCommand":

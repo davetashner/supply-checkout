@@ -5,7 +5,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./helpers.js";
 import { currentBuild } from "../scripts/builds.mjs";
-import { FakeBackend, TEAM, USER, openAws, connected } from "./fake-aws.js";
+import { FakeBackend, TEAM, USER, ORIGIN, AUTH, openAws, connected } from "./fake-aws.js";
 
 test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 test.use({ reducedMotion: "reduce" });
@@ -108,6 +108,42 @@ test("billing refused for want of two-step sign-in opens the setup, saying why",
   // Cancel leaves everything as it was
   await dialog(page).getByRole("button", { name: "Cancel" }).click();
   await expect(page.locator("#overlay")).toBeHidden();
+});
+
+test("billing refused for a session from before two-step sign-in asks to sign in again, keeping the team and drafts", { tag: ["@J0", "@J7"] }, async ({ page }) => {
+  const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING }], user: { ...USER, mfa: "totp" } }));
+  await page.evaluate(() => localStorage.setItem("supplyCheckout.receiptDraft.t1", JSON.stringify({ vendor: "Costco", items: [] })));
+  backend.on("POST", PORTAL, error(403, "permission_denied", { reason: "mfa_sign_in_again" }));
+  await bar(page).getByRole("button", { name: "Billing" }).click();
+  await expect(dialog(page).getByRole("heading", { name: "Sign in again" })).toBeVisible();
+  await expect(dialog(page).getByText("To manage billing, sign in again with your email, your password and a code from your authenticator app. This session began before two-step sign-in was turned on.")).toBeVisible();
+  await expect(dialog(page).getByRole("button", { name: "Sign in again" })).toBeFocused();
+  await expect(page.locator("#toast")).toBeHidden();
+  await expectAccessible(page);
+  // Cancel leaves everything as it was
+  await dialog(page).getByRole("button", { name: "Cancel" }).click();
+  await expect(page.locator("#overlay")).toBeHidden();
+  expect(backend.requests("POST", "/auth/sign-out")).toEqual([]);
+  // The API can't be reached: still signed in, and says so
+  backend.on("POST", PORTAL, error(403, "permission_denied", { reason: "mfa_sign_in_again" }));
+  await bar(page).getByRole("button", { name: "Billing" }).click();
+  backend.on("POST", "/auth/sign-out", { abort: true });
+  await dialog(page).getByRole("button", { name: "Sign in again" }).click();
+  await expect(page.locator("#toast")).toHaveText("Couldn't sign out. Try again.");
+  expect(backend.authRequests).toEqual([]);
+  // Signed out here and of Managed Login, whose session would otherwise sign straight back in
+  await dialog(page).getByRole("button", { name: "Sign in again" }).click();
+  await expect.poll(() => backend.authRequests).toEqual([`${AUTH}/logout?client_id=test-client&logout_uri=${encodeURIComponent(ORIGIN + "/")}`]);
+  expect(backend.requests("POST", "/auth/sign-out")).toHaveLength(2);
+  expect(await page.evaluate(() => ["supplyCheckout.team", "supplyCheckout.owner", "supplyCheckout.receiptDraft.t1"].map((k) => localStorage.getItem(k) !== null))).toEqual([true, true, true]);
+});
+
+test("invoices refused for a session from before two-step sign-in ask to sign in again", { tag: ["@J7.3"] }, async ({ page }) => {
+  const backend = await open(page, new FakeBackend({ teams: [{ ...TEAM, ...PAYING }], user: { ...USER, mfa: "totp" } }));
+  backend.on("GET", "/teams/t1/billing/invoices", error(403, "permission_denied", { reason: "mfa_sign_in_again" }));
+  await bar(page).getByRole("button", { name: "Invoices" }).click();
+  await expect(dialog(page).getByRole("heading", { name: "Sign in again" })).toBeVisible();
+  await expect(dialog(page).locator("#invoiceList")).toHaveCount(0);
 });
 
 test("an owner subscribing again without two-step sign-in is sent to set it up", { tag: ["@J0", "@J7"] }, async ({ page }) => {

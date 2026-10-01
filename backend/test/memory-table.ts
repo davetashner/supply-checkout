@@ -92,6 +92,10 @@ export class MemoryTable {
     return this.items.get(MemoryTable.id({ PK, SK }));
   }
 
+  delete(PK: string, SK: string): void {
+    this.items.delete(MemoryTable.id({ PK, SK }));
+  }
+
   /** A team with members, as createTeam and acceptInvite would leave it. */
   seedTeam(teamId: string, members: Record<string, "owner" | "contributor" | "viewer">): void {
     const owners = Object.values(members).filter((role) => role === "owner").length;

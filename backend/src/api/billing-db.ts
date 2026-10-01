@@ -8,12 +8,16 @@
 //                   this handle before anything else (authorizeTeam)      TEAM#<teamId>
 //   stripeCustomer  the Stripe customer Stripe made for that team, once   STRIPE#<customer>
 //                   it has; BILLING_TAG_UNUSED until then
+//   userId          the caller's own `sub`, for the two-step sign-in      USER#<userId>
+//                   check only (supply-checkout-8jc.14);
+//                   BILLING_TAG_UNUSED otherwise
 //
 // and that role's policy allows reading `TEAM#<teamId>`, updating only its
-// META item's `stripeCustomerId`, and putting only the `STRIPE#<customer>`
-// link (dynamodb:LeadingKeys and dynamodb:Attributes). So a checkout can only
-// link the customer Stripe returned to the path's team, and can't touch any
-// other team or any other attribute.
+// META item's `stripeCustomerId`, putting only the `STRIPE#<customer>` link,
+// and reading and updating only `totpOnAt` in `USER#<userId>`
+// (dynamodb:LeadingKeys and dynamodb:Attributes). So a checkout can only link
+// the customer Stripe returned to the path's team, and can't touch any other
+// team, any other user, or any other attribute.
 
 import { STSClient } from "@aws-sdk/client-sts";
 import { createDb, type Db, InvalidInputError } from "../data/index.js";
@@ -25,6 +29,8 @@ export interface BillingScope {
   readonly teamId: string;
   /** The team's Stripe customer, from Stripe, when it's being linked. */
   readonly stripeCustomer?: string;
+  /** The caller's `sub`, from the verified token, to read and record when they turned two-step sign-in on. */
+  readonly userId?: string;
 }
 
 export type DbForBilling = (scope: BillingScope) => Db;
@@ -56,11 +62,14 @@ export function billingScopedDbs(options: BillingDbOptions): DbForBilling {
     if (scope.stripeCustomer !== undefined && (typeof scope.stripeCustomer !== "string" || scope.stripeCustomer === BILLING_TAG_UNUSED || !ID.test(scope.stripeCustomer))) {
       throw new InvalidInputError("Invalid Stripe customer ID");
     }
+    // ID doesn't allow the unused marker either, so no session reaches USER#.
+    if (scope.userId !== undefined && (typeof scope.userId !== "string" || !ID.test(scope.userId))) throw new InvalidInputError("Invalid user ID");
     const tags = {
       [BILLING_SESSION_TAGS.teamId]: scope.teamId,
       [BILLING_SESSION_TAGS.stripeCustomer]: scope.stripeCustomer ?? BILLING_TAG_UNUSED,
+      [BILLING_SESSION_TAGS.userId]: scope.userId ?? BILLING_TAG_UNUSED,
     };
-    return cached(`${tags.teamId} ${tags.stripeCustomer}`, () =>
+    return cached(`${tags.teamId} ${tags.stripeCustomer} ${tags.userId}`, () =>
       createDb({ tableName: options.tableName, env, credentials: roleSession(sts, now, { roleArn: options.roleArn, sessionName: `billing-${scope.teamId}`, tags }) }),
     );
   };

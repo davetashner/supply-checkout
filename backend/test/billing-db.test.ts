@@ -27,14 +27,16 @@ async function credentials(db: Db) {
 }
 
 describe("billingScopedDbs", () => {
-  it("tags every session with the team and the Stripe customer, or the unused marker before there is one", async () => {
+  it("tags every session with the team, the Stripe customer and the caller, or the unused marker for those it doesn't name", async () => {
     const { sts, calls } = fakeSts();
     const dbFor = billingScopedDbs({ roleArn: ROLE, env, sts });
     await credentials(dbFor({ teamId: "team-a" }));
     await credentials(dbFor({ teamId: "team-a", stripeCustomer: "cus_test_1" }));
+    await credentials(dbFor({ teamId: "team-a", userId: "user-1" }));
     expect(calls).toEqual([
-      { RoleArn: ROLE, RoleSessionName: "billing-team-a", DurationSeconds: 3600, Tags: [{ Key: "teamId", Value: "team-a" }, { Key: "stripeCustomer", Value: "." }] },
-      { RoleArn: ROLE, RoleSessionName: "billing-team-a", DurationSeconds: 3600, Tags: [{ Key: "teamId", Value: "team-a" }, { Key: "stripeCustomer", Value: "cus_test_1" }] },
+      { RoleArn: ROLE, RoleSessionName: "billing-team-a", DurationSeconds: 3600, Tags: [{ Key: "teamId", Value: "team-a" }, { Key: "stripeCustomer", Value: "." }, { Key: "userId", Value: "." }] },
+      { RoleArn: ROLE, RoleSessionName: "billing-team-a", DurationSeconds: 3600, Tags: [{ Key: "teamId", Value: "team-a" }, { Key: "stripeCustomer", Value: "cus_test_1" }, { Key: "userId", Value: "." }] },
+      { RoleArn: ROLE, RoleSessionName: "billing-team-a", DurationSeconds: 3600, Tags: [{ Key: "teamId", Value: "team-a" }, { Key: "stripeCustomer", Value: "." }, { Key: "userId", Value: "user-1" }] },
     ]);
   });
 
@@ -43,13 +45,15 @@ describe("billingScopedDbs", () => {
     const dbFor = billingScopedDbs({ roleArn: ROLE, env, sts });
     expect(dbFor({ teamId: "team-a" })).toBe(dbFor({ teamId: "team-a" }));
     expect(dbFor({ teamId: "team-a" })).not.toBe(dbFor({ teamId: "team-a", stripeCustomer: "cus_test_1" }));
+    expect(dbFor({ teamId: "team-a" })).not.toBe(dbFor({ teamId: "team-a", userId: "user-1" }));
   });
 
-  it("refuses a malformed team or customer before assuming anything", () => {
+  it("refuses a malformed team, customer or user before assuming anything", () => {
     const { sts } = fakeSts();
     const dbFor = billingScopedDbs({ roleArn: ROLE, env, sts, maxScopes: 2 });
     for (const bad of ["", "TEAM#x", "x".repeat(129), 7 as unknown as string]) expect(() => dbFor({ teamId: bad })).toThrow(/Invalid team ID/);
     for (const bad of ["", ".", "cus/1", "STRIPE#cus", 7 as unknown as string]) expect(() => dbFor({ teamId: "team-a", stripeCustomer: bad })).toThrow(/Invalid Stripe customer ID/);
+    for (const bad of ["", ".", "USER#u", "u/1", 7 as unknown as string]) expect(() => dbFor({ teamId: "team-a", userId: bad })).toThrow(/Invalid user ID/);
     expect(sts.send).not.toHaveBeenCalled();
   });
 

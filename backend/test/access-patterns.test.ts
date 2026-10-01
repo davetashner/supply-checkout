@@ -13,6 +13,9 @@ import {
   codeSentHash,
   provenEmailHash,
   claimNotice,
+  clearTotpOn,
+  recordTotpOn,
+  totpOnAt,
   startAccountDeletion,
   claimEmailChangeNotice,
   releaseEmailChangeNotice,
@@ -205,6 +208,24 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       await startAccountDeletion(db, leaving, at);
       expect(await recordNoticeAddress(db, leaving, "owner@example.com", "seen-1", at)).toBe(false);
       expect(await rawItem(db, `USER#${leaving}`, "NOTICE_ADDRESS")).toBeUndefined();
+    });
+
+    // supply-checkout-8jc.14
+    it("keeps when TOTP was turned on in the user's own partition, only ever moving it later", async () => {
+      db = table.db;
+      const userId = newUser();
+      const at = new Date("2026-09-30T14:05:09.000Z");
+      expect(await totpOnAt(db, userId)).toBeUndefined();
+      expect(await clearTotpOn(db, userId, at)).toBe(false);
+      expect(await rawItem(db, `USER#${userId}`, "TOTP_ON")).toBeUndefined();
+      expect(await recordTotpOn(db, userId, at)).toBe(true);
+      expect(await recordTotpOn(db, userId, new Date(at.getTime() - 1000))).toBe(false);
+      expect(await rawItem(db, `USER#${userId}`, "TOTP_ON")).toEqual({ PK: `USER#${userId}`, SK: "TOTP_ON", totpOnAt: at.toISOString() });
+      expect(await recordTotpOn(db, userId, new Date(at.getTime() + 300))).toBe(true);
+      expect(await totpOnAt(db, userId)).toBe(at.getTime() + 300);
+      expect(await clearTotpOn(db, userId, at)).toBe(false);
+      expect(await clearTotpOn(db, userId, new Date(at.getTime() + 1000))).toBe(true);
+      expect(await totpOnAt(db, userId)).toBeUndefined();
     });
 
     it("starts a trial, and makes one team per request key however often it's sent", async () => {

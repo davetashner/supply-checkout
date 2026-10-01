@@ -189,6 +189,8 @@ beforeEach(() => {
   table = new MemoryTable();
   table.seedTeam(TEAM, { [OWNER]: "owner", [CONTRIBUTOR]: "contributor", [VIEWER]: "viewer" });
   table.seedTeam("team-b", { [OUTSIDER]: "owner" });
+  // When each user turned TOTP on (supply-checkout-8jc.14): a day ago
+  for (const user of [OWNER, CONTRIBUTOR, VIEWER, OUTSIDER]) table.put({ PK: `USER#${user}`, SK: "TOTP_ON", totpOnAt: new Date(now - DAY).toISOString() });
   // A team made a day ago, 13 days left of its trial
   patchTeam({ name: "Echo Plumbing", plan: "trial", seats: 1, status: "trialing", createdAt: new Date(now - DAY).toISOString(), trialEndsAt: new Date(now + 13 * DAY).toISOString() });
   stripe = fakeStripe();
@@ -213,7 +215,8 @@ interface Request {
 
 function event(request: Request = {}): DataEvent {
   const user = request.user ?? OWNER;
-  const claims = request.claims ?? { sub: user, token_use: "access", exp: String(Math.floor(now / 1000) + 600), iss: ISSUER, client_id: "web" };
+  // Signed in a minute ago, after TOTP was turned on (TOTP_ON, a day ago: beforeEach)
+  const claims = request.claims ?? { sub: user, token_use: "access", exp: String(Math.floor(now / 1000) + 600), auth_time: String(Math.floor(now / 1000) - 60), iss: ISSUER, client_id: "web" };
   const teamId = request.teamId ?? TEAM;
   return {
     version: "2.0",
@@ -277,7 +280,7 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
     });
     expect(session?.key).toBe(idempotencyKey("checkout", TEAM, { key: KEY, customer: "cus_test_1", priceId: "price_monthly", seats: 2, trial: Math.floor((now + 13 * DAY) / 1000) }));
     // Every handle was scoped to the path's team; only the link's also named the customer
-    expect(scopes).toEqual([{ teamId: TEAM }, { teamId: TEAM }, { teamId: TEAM, stripeCustomer: "cus_test_1" }]);
+    expect(scopes).toEqual([{ teamId: TEAM }, { teamId: TEAM, userId: OWNER }, { teamId: TEAM }, { teamId: TEAM, stripeCustomer: "cus_test_1" }]);
     expect(denied).toEqual([]);
     expect(counts[BusinessMetric.CheckoutSessionErrors]).toBeUndefined();
     expect(JSON.stringify(logs)).not.toContain("Echo Plumbing");
@@ -568,6 +571,88 @@ describe("two-step sign-in for billing (supply-checkout-8jc.12)", () => {
     expect(stripe.state.sessions).toEqual([]);
   });
 
+  describe("a session that began before TOTP was turned on (supply-checkout-8jc.14)", () => {
+    const signedIn = (at: number, user = OWNER) => ({ sub: user, token_use: "access", exp: String(Math.floor(now / 1000) + 600), auth_time: String(Math.floor(at / 1000)), iss: ISSUER, client_id: "web" });
+    const turnedOn = (at: number) => table.put({ PK: `USER#${OWNER}`, SK: "TOTP_ON", totpOnAt: new Date(at).toISOString() });
+
+    it("refuses it on every route, before Stripe is called, and lets a later sign-in through", async () => {
+      patchTeam({ stripeCustomerId: "cus_linked" });
+      turnedOn(now - 5 * 60_000);
+      for (const [name, send] of [["checkout", checkout], ["portal", portal], ["invoices", invoices]] as const) {
+        const { status, body } = await send({ claims: signedIn(now - HOUR) });
+        expect(status, name).toBe(403);
+        expect(body.error, name).toMatchObject({ code: "permission_denied", reason: "mfa_sign_in_again" });
+        expect(body.error.message, name).toMatch(/Sign in again/);
+      }
+      expect(stripe.state.customers).toEqual([]);
+      expect(stripe.state.sessions).toEqual([]);
+      expect(stripe.state.portalSessions).toEqual([]);
+      expect(stripe.state.invoiceLists).toEqual([]);
+      expect((await portal({ claims: signedIn(now - 60_000) })).status).toBe(201);
+      expect(denied).toEqual([]);
+    });
+
+    it("needs a later second: auth_time is in whole seconds, rounded down", async () => {
+      patchTeam({ stripeCustomerId: "cus_linked" });
+      // Turned on at :00.400; a sign-in in the same second, before or after it, can't be told apart
+      const on = Math.floor(now / 1000) * 1000 - 10_000 + 400;
+      turnedOn(on);
+      expect((await portal({ claims: signedIn(on) })).body.error.reason).toBe("mfa_sign_in_again");
+      expect((await portal({ claims: signedIn(on + 600) })).status).toBe(201);
+    });
+
+    it("refuses a token without a usable auth_time", async () => {
+      patchTeam({ stripeCustomerId: "cus_linked" });
+      for (const authTime of [undefined, "", "soon", "1.5"]) {
+        const claims: Record<string, unknown> = { ...signedIn(now), auth_time: authTime };
+        if (authTime === undefined) delete claims.auth_time;
+        expect((await portal({ claims })).body.error.reason, String(authTime)).toBe("mfa_sign_in_again");
+      }
+    });
+
+    it("with no record (TOTP on from before it was kept), records now and refuses, so the next sign-in passes", async () => {
+      patchTeam({ stripeCustomerId: "cus_linked" });
+      table.delete(`USER#${OWNER}`, "TOTP_ON");
+      expect((await portal({ claims: signedIn(now - 60_000) })).body.error.reason).toBe("mfa_sign_in_again");
+      expect(table.get(`USER#${OWNER}`, "TOTP_ON")).toEqual({ PK: `USER#${OWNER}`, SK: "TOTP_ON", totpOnAt: new Date(now).toISOString() });
+      expect(logs).toContainEqual(["Two-step sign-in time recorded", { userId: OWNER }]);
+      // The same session still can't; one that began after it can
+      now += 5_000;
+      expect((await portal({ claims: signedIn(now - 5_000) })).body.error.reason).toBe("mfa_sign_in_again");
+      expect((await portal({ claims: signedIn(now) })).status).toBe(201);
+      // Only the caller's own record, on a session tagged with them, naming only totpOnAt
+      expect(scopes.filter((s) => s.userId)).toEqual([{ teamId: TEAM, userId: OWNER }, { teamId: TEAM, userId: OWNER }, { teamId: TEAM, userId: OWNER }]);
+      expect(denied).toEqual([]);
+    });
+
+    it("doesn't apply to a Google or Apple user, who has no TOTP to have turned on", async () => {
+      patchTeam({ stripeCustomerId: "cus_linked" });
+      cognito[OWNER] = { totp: false, federated: true };
+      table.delete(`USER#${OWNER}`, "TOTP_ON");
+      expect((await portal({ claims: signedIn(now - DAY * 2) })).status).toBe(201);
+      expect(table.get(`USER#${OWNER}`, "TOTP_ON")).toBeUndefined();
+      expect(scopes.filter((s) => s.userId)).toEqual([]);
+    });
+
+    it("fails with 500 when the record can't be read, logged as the two-step check", async () => {
+      const allow = billingPolicy({ teamId: TEAM });
+      handler = createBillingHandler({
+        dbFor: (scope) => table.guarded((command, input) => !scope.userId && allow(command, input)),
+        userInfo: async () => ({ sub: OWNER, emailVerified: true, emailVerifiedInCognito: true, totp: true, federated: false }),
+        stripe: () => Promise.resolve(stripe.client),
+        priceFor: async () => "price_monthly",
+        portalConfiguration: async () => "bpc_ours",
+        issuerUrl: ISSUER,
+        appUrl: APP,
+        obs: fakeObservability(),
+        now: () => now,
+      });
+      expect((await invoices()).status).toBe(500);
+      expect(logs).toContainEqual(["Two-step sign-in check failed", { code: "AccessDeniedException" }]);
+      expect(counts).toEqual({});
+    });
+  });
+
   it("fails with 500 when Cognito can't answer, without counting it as Stripe's failure", async () => {
     cognito = new Proxy({}, { get: () => { throw new Error("GetUser failed: 500 InternalErrorException"); } });
     expect((await checkout()).status).toBe(500);
@@ -595,7 +680,7 @@ describe("POST /teams/{teamId}/billing/portal", () => {
     expect(body).toEqual({ portal: { url: "https://billing.stripe.test/p/session/bps_test_1" } });
     expect(stripe.state.portalSessions).toEqual([{ customer: "cus_test_9", configuration: "bpc_ours", return_url: `${APP}/?billing=portal&team=${TEAM}` }]);
     // Read-only: handles scoped to the path's team only, and nothing written
-    expect(scopes).toEqual([{ teamId: TEAM }, { teamId: TEAM }]);
+    expect(scopes).toEqual([{ teamId: TEAM }, { teamId: TEAM, userId: OWNER }, { teamId: TEAM }]);
     expect(denied).toEqual([]);
     expect(stripe.state.customers).toHaveLength(0);
     expect(logs.find((l) => l[0] === "Billing portal opened")?.[1]).toEqual({ teamId: TEAM });
@@ -736,7 +821,7 @@ describe("GET /teams/{teamId}/billing/invoices (supply-checkout-eja)", () => {
     // Only the path's team's customer, a page of them
     expect(stripe.state.invoiceLists).toEqual([{ customer: "cus_test_9", limit: INVOICE_PAGE }]);
     // Read-only: handles scoped to the path's team only, and nothing written
-    expect(scopes).toEqual([{ teamId: TEAM }, { teamId: TEAM }]);
+    expect(scopes).toEqual([{ teamId: TEAM }, { teamId: TEAM, userId: OWNER }, { teamId: TEAM }]);
     expect(denied).toEqual([]);
     expect(logs.find((l) => l[0] === "Invoices listed")?.[1]).toEqual({ teamId: TEAM, count: 3 });
     expect(JSON.stringify(logs)).not.toContain("cus_test_9");
