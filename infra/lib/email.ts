@@ -6,7 +6,7 @@
 // function, for invites; billing notices, supply-checkout-x0l) gets
 // grantSendEmail(), and nothing else may send.
 import { Stack } from "aws-cdk-lib";
-import { PolicyStatement } from "aws-cdk-lib/aws-iam";
+import { PolicyStatement, type User } from "aws-cdk-lib/aws-iam";
 import type { Function as LambdaFunction } from "aws-cdk-lib/aws-lambda";
 import { configurationSetName, EMAIL_ENV, FROM_LOCAL_PART } from "../../backend/src/email/names.js";
 import type { DeploymentConfig } from "./config.js";
@@ -57,4 +57,68 @@ export function grantSendEmail(fn: LambdaFunction, config: DeploymentConfig): vo
   fn.addEnvironment(EMAIL_ENV.configurationSet, email.configurationSet);
   fn.addEnvironment(EMAIL_ENV.region, email.region);
   fn.addEnvironment(EMAIL_ENV.appUrl, email.appUrl);
+}
+
+/** The support mailbox's local part: `support@<env domain>` (supply-checkout-6qd). */
+export const SUPPORT_LOCAL_PART = "support";
+
+/** `support@<env domain>`. */
+export const supportAddress = (config: DeploymentConfig): string => `${SUPPORT_LOCAL_PART}@${hostNames(config).apex}`;
+
+export interface MailForwarder {
+  /** The apex's MX records, lowest priority first. */
+  readonly mx: readonly { readonly priority: number; readonly hostName: string }[];
+  /** What the forwarder asks the apex's SPF record to include. */
+  readonly spfInclude: string;
+}
+
+/**
+ * Forwarding services the apex's MX can point at, so mail to support@ reaches
+ * a personal inbox (supply-checkout-6qd). ImprovMX's values were checked
+ * against its DNS setup guides (improvmx.com/guides) on 2026-10-01, and
+ * spf.improvmx.com was flat (ip4 and ip6 only, no further lookups) that day.
+ */
+export const MAIL_FORWARDERS: Readonly<Record<string, MailForwarder>> = Object.freeze({
+  improvmx: {
+    mx: [
+      { priority: 10, hostName: "mx1.improvmx.com" },
+      { priority: 20, hostName: "mx2.improvmx.com" },
+    ],
+    spfInclude: "spf.improvmx.com",
+  },
+});
+
+/**
+ * The forwarder that receives the env domain's mail, from `-c supportMail=improvmx`
+ * (cdk.json sets it). Only prod uses it: other environments get no apex MX.
+ * Keep it in cdk.json, like delegatedEnvs: a prod deploy without it removes
+ * the MX records, and support@ stops receiving mail.
+ */
+export function supportMailFromContext(node: { tryGetContext(key: string): unknown }, envName: string): MailForwarder | undefined {
+  const value = node.tryGetContext("supportMail");
+  if (value === undefined || value === "" || value === false || value === "false") return undefined;
+  const name = String(value);
+  const forwarder = Object.hasOwn(MAIL_FORWARDERS, name) ? MAIL_FORWARDERS[name] : undefined;
+  if (!forwarder) throw new Error(`supportMail must be one of ${Object.keys(MAIL_FORWARDERS).join(", ")} (got "${name}")`);
+  return envName === "prod" ? forwarder : undefined;
+}
+
+/**
+ * Lets `user` (the support SMTP user) send support replies through SES's
+ * SMTP interface: ses:SendRawEmail (what SMTP sends are authorized as) on the
+ * domain identity and the configuration set only, and only with the From
+ * address `support@<env domain>`. It can't send as noreply@ or any other
+ * address, use another identity, or call any other SES action.
+ */
+export function grantSendSupportMail(user: User, config: DeploymentConfig): void {
+  const email = emailSettings(config);
+  const arn = (resource: string, resourceName: string) => Stack.of(user).formatArn({ service: "ses", region: email.region, resource, resourceName });
+  user.addToPrincipalPolicy(
+    new PolicyStatement({
+      sid: "SendSupportReplies",
+      actions: ["ses:SendRawEmail"],
+      resources: [arn("identity", email.identity), arn("configuration-set", email.configurationSet)],
+      conditions: { StringEquals: { "ses:FromAddress": supportAddress(config) } },
+    }),
+  );
 }

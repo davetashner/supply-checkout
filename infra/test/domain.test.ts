@@ -1,9 +1,10 @@
-import { testApp } from "./cdk-app.js";
+import { CDK_JSON_CONTEXT, testApp } from "./cdk-app.js";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { AwsSolutionsChecks } from "cdk-nag";
 import { describe, expect, it } from "vitest";
 import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { dnsInputParameters, domainOutputParameters, envDomain, hostNames } from "../lib/domain.js";
+import { supportMailFromContext } from "../lib/email.js";
 import { delegatedEnvsFromContext } from "../lib/stacks/domain-stack.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
 
@@ -156,7 +157,7 @@ describe("email domain (SES)", () => {
     template.hasResourceProperties("AWS::Route53::RecordSet", {
       Type: "TXT",
       Name: "supplycheckout.com.",
-      ResourceRecords: ['"v=spf1 include:amazonses.com -all"'],
+      ResourceRecords: ['"v=spf1 include:amazonses.com include:spf.improvmx.com -all"'],
     });
     template.hasParameter("*", ssmParameter(dnsInputParameters("prod").dmarcReportUri));
     template.hasResourceProperties("AWS::Route53::RecordSet", {
@@ -168,6 +169,78 @@ describe("email domain (SES)", () => {
         },
       ],
     });
+  });
+});
+
+describe("support mail (supply-checkout-6qd)", () => {
+  const apexRecords = (template: Template, type: string) =>
+    Object.values(template.findResources("AWS::Route53::RecordSet")).filter((r) => r.Properties.Type === type && r.Properties.Name === "supplycheckout.com.");
+  const supportPolicies = (template: Template) => Object.values(template.findResources("AWS::IAM::Policy"));
+
+  it("points the apex MX at ImprovMX in prod, from cdk.json, and keeps one SPF record that also covers SES", () => {
+    expect(CDK_JSON_CONTEXT.supportMail).toBe("improvmx");
+    const { domain } = build();
+    const template = domain(EAST);
+    template.hasResourceProperties("AWS::Route53::RecordSet", {
+      Type: "MX",
+      Name: "supplycheckout.com.",
+      ResourceRecords: ["10 mx1.improvmx.com", "20 mx2.improvmx.com"],
+    });
+    const spf = apexRecords(template, "TXT").flatMap((r) => r.Properties.ResourceRecords).filter((v: string) => v.includes("v=spf1"));
+    expect(spf).toEqual(['"v=spf1 include:amazonses.com include:spf.improvmx.com -all"']);
+    // SES's MAIL FROM SPF on mail. is unchanged
+    template.hasResourceProperties("AWS::Route53::RecordSet", {
+      Type: "TXT",
+      Name: "mail.supplycheckout.com.",
+      ResourceRecords: ['"v=spf1 include:amazonses.com ~all"'],
+    });
+    domain(WEST).resourcePropertiesCountIs("AWS::Route53::RecordSet", { Type: "MX" }, 0);
+  });
+
+  it("gives the support SMTP user SendRawEmail as support@ only, on the identity and configuration set, and no access key", () => {
+    const { domain } = build();
+    const template = domain(EAST);
+    template.resourceCountIs("AWS::IAM::User", 1);
+    template.hasResourceProperties("AWS::IAM::User", { UserName: "supply-checkout-prod-support-smtp" });
+    template.resourceCountIs("AWS::IAM::AccessKey", 0);
+    const user = template.findResources("AWS::IAM::User");
+    const policies = supportPolicies(template).filter((p) => JSON.stringify(p.Properties.Users ?? []).includes(Object.keys(user)[0] as string));
+    expect(policies).toHaveLength(1);
+    const statements = policies[0]?.Properties.PolicyDocument.Statement;
+    expect(statements).toHaveLength(1);
+    const [statement] = statements;
+    expect(statement).toMatchObject({
+      Sid: "SendSupportReplies",
+      Effect: "Allow",
+      Action: "ses:SendRawEmail",
+      Condition: { StringEquals: { "ses:FromAddress": "support@supplycheckout.com" } },
+    });
+    const resources = (statement.Resource as unknown[]).map((r) => JSON.stringify(r)).sort();
+    expect(resources).toHaveLength(2);
+    expect(resources[0]).toMatch(new RegExp(`:ses:${EAST}:".*:configuration-set/supply-checkout-prod-transactional"`));
+    expect(resources[1]).toMatch(new RegExp(`:ses:${EAST}:".*:identity/supplycheckout\\.com"`));
+    domain(WEST).resourceCountIs("AWS::IAM::User", 0);
+  });
+
+  it("adds nothing in other environments, or when switched off", () => {
+    for (const { domain } of [build({ envName: "staging" }), build({}, { supportMail: "" }), build({}, { supportMail: "false" })]) {
+      const template = domain(EAST);
+      template.resourcePropertiesCountIs("AWS::Route53::RecordSet", { Type: "MX", Name: Match.stringLikeRegexp("^(staging\\.)?supplycheckout\\.com\\.$") }, 0);
+      template.resourceCountIs("AWS::IAM::User", 0);
+      const spf = Object.values(template.findResources("AWS::Route53::RecordSet"))
+        .flatMap((r) => r.Properties.ResourceRecords ?? [])
+        .filter((v: unknown) => typeof v === "string" && v.includes("v=spf1") && v.includes("-all"));
+      expect(spf).toEqual(['"v=spf1 include:amazonses.com -all"']);
+    }
+  });
+
+  it("rejects an unknown forwarder", () => {
+    expect(() => supportMailFromContext({ tryGetContext: () => "mailgun" }, "prod")).toThrow(/supportMail must be one of improvmx/);
+    expect(() => supportMailFromContext({ tryGetContext: () => "toString" }, "prod")).toThrow(/supportMail must be one of/);
+    expect(supportMailFromContext({ tryGetContext: () => undefined }, "prod")).toBeUndefined();
+    expect(supportMailFromContext({ tryGetContext: () => false }, "prod")).toBeUndefined();
+    expect(supportMailFromContext({ tryGetContext: () => "improvmx" }, "dev")).toBeUndefined();
+    expect(supportMailFromContext({ tryGetContext: () => "improvmx" }, "prod")?.spfInclude).toBe("spf.improvmx.com");
   });
 });
 

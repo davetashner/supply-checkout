@@ -755,10 +755,105 @@
         },
         "Name": "supplycheckout.com.",
         "ResourceRecords": [
-          "\"v=spf1 include:amazonses.com -all\""
+          "\"v=spf1 include:amazonses.com include:spf.improvmx.com -all\""
         ],
         "TTL": "1800",
         "Type": "TXT"
+      }
+    },
+    "ApexMxBDFBE500": {
+      "Type": "AWS::Route53::RecordSet",
+      "Properties": {
+        "HostedZoneId": {
+          "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter"
+        },
+        "Name": "supplycheckout.com.",
+        "ResourceRecords": [
+          "10 mx1.improvmx.com",
+          "20 mx2.improvmx.com"
+        ],
+        "TTL": "1800",
+        "Type": "MX"
+      }
+    },
+    "SupportSmtpUser94BD565D": {
+      "Type": "AWS::IAM::User",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "domain"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "UserName": "supply-checkout-prod-support-smtp"
+      }
+    },
+    "SupportSmtpUserDefaultPolicyBA78DA14": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "ses:SendRawEmail",
+              "Condition": {
+                "StringEquals": {
+                  "ses:FromAddress": "support@supplycheckout.com"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:ses:us-east-1:",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":configuration-set/supply-checkout-prod-transactional"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:ses:us-east-1:",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":identity/supplycheckout.com"
+                    ]
+                  ]
+                }
+              ],
+              "Sid": "SendSupportReplies"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "SupportSmtpUserDefaultPolicyBA78DA14",
+        "Users": [
+          {
+            "Ref": "SupportSmtpUser94BD565D"
+          }
+        ]
       }
     },
     "Dmarc65510571": {

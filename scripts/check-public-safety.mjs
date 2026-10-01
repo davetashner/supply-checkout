@@ -23,8 +23,9 @@ const RULES = [
   {
     name: "email address",
     re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g,
-    // The product's own no-reply sender (Cognito and SES mail) is public by design
-    allow: (m) => /^noreply@(?:[a-z0-9-]+\.)*supplycheckout\.com$|^noreply@anthropic\.com$|@users\.noreply\.github\.com$|@example\.(?:com|org|net|test)$|^git@github\.com$/i.test(m),
+    // The product's own no-reply sender (Cognito and SES mail) and its support
+    // address (supply-checkout-6qd) are public by design
+    allow: (m) => /^noreply@(?:[a-z0-9-]+\.)*supplycheckout\.com$|^support@(?:[a-z0-9-]+\.)*supplycheckout\.com$|^noreply@anthropic\.com$|@users\.noreply\.github\.com$|@example\.(?:com|org|net|test)$|^git@github\.com$/i.test(m),
   },
 ];
 
