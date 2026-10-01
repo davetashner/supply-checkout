@@ -104,6 +104,14 @@ export function createMailer(options: MailerOptions): Mailer {
   };
 }
 
+/**
+ * The SES client's settings: bounded, so a hung connection can't hold a
+ * function to its own timeout with a notice claimed but never sent. At most
+ * 2 seconds to connect and 5 to answer, per try, and 2 tries: about 15
+ * seconds at worst, well inside every sending function's timeout.
+ */
+export const sesClientConfig = (region: string) => ({ region, maxAttempts: 2, requestHandler: { connectionTimeout: 2_000, requestTimeout: 5_000 } });
+
 /** A mailer from the environment grantSendEmail sets, with one SES client per container. */
 export function mailerFromEnv(env: NodeJS.ProcessEnv = process.env): Mailer {
   const need = (name: string) => {
@@ -115,7 +123,7 @@ export function mailerFromEnv(env: NodeJS.ProcessEnv = process.env): Mailer {
     fromAddress: need(EMAIL_ENV.fromAddress),
     configurationSet: need(EMAIL_ENV.configurationSet),
     appUrl: need(EMAIL_ENV.appUrl),
-    ses: new SESv2Client({ region: need(EMAIL_ENV.region) }),
+    ses: new SESv2Client(sesClientConfig(need(EMAIL_ENV.region))),
   });
 }
 

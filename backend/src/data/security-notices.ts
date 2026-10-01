@@ -39,6 +39,14 @@ import { id, keys } from "./keys.js";
 /** How long after one notice of a kind another of that kind isn't sent: longer than CloudTrail usually takes to reach EventBridge. */
 export const NOTICE_DEDUPE_MS = 15 * 60_000;
 
+/**
+ * How long a claim on an email change notice holds: just over the function's
+ * 30-second timeout, while one attempt sends. What stops a second notice once
+ * it's sent is the record moving on, so a claim left by an attempt that died
+ * has lapsed by Lambda's retry (about a minute later), which sends it.
+ */
+export const EMAIL_CHANGE_CLAIM_MS = 45_000;
+
 const failedCondition = (error: unknown) => (error as { name?: string } | null)?.name === "ConditionalCheckFailedException";
 
 /** Records that a notice of `kind` just went out (or is about to), whether or not one did recently. */
@@ -167,7 +175,7 @@ export async function moveNoticeAddress(db: Db, userId: string, from: string, se
 
 /**
  * Claims the email change notice about the Cognito address `seen`: true
- * unless one about the same address went out less than NOTICE_DEDUPE_MS ago.
+ * unless another attempt claimed it less than EMAIL_CHANGE_CLAIM_MS ago.
  */
 export async function claimEmailChangeNotice(db: Db, userId: string, seen: string, now = new Date()): Promise<boolean> {
   try {
@@ -178,7 +186,7 @@ export async function claimEmailChangeNotice(db: Db, userId: string, seen: strin
         UpdateExpression: "SET #at = :at, #for = :for",
         ConditionExpression: "attribute_not_exists(#at) OR #at < :cutoff OR #for <> :for",
         ExpressionAttributeNames: { "#at": "noticeSentAt", "#for": "noticeFor" },
-        ExpressionAttributeValues: { ":at": now.toISOString(), ":for": seen, ":cutoff": new Date(now.getTime() - NOTICE_DEDUPE_MS).toISOString() },
+        ExpressionAttributeValues: { ":at": now.toISOString(), ":for": seen, ":cutoff": new Date(now.getTime() - EMAIL_CHANGE_CLAIM_MS).toISOString() },
       }),
     );
     return true;

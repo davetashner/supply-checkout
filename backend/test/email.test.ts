@@ -8,7 +8,7 @@ import { SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { beforeEach, describe, expect, it } from "vitest";
 import { type Invite, type Member, type Team, hashEmail, markInviteFailed, teamContextForEmailEvent } from "../src/data/index.js";
 import { createEmailEventsHandler } from "../src/email/events-handler.js";
-import { EmailNotSentError, createMailer, mailerFromEnv, sendInviteEmail, sendTeamNotice, type SesSender } from "../src/email/mailer.js";
+import { EmailNotSentError, createMailer, mailerFromEnv, sesClientConfig, sendInviteEmail, sendTeamNotice, type SesSender } from "../src/email/mailer.js";
 import { EMAIL_ENV, EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, EMAIL_KINDS, EMAIL_TAGS, configurationSetName } from "../src/email/names.js";
 import { type EmailInput, type TeamNoticeInput, escapeHtml, formatDate, formatDateTime, plainName, renderEmail, teamLabel } from "../src/email/templates.js";
 import type { Observability } from "../src/observability/index.js";
@@ -311,6 +311,11 @@ describe("mailer", () => {
     expect(() => mailerFromEnv({})).toThrow(`${EMAIL_ENV.fromAddress} is not set`);
     const env = { [EMAIL_ENV.fromAddress]: "noreply@supplycheckout.com", [EMAIL_ENV.configurationSet]: "c", [EMAIL_ENV.appUrl]: APP, [EMAIL_ENV.region]: "test-local-1" };
     expect(typeof mailerFromEnv(env).send).toBe("function");
+  });
+
+  // supply-checkout-8jc.28 review: a hung SES call mustn't run a function into its timeout
+  it("bounds every SES call: 2 seconds to connect, 5 to answer, 2 tries", () => {
+    expect(sesClientConfig("test-local-1")).toEqual({ region: "test-local-1", maxAttempts: 2, requestHandler: { connectionTimeout: 2_000, requestTimeout: 5_000 } });
   });
 });
 

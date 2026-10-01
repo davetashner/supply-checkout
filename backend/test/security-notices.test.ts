@@ -10,7 +10,7 @@
 // behind a stand-in for the function's IAM policy.
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { claimEmailChangeNotice, claimNotice, emailSeenHash, markNoticeSent, moveNoticeAddress, NOTICE_DEDUPE_MS, noticeAddress, recordNoticeAddress, releaseEmailChangeNotice } from "../src/data/index.js";
+import { claimEmailChangeNotice, claimNotice, EMAIL_CHANGE_CLAIM_MS, emailSeenHash, markNoticeSent, moveNoticeAddress, NOTICE_DEDUPE_MS, noticeAddress, recordNoticeAddress, releaseEmailChangeNotice } from "../src/data/index.js";
 import { SECURITY_NOTICE_ATTRIBUTES } from "../src/data/schema.js";
 import { cognitoAccounts, type PoolAccount } from "../src/identity/cognito-accounts.js";
 import { SECURITY_NOTICE_EVENTS } from "../src/identity/names.js";
@@ -386,11 +386,67 @@ describe("security notices from CloudTrail", () => {
       expect(await noticeAddress(table.db(), SUB)).toBeUndefined();
     });
 
-    it("tells the old address once when two events race for the same change", async () => {
+    it("tells the old address once when two events race for the same change; the loser counts it pending and its retry finds it sent", async () => {
       await recorded();
       accounts.set(SUB, account({ email: ATTACKER_EMAIL }));
-      await Promise.all([handle(cloudTrail("UpdateUserAttributes")), handle(cloudTrail("VerifyUserAttribute"))]);
+      const results = await Promise.allSettled([handle(cloudTrail("UpdateUserAttributes")), handle(cloudTrail("VerifyUserAttribute"))]);
       expect(mails.sent.map((m) => m.to)).toEqual([OWNER_EMAIL]);
+      for (const r of results) if (r.status === "rejected") expect(String(r.reason)).toContain("claimed but not sent");
+      // Lambda's retry of either finds the record moved on, and sends nothing
+      await handle(cloudTrail("VerifyUserAttribute"));
+      expect(mails.sent).toHaveLength(1);
+    });
+
+    // An attempt that died between the claim and the send (or a send that hung to the function's timeout)
+    it("doesn't take a claim left by an attempt that died for a sent notice: it counts and throws, and the retry after the claim lapses sends", async () => {
+      await recorded();
+      accounts.set(SUB, account({ email: ATTACKER_EMAIL }));
+      expect(await claimEmailChangeNotice(table.db(), SUB, emailSeenHash(ATTACKER_EMAIL), new Date(now))).toBe(true);
+      now += 20_000;
+      await expect(handle(cloudTrail("VerifyUserAttribute"))).rejects.toThrow("claimed but not sent");
+      expect(metrics).toEqual([{ metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "emailChanged", reason: "pending", via: "cloudtrail" } }]);
+      expect(mails.sent).toEqual([]);
+      // Lambda's first retry comes about a minute later
+      now += EMAIL_CHANGE_CLAIM_MS;
+      await handle(cloudTrail("VerifyUserAttribute"));
+      expect(mails.sent.map((m) => m.to)).toEqual([OWNER_EMAIL]);
+      expectNothingPersonal();
+    });
+
+    it("gives the claim up when SES takes too long, counts it, and throws for the retry", async () => {
+      await recorded();
+      accounts.set(SUB, account({ email: ATTACKER_EMAIL }));
+      const hanging = createSecurityNoticesHandler({
+        userPoolId: POOL,
+        findAccount: async (sub) => accounts.get(sub),
+        db: table.guarded(policy),
+        mailer: { send: () => new Promise(() => {}) },
+        obs: fakeObservability(),
+        sendTimeoutMs: 5,
+        now: () => now,
+      });
+      await expect(hanging(cloudTrail("VerifyUserAttribute"))).rejects.toMatchObject({ name: "EmailNotSentError", code: "Timeout" });
+      expect(metrics).toEqual([{ metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "emailChanged", reason: "not_sent", via: "cloudtrail" } }]);
+      // Released at once: the retry sends
+      await handle(cloudTrail("VerifyUserAttribute"));
+      expect(mails.sent.map((m) => m.to)).toEqual([OWNER_EMAIL]);
+      expect(denied).toEqual([]);
+    });
+
+    it("still gets the notice out when SES refused it and the claim couldn't be given up", async () => {
+      await recorded();
+      accounts.set(SUB, account({ email: ATTACKER_EMAIL }));
+      mails.state.fail = "TooManyRequestsException";
+      table.failingUpdates = (input) => String(input.UpdateExpression).startsWith("REMOVE");
+      await expect(handle(cloudTrail("VerifyUserAttribute"))).rejects.toMatchObject({ code: "TooManyRequestsException" });
+      mails.state.fail = undefined;
+      table.failingUpdates = undefined;
+      // The claim is still held: the next try counts it pending, and the one after it lapses sends
+      await expect(handle(cloudTrail("VerifyUserAttribute"))).rejects.toThrow("claimed but not sent");
+      now += EMAIL_CHANGE_CLAIM_MS + 1;
+      await handle(cloudTrail("VerifyUserAttribute"));
+      expect(mails.sent.map((m) => m.to)).toEqual([OWNER_EMAIL]);
+      expect(metrics.map((m) => m.metadata.reason)).toEqual(["not_sent", "pending", undefined]);
     });
 
     it("counts a notice SES refused and throws, keeping the record, so Lambda's retry (or a later event) still tells the old address", async () => {
@@ -433,7 +489,7 @@ describe("security notice records", () => {
     expect(table.get(`USER#${SUB}`, "NOTICE#passwordSet")).toEqual({ PK: `USER#${SUB}`, SK: "NOTICE#passwordSet", noticeSentAt: new Date(NOW + NOTICE_DEDUPE_MS + 1).toISOString() });
   });
 
-  it("claims an email change notice once per new address and window, and gives a claim up only for its address", async () => {
+  it("claims an email change notice once per new address while an attempt sends, and gives a claim up only for its address", async () => {
     const db = table.db();
     const at = new Date(NOW);
     expect(await claimEmailChangeNotice(db, SUB, "a", at)).toBe(true);
@@ -443,7 +499,8 @@ describe("security notice records", () => {
     expect(await claimEmailChangeNotice(db, SUB, "b", at)).toBe(false);
     await releaseEmailChangeNotice(db, SUB, "b");
     expect(await claimEmailChangeNotice(db, SUB, "b", at)).toBe(true);
-    expect(await claimEmailChangeNotice(db, SUB, "b", new Date(NOW + NOTICE_DEDUPE_MS + 1))).toBe(true);
+    expect(await claimEmailChangeNotice(db, SUB, "b", new Date(NOW + EMAIL_CHANGE_CLAIM_MS - 1))).toBe(false);
+    expect(await claimEmailChangeNotice(db, SUB, "b", new Date(NOW + EMAIL_CHANGE_CLAIM_MS + 1))).toBe(true);
   });
 
   it("records an address once, and moves it only from the Cognito address it last accounted for", async () => {

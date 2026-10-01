@@ -54,7 +54,8 @@
 // Best effort, like the API's notices: a failed send is logged with the user
 // ID, the kind and the error's name only, and counted in
 // SecurityNoticeFailures (reason `not_sent`, `no_address`, `no_user`,
-// `lookup_failed`, or `error` for anything else thrown, such as DynamoDB
+// `lookup_failed`, `pending` for an email change notice another attempt has
+// claimed but not sent, or `error` for anything else thrown, such as DynamoDB
 // refusing a call). A failed Cognito or DynamoDB call, or an email change
 // notice SES refused, is thrown after it's counted, so Lambda tries the event
 // again, then puts it on the dead-letter queue ("Security notices dropped").
@@ -85,8 +86,13 @@ export interface SecurityNoticesDeps {
   readonly db: Db;
   readonly mailer: Mailer;
   readonly obs: Observability;
+  /** How long an email change notice may wait on SES (SEND_TIMEOUT_MS); for tests. */
+  readonly sendTimeoutMs?: number;
   readonly now?: () => number;
 }
+
+/** How long an email change notice waits on SES before its claim is given up and the event retried. */
+const SEND_TIMEOUT_MS = 10_000;
 
 /** The parts of a CloudTrail record this reads (EventBridge's `detail`). */
 interface CloudTrailDetail {
@@ -169,10 +175,13 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
    * The address told is always the recorded one, which only ever starts as an
    * address the API trusts, and moves on only to one that normalizes.
    *
-   * The notice is claimed for the new address, sent, and only then is the
-   * record moved on. If SES refuses it, the claim is given up and the error
-   * thrown, so Lambda tries again (then the dead-letter queue), and a later
-   * event for the user finds the change still unannounced.
+   * The notice is claimed for the new address (for just over the function's
+   * timeout, EMAIL_CHANGE_CLAIM_MS), sent, and only then is the record moved
+   * on. If SES refuses it or takes over SEND_TIMEOUT_MS, the claim is given up
+   * and the error thrown, so Lambda tries again (then the dead-letter queue).
+   * An attempt that finds the claim held and the record not moved counts it
+   * (`pending`) and throws too, so an attempt that died holding the claim
+   * isn't taken for a sent notice: the retry, after the claim lapses, sends it.
    */
   async function noticeEmailChange(userId: string, account: PoolAccount, at: string): Promise<void> {
     // A new address not verified yet (keepOriginal keeps the old one until it is) changes nothing
@@ -186,15 +195,28 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
     }
     if (record.seen === seen) return;
     if (!(await claimEmailChangeNotice(db, userId, seen, now()))) {
-      obs.logger.info("Security notice already sent", { userId, kind: "emailChanged", via: "cloudtrail" });
-      return;
+      // Sent already if the record has moved on; otherwise another attempt holds the claim, and may
+      // have died with it: count it and throw, so the retry (after the claim lapses) or the
+      // dead-letter queue sees it through
+      if ((await noticeAddress(db, userId))?.seen === seen) return;
+      failed(userId, "emailChanged", "pending", "ClaimHeld");
+      throw new CountedError(new Error("An email change notice is claimed but not sent yet"));
     }
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await deps.mailer.send(record.address, { kind: "emailChanged", at });
+      // Bounded (the SES client is too, mailer.ts), so a hung send can't hold the claim to the function's timeout
+      await Promise.race([
+        deps.mailer.send(record.address, { kind: "emailChanged", at }),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new EmailNotSentError("Timeout")), deps.sendTimeoutMs ?? SEND_TIMEOUT_MS);
+        }),
+      ]);
     } catch (error) {
       await releaseEmailChangeNotice(db, userId, seen).catch(() => undefined);
       failed(userId, "emailChanged", "not_sent", errorCode(error));
       throw new CountedError(error);
+    } finally {
+      clearTimeout(timer);
     }
     obs.count(BusinessMetric.SecurityNotices, 1, { kind: "emailChanged", via: "cloudtrail" });
     obs.logger.info("Security notice sent", { userId, kind: "emailChanged", via: "cloudtrail" });
