@@ -1391,6 +1391,94 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmssignintriggerfailingF57C49A4": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "AlarmDescription": "P1 Sign-in trigger failing (J0, us-east-1). Any Errors or Throttles of the app pool's pre token generation trigger in 5 minutes. It exists only while Google or Apple sign-in is on, and runs at every token Cognito issues, refreshes included, for every user: a failed call fails that sign-in or refresh. It fails on purpose only when it can't unverify a linked user's changed email (also counted in EmailUnverifyFailures), so this is a crash, a timeout, a throttle or that (supply-checkout-3sv.16). Its logs are the function's log group. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p1-sign-in-trigger-failing",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Expression": "FILL(e, 0) + FILL(t, 0)",
+            "Id": "expr_1",
+            "Label": "Pre token generation trigger errors and throttles (us-east-1)",
+            "ReturnData": true
+          },
+          {
+            "Id": "e",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "FunctionName",
+                    "Value": "supply-checkout-prod-email-verified"
+                  }
+                ],
+                "MetricName": "Errors",
+                "Namespace": "AWS/Lambda"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "t",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "FunctionName",
+                    "Value": "supply-checkout-prod-email-verified"
+                  }
+                ],
+                "MetricName": "Throttles",
+                "Namespace": "AWS/Lambda"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmssignuptriggerfailing832D02A3": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -11053,6 +11141,13 @@
               {
                 "Fn::GetAtt": [
                   "JourneyAlarmssecuritynoticesdroppedDBC2F8B3",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmssignintriggerfailingF57C49A4",
                   "Arn"
                 ]
               },

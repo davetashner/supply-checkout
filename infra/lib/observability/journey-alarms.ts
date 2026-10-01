@@ -178,6 +178,24 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       }),
       threshold: 0,
     },
+    {
+      id: "sign-in-trigger-failing",
+      title: "Sign-in trigger failing",
+      journeys: "J0",
+      severity: "P1",
+      rule: "Any Errors or Throttles of the app pool's pre token generation trigger in 5 minutes. It exists only while Google or Apple sign-in is on, and runs at every token Cognito issues, refreshes included, for every user: a failed call fails that sign-in or refresh. It fails on purpose only when it can't unverify a linked user's changed email (also counted in EmailUnverifyFailures), so this is a crash, a timeout, a throttle or that (supply-checkout-3sv.16). Its logs are the function's log group.",
+      metric: new MathExpression({
+        expression: "FILL(e, 0) + FILL(t, 0)",
+        usingMetrics: {
+          e: new Metric({ namespace: "AWS/Lambda", metricName: "Errors", dimensionsMap: { FunctionName: identity.emailVerifiedFunction }, statistic: "Sum", period: FIVE_MINUTES, region }),
+          t: new Metric({ namespace: "AWS/Lambda", metricName: "Throttles", dimensionsMap: { FunctionName: identity.emailVerifiedFunction }, statistic: "Sum", period: FIVE_MINUTES, region }),
+        },
+        period: FIVE_MINUTES,
+        label: `Pre token generation trigger errors and throttles (${region})`,
+      }),
+      threshold: 0,
+      primaryOnly: true,
+    },
     // J1. Sign up
     {
       id: "sign-up-trigger-failing",
