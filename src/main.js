@@ -313,7 +313,8 @@ function groupMeta(list) {
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 function groupedHTML(closed) {
   const years = new Map();
-  [...closed].sort((a, b) => String(b.date || "").localeCompare(String(a.date || ""))).forEach(s => {
+  const day = s => String(s.date || "");
+  [...closed].sort((a, b) => day(b).localeCompare(day(a))).forEach(s => {
     const y = yearOf(s) || "No date";
     years.set(y, [...(years.get(y) || []), s]);
   });
@@ -367,10 +368,9 @@ function drawList() {
     </div>
     ${groupedHTML(grouped)}`);
   // Not in the HTML, so a redraw while someone types leaves the field (and its caret) alone;
-  // set here when the list is drawn afresh (back from a sheet or the Inventory)
-  const box = $("#sheetSearch"), pick = $("#yearFilter");
+  // set here when the list is drawn afresh (back from the Inventory)
+  const box = $("#sheetSearch");
   if (box.value !== ui.q) box.value = ui.q;
-  if (pick && pick.value !== year) pick.value = year;
 }
 $("#main").addEventListener("input", e => { if (e.target.id === "sheetSearch") { ui.q = e.target.value; draw(); } });
 $("#main").addEventListener("change", e => { if (e.target.id === "yearFilter") { ui.year = e.target.value; draw(); } });

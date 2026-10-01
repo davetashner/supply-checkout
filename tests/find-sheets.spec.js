@@ -69,6 +69,11 @@ test("search finds sheets by client, who prepared them and their items, in each 
   await page.getByRole("button", { name: "← All sheets" }).click();
   await expect(search(page)).toHaveValue("charlie");
   await expect(cards(page)).toHaveText(["Charlie Cafe"]);
+  // and after the Inventory, which draws the list afresh
+  await page.getByRole("button", { name: "Inventory" }).click();
+  await page.getByRole("button", { name: "Sheets", exact: true }).click();
+  await expect(search(page)).toHaveValue("charlie");
+  await expect(cards(page)).toHaveText(["Charlie Cafe"]);
 });
 
 test("typing in the search keeps focus and the caret while the list redraws", { tag: ["@J6.1"] }, async ({ page }) => {
@@ -150,6 +155,10 @@ test("the year filter scopes the list and the owner's sheets CSV", { tag: ["@J6"
   await year.selectOption(OLD);
   // The year picked is open, though it's an older one
   await expect(page.locator(".year-head")).toHaveText([`${OLD}2 sheets · $10.00`]);
+  await expect(cards(page)).toHaveText(["Delta Dental", "Echo Old"]);
+  await page.getByRole("button", { name: "Inventory" }).click();
+  await page.getByRole("button", { name: "Sheets", exact: true }).click();
+  await expect(year).toHaveValue(OLD);
   await expect(cards(page)).toHaveText(["Delta Dental", "Echo Old"]);
   // Out now has nothing open from then, but the ad hoc card stays
   await page.getByRole("button", { name: /^Out now/ }).click();
