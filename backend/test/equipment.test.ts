@@ -148,7 +148,7 @@ describe.skipIf(!endpoint)("company equipment (DynamoDB Local)", () => {
     for (const r of race) if (r.status === "rejected") expect(r.reason).toBeInstanceOf(ConflictError);
     for (const other of [crew, viewer]) {
       await expect(setTeamSettings(db, other, { equipmentMarkup: 50 }, 2)).rejects.toThrow(ForbiddenError);
-      expect(await getTeamSettings(db, other)).toEqual({ version: 2, settings: {} });
+      expect(await getTeamSettings(db, other)).toEqual({ settings: {} });
     }
     const audit = (await listAudit(db, ctx)).items.filter((e) => e.action === "settings.equipment-markup");
     expect(audit.map((e) => e.detail?.from)).toEqual([25, 0]);

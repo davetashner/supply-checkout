@@ -334,8 +334,8 @@ async function run(deps: DataHandlerDeps, route: DataRoute, event: DataEvent, ct
   const id = documentId(event);
   const result =
     route.operation === "set"
-      ? await setDocument(db, ctx, collection, id, body.data, { expectedVersion })
-      : await updateDocument(db, ctx, collection, id, body.data, { expectedVersion });
+      ? await setDocument(db, ctx, collection, id, body.data, { expectedVersion, now: new Date((deps.now ?? Date.now)()) })
+      : await updateDocument(db, ctx, collection, id, body.data, { expectedVersion, now: new Date((deps.now ?? Date.now)()) });
   deps.obs.count(BusinessMetric.Writes, 1, metadata);
   if (collection === "sheets") {
     const { checkouts, returns } = sheetMovement(result);

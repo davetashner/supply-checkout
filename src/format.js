@@ -7,8 +7,9 @@ export const fmtDate = iso => { if (!iso) return ""; const [y,m,d] = iso.split("
 // A barcode's product key: also its line's key in a sheet's items. "__proto__" gets an "x"
 // like a dots-only key, because as a field name it would be the items map's prototype
 // (the API refuses it). Other built-in names, like "constructor", are ordinary keys, so
-// code that reads a line or product by key uses own() or a null-prototype map.
-export const keyOf = code => { let k = String(code).trim().replace(/[^A-Za-z0-9_\-.~:@+]/g, "_").slice(0, 150); if (/^\.+$/.test(k) || k === "__proto__") k = "x" + k; return k; };
+// code that reads a line or product by key uses own() or a null-prototype map. Never a key
+// ending in ":bought", which the API keeps for lines bought for a client (ADR 0017).
+export const keyOf = code => { let k = String(code).trim().replace(/[^A-Za-z0-9_\-.~:@+]/g, "_").slice(0, 150).replace(/:bought$/, "_bought"); if (/^\.+$/.test(k) || k === "__proto__") k = "x" + k; return k; };
 // obj[k] when it's obj's own property, not something inherited like Object.prototype.constructor
 export const own = (obj, k) => Object.hasOwn(obj, k) ? obj[k] : undefined;
 export const int = v => Math.max(0, Math.floor(Number(v) || 0));

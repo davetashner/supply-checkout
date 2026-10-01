@@ -248,3 +248,14 @@ test("shows a count as full packs and loose items while either field changes", {
   await inventoryRow(page, "Storage bins").click();
   await expect(modal(page).locator("#fPacks")).toBeHidden();
 });
+
+test("an item whose barcode ends in :bought is saved under a key the API takes", { tag: ["@J2.2"] }, async ({ page }) => {
+  // The API keeps keys ending in ":bought" for equipment bought for a client (ADR 0017)
+  await openInventory(page);
+  await page.getByRole("button", { name: "+ Add item" }).click();
+  await modal(page).getByPlaceholder("Type, scan, or leave blank").fill("LAD-1:bought");
+  await modal(page).getByLabel("Item name").fill("Odd barcode");
+  await modal(page).getByRole("button", { name: "Save" }).click();
+  await expect(inventoryRow(page, "Odd barcode")).toContainText("Barcode LAD-1:bought");
+  expect(await page.evaluate(() => [...window.__mock.docs.keys()].filter(k => k.includes("LAD-1")))).toEqual(["products/LAD-1_bought"]);
+});

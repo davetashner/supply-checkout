@@ -29,8 +29,8 @@ export interface TeamSettings {
 }
 
 export interface SettingsView {
-  /** 0 until an owner first saves the settings; a write names it as expectedVersion. */
-  readonly version: number;
+  /** Owners only: 0 until an owner first saves the settings; a write names it as expectedVersion. */
+  readonly version?: number;
   /** All of the settings for an owner; for anyone else, only what they may see (nothing, for now). */
   readonly settings: Partial<TeamSettings>;
 }
@@ -56,11 +56,14 @@ async function readSettingsItem(db: Db, ctx: TeamContext): Promise<Record<string
 
 const versionOf = (item: Record<string, unknown> | undefined) => (typeof item?.version === "number" ? item.version : 0);
 
-/** The team's settings as the caller may see them: the markup for owners only. */
+/**
+ * The team's settings as the caller may see them: owners get the markup and the version they
+ * write against; anyone else gets nothing of them, not even whether they were ever saved.
+ */
 export async function getTeamSettings(db: Db, ctx: TeamContext): Promise<SettingsView> {
   readable(ctx);
+  if (ctx.role !== "owner") return { settings: {} };
   const item = await readSettingsItem(db, ctx);
-  if (ctx.role !== "owner") return { version: versionOf(item), settings: {} };
   return { version: versionOf(item), settings: { equipmentMarkup: storedMarkup(item) } };
 }
 

@@ -624,7 +624,8 @@ export async function markLost(db: Db, ctx: TeamContext, input: LostInput, now =
     const stored = line.lostCharge;
     if (stored !== undefined && storedMoney(stored) === undefined) throw new InvalidInputError("This line's charge isn't an amount; correct the line first");
     // Several lost records on one line add up (in whole cents)
-    const total = charge ? roundCents((storedMoney(stored) ?? 0) + charge) : undefined;
+    // A charge of 0 is a charge too: the line gets a lostCharge (of what it had), as the movement records it
+    const total = charge === undefined ? undefined : roundCents((storedMoney(stored) ?? 0) + charge);
     if (total !== undefined && total > MAX_MONEY) throw new InvalidInputError(`A line's charge can't be more than ${MAX_MONEY}`);
 
     const names: Record<string, string> = { "#items": "items", "#line": key, "#out": "out", "#returned": "returned", "#lost": "lost", "#status": "status", "#version": "version" };
@@ -771,12 +772,13 @@ function addLinesInput(value: unknown): RequestedLine[] {
  *   request's `code`, `name`, `price` and `cost`, as before. `price` is required.
  * - Company equipment's: bought for the client, under `<productKey>:bought`
  *   with `purchased: true` and no `kind`. Its price is the reviewer's typed
- *   price (`priceSet: "manual"`), or else the receipt price each (`cost`,
+ *   price (`priceSet: "manual"`, with `priceSetBy` and `priceSetAt`: who
+ *   typed it and when), or else the receipt price each (`cost`,
  *   required then) plus the team's equipment markup, rounded to the cent
  *   (`priceSet: "markup"`). A price sent without "manual" is refused, so a
  *   client-sent price is never stored as a markup price.
  */
-function boughtLine(line: RequestedLine, equipment: boolean, markup: number): { key: string; snapshot: Item; purchased: boolean } {
+function boughtLine(line: RequestedLine, equipment: boolean, markup: number, typed: { readonly by: string; readonly at: string }): { key: string; snapshot: Item; purchased: boolean } {
   const { key, code, name, price, cost, priceSet } = line;
   const base = { code, name, ...(cost === undefined ? {} : { cost }) };
   if (!equipment) {
@@ -784,7 +786,8 @@ function boughtLine(line: RequestedLine, equipment: boolean, markup: number): { 
     return { key, snapshot: { code, name, price: money(price, "price"), ...(cost === undefined ? {} : { cost }) }, purchased: false };
   }
   const lineKey = productKey(`${key}${BOUGHT_SUFFIX}`);
-  if (priceSet === "manual") return { key: lineKey, snapshot: { ...base, price: price as number, purchased: true, priceSet: "manual" }, purchased: true };
+  // A typed price says who typed it and when, kept on the line (the operation record expires)
+  if (priceSet === "manual") return { key: lineKey, snapshot: { ...base, price: price as number, purchased: true, priceSet: "manual", priceSetBy: typed.by, priceSetAt: typed.at }, purchased: true };
   if (price !== undefined) throw new InvalidInputError('This is company equipment, priced by the team\'s markup: leave its price out, or send priceSet "manual" with the price the reviewer typed');
   if (cost === undefined) throw new InvalidInputError("Company equipment bought for a client needs its receipt price each, as cost");
   const marked = roundCents(cost * (1 + markup / 100));
@@ -833,7 +836,7 @@ export async function addLines(db: Db, ctx: TeamContext, input: AddLinesInput, n
     const checks: TransactItem[] = [];
     const result = lines.map((requested, n): AddedLine => {
       const equipment = products[n]?.kind === "equipment";
-      const { key, snapshot, purchased } = boughtLine(requested, equipment, markup);
+      const { key, snapshot, purchased } = boughtLine(requested, equipment, markup, { by: ctx.userId, at });
       // Still what it was read as when this commits: equipment, or not (a missing item counts as not)
       checks.push({
         ConditionCheck: {
