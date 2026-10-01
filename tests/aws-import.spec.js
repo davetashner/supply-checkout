@@ -2,8 +2,7 @@
 // server's preview, and import it, against the fake backend in tests/fake-aws.js. The
 // server's side (parsing, validation, all or nothing) is tested in backend/test/imports*.
 import { readFile } from "node:fs/promises";
-import AxeBuilder from "@axe-core/playwright";
-import { test, expect } from "./helpers.js";
+import { test, expect, modalViolations } from "./helpers.js";
 import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, TEAM, openAws, connected } from "./fake-aws.js";
 
@@ -54,8 +53,7 @@ test("an owner previews a file, imports it, and every retry sends the same impor
   await expect(rows.nth(1)).toHaveText(/Rags\s*\$1\.50\s*—\s*New/);
   await expect(rows.nth(2)).toContainText("Bins <b>");
   await expect(rows.nth(2)).toContainText("No change");
-  const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
-  expect(violations.map((v) => v.id)).toEqual([]);
+  expect(await modalViolations(page)).toEqual([]);
   expect(backend.requests("POST", PATH).map((c) => c.body)).toEqual([{ dryRun: true, csv: CSV }]);
 
   // The first try doesn't finish; the second, with the same ID, does
@@ -173,8 +171,7 @@ test("offers a template with a column guide, and the template goes through the p
   await guide.getByText("What goes in each column").click();
   for (const column of ["name", "price", "barcode", "kind", "cost", "stock", "pack_size"]) await expect(guide.locator("dt", { hasText: new RegExp(`^${column}$`) })).toBeVisible();
   await expect(guide).toContainText("before tax. It isn't shown on client sheets.");
-  const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
-  expect(violations.map((v) => v.id)).toEqual([]);
+  expect(await modalViolations(page)).toEqual([]);
 
   const download = page.waitForEvent("download");
   await dialog(page).getByRole("button", { name: "Download a template" }).click();

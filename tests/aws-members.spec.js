@@ -2,8 +2,7 @@
 // roles, change roles and remove members, and the last owner can't step down or leave,
 // against the fake backend in tests/fake-aws.js. The server's side (the role checks and
 // the atomic owner count) is tested in backend/test/members-api.test.ts and roles.test.ts.
-import AxeBuilder from "@axe-core/playwright";
-import { test, expect } from "./helpers.js";
+import { test, expect, modalViolations } from "./helpers.js";
 import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, TEAM, USER, openAws, connected } from "./fake-aws.js";
 
@@ -40,8 +39,7 @@ test("an owner sees the members and roles, changes a role and removes a member",
   await expect(row(page, "pat@example.com").getByRole("combobox")).toBeDisabled();
   await expect(row(page, "pat@example.com").getByRole("button", { name: "Leave" })).toBeDisabled();
   await expect(dialog(page)).toContainText("A team needs at least one owner.");
-  const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
-  expect(violations.map((v) => v.id)).toEqual([]);
+  expect(await modalViolations(page)).toEqual([]);
 
   await row(page, "sam@example.com").getByRole("combobox").selectOption("owner");
   await expect(page.locator("#toast")).toHaveText("sam@example.com is now an owner");
@@ -167,8 +165,7 @@ test.describe("seats", { tag: ["@J7.3"] }, () => {
     await expect(seats(page)).toHaveText("2 of 4 members");
     await expect(send(page)).toBeEnabled();
     await expect(full(page)).toBeHidden();
-    const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
-    expect(violations.map((v) => v.id)).toEqual([]);
+    expect(await modalViolations(page)).toEqual([]);
 
     await dialog(page).getByLabel("Email").fill("new@example.com");
     await send(page).click();
@@ -287,8 +284,7 @@ test.describe("support activity", () => {
     await expect(items(page).nth(0)).toContainText("2026");
     await expect(dialog(page).getByRole("button", { name: "Show more" })).toBeHidden();
     expect(backend.requests("GET", SUPPORT).map((c) => c.query)).toEqual([{ limit: "20" }]);
-    const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
-    expect(violations.map((v) => v.id)).toEqual([]);
+    expect(await modalViolations(page)).toEqual([]);
   });
 
   test("shows more a page at a time, and says so when a page doesn't load", async ({ page }) => {
@@ -318,8 +314,7 @@ test.describe("support activity", () => {
     const retry = list(page).getByRole("button", { name: "Try again" });
     await expect(retry).toBeVisible();
     await expect(dialog(page).getByRole("button", { name: "Show more" })).toBeHidden();
-    const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
-    expect(violations.map((v) => v.id)).toEqual([]);
+    expect(await modalViolations(page)).toEqual([]);
     // Fails again: still offered
     backend.on("GET", SUPPORT, { abort: true });
     await retry.click();

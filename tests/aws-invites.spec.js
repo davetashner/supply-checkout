@@ -4,8 +4,7 @@
 // Joining from the emailed link is in tests/aws-account.spec.js; the server's side (the
 // email, the single-use token, rate limits, the role checks) is in
 // backend/test/invites-api.test.ts and roles.test.ts.
-import AxeBuilder from "@axe-core/playwright";
-import { test, expect } from "./helpers.js";
+import { test, expect, modalViolations } from "./helpers.js";
 import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, USER, openAws, connected } from "./fake-aws.js";
 
@@ -95,8 +94,7 @@ test("shows each invite as pending, failed with why, or expired, and is accessib
   await expect(row(page, "unsent@")).toContainText("Couldn't deliver. The email couldn't be sent. Try Resend.");
   await expect(row(page, "unknown@")).toContainText("Couldn't deliver. Try Resend, or revoke it.");
   await expect(row(page, "expired@")).toContainText("Expired Sep 20, 2026. Resend it for a new link.");
-  const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
-  expect(violations.map((v) => v.id)).toEqual([]);
+  expect(await modalViolations(page)).toEqual([]);
   // A failed invite re-sent is pending again
   await row(page, "bounced@").getByRole("button", { name: "Resend" }).click();
   await expect(row(page, "bounced@")).toContainText("Pending, expires");

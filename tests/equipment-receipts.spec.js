@@ -3,8 +3,7 @@
 // charged the receipt price, or a typed one), and in the web build against tests/fake-aws.js:
 // the server works the markup out, only owners have the percentage, and owners set it in Team
 // settings.
-import AxeBuilder from "@axe-core/playwright";
-import { test, expect, openApp, modal, lineRow } from "./helpers.js";
+import { test, expect, openApp, modal, lineRow, modalViolations } from "./helpers.js";
 import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, TEAM, USER, openAws, connected } from "./fake-aws.js";
 
@@ -198,8 +197,7 @@ test.describe("the web build: the server prices it, and only owners have the mar
     await page.locator(".teambar").getByRole("button", { name: "Team settings" }).click();
     const field = modal(page).getByLabel("Markup on company equipment bought for a client (%)");
     await expect(field).toHaveValue("0");
-    const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
-    expect(violations.map((v) => v.id)).toEqual([]);
+    expect(await modalViolations(page)).toEqual([]);
     for (const bad of ["", "1000.5", "1.234"]) {
       await field.fill(bad);
       await modal(page).getByRole("button", { name: "Save" }).click();
