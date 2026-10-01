@@ -88,7 +88,13 @@
 // end, the purge resumes it at once (resumeSubscription, counted in
 // ReopenedTeamSubscriptionsResumed) and warns. Otherwise (cancelled at once,
 // closed again, gone, or the resume failed) it's logged as an error, counted
-// in ReopenedTeamSubscriptionsEnded, and fails the run.
+// in ReopenedTeamSubscriptionsEnded, and fails the run. If recording it fails
+// after Stripe took the change, the team may have been reopened with nothing
+// to see it, so that's counted in ReopenedTeamSubscriptionsEnded too, logged
+// as an error, and fails the run (supply-checkout-8jc.30). The billing worker
+// usually sets a closed team's subscription to cancel within seconds of the
+// closure (billing/worker.ts, endAtClose): the purge then finds it already
+// set to cancel for this closure, sends Stripe nothing, and records it.
 //
 // Logs have team, subscription and customer IDs and counts, never names,
 // emails or Stripe's messages. The function's role may delete whole items
@@ -218,7 +224,15 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
           obs.logger.warn("Closed team's subscription renewed after it closed", { teamId, subscriptionId: sub.id, closedAt: team.closedAt });
           obs.count(BusinessMetric.ClosedTeamRenewalsCharged, 1, { teamId });
         }
-        if (!(await markSubscriptionEnding(db, team))) {
+        const marked = await markSubscriptionEnding(db, team).catch((error: unknown) => {
+          // Set to end, but not recorded: if the team was reopened meanwhile, nothing would see it (supply-checkout-8jc.30)
+          if (action !== "none") {
+            obs.count(BusinessMetric.ReopenedTeamSubscriptionsEnded, 1, { teamId, action, checked: "no" });
+            obs.logger.error("Closed team's subscription set to end, but the team wasn't read again", { teamId, subscriptionId: sub.id, action, error: errorName(error) });
+          }
+          throw error;
+        });
+        if (!marked) {
           // Reopened meanwhile: undo a cancellation at the period's end, which the reopen's resync may have missed
           if (action === "cancel_at_period_end" && (await resumedAfterReopen(stripe, team, sub.id))) {
             obs.count(BusinessMetric.ReopenedTeamSubscriptionsResumed, 1, { teamId, source: "purge" });

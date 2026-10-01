@@ -144,6 +144,16 @@
 // for the nightly reconciliation to fix. The customer comes from the team's
 // own item, never the request.
 //
+// Closing (supply-checkout-8jc.30): when a team with a Stripe customer closes
+// (by an owner, or with its only member's account), a message with reason
+// `closed` goes on the same queue, and the billing worker sets the team's
+// subscription to cancel at the period's end within seconds, not at the
+// hourly purge's next run, so a renewal in that hour isn't charged. A reopen
+// right after resumes it (billing/reopening.ts): its seat sync is queued
+// behind this one for the same customer. The close never waits on Stripe,
+// and a message that couldn't be queued is logged and counted
+// (SeatSyncQueueFailures): the purge ends the subscription anyway.
+//
 // Invite emails: the invite is written first, then sent (email/mailer.ts). If
 // SES won't take it, the invite stays, marked failed (`not_sent`), so the
 // owner sees "Couldn't deliver" and can re-send or revoke it. Addresses,
@@ -620,6 +630,18 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     }
   }
 
+  /** Asks the billing worker to end a team's subscription now that it has closed (see "Closing" at the top). Never throws. */
+  async function queueClosedSync(teamId: string, team: Pick<Team, "stripeCustomerId">): Promise<void> {
+    if (!deps.seats || !team.stripeCustomerId) return;
+    try {
+      await deps.seats(team.stripeCustomerId, "closed");
+      obs.logger.info("Closed team's subscription end queued", { teamId });
+    } catch (error) {
+      obs.logger.warn("Closed team's subscription end not queued", { teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      obs.count(BusinessMetric.SeatSyncQueueFailures, 1, { teamId, reason: "closed" });
+    }
+  }
+
   /** queueSeatSync after a change to the team's members, reading the team as it is now. Never throws. */
   async function seatsAfterChange(db: ReturnType<DbForAccount>, ctx: TeamContext): Promise<void> {
     if (!deps.seats) return;
@@ -706,6 +728,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     if (closedNow) {
       obs.count(BusinessMetric.TeamsClosed, 1, { teamId });
       obs.logger.info("Team closed", { teamId, purgeAfter: team.purgeAfter ?? "" });
+      await queueClosedSync(teamId, team);
       await noticeOwners(db, ctx, { kind: "teamClosed", teamName: team.name, purgeAfter: team.purgeAfter as string }, CLOSED_NOTICES);
     }
     return json(200, { team: teamBody(team, ctx.role) });
@@ -848,7 +871,10 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
         if (alone) {
           // Only while they're still alone in it: someone who joined meanwhile makes it a ConflictError
           const { closedNow } = await closeTeam(db, ctx, { confirmName: team.name, onlyMember: true }, at);
-          if (closedNow) obs.count(BusinessMetric.TeamsClosed, 1, { teamId: ctx.teamId });
+          if (closedNow) {
+            obs.count(BusinessMetric.TeamsClosed, 1, { teamId: ctx.teamId });
+            await queueClosedSync(ctx.teamId, team);
+          }
         }
         await removeMember(db, ctx, userId, { reason: "account_deleted" }, at);
         // A team it closed has nothing left to bill

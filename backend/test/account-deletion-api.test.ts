@@ -60,6 +60,8 @@ let memberListFails: boolean;
 let accountHandler: ReturnType<typeof createAccountHandler>;
 // Seat syncs queued after a membership change (billing/seats.ts)
 let queued: [string, string][];
+/** The seat sync queue refuses messages. */
+let queueFails: boolean;
 let dataHandler: ReturnType<typeof createDataHandler>;
 
 function observability(): Observability {
@@ -121,6 +123,7 @@ beforeEach(() => {
   refuse = new Set();
   memberListFails = false;
   queued = [];
+  queueFails = false;
   table = new MemoryTable();
   // team-a: an owner, a contributor and a viewer; team-b: two owners and Pat
   team("team-a", { [OWNER]: "owner", [PAT]: "contributor", [VIEWER]: "viewer" });
@@ -157,6 +160,7 @@ beforeEach(() => {
     },
   };
   accountHandler = createAccountHandler({ dbFor, userInfo, issuerUrl: ISSUER, obs, mailer, emailCodes: unusedEmailCodes, totp: unusedTotp, deleteUser, deletions: deletions.log, now: () => now, seats: async (customer, reason) => {
+    if (queueFails) throw Object.assign(new Error("SQS is down"), { name: "ServiceUnavailable" });
     queued.push([customer, reason]);
   } });
   dataHandler = createDataHandler({ dbForTeam: (teamId) => table.db(teamId), obs, now: () => now });
@@ -1396,6 +1400,35 @@ describe("purging closed teams", () => {
     expect(counts[BusinessMetric.ReopenedTeamSubscriptionsResumed]).toBe(1);
   });
 
+  it("records, without asking Stripe again, a subscription the billing worker already ended at close (supply-checkout-8jc.30)", async () => {
+    const closedAt = await subscribedAndClosed();
+    // As the worker leaves it seconds after the closure: set to cancel, stamped with this closure
+    stripe.state.subs.set("sub_123", liveSubscription({ cancel_at_period_end: true, canceled_at: NOW / 1000 + 5, metadata: { [CLOSED_AT_METADATA]: closedAt } }));
+    expect(await purge(NOW + 3_600_000)).toMatchObject({ failed: 0 });
+    expect(stripe.state.updates).toEqual([]);
+    expect(stripe.state.cancels).toEqual([]);
+    expect(meta("team-a")).toMatchObject({ stripeCancelledFor: closedAt });
+    expect(counts[BusinessMetric.ClosedTeamSubscriptionsEnded]).toBeUndefined();
+    expect(logs).toContainEqual(["info", "Closed team's subscription ended", { teamId: "team-a", subscriptionId: "sub_123", status: "active", action: "none" }]);
+    // Later runs don't ask Stripe again
+    await purge(NOW + 2 * 3_600_000);
+    expect(stripe.state.retrieves).toEqual(["sub_123"]);
+  });
+
+  it("alarms when it can't record a subscription it just set to end, since the team may have been reopened (supply-checkout-8jc.30)", async () => {
+    await subscribedAndClosed();
+    table.failingUpdates = (input) => String(input.UpdateExpression).includes("stripeCancelledFor");
+    await expect(purge(NOW + 3_600_000)).rejects.toThrow("1 closed teams' subscriptions weren't ended");
+    expect(stripe.state.updates).toHaveLength(1);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBe(1);
+    expect(logs).toContainEqual(["error", "Closed team's subscription set to end, but the team wasn't read again", { teamId: "team-a", subscriptionId: "sub_123", action: "cancel_at_period_end", error: "ProvisionedThroughputExceededException" }]);
+    // The next run finds it ended for this closure, records it, and alarms no more
+    table.failingUpdates = undefined;
+    expect(await purge(NOW + 2 * 3_600_000)).toMatchObject({ failed: 0 });
+    expect(stripe.state.updates).toHaveLength(1);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBe(1);
+  });
+
   it("stops ending subscriptions after half its time budget, leaving the rest for the next run", async () => {
     await subscribedAndClosed();
     let clock = NOW + 3_600_000;
@@ -1566,26 +1599,46 @@ describe("purging closed teams", () => {
 describe("seats (supply-checkout-l50)", () => {
   const withCustomer = (teamId: string) => table.put({ ...(meta(teamId) as Record<string, unknown>), stripeCustomerId: `cus_${teamId.slice(5)}` });
 
-  it("queues a seat sync for each team a deleted account left, but not one it closed", async () => {
+  it("queues a seat sync for each team a deleted account left, and asks for the subscription of one it closed to end (supply-checkout-8jc.30)", async () => {
     withCustomer("team-a");
     withCustomer("team-b");
     team("team-solo", { [SOLO]: "owner" }, { stripeCustomerId: "cus_solo" });
     team("team-pat", { [PAT]: "owner" }, { stripeCustomerId: "cus_pat" });
     expect((await deleteAccount(PAT)).status).toBe(204);
-    expect(queued.sort()).toEqual([["cus_a", "membership"], ["cus_b", "membership"]]);
+    expect(queued.sort()).toEqual([["cus_a", "membership"], ["cus_b", "membership"], ["cus_pat", "closed"]]);
   });
 
-  it("queues one when a team is reopened (members may have left while it was closed), and none when it closes", async () => {
+  it("asks for the subscription to end as a team closes, and queues a seat sync when it's reopened (members may have left while it was closed)", async () => {
     withCustomer("team-a");
     expect((await close()).status).toBe(200);
-    expect(queued).toEqual([]);
+    // The billing worker sets it to cancel within seconds, not at the purge's next run (supply-checkout-8jc.30)
+    expect(queued).toEqual([["cus_a", "closed"]]);
+    expect(logs).toContainEqual(["info", "Closed team's subscription end queued", { teamId: "team-a" }]);
+    // Closing a closed team changes nothing, and queues nothing
+    expect((await close()).status).toBe(200);
+    expect(queued).toHaveLength(1);
     const closedAt = meta("team-a")?.closedAt;
     expect((await reopen()).status).toBe(200);
-    expect(queued).toEqual([["cus_a", "membership"]]);
+    // Behind the close's on the customer's FIFO group
+    expect(queued).toEqual([["cus_a", "closed"], ["cus_a", "membership"]]);
     // That sync resyncs its subscription from Stripe (billing/reopening.ts, supply-checkout-85qp)
     expect(meta("team-a")).toMatchObject({ stripeResyncFor: closedAt, stripeReopenedAt: expect.any(String) });
     // Reopening an open team changes nothing, and queues nothing
     expect((await reopen()).status).toBe(200);
-    expect(queued).toHaveLength(1);
+    expect(queued).toHaveLength(2);
+  });
+
+  it("closes the team when its subscription's end can't be queued, leaving it to the purge", async () => {
+    withCustomer("team-a");
+    queueFails = true;
+    expect((await close()).status).toBe(200);
+    expect(meta("team-a")?.closedAt).toBeDefined();
+    expect(logs).toContainEqual(["warn", "Closed team's subscription end not queued", { teamId: "team-a", code: "ServiceUnavailable" }]);
+    expect(counts[BusinessMetric.SeatSyncQueueFailures]).toBe(1);
+  });
+
+  it("queues nothing when a team with no Stripe customer closes", async () => {
+    expect((await close()).status).toBe(200);
+    expect(queued).toEqual([]);
   });
 });

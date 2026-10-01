@@ -74,7 +74,7 @@ export const BusinessMetric = {
   SeatQuantityDrift: "SeatQuantityDrift",
   /** Teams the nightly entitlement check found recorded with a different subscription, status, plan or seats than Stripe has: a Stripe event was lost or stuck (supply-checkout-8jc.9, J7, J8). */
   EntitlementDrift: "EntitlementDrift",
-  /** Membership changes whose seat sync couldn't be queued; the nightly reconciliation fixes the quantity (J7). */
+  /** Membership changes whose seat sync couldn't be queued; the nightly reconciliation fixes the quantity (J7). Also closures whose early subscription end couldn't be queued (reason `closed`, supply-checkout-8jc.30); the hourly purge ends it. */
   SeatSyncQueueFailures: "SeatSyncQueueFailures",
   /** Sign-outs whose refresh token Cognito didn't revoke: it stays valid until it expires (J0). */
   SignOutRevokeFailures: "SignOutRevokeFailures",
@@ -118,7 +118,7 @@ export const BusinessMetric = {
   TeamsPurged: "TeamsPurged",
   /** Closed teams' Stripe subscriptions set to cancel at the period's end (or cancelled, if nothing was being paid), by the purge or the billing worker; the action goes in metadata. */
   ClosedTeamSubscriptionsEnded: "ClosedTeamSubscriptionsEnded",
-  /** Subscriptions set to end (or ended) for a closure the team was reopened from, by the purge or the billing worker, while Stripe was being called: an owner or operator must resume it (J7, J11). */
+  /** Subscriptions set to end (or ended) for a closure the team was reopened from, by the purge or the billing worker, while Stripe was being called: an owner or operator must resume it (J7, J11). Also one set to end whose team couldn't be read (or recorded) again afterwards, so a reopen in that moment can't be ruled out (metadata `checked: "no"`, supply-checkout-8jc.30). */
   ReopenedTeamSubscriptionsEnded: "ReopenedTeamSubscriptionsEnded",
   /** Reopened teams' subscriptions resumed in Stripe (a closure had set them to cancel at the period's end), by the billing worker's resync, or by the purge or the worker that ended one as its team was reopened; the source goes in metadata (supply-checkout-85qp). */
   ReopenedTeamSubscriptionsResumed: "ReopenedTeamSubscriptionsResumed",
