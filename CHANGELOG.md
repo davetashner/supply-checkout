@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.5.0](https://github.com/davetashner/supply-checkout/compare/v1.4.0...v1.5.0) (2026-10-01)
+
+
+### Features
+
+* alarm on RUM event surges and on security notices not sent ([#273](https://github.com/davetashner/supply-checkout/issues/273)) ([0d2b58d](https://github.com/davetashner/supply-checkout/commit/0d2b58df76cba31d7c54f5de26b2f5c1738889c0))
+* alert on operators deleted or locked out and on trail bucket and key changes ([#256](https://github.com/davetashner/supply-checkout/issues/256)) ([c730294](https://github.com/davetashner/supply-checkout/commit/c730294d5fad9acfadb58981f476e7f66277fea8))
+* email the account when a password is set or two-step sign-in is turned on ([#257](https://github.com/davetashner/supply-checkout/issues/257)) ([e01ded2](https://github.com/davetashner/supply-checkout/commit/e01ded2a22dda6e8701fa463aaa5de377da303ed))
+* shrink receipt photos on the device before they're read ([#258](https://github.com/davetashner/supply-checkout/issues/258)) ([c54a759](https://github.com/davetashner/supply-checkout/commit/c54a75992c27333d170d01c116f3dfdcff0e20f9))
+
+
+### Bug Fixes
+
+* alarm when a closed team is charged for a period after it closed ([#275](https://github.com/davetashner/supply-checkout/issues/275)) ([929c962](https://github.com/davetashner/supply-checkout/commit/929c962de8260597e08e46110fba9f103adeb627))
+* alert on RemovePermission on the watches and lock the group watch's log writes to it ([#259](https://github.com/davetashner/supply-checkout/issues/259)) ([4b1c9a2](https://github.com/davetashner/supply-checkout/commit/4b1c9a22774a1bffc65df9d67d1273a611cef941))
+* deflake the operators Ctrl-C test by waiting for the CLI to run ([#274](https://github.com/davetashner/supply-checkout/issues/274)) ([05da09f](https://github.com/davetashner/supply-checkout/commit/05da09f20feada8b9ae53fb885c5d3b8b05e5fd0))
+* flag a closed team reopened while the billing worker ends its subscription ([#271](https://github.com/davetashner/supply-checkout/issues/271)) ([7954a2f](https://github.com/davetashner/supply-checkout/commit/7954a2f693e946c4a7a1b639dfd261ff1dd344f8))
+* land an open beads export PR instead of opening a second one ([#272](https://github.com/davetashner/supply-checkout/issues/272)) ([07ead31](https://github.com/davetashner/supply-checkout/commit/07ead3175ae8c2e5fbb6e79cd740c72835d33072))
+* limit the receipt-import line price to the money bounds ([#260](https://github.com/davetashner/supply-checkout/issues/260)) ([e0b294d](https://github.com/davetashner/supply-checkout/commit/e0b294d932d6936e0bcb2bdf139d5d13a2fc9977))
+* retry the squash merge in npm run land after a transient GitHub error ([#270](https://github.com/davetashner/supply-checkout/issues/270)) ([88cd728](https://github.com/davetashner/supply-checkout/commit/88cd7282a822a0bb23c01b7daf3de137271990c5))
+* stop npm run land hanging forever when the PR's CI fails ([#263](https://github.com/davetashner/supply-checkout/issues/263)) ([4cf9d7a](https://github.com/davetashner/supply-checkout/commit/4cf9d7a1c4888d4aef7c9aeb08619df803f54aea))
+
 ## [1.4.0](https://github.com/davetashner/supply-checkout/compare/v1.3.0...v1.4.0) (2026-09-29)
 
 
