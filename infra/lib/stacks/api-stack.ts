@@ -68,9 +68,9 @@ import {
   WEBHOOK_RECORD_ATTRIBUTES,
   WEBHOOK_RECORD_PREFIX,
 } from "../../../backend/src/data/schema.js";
-import { BILLING_ENV, BILLING_MAX_RECEIVES, billingResourceNames, SEAT_SYNC_MAX_CONCURRENCY, STRIPE_ENV, stripeSecretName, stripeWebhookSecretName } from "../../../backend/src/billing/names.js";
+import { BILLING_ENV, BILLING_MAX_RECEIVES, billingResourceNames, OPS_STRIPE_ENV, SEAT_SYNC_MAX_CONCURRENCY, STRIPE_ENV, stripeOpsKeySecretName, stripeSecretName, stripeWebhookSecretName } from "../../../backend/src/billing/names.js";
 import { BILLING_WORKER_TAGS } from "../../../backend/src/billing/worker-db.js";
-import { type DeploymentConfig, stripeModeOf, stripeSecretArn, stripeWebhookSecretArn } from "../config.js";
+import { type DeploymentConfig, stripeModeOf, stripeOpsKeySecretArn, stripeSecretArn, stripeWebhookSecretArn } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import { grantPutDeletionRecords } from "../deletions.js";
 import { grantSendEmail } from "../email.js";
@@ -965,6 +965,19 @@ export class ApiStack extends SupplyCheckoutStack {
     fn.addToRolePolicy(new PolicyStatement({ actions: ["sts:AssumeRole", "sts:TagSession"], resources: [role.roleArn] }));
     fn.addToRolePolicy(new PolicyStatement({ actions: ["cognito-idp:AdminListGroupsForUser"], resources: [ssm(identity.opsUserPoolArn)] }));
     fn.addEnvironment(API_ENV.opsRoleArn, role.roleArn);
+    // The ops restricted Stripe key (ADR 0015 §2, supply-checkout-6uw.4): this one secret only, never the
+    // billing functions' secret key. The owner stores it with Secrets Manager's AWS managed key, which
+    // needs no KMS grant; until then a team's detail just has no Stripe part
+    const mode = stripeModeOf(config);
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ReadOpsStripeKey",
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: [stripeOpsKeySecretArn({ partition: Aws.PARTITION, region: this.region, account: Aws.ACCOUNT_ID }, config.envName, mode)],
+      }),
+    );
+    fn.addEnvironment(OPS_STRIPE_ENV.secretId, stripeOpsKeySecretName(config.envName, mode));
+    fn.addEnvironment(STRIPE_ENV.mode, mode);
 
     // The operator reopen function (supply-checkout-6uw.6). Reopening a team
     // removes its closure fields; IAM can't tell removing an attribute from

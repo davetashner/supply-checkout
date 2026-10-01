@@ -1,4 +1,4 @@
-import { STRIPE_MODES, type StripeMode, stripeSecretName, stripeWebhookSecretName } from "../../backend/src/billing/names.js";
+import { STRIPE_MODES, type StripeMode, stripeOpsKeySecretName, stripeSecretName, stripeWebhookSecretName } from "../../backend/src/billing/names.js";
 
 // Where the app deploys. Nothing account-specific is committed: the account
 // comes from the CLI profile at synth time (CDK_DEFAULT_ACCOUNT), and the
@@ -74,6 +74,11 @@ export function stripeSecretArn(where: { readonly partition: string; readonly re
 /** The same for the Stripe webhook endpoint's signing secret (stripeWebhookSecretName). */
 export function stripeWebhookSecretArn(where: { readonly partition: string; readonly region: string; readonly account: string }, envName: string, mode: StripeMode): string {
   return `arn:${where.partition}:secretsmanager:${where.region}:${where.account}:secret:${stripeWebhookSecretName(envName, mode)}-??????`;
+}
+
+/** The same for the ops function's Stripe restricted key (stripeOpsKeySecretName, supply-checkout-6uw.4). */
+export function stripeOpsKeySecretArn(where: { readonly partition: string; readonly region: string; readonly account: string }, envName: string, mode: StripeMode): string {
+  return `arn:${where.partition}:secretsmanager:${where.region}:${where.account}:secret:${stripeOpsKeySecretName(envName, mode)}-??????`;
 }
 
 interface ContextReader {

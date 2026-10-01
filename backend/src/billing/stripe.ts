@@ -50,12 +50,37 @@ export function requireMode(key: string, mode: StripeMode): string {
   return key;
 }
 
+/**
+ * The key, if it's a restricted key (`rk_`). A full secret key (`sk_`) is
+ * refused, without its value, so a function meant to hold a restricted key
+ * never quietly runs with every right (supply-checkout-6uw.4).
+ */
+export function requireRestricted(key: string): string {
+  if (!key.startsWith("rk_")) throw new Error("The Stripe secret holds a full secret key, not a restricted key");
+  return key;
+}
+
 /** Reads a secret's string value by name or ARN. */
 export type SecretReader = (secretId: string) => Promise<string | undefined>;
 
+/**
+ * How a Secrets Manager client is bounded: 1 second to connect, 3 to answer
+ * (failing the call, not only warning), 2 tries. cachedSecret shares one
+ * pending read among callers, so a read that hung would hold every later
+ * request in the container behind it.
+ */
+export function secretsManagerClientConfig(region: string | undefined, credentials?: SecretsManagerClientConfig["credentials"]): SecretsManagerClientConfig {
+  return {
+    region,
+    maxAttempts: 2,
+    requestHandler: { connectionTimeout: 1_000, requestTimeout: 3_000, throwOnRequestTimeout: true },
+    ...(credentials ? { credentials } : {}),
+  };
+}
+
 /** A reader on Secrets Manager in `region`, with the function's own credentials (or the script's). */
 export function secretsManagerReader(region: string | undefined, credentials?: SecretsManagerClientConfig["credentials"]): SecretReader {
-  const client = new SecretsManagerClient({ region, ...(credentials ? { credentials } : {}) });
+  const client = new SecretsManagerClient(secretsManagerClientConfig(region, credentials));
   return async (secretId) => (await client.send(new GetSecretValueCommand({ SecretId: secretId }))).SecretString;
 }
 

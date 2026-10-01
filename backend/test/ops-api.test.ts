@@ -37,6 +37,8 @@ import { connection } from "../src/data/client.js";
 import { MemoryTable } from "./memory-table.js";
 import { createReopenHandler, type ReopenRequest } from "../src/operator/reopen-handler.js";
 import { opsPolicy, reopenPolicy } from "./ops-policy.js";
+import Stripe from "stripe";
+import { OPS_INVOICE_PAGE, OPS_SUBSCRIPTION_PAGE, type OpsInvoiceLike, type OpsStripe, opsStripeClient, type OpsSubscriptionLike } from "../src/operator/stripe-detail.js";
 
 const OPS_ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_ops";
 const CUSTOMER_ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_pool";
@@ -65,6 +67,25 @@ let groups: Map<string, string[]>;
 let handler: ReturnType<typeof createOpsHandler>;
 let teamA: string;
 let teamB: string;
+// The ops Stripe client: a fake, never Stripe. `opsStripe` is what reading the ops restricted key gives
+let stripeCalls: [string, Record<string, unknown>][];
+let stripeSubs: OpsSubscriptionLike[];
+let stripeInvoices: OpsInvoiceLike[];
+let opsStripe: (() => Promise<OpsStripe>) | undefined;
+const fakeOpsStripe: OpsStripe = {
+  subscriptions: {
+    list: async (params) => {
+      stripeCalls.push(["subscriptions.list", params]);
+      return { data: stripeSubs };
+    },
+  },
+  invoices: {
+    list: async (params) => {
+      stripeCalls.push(["invoices.list", params]);
+      return { data: stripeInvoices, has_more: true };
+    },
+  },
+};
 
 function fakeObservability(): Observability {
   const log = (...args: unknown[]) => logs.push(args);
@@ -143,6 +164,10 @@ beforeEach(async () => {
   directoryCalls = [];
   revoked = new Set();
   groups = new Map([[OPERATOR, ["operators"]]]);
+  stripeCalls = [];
+  stripeSubs = [];
+  stripeInvoices = [];
+  opsStripe = async () => fakeOpsStripe;
   const setup = table.db();
   teamA = (await createTeam(setup, { userId: OWNER, email: OWNER_EMAIL }, { name: "Acme Cleaning" }, new Date(NOW - 2 * DAY))).team.teamId;
   teamB = (await createTeam(setup, { userId: "user-b" }, { name: "Bravo Janitorial" }, new Date(NOW - DAY))).team.teamId;
@@ -163,6 +188,8 @@ beforeEach(async () => {
       seatSyncs.push([customer, reason]);
     },
     directory,
+    stripeDeadlineMs: 50,
+    stripe: () => (opsStripe ? opsStripe() : Promise.reject(Object.assign(new Error("not configured"), { name: "NotConfigured" }))),
     issuerUrl: OPS_ISSUER,
     clientId: OPS_CLIENT,
     obs: fakeObservability(),
@@ -425,6 +452,180 @@ describe("teams", () => {
   it("answers 404 for an unknown team and 400 for a bad ID", async () => {
     expect((await call("GET", "/ops/teams/no-such-team")).status).toBe(404);
     expect((await call("GET", "/ops/teams/bad%20id")).status).toBe(400);
+  });
+});
+
+describe("a team's Stripe subscription and invoices (supply-checkout-6uw.4)", () => {
+  const CUSTOMER = "cus_TeamA1";
+  const sub = (over: Partial<OpsSubscriptionLike> & { quantity?: number; lookupKey?: string | null } = {}): OpsSubscriptionLike => {
+    const { quantity = 3, lookupKey = "supply_checkout_starter_monthly", ...rest } = over;
+    return {
+      id: "sub_1",
+      customer: CUSTOMER,
+      status: "active",
+      created: Date.parse("2026-08-01T00:00:00Z") / 1000,
+      cancel_at_period_end: false,
+      cancel_at: null,
+      trial_end: null,
+      items: { data: [{ quantity, current_period_end: Date.parse("2026-10-01T00:00:00Z") / 1000, price: { lookup_key: lookupKey } }] },
+      ...rest,
+    };
+  };
+  const invoice = (over: Partial<OpsInvoiceLike> = {}): OpsInvoiceLike => ({
+    id: "in_1",
+    customer: CUSTOMER,
+    number: "ABC-0001",
+    status: "paid",
+    created: Date.parse("2026-09-01T00:00:00Z") / 1000,
+    currency: "usd",
+    total: 2700,
+    amount_due: 2700,
+    amount_paid: 2700,
+    ...over,
+  });
+  const withCustomer = (customer: string = CUSTOMER) => table.put({ ...teamOf(teamA), stripeCustomerId: customer });
+
+  it("adds the subscription and recent invoices for the team's own customer, with only what an operator needs", async () => {
+    withCustomer();
+    // What Stripe also sends, and must never come back: the customer's email and name, card details and bearer links
+    const extra = { customer_email: "payer@example.com", customer_name: "Pat Payer", hosted_invoice_url: "https://invoice.stripe.com/i/secret", invoice_pdf: "https://pay.stripe.com/invoice/secret/pdf", default_payment_method: { card: { last4: "4242" } } };
+    stripeSubs = [{ ...sub({ cancel_at_period_end: true, cancel_at: Date.parse("2026-10-01T00:00:00Z") / 1000 }), ...extra } as OpsSubscriptionLike];
+    stripeInvoices = [{ ...invoice(), ...extra } as OpsInvoiceLike, invoice({ id: "in_draft", number: null, status: "draft" }), invoice({ id: "in_other", customer: "cus_Other" })];
+    const res = await call("GET", `/ops/teams/${teamA}`);
+    expect(res.status).toBe(200);
+    expect(res.body.team).toMatchObject({ id: teamA, stripeCustomerId: CUSTOMER });
+    expect(res.body.stripe).toEqual({
+      customerId: CUSTOMER,
+      subscription: {
+        id: "sub_1",
+        status: "active",
+        lookupKey: "supply_checkout_starter_monthly",
+        plan: "starter",
+        interval: "month",
+        seats: 3,
+        currentPeriodEnd: "2026-10-01T00:00:00.000Z",
+        cancelAtPeriodEnd: true,
+        cancelAt: "2026-10-01T00:00:00.000Z",
+        trialEnd: null,
+        createdAt: "2026-08-01T00:00:00.000Z",
+      },
+      subscriptionCount: 1,
+      invoices: [{ id: "in_1", number: "ABC-0001", status: "paid", createdAt: "2026-09-01T00:00:00.000Z", currency: "usd", total: 2700, amountDue: 2700, amountPaid: 2700 }],
+      hasMoreInvoices: true,
+    });
+    const text = JSON.stringify(res.body);
+    for (const leak of ["payer@example.com", "Pat Payer", "stripe.com", "4242", "in_other", "in_draft"]) expect(text).not.toContain(leak);
+    // The customer from the team's index entry, never the request; two reads and nothing else
+    expect(stripeCalls).toEqual([
+      ["subscriptions.list", { customer: CUSTOMER, status: "all", limit: OPS_SUBSCRIPTION_PAGE }],
+      ["invoices.list", { customer: CUSTOMER, limit: OPS_INVOICE_PAGE }],
+    ]);
+    // Still audited, and still only through the operator-access role
+    expect(auditItems(teamA)).toEqual([expect.objectContaining({ action: "ops.team.read" })]);
+    expect(denied).toEqual([]);
+  });
+
+  it("shows the current subscription over a newer one that's over, and the newest when all are over", async () => {
+    withCustomer();
+    stripeSubs = [sub({ id: "sub_new", status: "canceled" }), sub({ id: "sub_live", status: "past_due", quantity: 5, lookupKey: "not-in-catalog" }), sub({ id: "sub_mixed", customer: { id: "cus_Other" } })];
+    const live = (await call("GET", `/ops/teams/${teamA}`)).body.stripe;
+    expect(live.subscription).toMatchObject({ id: "sub_live", status: "past_due", seats: 5, lookupKey: "not-in-catalog", plan: null, interval: null });
+    expect(live.subscriptionCount).toBe(2);
+    stripeSubs = [sub({ id: "sub_b", status: "incomplete_expired" }), sub({ id: "sub_a", status: "canceled", customer: { id: CUSTOMER } })];
+    expect((await call("GET", `/ops/teams/${teamA}`)).body.stripe.subscription).toMatchObject({ id: "sub_b" });
+    stripeSubs = [sub({ items: { data: [] } })];
+    expect((await call("GET", `/ops/teams/${teamA}`)).body.stripe.subscription).toMatchObject({ seats: 0, lookupKey: null, currentPeriodEnd: null });
+    stripeSubs = [];
+    expect((await call("GET", `/ops/teams/${teamA}`)).body.stripe).toMatchObject({ subscription: null, subscriptionCount: 0, invoices: [] });
+  });
+
+  it("answers stripe: null for a team without a Stripe customer, without reading the key or calling Stripe", async () => {
+    let reads = 0;
+    opsStripe = async () => {
+      reads++;
+      return fakeOpsStripe;
+    };
+    const res = await call("GET", `/ops/teams/${teamA}`);
+    expect(res.status).toBe(200);
+    expect(res.body.stripe).toBeNull();
+    expect(reads).toBe(0);
+    expect(stripeCalls).toEqual([]);
+  });
+
+  const logged = () => JSON.stringify(logs);
+  it.each<[string, () => void]>([
+    [
+      "the ops key isn't stored yet",
+      () => {
+        opsStripe = () => Promise.reject(Object.assign(new Error("Secrets Manager can't find the specified secret: rk_test_SECRET"), { name: "ResourceNotFoundException" }));
+      },
+    ],
+    [
+      "Stripe errors",
+      () => {
+        opsStripe = async () => ({
+          ...fakeOpsStripe,
+          invoices: { list: () => Promise.reject(new Stripe.errors.StripePermissionError({ type: "invalid_request_error", message: "The key rk_test_SECRET for payer@example.com lacks rights", code: "permission", statusCode: 403, requestId: "req_9" } as never)) },
+        });
+      },
+    ],
+    [
+      "Stripe is too slow",
+      () => {
+        opsStripe = async () => ({ ...fakeOpsStripe, subscriptions: { list: () => new Promise(() => {}) } });
+      },
+    ],
+  ])("still answers with the team when %s, and logs no key, message or email", async (_, arrange) => {
+    withCustomer();
+    arrange();
+    const res = await call("GET", `/ops/teams/${teamA}`);
+    expect(res.status).toBe(200);
+    expect(res.body.team).toMatchObject({ id: teamA, name: "Acme Cleaning" });
+    expect(res.body.stripe).toEqual({ error: "unavailable" });
+    expect(logged()).toContain("Stripe detail unavailable");
+    for (const leak of ["rk_test_SECRET", "payer@example.com", "lacks rights", "can't find"]) expect(logged()).not.toContain(leak);
+  });
+
+  // Built from pieces, so the public-safety check doesn't take them for real keys
+  const FULL_KEY = `sk_test_${"F".repeat(24)}`;
+  const LIVE_RESTRICTED = `rk_live_${"L".repeat(24)}`;
+  const RESTRICTED = `rk_test_${"R".repeat(24)}`;
+  it("uses only a restricted key: a full secret key stored by mistake makes the detail unavailable, and is never logged", async () => {
+    withCustomer();
+    stripeSubs = [sub()];
+    const created: string[] = [];
+    const client = (value: string) => opsStripeClient({ secretId: "supply-checkout/prod/stripe/test-ops-restricted-key", mode: "test", read: async () => value, create: (key) => (created.push(key), fakeOpsStripe) });
+    opsStripe = client(FULL_KEY);
+    const refused = await call("GET", `/ops/teams/${teamA}`);
+    expect(refused.status).toBe(200);
+    expect(refused.body.stripe).toEqual({ error: "unavailable" });
+    expect(created).toEqual([]);
+    expect(stripeCalls).toEqual([]);
+    expect(JSON.stringify(logs)).not.toContain("FFFFFFFF");
+    expect(JSON.stringify(refused.body)).not.toContain("FFFFFFFF");
+    // A live key where test mode is configured is refused too
+    opsStripe = client(LIVE_RESTRICTED);
+    expect((await call("GET", `/ops/teams/${teamA}`)).body.stripe).toEqual({ error: "unavailable" });
+    expect(created).toEqual([]);
+    // A restricted key of the configured mode works
+    opsStripe = client(RESTRICTED);
+    expect((await call("GET", `/ops/teams/${teamA}`)).body.stripe.subscription).toMatchObject({ id: "sub_1" });
+    expect(created).toEqual([RESTRICTED]);
+    expect(JSON.stringify(logs)).not.toContain("RRRRRRRR");
+  });
+
+  it("never calls Stripe for a customer ID that isn't one", async () => {
+    withCustomer("cus_bad id/../x");
+    expect((await call("GET", `/ops/teams/${teamA}`)).body.stripe).toEqual({ error: "unavailable" });
+    expect(stripeCalls).toEqual([]);
+    expect(logged()).toContain("InvalidCustomer");
+  });
+
+  it("answers unavailable when the function has no Stripe client at all", async () => {
+    withCustomer();
+    const bare = createOpsHandler({ dbFor: (_sub, teamId) => table.guarded(opsPolicy(teamId ?? ".", denied)), reopen: async () => { throw new Error("not used"); }, directory, issuerUrl: OPS_ISSUER, clientId: OPS_CLIENT, obs: fakeObservability(), now: () => now });
+    const res = await bare(event("GET", `/ops/teams/${teamA}`));
+    expect(JSON.parse(res.body as string).stripe).toEqual({ error: "unavailable" });
   });
 });
 

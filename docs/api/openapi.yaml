@@ -1540,8 +1540,16 @@ paths:
     get:
       tags: [ops]
       operationId: opsGetTeam
-      summary: One team's account record and owners. Audited as `ops.team.read`.
-      description: The record comes from the operators' index, which lags writes by up to a second or so.
+      summary: One team's account record and owners, with its Stripe subscription and recent invoices. Audited as `ops.team.read`.
+      description: |
+        The record comes from the operators' index, which lags writes by up to
+        a second or so. `stripe` is read from Stripe with the ops function's
+        own restricted key, for the customer on the team's record (never one
+        from the request): `null` for a team with no Stripe customer, and
+        `{ "error": "unavailable" }` when the key isn't stored yet, Stripe
+        errors or takes more than 4 seconds; the team still comes back. It
+        never includes the customer's email, name or address, card details,
+        or links to Stripe's hosted invoice pages.
       security: [{ opsCognito: [] }]
       responses:
         "200":
@@ -1550,9 +1558,10 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [team]
+                required: [team, stripe]
                 properties:
                   team: { $ref: "#/components/schemas/OpsTeam" }
+                  stripe: { $ref: "#/components/schemas/OpsStripeDetail" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/OperatorsOnly" }
@@ -2110,6 +2119,57 @@ components:
         q: { type: [string, "null"] }
         cursor: { type: [string, "null"] }
         teams: { type: array, items: { type: string } }
+    OpsStripeDetail:
+      oneOf:
+        - type: "null"
+          description: The team has no Stripe customer.
+        - type: object
+          additionalProperties: false
+          required: [error]
+          properties:
+            error: { const: unavailable, description: "No ops key stored yet, or Stripe errored or was slow." }
+        - type: object
+          additionalProperties: false
+          required: [customerId, subscription, subscriptionCount, invoices, hasMoreInvoices]
+          properties:
+            customerId: { type: string }
+            subscription:
+              description: The current subscription (the newest not canceled or expired), else the newest; null if the customer has none.
+              oneOf:
+                - type: "null"
+                - type: object
+                  additionalProperties: false
+                  required: [id, status, lookupKey, plan, interval, seats, currentPeriodEnd, cancelAtPeriodEnd, cancelAt, trialEnd, createdAt]
+                  properties:
+                    id: { type: string }
+                    status: { type: string, description: "Stripe's subscription status." }
+                    lookupKey: { type: [string, "null"], description: The first item's price lookup key. }
+                    plan: { type: [string, "null"], description: "The catalog's plan for that lookup key, or null for a price it doesn't know." }
+                    interval: { type: [string, "null"] }
+                    seats: { type: integer, description: The quantity across the items. }
+                    currentPeriodEnd: { type: [string, "null"], format: date-time }
+                    cancelAtPeriodEnd: { type: boolean }
+                    cancelAt: { type: [string, "null"], format: date-time }
+                    trialEnd: { type: [string, "null"], format: date-time }
+                    createdAt: { type: [string, "null"], format: date-time }
+            subscriptionCount: { type: integer, description: "Subscriptions among the customer's latest 10: more than one is worth a look." }
+            invoices:
+              type: array
+              description: The latest 12, newest first, without drafts.
+              items:
+                type: object
+                additionalProperties: false
+                required: [id, number, status, createdAt, currency, total, amountDue, amountPaid]
+                properties:
+                  id: { type: string }
+                  number: { type: [string, "null"] }
+                  status: { type: string }
+                  createdAt: { type: string, format: date-time }
+                  currency: { type: string }
+                  total: { type: integer, description: In the currency's minor units. }
+                  amountDue: { type: integer }
+                  amountPaid: { type: integer }
+            hasMoreInvoices: { type: boolean }
     OpsTeam:
       type: object
       required: [id, name, plan, seats, status, ownerCount, createdAt, version, comp, owners]

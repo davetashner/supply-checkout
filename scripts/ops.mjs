@@ -47,7 +47,7 @@ const ENV = /^[a-z][a-z0-9-]{0,20}$/;
 export const USAGE = `Usage: npm run ops -- <command> [options]
 
   teams [--q <text>] [--limit N] [--cursor C]   List teams in ID order, or search by name or ID (a page can be short: follow --cursor)
-  team <teamId>                                 One team's account record and owners (audited)
+  team <teamId>                                 One team's account record, owners, Stripe subscription and invoices (audited)
   comp <teamId> --plan <plan> --until <date> --reason <text> [--seats N]
                                                 Comp a team or change or extend its comp (at most 12 months)
   uncomp <teamId> --reason <text>               End a team's comp now
@@ -266,7 +266,26 @@ export function teamLine(team) {
   return `${pad(team.id, 38)} ${pad(team.name, 28)} ${pad(`${team.plan}/${team.status}`, 20)} created ${date(team.createdAt)}${team.closedAt ? ` closed ${date(team.closedAt)}` : ""}${comp}${owners ? `  owners: ${owners}` : ""}`;
 }
 
-function teamDetail(team) {
+/** An amount in a currency's minor units, as `27.00 USD` (two decimals: the currencies Stripe bills here). */
+const money = (amount, currency) => `${(amount / 100).toFixed(2)} ${String(currency).toUpperCase()}`;
+
+/** The Stripe part of one team's detail (supply-checkout-6uw.4): null for a team with no Stripe customer. */
+function stripeLines(stripe) {
+  if (!stripe) return [];
+  if (stripe.error) return [`  Stripe: ${stripe.error} (the team's record above is current; try again later)`];
+  const s = stripe.subscription;
+  const lines = [
+    s
+      ? `  subscription ${s.id} ${s.status}, ${s.plan ? `${s.plan}/${s.interval} (${s.lookupKey})` : "unknown price"}, ${s.seats} seats${s.currentPeriodEnd ? `, period ends ${date(s.currentPeriodEnd)}` : ""}${s.cancelAtPeriodEnd || s.cancelAt ? `, cancels ${s.cancelAtPeriodEnd ? "at period end" : `on ${date(s.cancelAt)}`}` : ""}${s.trialEnd ? `, trial ends ${date(s.trialEnd)}` : ""}`
+      : "  no subscription",
+    ...(stripe.subscriptionCount > 1 ? [`  (${stripe.subscriptionCount} subscriptions for this customer: check for a duplicate)`] : []),
+    ...(stripe.invoices.length ? stripe.invoices.map((i) => `  invoice ${pad(i.number ?? i.id, 14)} ${pad(i.status, 14)} ${pad(money(i.total, i.currency), 12)} ${date(i.createdAt)}`) : ["  no invoices"]),
+    ...(stripe.hasMoreInvoices ? ["  (older invoices in Stripe)"] : []),
+  ];
+  return lines;
+}
+
+function teamDetail(team, stripe) {
   const lines = [
     `${team.name} (${team.id})`,
     `  plan ${team.plan}, status ${team.status}, seats ${team.seats}, owners ${team.ownerCount}${team.closedAt ? `, CLOSED ${team.closedAt} (read-only until it's deleted)` : ""}`,
@@ -277,6 +296,7 @@ function teamDetail(team) {
       : "  no comp",
     `  version ${team.version}`,
     ...(team.owners ?? []).map((o) => `  owner ${o.email ?? "(no email)"} (${o.userId}), joined ${o.joinedAt ?? "?"}`),
+    ...stripeLines(stripe),
   ];
   return lines.join("\n");
 }
@@ -362,7 +382,7 @@ export async function main(argv, deps) {
     const none = page.cursor ? "No teams yet (the search isn't finished)." : "No teams.";
     print(page, (p) => [p.teams.length ? p.teams.map(teamLine).join("\n") : none, ...(p.cursor ? [`More: --cursor ${p.cursor}`] : [])].join("\n"));
   } else if (command === "team") {
-    print(await call("GET", `/ops/teams/${teamId()}`), (r) => teamDetail(r.team));
+    print(await call("GET", `/ops/teams/${teamId()}`), (r) => teamDetail(r.team, r.stripe));
   } else if (command === "comp" || command === "uncomp") {
     const id = teamId();
     if (!flags.reason) throw new UsageError(`${command} needs --reason`);
