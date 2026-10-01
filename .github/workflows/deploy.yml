@@ -3,6 +3,8 @@ name: Deploy
 # Deploys a release to prod (ADR 0012, supply-checkout-pbp.26). The release workflow starts it
 # once the release's full check suite has passed; the owner can also start it by hand for a tag
 # (Actions, Deploy, Run workflow, from main), for example to deploy an older release again.
+# It runs only from main: a run dispatched on a tag would use that tag's own copy of this file,
+# which could leave out the checks below, so every job refuses any other ref.
 # docs/releases.md ("Deploying a release") has the whole flow.
 #
 # Only workflow_dispatch starts it. A release that release-please creates with GITHUB_TOKEN
@@ -18,7 +20,9 @@ name: Deploy
 #            job summary and deploys the stateless stacks (scripts/deploy-stacks.mjs)
 #
 # No AWS credentials exist before the deploy job's sign-in step, and that job runs only code
-# from the release tag. Every third-party action is pinned by commit SHA.
+# from a release commit on main. Every third-party action is pinned by commit SHA. The deploy
+# role's ARN is a secret (AWS_DEPLOY_ROLE_ARN: the production environment's for the deploy job,
+# the repository's for the trust job), so neither it nor the account ID reaches the public log.
 on:
   workflow_dispatch:
     inputs:
@@ -34,9 +38,11 @@ on:
 permissions: {}
 
 # One deploy at a time, and never cancel one that has started: a deploy cut off halfway leaves
-# CloudFormation to roll back. A run that's waiting here replaces an older waiting one.
+# CloudFormation to roll back. A run that's waiting here replaces an older waiting one. Dry runs
+# change nothing, so they have their own group: one can't replace a release deploy that's
+# waiting for approval, and it can run while a deploy waits.
 concurrency:
-  group: deploy-production
+  group: ${{ inputs.dry-run && 'deploy-production-dry-run' || 'deploy-production' }}
   cancel-in-progress: false
 
 defaults:
@@ -47,6 +53,7 @@ defaults:
 jobs:
   release:
     name: Check the release
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -69,9 +76,9 @@ jobs:
           REF: ${{ github.ref }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          # The production environment also allows only main and v* tags; this says why clearly
-          if [[ "$REF" != refs/heads/main && ! "$REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Run the deploy from main (or a release tag), not $REF"
+          # The jobs' `if` already skip any other ref; the production environment allows only main
+          if [[ "$REF" != refs/heads/main ]]; then
+            echo "::error::Run the deploy from main, not $REF"
             exit 1
           fi
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -90,9 +97,10 @@ jobs:
             echo "::error::$TAG has no published GitHub Release"
             exit 1
           fi
-          # "CI passed" from the push to main, or "checks / CI passed" from the release workflow
+          # "CI passed" from the push to main, or "checks / CI passed" from the release workflow,
+          # reported by GitHub Actions (not some other app posting a check run with that name)
           passed="$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha/check-runs?per_page=100" \
-            --jq '.check_runs[] | select(.name | test("(^|/ )CI passed$")) | select(.conclusion == "success") | .name')"
+            --jq '.check_runs[] | select(.app.slug == "github-actions") | select(.name | test("(^|/ )CI passed$")) | select(.conclusion == "success") | .name')"
           if [[ -z "$passed" ]]; then
             echo "::error::$TAG ($sha) has no successful \"CI passed\" check: deploy only what CI passed"
             exit 1
@@ -108,10 +116,11 @@ jobs:
   trust:
     # The negative half of the dry check in docs/infrastructure.md (step 3): a job outside the
     # production environment gets a different OIDC subject, and the role must refuse it. It
-    # needs the role's ARN as a repository variable (AWS_DEPLOY_ROLE_ARN, the same value as the
-    # production environment's), since environment variables reach only that environment's jobs.
+    # needs the role's ARN as a repository secret (AWS_DEPLOY_ROLE_ARN, the same value as the
+    # production environment's), since environment secrets reach only that environment's jobs.
     name: The deploy role refuses jobs outside production
     needs: release
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -119,16 +128,16 @@ jobs:
     steps:
       - name: Try to assume the deploy role without the production environment
         env:
-          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           DRY_RUN: ${{ inputs.dry-run }}
           AWS_REGION: ${{ needs.release.outputs.region }}
         run: |
           if [[ -z "$ROLE_ARN" ]]; then
-            message="Set the repository variable AWS_DEPLOY_ROLE_ARN (the deploy role's ARN) to check the role refuses jobs outside production"
+            message="Set the repository secret AWS_DEPLOY_ROLE_ARN (the deploy role's ARN) to check the role refuses jobs outside production"
             # A dry run is the trust check, so it can't skip it
             if [[ "$DRY_RUN" == true ]]; then echo "::error::$message"; exit 1; fi
             echo "::warning::$message"
-            echo "Trust check skipped: no repository variable AWS_DEPLOY_ROLE_ARN" >> "$GITHUB_STEP_SUMMARY"
+            echo "Trust check skipped: no repository secret AWS_DEPLOY_ROLE_ARN" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           if [[ ! "$ROLE_ARN" =~ ^arn:aws:iam::([0-9]{12}):role/supply-checkout-prod-github-deploy$ ]]; then
@@ -157,10 +166,11 @@ jobs:
   deploy:
     name: Deploy the stateless stacks
     needs: [release, trust]
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # Waits for the owner's approval. Its rules (main and v* only, required reviewer, no admin
-    # bypass) are what give this job the OIDC subject the deploy role trusts.
+    # Waits for the owner's approval. Its rules (main only, required reviewer, no admin bypass)
+    # are what give this job the OIDC subject the deploy role trusts.
     environment: production
     permissions:
       contents: read
@@ -181,12 +191,15 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-      # Before any credentials exist: install scripts never see them. The synth bundles the
-      # Lambda code from backend/.
+      # Before any credentials exist, and without install scripts (esbuild finds its binary in
+      # its platform package without its postinstall). This is defence in depth: the real
+      # control is that only a reviewed, released commit on main gets here. The synth bundles
+      # the Lambda code from backend/. Every cdk and tsx below is the locked local copy, never
+      # something npx could fetch.
       - name: Install dependencies
         run: |
-          (cd backend && npm ci --no-audit --no-fund)
-          (cd infra && npm ci --no-audit --no-fund)
+          (cd backend && npm ci --ignore-scripts --no-audit --no-fund)
+          (cd infra && npm ci --ignore-scripts --no-audit --no-fund)
       - name: Choose the stacks
         id: stacks
         run: echo "stateless=$(node scripts/deploy-stacks.mjs stateless --env "$ENV_NAME")" >> "$GITHUB_OUTPUT"
@@ -194,7 +207,8 @@ jobs:
       - name: Sign in to AWS with the deploy role
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          # A secret, so the ARN (and the account ID in it) is masked in the log
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           role-session-name: deploy-${{ github.run_id }}-${{ github.run_attempt }}
           aws-region: ${{ needs.release.outputs.region }}
           role-duration-seconds: 3600
@@ -242,7 +256,7 @@ jobs:
         run: |
           context=(-c "envName=$ENV_NAME")
           if [[ "$BACKUP_COPY" == false ]]; then context+=(-c backupCopy=false); fi
-          npx cdk synth --quiet --no-notices "${context[@]}"
+          ./node_modules/.bin/cdk synth --app "./node_modules/.bin/tsx bin/app.ts" --quiet --no-notices "${context[@]}"
 
       - name: Show the diff
         working-directory: infra
@@ -250,14 +264,19 @@ jobs:
           STACKS: ${{ steps.stacks.outputs.stateless }}
         run: |
           read -r -a stacks <<< "$STACKS"
-          npx cdk diff --app cdk.out --exclusively --no-color --no-notices "${stacks[@]}" 2>&1 | tee "$RUNNER_TEMP/diff.txt"
-          # The summary isn't masked like the log: take the account ID out of it
+          # The repository is public, so the diff is too (resource names, policy documents;
+          # docs/releases.md). Account IDs aren't: this account's is masked in the log, and the
+          # filter takes out any account ID in an ARN or a quoted principal, this one included,
+          # before the diff reaches the log or the job summary (which isn't masked).
           account="$(aws sts get-caller-identity --query Account --output text)"
+          ./node_modules/.bin/cdk diff --app cdk.out --exclusively --no-color --no-notices "${stacks[@]}" 2>&1 \
+            | sed -E -e "s/$account/<account>/g" -e 's/(arn:[^:" ]+:[^:" ]*:[^:" ]*:)[0-9]{12}/\1<account>/g' -e 's/"[0-9]{12}"/"<account>"/g' \
+            | tee "$RUNNER_TEMP/diff.txt"
           {
             echo "## Stateless stacks: diff for $TAG"
             echo
             echo '```diff'
-            head -c 900000 "$RUNNER_TEMP/diff.txt" | sed "s/$account/<account>/g"
+            head -c 900000 "$RUNNER_TEMP/diff.txt"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -270,7 +289,7 @@ jobs:
           STACKS: ${{ steps.stacks.outputs.stateless }}
         run: |
           read -r -a stacks <<< "$STACKS"
-          npx cdk deploy --app cdk.out --exclusively --require-approval never --no-notices --progress events "${stacks[@]}"
+          ./node_modules/.bin/cdk deploy --app cdk.out --exclusively --require-approval never --no-notices --progress events "${stacks[@]}"
           echo "Deployed $TAG ($SHA): ${stacks[*]}" >> "$GITHUB_STEP_SUMMARY"
       - name: Dry run
         if: ${{ inputs.dry-run }}
