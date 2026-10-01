@@ -798,8 +798,10 @@
                     "PK",
                     "SK",
                     "noticeSentAt",
+                    "noticeFor",
                     "noticeAddress",
-                    "noticeAddressAt"
+                    "noticeAddressAt",
+                    "noticeSeenHash"
                   ]
                 },
                 "StringEqualsIfExists": {
@@ -826,7 +828,10 @@
               "Sid": "ReadNoticeRecords"
             },
             {
-              "Action": "dynamodb:UpdateItem",
+              "Action": [
+                "dynamodb:UpdateItem",
+                "dynamodb:ConditionCheckItem"
+              ],
               "Condition": {
                 "ForAllValues:StringLike": {
                   "dynamodb:LeadingKeys": [
@@ -838,8 +843,10 @@
                     "PK",
                     "SK",
                     "noticeSentAt",
+                    "noticeFor",
                     "noticeAddress",
-                    "noticeAddressAt"
+                    "noticeAddressAt",
+                    "noticeSeenHash"
                   ]
                 },
                 "StringEqualsIfExists": {
@@ -1115,6 +1122,11 @@
       "Properties": {
         "Description": "App pool: a password, two-step sign-in or email changed, by any client (supply-checkout-8jc.28, 8jc.29)",
         "EventPattern": {
+          "account": [
+            {
+              "Ref": "AWS::AccountId"
+            }
+          ],
           "source": [
             "aws.cognito-idp"
           ],

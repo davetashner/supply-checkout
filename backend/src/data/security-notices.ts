@@ -2,8 +2,10 @@
 // supply-checkout-8jc.29), in the user's own `USER#<sub>` partition:
 //
 //   PK USER#<sub>  SK NOTICE#<kind>   noticeSentAt      when a notice of that kind last went out
-//   PK USER#<sub>  SK NOTICE_ADDRESS  noticeAddress,    the verified address the account had
-//                                     noticeAddressAt
+//                                     (noticeFor)       for emailChanged: the address it was about (emailSeenHash)
+//   PK USER#<sub>  SK NOTICE_ADDRESS  noticeAddress,    the address to tell of an email change: always one
+//                                     noticeAddressAt   the account API trusted, normalized
+//                                     noticeSeenHash    emailSeenHash of the Cognito address last accounted for
 //
 // A change made through the account API (POST /me/password, POST
 // /me/mfa/totp/verify) is emailed at once, and the same change reaches the
@@ -15,17 +17,22 @@
 // SetUserMFAPreference) to one email.
 //
 // NOTICE_ADDRESS is the account's verified address before an email change,
-// written the first time it's seen (GET /me, or the notices function), and
-// moved to a new address only by the notices function, in the same
-// conditional write that decides to tell the old one (moveNoticeAddress). So
-// the old address is known even if the change finished before its CloudTrail
-// event arrived, and a /me from the new address can't overwrite it.
+// written the first time it's seen (GET /me, or the notices function), never
+// for an account being deleted (the DELETING mark is checked in the same
+// transaction), and moved on only by the notices function, after it has told
+// the old one (moveNoticeAddress). So the old address is known even if the
+// change finished before its CloudTrail event arrived, and a /me from the new
+// address can't overwrite it. Whether the email changed is decided on
+// noticeSeenHash, a hash of Cognito's own address only trimmed and lowered,
+// so an address the app can't normalize (too long, say) or one NFKC would
+// fold into the recorded one still counts as a change.
 //
 // Only SECURITY_NOTICE_ATTRIBUTES are named, and nothing is returned, which is
 // all the notices function's IAM policy allows. Deleting an account deletes
 // these rows with the rest of the partition (deleteUserRows).
 
-import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { createHash } from "node:crypto";
+import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { id, keys } from "./keys.js";
 
@@ -70,33 +77,85 @@ export async function claimNotice(db: Db, userId: string, kind: string, now = ne
   }
 }
 
-/** The verified address recorded for the account, if any (strongly consistent). */
-export async function noticeAddress(db: Db, userId: string): Promise<string | undefined> {
+/** A hash of an address as Cognito holds it, only trimmed and lowered: what "the email changed" compares. */
+export function emailSeenHash(email: string): string {
+  return createHash("sha256").update(email.trim().toLowerCase(), "utf8").digest("hex");
+}
+
+export interface NoticeAddressRecord {
+  /** The address to tell of an email change. */
+  readonly address: string;
+  /** emailSeenHash of the Cognito address last accounted for. */
+  readonly seen: string;
+}
+
+/** The recorded address, if any (strongly consistent). */
+export async function noticeAddress(db: Db, userId: string): Promise<NoticeAddressRecord | undefined> {
   const { Item } = await connection(db).doc.send(
     new GetCommand({
       TableName: db.tableName,
       Key: keys.noticeAddress(id(userId, "user ID")),
-      ProjectionExpression: "#address",
-      ExpressionAttributeNames: { "#address": "noticeAddress" },
+      ProjectionExpression: "#address, #seen",
+      ExpressionAttributeNames: { "#address": "noticeAddress", "#seen": "noticeSeenHash" },
       ConsistentRead: true,
     }),
   );
   const address = Item?.noticeAddress;
-  return typeof address === "string" && address ? address : undefined;
+  if (typeof address !== "string" || !address) return undefined;
+  const seen = Item?.noticeSeenHash;
+  return { address, seen: typeof seen === "string" && seen ? seen : emailSeenHash(address) };
 }
 
-/** Records `email` as the account's address if none is recorded yet. True if it was written. */
-export async function recordNoticeAddress(db: Db, userId: string, email: string, now = new Date()): Promise<boolean> {
-  if (!email) throw new Error("No address to record");
+/**
+ * Records `email` (normalized, one the account API trusts) as the address to
+ * tell, and `seen` as the Cognito address it came from, if none is recorded
+ * yet and the account isn't being deleted. True if it was written.
+ */
+export async function recordNoticeAddress(db: Db, userId: string, email: string, seen: string, now = new Date()): Promise<boolean> {
+  if (!email || !seen) throw new Error("No address to record");
+  const user = id(userId, "user ID");
+  try {
+    await connection(db).doc.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Update: {
+              TableName: db.tableName,
+              Key: keys.noticeAddress(user),
+              UpdateExpression: "SET #address = :address, #at = :at, #seen = :seen",
+              ConditionExpression: "attribute_not_exists(#address)",
+              ExpressionAttributeNames: { "#address": "noticeAddress", "#at": "noticeAddressAt", "#seen": "noticeSeenHash" },
+              ExpressionAttributeValues: { ":address": email, ":at": now.toISOString(), ":seen": seen },
+            },
+          },
+          // Not for an account being deleted: its rows are going, and this one holds an address
+          { ConditionCheck: { TableName: db.tableName, Key: keys.accountDeletion(user), ConditionExpression: "attribute_not_exists(PK)" } },
+        ],
+      }),
+    );
+    return true;
+  } catch (error) {
+    if ((error as { name?: string } | null)?.name === "TransactionCanceledException") return false;
+    throw error;
+  }
+}
+
+/**
+ * Moves the record on to the Cognito address `seen` (and to `address`, the
+ * address to tell next), if it's still at `from`. True if it moved; false,
+ * and nothing written, if another event moved it first.
+ */
+export async function moveNoticeAddress(db: Db, userId: string, from: string, seen: string, address: string, now = new Date()): Promise<boolean> {
+  if (!from || !seen || !address) throw new Error("No address to move");
   try {
     await connection(db).doc.send(
       new UpdateCommand({
         TableName: db.tableName,
         Key: keys.noticeAddress(id(userId, "user ID")),
-        UpdateExpression: "SET #address = :address, #at = :at",
-        ConditionExpression: "attribute_not_exists(#address)",
-        ExpressionAttributeNames: { "#address": "noticeAddress", "#at": "noticeAddressAt" },
-        ExpressionAttributeValues: { ":address": email, ":at": now.toISOString() },
+        UpdateExpression: "SET #address = :address, #seen = :seen, #at = :at",
+        ConditionExpression: "#seen = :from",
+        ExpressionAttributeNames: { "#address": "noticeAddress", "#seen": "noticeSeenHash", "#at": "noticeAddressAt" },
+        ExpressionAttributeValues: { ":from": from, ":seen": seen, ":address": address, ":at": now.toISOString() },
       }),
     );
     return true;
@@ -107,26 +166,42 @@ export async function recordNoticeAddress(db: Db, userId: string, email: string,
 }
 
 /**
- * Moves the recorded address from `from` to `to`, if it's still `from`. True
- * if it moved: the caller is then the one to tell `from` (so two events for
- * one change tell it once). False, and nothing written, otherwise.
+ * Claims the email change notice about the Cognito address `seen`: true
+ * unless one about the same address went out less than NOTICE_DEDUPE_MS ago.
  */
-export async function moveNoticeAddress(db: Db, userId: string, from: string, to: string, now = new Date()): Promise<boolean> {
-  if (!from || !to) throw new Error("No address to move");
+export async function claimEmailChangeNotice(db: Db, userId: string, seen: string, now = new Date()): Promise<boolean> {
   try {
     await connection(db).doc.send(
       new UpdateCommand({
         TableName: db.tableName,
-        Key: keys.noticeAddress(id(userId, "user ID")),
-        UpdateExpression: "SET #address = :to, #at = :at",
-        ConditionExpression: "#address = :from",
-        ExpressionAttributeNames: { "#address": "noticeAddress", "#at": "noticeAddressAt" },
-        ExpressionAttributeValues: { ":from": from, ":to": to, ":at": now.toISOString() },
+        Key: keys.noticeSent(id(userId, "user ID"), "emailChanged"),
+        UpdateExpression: "SET #at = :at, #for = :for",
+        ConditionExpression: "attribute_not_exists(#at) OR #at < :cutoff OR #for <> :for",
+        ExpressionAttributeNames: { "#at": "noticeSentAt", "#for": "noticeFor" },
+        ExpressionAttributeValues: { ":at": now.toISOString(), ":for": seen, ":cutoff": new Date(now.getTime() - NOTICE_DEDUPE_MS).toISOString() },
       }),
     );
     return true;
   } catch (error) {
     if (failedCondition(error)) return false;
     throw error;
+  }
+}
+
+/** Gives up a claim on the email change notice about `seen` that couldn't be sent, so a retry can send it. */
+export async function releaseEmailChangeNotice(db: Db, userId: string, seen: string): Promise<void> {
+  try {
+    await connection(db).doc.send(
+      new UpdateCommand({
+        TableName: db.tableName,
+        Key: keys.noticeSent(id(userId, "user ID"), "emailChanged"),
+        UpdateExpression: "REMOVE #at, #for",
+        ConditionExpression: "#for = :for",
+        ExpressionAttributeNames: { "#at": "noticeSentAt", "#for": "noticeFor" },
+        ExpressionAttributeValues: { ":for": seen },
+      }),
+    );
+  } catch (error) {
+    if (!failedCondition(error)) throw error;
   }
 }

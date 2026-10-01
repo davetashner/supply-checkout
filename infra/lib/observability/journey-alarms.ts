@@ -153,6 +153,22 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       metric: business(BusinessMetric.SecurityNoticeFailures, region, FIFTEEN_MINUTES),
       threshold: 0,
     },
+    {
+      id: "security-notices-dropped",
+      title: "Security notices dropped",
+      journeys: "J0",
+      severity: "P2",
+      rule: "Any message in the security notices dead-letter queue: a CloudTrail record of a password, two-step or email change that the security notices function failed on after its retries, or EventBridge couldn't deliver, so the account may not have been told (supply-checkout-8jc.28). The message has the event to replay.",
+      metric: new Metric({
+        namespace: "AWS/SQS",
+        metricName: "ApproximateNumberOfMessagesVisible",
+        dimensionsMap: { QueueName: email.securityNoticesDeadLetterQueue },
+        statistic: "Maximum",
+        period: FIVE_MINUTES,
+        region,
+      }),
+      threshold: 0,
+    },
     // J2. Set up the inventory
     {
       id: "imports-stuck",

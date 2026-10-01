@@ -13,6 +13,9 @@ import {
   codeSentHash,
   provenEmailHash,
   claimNotice,
+  startAccountDeletion,
+  claimEmailChangeNotice,
+  releaseEmailChangeNotice,
   markNoticeSent,
   moveNoticeAddress,
   NOTICE_DEDUPE_MS,
@@ -187,12 +190,21 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       expect(await claimNotice(db, userId, "passwordSet", new Date(at.getTime() + NOTICE_DEDUPE_MS + 1))).toBe(true);
       expect(await claimNotice(db, userId, "twoStepOn", at)).toBe(true);
       expect(await noticeAddress(db, userId)).toBeUndefined();
-      expect(await recordNoticeAddress(db, userId, "owner@example.com", at)).toBe(true);
-      expect(await recordNoticeAddress(db, userId, "other@example.com", at)).toBe(false);
-      expect(await moveNoticeAddress(db, userId, "other@example.com", "new@example.com", at)).toBe(false);
-      expect(await moveNoticeAddress(db, userId, "owner@example.com", "new@example.com", at)).toBe(true);
-      expect(await rawItem(db, `USER#${userId}`, "NOTICE_ADDRESS")).toEqual({ PK: `USER#${userId}`, SK: "NOTICE_ADDRESS", noticeAddress: "new@example.com", noticeAddressAt: at.toISOString() });
-      expect(await noticeAddress(db, userId)).toBe("new@example.com");
+      expect(await recordNoticeAddress(db, userId, "owner@example.com", "seen-1", at)).toBe(true);
+      expect(await recordNoticeAddress(db, userId, "other@example.com", "seen-2", at)).toBe(false);
+      expect(await moveNoticeAddress(db, userId, "seen-2", "seen-3", "new@example.com", at)).toBe(false);
+      expect(await moveNoticeAddress(db, userId, "seen-1", "seen-2", "new@example.com", at)).toBe(true);
+      expect(await rawItem(db, `USER#${userId}`, "NOTICE_ADDRESS")).toEqual({ PK: `USER#${userId}`, SK: "NOTICE_ADDRESS", noticeAddress: "new@example.com", noticeAddressAt: at.toISOString(), noticeSeenHash: "seen-2" });
+      expect(await noticeAddress(db, userId)).toEqual({ address: "new@example.com", seen: "seen-2" });
+      expect(await claimEmailChangeNotice(db, userId, "seen-2", at)).toBe(true);
+      expect(await claimEmailChangeNotice(db, userId, "seen-2", at)).toBe(false);
+      await releaseEmailChangeNotice(db, userId, "seen-2");
+      expect(await claimEmailChangeNotice(db, userId, "seen-2", at)).toBe(true);
+      // Never for an account being deleted
+      const leaving = newUser();
+      await startAccountDeletion(db, leaving, at);
+      expect(await recordNoticeAddress(db, leaving, "owner@example.com", "seen-1", at)).toBe(false);
+      expect(await rawItem(db, `USER#${leaving}`, "NOTICE_ADDRESS")).toBeUndefined();
     });
 
     it("starts a trial, and makes one team per request key however often it's sent", async () => {

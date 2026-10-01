@@ -199,10 +199,10 @@ export class EmailStack extends SupplyCheckoutStack {
     });
     role.addToPolicy(new PolicyStatement({ actions: ["logs:CreateLogStream", "logs:PutLogEvents"], resources: [logGroup.logGroupArn] }));
     // Events the function or EventBridge gave up on, to replay: CloudTrail records (the user's sub, IP
-    // and user agent; no address or token), encrypted by SQS, kept 14 days. A lookup that fails every
-    // try is also counted in SecurityNoticeFailures, which alarms ("Security notices failing")
+    // and user agent; no address or token), encrypted by SQS, kept 14 days. Any message alarms
+    // ("Security notices dropped", journey-alarms.ts), as each failed try does ("Security notices failing")
     const deadLetters = new Queue(this, "SecurityNoticesDeadLetterQueue", {
-      queueName: `supply-checkout-${config.envName}-security-notices-dlq`,
+      queueName: emailResourceNames(config.envName).securityNoticesDeadLetterQueue,
       encryption: QueueEncryption.SQS_MANAGED,
       enforceSSL: true,
       retentionPeriod: Duration.days(14),
@@ -249,10 +249,11 @@ export class EmailStack extends SupplyCheckoutStack {
         conditions: { ...noticeRecords, StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" } },
       }),
     );
+    // ConditionCheckItem: recordNoticeAddress checks the DELETING mark in the same transaction, naming only the keys
     fn.addToRolePolicy(
       new PolicyStatement({
         sid: "WriteNoticeRecords",
-        actions: ["dynamodb:UpdateItem"],
+        actions: ["dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"],
         resources: [tableArn],
         conditions: { ...noticeRecords, StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" } },
       }),
@@ -270,6 +271,8 @@ export class EmailStack extends SupplyCheckoutStack {
       ruleName: `supply-checkout-${config.envName}-security-notices`,
       description: "App pool: a password, two-step sign-in or email changed, by any client (supply-checkout-8jc.28, 8jc.29)",
       eventPattern: {
+        // This account's own events only (defense in depth: a bus only gets another account's if it's allowed to)
+        account: [Stack.of(this).account],
         source: ["aws.cognito-idp"],
         detailType: ["AWS API Call via CloudTrail"],
         detail: {

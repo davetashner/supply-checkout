@@ -11,7 +11,7 @@ import type { CognitoUser, TotpSetup } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
-import { authorizeTeam, createInvite, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, MEMBERS_PER_TRIAL_TEAM, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS, verifiedEmailHash } from "../src/data/index.js";
+import { authorizeTeam, createInvite, emailSeenHash, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, MEMBERS_PER_TRIAL_TEAM, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS, verifiedEmailHash } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { connection } from "../src/data/client.js";
 import { REGION, accountPartitions, fakeDb, fakeMailer, unusedDeleteUser, unusedDeletionLog } from "./helpers.js";
@@ -772,13 +772,28 @@ describe("two-step sign-in", () => {
       expect(table.get(`USER#${PAT}`, "NOTICE_ADDRESS")).toMatchObject({ noticeAddress: "pat@example.com" });
     });
 
+    it("is recorded with a hash of Cognito's own address as it was, which is what the notices function compares", async () => {
+      expect((await call("GET", "/me", { user: PAT })).status).toBe(200);
+      expect(table.get(`USER#${PAT}`, "NOTICE_ADDRESS")).toMatchObject({ noticeAddress: "pat@example.com", noticeSeenHash: emailSeenHash("Pat@Example.com") });
+    });
+
+    // supply-checkout-8jc.28 review: deleting an account deletes its rows before its Cognito user, so a /me
+    // in between mustn't put an address back
+    it("isn't recorded for an account being deleted", async () => {
+      table.put({ PK: `USER#${OWNER}`, SK: "DELETING", type: "accountDeletion", userId: OWNER });
+      expect((await call("GET", "/me")).status).toBe(200);
+      expect(table.get(`USER#${OWNER}`, "NOTICE_ADDRESS")).toBeUndefined();
+    });
+
     it("isn't recorded for an unverified address", async () => {
       expect((await call("GET", "/me", { user: UNVERIFIED })).status).toBe(200);
       expect(table.get(`USER#${UNVERIFIED}`, "NOTICE_ADDRESS")).toBeUndefined();
     });
 
     it("doesn't fail /me when it can't be recorded", async () => {
-      table.failingUpdates = (input) => JSON.stringify(input.ExpressionAttributeNames).includes("noticeAddress");
+      table.beforeTransactWrite = () => {
+        throw Object.assign(new Error("Throughput exceeded"), { name: "ProvisionedThroughputExceededException" });
+      };
       expect((await call("GET", "/me")).status).toBe(200);
       expect(logs).toContainEqual(["Notice address not recorded", { userId: OWNER, code: "ProvisionedThroughputExceededException" }]);
       expect(JSON.stringify(logs)).not.toContain("owner@");

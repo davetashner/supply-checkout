@@ -1278,6 +1278,60 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmssecuritynoticesdroppedDBC2F8B3": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Security notices dropped (J0, us-east-1). Any message in the security notices dead-letter queue: a CloudTrail record of a password, two-step or email change that the security notices function failed on after its retries, or EventBridge couldn't deliver, so the account may not have been told (supply-checkout-8jc.28). The message has the event to replay. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-security-notices-dropped",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "Dimensions": [
+          {
+            "Name": "QueueName",
+            "Value": "supply-checkout-prod-security-notices-dlq"
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Namespace": "AWS/SQS",
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Period": 300,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmsimportsstuck68033DBE": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -9153,6 +9207,13 @@
               {
                 "Fn::GetAtt": [
                   "JourneyAlarmssecuritynoticesfailing933F267B",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmssecuritynoticesdroppedDBC2F8B3",
                   "Arn"
                 ]
               },

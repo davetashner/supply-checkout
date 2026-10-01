@@ -177,6 +177,7 @@ import {
   listInvitesForEmail,
   listTeamsForUser,
   markNoticeSent,
+  emailSeenHash,
   noticeAddress,
   recordNoticeAddress,
   hasEnded,
@@ -414,7 +415,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const [rows, invites] = await Promise.all([
       listTeamsForUser(own, userId),
       email ? listInvitesForEmail(own, email, new Date(now())) : [],
-      email ? rememberNoticeAddress(own, userId, email) : undefined,
+      email ? rememberNoticeAddress(own, userId, email, user.email ?? email) : undefined,
     ]);
     // Each team's details on a session for that team, after the membership
     // check: a stale switcher row (a removed member) shows nothing. Capped, so
@@ -468,13 +469,17 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
    * to (NOTICE_ADDRESS, data/security-notices.ts), the first time there is
    * one. Never replaces it: after an email change, only the security notices
    * function moves it, once it has told the old address, so someone who
-   * changed the email and then loads the app can't. Reads first, so an
+   * changed the email and then loads the app can't, and never for an account
+   * being deleted (recordNoticeAddress checks its DELETING mark in the same
+   * transaction, so a /me racing a deletion can't leave an address behind).
+   * Also records Cognito's own address as it was (emailSeenHash), which is
+   * what the notices function compares. Reads first, so an
    * account that has one costs no write. Best effort: a failure is logged
    * (the user ID and error name only) and /me goes on.
    */
-  async function rememberNoticeAddress(db: ReturnType<DbForAccount>, userId: string, email: string): Promise<void> {
+  async function rememberNoticeAddress(db: ReturnType<DbForAccount>, userId: string, email: string, cognitoEmail: string): Promise<void> {
     try {
-      if (!(await noticeAddress(db, userId))) await recordNoticeAddress(db, userId, email, new Date(now()));
+      if (!(await noticeAddress(db, userId))) await recordNoticeAddress(db, userId, email, emailSeenHash(cognitoEmail), new Date(now()));
     } catch (error) {
       obs.logger.warn("Notice address not recorded", { userId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
     }

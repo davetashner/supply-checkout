@@ -32,9 +32,11 @@
 //   address, when AdminGetUser shows an authenticator app among the user's
 //   MFA methods (so turning it off, or a code checked without turning it on,
 //   sends nothing).
-// - UpdateUserAttributes, VerifyUserAttribute: `emailChanged`, to the
-//   address the account had before, when the address Cognito has verified
-//   (where it now sends codes and resets) is another one. The old address is the one recorded in NOTICE_ADDRESS
+// - Every event, and UpdateUserAttributes and VerifyUserAttribute only for
+//   this: `emailChanged`, to the address the account had before, when the
+//   address Cognito has verified (where it now sends codes and resets) is
+//   another one (noticeEmailChange). Checked on every event, so a later one
+//   catches a change whose own events were missed. The old address is the one recorded in NOTICE_ADDRESS
 //   (data/security-notices.ts), written when /me or this function first saw
 //   the account's verified address. The pool keeps the old address until the
 //   new one is verified (keepOriginal), but the event can arrive after that,
@@ -51,12 +53,24 @@
 //
 // Best effort, like the API's notices: a failed send is logged with the user
 // ID, the kind and the error's name only, and counted in
-// SecurityNoticeFailures (reason `not_sent`, `no_address`, `no_user`, or
-// `lookup_failed`). A failed Cognito or DynamoDB call before anything is
-// claimed is thrown, so Lambda tries the event again. No address, name or
-// token is ever logged or put in a metric.
+// SecurityNoticeFailures (reason `not_sent`, `no_address`, `no_user`,
+// `lookup_failed`, or `error` for anything else thrown, such as DynamoDB
+// refusing a call). A failed Cognito or DynamoDB call, or an email change
+// notice SES refused, is thrown after it's counted, so Lambda tries the event
+// again, then puts it on the dead-letter queue ("Security notices dropped").
+// No address, name or token is ever logged or put in a metric.
 
-import { claimNotice, type Db, moveNoticeAddress, normalizeEmail, noticeAddress, recordNoticeAddress } from "../data/index.js";
+import {
+  claimEmailChangeNotice,
+  claimNotice,
+  type Db,
+  emailSeenHash,
+  moveNoticeAddress,
+  normalizeEmail,
+  noticeAddress,
+  recordNoticeAddress,
+  releaseEmailChangeNotice,
+} from "../data/index.js";
 import { EmailNotSentError, type Mailer } from "../email/mailer.js";
 import type { SecurityNotice } from "../email/templates.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
@@ -89,6 +103,16 @@ type Kind = SecurityNotice["kind"];
 /** cognitoRequest's error message: `<Action> failed: <status> <type>`. */
 const LOOKUP_ERROR = /^(ListUsers|AdminGetUser) failed: \d{3}( [A-Za-z]+)?$/;
 
+/** An error's code for a log line: SES's, or only the error's name, never its message. */
+const errorCode = (error: unknown) => (error instanceof EmailNotSentError ? error.code : ((error as { name?: string } | null)?.name ?? "Unknown"));
+
+/** An error already logged and counted, thrown on for Lambda to try again. */
+class CountedError extends Error {
+  constructor(cause: unknown) {
+    super("Counted", { cause });
+  }
+}
+
 const text = (value: unknown) => (typeof value === "string" && value ? value : undefined);
 
 /** The account's address, normalized, if `verified`; otherwise undefined. */
@@ -120,7 +144,7 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
       obs.count(BusinessMetric.SecurityNotices, 1, { kind: input.kind, via: "cloudtrail" });
       obs.logger.info("Security notice sent", { userId, kind: input.kind, via: "cloudtrail" });
     } catch (error) {
-      failed(userId, input.kind, "not_sent", error instanceof EmailNotSentError ? error.code : ((error as { name?: string } | null)?.name ?? "Unknown"));
+      failed(userId, input.kind, "not_sent", errorCode(error));
     }
   }
 
@@ -137,40 +161,61 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
 
   /**
    * Tells the address the account had before that its email changed, once per
-   * change. "Now" is Cognito's own verified address, where codes and resets go,
-   * not the account API's stricter rule: a linked user's address changed
-   * directly is verified in Cognito but isn't their recorded one, and that's a
-   * takeover the old address must hear of. The recorded address itself only
-   * ever starts as one the account API trusts.
+   * change (see "What" at the top). Whether it changed is decided on Cognito's
+   * own verified address, only trimmed and lowered (emailSeenHash), not the
+   * account API's rules: a linked user's new address isn't one the API counts,
+   * one over 254 characters won't normalize, and NFKC could fold a different
+   * mailbox into the recorded one, yet Cognito sends codes and resets to each.
+   * The address told is always the recorded one, which only ever starts as an
+   * address the API trusts, and moves on only to one that normalizes.
+   *
+   * The notice is claimed for the new address, sent, and only then is the
+   * record moved on. If SES refuses it, the claim is given up and the error
+   * thrown, so Lambda tries again (then the dead-letter queue), and a later
+   * event for the user finds the change still unannounced.
    */
   async function noticeEmailChange(userId: string, account: PoolAccount, at: string): Promise<void> {
     // A new address not verified yet (keepOriginal keeps the old one until it is) changes nothing
-    const current = addressIf(account, account.emailVerifiedInCognito);
-    if (!current) return;
-    const previous = await noticeAddress(db, userId);
-    if (!previous) {
+    if (!account.emailVerifiedInCognito || !account.email?.trim()) return;
+    const seen = emailSeenHash(account.email);
+    const record = await noticeAddress(db, userId);
+    if (!record) {
       const trusted = verifiedAddress(account);
-      if (trusted) await recordNoticeAddress(db, userId, trusted, now());
+      if (trusted) await recordNoticeAddress(db, userId, trusted, seen, now());
       return;
     }
-    if (previous === current) return;
-    // Whoever moves it tells the old address; another event for the same change finds it moved
-    if (!(await moveNoticeAddress(db, userId, previous, current, now()))) return;
-    await send(userId, previous, { kind: "emailChanged", at });
+    if (record.seen === seen) return;
+    if (!(await claimEmailChangeNotice(db, userId, seen, now()))) {
+      obs.logger.info("Security notice already sent", { userId, kind: "emailChanged", via: "cloudtrail" });
+      return;
+    }
+    try {
+      await deps.mailer.send(record.address, { kind: "emailChanged", at });
+    } catch (error) {
+      await releaseEmailChangeNotice(db, userId, seen).catch(() => undefined);
+      failed(userId, "emailChanged", "not_sent", errorCode(error));
+      throw new CountedError(error);
+    }
+    obs.count(BusinessMetric.SecurityNotices, 1, { kind: "emailChanged", via: "cloudtrail" });
+    obs.logger.info("Security notice sent", { userId, kind: "emailChanged", via: "cloudtrail" });
+    // The next change is told to the new address only if it's one the app can use; otherwise still the old one
+    await moveNoticeAddress(db, userId, record.seen, seen, addressIf(account, true) ?? record.address, now());
   }
 
-  return async (event: { readonly detail?: unknown }): Promise<void> => {
+  async function handle(event: { readonly detail?: unknown }, seen: { sub?: string; kind?: Kind }): Promise<void> {
     const detail = (event.detail ?? {}) as CloudTrailDetail;
     if (detail.eventSource !== "cognito-idp.amazonaws.com") return;
     const name = text(detail.eventName);
     if (!name || !Object.hasOwn(SECURITY_NOTICE_EVENTS, name)) return;
     const kind: Kind = SECURITY_NOTICE_EVENTS[name as keyof typeof SECURITY_NOTICE_EVENTS];
+    seen.kind = kind;
     // Only calls that succeeded changed anything
     if (text(detail.errorCode)) return;
     const pool = text(detail.requestParameters?.userPoolId) ?? text(detail.additionalEventData?.userPoolId);
     if (pool && pool !== deps.userPoolId) return;
     const sub = text(detail.additionalEventData?.sub);
     if (!sub || !SUB.test(sub)) return failed(undefined, kind, "no_user", "NoSub");
+    seen.sub = sub;
     const eventTime = Date.parse(String(detail.eventTime));
     const at = (Number.isFinite(eventTime) ? new Date(eventTime) : now()).toISOString();
 
@@ -180,13 +225,27 @@ export function createSecurityNoticesHandler(deps: SecurityNoticesDeps) {
     } catch (error) {
       // cognitoRequest's message names only the action, status and error type; anything else, only its name. Lambda tries again
       const message = (error as { message?: unknown } | null)?.message;
-      failed(sub, kind, "lookup_failed", typeof message === "string" && LOOKUP_ERROR.test(message) ? message : ((error as { name?: string } | null)?.name ?? "Unknown"));
-      throw error;
+      failed(sub, kind, "lookup_failed", typeof message === "string" && LOOKUP_ERROR.test(message) ? message : errorCode(error));
+      throw new CountedError(error);
     }
     // Not an app user: another pool's (the event didn't name it), or since deleted
     if (!account) return;
-    if (kind === "emailChanged") return noticeEmailChange(sub, account, at);
+    // On every event, so a later one catches an email change whose own events were missed or dead-lettered
+    await noticeEmailChange(sub, account, at);
+    if (kind === "emailChanged") return;
     if (kind === "twoStepOn" && !account.totpEnabled) return;
     return noticeAccount(sub, account, kind, at);
+  }
+
+  return async (event: { readonly detail?: unknown }): Promise<void> => {
+    const seen: { sub?: string; kind?: Kind } = {};
+    try {
+      await handle(event, seen);
+    } catch (error) {
+      if (error instanceof CountedError) throw error.cause;
+      // Anything else (DynamoDB refusing a call, say) is counted too, before Lambda tries again
+      failed(seen.sub, seen.kind ?? "passwordSet", "error", errorCode(error));
+      throw error;
+    }
   };
 }

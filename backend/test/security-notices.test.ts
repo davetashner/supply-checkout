@@ -10,7 +10,7 @@
 // behind a stand-in for the function's IAM policy.
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { claimNotice, markNoticeSent, moveNoticeAddress, NOTICE_DEDUPE_MS, noticeAddress, recordNoticeAddress } from "../src/data/index.js";
+import { claimEmailChangeNotice, claimNotice, emailSeenHash, markNoticeSent, moveNoticeAddress, NOTICE_DEDUPE_MS, noticeAddress, recordNoticeAddress, releaseEmailChangeNotice } from "../src/data/index.js";
 import { SECURITY_NOTICE_ATTRIBUTES } from "../src/data/schema.js";
 import { cognitoAccounts, type PoolAccount } from "../src/identity/cognito-accounts.js";
 import { SECURITY_NOTICE_EVENTS } from "../src/identity/names.js";
@@ -82,18 +82,29 @@ let logs: unknown[][];
 let now: number;
 let handle: ReturnType<typeof createSecurityNoticesHandler>;
 
-/** The function's IAM policy: GetItem (projected) and UpdateItem (nothing returned), SECURITY_NOTICE_ATTRIBUTES only, USER# partitions only. */
+/**
+ * The function's IAM policy: GetItem (projected) and UpdateItem (nothing returned), SECURITY_NOTICE_ATTRIBUTES
+ * only, USER# partitions only, and ConditionCheckItem naming no attribute but the keys (the DELETING mark).
+ */
 function policy(command: string, input: Record<string, unknown>): boolean {
   const allowed = new Set<string>(SECURITY_NOTICE_ATTRIBUTES);
-  const key = input.Key as { PK?: unknown } | undefined;
-  const names = Object.values((input.ExpressionAttributeNames ?? {}) as Record<string, string>);
+  const one = (kind: string, body: Record<string, unknown>) => {
+    const key = (body.Key ?? {}) as { PK?: unknown };
+    const names = Object.values((body.ExpressionAttributeNames ?? {}) as Record<string, string>);
+    return (
+      ["GetCommand", "UpdateCommand", "Update", "ConditionCheck"].includes(kind) &&
+      typeof key.PK === "string" &&
+      key.PK.startsWith("USER#") &&
+      names.every((n) => allowed.has(n)) &&
+      (kind !== "ConditionCheck" || (names.length === 0 && /^attribute_not_exists\(PK\)$/.test(String(body.ConditionExpression)))) &&
+      (kind !== "GetCommand" || typeof body.ProjectionExpression === "string") &&
+      (body.ReturnValues === undefined || body.ReturnValues === "NONE")
+    );
+  };
   const ok =
-    (command === "GetCommand" || command === "UpdateCommand") &&
-    typeof key?.PK === "string" &&
-    key.PK.startsWith("USER#") &&
-    names.every((n) => allowed.has(n)) &&
-    (command !== "GetCommand" || typeof input.ProjectionExpression === "string") &&
-    (input.ReturnValues === undefined || input.ReturnValues === "NONE");
+    command === "TransactWriteCommand"
+      ? (input.TransactItems as Record<string, Record<string, unknown>>[]).every((op) => Object.entries(op).every(([kind, body]) => one(kind, body)))
+      : one(command, input);
   if (!ok) denied.push({ command, input });
   return ok;
 }
@@ -276,35 +287,47 @@ describe("security notices from CloudTrail", () => {
   });
 
   describe("email changes (supply-checkout-8jc.29)", () => {
+    /** What GET /me records: the trusted address, and Cognito's own as it was. */
+    const recorded = (address = OWNER_EMAIL) => recordNoticeAddress(table.db(), SUB, address, emailSeenHash(address));
+
     it("tells the address the account had before, once, even when the change finished before its events arrived", async () => {
-      // GET /me recorded the owner's address earlier
-      await recordNoticeAddress(table.db(), SUB, OWNER_EMAIL);
+      await recorded();
       // The attacker changed it and verified the new one before CloudTrail's events came
       accounts.set(SUB, account({ email: "Attacker@Example.net" }));
       await handle(cloudTrail("UpdateUserAttributes"));
       await handle(cloudTrail("VerifyUserAttribute"));
       expect(mails.sent).toEqual([{ to: OWNER_EMAIL, input: { kind: "emailChanged", at: "2026-09-30T14:05:09.000Z" }, tags: {} }]);
-      // The recorded address is the new one now, so a later change tells it
-      expect(await noticeAddress(table.db(), SUB)).toBe("attacker@example.net");
+      // The record moved on to the new address, so a later change tells it
+      expect(await noticeAddress(table.db(), SUB)).toEqual({ address: "attacker@example.net", seen: emailSeenHash(ATTACKER_EMAIL) });
       expect(denied).toEqual([]);
       expectNothingPersonal();
     });
 
+    it("checks on every event, so a password change catches an email change whose own events were missed", async () => {
+      await recorded();
+      accounts.set(SUB, account({ email: ATTACKER_EMAIL }));
+      await handle(cloudTrail("ChangePassword"));
+      expect(mails.sent.map((m) => [m.to, m.input.kind])).toEqual([
+        [OWNER_EMAIL, "emailChanged"],
+        [ATTACKER_EMAIL, "passwordSet"],
+      ]);
+    });
+
     it("sends nothing while the new address isn't verified (the pool keeps the old one), or when nothing changed", async () => {
-      await recordNoticeAddress(table.db(), SUB, OWNER_EMAIL);
+      await recorded();
       await handle(cloudTrail("UpdateUserAttributes"));
       accounts.set(SUB, account({ email: ATTACKER_EMAIL, emailVerified: false, emailVerifiedInCognito: false }));
       await handle(cloudTrail("UpdateUserAttributes"));
-      accounts.set(SUB, account({ email: "OWNER@example.com" }));
+      accounts.set(SUB, account({ email: " OWNER@example.com " }));
+      await handle(cloudTrail("VerifyUserAttribute"));
+      accounts.set(SUB, account({ email: "  " }));
       await handle(cloudTrail("VerifyUserAttribute"));
       expect(mails.sent).toEqual([]);
-      expect(await noticeAddress(table.db(), SUB)).toBe(OWNER_EMAIL);
+      expect(await noticeAddress(table.db(), SUB)).toEqual({ address: OWNER_EMAIL, seen: emailSeenHash(OWNER_EMAIL) });
     });
 
-    // The account API doesn't count a linked user's new address (it isn't their recorded one), but Cognito
-    // sends codes and resets to it, so the old address must still be told; likewise a downgrade pending
     it("tells the old address when a linked user's email is changed directly, though the account API doesn't trust the new one", async () => {
-      await recordNoticeAddress(table.db(), SUB, OWNER_EMAIL);
+      await recorded();
       accounts.set(SUB, account({ email: ATTACKER_EMAIL, emailVerified: false, emailVerifiedInCognito: true }));
       await handle(cloudTrail("VerifyUserAttribute"));
       expect(mails.sent).toEqual([{ to: OWNER_EMAIL, input: { kind: "emailChanged", at: "2026-09-30T14:05:09.000Z" }, tags: {} }]);
@@ -312,6 +335,32 @@ describe("security notices from CloudTrail", () => {
       await handle(cloudTrail("ChangePassword"));
       expect(mails.sent).toHaveLength(1);
       expect(metrics.at(-1)).toEqual({ metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "passwordSet", reason: "no_address", via: "cloudtrail" } });
+    });
+
+    // Cognito takes addresses up to 2,048 characters; the app's normalizeEmail refuses over 254
+    it("tells the old address of a change to one the app can't normalize, once, and keeps telling the old address", async () => {
+      await recorded();
+      const long = `${"a".repeat(260)}@example.net`;
+      accounts.set(SUB, account({ email: long, emailVerified: false }));
+      await handle(cloudTrail("VerifyUserAttribute"));
+      await handle(cloudTrail("UpdateUserAttributes"));
+      expect(mails.sent.map((m) => m.to)).toEqual([OWNER_EMAIL]);
+      // Marked as told, but the address to tell is still the old, good one
+      expect(await noticeAddress(table.db(), SUB)).toEqual({ address: OWNER_EMAIL, seen: emailSeenHash(long) });
+      now += NOTICE_DEDUPE_MS + 1000;
+      accounts.set(SUB, account({ email: ATTACKER_EMAIL }));
+      await handle(cloudTrail("VerifyUserAttribute"));
+      expect(mails.sent.map((m) => m.to)).toEqual([OWNER_EMAIL, OWNER_EMAIL]);
+    });
+
+    // NFKC would fold the fullwidth ｏ into the recorded address; Cognito sends to it as it is
+    it("tells the old address of a change to one that only normalizes to it", async () => {
+      await recorded();
+      accounts.set(SUB, account({ email: "\uFF4Fwner@example.com" }));
+      await handle(cloudTrail("VerifyUserAttribute"));
+      expect(mails.sent.map((m) => [m.to, m.input.kind])).toEqual([[OWNER_EMAIL, "emailChanged"]]);
+      await handle(cloudTrail("VerifyUserAttribute"));
+      expect(mails.sent).toHaveLength(1);
     });
 
     it("records only an address the account API trusts when it has none", async () => {
@@ -324,27 +373,52 @@ describe("security notices from CloudTrail", () => {
     it("records the address of an account it hasn't seen, and tells nobody", async () => {
       await handle(cloudTrail("VerifyUserAttribute"));
       expect(mails.sent).toEqual([]);
-      expect(await noticeAddress(table.db(), SUB)).toBe(OWNER_EMAIL);
+      expect(await noticeAddress(table.db(), SUB)).toEqual({ address: OWNER_EMAIL, seen: emailSeenHash(OWNER_EMAIL) });
+      expect(denied).toEqual([]);
       accounts.set(SUB, account({ email: ATTACKER_EMAIL }));
       await handle(cloudTrail("VerifyUserAttribute"));
       expect(mails.sent.map((m) => m.to)).toEqual([OWNER_EMAIL]);
     });
 
+    it("records nothing for an account being deleted", async () => {
+      table.put({ PK: `USER#${SUB}`, SK: "DELETING", type: "accountDeletion" });
+      await handle(cloudTrail("VerifyUserAttribute"));
+      expect(await noticeAddress(table.db(), SUB)).toBeUndefined();
+    });
+
     it("tells the old address once when two events race for the same change", async () => {
-      await recordNoticeAddress(table.db(), SUB, OWNER_EMAIL);
+      await recorded();
       accounts.set(SUB, account({ email: ATTACKER_EMAIL }));
       await Promise.all([handle(cloudTrail("UpdateUserAttributes")), handle(cloudTrail("VerifyUserAttribute"))]);
       expect(mails.sent.map((m) => m.to)).toEqual([OWNER_EMAIL]);
     });
 
-    it("counts a notice SES refused, and doesn't tell the old address twice", async () => {
-      await recordNoticeAddress(table.db(), SUB, OWNER_EMAIL);
+    it("counts a notice SES refused and throws, keeping the record, so Lambda's retry (or a later event) still tells the old address", async () => {
+      await recorded();
       accounts.set(SUB, account({ email: ATTACKER_EMAIL }));
-      mails.state.fail = "AccountSendingPausedException";
-      await handle(cloudTrail("VerifyUserAttribute"));
+      mails.state.fail = "TooManyRequestsException";
+      await expect(handle(cloudTrail("VerifyUserAttribute"))).rejects.toMatchObject({ name: "EmailNotSentError", code: "TooManyRequestsException" });
       expect(metrics).toEqual([{ metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "emailChanged", reason: "not_sent", via: "cloudtrail" } }]);
+      expect(await noticeAddress(table.db(), SUB)).toEqual({ address: OWNER_EMAIL, seen: emailSeenHash(OWNER_EMAIL) });
+      mails.state.fail = undefined;
+      await handle(cloudTrail("VerifyUserAttribute"));
+      expect(mails.sent.map((m) => m.to)).toEqual([OWNER_EMAIL]);
       expectNothingPersonal();
     });
+  });
+
+  it("counts anything else thrown, such as DynamoDB refusing a call, by its name, and throws it on", async () => {
+    const refusing = createSecurityNoticesHandler({
+      userPoolId: POOL,
+      findAccount: async () => account(),
+      db: table.guarded(() => false),
+      mailer: mails.mailer,
+      obs: fakeObservability(),
+      now: () => NOW,
+    });
+    await expect(refusing(cloudTrail("ChangePassword"))).rejects.toMatchObject({ name: "AccessDeniedException" });
+    expect(metrics).toEqual([{ metric: BusinessMetric.SecurityNoticeFailures, metadata: { kind: "passwordSet", reason: "error", via: "cloudtrail" } }]);
+    expect(logs).toContainEqual(["Security notice not sent", { userId: SUB, kind: "passwordSet", code: "AccessDeniedException", via: "cloudtrail" }]);
   });
 });
 
@@ -359,23 +433,46 @@ describe("security notice records", () => {
     expect(table.get(`USER#${SUB}`, "NOTICE#passwordSet")).toEqual({ PK: `USER#${SUB}`, SK: "NOTICE#passwordSet", noticeSentAt: new Date(NOW + NOTICE_DEDUPE_MS + 1).toISOString() });
   });
 
-  it("records an address once, and moves it only from the address it holds", async () => {
+  it("claims an email change notice once per new address and window, and gives a claim up only for its address", async () => {
+    const db = table.db();
+    const at = new Date(NOW);
+    expect(await claimEmailChangeNotice(db, SUB, "a", at)).toBe(true);
+    expect(await claimEmailChangeNotice(db, SUB, "a", at)).toBe(false);
+    expect(await claimEmailChangeNotice(db, SUB, "b", at)).toBe(true);
+    await releaseEmailChangeNotice(db, SUB, "a");
+    expect(await claimEmailChangeNotice(db, SUB, "b", at)).toBe(false);
+    await releaseEmailChangeNotice(db, SUB, "b");
+    expect(await claimEmailChangeNotice(db, SUB, "b", at)).toBe(true);
+    expect(await claimEmailChangeNotice(db, SUB, "b", new Date(NOW + NOTICE_DEDUPE_MS + 1))).toBe(true);
+  });
+
+  it("records an address once, and moves it only from the Cognito address it last accounted for", async () => {
     const db = table.db();
     expect(await noticeAddress(db, SUB)).toBeUndefined();
-    expect(await recordNoticeAddress(db, SUB, OWNER_EMAIL)).toBe(true);
-    expect(await recordNoticeAddress(db, SUB, ATTACKER_EMAIL)).toBe(false);
-    expect(await moveNoticeAddress(db, SUB, ATTACKER_EMAIL, "x@example.com")).toBe(false);
-    expect(await moveNoticeAddress(db, SUB, OWNER_EMAIL, ATTACKER_EMAIL)).toBe(true);
-    expect(await noticeAddress(db, SUB)).toBe(ATTACKER_EMAIL);
-    await expect(recordNoticeAddress(db, SUB, "")).rejects.toThrow("No address");
-    await expect(moveNoticeAddress(db, SUB, "", OWNER_EMAIL)).rejects.toThrow("No address");
+    expect(await recordNoticeAddress(db, SUB, OWNER_EMAIL, "seen-1")).toBe(true);
+    expect(await recordNoticeAddress(db, SUB, ATTACKER_EMAIL, "seen-2")).toBe(false);
+    expect(await moveNoticeAddress(db, SUB, "seen-2", "seen-3", "x@example.com")).toBe(false);
+    expect(await moveNoticeAddress(db, SUB, "seen-1", "seen-2", ATTACKER_EMAIL)).toBe(true);
+    expect(await noticeAddress(db, SUB)).toEqual({ address: ATTACKER_EMAIL, seen: "seen-2" });
+    await expect(recordNoticeAddress(db, SUB, "", "s")).rejects.toThrow("No address");
+    await expect(moveNoticeAddress(db, SUB, "", "s", OWNER_EMAIL)).rejects.toThrow("No address");
+    // A record from before the seen hash compares as its own address
+    table.put({ PK: `USER#${OTHER_SUB}`, SK: "NOTICE_ADDRESS", noticeAddress: OWNER_EMAIL });
+    expect(await noticeAddress(db, OTHER_SUB)).toEqual({ address: OWNER_EMAIL, seen: emailSeenHash(OWNER_EMAIL) });
+  });
+
+  it("hashes Cognito's address only trimmed and lowered", () => {
+    expect(emailSeenHash(" Owner@Example.COM ")).toBe(emailSeenHash("owner@example.com"));
+    expect(emailSeenHash("\uFF4Fwner@example.com")).not.toBe(emailSeenHash("owner@example.com"));
   });
 
   it("passes on errors other than a failed condition", async () => {
     const broken = table.guarded(() => false);
     await expect(claimNotice(broken, SUB, "passwordSet")).rejects.toThrow("not authorized");
-    await expect(recordNoticeAddress(broken, SUB, OWNER_EMAIL)).rejects.toThrow("not authorized");
-    await expect(moveNoticeAddress(broken, SUB, OWNER_EMAIL, ATTACKER_EMAIL)).rejects.toThrow("not authorized");
+    await expect(claimEmailChangeNotice(broken, SUB, "a")).rejects.toThrow("not authorized");
+    await expect(releaseEmailChangeNotice(broken, SUB, "a")).rejects.toThrow("not authorized");
+    await expect(recordNoticeAddress(broken, SUB, OWNER_EMAIL, "s")).rejects.toThrow("not authorized");
+    await expect(moveNoticeAddress(broken, SUB, "s", "t", ATTACKER_EMAIL)).rejects.toThrow("not authorized");
   });
 });
 

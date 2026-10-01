@@ -278,11 +278,12 @@ export const NOTICE_ADDRESS_SK = "NOTICE_ADDRESS";
 /**
  * The only attributes the security notices function may name, read or write
  * (GetItem and UpdateItem, in `USER#` partitions): its IAM policy allows
- * exactly these (dynamodb:Attributes). No other item has any but the keys, so
- * it can't read a user's teams or proofs, and with no `expiresAt` it can't set
- * a TTL that would delete one of their rows.
+ * exactly these (dynamodb:Attributes); its one ConditionCheckItem (the
+ * DELETING mark, recordNoticeAddress) names only the keys. No other item has
+ * any but the keys, so it can't read a user's teams or proofs, and with no
+ * `expiresAt` it can't set a TTL that would delete one of their rows.
  */
-export const SECURITY_NOTICE_ATTRIBUTES = [PK, SK, "noticeSentAt", "noticeAddress", "noticeAddressAt"] as const;
+export const SECURITY_NOTICE_ATTRIBUTES = [PK, SK, "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash"] as const;
 
 /**
  * The partition prefix of a Stripe customer's link to its team:

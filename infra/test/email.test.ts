@@ -184,7 +184,9 @@ describe("email stack", () => {
     it("sends the app pool's password, two-step and email calls, from any client, to the function", () => {
       const t = email();
       const props = rule(t);
-      const pattern = props.EventPattern as { source: string[]; "detail-type": string[]; detail: Record<string, unknown> };
+      const pattern = props.EventPattern as { account: unknown[]; source: string[]; "detail-type": string[]; detail: Record<string, unknown> };
+      // This account's events only
+      expect(pattern.account).toEqual([{ Ref: "AWS::AccountId" }]);
       expect(pattern.source).toEqual(["aws.cognito-idp"]);
       expect(pattern["detail-type"]).toEqual(["AWS API Call via CloudTrail"]);
       expect(pattern.detail.eventSource).toEqual(["cognito-idp.amazonaws.com"]);
@@ -241,16 +243,16 @@ describe("email stack", () => {
           Action: "dynamodb:GetItem",
           Condition: {
             "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
-            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeSentAt", "noticeAddress", "noticeAddressAt"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash"] },
             StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
           },
         }),
         expect.objectContaining({
           Sid: "WriteNoticeRecords",
-          Action: "dynamodb:UpdateItem",
+          Action: ["dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"],
           Condition: {
             "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
-            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeSentAt", "noticeAddress", "noticeAddressAt"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash"] },
             StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
           },
         }),
