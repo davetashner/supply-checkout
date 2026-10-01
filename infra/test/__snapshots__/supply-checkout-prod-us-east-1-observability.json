@@ -62,6 +62,80 @@
                 ]
               },
               "Resource": "*"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:GenerateDataKey*"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":budgets::",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":*"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "budgets.amazonaws.com"
+              },
+              "Resource": "*",
+              "Sid": "AllowBudgetsToPublish"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:GenerateDataKey*"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":ce::",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":anomalysubscription/*"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "costalerts.amazonaws.com"
+              },
+              "Resource": "*",
+              "Sid": "AllowCostAnomaliesToPublish"
             }
           ],
           "Version": "2012-10-17"
@@ -552,6 +626,78 @@
                 "Ref": "AlarmTopicsP213C63151"
               },
               "Sid": "AllowCloudWatchAlarmsToPublish"
+            },
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":budgets::",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":*"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "budgets.amazonaws.com"
+              },
+              "Resource": {
+                "Ref": "AlarmTopicsP213C63151"
+              },
+              "Sid": "AllowBudgetsToPublish"
+            },
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":ce::",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":anomalysubscription/*"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "costalerts.amazonaws.com"
+              },
+              "Resource": {
+                "Ref": "AlarmTopicsP213C63151"
+              },
+              "Sid": "AllowCostAnomaliesToPublish"
             },
             {
               "Action": "sns:Publish",
@@ -4167,6 +4313,174 @@
         "Threshold": 1000000,
         "TreatMissingData": "notBreaching"
       }
+    },
+    "CostAlertsBudgetB505C9D5": {
+      "Type": "AWS::Budgets::Budget",
+      "Properties": {
+        "Budget": {
+          "BudgetLimit": {
+            "Amount": 100,
+            "Unit": "USD"
+          },
+          "BudgetName": "supply-checkout-prod-monthly",
+          "BudgetType": "COST",
+          "CostTypes": {
+            "IncludeCredit": false,
+            "IncludeRefund": false
+          },
+          "TimeUnit": "MONTHLY"
+        },
+        "NotificationsWithSubscribers": [
+          {
+            "Notification": {
+              "ComparisonOperator": "GREATER_THAN",
+              "NotificationType": "ACTUAL",
+              "Threshold": 50,
+              "ThresholdType": "PERCENTAGE"
+            },
+            "Subscribers": [
+              {
+                "Address": {
+                  "Ref": "AlarmTopicsP213C63151"
+                },
+                "SubscriptionType": "SNS"
+              }
+            ]
+          },
+          {
+            "Notification": {
+              "ComparisonOperator": "GREATER_THAN",
+              "NotificationType": "ACTUAL",
+              "Threshold": 80,
+              "ThresholdType": "PERCENTAGE"
+            },
+            "Subscribers": [
+              {
+                "Address": {
+                  "Ref": "AlarmTopicsP213C63151"
+                },
+                "SubscriptionType": "SNS"
+              }
+            ]
+          },
+          {
+            "Notification": {
+              "ComparisonOperator": "GREATER_THAN",
+              "NotificationType": "ACTUAL",
+              "Threshold": 100,
+              "ThresholdType": "PERCENTAGE"
+            },
+            "Subscribers": [
+              {
+                "Address": {
+                  "Ref": "AlarmTopicsP213C63151"
+                },
+                "SubscriptionType": "SNS"
+              }
+            ]
+          },
+          {
+            "Notification": {
+              "ComparisonOperator": "GREATER_THAN",
+              "NotificationType": "FORECASTED",
+              "Threshold": 100,
+              "ThresholdType": "PERCENTAGE"
+            },
+            "Subscribers": [
+              {
+                "Address": {
+                  "Ref": "AlarmTopicsP213C63151"
+                },
+                "SubscriptionType": "SNS"
+              }
+            ]
+          }
+        ]
+      },
+      "DependsOn": [
+        "AlarmTopicsP2Policy8BE19EA4",
+        "AlarmTopicsP213C63151"
+      ]
+    },
+    "CostAlertsMonitor6895C43D": {
+      "Type": "AWS::CE::AnomalyMonitor",
+      "Properties": {
+        "MonitorDimension": "SERVICE",
+        "MonitorName": "supply-checkout-prod-services",
+        "MonitorType": "DIMENSIONAL",
+        "ResourceTags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "CostAlertsSubscriptionEABF71E9": {
+      "Type": "AWS::CE::AnomalySubscription",
+      "Properties": {
+        "Frequency": "IMMEDIATE",
+        "MonitorArnList": [
+          {
+            "Fn::GetAtt": [
+              "CostAlertsMonitor6895C43D",
+              "MonitorArn"
+            ]
+          }
+        ],
+        "ResourceTags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Subscribers": [
+          {
+            "Address": {
+              "Ref": "AlarmTopicsP213C63151"
+            },
+            "Type": "SNS"
+          }
+        ],
+        "SubscriptionName": "supply-checkout-prod-anomalies",
+        "ThresholdExpression": "{\"Dimensions\":{\"Key\":\"ANOMALY_TOTAL_IMPACT_ABSOLUTE\",\"MatchOptions\":[\"GREATER_THAN_OR_EQUAL\"],\"Values\":[\"20\"]}}"
+      },
+      "DependsOn": [
+        "AlarmTopicsP2Policy8BE19EA4",
+        "AlarmTopicsP213C63151"
+      ]
     },
     "AlarmTopicP1ParamCE612988": {
       "Type": "AWS::SSM::Parameter",

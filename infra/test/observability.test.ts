@@ -11,6 +11,7 @@ import { BusinessMetric } from "../../backend/src/observability/names.js";
 import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { alarmContactParameter, alarmContactsFromContext, alarmRecipientParameterPrefix } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
+import { costAlertsFromContext, DEFAULT_COST_ANOMALY_USD, DEFAULT_MONTHLY_BUDGET_USD } from "../lib/observability/cost-alerts.js";
 import { journeyAlarmSpecs, SET_ASIDE_INCIDENT_AT } from "../lib/observability/journey-alarms.js";
 import { ROUTER_FAILING_ABOVE, RUM_EVENTS_FLOOD_PER_HOUR, RUM_EVENTS_SURGE_PER_HOUR, SITE_DOWN_MIN_REQUESTS, SITE_DOWN_PERCENT } from "../lib/observability/web-alarms.js";
 import { rumAppMonitorName } from "../lib/web/rum.js";
@@ -212,7 +213,8 @@ describe("alarm topics", () => {
         // (and the backup stack's change alerts, by rule name)
         // (and the P2 topic takes the alert-route rule's, tested below)
         // (and the deletion records bucket's change rule, tested with the watch)
-        const allow = all.filter((a) => !["AllowOperatorPoolAlertToPublish", "AllowBackupChangeAlertsToPublish", "AllowAlertRouteChangesToPublish", "AllowDeletionsBucketAlertToPublish"].includes(String(a.Sid)));
+        // (and the global services region's P2 topic takes the budget's and Cost Anomaly Detection's, tested with the cost alerts)
+        const allow = all.filter((a) => !["AllowOperatorPoolAlertToPublish", "AllowBackupChangeAlertsToPublish", "AllowAlertRouteChangesToPublish", "AllowDeletionsBucketAlertToPublish", "AllowBudgetsToPublish", "AllowCostAnomaliesToPublish"].includes(String(a.Sid)));
         if (all.length !== allow.length) expect([r, topics[0]]).toEqual([EAST, expect.stringMatching(/^AlarmTopicsP[12]/)]);
         expect(allow).toEqual([
           {
@@ -312,6 +314,140 @@ describe("alarm topics", () => {
     const t = observability();
     for (const p of ["p1", "p2"]) {
       t.hasResourceProperties("AWS::SSM::Parameter", { Name: `/supply-checkout/prod/observability/alarm-topic-${p}-arn` });
+    }
+  });
+});
+
+describe("cost alerts (supply-checkout-jxq)", () => {
+  const ACCOUNT_SOURCE = (service: string, resource: string) => ({
+    "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:${service}::`, { Ref: "AWS::AccountId" }, `:${resource}`]],
+  });
+  const PUBLISHERS = [
+    { sid: "AllowBudgetsToPublish", service: "budgets.amazonaws.com", source: ACCOUNT_SOURCE("budgets", "*") },
+    { sid: "AllowCostAnomaliesToPublish", service: "costalerts.amazonaws.com", source: ACCOUNT_SOURCE("ce", "anomalysubscription/*") },
+  ];
+  const conditionFor = (source: unknown) => ({ StringEquals: { "aws:SourceAccount": { Ref: "AWS::AccountId" } }, ArnLike: { "aws:SourceArn": source } });
+  const topicRef = (t: Template, severity: "P1" | "P2") => {
+    const [id] = Object.keys(t.findResources("AWS::SNS::Topic", { Properties: { TopicName: `supply-checkout-prod-alarms-${severity.toLowerCase()}` } }));
+    return id as string;
+  };
+
+  it("are in the global services region's observability stack only: Budgets and Cost Explorer are account-wide", () => {
+    expect(GLOBAL_SERVICES_REGION).toBe(EAST);
+    const east = observability(EAST);
+    east.resourceCountIs("AWS::Budgets::Budget", 1);
+    east.resourceCountIs("AWS::CE::AnomalyMonitor", 1);
+    east.resourceCountIs("AWS::CE::AnomalySubscription", 1);
+    const west = observability(WEST);
+    for (const type of ["AWS::Budgets::Budget", "AWS::CE::AnomalyMonitor", "AWS::CE::AnomalySubscription"]) west.resourceCountIs(type, 0);
+    // And no other stack in the app has them
+    const { stacks } = build();
+    for (const stack of stacks.all) {
+      if (stack === stacks.regions[EAST]?.observability) continue;
+      const t = Template.fromStack(stack);
+      for (const type of ["AWS::Budgets::Budget", "AWS::CE::AnomalyMonitor", "AWS::CE::AnomalySubscription"]) t.resourceCountIs(type, 0);
+    }
+  });
+
+  it("budget the month's gross cost, alerting P2 at 50%, 80% and 100% of actual spend and 100% of forecast", () => {
+    const t = observability();
+    const p2 = topicRef(t, "P2");
+    const sns = [{ SubscriptionType: "SNS", Address: { Ref: p2 } }];
+    const budgets = Object.values(t.findResources("AWS::Budgets::Budget"));
+    expect(budgets).toHaveLength(1);
+    const [budget] = budgets as [{ Properties: Record<string, unknown>; DependsOn: string[] }];
+    expect(budget.Properties).toEqual({
+      Budget: {
+        BudgetName: "supply-checkout-prod-monthly",
+        BudgetType: "COST",
+        TimeUnit: "MONTHLY",
+        BudgetLimit: { Amount: DEFAULT_MONTHLY_BUDGET_USD, Unit: "USD" },
+        CostTypes: { IncludeCredit: false, IncludeRefund: false },
+      },
+      NotificationsWithSubscribers: [
+        ...[50, 80, 100].map((Threshold) => ({ Notification: { NotificationType: "ACTUAL", ComparisonOperator: "GREATER_THAN", Threshold, ThresholdType: "PERCENTAGE" }, Subscribers: sns })),
+        { Notification: { NotificationType: "FORECASTED", ComparisonOperator: "GREATER_THAN", Threshold: 100, ThresholdType: "PERCENTAGE" }, Subscribers: sns },
+      ],
+    });
+    // Created after the topic's policy lets Budgets publish
+    expect(budget.DependsOn).toEqual(expect.arrayContaining([p2, expect.stringMatching(/^AlarmTopicsP2Policy/)]));
+  });
+
+  it("watch every AWS service's cost for anomalies, alerting P2 at once on one of $20 or more", () => {
+    const t = observability();
+    const p2 = topicRef(t, "P2");
+    t.hasResourceProperties("AWS::CE::AnomalyMonitor", { MonitorName: "supply-checkout-prod-services", MonitorType: "DIMENSIONAL", MonitorDimension: "SERVICE" });
+    const [monitor] = Object.keys(t.findResources("AWS::CE::AnomalyMonitor"));
+    const subs = Object.values(t.findResources("AWS::CE::AnomalySubscription")) as { Properties: Record<string, unknown>; DependsOn: string[] }[];
+    expect(subs).toHaveLength(1);
+    const [sub] = subs as [(typeof subs)[number]];
+    expect(sub.Properties).toMatchObject({
+      SubscriptionName: "supply-checkout-prod-anomalies",
+      Frequency: "IMMEDIATE",
+      MonitorArnList: [{ "Fn::GetAtt": [monitor, "MonitorArn"] }],
+      Subscribers: [{ Type: "SNS", Address: { Ref: p2 } }],
+    });
+    expect(JSON.parse(sub.Properties.ThresholdExpression as string)).toEqual({
+      Dimensions: { Key: "ANOMALY_TOTAL_IMPACT_ABSOLUTE", MatchOptions: ["GREATER_THAN_OR_EQUAL"], Values: [String(DEFAULT_COST_ANOMALY_USD)] },
+    });
+    expect(DEFAULT_COST_ANOMALY_USD).toBe(20);
+    expect(sub.DependsOn).toEqual(expect.arrayContaining([p2, expect.stringMatching(/^AlarmTopicsP2Policy/)]));
+  });
+
+  it("let only Budgets and Cost Anomaly Detection, for this account, publish to the P2 topic, and not to P1", () => {
+    const t = observability();
+    const statementsOf = (severity: "P1" | "P2") => {
+      const ref = topicRef(t, severity);
+      const policy = Object.values(t.findResources("AWS::SNS::TopicPolicy")).find((p) => (p.Properties.Topics as { Ref: string }[]).some((x) => x.Ref === ref));
+      return (policy?.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement;
+    };
+    const p2 = topicRef(t, "P2");
+    for (const { sid, service, source } of PUBLISHERS) {
+      expect(statementsOf("P2").filter((s) => s.Sid === sid)).toEqual([
+        { Sid: sid, Effect: "Allow", Principal: { Service: service }, Action: "sns:Publish", Resource: { Ref: p2 }, Condition: conditionFor(source) },
+      ]);
+      expect(statementsOf("P1").some((s) => s.Sid === sid || JSON.stringify(s.Principal).includes(service))).toBe(false);
+    }
+  });
+
+  it("let them use the topics' key, for this account's budgets and anomaly subscriptions only", () => {
+    const t = observability();
+    const keys = Object.values(t.findResources("AWS::KMS::Key"));
+    const alarmKey = keys.find((k) => JSON.stringify(k.Properties.Description ?? "").includes("alarm topics"));
+    const statements = (alarmKey?.Properties.KeyPolicy as { Statement: Record<string, unknown>[] }).Statement;
+    for (const { sid, service, source } of PUBLISHERS) {
+      expect(statements.filter((s) => JSON.stringify(s.Principal ?? {}).includes(service))).toEqual([
+        { Sid: sid, Effect: "Allow", Principal: { Service: service }, Action: ["kms:Decrypt", "kms:GenerateDataKey*"], Resource: "*", Condition: conditionFor(source) },
+      ]);
+    }
+    // Not in a region without the cost alerts
+    const west = JSON.stringify(observability(WEST).toJSON());
+    expect(west).not.toContain("budgets.amazonaws.com");
+    expect(west).not.toContain("costalerts.amazonaws.com");
+  });
+
+  it("take the budget and the anomaly threshold from context, as numbers or strings", () => {
+    const t = observability(EAST, { monthlyBudgetUsd: "250", costAnomalyUsd: 7.5 });
+    t.hasResourceProperties("AWS::Budgets::Budget", { Budget: Match.objectLike({ BudgetLimit: { Amount: 250, Unit: "USD" } }) });
+    t.hasResourceProperties("AWS::CE::AnomalySubscription", { ThresholdExpression: Match.stringLikeRegexp('"Values":\\["7.5"\\]') });
+  });
+
+  it("subscribe to an existing monitor from context instead of creating one", () => {
+    const arn = `arn:aws:ce::${"1".repeat(12)}:anomalymonitor/0a1b2c3d-4e5f-6789-abcd-ef0123456789`;
+    const t = observability(EAST, { costAnomalyMonitorArn: arn });
+    t.resourceCountIs("AWS::CE::AnomalyMonitor", 0);
+    t.hasResourceProperties("AWS::CE::AnomalySubscription", { MonitorArnList: [arn] });
+  });
+
+  it("reject settings that aren't a sensible number of dollars or a monitor ARN", () => {
+    const ctx = (values: Record<string, unknown>) => ({ tryGetContext: (k: string) => values[k] });
+    expect(costAlertsFromContext(ctx({}))).toEqual({ monthlyBudgetUsd: DEFAULT_MONTHLY_BUDGET_USD, anomalyUsd: DEFAULT_COST_ANOMALY_USD });
+    for (const bad of [0, -5, "abc", "", 10_001, Number.NaN, true, null]) {
+      expect(() => costAlertsFromContext(ctx({ monthlyBudgetUsd: bad })), String(bad)).toThrow(/monthlyBudgetUsd/);
+      expect(() => costAlertsFromContext(ctx({ costAnomalyUsd: bad })), String(bad)).toThrow(/costAnomalyUsd/);
+    }
+    for (const bad of ["arn:aws:ce::123:anomalymonitor/x", `arn:aws:ce::${"1".repeat(12)}:anomalysubscription/abc`, 42, "*"]) {
+      expect(() => costAlertsFromContext(ctx({ costAnomalyMonitorArn: bad })), String(bad)).toThrow(/costAnomalyMonitorArn/);
     }
   });
 });

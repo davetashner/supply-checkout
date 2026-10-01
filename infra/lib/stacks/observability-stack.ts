@@ -18,6 +18,7 @@ import { DeletionRecordsWatch } from "../observability/deletion-records-watch.js
 import { OperatorAuditWatch } from "../observability/operator-audit-watch.js";
 import { OperatorGroupWatch } from "../observability/operator-group-watch.js";
 import { OpsChecks } from "../observability/ops-checks.js";
+import { CostAlerts, costAlertsFromContext } from "../observability/cost-alerts.js";
 import { WebAlarms } from "../observability/web-alarms.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
@@ -396,6 +397,10 @@ export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySo
  * - `web`: GLOBAL_SERVICES_REGION only, where CloudFront's metrics are: the
  *   P1 alarms on the web distribution's 5xx rate and the router function's
  *   errors (web-alarms.ts), from the web stack's SSM outputs.
+ * - `costs`: GLOBAL_SERVICES_REGION only, the account's monthly cost budget
+ *   and its Cost Anomaly Detection monitor and subscription, to the P2 topic
+ *   (cost-alerts.ts, supply-checkout-jxq). Both services are account-wide,
+ *   so they're in one stack, in the region Cost Explorer's API is in.
  * - `dashboard`: primary region only, drawing every region's metrics.
  * - `checks`: primary region only, the scheduled checks that send the
  *   StuckImports and EmailQuotaUsedPercent gauges, and the closed-team purge
@@ -429,6 +434,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
   readonly operatorGroup?: OperatorGroupWatch;
   readonly deletionRecords?: DeletionRecordsWatch;
   readonly web?: WebAlarms;
+  readonly costs?: CostAlerts;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "observability", layer: "stateless" });
@@ -450,6 +456,10 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         }
       : undefined;
     if (webIds) this.web = new WebAlarms(this, "WebAlarms", { envName: config.envName, ...webIds, topics: this.topics });
+    // Budgets and Cost Anomaly Detection are account-wide: one stack, in the region of Cost Explorer's API
+    if (region === GLOBAL_SERVICES_REGION) {
+      this.costs = new CostAlerts(this, "CostAlerts", { envName: config.envName, topics: this.topics, ...costAlertsFromContext(this.node) });
+    }
 
     for (const [severity, topic] of Object.entries(this.topics.topics)) {
       new StringParameter(this, `AlarmTopic${severity}Param`, {
