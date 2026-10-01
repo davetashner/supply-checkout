@@ -1,7 +1,9 @@
 # Privacy Policy
 
-> **DRAFT — not reviewed by a lawyer / owner; not in effect.**
+> **DRAFT — not reviewed by a lawyer / owner; not in effect, except as pilot terms (below).**
 > Placeholders in `[BRACKETS]` must be filled in before publishing. See [Open questions](#open-questions-for-the-owner--lawyer) at the end.
+>
+> **Pilot terms.** During the supervised pilot, this draft applies as one of the pilot terms, as the [Pilot Agreement](pilot-agreement.md) (section 1) describes: in full, with Main Street Logic as "we" and the support mailbox as every contact. Where they disagree, the Pilot Agreement wins. A lawyer reviews this draft before public launch.
 
 - Last updated: [DATE]
 - Effective: [DATE]
@@ -16,7 +18,7 @@ The Service is for businesses in the United States. We store and process data in
 - **We don't sell or share personal information** for advertising, and we don't use ad trackers.
 - **We don't use your data to train AI models**, and neither does Amazon Bedrock, which reads receipts for us.
 - **Receipt photos aren't stored.** They're sent to be read and then discarded.
-- Owners can **export** the team's data at any time and **close** the team, which deletes it 30 days later. You can **delete your own account** in the app, and it's deleted straight away.
+- Owners can **export** the team's data at any time and **close** the team, which deletes it 30 days later (up to 44 days in rare billing cases). You can **delete your own account** in the app, and it's deleted straight away.
 - Deleted data can stay in our backups for up to **35 days**, and then it's gone.
 
 ## 1. Who is responsible for what
@@ -107,7 +109,7 @@ A current list of the service providers that handle customer data is at [SUBPROC
 | Data | How long |
 | --- | --- |
 | Your account (email, name, sign-in methods) | Until you delete your account. Then it's deleted straight away. |
-| Your team's data | While the team is open. When an owner closes the team, it's deleted 30 days later. Owners can reopen the team until an hour before then. |
+| Your team's data | While the team is open. When an owner closes the team, it's deleted 30 days later, or up to 44 days later in rare cases where its Stripe subscription can't be ended. Owners can reopen the team until an hour before then. |
 | A team whose subscription ended or whose trial ended without a plan | Read-only for 30 days so owners can export, then deleted, as the Terms describe. |
 | Invitations | Until accepted or revoked, or 7 days, whichever comes first. They're deleted when the team is closed. |
 | The team's activity history (for example, who closed or reopened a team) | 1 year, or until the team is deleted if that's sooner. It names people by internal ID, not email. |
@@ -156,7 +158,7 @@ These are all needed for the app to work as you'd expect, so there's no setting 
 - **See and export.** Owners can export all of the team's data as CSV and JSON files at any time (**Export data**), including while a closed or ended team is read-only.
 - **Correct.** Owners and members can edit the team's data. Owners can update billing details in Stripe's billing portal (**Billing**). To correct your name or email address, contact us.
 - **Delete your account.** **Account → Delete account**. It's deleted straight away, and you're signed out everywhere.
-- **Close the team.** Owners can close the team from **Members**. Its data is deleted 30 days later.
+- **Close the team.** Owners can close the team from **Members**. Its data is deleted 30 days later (up to 44 days in rare billing cases).
 - **Leave a team.** Any member can leave. Owners can remove members.
 
 ### California residents
