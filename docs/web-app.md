@@ -56,13 +56,15 @@ aws route53 list-resource-record-sets --profile supply-prod --hosted-zone-id "$Z
 aws route53 list-resource-record-sets --profile supply-prod --hosted-zone-id "$ZONE_ID" \
   --query "ResourceRecordSets[?(Type=='A' || Type=='AAAA' || Type=='CNAME') && contains(['supplycheckout.com.','www.supplycheckout.com.','app.supplycheckout.com.'], Name)].[Name,Type]" --output text
 cd infra && npm ci
-npx cdk deploy supply-checkout-prod-us-east-1-web --profile supply-prod   # also deploys the domain and data stacks it needs
+npx cdk deploy supply-checkout-prod-us-east-1-web --profile supply-prod -c backupCopy=false   # also deploys the domain and data stacks it needs
 cd .. && npm ci
 npm run publish:web -- check-router                                        # the router runs (503s until something is live)
 npm run publish:demo
 curl -sI https://supplycheckout.com/demo/ | head -20                       # 200, with the security headers
 curl -sI https://supplycheckout.com/ | grep -i '^location\|^cache-control'  # 302 to https://app.supplycheckout.com/, no-store
 ```
+
+The web stack deploys the data stack too, so keep `-c backupCopy=false` until [step 4 of the backup setup](backups.md#setting-it-up) ([why](infrastructure.md#the-cloudtrail-trail)).
 
 Then check https://securityheaders.com/?q=supplycheckout.com/demo/ (it should grade A; `'unsafe-inline'` for style attributes stops it at A rather than A+) and that `https://www.supplycheckout.com/` redirects to the apex and `/demo` to `/demo/`. `https://app.supplycheckout.com/` answers 503 until the real app is published to the `app` channel.
 
