@@ -812,6 +812,25 @@ describe("ending a subscription as the team closes (supply-checkout-8jc.30)", ()
     expect(counts[BusinessMetric.ClosedTeamSubscriptionsEnded]).toBeUndefined();
   });
 
+  it("leaves it to the hourly purge, without failing the message, when DynamoDB refuses its reads, so the reopen's sync behind it isn't held up", async () => {
+    readsFail = true;
+    expect(await worker(closing())).toBe("closed_team_deferred");
+    expect(logs).toContainEqual(["Closed team's subscription not ended at close: the purge will", expect.objectContaining({ messageId: "seats-close-1", error: "ThrottlingException" })]);
+    expect(retrieves).toEqual([]);
+    expect(updates).toEqual([]);
+    // Once the link is read, a failing team read is deferred too, naming the team
+    readsFail = false;
+    const original = table.guarded.bind(table);
+    table.guarded = (check) =>
+      original((command, input) => {
+        if (command === "GetCommand" && JSON.stringify(input.Key).includes(`TEAM#${TEAM}`)) throw Object.assign(new Error("Rate exceeded"), { name: "ThrottlingException" });
+        return check(command, input);
+      });
+    expect(await worker(closing("seats-close-2"))).toBe("closed_team_deferred");
+    expect(logs).toContainEqual(["Closed team's subscription not ended at close: the purge will", { teamId: TEAM, messageId: "seats-close-2", error: "ThrottlingException" }]);
+    expect(updates).toEqual([]);
+  });
+
   it("does nothing for a team reopened before it ran, being purged or gone, with no subscription, or another customer's", async () => {
     patchTeam({ closedAt: undefined });
     expect(await worker(closing())).toBe("team_open");

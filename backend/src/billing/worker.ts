@@ -294,32 +294,34 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
    * team: the stamp is the record of whose cancellation it is, so a reopen right after
    * resumes it (reopening.ts), and the purge, finding it already set to cancel for this
    * closure (closingAction `none`), sends Stripe nothing and records it. The team comes
-   * from our own link, as for any seat sync. Best effort: a Stripe failure is logged and
+   * from our own link, as for any seat sync. Best effort: a Stripe or DynamoDB failure is logged and
    * left to the purge, so the message never fails and never holds up the customer's later
    * syncs (the reopen's, say). A reopen while Stripe was asked is handled and alarmed as
    * for an event, and isn't retried: the team is open then, so a retry would do nothing.
    */
   async function endAtClose(message: SeatSyncMessage): Promise<ClosedSyncOutcome> {
     const { id, customer } = message;
-    const own = deps.dbFor({ eventId: id, stripeCustomer: customer });
-    const teamId = await stripeCustomerTeam(own, customer);
-    if (!teamId) return "unknown_customer";
-    const db = deps.dbFor({ eventId: id, stripeCustomer: customer, teamId });
-    const ctx = await teamContextForStripeCustomer(db, customer);
-    if (!ctx || ctx.teamId !== teamId) return "team_gone";
-    const team = await getBillingTeam(db, ctx, now());
-    if (!team) return "team_gone";
-    // Being purged: deleting its customer ends the subscription
-    if (team.purging) return "team_closed";
-    // Reopened before this ran: nothing to end
-    if (!team.closed) return "team_open";
-    if (team.stripeCustomerId !== customer) return "not_ours";
-    if (!team.stripeSubscriptionId) return "no_subscription";
+    let teamId: string | undefined;
+    // Any failure (DynamoDB or Stripe) is left to the purge: the message never fails, so it never holds up the customer's FIFO group
     try {
+      const own = deps.dbFor({ eventId: id, stripeCustomer: customer });
+      teamId = await stripeCustomerTeam(own, customer);
+      if (!teamId) return "unknown_customer";
+      const db = deps.dbFor({ eventId: id, stripeCustomer: customer, teamId });
+      const ctx = await teamContextForStripeCustomer(db, customer);
+      if (!ctx || ctx.teamId !== teamId) return "team_gone";
+      const team = await getBillingTeam(db, ctx, now());
+      if (!team) return "team_gone";
+      // Being purged: deleting its customer ends the subscription
+      if (team.purging) return "team_closed";
+      // Reopened before this ran: nothing to end
+      if (!team.closed) return "team_open";
+      if (team.stripeCustomerId !== customer) return "not_ours";
+      if (!team.stripeSubscriptionId) return "no_subscription";
       const outcome = await endForClosedTeam(db, ctx, { id, log: { messageId: id }, customer, subscription: team.stripeSubscriptionId }, team, { atClose: true });
       return outcome === "ended" ? "closed_team_ended" : outcome === "reopened" ? "team_reopened" : outcome;
     } catch (error) {
-      obs.logger.warn("Closed team's subscription not ended at close: the purge will", { teamId, messageId: id, error: (error as { name?: string } | null)?.name ?? "Unknown" });
+      obs.logger.warn("Closed team's subscription not ended at close: the purge will", { teamId: teamId ?? "", messageId: id, error: (error as { name?: string } | null)?.name ?? "Unknown" });
       return "closed_team_deferred";
     }
   }

@@ -474,7 +474,9 @@ If the log line is `Closed team's subscription set to end, but the team wasn't r
 2. Refund only an invoice for the period that began after that time that was paid and isn't zero. A $0 invoice, or a period a comp covered, also sets this off, and there's nothing to refund.
 3. Refund once per subscription and period. If the purge couldn't record the team after the warning, its next hourly run counts the same renewal again, so check the invoice hasn't already been refunded.
 
-The purge has already set the subscription to cancel, so nothing more will be charged.
+The purge has already set the subscription to cancel, so no new period will be charged.
+
+A `past_due` subscription is the exception to "nothing more is charged": setting it to cancel at the period's end (at close, or by the purge) doesn't void its open invoice, so Stripe keeps retrying the card for the period that began **before** the closure, and a retry can succeed after the team closed. That's existing behavior, not a renewal after closing, and it doesn't set this alarm off (the period didn't start after the closure). If an owner asks, it's a payment for time the team had before it closed; refund it by hand only if the owners and support agree to.
 
 **Closed-team subscription not found in Stripe: what to do.** Find `Closed team's subscription not found in Stripe` in the closed-team purge's log (`/aws/lambda/supply-checkout-<env>-team-purge`): it has the team and subscription IDs. Look the subscription up in the Stripe Dashboard, in the mode the purge runs in (`STRIPE_MODE` in its environment). The team was set aside (reason `NotFound`), not recorded as done, so "Closed-team subscription set aside" fires too, and stays on until each such team is dealt with:
 1. If Stripe has it in the other mode, or many teams were logged at once, the purge is reading the wrong Stripe secret key: fix the key in Secrets Manager or the deploy's Stripe mode. Then remove `stripeSetAsideFor` from each logged team's `META` item (below): the next hourly run lists them again and ends their subscriptions itself.
