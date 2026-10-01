@@ -2,8 +2,7 @@
 // says whether it's on and sets it up, and billing refused for want of it opens the setup,
 // against the fake backend in tests/fake-aws.js. The server's side is in
 // backend/test/account-api.test.ts and billing-api.test.ts (supply-checkout-8jc.12).
-import AxeBuilder from "@axe-core/playwright";
-import { test, expect } from "./helpers.js";
+import { test, expect, modalViolations } from "./helpers.js";
 import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, TEAM, USER, ORIGIN, AUTH, openAws, connected } from "./fake-aws.js";
 
@@ -26,8 +25,7 @@ async function open(page, backend) {
 }
 
 async function expectAccessible(page) {
-  const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
-  expect(violations.map((v) => v.id)).toEqual([]);
+  expect(await modalViolations(page)).toEqual([]);
 }
 
 test("an owner sets a password and an authenticator app up from Account, and signs in again", { tag: ["@J0"] }, async ({ page }) => {

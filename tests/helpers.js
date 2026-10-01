@@ -1,4 +1,5 @@
 import { test as base, expect } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
 import { builtFiles, currentBuild } from "../scripts/builds.mjs";
 import { installMockClaude } from "./mock-claude.js";
 import * as coverage from "./coverage.js";
@@ -65,5 +66,17 @@ export async function enterBarcode(page, code) {
 }
 
 export const modal = (page) => page.locator("#modal");
+
+/**
+ * The open modal's accessibility violations (WCAG 2.1 A and AA), by rule ID.
+ * A modal rises into place from 0.6 opacity (`.modal`'s "rise" animation in
+ * the app's CSS), and axe's colour-contrast rule reads a half-faded modal as
+ * low contrast, so this waits for the modal's animations to finish first.
+ */
+export async function modalViolations(page) {
+  await modal(page).evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)));
+  const { violations } = await new AxeBuilder({ page }).include("#modal").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  return violations.map((v) => v.id);
+}
 export const lineRow = (page, name) => page.locator("#sheetBody tbody tr", { hasText: name });
 export const inventoryRow = (page, name) => page.locator("#main tbody tr", { hasText: name });
