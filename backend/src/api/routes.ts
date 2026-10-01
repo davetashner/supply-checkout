@@ -6,7 +6,7 @@
 /**
  * The generic document operations, which the app's edit screens use, and the
  * inventory commands next to them (backend/src/data/commands.ts,
- * docs/api/commands.md): checkout, return, adding a receipt's lines and stock adjust, each one atomic and
+ * docs/api/commands.md): checkout, quick take, return, moving an ad hoc line, adding a receipt's lines and stock adjust, each one atomic and
  * idempotent by operation ID, and a product's stock history. And the CSV
  * inventory import.
  */
@@ -17,6 +17,8 @@ export type Operation =
   | "update"
   | "delete"
   | "checkout"
+  | "quickTake"
+  | "move"
   | "return"
   | "lost"
   | "addLines"
@@ -65,6 +67,10 @@ const commandRoutes: DataRoute[] = [
   { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/return", collection: "sheets", operation: "return", minRole: "contributor" },
   // Company equipment lost or broken on a job (ADR 0017, section 3): no stock moves
   { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/lost", collection: "sheets", operation: "lost", minRole: "contributor" },
+  // Quick take onto the team's open ad hoc sheet, or the next one (ADR 0017, section 4)
+  { method: "POST", path: "/teams/{teamId}/adhoc/checkout", collection: "sheets", operation: "quickTake", minRole: "contributor" },
+  // A whole line from the open ad hoc sheet to an open job sheet, both in one transaction (no stock moves)
+  { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/move", collection: "sheets", operation: "move", minRole: "contributor" },
   // A receipt's lines for a client, added to an existing sheet in one transaction (no stock moves)
   { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/lines", collection: "sheets", operation: "addLines", minRole: "contributor" },
   { method: "POST", path: "/teams/{teamId}/products/{key}/stock", collection: "products", operation: "adjustStock", minRole: "contributor" },

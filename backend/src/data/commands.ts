@@ -36,16 +36,17 @@
 
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection, storable } from "./client.js";
-import { MAX_DOCUMENT_BYTES } from "./documents.js";
+import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
+import { MAX_DOCUMENT_BYTES, sheetItem } from "./documents.js";
 import { ConflictError, InvalidInputError, NotFoundError, StockChangedError, TooLargeError, isCancelledAsTooLarge } from "./errors.js";
-import { BOUGHT_SUFFIX, barcode, id as checkId, keys, movementPrefix, productKey, strip, teamPartition } from "./keys.js";
+import { BOUGHT_SUFFIX, adhocSheetId, barcode, date as checkDate, id as checkId, keys, movementPrefix, productKey, strip, teamPartition } from "./keys.js";
 import { count as checkCount, MAX_MONEY, MAX_QUANTITY, money, quantity as checkQuantity, roundCents, storedMoney } from "./money.js";
 import { type Page, queryPage } from "./query.js";
 import { PK } from "./schema.js";
 import { storedMarkup } from "./settings.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
-export type CommandName = "checkout" | "return" | "lost" | "stockAdjust" | "addLines";
+export type CommandName = "checkout" | "quickTake" | "return" | "lost" | "move" | "stockAdjust" | "addLines";
 
 /**
  * Why a product's stock moved. `import` is a CSV inventory import setting
@@ -54,9 +55,11 @@ export type CommandName = "checkout" | "return" | "lost" | "stockAdjust" | "addL
  * counting the item, which removes its stock, recorded as taking it to 0.
  * `lost` is company equipment lost or broken on a job (ADR 0017): it left the
  * business, but stock already went down when it was checked out, so its
- * delta is always 0.
+ * delta is always 0. `move` is a whole line moved from the ad hoc sheet to a
+ * job sheet (ADR 0017, section 5): the items left storage once, at the quick
+ * take, so its delta is always 0 too.
  */
-export type MovementReason = "checkout" | "return" | "receipt" | "count" | "uncount" | "import" | "delete" | "lost";
+export type MovementReason = "checkout" | "return" | "receipt" | "count" | "uncount" | "import" | "delete" | "lost" | "move";
 
 
 /** How long a retry with the same operation ID returns the first result. */
@@ -90,15 +93,23 @@ export interface CommandResult {
   readonly command: CommandName;
   readonly reason: MovementReason;
   readonly productKey: string;
+  /** The sheet it acted on: for a quick take, the ad hoc sheet it went on; for a move, the ad hoc sheet it came off. */
   readonly sheetId?: string;
-  /** Eaches checked out, returned or received. Absent for a count or uncount. */
+  /** Eaches checked out, returned or received; for a move, the line's `out`. Absent for a count or uncount. */
   readonly quantity?: number;
   /** For a count: the stock level counted. */
   readonly count?: number;
   /** The change to the product's `stock`: 0 when the product doesn't track stock (or isn't in inventory). */
   readonly stockDelta: number;
-  /** Checkout: true when this checkout added the line to the sheet. */
+  /** Checkout: true when this checkout added the line to the sheet. For a move: when it added the line to the job sheet. */
   readonly lineCreated?: boolean;
+  /** Quick take: true when this take started the ad hoc sheet. */
+  readonly sheetCreated?: boolean;
+  /** Move: the job sheet the line went to. */
+  readonly toSheetId?: string;
+  /** Move: the line's `returned` and `lost` that moved with it. */
+  readonly returned?: number;
+  readonly lost?: number;
   /** Checkout of a new line: what the line copied. */
   readonly snapshot?: LineSnapshot;
   /** Receipt: what was paid per each. */
@@ -126,7 +137,13 @@ export interface Movement {
   readonly tracked: boolean;
   readonly quantity?: number;
   readonly count?: number;
+  /** The sheet a checkout, return or lost record was on; for a move, the job sheet the line went to. */
   readonly sheetId?: string;
+  /** Move: the ad hoc sheet the line came off. */
+  readonly fromSheetId?: string;
+  /** Move: the line's `returned` and `lost` that moved with it (`quantity` is its `out`). */
+  readonly returned?: number;
+  readonly lost?: number;
   readonly unitCost?: number;
   /** Lost: the amount charged to the client for it, if any. */
   readonly charge?: number;
@@ -265,7 +282,17 @@ async function execute<R = CommandResult>(
   if (prior) return prior;
   const epoch = Math.floor(now.getTime() / 1000);
   for (let attempt = 1; ; attempt++) {
-    const { writes, result } = await plan();
+    let planned: Plan<R>;
+    try {
+      planned = await plan();
+    } catch (error) {
+      // A retry of this operation racing its first run can find the change already made (a moved
+      // line gone, say) and be refused for it: it gets the first run's result instead
+      const replay = await priorOutcome<R>(db, ctx, opId, request);
+      if (replay) return replay;
+      throw error;
+    }
+    const { writes, result } = planned;
     const record = {
       ...keys.operation(ctx.teamId, opId),
       type: "operation",
@@ -412,6 +439,29 @@ export async function checkout(db: Db, ctx: TeamContext, input: CheckoutInput, n
   writable(db, ctx);
   const opId = operationId(input.operationId);
   const sheetId = checkId(input.sheetId, "sheet ID");
+  const { key, qty, oneOff } = takeInput(input);
+  const request = JSON.stringify({ command: "checkout", userId: ctx.userId, sheetId, key, qty, ...oneOff });
+  const at = now.toISOString();
+
+  return execute(db, ctx, opId, "checkout", request, now, async () => {
+    const [rawSheet, product] = await readSheetAndProduct(db, ctx, sheetId, key);
+    const sheet = openSheet(rawSheet, "check items out");
+    // The ad hoc sheet takes only quick takes (ADR 0017, section 4), and a sheet's kind never changes
+    if (sheet.kind === "adhoc") throw new InvalidInputError("Take items for no job with Quick take, not onto the ad hoc sheet");
+    return takePlan(db, ctx, { opId, command: "checkout", sheet, sheetId, key, product, qty, oneOff, at, kind: "job" });
+  });
+}
+
+/** The request's one-off fields: only for an item that isn't in inventory. */
+interface OneOff {
+  readonly name?: string;
+  readonly price?: number;
+  readonly code?: string;
+  readonly cost?: number;
+}
+
+/** A checkout's or quick take's item, quantity and one-off fields, checked. */
+function takeInput(input: Omit<CheckoutInput, "sheetId" | "operationId">): { key: string; qty: number; oneOff: OneOff } {
   const key = productKey(input.productKey);
   if (isBoughtKey(key)) throw new InvalidInputError("Items bought for the client aren't checked out from storage");
   const qty = checkQuantity(input.quantity);
@@ -421,114 +471,248 @@ export async function checkout(db: Db, ctx: TeamContext, input: CheckoutInput, n
     code: input.code === undefined ? undefined : barcode(input.code),
     cost: input.cost === undefined ? undefined : money(input.cost, "cost"),
   };
-  const request = JSON.stringify({ command: "checkout", userId: ctx.userId, sheetId, key, qty, ...oneOff });
+  return { key, qty, oneOff };
+}
+
+/**
+ * What a new line copies (ADR 0014, 0017): from the product, or for an item
+ * that isn't in inventory, from the request's `name` and `price` (both
+ * required then) and its optional `code` and `cost`.
+ */
+function lineSnapshot(product: Item | undefined, oneOff: OneOff): LineSnapshot {
+  if (product) {
+    const cost = storedMoney(product.cost);
+    return {
+      code: typeof product.code === "string" ? product.code : "",
+      name: typeof product.name === "string" ? product.name : "",
+      // Company equipment has no client price, and its line says what it is (ADR 0017)
+      ...(product.kind === "equipment" ? { kind: "equipment" as const } : { price: storedMoney(product.price) ?? 0 }),
+      ...(cost === undefined ? {} : { cost }),
+    };
+  }
+  if (oneOff.name === undefined || oneOff.price === undefined) {
+    throw new InvalidInputError("This item isn't in inventory; send its name and price");
+  }
+  return { code: oneOff.code ?? "", name: oneOff.name, price: oneOff.price, ...(oneOff.cost === undefined ? {} : { cost: oneOff.cost }) };
+}
+
+/** A new line of `qty`, with who took it and when for equipment. */
+function newLine(snapshot: LineSnapshot, qty: number, userId: string, at: string): Item {
+  return { ...snapshot, out: qty, returned: 0, ...(snapshot.kind === "equipment" ? { takenBy: userId, takenAt: at } : {}) };
+}
+
+/**
+ * The product's part of taking a line out: stock down by `qty` when it tracks
+ * stock. A new line's snapshot must be the product as the transaction finds
+ * it, so for a new line it also checks the product's version. (A version that
+ * isn't a number could never match, so it's refused now, not as a conflict
+ * after retries.)
+ */
+function takeProduct(db: Db, ctx: TeamContext, key: string, product: Item | undefined, qty: number, lineIsNew: boolean): { item: TransactItem; tracked: boolean } {
+  if (lineIsNew && product) checkVersion(product);
+  const version = product?.version;
+  const fresh = !lineIsNew
+    ? NO_EXTRA
+    : typeof version === "number"
+      ? { names: { "#version": "version" }, values: { ":version": version }, clauses: ["#version = :version"] }
+      : { names: { "#version": "version" }, values: {}, clauses: ["attribute_not_exists(#version)"] };
+  return productWrite(db, ctx, key, product, -qty, fresh);
+}
+
+interface TakeOptions {
+  readonly opId: string;
+  readonly command: "checkout" | "quickTake";
+  /** The sheet as read: open, with its items a map or missing. */
+  readonly sheet: Item;
+  readonly sheetId: string;
+  readonly key: string;
+  readonly product: Item | undefined;
+  readonly qty: number;
+  readonly oneOff: OneOff;
+  readonly at: string;
+  /** The sheet's kind, which the transaction checks it still is: a job sheet's checkout, or the ad hoc sheet's quick take. */
+  readonly kind: "job" | "adhoc";
+}
+
+/**
+ * Takes `qty` of `key` onto an open sheet that exists: adds to the line's
+ * `out`, or creates the line with its snapshot, takes it off stock, and
+ * records a checkout movement. The sheet's part is conditional on it still
+ * being open and of `kind`, and the line on still being there (or not).
+ */
+function takePlan(db: Db, ctx: TeamContext, o: TakeOptions): Plan {
+  const { sheet, sheetId, key, qty, at } = o;
+  const items = sheet.items as Item | undefined;
+  const existing = lineOf(items, key);
+  if (existing !== undefined && !isMap(existing)) throw new InvalidInputError("This line is malformed; correct it first");
+
+  const names: Record<string, string> = { "#items": "items", "#line": key, "#status": "status", "#version": "version", "#kind": "kind" };
+  const values: Item = { ":one": 1, ":closed": "closed" };
+  const kindClause = o.kind === "adhoc" ? "#kind = :adhoc" : "attribute_not_exists(#kind)";
+  if (o.kind === "adhoc") values[":adhoc"] = "adhoc";
+  let update: string;
+  let clauses: string[];
+  let snapshot: LineSnapshot | undefined;
+  if (existing) {
+    lineCounts(existing);
+    names["#out"] = "out";
+    values[":qty"] = qty;
+    update = "SET #items.#line.#out = #items.#line.#out + :qty ADD #version :one";
+    clauses = ["attribute_exists(#items.#line.#out)"];
+    if (existing.kind === "equipment") {
+      // Equipment names the latest person to take more (ADR 0017); the movements keep the rest
+      names["#by"] = "takenBy";
+      names["#at"] = "takenAt";
+      values[":by"] = ctx.userId;
+      values[":at"] = at;
+      update = "SET #items.#line.#out = #items.#line.#out + :qty, #items.#line.#by = :by, #items.#line.#at = :at ADD #version :one";
+    }
+  } else {
+    snapshot = lineSnapshot(o.product, o.oneOff);
+    const line = newLine(snapshot, qty, ctx.userId, at);
+    // Refuse early a line that would take the sheet past the document limit
+    // (DynamoDB would refuse it past 400 KB anyway, which execute also maps to 413)
+    if (Buffer.byteLength(JSON.stringify(sheet), "utf8") + Buffer.byteLength(JSON.stringify({ [key]: line }), "utf8") > MAX_DOCUMENT_BYTES) {
+      throw new TooLargeError(`Sheets are limited to ${MAX_DOCUMENT_BYTES} bytes; start another sheet`);
+    }
+    if (items) {
+      values[":line"] = line;
+      update = "SET #items.#line = :line ADD #version :one";
+      clauses = ["attribute_exists(#items)", "attribute_not_exists(#items.#line)"];
+    } else {
+      // An own field even for a key like "constructor" (storable() below makes it marshal as a map)
+      values[":items"] = Object.fromEntries([[key, line]]);
+      // DynamoDB refuses a name the expressions don't use
+      delete names["#line"];
+      update = "SET #items = :items ADD #version :one";
+      clauses = ["attribute_exists(PK)", "attribute_not_exists(#items)"];
+    }
+  }
+
+  const { item: productItem, tracked } = takeProduct(db, ctx, key, o.product, qty, !existing);
+  const stockDelta = tracked ? -qty : 0;
+  const result: CommandResult = {
+    operationId: o.opId,
+    command: o.command,
+    reason: "checkout",
+    productKey: key,
+    sheetId,
+    quantity: qty,
+    stockDelta,
+    lineCreated: !existing,
+    ...(snapshot ? { snapshot } : {}),
+    userId: ctx.userId,
+    at,
+  };
+  return {
+    result,
+    writes: [
+      {
+        Update: {
+          TableName: db.tableName,
+          Key: keys.sheet(ctx.teamId, sheetId),
+          UpdateExpression: update,
+          ConditionExpression: anyOf([...clauses, kindClause], SHEET_OPEN),
+          ExpressionAttributeNames: names,
+          ExpressionAttributeValues: storable(values),
+        },
+      },
+      productItem,
+      movementPut(db, ctx, { productKey: key, reason: "checkout", delta: stockDelta, tracked, quantity: qty, sheetId, operationId: o.opId, userId: ctx.userId, at }),
+    ],
+  };
+}
+
+export interface QuickTakeInput {
+  readonly operationId: unknown;
+  readonly productKey: unknown;
+  readonly quantity: unknown;
+  /** Only for an item that isn't in inventory (a one-off line), as for a checkout. */
+  readonly name?: unknown;
+  readonly price?: unknown;
+  readonly code?: unknown;
+  readonly cost?: unknown;
+  /** The person's local date, YYYY-MM-DD: a new ad hoc sheet's date. Default: today in UTC. */
+  readonly date?: unknown;
+}
+
+/** How many taken ad hoc IDs a quick take steps past (sheets the ADHOC count doesn't know of) before giving up. */
+const MAX_ADHOC_SKIPS = 20;
+
+/**
+ * Quick take (ADR 0017, section 4): checks `quantity` eaches of `productKey`
+ * out onto the team's open ad hoc sheet, without choosing a sheet.
+ *
+ * Reads the team's ADHOC item (adhoc.ts). When it names an open ad hoc sheet,
+ * this is a checkout onto it, on the condition that ADHOC is unchanged and the
+ * sheet is still an open ad hoc sheet. Otherwise it makes the next one,
+ * `adhoc-<count + 1>` (with `kind: "adhoc"`, no client, `date`, and the line),
+ * and points ADHOC at it, on the condition that ADHOC is still as read and the
+ * sheet doesn't exist. Two first takes at once both aim at the same sheet: one
+ * transaction makes it, the other is cancelled, reads again, finds the sheet
+ * open and adds to it. `result.sheetId` names the sheet, and a retry with the
+ * same operation ID returns the same one. Stock and the movement are as for a
+ * checkout.
+ */
+export async function quickTake(db: Db, ctx: TeamContext, input: QuickTakeInput, now = new Date()): Promise<CommandOutcome> {
+  writable(db, ctx);
+  const opId = operationId(input.operationId);
+  const { key, qty, oneOff } = takeInput(input);
+  const day = input.date === undefined ? now.toISOString().slice(0, 10) : sheetDate(input.date);
+  const request = JSON.stringify({ command: "quickTake", userId: ctx.userId, key, qty, ...oneOff, date: day });
   const at = now.toISOString();
 
-  return execute(db, ctx, opId, "checkout", request, now, async () => {
-    const [rawSheet, product] = await readSheetAndProduct(db, ctx, sheetId, key);
-    const sheet = openSheet(rawSheet, "check items out");
-    const items = sheet.items as Item | undefined;
-    const existing = lineOf(items, key);
-    if (existing !== undefined && !isMap(existing)) throw new InvalidInputError("This line is malformed; correct it first");
-
-    const names: Record<string, string> = { "#items": "items", "#line": key, "#status": "status", "#version": "version" };
-    const values: Item = { ":one": 1, ":closed": "closed" };
-    let update: string;
-    let clauses: string[];
-    let snapshot: LineSnapshot | undefined;
-    if (existing) {
-      lineCounts(existing);
-      names["#out"] = "out";
-      values[":qty"] = qty;
-      update = "SET #items.#line.#out = #items.#line.#out + :qty ADD #version :one";
-      clauses = ["attribute_exists(#items.#line.#out)"];
-      if (existing.kind === "equipment") {
-        // Equipment names the latest person to take more (ADR 0017); the movements keep the rest
-        names["#by"] = "takenBy";
-        names["#at"] = "takenAt";
-        values[":by"] = ctx.userId;
-        values[":at"] = at;
-        update = "SET #items.#line.#out = #items.#line.#out + :qty, #items.#line.#by = :by, #items.#line.#at = :at ADD #version :one";
-      }
-    } else {
-      if (product) {
-        const cost = storedMoney(product.cost);
-        snapshot = {
-          code: typeof product.code === "string" ? product.code : "",
-          name: typeof product.name === "string" ? product.name : "",
-          // Company equipment has no client price, and its line says what it is (ADR 0017)
-          ...(product.kind === "equipment" ? { kind: "equipment" as const } : { price: storedMoney(product.price) ?? 0 }),
-          ...(cost === undefined ? {} : { cost }),
-        };
-      } else {
-        if (oneOff.name === undefined || oneOff.price === undefined) {
-          throw new InvalidInputError("This item isn't in inventory; send its name and price");
-        }
-        snapshot = { code: oneOff.code ?? "", name: oneOff.name, price: oneOff.price, ...(oneOff.cost === undefined ? {} : { cost: oneOff.cost }) };
-      }
-      const line = { ...snapshot, out: qty, returned: 0, ...(snapshot.kind === "equipment" ? { takenBy: ctx.userId, takenAt: at } : {}) };
-      // Refuse early a line that would take the sheet past the document limit
-      // (DynamoDB would refuse it past 400 KB anyway, which execute also maps to 413)
-      if (Buffer.byteLength(JSON.stringify(sheet), "utf8") + Buffer.byteLength(JSON.stringify({ [key]: line }), "utf8") > MAX_DOCUMENT_BYTES) {
-        throw new TooLargeError(`Sheets are limited to ${MAX_DOCUMENT_BYTES} bytes; start another sheet`);
-      }
-      if (items) {
-        values[":line"] = line;
-        update = "SET #items.#line = :line ADD #version :one";
-        clauses = ["attribute_exists(#items)", "attribute_not_exists(#items.#line)"];
-      } else {
-        // An own field even for a key like "constructor" (storable() below makes it marshal as a map)
-        values[":items"] = Object.fromEntries([[key, line]]);
-        // DynamoDB refuses a name the expressions don't use
-        delete names["#line"];
-        update = "SET #items = :items ADD #version :one";
-        clauses = ["attribute_exists(PK)", "attribute_not_exists(#items)"];
-      }
+  return execute(db, ctx, opId, "quickTake", request, now, async () => {
+    const [pointer, product] = await Promise.all([readAdhoc(db, ctx.teamId), getItem(db, keys.product(ctx.teamId, key))]);
+    const unchanged = adhocPut(db, ctx.teamId, pointer, { open: adhocOpen(pointer), count: adhocCount(pointer) }, at).Put as Item;
+    const openId = adhocOpen(pointer);
+    const open = openId === undefined ? undefined : await getItem(db, keys.sheet(ctx.teamId, openId));
+    if (openId !== undefined && open && open.kind === "adhoc" && open.status !== "closed") {
+      const plan = takePlan(db, ctx, { opId, command: "quickTake", sheet: openSheet(open, "take"), sheetId: openId, key, product, qty, oneOff, at, kind: "adhoc" });
+      const [sheetWrite, ...rest] = plan.writes;
+      // The pointer still names this sheet when the take commits
+      const check = {
+        ConditionCheck: {
+          TableName: db.tableName,
+          Key: keys.adhoc(ctx.teamId),
+          ConditionExpression: unchanged.ConditionExpression,
+          ...(unchanged.ExpressionAttributeNames ? { ExpressionAttributeNames: unchanged.ExpressionAttributeNames } : {}),
+          ...(unchanged.ExpressionAttributeValues ? { ExpressionAttributeValues: unchanged.ExpressionAttributeValues } : {}),
+        },
+      };
+      return { result: plan.result, writes: [sheetWrite as TransactItem, check, ...rest] };
     }
 
-    // A new line's snapshot must be the product as the transaction finds it. A version that
-    // isn't a number could never match, so refuse it now, not as a conflict after retries.
-    if (!existing && product) checkVersion(product);
-    const version = product?.version;
-    const fresh = existing
-      ? NO_EXTRA
-      : typeof version === "number"
-        ? { names: { "#version": "version" }, values: { ":version": version }, clauses: ["#version = :version"] }
-        : { names: { "#version": "version" }, values: {}, clauses: ["attribute_not_exists(#version)"] };
-    const { item: productItem, tracked } = productWrite(db, ctx, key, product, -qty, fresh);
+    // No open ad hoc sheet: the next number that's free (one made outside the count, by a restore say, is stepped past)
+    let n = adhocCount(pointer) + 1;
+    for (let skips = 0; await getItem(db, keys.sheet(ctx.teamId, adhocSheetId(n))); skips++) {
+      if (skips >= MAX_ADHOC_SKIPS) throw new ConflictError("Couldn't start the ad hoc sheet; try again");
+      n++;
+    }
+    const sheetId = adhocSheetId(n);
+    const snapshot = lineSnapshot(product, oneOff);
+    const data = { kind: "adhoc", client: "", date: day, status: "open", createdBy: ctx.userId, createdAt: at, items: Object.fromEntries([[key, newLine(snapshot, qty, ctx.userId, at)]]) };
+    const { item: productItem, tracked } = takeProduct(db, ctx, key, product, qty, true);
     const stockDelta = tracked ? -qty : 0;
-
-    const result: CommandResult = {
-      operationId: opId,
-      command: "checkout",
-      reason: "checkout",
-      productKey: key,
-      sheetId,
-      quantity: qty,
-      stockDelta,
-      lineCreated: !existing,
-      ...(snapshot ? { snapshot } : {}),
-      userId: ctx.userId,
-      at,
-    };
     return {
-      result,
+      result: { operationId: opId, command: "quickTake", reason: "checkout", productKey: key, sheetId, quantity: qty, stockDelta, lineCreated: true, sheetCreated: true, snapshot, userId: ctx.userId, at },
       writes: [
-        {
-          Update: {
-            TableName: db.tableName,
-            Key: keys.sheet(ctx.teamId, sheetId),
-            UpdateExpression: update,
-            ConditionExpression: anyOf(clauses, SHEET_OPEN),
-            ExpressionAttributeNames: names,
-            ExpressionAttributeValues: storable(values),
-          },
-        },
+        { Put: { TableName: db.tableName, Item: storable(sheetItem(ctx.teamId, sheetId, data, 1)), ConditionExpression: "attribute_not_exists(PK)" } },
+        adhocPut(db, ctx.teamId, pointer, { open: sheetId, count: n }, at),
         productItem,
         movementPut(db, ctx, { productKey: key, reason: "checkout", delta: stockDelta, tracked, quantity: qty, sheetId, operationId: opId, userId: ctx.userId, at }),
       ],
     };
   });
+}
+
+/** A date sent with a quick take: YYYY-MM-DD. */
+function sheetDate(value: unknown): string {
+  try {
+    return checkDate(value);
+  } catch {
+    throw new InvalidInputError("date must be YYYY-MM-DD");
+  }
 }
 
 /**
@@ -687,6 +871,167 @@ export async function markLost(db: Db, ctx: TeamContext, input: LostInput, now =
   });
 }
 
+export interface MoveInput {
+  readonly operationId: unknown;
+  /** The open ad hoc sheet the line comes off. */
+  readonly sheetId: unknown;
+  readonly productKey: unknown;
+  /** The open job sheet it goes to. */
+  readonly toSheetId: unknown;
+}
+
+/** A sheet's version condition: the version read, or none when it had none. */
+function sameVersion(sheet: Item, values: Item): string {
+  if (typeof sheet.version !== "number") return "attribute_not_exists(#version)";
+  values[":version"] = sheet.version;
+  return "#version = :version";
+}
+
+/**
+ * Moves a whole line from the open ad hoc sheet to an open job sheet (ADR
+ * 0017, section 5), with its counts (`out`, `returned`, `lost`), in one
+ * transaction:
+ *
+ * - The ad hoc sheet loses the line, on the condition that the sheet is
+ *   unchanged since the read (its version), so the counts moved are exactly
+ *   the ones taken off.
+ * - The job sheet's line for the item gets the counts added to it, keeping its
+ *   own snapshot (its price), or, if it has none, the line arrives as it is,
+ *   with the snapshot it was taken with. Lines of different kinds (the item's
+ *   kind changed between the two checkouts) are refused.
+ * - A `move` movement records the counts, `fromSheetId` and `sheetId` (the
+ *   job sheet), with `delta: 0`: stock doesn't change, since the items left
+ *   storage once, at the quick take.
+ *
+ * Both sheets get a new version. Both must be open, and the job sheet must be
+ * a job sheet, checked in the transaction. A retry with the same operation ID
+ * changes nothing more.
+ */
+export async function moveLine(db: Db, ctx: TeamContext, input: MoveInput, now = new Date()): Promise<CommandOutcome> {
+  writable(db, ctx);
+  const opId = operationId(input.operationId);
+  const sheetId = checkId(input.sheetId, "sheet ID");
+  const toSheetId = checkId(input.toSheetId, "toSheetId");
+  const key = productKey(input.productKey);
+  const request = JSON.stringify({ command: "move", userId: ctx.userId, sheetId, key, toSheetId });
+  const at = now.toISOString();
+
+  return execute(db, ctx, opId, "move", request, now, async () => {
+    const [rawFrom, rawTo, product] = await Promise.all([
+      getItem(db, keys.sheet(ctx.teamId, sheetId)),
+      getItem(db, keys.sheet(ctx.teamId, toSheetId)),
+      getItem(db, keys.product(ctx.teamId, key)),
+    ]);
+    const from = openSheet(rawFrom, "move its lines");
+    if (from.kind !== "adhoc") throw new InvalidInputError("Only a line on the ad hoc sheet moves to a job sheet");
+    if (!rawTo) throw new NotFoundError("No such job sheet");
+    const to = openSheet(rawTo, "move a line to it");
+    if (to.kind !== undefined) throw new InvalidInputError("A line moves to a client's sheet only");
+    const line = lineOf(from.items as Item | undefined, key);
+    if (!isMap(line)) throw new InvalidInputError("This item isn't on this sheet");
+    if (line.purchased === true) throw new InvalidInputError("This line was bought for a client and doesn't move");
+    const { out, returned = 0, lost = 0 } = lineCounts(line);
+    const toItems = to.items as Item | undefined;
+    const existing = lineOf(toItems, key);
+    if (existing !== undefined && !isMap(existing)) throw new InvalidInputError("The job sheet's line for this item is malformed; correct it first");
+    if (existing && (existing.kind ?? null) !== (line.kind ?? null)) {
+      throw new InvalidInputError(existing.kind === "equipment" ? "The job sheet has this item as company equipment; correct the lines by hand" : "The job sheet has this item as a supply; correct the lines by hand");
+    }
+
+    // Off the ad hoc sheet, only as it was read
+    const fromValues: Item = { ":one": 1, ":closed": "closed", ":adhoc": "adhoc" };
+    const fromWrite: TransactItem = {
+      Update: {
+        TableName: db.tableName,
+        Key: keys.sheet(ctx.teamId, sheetId),
+        UpdateExpression: "REMOVE #items.#line ADD #version :one",
+        ConditionExpression: anyOf(["#kind = :adhoc", "attribute_exists(#items.#line)", sameVersion(from, fromValues)], SHEET_OPEN),
+        ExpressionAttributeNames: { "#items": "items", "#line": key, "#kind": "kind", "#status": "status", "#version": "version" },
+        ExpressionAttributeValues: fromValues,
+      },
+    };
+
+    // Onto the job sheet: counts added to its line, or the line as it is
+    const names: Record<string, string> = { "#items": "items", "#line": key, "#kind": "kind", "#status": "status", "#version": "version" };
+    const values: Item = { ":one": 1, ":closed": "closed" };
+    let update: string;
+    let clauses: string[];
+    if (existing) {
+      lineCounts(existing);
+      Object.assign(names, { "#out": "out", "#returned": "returned" });
+      Object.assign(values, { ":out": out, ":returned": returned, ":zero": 0 });
+      const sets = ["#items.#line.#out = #items.#line.#out + :out", "#items.#line.#returned = if_not_exists(#items.#line.#returned, :zero) + :returned"];
+      clauses = ["attribute_exists(#items.#line.#out)"];
+      if (lost > 0) {
+        names["#lost"] = "lost";
+        values[":lost"] = lost;
+        sets.push("#items.#line.#lost = if_not_exists(#items.#line.#lost, :zero) + :lost");
+      }
+      // Equipment names the latest person to take it: the moved line's, when it's the later
+      const takenAt = typeof line.takenAt === "string" ? line.takenAt : undefined;
+      const theirs = typeof existing.takenAt === "string" ? existing.takenAt : undefined;
+      if (line.kind === "equipment" && takenAt !== undefined && (theirs === undefined || takenAt > theirs)) {
+        Object.assign(names, { "#by": "takenBy", "#at": "takenAt" });
+        Object.assign(values, { ":by": line.takenBy, ":at": takenAt });
+        sets.push("#items.#line.#by = :by", "#items.#line.#at = :at");
+        if (theirs === undefined) clauses.push("attribute_not_exists(#items.#line.#at)");
+        else {
+          values[":theirs"] = theirs;
+          clauses.push("#items.#line.#at = :theirs");
+        }
+      }
+      update = `SET ${sets.join(", ")} ADD #version :one`;
+    } else {
+      if (Buffer.byteLength(JSON.stringify(to), "utf8") + Buffer.byteLength(JSON.stringify({ [key]: line }), "utf8") > MAX_DOCUMENT_BYTES) {
+        throw new TooLargeError(`Sheets are limited to ${MAX_DOCUMENT_BYTES} bytes; move it to another sheet`);
+      }
+      if (toItems) {
+        values[":line"] = line;
+        update = "SET #items.#line = :line ADD #version :one";
+        clauses = ["attribute_exists(#items)", "attribute_not_exists(#items.#line)"];
+      } else {
+        values[":items"] = Object.fromEntries([[key, line]]);
+        delete names["#line"];
+        update = "SET #items = :items ADD #version :one";
+        clauses = ["attribute_exists(PK)", "attribute_not_exists(#items)"];
+      }
+    }
+    const toWrite: TransactItem = {
+      Update: {
+        TableName: db.tableName,
+        Key: keys.sheet(ctx.teamId, toSheetId),
+        UpdateExpression: update,
+        ConditionExpression: anyOf([...clauses, "attribute_not_exists(#kind)"], SHEET_OPEN),
+        ExpressionAttributeNames: names,
+        ExpressionAttributeValues: storable(values),
+      },
+    };
+    const tracked = typeof product?.stock === "number";
+    return {
+      result: {
+        operationId: opId,
+        command: "move",
+        reason: "move",
+        productKey: key,
+        sheetId,
+        toSheetId,
+        quantity: out,
+        returned,
+        lost,
+        stockDelta: 0,
+        lineCreated: !existing,
+        userId: ctx.userId,
+        at,
+      },
+      writes: [
+        fromWrite,
+        toWrite,
+        movementPut(db, ctx, { productKey: key, reason: "move", delta: 0, tracked, quantity: out, returned, lost, sheetId: toSheetId, fromSheetId: sheetId, operationId: opId, userId: ctx.userId, at }),
+      ],
+    };
+  });
+}
+
 /** The most lines one addLines request takes: its expressions stay well inside DynamoDB's 4 KB limit. */
 export const MAX_ADD_LINES = 40;
 
@@ -822,13 +1167,15 @@ export async function addLines(db: Db, ctx: TeamContext, input: AddLinesInput, n
   return execute<AddLinesResult>(db, ctx, opId, "addLines", request, now, async () => {
     const [rawSheet, ...products] = await Promise.all([getItem(db, keys.sheet(ctx.teamId, sheetId)), ...lines.map((l) => getItem(db, keys.product(ctx.teamId, l.key)))]);
     const sheet = openSheet(rawSheet, "add to it");
+    // A receipt's lines go to a client's sheet, never the ad hoc sheet (ADR 0017, section 4)
+    if (sheet.kind === "adhoc") throw new InvalidInputError("A receipt's lines go on a client's sheet, not the ad hoc sheet");
     // The team's settings, read only when an equipment line is priced by its markup
     const needsMarkup = lines.some((l, n) => products[n]?.kind === "equipment" && l.priceSet !== "manual");
     const settings = needsMarkup ? await getItem(db, keys.settings(ctx.teamId)) : undefined;
     const markup = storedMarkup(settings);
 
     const items = sheet.items as Item | undefined;
-    const names: Record<string, string> = { "#i": "items", "#s": "status", "#v": "version" };
+    const names: Record<string, string> = { "#i": "items", "#s": "status", "#v": "version", "#kd": "kind" };
     const values: Item = { ":one": 1, ":closed": "closed" };
     const sets: string[] = [];
     const clauses: string[] = [];
@@ -871,6 +1218,8 @@ export async function addLines(db: Db, ctx: TeamContext, input: AddLinesInput, n
     if (Buffer.byteLength(JSON.stringify(sheet), "utf8") + Buffer.byteLength(JSON.stringify(added), "utf8") > MAX_DOCUMENT_BYTES) {
       throw new TooLargeError(`Sheets are limited to ${MAX_DOCUMENT_BYTES} bytes; start another sheet`);
     }
+    // Still a job sheet when this commits
+    clauses.unshift("attribute_not_exists(#kd)");
     if (items) clauses.unshift("attribute_exists(#i)");
     else {
       // No items map yet, so every line is new. An own field even for a key like "constructor".

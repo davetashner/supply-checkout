@@ -198,6 +198,7 @@ export async function main(
     const result = await applyArtifactImport(db, ctx, plan);
     out(`Added ${result.productsCreated} items (${result.movements} stock counts recorded as import movements, operation ${result.operationId}) and ${result.sheetsCreated} sheets`);
     if (result.alreadyThere) out(`  added by another run first, with the same values: ${result.alreadyThere}`);
+    if (result.adhocOpen) out(`The open ad hoc sheet is ${result.adhocOpen}: quick takes go on it`);
     const check = await verifyArtifactImport(db, ctx, p);
     out(`Stock: ${check.stockAfter} eaches in the team for the ${check.productsChecked} items, ${check.stockBefore} in the export`);
     out(`Sheet charges: ${dollars(check.chargeAfterCents)} in the team for the ${check.sheetsChecked} sheets, ${dollars(check.chargeBeforeCents)} in the export`);

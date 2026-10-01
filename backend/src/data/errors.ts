@@ -54,6 +54,14 @@ export class EquipmentOutError extends ConflictError {
   override readonly name = "EquipmentOutError";
 }
 
+/**
+ * Reopening a finished ad hoc sheet while another ad hoc sheet is open (ADR
+ * 0017, section 4): a team has at most one open. (409, reason `adhoc_open`)
+ */
+export class AdhocOpenError extends ConflictError {
+  override readonly name = "AdhocOpenError";
+}
+
 /** The change would leave the team without an owner. (409) */
 export class LastOwnerError extends ConflictError {
   override readonly name = "LastOwnerError";

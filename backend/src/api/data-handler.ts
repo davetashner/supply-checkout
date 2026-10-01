@@ -16,6 +16,7 @@
 //    whose IAM policy allows only that team's partition (team-db.ts).
 //
 // Next to the document routes are the inventory commands (checkout, return,
+// the quick take onto the ad hoc sheet, moving an ad hoc line to a job sheet,
 // adding a receipt's lines, marking equipment lost, stock adjust), each one transaction that's idempotent by operation ID, and
 // a product's stock history (backend/src/data/commands.ts, docs/api/commands.md),
 // and the CSV inventory import, owners only (backend/src/data/imports.ts).
@@ -26,6 +27,7 @@ import type {
   Context,
 } from "aws-lambda";
 import {
+  AdhocOpenError,
   addLines,
   adjustStockCommand,
   authorizeTeam,
@@ -45,7 +47,9 @@ import {
   listMovements,
   listSupportActions,
   markLost,
+  moveLine,
   NotFoundError,
+  quickTake,
   returnItems,
   StockChangedError,
   setDocument,
@@ -84,6 +88,7 @@ export function errorFor(error: unknown): ApiError {
   if (error instanceof NotFoundError) return new ApiError(404, "not_found", error.message);
   if (error instanceof StockChangedError) return new ApiError(409, "aborted", error.message, "stock_changed");
   if (error instanceof EquipmentOutError) return new ApiError(409, "aborted", error.message, "equipment_out");
+  if (error instanceof AdhocOpenError) return new ApiError(409, "aborted", error.message, "adhoc_open");
   if (error instanceof ConflictError) return new ApiError(409, "aborted", error.message);
   if (error instanceof TooLargeError) return new ApiError(413, "quota_exceeded", error.message);
   if (error instanceof LimitReachedError) return new ApiError(429, "quota_exceeded", error.message);
@@ -162,6 +167,8 @@ export function sheetMovement(result: WriteResult): { checkouts: number; returns
 }
 
 const CHECKOUT_FIELDS = ["operationId", "productKey", "quantity", "name", "price", "code", "cost"];
+const QUICK_TAKE_FIELDS = ["operationId", "productKey", "quantity", "name", "price", "code", "cost", "date"];
+const MOVE_FIELDS = ["operationId", "productKey", "toSheetId"];
 const RETURN_FIELDS = ["operationId", "productKey", "quantity"];
 const LOST_FIELDS = ["operationId", "productKey", "quantity", "charge"];
 const LINES_FIELDS = ["operationId", "lines"];
@@ -177,7 +184,8 @@ async function commandResponse(deps: DataHandlerDeps, ctx: TeamContext, outcome:
   const metadata = { teamId: ctx.teamId };
   if (!replayed) {
     deps.obs.count(BusinessMetric.Writes, 1, metadata);
-    if (result.command === "checkout") deps.obs.count(BusinessMetric.Checkouts, result.quantity ?? 0, metadata);
+    // A quick take is a checkout, onto the ad hoc sheet (the Checkouts stopped alarm counts it)
+    if (result.command === "checkout" || result.command === "quickTake") deps.obs.count(BusinessMetric.Checkouts, result.quantity ?? 0, metadata);
     if (result.command === "return") deps.obs.count(BusinessMetric.Returns, result.quantity ?? 0, metadata);
   }
   const [sheet, product] = await Promise.all([
@@ -210,7 +218,19 @@ async function runCommand(deps: DataHandlerDeps, route: DataRoute, event: DataEv
     const body = jsonBody(event, STOCK_FIELDS);
     return commandResponse(deps, ctx, await adjustStockCommand(db, ctx, { ...body, productKey: documentId(event, 1) } as Parameters<typeof adjustStockCommand>[2], at));
   }
+  if (route.operation === "quickTake") {
+    const body = jsonBody(event, QUICK_TAKE_FIELDS);
+    return commandResponse(deps, ctx, await quickTake(db, ctx, body as unknown as Parameters<typeof quickTake>[2], at));
+  }
   const sheetId = documentId(event, 1);
+  if (route.operation === "move") {
+    const body = jsonBody(event, MOVE_FIELDS);
+    const { result, replayed } = await moveLine(db, ctx, { ...body, sheetId } as Parameters<typeof moveLine>[2], at);
+    if (!replayed) deps.obs.count(BusinessMetric.Writes, 1, { teamId: ctx.teamId });
+    // Both sheets as they are now, read after the write (null if since deleted); no stock moved
+    const [sheet, toSheet] = await Promise.all([getDocument(db, ctx, "sheets", sheetId), getDocument(db, ctx, "sheets", result.toSheetId as string)]);
+    return json(200, { operationId: result.operationId, replayed, result, sheet: sheet ? toBody(sheet) : null, toSheet: toSheet ? toBody(toSheet) : null, product: null });
+  }
   if (route.operation === "addLines") {
     const body = jsonBody(event, LINES_FIELDS);
     const { result, replayed } = await addLines(db, ctx, { ...body, sheetId } as Parameters<typeof addLines>[2], at);
@@ -235,7 +255,7 @@ async function runCommand(deps: DataHandlerDeps, route: DataRoute, event: DataEv
   return commandResponse(deps, ctx, await returnItems(db, ctx, { ...body, sheetId } as Parameters<typeof returnItems>[2], at));
 }
 
-const COMMANDS = new Set(["checkout", "return", "lost", "addLines", "adjustStock", "movements"]);
+const COMMANDS = new Set(["checkout", "quickTake", "move", "return", "lost", "addLines", "adjustStock", "movements"]);
 const SETTINGS_FIELDS = ["equipmentMarkup", "expectedVersion"];
 
 /**
@@ -374,9 +394,10 @@ export function createDataHandler(deps: DataHandlerDeps) {
       const apiError = errorFor(error);
       status = apiError.status;
       // A count refused because the stock moved since the form opened (stock_changed), or a
-      // Finished Return refused while equipment is still out (equipment_out), is the refusal
+      // Finished Return refused while equipment is still out (equipment_out), or a reopen refused
+      // while another ad hoc sheet is open (adhoc_open), is the refusal
       // working as meant, not a write that lost a race, so it isn't counted as one
-      if (apiError.status === 409 && apiError.reason !== "stock_changed" && apiError.reason !== "equipment_out") deps.obs.count(BusinessMetric.ConditionalWriteConflicts, 1, teamId ? { teamId } : {});
+      if (apiError.status === 409 && apiError.reason !== "stock_changed" && apiError.reason !== "equipment_out" && apiError.reason !== "adhoc_open") deps.obs.count(BusinessMetric.ConditionalWriteConflicts, 1, teamId ? { teamId } : {});
       if (apiError.status >= 500) deps.obs.logger.error("Request failed", error as Error);
       // DynamoDB's refusal behind a 413, when the data layer kept it: its name and the start of its message
       else if (error instanceof TooLargeError && error.cause !== undefined) deps.obs.logger.warn("Refused as too large", { cause: error.cause });

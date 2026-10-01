@@ -76,6 +76,20 @@ function seed() {
       ladder: { code: "", name: "Ladder", kind: "equipment", cost: 120, out: 1, returned: 0 },
     },
   });
+  // The team's open ad hoc sheet (ADR 0017), for the move
+  table.put({ PK: "TEAM#team-a", SK: "ADHOC", type: "adhoc", count: 1, open: "adhoc-1", version: 1 });
+  table.put({
+    PK: "TEAM#team-a",
+    SK: "SHEET#adhoc-1",
+    type: "sheet",
+    id: "adhoc-1",
+    version: 1,
+    kind: "adhoc",
+    client: "",
+    date: "2026-09-26",
+    status: "open",
+    items: { rags: { code: "", name: "Rags", price: 1.5, out: 3, returned: 0 } },
+  });
   dataHandler = createDataHandler({
     dbForTeam: (teamId) => {
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(teamId)) throw new InvalidInputError("Invalid team ID");
@@ -140,6 +154,8 @@ const DATA_CASES: Record<string, Omit<Case, "minRole">> = {
   "PATCH /teams/{teamId}/sheets/{sheetId}": { method: "PATCH", path: "/teams/team-a/sheets/s1", body: { data: { client: "Echo 2" }, expectedVersion: 1 } },
   "DELETE /teams/{teamId}/sheets/{sheetId}": { method: "DELETE", path: "/teams/team-a/sheets/s1", query: { expectedVersion: "1" } },
   "POST /teams/{teamId}/sheets/{sheetId}/checkout": { method: "POST", path: "/teams/team-a/sheets/s1/checkout", body: { operationId: randomUUID(), productKey: "0123", quantity: 1 } },
+  "POST /teams/{teamId}/adhoc/checkout": { method: "POST", path: "/teams/team-a/adhoc/checkout", body: { operationId: randomUUID(), productKey: "0123", quantity: 1 } },
+  "POST /teams/{teamId}/sheets/{sheetId}/move": { method: "POST", path: "/teams/team-a/sheets/adhoc-1/move", body: { operationId: randomUUID(), productKey: "rags", toSheetId: "s1" } },
   "POST /teams/{teamId}/sheets/{sheetId}/lines": { method: "POST", path: "/teams/team-a/sheets/s1/lines", body: { operationId: randomUUID(), lines: [{ productKey: "k-1", quantity: 1, name: "Rags", price: 1.5 }] } },
   "POST /teams/{teamId}/sheets/{sheetId}/return": { method: "POST", path: "/teams/team-a/sheets/s1/return", body: { operationId: randomUUID(), productKey: "0123", quantity: 1 } },
   "POST /teams/{teamId}/sheets/{sheetId}/lost": { method: "POST", path: "/teams/team-a/sheets/s1/lost", body: { operationId: randomUUID(), productKey: "ladder", quantity: 1, charge: 50 } },

@@ -7,9 +7,9 @@
 // Local (CI; locally, npm run test:ddb -- test/artifact-import.test.ts).
 
 import { readFileSync } from "node:fs";
-import { PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { authorizeTeam, closeTeam, ConflictError, createTeam, type Db, ForbiddenError, getDocument, InvalidInputError, listDocuments, listMovements, setDocument, TeamClosedError, type TeamContext } from "../src/data/index.js";
+import { authorizeTeam, closeTeam, ConflictError, createTeam, type Db, ForbiddenError, getDocument, InvalidInputError, listDocuments, listMovements, quickTake, setDocument, TeamClosedError, type TeamContext } from "../src/data/index.js";
 import { connection, dbFromConnection } from "../src/data/client.js";
 import { keys } from "../src/data/keys.js";
 import {
@@ -242,6 +242,16 @@ describe("the import's role and team checks", () => {
   });
 });
 
+describe("parseArtifactExport: ad hoc sheets (ADR 0017)", () => {
+  it("keeps an ad hoc sheet's kind, only on an adhoc-<n> ID", () => {
+    const adhoc = (id: string, kind: unknown) => ({ id, kind, client: "", date: "2026-09-30", status: "open", items: {} });
+    const p = parseArtifactExport(edited((doc) => doc.sheets.push(adhoc("adhoc-1", "adhoc"), adhoc("adhoc-x", "adhoc"), adhoc("s-9", "adhoc"), adhoc("adhoc-2", "job"), adhoc("adhoc-3", null))));
+    expect(p.sheets.find((s) => s.id === "adhoc-1")?.kind).toBe("adhoc");
+    expect(p.sheets.find((s) => s.id === "adhoc-3")).not.toHaveProperty("kind");
+    expect(p.errors.map((e) => e.message)).toEqual(Array(3).fill('kind must be "adhoc", on a sheet whose id is adhoc-<n>'));
+  });
+});
+
 describe.skipIf(!endpoint)("the artifact import (DynamoDB Local)", () => {
   const table = useTable();
   let db: Db;
@@ -289,6 +299,29 @@ describe.skipIf(!endpoint)("the artifact import (DynamoDB Local)", () => {
     expect(again.result).toMatchObject({ productsCreated: 0, sheetsCreated: 0, movements: 0 });
     expect(again.check.mismatches).toEqual([]);
     expect((await listMovements(db, ctx, "012345678905")).items).toHaveLength(1);
+  });
+
+  it("sets the team's ad hoc pointer from the ad hoc sheets it imports, so the next quick take adds to the open one", async () => {
+    const { ctx } = await team();
+    const text = edited((doc) =>
+      doc.sheets.push(
+        { id: "adhoc-1", kind: "adhoc", client: "", date: "2026-09-01", status: "closed", items: {} },
+        { id: "adhoc-2", kind: "adhoc", client: "", date: "2026-09-20", status: "open", items: { tape: { code: "", name: "Tape", price: 3, out: 2, returned: 0 } } },
+      ),
+    );
+    const { result } = await run(ctx, text);
+    expect(result).toMatchObject({ sheetsCreated: 6, adhocOpen: "adhoc-2" });
+    const pointer = async () => (await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: keys.adhoc(ctx.teamId) }))).Item;
+    expect(await pointer()).toMatchObject({ type: "adhoc", count: 2, open: "adhoc-2", version: 1 });
+    expect((await getDocument(db, ctx, "sheets", "adhoc-2"))?.data).toMatchObject({ kind: "adhoc" });
+    // A re-run leaves it as it is
+    expect((await run(ctx, text)).result).toMatchObject({ sheetsCreated: 0, adhocOpen: "adhoc-2" });
+    expect(await pointer()).toMatchObject({ version: 1 });
+    const taken = await quickTake(db, ctx, { operationId: "0f8fad5b-d9cb-469f-a165-70867728950e", productKey: "tape", quantity: 1, name: "Tape", price: 3 });
+    expect(taken.result.sheetId).toBe("adhoc-2");
+    // An import with no ad hoc sheets leaves no pointer
+    const other = await team();
+    expect((await run(other.ctx)).result).not.toHaveProperty("adhocOpen");
   });
 
   it("finishes an import that stopped part-way", async () => {
