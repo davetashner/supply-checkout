@@ -284,6 +284,37 @@
         { "id": "J13.5", "text": "See what's out, on which sheet, who took it and when, in **Inventory → Equipment → Out on jobs**.", "status": "built", "beads": ["supply-checkout-h9to"] }
       ]
     }
+,
+    {
+      "id": "J14",
+      "name": "Take supplies without a job sheet",
+      "persona": "Crew member",
+      "critical": true,
+      "steps": [
+        {
+          "id": "J14.1",
+          "text": "On the sheet list, tap **Quick take** and scan (or pick) what you're taking, and how many. It goes on the team's ad hoc sheet, shown above the job sheets.",
+          "status": "built",
+          "beads": ["supply-checkout-mdae"],
+          "tests": ["backend/test/adhoc-api.test.ts", "backend/test/adhoc.test.ts"]
+        },
+        { "id": "J14.2", "text": "Bringing something back, tap **Return** on the sheet list and scan it: it goes back to the sheet it's out on, or you pick the sheet when it's out on more than one.", "status": "built", "beads": ["supply-checkout-mdae"] },
+        {
+          "id": "J14.3",
+          "text": "To bill a client for something taken ad hoc, open the ad hoc sheet, tap the line and **Move to a job sheet**.",
+          "status": "built",
+          "beads": ["supply-checkout-mdae"],
+          "tests": ["backend/test/adhoc-api.test.ts", "backend/test/adhoc.test.ts"]
+        },
+        {
+          "id": "J14.4",
+          "text": "When the van is restocked, tap **Finished Return** on the ad hoc sheet. The next quick take starts a new one.",
+          "status": "built",
+          "beads": ["supply-checkout-mdae"],
+          "tests": ["backend/test/adhoc-api.test.ts", "backend/test/adhoc.test.ts"]
+        }
+      ]
+    }
   ],
   "alarms": [
     { "name": "Core journey canary failing", "journeys": ["*", "J4"] },
@@ -323,7 +354,7 @@
     { "name": "Email codes failing", "journeys": ["J3"], "infra": "email-codes-failing" },
     { "name": "Invites not accepted", "journeys": ["J3"] },
 
-    { "name": "Checkouts stopped", "journeys": ["J4", "J13"] },
+    { "name": "Checkouts stopped", "journeys": ["J4", "J13", "J14"] },
     { "name": "Writes rejected", "journeys": ["J4"], "infra": "writes-rejected" },
     { "name": "Live updates failing", "journeys": ["J4"], "infra": "live-updates-failing" },
     { "name": "Live updates delayed", "journeys": ["J4"], "infra": "live-updates-delayed" },

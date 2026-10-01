@@ -50,6 +50,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 | [J11](#j11-delete-an-account) | Delete an account | Anyone | No | Tested |
 | [J12](#j12-choose-a-plan-in-the-mobile-app) | Choose a plan in the mobile app | Owner | No | Planned (phase 2) |
 | [J13](#j13-take-company-equipment-to-a-job-and-bring-it-back) | Take company equipment to a job and bring it back | Crew member | Yes | Tested |
+| [J14](#j14-take-supplies-without-a-job-sheet) | Take supplies without a job sheet | Crew member | Yes | Tested |
 <!-- /journeys:table -->
 
 ---
@@ -267,6 +268,23 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 **Status:** tested (`supply-checkout-h9to`). **Finished Return** on a sheet with equipment still out asks first, for each piece, how many are back (a return), how many were lost or broken (the `lost` command, with an optional charge for the lot, which goes on the sheet as "<item> (lost or broken)", in its total and the client's CSV), and leaves the rest still at the job: the sheet stays open until nothing is out, and the server refuses to close it otherwise (409 `equipment_out`).
 
 **Tests:** `equipment.spec.js` (all tests), and the server's in `backend/test/equipment-api.test.ts` and `backend/test/equipment.test.ts`.
+
+### J14. Take supplies without a job sheet
+
+**Persona:** crew member. **Critical:** a box of gloves for the van, or supplies for several small jobs, is taken every week, and without it storage counts drift.
+
+<!-- journeys:steps J14 -->
+- **J14.1** On the sheet list, tap **Quick take** and scan (or pick) what you're taking, and how many. It goes on the team's ad hoc sheet, shown above the job sheets.
+- **J14.2** Bringing something back, tap **Return** on the sheet list and scan it: it goes back to the sheet it's out on, or you pick the sheet when it's out on more than one.
+- **J14.3** To bill a client for something taken ad hoc, open the ad hoc sheet, tap the line and **Move to a job sheet**.
+- **J14.4** When the van is restocked, tap **Finished Return** on the ad hoc sheet. The next quick take starts a new one.
+<!-- /journeys:steps J14 -->
+
+**Expected:** a quick take checks items out as a checkout does, storage counts going down, onto the team's one open ad hoc sheet ([ADR 0017](adr/0017-company-equipment-and-ad-hoc-checkout.md), sections 4 to 6). The first starts it (`adhoc-<n>`), and two people's first takes at once end on the same sheet. The ad hoc sheet is a card of its own above the job sheets ("Ad hoc · Since Sep 30 · 6 items out"), and shows no money: nothing on it is charged to anyone. It takes returns but no checkouts, edits of its details or receipt lines. **Return** on the sheet list finds every open sheet the item is still out on, and a job sheet's "Not on this sheet" offers to return it where it's out. Moving a line takes the whole line with its counts to the job sheet, which keeps its own price if it already has the item, without moving stock, and a retried move counts once. **Finished Return** asks about equipment as on a job sheet, with no charge, and a finished ad hoc sheet can be reopened only while no other one is open.
+
+**Status:** tested (`supply-checkout-mdae`). The web build sends the quick take and the move as commands (`POST /teams/{teamId}/adhoc/checkout`, `POST /teams/{teamId}/sheets/{sheetId}/move`, [docs/api/commands.md](api/commands.md)); the claude.ai artifact build writes them as ADR 0017's section 6 describes.
+
+**Tests:** `adhoc.spec.js` (all tests), and the server's in `backend/test/adhoc-api.test.ts` and `backend/test/adhoc.test.ts`.
 
 ---
 
@@ -623,6 +641,12 @@ The purge lists at most 100 closed teams' subscriptions a run (`CLOSED_TEAMS_TO_
 | Alarm | Signal | Starting threshold | Severity |
 | --- | --- | --- | --- |
 | **Checkouts stopped** | `Checkouts` business metric across all teams: equipment is checked out with the same command as supplies, so it counts | as for J4 | P1 |
+
+### J14. Take supplies without a job sheet
+
+| Alarm | Signal | Starting threshold | Severity |
+| --- | --- | --- | --- |
+| **Checkouts stopped** | `Checkouts` business metric across all teams: the quick take counts as a checkout | as for J4 | P1 |
 
 ### Phase 2: second region
 

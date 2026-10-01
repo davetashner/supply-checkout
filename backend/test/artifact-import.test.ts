@@ -247,8 +247,14 @@ describe("parseArtifactExport: ad hoc sheets (ADR 0017)", () => {
     const adhoc = (id: string, kind: unknown) => ({ id, kind, client: "", date: "2026-09-30", status: "open", items: {} });
     const p = parseArtifactExport(edited((doc) => doc.sheets.push(adhoc("adhoc-1", "adhoc"), adhoc("adhoc-x", "adhoc"), adhoc("s-9", "adhoc"), adhoc("adhoc-2", "job"), adhoc("adhoc-3", null))));
     expect(p.sheets.find((s) => s.id === "adhoc-1")?.kind).toBe("adhoc");
-    expect(p.sheets.find((s) => s.id === "adhoc-3")).not.toHaveProperty("kind");
-    expect(p.errors.map((e) => e.message)).toEqual(Array(3).fill('kind must be "adhoc", on a sheet whose id is adhoc-<n>'));
+    expect(p.sheets.find((s) => s.id === "adhoc-3")).toBeUndefined();
+    expect(p.errors.map((e) => e.message)).toEqual([...Array(3).fill('kind must be "adhoc", on a sheet whose id is adhoc-<n>'), 'an id starting "adhoc-" is an ad hoc sheet\'s, which needs kind "adhoc"']);
+  });
+
+  it("refuses a file with more than one open ad hoc sheet", () => {
+    const adhoc = (id: string, status: string) => ({ id, kind: "adhoc", client: "", date: "2026-09-30", status, items: {} });
+    const p = parseArtifactExport(edited((doc) => doc.sheets.push(adhoc("adhoc-1", "open"), adhoc("adhoc-2", "closed"), adhoc("adhoc-3", "open"))));
+    expect(p.errors).toEqual([{ at: 'sheet id "adhoc-3"', message: 'is a second open ad hoc sheet ("adhoc-1" is open too); finish all but one first' }]);
   });
 });
 
@@ -319,6 +325,13 @@ describe.skipIf(!endpoint)("the artifact import (DynamoDB Local)", () => {
     expect(await pointer()).toMatchObject({ version: 1 });
     const taken = await quickTake(db, ctx, { operationId: "0f8fad5b-d9cb-469f-a165-70867728950e", productKey: "tape", quantity: 1, name: "Tape", price: 3 });
     expect(taken.result.sheetId).toBe("adhoc-2");
+    // A file whose open ad hoc sheet would be a second one in the team is a conflict
+    const third = edited((doc) => doc.sheets.push({ id: "adhoc-3", kind: "adhoc", client: "", date: "2026-09-25", status: "open", items: {} }));
+    const blocked = await planArtifactImport(db, ctx, parseArtifactExport(third));
+    expect(blocked.conflicts).toContainEqual({ at: 'sheet id "adhoc-3"', message: 'the team already has an open ad hoc sheet, "adhoc-2"; finish one of them first' });
+    // And if one slips in anyway, the pointer isn't left naming one of two
+    await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: { ...keys.sheet(ctx.teamId, "adhoc-4"), type: "sheet", id: "adhoc-4", kind: "adhoc", client: "", date: "2026-09-26", status: "open", items: {}, version: 1 } }));
+    await expect(applyArtifactImport(db, ctx, { products: [], sheets: [], productsPresent: 0, sheetsPresent: 0, conflicts: [] })).rejects.toThrow("more than one open ad hoc sheet");
     // An import with no ad hoc sheets leaves no pointer
     const other = await team();
     expect((await run(other.ctx)).result).not.toHaveProperty("adhocOpen");

@@ -52,3 +52,11 @@ export function totals(sheet) {
   }
   return { out, ret, used, charge: charge / 100, value: value / 100, count, equipmentOut };
 }
+
+// The team's ad hoc sheet (ADR 0017, section 4): what's taken for no job, with Quick take. It has
+// no client, so it's shown as "Ad hoc", and nothing on it is charged to anyone.
+export const isAdhoc = s => !!s && s.kind === "adhoc";
+export const sheetTitle = s => isAdhoc(s) ? "Ad hoc" : s.client || "Untitled";
+// What's still out on a line: supplies not back, equipment neither back nor lost. A line bought
+// for the client isn't coming back, so it's never out.
+export const leftOut = l => l.purchased === true ? 0 : isEquipmentLine(l) ? equipmentCounts(l).still : lineCounts(l).u;

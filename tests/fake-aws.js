@@ -296,6 +296,11 @@ export class FakeBackend {
     m = path.match(/^\/teams\/([^/]+)\/sheets\/([^/]+)\/(checkout|return|lost)$/);
     if (m && method === "POST") return this.command(decodeURIComponent(m[1]), decodeURIComponent(m[2]), m[3], call.body);
 
+    m = path.match(/^\/teams\/([^/]+)\/adhoc\/checkout$/);
+    if (m && method === "POST") return this.quickTake(decodeURIComponent(m[1]), call.body);
+    m = path.match(/^\/teams\/([^/]+)\/sheets\/([^/]+)\/move$/);
+    if (m && method === "POST") return this.move(decodeURIComponent(m[1]), decodeURIComponent(m[2]), call.body);
+
     m = path.match(/^\/teams\/([^/]+)\/sheets\/([^/]+)\/lines$/);
     if (m && method === "POST") return this.addLines(decodeURIComponent(m[1]), decodeURIComponent(m[2]), call.body);
 
@@ -338,6 +343,10 @@ export class FakeBackend {
     const stillOut = (l) => l && l.kind === "equipment" && (l.out || 0) - (l.returned || 0) - (l.lost || 0) > 0;
     if (coll === "sheets" && data.status === "closed" && cur?.data.status !== "closed" && Object.values(data.items || {}).some(stillOut)) {
       return [409, { error: { code: "aborted", message: "Equipment is still out on this sheet", reason: "equipment_out" } }];
+    }
+    // One open ad hoc sheet per team (ADR 0017, documents.ts)
+    if (coll === "sheets" && data.kind === "adhoc" && data.status !== "closed" && cur?.data.status === "closed" && this.openAdhoc(team)) {
+      return [409, { error: { code: "aborted", message: "Another ad hoc sheet is open. Finish it before reopening this one.", reason: "adhoc_open" } }];
     }
     this.write(team, coll, id, data);
     return [200, out()];
@@ -479,6 +488,9 @@ export class FakeBackend {
     if (!member) return err(403, "permission_denied", "permission_denied", "not_member");
     if (member.role === "viewer") return err(403, "permission_denied", "permission_denied", "view_only");
     const { operationId, productKey: key, quantity: qty, ...oneOff } = body;
+    // Not part of the request: the quick take's own marker that it may check out onto the ad hoc sheet
+    const quick = oneOff.quickTake === true;
+    delete oneOff.quickTake;
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId) || typeof key !== "string" || !Number.isInteger(qty) || qty < 1) return err(400, "bad_request");
     const sheetKey = `${team}/sheets/${sheetId}`, productKey = `${team}/products/${key}`;
     const out = (k) => { const d = this.docs.get(k); return d ? { id: k.slice(k.lastIndexOf("/") + 1), version: d.version, data: d.data } : null; };
@@ -495,6 +507,8 @@ export class FakeBackend {
     let delta;
     // Company equipment (ADR 0017): its line has kind and no price, and names who took it last and when
     const taken = { takenBy: this.user.id, takenAt: new Date().toISOString() };
+    // The ad hoc sheet takes only quick takes (ADR 0017)
+    if (name === "checkout" && sheet.data.kind === "adhoc" && !quick) return err(400, "bad_request", "Take items for no job with Quick take, not onto the ad hoc sheet");
     if (name === "checkout") {
       if (line) { line.out += qty; if (line.kind === "equipment") Object.assign(line, taken); }
       else {
@@ -524,6 +538,69 @@ export class FakeBackend {
     const tracked = !!product && typeof product.data.stock === "number";
     if (tracked && delta) { product.data.stock += delta; product.version++; }
     const result = { operationId, command: name, reason: name, productKey: key, sheetId, quantity: qty, stockDelta: tracked ? delta : 0, userId: this.user.id, at: new Date().toISOString() };
+    this.operations.set(`${team}/${operationId}`, { request, result });
+    return answer(result, false);
+  }
+
+  // The team's open ad hoc sheet's ID, if there is one
+  openAdhoc(team) {
+    const prefix = `${team}/sheets/`;
+    const hit = [...this.docs].find(([k, d]) => k.startsWith(prefix) && d.data.kind === "adhoc" && d.data.status !== "closed");
+    return hit && hit[0].slice(prefix.length);
+  }
+
+  // Quick take as the API runs it (quickTake in backend/src/data/commands.ts): a checkout onto the
+  // team's open ad hoc sheet, or onto the next adhoc-<n>, which it starts. Replays as for checkout.
+  quickTake(team, body) {
+    const err = (status, code, message = code, reason) => [status, { error: { code, message, ...(reason ? { reason } : {}) } }];
+    const member = this.teams.find((t) => t.id === team);
+    if (!member) return err(403, "permission_denied", "permission_denied", "not_member");
+    if (member.role === "viewer") return err(403, "permission_denied", "permission_denied", "view_only");
+    const { date, ...take } = body;
+    const prior = this.operations.get(`${team}/${body.operationId}`);
+    if (prior) return this.command(team, prior.result.sheetId, "checkout", { ...take, quickTake: true });
+    let sheetId = this.openAdhoc(team), created = false;
+    if (!sheetId) {
+      const prefix = `${team}/sheets/adhoc-`;
+      const n = Math.max(0, ...[...this.docs.keys()].filter((k) => k.startsWith(prefix)).map((k) => Number(k.slice(prefix.length)) || 0)) + 1;
+      sheetId = `adhoc-${n}`;
+      created = true;
+      this.write(team, "sheets", sheetId, { kind: "adhoc", client: "", date, status: "open", createdBy: this.user.id, createdAt: new Date().toISOString(), items: {} });
+    }
+    const [status, answer] = this.command(team, sheetId, "checkout", { ...take, quickTake: true });
+    if (status !== 200) return [status, answer];
+    Object.assign(answer.result, { command: "quickTake", ...(created ? { sheetCreated: true } : {}) });
+    return [status, answer];
+  }
+
+  // Moving an ad hoc line to a job sheet as the API runs it (moveLine in commands.ts): both
+  // sheets change together, the job sheet's line keeps its own price, and no stock moves
+  move(team, fromId, body) {
+    const err = (status, code, message = code, reason) => [status, { error: { code, message, ...(reason ? { reason } : {}) } }];
+    const member = this.teams.find((t) => t.id === team);
+    if (!member) return err(403, "permission_denied", "permission_denied", "not_member");
+    if (member.role === "viewer") return err(403, "permission_denied", "permission_denied", "view_only");
+    const { operationId, productKey: key, toSheetId: toId } = body;
+    const fromKey = `${team}/sheets/${fromId}`, toKey = `${team}/sheets/${toId}`;
+    const out = (k) => { const d = this.docs.get(k); return d ? { id: k.slice(k.lastIndexOf("/") + 1), version: d.version, data: d.data } : null; };
+    const answer = (result, replayed) => [200, { operationId, replayed, result, sheet: out(fromKey), toSheet: out(toKey), product: null }];
+    const request = JSON.stringify(["move", fromId, key, toId]);
+    const prior = this.operations.get(`${team}/${operationId}`);
+    if (prior) return prior.request === request ? answer(prior.result, true) : err(400, "bad_request");
+    const from = this.docs.get(fromKey), to = this.docs.get(toKey);
+    if (!from || from.data.kind !== "adhoc" || this.openAdhoc(team) !== fromId) return err(400, "bad_request", "Only a line on the open ad hoc sheet moves to a job sheet");
+    if (!to) return err(404, "not_found", "No such job sheet");
+    if (to.data.status === "closed") return err(409, "aborted", "This sheet is closed. Reopen it to move a line to it.");
+    const line = Object.hasOwn(from.data.items || {}, key) ? from.data.items[key] : undefined;
+    if (!line) return err(400, "bad_request", "This item isn't on this sheet");
+    const items = (to.data.items ||= {}), cur = Object.hasOwn(items, key) ? items[key] : undefined;
+    if (cur && cur.kind !== line.kind) return err(400, "bad_request", cur.kind === "equipment" ? "The job sheet has this item as company equipment; correct the lines by hand" : "The job sheet has this item as a supply; correct the lines by hand");
+    if (cur) Object.assign(cur, { out: cur.out + line.out, returned: (cur.returned || 0) + (line.returned || 0), ...(line.lost ? { lost: (cur.lost || 0) + line.lost } : {}) });
+    else items[key] = clone(line);
+    delete from.data.items[key];
+    from.version++;
+    to.version++;
+    const result = { operationId, command: "move", reason: "move", productKey: key, sheetId: fromId, toSheetId: toId, quantity: line.out, returned: line.returned || 0, lost: line.lost || 0, stockDelta: 0, lineCreated: !cur, userId: this.user.id, at: new Date().toISOString() };
     this.operations.set(`${team}/${operationId}`, { request, result });
     return answer(result, false);
   }

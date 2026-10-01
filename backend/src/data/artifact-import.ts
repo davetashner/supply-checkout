@@ -54,7 +54,7 @@ import { MAX_DOCUMENT_BYTES } from "./documents.js";
 import { ConflictError, InvalidInputError, TeamClosedError } from "./errors.js";
 import { MAX_NAME_LENGTH, MAX_PACK_SIZE } from "./imports.js";
 import { adhocCount, adhocOpen, adhocPut, readAdhoc } from "./adhoc.js";
-import { MAX_CODE_LENGTH, adhocNumber, gsi1, keys, prefixes, teamPartition } from "./keys.js";
+import { MAX_CODE_LENGTH, adhocNumber, gsi1, isAdhocId, keys, prefixes, teamPartition } from "./keys.js";
 import { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
 import { queryAll } from "./query.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
@@ -275,6 +275,8 @@ function sheet(raw: unknown, ignored: (field: string) => void, lineErrors: Impor
   if (!DATE.test(date)) throw new FieldError("date isn't YYYY-MM-DD");
   const adhoc = raw.kind !== undefined && raw.kind !== null;
   if (adhoc && (raw.kind !== "adhoc" || adhocNumber(raw.id) === undefined)) throw new FieldError('kind must be "adhoc", on a sheet whose id is adhoc-<n>');
+  // adhoc- IDs are the ad hoc sheets' (only the quick take makes one in a team)
+  if (!adhoc && isAdhocId(raw.id)) throw new FieldError('an id starting "adhoc-" is an ad hoc sheet\'s, which needs kind "adhoc"');
   let status: "open" | "closed" = "open";
   if (raw.status !== undefined && raw.status !== null) {
     if (raw.status !== "open" && raw.status !== "closed") throw new FieldError('status must be "open" or "closed"');
@@ -406,6 +408,9 @@ export function parseArtifactExport(json: unknown): ParsedExport {
       errors.push({ at, message: error.message });
     }
   });
+  // A team has at most one open ad hoc sheet (ADR 0017, section 4)
+  const openAdhoc = sheets.filter((s) => s.kind === "adhoc" && s.status !== "closed");
+  for (const s of openAdhoc.slice(1)) errors.push({ at: `sheet id ${shown(s.id)}`, message: `is a second open ad hoc sheet (${shown(openAdhoc[0]?.id ?? "")} is open too); finish all but one first` });
   return { ...(exportedAt === undefined ? {} : { exportedAt }), products, sheets, totals, errors, ignoredFields, droppedCreatedBy, sheetsWithoutTotals };
 }
 
@@ -474,6 +479,10 @@ export async function planArtifactImport(db: Db, ctx: TeamContext, parsed: Parse
     }
     products.push(p);
   }
+  // An open ad hoc sheet already in the team, other than one the file has: the file's open one would be a second
+  const openHere = existingSheets.find((s) => s.kind === "adhoc" && s.status !== "closed" && !parsed.sheets.some((p) => p.id === s.id));
+  const openThere = parsed.sheets.find((s) => s.kind === "adhoc" && s.status !== "closed");
+  if (openHere && openThere) conflicts.push({ at: `sheet id ${shown(openThere.id)}`, message: `the team already has an open ad hoc sheet, ${shown(String(openHere.id))}; finish one of them first` });
   const sheets: ArtifactSheet[] = [];
   let sheetsPresent = 0;
   for (const s of parsed.sheets) {
@@ -609,7 +618,10 @@ async function pointAdhoc(db: Db, ctx: TeamContext, at: string): Promise<string 
     .sort((a, b) => b.n - a.n);
   if (!adhoc.length) return adhocOpen(pointer);
   const named = adhocOpen(pointer);
-  const open = adhoc.some((s) => s.open && s.id === named) ? named : adhoc.find((s) => s.open)?.id;
+  const opens = adhoc.filter((s) => s.open);
+  // Never leave two open (the plan refuses that; this catches a quick take made meanwhile)
+  if (opens.length > 1) throw new ConflictError(`After importing, the team has more than one open ad hoc sheet (${opens.map((s) => shown(s.id)).join(", ")}): the imported sheets are saved, but quick takes need one. Finish all but one in the app (Finished Return on each), then run the import again to set the team's ad hoc sheet`);
+  const open = opens[0]?.id;
   const count = Math.max(adhocCount(pointer), adhoc[0]?.n ?? 0);
   if (pointer && count === adhocCount(pointer) && open === named) return open;
   try {

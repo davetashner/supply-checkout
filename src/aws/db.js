@@ -303,6 +303,42 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     }
   });
 
+  // Quick take (ADR 0017, docs/api/commands.md): a checkout onto the team's ad hoc sheet, which
+  // the server picks (or starts) in the checkout's transaction. Answers, retries and refusals as
+  // command() above; resolves to the checkout's answer and the sheet it went on (sheetId).
+  const quickTake = (body, action) => queued("adhoc", async () => {
+    const operation = operationId(action, ["quickTake", body]);
+    const send = () => api("POST", `${base}/adhoc/checkout`, { operationId: operation, ...body });
+    try {
+      const res = await send().catch((e) => { if (e.code !== "aborted") throw e; return send(); });
+      const sheetId = res.result.sheetId;
+      put("sheets", sheetId, res.sheet);
+      put("products", body.productKey, res.product);
+      return { quantity: res.result.quantity, sheetId };
+    } catch (e) {
+      if (e.code === "bad_request") throw refused(e);
+      throw denied(e);
+    }
+  });
+
+  // Moving a whole ad hoc line to a job sheet (ADR 0017, docs/api/commands.md): one POST that
+  // changes both sheets together. Answers, retries and refusals as command() above, fetching both
+  // sheets when it's refused.
+  const moveLine = (fromId, key, toId, action) => queued("sheets/" + fromId, async () => {
+    const operation = operationId(action, ["move", fromId, key, toId]);
+    const send = () => api("POST", `${docPath("sheets", fromId)}/move`, { operationId: operation, productKey: key, toSheetId: toId });
+    try {
+      const res = await send().catch((e) => { if (e.code !== "aborted") throw e; return send(); });
+      put("sheets", fromId, res.sheet);
+      put("sheets", toId, res.toSheet);
+    } catch (e) {
+      const bad = e.code === "bad_request" || e.code === "not_found";
+      if (bad || e.code === "aborted") await Promise.all([fetchDoc("sheets", fromId), fetchDoc("sheets", toId)]);
+      if (bad) throw refused(e);
+      throw denied(e);
+    }
+  });
+
   // A receipt's lines for a client, added to an existing sheet (docs/api/commands.md): one POST
   // that adds them all or none, without moving stock. lines: [{ productKey, quantity, code,
   // name, price, cost }], at most 40. Idempotent by operation ID, as command() is. A sheet
@@ -385,6 +421,8 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     },
     doc: docRef,
     command,
+    quickTake,
+    moveLine,
     addLines,
     saveItem,
     // A new access token: reconnect live updates with it

@@ -378,7 +378,7 @@ describe("moving an ad hoc line to a job sheet", () => {
     await take({ productKey: "ladder", quantity: 1 });
     const refusals: [Record<string, unknown>, string, number, string?][] = [
       [{ productKey: "0123", toSheetId: "adhoc-1" }, "adhoc-1", 400, "A line moves to a client's sheet only"],
-      [{ productKey: "0123", toSheetId: "s1" }, "s1", 400, "Only a line on the ad hoc sheet moves to a job sheet"],
+      [{ productKey: "0123", toSheetId: "s1" }, "s1", 400, "Only a line on the open ad hoc sheet moves to a job sheet"],
       [{ productKey: "0123", toSheetId: "nope" }, "adhoc-1", 404, "No such job sheet"],
       [{ productKey: "0123", toSheetId: "closed" }, "adhoc-1", 409],
       [{ productKey: "0123", toSheetId: "s1" }, "gone", 404],
@@ -399,8 +399,42 @@ describe("moving an ad hoc line to a job sheet", () => {
     expect(Object.keys(items("adhoc-1")).sort()).toEqual(["0123", "ladder"]);
   });
 
+  it("moves only from the ad hoc sheet the team's pointer names, checked in the transaction", async () => {
+    seed();
+    await take({ productKey: "0123", quantity: 1 });
+    // An open ad hoc sheet the pointer doesn't name (a restore, say)
+    sheet("adhoc-7", { kind: "adhoc", client: "", items: { "0123": { name: "Gloves", price: 1, out: 1, returned: 0 } } });
+    expect(await move({ productKey: "0123", toSheetId: "s1" }, "adhoc-7")).toMatchObject({ status: 400, body: { error: { message: "Only a line on the open ad hoc sheet moves to a job sheet" } } });
+    // The pointer moves away between the read and the transaction: it reads again and refuses
+    let raced = false;
+    table.beforeTransactWrite = () => {
+      if (raced) return;
+      raced = true;
+      table.put({ PK: TEAM, SK: "ADHOC", type: "adhoc", count: 7, open: "adhoc-7", version: 9 });
+    };
+    expect(await move({ productKey: "0123", toSheetId: "s1" })).toMatchObject({ status: 400 });
+    expect(items("adhoc-1")["0123"]).toBeDefined();
+    expect(items("s1")).toEqual({});
+  });
+
+  it("checks in the transaction that the job sheet's line is still the kind it was read as", async () => {
+    seed();
+    sheet("s1", { items: { "0123": { code: "0123", name: "Gloves", price: 11, out: 1, returned: 0 } } });
+    await take({ productKey: "0123", quantity: 2 });
+    let raced = false;
+    table.beforeTransactWrite = () => {
+      if (raced) return;
+      raced = true;
+      // The job line is replaced by an equipment line meanwhile
+      sheet("s1", { items: { "0123": { code: "0123", name: "Gloves", kind: "equipment", out: 1, returned: 0 } } });
+    };
+    expect(await move({ productKey: "0123", toSheetId: "s1" })).toMatchObject({ status: 400, body: { error: { message: "The job sheet has this item as company equipment; correct the lines by hand" } } });
+    expect(items("s1")["0123"]?.out).toBe(1);
+  });
+
   it("refuses a closed ad hoc sheet, a bought or malformed line, and a job sheet it would take past the size limit", async () => {
     seed();
+    table.put({ PK: TEAM, SK: "ADHOC", type: "adhoc", count: 1, open: "adhoc-1", version: 1 });
     sheet("adhoc-1", { kind: "adhoc", client: "", items: { "x:bought": { name: "X", price: 1, purchased: true, out: 1, returned: 0 }, bad: "nope", odd: { name: "Odd", price: 1, out: 1.5, returned: 0 }, big: { name: "Big", price: 1, out: 1, returned: 0 } } });
     sheet("s2", { items: { big: "nope" } });
     expect(await move({ productKey: "x:bought", toSheetId: "s1" })).toMatchObject({ status: 400, body: { error: { message: "This line was bought for a client and doesn't move" } } });
