@@ -22,6 +22,10 @@
 
 **Backup alerts** ([backups.md](backups.md#alerts-on-the-backups)). The backup stack's P2 alarms (Backup failed, No recent backup, and with the copy Deletion records not replicated and Deletion records replication stuck, a record pending or an hour behind for an hour: [When deletion records stop replicating](backups.md#when-deletion-records-stop-replicating)) go to the P2 topic. Its two EventBridge rules, `supply-checkout-<env>-backup-changes` and `-backup-key-changes`, tell the P1 topic when a vault's access policy or lock, the plan, a selection or the vault key is changed or deleted; the P1 topic lets those two rule names publish, and no other rule but the operator-pool ones. The backup account's vault stack has its own encrypted topic, `supply-checkout-<env>-backup-alerts`, emailed to that account's `/supply-checkout/<env>/alarms/email-<n>` parameters (see below), with the same two rules there, a third, `supply-checkout-<env>-backup-vault-deletions-copy-changes`, on changes to the deletion records copy's bucket policy, ownership controls, Object Lock configuration or versioning ([When backups are tampered with](backups.md#when-backups-are-tampered-with)), and a `supply-checkout-<env>-backup-copies-missing` alarm.
 
+**Cost alerts** (`lib/observability/cost-alerts.ts`, `supply-checkout-jxq`). The `observability` stack in `GLOBAL_SERVICES_REGION` (us-east-1) has the account's monthly cost budget, `supply-checkout-<env>-monthly`, and a Cost Anomaly Detection monitor, `supply-checkout-<env>-services` (every AWS service's cost, `DIMENSIONAL`/`SERVICE`), with its subscription `supply-checkout-<env>-anomalies`. Both email the P2 recipients through the P2 topic: a cost surprise isn't worth waking anyone for. The budget alerts at 50%, 80% and 100% of the month's actual spend and when the forecast passes 100%; it counts gross cost (credits and refunds excluded), so promotional credits can't hide a runaway cost until they run out. The anomaly subscription is `IMMEDIATE` (SNS subscribers must be) and alerts on an anomaly with a total impact of at least the threshold. Budgets and Cost Explorer are account-wide, not regional, and Cost Explorer's API is only in us-east-1, so they're in that one stack, not one per region; if us-east-1 ever stopped being a deployed region, they'd go with it, like the web alarms. Both services publish as AWS service principals, so the P2 topic's policy lets `budgets.amazonaws.com` (`AllowBudgetsToPublish`) and `costalerts.amazonaws.com` (`AllowCostAnomaliesToPublish`) publish, and the topics' KMS key lets them `kms:Decrypt` and `kms:GenerateDataKey*`, each only with `aws:SourceAccount` this account and `aws:SourceArn` this account's budgets (`arn:aws:budgets::<account>:*`) or anomaly subscriptions (`arn:aws:ce::<account>:anomalysubscription/*`); the P1 topic doesn't allow them. The budget and subscription depend on the topic's policy, since both services check they may publish when they're saved.
+
+**The amounts are placeholders for the owner to set.** The defaults are `DEFAULT_MONTHLY_BUDGET_USD` (**$100** a month) and `DEFAULT_COST_ANOMALY_USD` (**$20** of impact) in `cost-alerts.ts`, a guess for a pre-launch account. Change them there, or per deploy with `-c monthlyBudgetUsd=150 -c costAnomalyUsd=25` (or the same keys in `cdk.json`'s context). Each must be above 0 and at most $10,000. Deploying, and testing an alert: [When a cost alert arrives](#when-a-cost-alert-arrives).
+
 Logging and business metrics in the Lambda code are in [Backend](backend.md).
 
 ## Front-end errors (CloudWatch RUM)
@@ -102,3 +106,31 @@ The alarm recovers on its first 5-minute period below the threshold. After a web
 6. **Turn it back on.** When it has stopped, run step 2's command with `--allow-unauthenticated-identities`, and delete the revoke policy (`aws iam delete-role-policy --role-name supply-checkout-<env>-rum-guest --policy-name AWSRevokeOlderSessions`). A web stack deploy doesn't undo either change by itself: CloudFormation only sets what its template changes.
 
 There's no switch that turns an app monitor off. Deleting it (`aws rum delete-app-monitor`) stops ingestion at once but loses its 30 days of data, and CloudFormation still thinks it's there until the web stack is deployed with a change to it; prefer the steps above.
+
+## When a cost alert arrives
+
+A P2 email from AWS Budgets (`supply-checkout-<env>-monthly`: actual spend past 50%, 80% or 100% of the month's budget, or the forecast past 100%) or from Cost Anomaly Detection (`supply-checkout-<env>-anomalies`: one service's spend well above its usual pattern, by at least the threshold). Each budget threshold alerts once a month.
+
+1. **See it.** Open **Billing and Cost Management → Cost Explorer**, this month, grouped by **Service**, then by **Usage type** for the service that jumped. An anomaly email links to the anomaly, with its root causes (service, region, usage type).
+2. **Find the cause.** Usual suspects here: RUM events ([When RUM events surge](#when-rum-events-surge)), SES sends (Near the sending limit), Lambda or DynamoDB from a loop or a flood of requests (the dashboard's traffic row, and the WAF's blocked requests), CloudWatch Logs ingestion from a noisy function, and SMS (the account's SMS spending limit caps it).
+3. **Stop it**, at its source: roll back the release, block the traffic, or turn the feature off. Then raise the budget only if the new spend is expected (below).
+4. **Record it** on a bead, with the cause and the cost.
+
+**Deploying the cost alerts.** They're in the us-east-1 `observability` stack, so `npm run deploy -- api` deploys them (with `--all` on a first deploy). Before the first deploy, check whether the account already has an AWS services monitor: an account may have only one, and AWS makes one (`Default-Services-Monitor`) for some accounts on its own, in which case the deploy fails creating `supply-checkout-<env>-services`:
+
+```bash
+aws ce get-anomaly-monitors --profile supply-prod --region us-east-1 \
+  --query 'AnomalyMonitors[].[MonitorName,MonitorType,MonitorDimension,MonitorArn]' --output table
+```
+
+If one with type `DIMENSIONAL` and dimension `SERVICE` is there, either delete it (and its subscriptions, `aws ce get-anomaly-subscriptions`, then `aws ce delete-anomaly-subscription` and `aws ce delete-anomaly-monitor --monitor-arn <arn>`), which loses only its learned history (a new monitor needs about 10 days of history before it finds anomalies), or keep it and subscribe to it instead: put `"costAnomalyMonitorArn": "<its ARN>"` in `infra/cdk.context.json` in the main checkout (gitignored, so it applies to every deploy and the ARN, which has the account ID, never reaches the repo). Every deploy needs it from then on: a deploy without it would try to create the monitor and fail.
+
+**Testing an alert.** Neither service has a "send a test" button, and only the service itself can publish as its principal, so test the whole path with a tiny budget. With some spend this month, deploy the observability stack once with a budget it has already passed:
+
+```bash
+cd infra && npx cdk deploy supply-checkout-prod-us-east-1-observability --exclusively \
+  --profile supply-prod -c backupCopy=false -c monthlyBudgetUsd=1
+```
+
+Budgets checks spend a few times a day, so within about 12 hours the P2 recipients get the 50%, 80% and 100% emails. If they don't, look at the P2 topic's `NumberOfNotificationsFailed` metric in CloudWatch (a key policy problem shows there) and the budget's alert status in the Budgets console. Then deploy again without `-c monthlyBudgetUsd` (or with `npm run deploy -- api`) to put the real amount back. The anomaly subscription uses the same topic, key and kind of policy, so a working budget alert shows that path works too; its first real alert can only come once the monitor has history.
+
