@@ -1278,9 +1278,7 @@
                       "dynamodb:Attributes": [
                         "PK",
                         "SK",
-                        "receipts",
-                        "type",
-                        "month"
+                        "receipts"
                       ]
                     },
                     "StringEqualsIfExists": {

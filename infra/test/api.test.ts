@@ -475,7 +475,7 @@ describe("receipts function and receipt-access role (ADR 0008)", () => {
         StringEqualsIfExists: { "dynamodb:ReturnValues": ["NONE", "UPDATED_NEW"] },
       },
     });
-    expect(RECEIPT_USAGE_ATTRIBUTES).toEqual(["PK", "SK", "receipts", "type", "month"]);
+    expect(RECEIPT_USAGE_ATTRIBUTES).toEqual(["PK", "SK", "receipts"]);
     for (const s of [read, count]) {
       const json = JSON.stringify(s?.Resource);
       expect(json).toContain(":table/supply-checkout-prod-app");

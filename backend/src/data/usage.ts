@@ -31,6 +31,11 @@ export async function getReceiptUsage(db: Db, ctx: TeamContext, m: string): Prom
  * Counts one receipt read, unless the team has already used `limit` this month.
  * Returns the new count; throws LimitReachedError at the limit. Atomic, so two
  * reads at once can't both take the last one.
+ *
+ * It names only the keys and `receipts` (RECEIPT_USAGE_ATTRIBUTES): the month
+ * is in the sort key, so the receipts function's role, which may update only
+ * those attributes, can't rewrite any other field of any item in the team's
+ * partition (an item's `type`, say).
  */
 export async function recordReceiptRead(db: Db, ctx: TeamContext, m: string, limit: number): Promise<number> {
   writable(db, ctx);
@@ -40,10 +45,9 @@ export async function recordReceiptRead(db: Db, ctx: TeamContext, m: string, lim
       new UpdateCommand({
         TableName: db.tableName,
         Key: keys.usage(ctx.teamId, month(m)),
-        UpdateExpression: "SET #type = :type, #month = :month ADD receipts :one",
+        UpdateExpression: "ADD receipts :one",
         ConditionExpression: "attribute_not_exists(receipts) OR receipts < :limit",
-        ExpressionAttributeNames: { "#type": "type", "#month": "month" },
-        ExpressionAttributeValues: { ":type": "usage", ":month": m, ":one": 1, ":limit": limit },
+        ExpressionAttributeValues: { ":one": 1, ":limit": limit },
         ReturnValues: "UPDATED_NEW",
       }),
     );

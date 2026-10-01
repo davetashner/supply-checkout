@@ -15,6 +15,8 @@ import { authorizeTeam, InvalidInputError, setDocument } from "../src/data/index
 import type { Observability } from "../src/observability/index.js";
 import { RECEIPT_INSTRUCTIONS } from "../src/receipts/prompt.js";
 import type { ReceiptModel } from "../src/receipts/reader.js";
+import { RECEIPT_USAGE_ATTRIBUTES } from "../src/data/schema.js";
+import { namedAttributes } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const NOW = Date.parse("2026-09-26T12:00:00Z");
@@ -348,6 +350,41 @@ describe("who may read receipts", () => {
     table.put({ ...(table.get("TEAM#team-a", "META") as Record<string, unknown>), closedAt: undefined, status: "canceled" });
     expect((await call()).body.error.reason).toBe("subscription_ended");
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("under the receipt-access role's policy (infra/lib/stacks/api-stack.ts)", () => {
+  // A stand-in for ReceiptAccessRole: reads in the team's partition, and an update
+  // only of the receipt counter's attributes (dynamodb:Attributes), returning at most
+  // what it updated. No puts, deletes or anything else.
+  const policyDb = (teamId: string, refused: string[]) =>
+    table.guarded((command, input) => {
+      const pk = `TEAM#${teamId}`;
+      const pkOf = (key: unknown) => {
+        const v = (key as { PK?: unknown } | undefined)?.PK;
+        return typeof v === "string" ? v : (v as { S?: string } | undefined)?.S;
+      };
+      const ok = (() => {
+        if (command === "TransactGetCommand") return ((input.TransactItems ?? []) as { Get: { Key: unknown } }[]).every((t) => pkOf(t.Get.Key) === pk);
+        if (command === "QueryCommand") return JSON.stringify(input.ExpressionAttributeValues ?? {}).includes(`"${pk}"`);
+        if (command === "UpdateCommand") {
+          return pkOf(input.Key) === pk && [...namedAttributes(input)].every((a) => (RECEIPT_USAGE_ATTRIBUTES as readonly string[]).includes(a)) && ["NONE", "UPDATED_NEW", undefined].includes(input.ReturnValues as string | undefined);
+        }
+        return false;
+      })();
+      if (!ok) refused.push(command);
+      return ok;
+    });
+
+  it("reads a receipt with nothing the role would refuse, and counts it", async () => {
+    const refused: string[] = [];
+    const guarded = createReceiptsHandler({ dbForTeam: (teamId) => policyDb(teamId, refused), obs: fakeObservability(), model: fakeModel, modelId: MODEL_ID, now: () => NOW });
+    const res = await guarded(event({ body: { image: jpeg } }));
+    expect(refused).toEqual([]);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body as string).usage.used).toBe(1);
+    // Only the count is written: no type or month, which the role can't name
+    expect(table.get("TEAM#team-a", "USAGE#2026-09")).toEqual({ PK: "TEAM#team-a", SK: "USAGE#2026-09", receipts: 1 });
   });
 });
 
