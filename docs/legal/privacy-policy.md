@@ -113,7 +113,7 @@ A current list of the service providers that handle customer data is at [SUBPROC
 | The team's activity history (for example, who closed or reopened a team) | 1 year, or until the team is deleted if that's sooner. It names people by internal ID, not email. |
 | Records of support actions on a team | 2 years, including after the team is deleted. They name support staff and the team by internal ID. |
 | Short-lived records (in-progress imports and stock changes, sign-in code checks, daily limits) | From a few hours to 7 days |
-| Deletion records | 400 days. When an account or team is deleted, we keep a record of its internal ID and the time, and nothing else, so that restoring a backup can't bring it back. |
+| Deletion records | 400 days. When an account or team is deleted, we keep a record of its internal ID and the time (and for a team, the IDs Stripe gave its customer and subscription), and nothing else, so that restoring a backup can't bring it back and a deleted team's Stripe customer can still be found. |
 | **Backups** | **Up to 35 days.** Deleted data stays in backups for up to 35 days after it's deleted, then the backups holding it expire. We use backups only to recover from mistakes and outages, and if we restore one we delete again every account and team deleted since it was taken. |
 | Server logs and web access logs (including IP addresses) | 1 year |
 | Security records of our cloud account | 400 days |

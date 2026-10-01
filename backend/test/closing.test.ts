@@ -336,6 +336,56 @@ describe.skipIf(!endpoint)("closing teams and deleting accounts (DynamoDB Local)
     expect(await partition(`TEAM#${teamId}`)).toEqual([]);
   });
 
+  it("holds back the purge of a team set aside for its closure until a person clears it, and gives the Stripe IDs to its deletion record (supply-checkout-8jc.37)", async () => {
+    const now = new Date("2026-09-04T00:00:00.000Z");
+    const { teamId, owner } = await team(now);
+    const customerId = `cus_${teamId.slice(0, 8)}`;
+    await linkStripeCustomer(table.db, owner, customerId);
+    await connection(table.db).doc.send(
+      new UpdateCommand({ TableName: table.db.tableName, Key: { PK: `TEAM#${teamId}`, SK: "META" }, UpdateExpression: "SET stripeSubscriptionId = :sub", ExpressionAttributeValues: { ":sub": "sub_held_1" } }),
+    );
+    await closeTeam(table.db, owner, { confirmName: "Echo Cleaning" }, now);
+    const toEnd = await closedTeamToEnd(table.db, teamId);
+    if (!toEnd) throw new Error("Not listed");
+    expect(await markSubscriptionSetAside(table.db, toEnd, "NotFound")).toBe(true);
+    const after = new Date(now.getTime() + (CLOSED_TEAM_RETENTION_DAYS + 2) * DAY);
+    const overdueBefore = new Date(after.getTime() - DAY);
+    // Not listed for the purge, counted as set aside and held past its date, and held if asked directly
+    expect((await listTeamsToPurge(table.db, after, 1000)).map((t) => t.teamId)).not.toContain(teamId);
+    const held = await listSetAsideTeams(table.db, 1000, overdueBefore);
+    expect(held.teams).toContainEqual({ teamId, reason: "NotFound" });
+    expect(held.overdue).toBeGreaterThanOrEqual(1);
+    expect((await listSetAsideTeams(table.db, 1000)).overdue).toBe(0);
+    const items = (await partition(`TEAM#${teamId}`)).length;
+    expect(await purgeTeam(table.db, teamId, after)).toEqual({ deleted: 0, skipped: true, held: true });
+    expect(await rawItem(table.db, `TEAM#${teamId}`, "META")).not.toHaveProperty("purging");
+    expect(await partition(`TEAM#${teamId}`)).toHaveLength(items);
+    // Set aside between the read and the mark: the mark's condition refuses it
+    const racing = intercepted(async (command) => {
+      if (command.constructor.name === "UpdateCommand") await markSubscriptionSetAside(table.db, toEnd, "NotFound");
+    });
+    await connection(table.db).doc.send(
+      new UpdateCommand({ TableName: table.db.tableName, Key: { PK: `TEAM#${teamId}`, SK: "META" }, UpdateExpression: "REMOVE stripeSetAsideFor" }),
+    );
+    expect(await purgeTeam(racing, teamId, after)).toEqual({ deleted: 0, skipped: true, held: true });
+    expect(await rawItem(table.db, `TEAM#${teamId}`, "META")).not.toHaveProperty("purging");
+    // A person records it as done (the runbook): purged, its Stripe IDs handed to the deletion record first
+    await connection(table.db).doc.send(
+      new UpdateCommand({
+        TableName: table.db.tableName,
+        Key: { PK: `TEAM#${teamId}`, SK: "META" },
+        UpdateExpression: "SET stripeCancelledFor = closedAt REMOVE stripeSetAsideFor",
+        ConditionExpression: "stripeSetAsideFor = closedAt",
+      }),
+    );
+    expect((await listTeamsToPurge(table.db, after, 1000)).map((t) => t.teamId)).toContain(teamId);
+    const recorded: unknown[] = [];
+    const result = await purgeTeam(table.db, teamId, after, { beforeDelete: async (ids) => void recorded.push(ids) });
+    expect(result.skipped).toBe(false);
+    expect(recorded).toEqual([{ stripeCustomerId: customerId, stripeSubscriptionId: "sub_held_1" }]);
+    expect(await partition(`TEAM#${teamId}`)).toEqual([]);
+  });
+
   it("refuses to reopen a team the purge has marked, whatever the clocks say, including one marked mid-request", async () => {
     const now = new Date("2026-09-05T00:00:00.000Z");
     const { teamId, ownerId } = await team(now);

@@ -306,6 +306,8 @@
     { "name": "Closed team charged", "journeys": ["J7", "J11"], "infra": "closed-team-charged" },
     { "name": "Closed-team subscription not found in Stripe", "journeys": ["J7", "J11"], "infra": "closed-team-subscription-not-found" },
     { "name": "Closed-team subscription set aside", "journeys": ["J7", "J11"], "infra": "closed-team-subscription-set-aside" },
+    { "name": "Many closed-team subscriptions set aside", "journeys": ["J7", "J11"], "infra": "closed-team-subscriptions-set-aside-many" },
+    { "name": "Stripe customer already deleted", "journeys": ["J7", "J11"], "infra": "stripe-customer-already-deleted" },
 
     { "name": "Mass lockout", "journeys": ["J8"] },
     { "name": "Failed payments rising", "journeys": ["J8"] },
