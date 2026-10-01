@@ -204,7 +204,11 @@ export class MemoryTable {
         if (this.failingUpdates?.(input)) throw Object.assign(new Error("Throughput exceeded"), { name: "ProvisionedThroughputExceededException" });
         const old = this.items.get(MemoryTable.id(key));
         this.check(input, old);
-        this.items.set(MemoryTable.id(key), this.update(input, old ?? { ...key }));
+        const next = this.update(input, old ?? { ...key });
+        this.items.set(MemoryTable.id(key), next);
+        // UPDATED_NEW: the top-level attributes the update changed, as DynamoDB returns them
+        if (input.ReturnValues === "ALL_NEW") return { Attributes: structuredClone(next) };
+        if (input.ReturnValues === "UPDATED_NEW") return { Attributes: Object.fromEntries(Object.entries(structuredClone(next)).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(old?.[k]))) };
         return {};
       }
       case "QueryCommand":

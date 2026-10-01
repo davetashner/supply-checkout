@@ -23,7 +23,7 @@ The design below is partly built. This table says which parts are on `main` toda
 | Billing: Stripe products and prices by script, Checkout Sessions (beads `8jc.10`, `x0l`) | Built, in the Stripe sandbox | [Billing](../infrastructure.md#billing) |
 | Billing: webhook, SQS FIFO queue and worker, read-only when a subscription ends (bead `2kl`) | Built, in the Stripe sandbox | [Billing](../infrastructure.md#billing) |
 | Billing: grace period for past-due teams, deleting canceled teams (bead `qdx`) | Planned | |
-| Receipt reading with Bedrock | Planned | |
+| Receipt reading with Bedrock: the `receipts` function and route (bead `kx8`) | Built; the web app is wired to it next | [Receipt reading](../infrastructure.md#receipt-reading) |
 | Synthetics canaries, automated deploys to staging and prod | Planned | |
 | Faster cut-off of live updates for removed members and canceled teams: a channel per member (bead `4zn`, [ADR 0016](../adr/0016-per-member-live-update-channels.md)) | Built | |
 | iOS and Android apps, us-west-2 | Phase 2 | |
@@ -132,7 +132,7 @@ Not drawn: KMS keys, Secrets Manager (Stripe keys), SES, CloudWatch alarms and d
 
 **Web releases.** One CloudFront distribution serves the apex (the demo at `/demo/`, and a redirect to `app.` elsewhere), `www.` (a redirect to the apex) and `app.` from one S3 bucket in us-east-1, behind AWS WAF (a per-IP rate limit and AWS managed rules). Each build is uploaded once to `releases/<version>/`. A CloudFront Function reads the live version of the host's channel (`demo` or `app`) from a CloudFront KeyValueStore and rewrites the path into that release, so a release or rollback is one key write that takes effect within seconds. See the README's "Web hosting and releases" section.
 
-## 3. Reading a receipt (planned)
+## 3. Reading a receipt
 
 The flow from [ADR 0008](../adr/0008-receipt-reading-bedrock.md). Nothing is saved until the user confirms, just like today.
 
@@ -148,16 +148,16 @@ sequenceDiagram
 
   U->>App: Take photo of receipt
   App->>App: Resize to 1568px JPEG
-  App->>API: POST /teams/{id}/receipts:read (photo)
+  App->>API: POST /teams/{id}/receipts/read (photo)
   API->>L: Verified user ID
   L->>DB: Membership = contributor/owner?<br/>Subscription active?<br/>ADD usage counter (limit check)
   alt Not allowed or over limit
-    L-->>App: 403 / 402 / 429 with a clear message
+    L-->>App: 403 / 429 with a clear message
   else Allowed
     L->>DB: Load team inventory (up to 500 items)
-    L->>B: Messages API: cached instructions + inventory + image,<br/>structured output schema
+    L->>B: InvokeModel (us. profile): instructions + cached inventory + image,<br/>structured output schema, 25 s deadline
     B-->>L: JSON: store, date, items[], totals
-    L->>L: Map inventory ids, log token usage
+    L->>L: Check the reply, map inventory ids to keys,<br/>log sizes, timings and token counts only
     L-->>App: Parsed receipt
     App->>U: Review screen (edit, match, assign to sheets)
     U->>App: Confirm

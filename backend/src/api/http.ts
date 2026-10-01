@@ -16,6 +16,7 @@ export type ErrorCode =
   | "not_found"
   | "aborted"
   | "quota_exceeded"
+  | "unavailable"
   | "internal";
 
 /**
@@ -38,6 +39,11 @@ export type ErrorCode =
  * `federated_sign_in` (a Google or Apple user, who has nothing to set up), and
  * `signout_failed` (it's on, but the user's other sessions weren't ended yet:
  * POST /me/sign-out-everywhere finishes it).
+ * Reading a receipt (ADR 0008): `image_rejected` (the photo isn't a JPEG or
+ * PNG, is too large, or the model service couldn't use it), `receipt_limit`
+ * (the team has read all its receipts this month), `model_busy` (the model
+ * service is throttling), `model_timeout` (no answer in time) and
+ * `invalid_output` (the model's reply couldn't be used).
  */
 export type ErrorReason =
   | "view_only"
@@ -63,7 +69,12 @@ export type ErrorReason =
   | "password_invalid"
   | "password_mismatch"
   | "federated_sign_in"
-  | "signout_failed";
+  | "signout_failed"
+  | "image_rejected"
+  | "receipt_limit"
+  | "model_busy"
+  | "model_timeout"
+  | "invalid_output";
 
 /** An error with the HTTP status and code the client sees. */
 export class ApiError extends Error {
@@ -128,17 +139,19 @@ export function accessToken(event: Pick<APIGatewayProxyEventV2, "headers">): str
   return token;
 }
 
-/** The request body as text, decoded and size-checked. */
-export function bodyText(event: Pick<APIGatewayProxyEventV2, "body" | "isBase64Encoded">): string {
+/** The request body as text, decoded and size-checked (at most `max` bytes, MAX_BODY_BYTES unless a route says otherwise). */
+export function bodyText(event: Pick<APIGatewayProxyEventV2, "body" | "isBase64Encoded">, max = MAX_BODY_BYTES): string {
   if (event.body === undefined || event.body === null || event.body === "") return "";
+  // Checked before decoding too, so an oversized body is never copied
+  if (event.body.length > (event.isBase64Encoded ? Math.ceil(max / 3) * 4 : max)) throw new ApiError(413, "quota_exceeded", "Request body is too large");
   const text = event.isBase64Encoded ? Buffer.from(event.body, "base64").toString("utf8") : event.body;
-  if (Buffer.byteLength(text, "utf8") > MAX_BODY_BYTES) throw new ApiError(413, "quota_exceeded", "Request body is too large");
+  if (Buffer.byteLength(text, "utf8") > max) throw new ApiError(413, "quota_exceeded", "Request body is too large");
   return text;
 }
 
 /** The body as a JSON object with no fields but `allowed`. */
-export function jsonBody(event: Pick<APIGatewayProxyEventV2, "body" | "isBase64Encoded">, allowed: readonly string[]): Record<string, unknown> {
-  const text = bodyText(event);
+export function jsonBody(event: Pick<APIGatewayProxyEventV2, "body" | "isBase64Encoded">, allowed: readonly string[], max = MAX_BODY_BYTES): Record<string, unknown> {
+  const text = bodyText(event, max);
   let value: unknown;
   try {
     value = JSON.parse(text);

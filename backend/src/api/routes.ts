@@ -89,6 +89,28 @@ const commandRoutes: DataRoute[] = [
 /** Team data. Every one needs a Cognito access token (the JWT authorizer). */
 export const DATA_ROUTES: readonly DataRoute[] = [...collectionRoutes("products", "key"), ...collectionRoutes("sheets", "sheetId"), ...commandRoutes];
 
+export interface ReceiptRoute {
+  readonly method: "POST";
+  readonly path: string;
+  readonly action: "readReceipt";
+  /** The least role that may call it. */
+  readonly minRole: TeamRole;
+  /** API Gateway's throttle for this route across all callers. */
+  readonly throttle: { readonly rate: number; readonly burst: number };
+}
+
+/**
+ * Receipt reading (ADR 0008): the app sends a receipt photo and gets back the
+ * lines the model read, for the review screen; nothing is saved. Contributors
+ * and owners, within the team's monthly limit. Needs a Cognito access token
+ * (the JWT authorizer). Served by the `receipts` function, the only one that
+ * may call Bedrock.
+ */
+export const RECEIPT_ROUTES: readonly ReceiptRoute[] = [
+  // Each is a model call of up to 25 seconds; the team's monthly limit is the real cap
+  { method: "POST", path: "/teams/{teamId}/receipts/read", action: "readReceipt", minRole: "contributor", throttle: { rate: 5, burst: 10 } },
+];
+
 export interface AuthRoute {
   readonly method: "POST";
   readonly path: string;
@@ -332,6 +354,10 @@ export const API_ENV = {
   opsReopenFunction: "OPS_REOPEN_FUNCTION",
   /** The role the operator reopen function assumes, tagged with the team it reopens. */
   opsReopenRoleArn: "OPS_REOPEN_ROLE_ARN",
+  /** The role the receipts function assumes, tagged with the team (ADR 0008). */
+  receiptRoleArn: "RECEIPT_ROLE_ARN",
+  /** The Bedrock model (a US cross-region inference profile) receipts are read with: RECEIPT_MODEL_ID in infra/lib/config.ts. */
+  receiptModelId: "RECEIPT_MODEL_ID",
 } as const;
 
 /** The refresh-token cookie, scoped to the auth endpoints. */
