@@ -31,11 +31,7 @@
                   "Fn::Join": [
                     "",
                     [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition"
-                      },
-                      ":iam::",
+                      "arn:aws:iam::",
                       {
                         "Ref": "AWS::AccountId"
                       },

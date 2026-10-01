@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { App, type Stack } from "aws-cdk-lib";
+import { type Stack } from "aws-cdk-lib";
+import { testApp } from "./cdk-app.js";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
@@ -20,7 +21,7 @@ const names = hostNames(config);
 const cspHosts = { ...names, rumRegion: GLOBAL_SERVICES_REGION };
 
 function build(overrides: Partial<DeploymentConfig> = {}) {
-  const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [] } });
+  const app = testApp();
   const stacks = addSupplyCheckout(app, { ...config, ...overrides });
   const data = (region: string) => {
     const r = stacks.regions[region];
@@ -177,20 +178,20 @@ describe("deletion records bucket (data stack, supply-checkout-0ic7)", () => {
         {
           Sid: "ReadRecordVersions",
           Effect: "Allow",
-          Action: ["s3:GetObjectVersionForReplication", "s3:GetObjectVersionAcl", "s3:GetObjectRetention", "s3:GetObjectLegalHold"],
+          Action: ["s3:GetObjectLegalHold", "s3:GetObjectRetention", "s3:GetObjectVersionAcl", "s3:GetObjectVersionForReplication"],
           Resource: objects(sourceArn),
         },
         {
           Sid: "WriteReplicasToTheBackupAccount",
           Effect: "Allow",
-          Action: ["s3:ReplicateObject", "s3:ObjectOwnerOverrideToBucketOwner"],
+          Action: ["s3:ObjectOwnerOverrideToBucketOwner", "s3:ReplicateObject"],
           Resource: objects(replicaArn(template)),
           Condition: inOrg,
         },
         {
           Sid: "CheckTheReplicaBucket",
           Effect: "Allow",
-          Action: ["s3:GetBucketVersioning", "s3:GetBucketObjectLockConfiguration"],
+          Action: ["s3:GetBucketObjectLockConfiguration", "s3:GetBucketVersioning"],
           Resource: replicaArn(template),
           Condition: inOrg,
         },
@@ -200,7 +201,7 @@ describe("deletion records bucket (data stack, supply-checkout-0ic7)", () => {
     });
 
     it("is left out, with no backup parameters read, with backupCopy=false", () => {
-      const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [], backupCopy: "false" } });
+      const app = testApp({ backupCopy: "false" });
       const stacks = addSupplyCheckout(app, config);
       const template = Template.fromStack(stacks.regions[EAST]?.data as Stack);
       expect(deletionsBucket(template)[1].Properties.ReplicationConfiguration).toBeUndefined();
@@ -481,7 +482,7 @@ describe("CloudWatch RUM (web stack)", () => {
               Effect: "Allow",
               Action: "rum:PutRumEvents",
               Resource: {
-                "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:rum:${GLOBAL_SERVICES_REGION}:`, { Ref: "AWS::AccountId" }, `:appmonitor/${rumAppMonitorName("prod")}`]],
+                "Fn::Join": ["", [`arn:aws:rum:${GLOBAL_SERVICES_REGION}:`, { Ref: "AWS::AccountId" }, `:appmonitor/${rumAppMonitorName("prod")}`]],
               },
             },
           ],

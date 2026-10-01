@@ -1,4 +1,4 @@
-import { App } from "aws-cdk-lib";
+import { testApp } from "./cdk-app.js";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { AwsSolutionsChecks } from "cdk-nag";
 import { describe, expect, it } from "vitest";
@@ -19,7 +19,7 @@ const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.
 const REPO = "example-owner/example-repo";
 
 function build(overrides: Partial<DeploymentConfig> = {}, repository = REPO) {
-  const app = new App({ context: { "aws:cdk:version-reporting": false } });
+  const app = testApp();
   const stack = addGithubDeploy(app, { ...config, ...overrides }, repository);
   return { app, stack, template: Template.fromStack(stack) };
 }
@@ -111,7 +111,7 @@ describe("GitHub Actions deploy role (supply-checkout-5ik)", () => {
 
   it("uses a bootstrap qualifier from context, and refuses one that isn't CDK's 1-10 letters, digits, _ or -", () => {
     const withQualifier = (qualifier: string) => {
-      const app = new App({ context: { "aws:cdk:version-reporting": false, "@aws-cdk/core:bootstrapQualifier": qualifier } });
+      const app = testApp({ "@aws-cdk/core:bootstrapQualifier": qualifier });
       return Template.fromStack(addGithubDeploy(app, config, REPO));
     };
     expect(JSON.stringify(policyStatements(withQualifier("custom_q-1")))).toContain(":role/cdk-custom_q-1-deploy-role-");
@@ -144,7 +144,10 @@ describe("GitHub Actions deploy role (supply-checkout-5ik)", () => {
     const { template } = build({ regions: [WEST], primaryRegion: WEST });
     const [statement] = policyStatements(template);
     const regions = [WEST, GLOBAL_SERVICES_REGION];
-    expect(statement?.Resource).toEqual(regions.flatMap((region) => ["deploy", "file-publishing", "image-publishing", "lookup"].map((kind) => bootstrapRole(kind, region))));
+    const roles = regions.flatMap((region) => ["deploy", "file-publishing", "image-publishing", "lookup"].map((kind) => bootstrapRole(kind, region)));
+    // In any order: cdk.json's @aws-cdk/aws-iam:minimizePolicies sorts them
+    expect(statement?.Resource).toHaveLength(roles.length);
+    expect(statement?.Resource).toEqual(expect.arrayContaining(roles));
     const both = policyStatements(build({ regions: [EAST, WEST], primaryRegion: EAST }).template)[0];
     expect(both?.Resource).toHaveLength(8);
   });

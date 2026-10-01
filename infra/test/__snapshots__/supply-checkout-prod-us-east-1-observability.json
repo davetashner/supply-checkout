@@ -31,11 +31,7 @@
                   "Fn::Join": [
                     "",
                     [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition"
-                      },
-                      ":iam::",
+                      "arn:aws:iam::",
                       {
                         "Ref": "AWS::AccountId"
                       },
@@ -60,25 +56,10 @@
               },
               "Effect": "Allow",
               "Principal": {
-                "Service": "cloudwatch.amazonaws.com"
-              },
-              "Resource": "*"
-            },
-            {
-              "Action": [
-                "kms:Decrypt",
-                "kms:GenerateDataKey*"
-              ],
-              "Condition": {
-                "StringEquals": {
-                  "aws:SourceAccount": {
-                    "Ref": "AWS::AccountId"
-                  }
-                }
-              },
-              "Effect": "Allow",
-              "Principal": {
-                "Service": "events.amazonaws.com"
+                "Service": [
+                  "cloudwatch.amazonaws.com",
+                  "events.amazonaws.com"
+                ]
               },
               "Resource": "*"
             }
@@ -3615,11 +3596,7 @@
                 "Fn::Join": [
                   "",
                   [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition"
-                    },
-                    ":dynamodb:us-east-1:",
+                    "arn:aws:dynamodb:us-east-1:",
                     {
                       "Ref": "AWS::AccountId"
                     },
@@ -3742,8 +3719,8 @@
           "Statement": [
             {
               "Action": [
-                "xray:PutTraceSegments",
-                "xray:PutTelemetryRecords"
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
               ],
               "Effect": "Allow",
               "Resource": "*"
@@ -4001,8 +3978,8 @@
           "Statement": [
             {
               "Action": [
-                "xray:PutTraceSegments",
-                "xray:PutTelemetryRecords"
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
               ],
               "Effect": "Allow",
               "Resource": "*"
@@ -4202,11 +4179,7 @@
                 "Fn::Join": [
                   "",
                   [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition"
-                    },
-                    ":dynamodb:us-east-1:",
+                    "arn:aws:dynamodb:us-east-1:",
                     {
                       "Ref": "AWS::AccountId"
                     },
@@ -4250,11 +4223,7 @@
                 "Fn::Join": [
                   "",
                   [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition"
-                    },
-                    ":dynamodb:us-east-1:",
+                    "arn:aws:dynamodb:us-east-1:",
                     {
                       "Ref": "AWS::AccountId"
                     },
@@ -4266,8 +4235,8 @@
             },
             {
               "Action": [
-                "dynamodb:GetItem",
-                "dynamodb:DeleteItem"
+                "dynamodb:DeleteItem",
+                "dynamodb:GetItem"
               ],
               "Condition": {
                 "ForAllValues:StringLike": {
@@ -4301,11 +4270,7 @@
                 "Fn::Join": [
                   "",
                   [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition"
-                    },
-                    ":dynamodb:us-east-1:",
+                    "arn:aws:dynamodb:us-east-1:",
                     {
                       "Ref": "AWS::AccountId"
                     },
@@ -4341,11 +4306,7 @@
                 "Fn::Join": [
                   "",
                   [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition"
-                    },
-                    ":dynamodb:us-east-1:",
+                    "arn:aws:dynamodb:us-east-1:",
                     {
                       "Ref": "AWS::AccountId"
                     },
@@ -4529,8 +4490,8 @@
           "Statement": [
             {
               "Action": [
-                "xray:PutTraceSegments",
-                "xray:PutTelemetryRecords"
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
               ],
               "Effect": "Allow",
               "Resource": "*"
@@ -4788,11 +4749,7 @@
                 "Fn::Join": [
                   "",
                   [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition"
-                    },
-                    ":dynamodb:us-east-1:",
+                    "arn:aws:dynamodb:us-east-1:",
                     {
                       "Ref": "AWS::AccountId"
                     },
@@ -4836,11 +4793,7 @@
                 "Fn::Join": [
                   "",
                   [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition"
-                    },
-                    ":sqs:us-east-1:",
+                    "arn:aws:sqs:us-east-1:",
                     {
                       "Ref": "AWS::AccountId"
                     },
@@ -4956,8 +4909,8 @@
           "Statement": [
             {
               "Action": [
-                "xray:PutTraceSegments",
-                "xray:PutTelemetryRecords"
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
               ],
               "Effect": "Allow",
               "Resource": "*"
@@ -5230,9 +5183,9 @@
             },
             {
               "Action": [
-                "sqs:SendMessage",
                 "sqs:GetQueueAttributes",
-                "sqs:GetQueueUrl"
+                "sqs:GetQueueUrl",
+                "sqs:SendMessage"
               ],
               "Effect": "Allow",
               "Resource": {
@@ -5327,8 +5280,8 @@
           "Statement": [
             {
               "Action": [
-                "xray:PutTraceSegments",
-                "xray:PutTelemetryRecords"
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
               ],
               "Effect": "Allow",
               "Resource": "*"
@@ -5741,11 +5694,7 @@
                 "Fn::Join": [
                   "",
                   [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition"
-                    },
-                    ":dynamodb:us-east-1:",
+                    "arn:aws:dynamodb:us-east-1:",
                     {
                       "Ref": "AWS::AccountId"
                     },
@@ -5985,11 +5934,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":lambda:us-east-1:",
+                        "arn:aws:lambda:us-east-1:",
                         {
                           "Ref": "AWS::AccountId"
                         },
@@ -6015,11 +5960,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":lambda:us-east-1:",
+                        "arn:aws:lambda:us-east-1:",
                         {
                           "Ref": "AWS::AccountId"
                         },
@@ -6034,11 +5975,7 @@
                 "Fn::Join": [
                   "",
                   [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition"
-                    },
-                    ":cognito-idp:us-east-1:",
+                    "arn:aws:cognito-idp:us-east-1:",
                     {
                       "Ref": "AWS::AccountId"
                     },
@@ -6062,11 +5999,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":lambda:us-east-1:",
+                        "arn:aws:lambda:us-east-1:",
                         {
                           "Ref": "AWS::AccountId"
                         },
@@ -6081,11 +6014,7 @@
                 "Fn::Join": [
                   "",
                   [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition"
-                    },
-                    ":ssm:us-east-1:",
+                    "arn:aws:ssm:us-east-1:",
                     {
                       "Ref": "AWS::AccountId"
                     },
@@ -6189,8 +6118,8 @@
           "Statement": [
             {
               "Action": [
-                "xray:PutTraceSegments",
-                "xray:PutTelemetryRecords"
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
               ],
               "Effect": "Allow",
               "Resource": "*"
@@ -6636,8 +6565,8 @@
           "Statement": [
             {
               "Action": [
-                "xray:PutTraceSegments",
-                "xray:PutTelemetryRecords"
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
               ],
               "Effect": "Allow",
               "Resource": "*"
@@ -7705,11 +7634,7 @@
                       "Fn::Join": [
                         "",
                         [
-                          "arn:",
-                          {
-                            "Ref": "AWS::Partition"
-                          },
-                          ":dynamodb:us-east-1:",
+                          "arn:aws:dynamodb:us-east-1:",
                           {
                             "Ref": "AWS::AccountId"
                           },
@@ -7722,11 +7647,7 @@
                         "Fn::Join": [
                           "",
                           [
-                            "arn:",
-                            {
-                              "Ref": "AWS::Partition"
-                            },
-                            ":dynamodb:us-east-1:",
+                            "arn:aws:dynamodb:us-east-1:",
                             {
                               "Ref": "AWS::AccountId"
                             },
@@ -7762,11 +7683,7 @@
                       "Fn::Join": [
                         "",
                         [
-                          "arn:",
-                          {
-                            "Ref": "AWS::Partition"
-                          },
-                          ":dynamodb:us-east-1:",
+                          "arn:aws:dynamodb:us-east-1:",
                           {
                             "Ref": "AWS::AccountId"
                           },
@@ -7801,11 +7718,7 @@
                       "Fn::Join": [
                         "",
                         [
-                          "arn:",
-                          {
-                            "Ref": "AWS::Partition"
-                          },
-                          ":dynamodb:us-east-1:",
+                          "arn:aws:dynamodb:us-east-1:",
                           {
                             "Ref": "AWS::AccountId"
                           },

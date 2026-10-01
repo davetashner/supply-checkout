@@ -31,11 +31,7 @@
                   "Fn::Join": [
                     "",
                     [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition"
-                      },
-                      ":iam::",
+                      "arn:aws:iam::",
                       {
                         "Ref": "AWS::AccountId"
                       },
@@ -74,11 +70,7 @@
                   "Fn::Join": [
                     "",
                     [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition"
-                      },
-                      ":iam::",
+                      "arn:aws:iam::",
                       {
                         "Fn::Select": [
                           4,
@@ -127,11 +119,7 @@
                   "Fn::Join": [
                     "",
                     [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition"
-                      },
-                      ":iam::",
+                      "arn:aws:iam::",
                       {
                         "Fn::Select": [
                           4,
@@ -218,11 +206,7 @@
                   "Fn::Join": [
                     "",
                     [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition"
-                      },
-                      ":iam::",
+                      "arn:aws:iam::",
                       {
                         "Fn::Select": [
                           4,
@@ -410,13 +394,13 @@
               "Effect": "Allow",
               "Resource": [
                 {
-                  "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
-                },
-                {
                   "Fn::GetAtt": [
                     "VaultKey6B75F33E",
                     "Arn"
                   ]
+                },
+                {
+                  "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
                 }
               ],
               "Sid": "GrantKeysToAwsBackup"
@@ -702,13 +686,13 @@
               "Effect": "Allow",
               "Resource": [
                 {
-                  "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
-                },
-                {
                   "Fn::GetAtt": [
                     "VaultKey6B75F33E",
                     "Arn"
                   ]
+                },
+                {
+                  "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
                 }
               ],
               "Sid": "GrantKeysToDynamoDb"

@@ -145,66 +145,6 @@
                       {
                         "Ref": "AWS::AccountId"
                       },
-                      ":role/cdk-hnb659fds-file-publishing-role-",
-                      {
-                        "Ref": "AWS::AccountId"
-                      },
-                      "-us-east-1"
-                    ]
-                  ]
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition"
-                      },
-                      ":iam::",
-                      {
-                        "Ref": "AWS::AccountId"
-                      },
-                      ":role/cdk-hnb659fds-image-publishing-role-",
-                      {
-                        "Ref": "AWS::AccountId"
-                      },
-                      "-us-east-1"
-                    ]
-                  ]
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition"
-                      },
-                      ":iam::",
-                      {
-                        "Ref": "AWS::AccountId"
-                      },
-                      ":role/cdk-hnb659fds-lookup-role-",
-                      {
-                        "Ref": "AWS::AccountId"
-                      },
-                      "-us-east-1"
-                    ]
-                  ]
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition"
-                      },
-                      ":iam::",
-                      {
-                        "Ref": "AWS::AccountId"
-                      },
                       ":role/cdk-hnb659fds-deploy-role-",
                       {
                         "Ref": "AWS::AccountId"
@@ -229,6 +169,26 @@
                       {
                         "Ref": "AWS::AccountId"
                       },
+                      "-us-east-1"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":role/cdk-hnb659fds-file-publishing-role-",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
                       "-us-west-2"
                     ]
                   ]
@@ -249,7 +209,47 @@
                       {
                         "Ref": "AWS::AccountId"
                       },
+                      "-us-east-1"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":role/cdk-hnb659fds-image-publishing-role-",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
                       "-us-west-2"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":role/cdk-hnb659fds-lookup-role-",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      "-us-east-1"
                     ]
                   ]
                 },

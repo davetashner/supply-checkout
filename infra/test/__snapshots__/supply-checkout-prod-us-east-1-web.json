@@ -25,11 +25,7 @@
             "Fn::Join": [
               "",
               [
-                "arn:",
-                {
-                  "Ref": "AWS::Partition"
-                },
-                ":s3:::",
+                "arn:aws:s3:::",
                 {
                   "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
                 },
@@ -189,11 +185,7 @@
                     "Fn::Join": [
                       "",
                       [
-                        "arn:",
-                        {
-                          "Ref": "AWS::Partition"
-                        },
-                        ":rum:us-east-1:",
+                        "arn:aws:rum:us-east-1:",
                         {
                           "Ref": "AWS::AccountId"
                         },

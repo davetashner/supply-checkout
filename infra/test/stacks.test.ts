@@ -1,7 +1,8 @@
 import { readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { App, type Stack, Token, Validations } from "aws-cdk-lib";
+import { type Stack, Token, Validations } from "aws-cdk-lib";
+import { testApp } from "./cdk-app.js";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { Bucket } from "aws-cdk-lib/aws-s3";
 import { AwsSolutionsChecks } from "cdk-nag";
@@ -18,7 +19,7 @@ const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.
 
 function build(overrides: Partial<DeploymentConfig> = {}) {
   // Version reporting off keeps snapshots stable across CDK upgrades
-  const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [] } });
+  const app = testApp();
   const stacks = addSupplyCheckout(app, { ...config, ...overrides });
   return { app, stacks };
 }
@@ -148,10 +149,10 @@ describe("stack layout", () => {
 describe("template snapshots", () => {
   const { stacks } = build();
   // The backup account's vault stack is a separate app (bin/backup-account.ts)
-  const backupAccountApp = new App({ context: { "aws:cdk:version-reporting": false } });
+  const backupAccountApp = testApp();
   const backupAccount = addBackupAccount(backupAccountApp, config);
   // So is GitHub Actions' deploy role (bin/github-deploy.ts)
-  const githubDeployApp = new App({ context: { "aws:cdk:version-reporting": false } });
+  const githubDeployApp = testApp();
   const githubDeploy = addGithubDeploy(githubDeployApp, config, DEFAULT_GITHUB_REPOSITORY);
   const snapshotted: Stack[] = [...stacks.all, backupAccount, githubDeploy];
   const snapshots = join(dirname(fileURLToPath(import.meta.url)), "__snapshots__");

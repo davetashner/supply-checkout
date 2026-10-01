@@ -1,4 +1,4 @@
-import { App } from "aws-cdk-lib";
+import { testApp } from "./cdk-app.js";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { LIVE_AUDIENCE_ATTRIBUTES } from "../../backend/src/data/schema.js";
@@ -13,7 +13,7 @@ const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.
 
 function realtime(region: string = EAST, overrides: Partial<DeploymentConfig> = {}) {
   // Bundling is skipped in tests (it needs backend/node_modules); `npm run synth` bundles for real
-  const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [] } });
+  const app = testApp();
   const stack = addSupplyCheckout(app, { ...config, ...overrides }).regions[region]?.realtime;
   if (!stack) throw new Error(`No realtime stack in ${region}`);
   return Template.fromStack(stack);

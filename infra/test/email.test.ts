@@ -1,4 +1,5 @@
-import { App, Stack } from "aws-cdk-lib";
+import { Stack } from "aws-cdk-lib";
+import { testApp } from "./cdk-app.js";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { Code, Function as LambdaFunction, Runtime } from "aws-cdk-lib/aws-lambda";
 import { describe, expect, it } from "vitest";
@@ -16,7 +17,7 @@ const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.
 
 function build(overrides: Partial<DeploymentConfig> = {}) {
   // Bundling is skipped in tests (it needs backend/node_modules); `npm run synth` bundles for real
-  const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [] } });
+  const app = testApp();
   return { app, stacks: addSupplyCheckout(app, { ...config, ...overrides }) };
 }
 
@@ -75,7 +76,7 @@ describe("domain stack: configuration set and events topic", () => {
           Match.objectLike({
             Sid: "SesPublishesEvents",
             Principal: { Service: "ses.amazonaws.com" },
-            Action: ["kms:GenerateDataKey*", "kms:Decrypt"],
+            Action: ["kms:Decrypt", "kms:GenerateDataKey*"],
             Condition: { StringEquals: { "aws:SourceAccount": Match.anyValue(), "aws:SourceArn": Match.anyValue() } },
           }),
         ]),
@@ -168,7 +169,7 @@ describe("email stack", () => {
   });
 
   it("is only for the primary region", () => {
-    const app = new App();
+    const app = testApp();
     expect(() => new EmailStack(app, config, WEST)).toThrow("primary region only");
   });
 
@@ -235,7 +236,7 @@ describe("email stack", () => {
       const all = statements(email(), "SecurityNoticesRole");
       const byAction = (prefix: string) => all.filter((s) => JSON.stringify(s.Action).includes(prefix));
       expect(byAction("cognito-idp:")).toEqual([
-        expect.objectContaining({ Sid: "FindAppUsers", Action: ["cognito-idp:ListUsers", "cognito-idp:AdminGetUser"], Resource: expect.objectContaining({ Ref: expect.stringMatching(/userpoolarn/i) }) }),
+        expect.objectContaining({ Sid: "FindAppUsers", Action: ["cognito-idp:AdminGetUser", "cognito-idp:ListUsers"], Resource: expect.objectContaining({ Ref: expect.stringMatching(/userpoolarn/i) }) }),
       ]);
       expect(byAction("dynamodb:")).toEqual([
         expect.objectContaining({
@@ -249,7 +250,7 @@ describe("email stack", () => {
         }),
         expect.objectContaining({
           Sid: "WriteNoticeRecords",
-          Action: ["dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"],
+          Action: ["dynamodb:ConditionCheckItem", "dynamodb:UpdateItem"],
           Condition: {
             "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
             "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash"] },
@@ -276,7 +277,7 @@ describe("email stack", () => {
 
 describe("grantSendEmail", () => {
   function sender() {
-    const stack = new Stack(new App(), "Test", { env: { region: WEST } });
+    const stack = new Stack(testApp(), "Test", { env: { region: WEST } });
     const fn = new LambdaFunction(stack, "Sender", { runtime: Runtime.NODEJS_24_X, handler: "index.handler", code: Code.fromInline("export const handler = () => {}") });
     grantSendEmail(fn, config);
     return Template.fromStack(stack);

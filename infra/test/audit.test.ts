@@ -1,4 +1,4 @@
-import { App } from "aws-cdk-lib";
+import { testApp } from "./cdk-app.js";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
@@ -10,7 +10,7 @@ const [EAST, WEST] = APPROVED_REGIONS;
 const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.com", regions: [EAST, WEST], primaryRegion: EAST };
 
 function build(overrides: Partial<DeploymentConfig> = {}) {
-  const app = new App({ context: { "aws:cdk:version-reporting": false, "aws:cdk:bundling-stacks": [] } });
+  const app = testApp();
   return addSupplyCheckout(app, { ...config, ...overrides });
 }
 
@@ -172,7 +172,7 @@ describe("CloudTrail trail (supply-checkout-3sv.3)", () => {
     expect(defaults).toContain("/supply-checkout/staging/audit/trail-key-arn");
     // Only the primary region's observability stack has the operator rules
     expect(Object.keys(Template.fromStack(build().regions[WEST]?.observability as never).toJSON().Parameters ?? {}).filter((k) => k.includes("audittrailkeyarn"))).toEqual([]);
-    const app = new App();
+    const app = testApp();
     expect(() => new AuditStack(app, config, WEST)).toThrow(/primary region only/);
   });
 });

@@ -213,8 +213,8 @@
           "Statement": [
             {
               "Action": [
-                "xray:PutTraceSegments",
-                "xray:PutTelemetryRecords"
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
               ],
               "Effect": "Allow",
               "Resource": "*"
