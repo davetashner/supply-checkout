@@ -203,9 +203,15 @@ fieldset.kinds .check{color:var(--ink);font-weight:400;padding-block:4px}
 fieldset.finish{border:1px solid var(--line);border-radius:12px;margin:0;padding:12px 14px;min-width:0}
 fieldset.finish legend{font-weight:600;padding:0 4px}
 .row2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-.stepper{display:grid;grid-template-columns:56px 1fr 56px;gap:8px}
-.stepper button{border:1px solid var(--line);background:var(--sunk);border-radius:10px;font-size:24px;font-weight:600;cursor:pointer}
-.stepper input{text-align:center;font-family:var(--mono);font-size:24px;padding:10px}
+/* Before you finish's two steppers sit side by side while both fit (the 440px dialog on a wide
+   screen) and stack on a phone in portrait, where side by side squeezed each number to a sliver */
+.finish .row2{grid-template-columns:repeat(auto-fit,minmax(min(100%,170px),1fr))}
+/* The number always has room for 3 digits; where space is short the buttons give up width, down
+   to 44px (a finger's), and the number's spinners are hidden since the buttons do their job */
+.stepper{display:grid;grid-template-columns:minmax(44px,56px) 1fr minmax(44px,56px);gap:8px}
+.stepper button{border:1px solid var(--line);background:var(--sunk);border-radius:10px;font-size:24px;font-weight:600;cursor:pointer;min-height:44px}
+.stepper input{text-align:center;font-family:var(--mono);font-size:24px;padding:10px 4px;min-width:calc(3ch + 18px);-moz-appearance:textfield;appearance:textfield}
+.stepper input::-webkit-inner-spin-button,.stepper input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
 .summary{background:var(--sunk);border-radius:10px;padding:10px 14px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:14px}
 .summary b{font-family:var(--mono);font-weight:500}
 .modal-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}

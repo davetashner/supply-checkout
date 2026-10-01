@@ -3,7 +3,7 @@
 // returns, the line editor, the exports, Inventory's Supplies / Equipment filter and its Out view.
 // In both builds, against the claude.ai runtime's mock; the web build's checkout command is
 // against tests/fake-aws.js at the end.
-import { test, expect, openApp, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
+import { test, expect, openApp, enterBarcode, modal, modalViolations, lineRow, inventoryRow } from "./helpers.js";
 import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, openAws, connected } from "./fake-aws.js";
 
@@ -449,5 +449,54 @@ test.describe("J13.4 Finished Return asks about each piece of equipment still ou
     await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("0");
     await page.getByRole("button", { name: "Finished Return" }).click();
     await expect(page.locator("#toast")).toHaveText("Return finished");
+  });
+  // Owner's report from an iPhone in portrait: side by side, each number box shrank to a sliver
+  test("on a phone in portrait the two steppers stack, and each shows 3 digits with 44px buttons", async ({ page }) => {
+    const s2 = seed["sheets/s2"];
+    await open(page, { seed: { ...seed, "sheets/s2": { ...s2, items: { "LAD-1": { ...s2.items["LAD-1"], out: 250, lost: 0 } } } } });
+    await openSheet(page, "Delta Dental");
+    await page.getByRole("button", { name: "Finished Return" }).click();
+    const box = finishBox(page, 0);
+    await expect(box.locator("legend")).toHaveText("Step ladder · 250 still out");
+    await box.getByLabel("It's back").fill("120");
+    await box.getByLabel("Lost or broken", { exact: true }).fill("100");
+    await box.getByLabel("Lost or broken", { exact: true }).dispatchEvent("input");
+    await expect(box.locator("[data-left]")).toHaveText("Still at the job: 30");
+    await expect(box.locator("[data-charge]")).toBeVisible();
+    // Sizes of everything in the box, and whether anything scrolls sideways
+    const measure = () => box.evaluate((el) => {
+      const ctx = document.createElement("canvas").getContext("2d");
+      const inputs = [...el.querySelectorAll(".stepper input")].map((i) => {
+        const cs = getComputedStyle(i), r = i.getBoundingClientRect();
+        ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+        return { width: r.width, top: r.top, bottom: r.bottom, room: i.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), text: ctx.measureText(i.value).width };
+      });
+      const buttons = [...el.querySelectorAll(".stepper button")].map((b) => { const r = b.getBoundingClientRect(); return Math.min(r.width, r.height); });
+      const modalEl = document.getElementById("modal"), m = modalEl.getBoundingClientRect();
+      const inside = [...el.querySelectorAll("input, [data-left], label")].every((n) => { const r = n.getBoundingClientRect(); return r.left >= m.left - 0.5 && r.right <= m.right + 0.5; });
+      return { inputs, buttons, inside, modalScrolls: modalEl.scrollWidth > modalEl.clientWidth, pageScrolls: document.documentElement.scrollWidth > window.innerWidth };
+    });
+    for (const width of [320, 375, 390]) {
+      await page.setViewportSize({ width, height: 740 });
+      const m = await measure();
+      for (const i of m.inputs) {
+        expect(i.width, `number box at ${width}px`).toBeGreaterThanOrEqual(44);
+        expect(i.room, `room for "${i.text}" at ${width}px`).toBeGreaterThanOrEqual(i.text);
+      }
+      for (const b of m.buttons) expect(b, `button at ${width}px`).toBeGreaterThanOrEqual(44);
+      // Lost or broken is under It's back
+      expect(m.inputs[1].top).toBeGreaterThanOrEqual(m.inputs[0].bottom);
+      expect(m.inside, `fields inside the dialog at ${width}px`).toBe(true);
+      expect(m.modalScrolls, `dialog scrolls sideways at ${width}px`).toBe(false);
+      expect(m.pageScrolls, `page scrolls sideways at ${width}px`).toBe(false);
+    }
+    expect(await modalViolations(page)).toEqual([]);
+    // In landscape, the dialog is wide enough for them side by side, as before
+    await page.setViewportSize({ width: 844, height: 390 });
+    const wide = await measure();
+    expect(wide.inputs[1].top).toBeLessThan(wide.inputs[0].bottom);
+    for (const i of wide.inputs) expect(i.room).toBeGreaterThanOrEqual(i.text);
+    for (const b of wide.buttons) expect(b).toBeGreaterThanOrEqual(44);
+    expect(wide.modalScrolls).toBe(false);
   });
 });
