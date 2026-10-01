@@ -1,5 +1,5 @@
 // Lambda entry point for reading receipts (see receipts-handler.ts). Built
-// once per container: the Bedrock client, the per-team DynamoDB clients and
+// once per container: the Bedrock client, the per-team-and-user DynamoDB clients and
 // the logger.
 //
 // The client is the Anthropic SDK's Bedrock client on Bedrock's InvokeModel
@@ -12,7 +12,7 @@ import { createObservability, withObservability } from "../observability/index.j
 import { receiptModelClient } from "../receipts/client.js";
 import { createReceiptsHandler } from "./receipts-handler.js";
 import { API_ENV } from "./routes.js";
-import { teamScopedDbs } from "./team-db.js";
+import { receiptScopedDbs } from "./team-db.js";
 
 const roleArn = process.env[API_ENV.receiptRoleArn];
 const modelId = process.env[API_ENV.receiptModelId];
@@ -23,4 +23,4 @@ if (!modelId) throw new Error(`${API_ENV.receiptModelId} is not set`);
 const obs = createObservability({ service: "receipts" });
 // The region and credentials are the function's (AWS_REGION and its role); see receipts/client.ts
 const model = receiptModelClient();
-export const handler = withObservability(obs, createReceiptsHandler({ dbForTeam: teamScopedDbs({ roleArn }), obs, model, modelId }));
+export const handler = withObservability(obs, createReceiptsHandler({ dbFor: receiptScopedDbs({ roleArn }), obs, model, modelId }));

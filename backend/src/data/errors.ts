@@ -72,6 +72,21 @@ export class LimitReachedError extends Error {
   override readonly name: string = "LimitReachedError";
 }
 
+/**
+ * The caller has read as many receipts as the per-user rate limit allows in
+ * a window (RECEIPT_RATE_LIMITS). (429, reason `rate_limited`, with
+ * Retry-After: `retryAfterSeconds`, until the longest refused window ends.)
+ */
+export class RateLimitedError extends LimitReachedError {
+  override readonly name = "RateLimitedError";
+  readonly retryAfterSeconds: number;
+
+  constructor(message: string, retryAfterSeconds: number) {
+    super(message);
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
 /** The team has as many members as it may (memberCap), counting pending invites when inviting. (429, reason `team_full`) */
 export class TeamFullError extends LimitReachedError {
   override readonly name = "TeamFullError";

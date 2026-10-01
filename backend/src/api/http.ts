@@ -41,7 +41,9 @@ export type ErrorCode =
  * POST /me/sign-out-everywhere finishes it).
  * Reading a receipt (ADR 0008): `image_rejected` (the photo isn't a JPEG or
  * PNG, is too large, or the model service couldn't use it), `receipt_limit`
- * (the team has read all its receipts this month), `model_busy` (the model
+ * (the team has read all its receipts this month, or all its trial's),
+ * `rate_limited` (the caller has read too many receipts in a short time; the
+ * response has Retry-After), `model_busy` (the model
  * service is throttling), `model_timeout` (no answer in time) and
  * `invalid_output` (the model's reply couldn't be used).
  */
@@ -72,6 +74,7 @@ export type ErrorReason =
   | "signout_failed"
   | "image_rejected"
   | "receipt_limit"
+  | "rate_limited"
   | "model_busy"
   | "model_timeout"
   | "invalid_output";
@@ -82,12 +85,15 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: ErrorCode;
   readonly reason?: ErrorReason;
+  /** Response headers the error carries (Retry-After on a rate limit). */
+  readonly headers?: Readonly<Record<string, string>>;
 
-  constructor(status: number, code: ErrorCode, message: string, reason?: ErrorReason) {
+  constructor(status: number, code: ErrorCode, message: string, reason?: ErrorReason, headers?: Readonly<Record<string, string>>) {
     super(message);
     this.status = status;
     this.code = code;
     if (reason) this.reason = reason;
+    if (headers) this.headers = headers;
   }
 }
 
@@ -110,7 +116,7 @@ export function errorFor(error: unknown): ApiError {
 }
 
 export function errorResponse(error: ApiError, cookies?: string[]): APIGatewayProxyStructuredResultV2 {
-  return json(error.status, { error: { code: error.code, message: error.message, ...(error.reason ? { reason: error.reason } : {}) } }, {}, cookies);
+  return json(error.status, { error: { code: error.code, message: error.message, ...(error.reason ? { reason: error.reason } : {}) } }, error.headers ?? {}, cookies);
 }
 
 /**

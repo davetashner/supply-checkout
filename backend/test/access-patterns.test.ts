@@ -68,7 +68,12 @@ import {
   MEMBERS_PER_TRIAL_TEAM,
   NotFoundError,
   recordAudit,
-  recordReceiptRead,
+  takeReceipt,
+  takeReceiptRate,
+  refundReceipt,
+  getReceiptQuota,
+  RateLimitedError,
+  RECEIPT_RATE_LIMITS,
   removeMember,
   removeSheetLine,
   resendInvite,
@@ -970,14 +975,61 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
   describe("Receipt usage", () => {
     it("counts atomically per month and stops at the limit", async () => {
       const { contributor, viewer } = await team();
-      const counts = await Promise.all(Array.from({ length: 5 }, () => recordReceiptRead(db, contributor, "2026-09", 5)));
-      expect(counts.sort()).toEqual([1, 2, 3, 4, 5]);
-      await expect(recordReceiptRead(db, contributor, "2026-09", 5)).rejects.toThrow(LimitReachedError);
+      const month = { period: "month", limit: 5 } as const;
+      const sept = new Date("2026-09-15T12:00:00Z");
+      const oct = new Date("2026-10-01T00:00:00Z");
+      const counts = await Promise.all(Array.from({ length: 5 }, () => takeReceipt(db, contributor, month, sept)));
+      expect(counts.map((c) => c.used).sort()).toEqual([1, 2, 3, 4, 5]);
+      expect(counts.find((c) => c.used === 5)).toEqual({ period: "month", limit: 5, month: "2026-09", used: 5, remaining: 0 });
+      await expect(takeReceipt(db, contributor, month, sept)).rejects.toThrow(LimitReachedError);
       expect(await getReceiptUsage(db, viewer, "2026-09")).toBe(5);
       expect(await getReceiptUsage(db, viewer, "2026-10")).toBe(0);
-      expect(await recordReceiptRead(db, contributor, "2026-10", 5)).toBe(1);
-      await expect(recordReceiptRead(db, viewer, "2026-10", 5)).rejects.toThrow(ForbiddenError);
-      await expect(recordReceiptRead(db, contributor, "2026-10", -1)).rejects.toThrow(InvalidInputError);
+      expect((await takeReceipt(db, contributor, month, oct)).used).toBe(1);
+      await expect(takeReceipt(db, viewer, month, oct)).rejects.toThrow(ForbiddenError);
+      await expect(takeReceipt(db, contributor, { period: "month", limit: -1 }, oct)).rejects.toThrow(InvalidInputError);
+    });
+
+    it("counts a trial's reads once for the whole trial, and in each month too", async () => {
+      const { contributor, viewer } = await team();
+      const trial = { period: "trial", limit: 3 } as const;
+      expect((await takeReceipt(db, contributor, trial, new Date("2026-09-30T23:59:00Z"))).used).toBe(1);
+      const counts = await Promise.all(Array.from({ length: 3 }, () => takeReceipt(db, contributor, trial, new Date("2026-10-01T00:01:00Z")).then((c) => c.used, (e: Error) => e.name)));
+      expect(counts.sort()).toEqual([2, 3, "LimitReachedError"]);
+      expect(await getReceiptUsage(db, viewer, "2026-09")).toBe(1);
+      expect(await getReceiptUsage(db, viewer, "2026-10")).toBe(2);
+      // A refund gives back the trial's read and the month's, never below zero
+      await refundReceipt(db, contributor, { ...trial, month: "2026-10", used: 3, remaining: 0 });
+      expect(await getReceiptUsage(db, viewer, "2026-10")).toBe(1);
+      expect((await takeReceipt(db, contributor, trial, new Date("2026-10-02T00:00:00Z"))).used).toBe(3);
+      await refundReceipt(db, contributor, { period: "month", limit: 200, month: "2026-11", used: 1, remaining: 199 });
+      expect(await getReceiptUsage(db, viewer, "2026-11")).toBe(0);
+    });
+
+    it("reads a team's allowance from its status and comp", async () => {
+      const { owner, viewer } = await team();
+      const now = new Date("2026-09-15T12:00:00Z");
+      expect(await getReceiptQuota(db, viewer, now)).toEqual({ period: "trial", limit: 25, month: "2026-09", used: 0, remaining: 25 });
+      await takeReceipt(db, owner, { period: "trial", limit: 25 }, now);
+      expect(await getReceiptQuota(db, viewer, now)).toMatchObject({ period: "trial", used: 1, remaining: 24 });
+      // Paying: this month's reads, the trial's included
+      await rawMeta(db, owner.teamId, "SET #status = :s", { "#status": "status" }, { ":s": "active" });
+      expect(await getReceiptQuota(db, viewer, now)).toEqual({ period: "month", limit: 200, month: "2026-09", used: 1, remaining: 199 });
+    });
+
+    it("limits each user's reads per minute, hour and day, from all their teams, atomically", async () => {
+      const { contributor } = await team();
+      const [minute] = RECEIPT_RATE_LIMITS;
+      const at = new Date("2026-09-15T12:00:30Z");
+      const results = await Promise.all(Array.from({ length: minute.max + 2 }, () => takeReceiptRate(db, contributor, at).then(() => "ok", (e: unknown) => e)));
+      expect(results.filter((r) => r === "ok")).toHaveLength(minute.max);
+      const refused = results.filter((r) => r !== "ok") as RateLimitedError[];
+      expect(refused).toHaveLength(2);
+      expect(refused[0]).toBeInstanceOf(RateLimitedError);
+      expect(refused[0]?.retryAfterSeconds).toBe(30);
+      // The next minute is a new window
+      await takeReceiptRate(db, contributor, new Date("2026-09-15T12:01:00Z"));
+      const item = await rawItem(db, `RECEIPTRATE#${contributor.userId}`, "RECEIPTS#MINUTE#2026-09-15T12:00");
+      expect(item).toEqual({ PK: `RECEIPTRATE#${contributor.userId}`, SK: "RECEIPTS#MINUTE#2026-09-15T12:00", count: minute.max, expiresAt: Date.parse("2026-09-15T12:01:00Z") / 1000 + 86_400 });
     });
   });
 

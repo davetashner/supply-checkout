@@ -15,7 +15,7 @@
 
 import { AssumeRoleCommand, type AssumeRoleCommandOutput, STSClient } from "@aws-sdk/client-sts";
 import { closeDb, createDb, type Db, InvalidInputError } from "../data/index.js";
-import { TEAM_SESSION_TAG } from "./routes.js";
+import { RECEIPT_SESSION_TAGS, TEAM_SESSION_TAG } from "./routes.js";
 
 export type DbForTeam = (teamId: string) => Db;
 
@@ -123,6 +123,39 @@ export function teamScopedDbs(options: TeamDbOptions): DbForTeam {
         tableName: options.tableName,
         env,
         credentials: roleSession(sts, now, { roleArn: options.roleArn, sessionName: `team-${teamId}`, tags: { [TEAM_SESSION_TAG]: teamId } }),
+      }),
+    );
+  };
+}
+
+/** A Db for one team, acting for one user: the receipts function's handles (receiptScopedDbs). */
+export type DbForTeamUser = (teamId: string, userId: string) => Db;
+
+/**
+ * Like teamScopedDbs, for the receipts function (ADR 0008, supply-checkout-wxx):
+ * its role session is tagged with the team and with the caller, so it reaches
+ * the team's partition and the caller's own per-user receipt rate counters
+ * (`RECEIPTRATE#<userId>`), and no one else's. `userId` must be the verified
+ * token's `sub`. One session per team and user, kept like the team ones.
+ */
+export function receiptScopedDbs(options: TeamDbOptions): DbForTeamUser {
+  const env = options.env ?? process.env;
+  const sts = options.sts ?? new STSClient({ region: env.AWS_REGION });
+  const now = options.now ?? Date.now;
+  const cached = dbCache(options.maxTeams ?? 50);
+
+  return (teamId: string, userId: string) => {
+    if (typeof teamId !== "string" || !TEAM_ID.test(teamId)) throw new InvalidInputError("Invalid team ID");
+    if (typeof userId !== "string" || !TEAM_ID.test(userId)) throw new InvalidInputError("Invalid user ID");
+    return cached(`${teamId}/${userId}`, () =>
+      createDb({
+        tableName: options.tableName,
+        env,
+        credentials: roleSession(sts, now, {
+          roleArn: options.roleArn,
+          sessionName: `receipts-${teamId}`,
+          tags: { [RECEIPT_SESSION_TAGS.teamId]: teamId, [RECEIPT_SESSION_TAGS.userId]: userId },
+        }),
       }),
     );
   };

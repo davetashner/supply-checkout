@@ -61,6 +61,13 @@ export interface JourneyAlarmsProps {
 export const INVITE_SURGE_PER_HOUR = 300;
 
 /**
+ * Receipt reads in an hour, across every team, that "Receipt volume high"
+ * alarms above (supply-checkout-wxx). Provisional: about $3 an hour of model
+ * calls, far above the pilot's use. Raise it with real traffic.
+ */
+export const RECEIPT_READS_ALARM_PER_HOUR = 300;
+
+/**
  * Closed teams set aside at once that "Many closed-team subscriptions set
  * aside" treats as an incident (P1): more than a one-off, most likely a Stripe
  * key or mode mismatch setting every closed team aside (supply-checkout-8jc.37).
@@ -399,6 +406,24 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
         `Receipt failure rate % (${region})`,
       ),
       threshold: 10,
+    },
+    {
+      id: "receipt-volume-high",
+      title: "Receipt volume high",
+      journeys: "J5",
+      severity: "P2",
+      rule: `ReceiptReads above ${RECEIPT_READS_ALARM_PER_HOUR} in an hour, across every team: far more than crews scanning receipts, so a client retrying in a loop, many users or trial teams used to reach the model, or real growth. Per-user rate limits and per-team allowances bound each caller; this is the account-wide watch on model spend.`,
+      metric: business(BusinessMetric.ReceiptReads, region, Duration.hours(1)),
+      threshold: RECEIPT_READS_ALARM_PER_HOUR,
+    },
+    {
+      id: "receipt-teams-near-limit",
+      title: "Receipt teams near their limit",
+      journeys: "J5",
+      severity: "P2",
+      rule: "Any ReceiptTeamsNearLimit in an hour: a team's read reached 80% of its allowance (its month's, or its trial's). Once per team per allowance; many at once from new trial teams suggests a farm of sign-ups.",
+      metric: business(BusinessMetric.ReceiptTeamsNearLimit, region, Duration.hours(1)),
+      threshold: 0,
     },
     // J7. Subscribe, add seats and see invoices
     {

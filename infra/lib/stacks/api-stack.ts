@@ -37,6 +37,7 @@ import {
   OPS_SESSION_TAG,
   RECEIPT_ROUTES,
   routeKey,
+  RECEIPT_SESSION_TAGS,
   TEAM_SESSION_TAG,
   WEBHOOK_ROUTES,
 } from "../../../backend/src/api/routes.js";
@@ -59,6 +60,8 @@ import {
   OPS_OWNERS_PREFIX,
   OPS_TEAMS_PARTITION,
   OWNER_OPERATOR_AUDIT_ATTRIBUTES,
+  RECEIPT_RATE_ATTRIBUTES,
+  RECEIPT_RATE_PREFIX,
   RECEIPT_USAGE_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
   STRIPE_LINK_ATTRIBUTES,
@@ -72,7 +75,7 @@ import {
 } from "../../../backend/src/data/schema.js";
 import { BILLING_ENV, BILLING_MAX_RECEIVES, billingResourceNames, OPS_STRIPE_ENV, SEAT_SYNC_MAX_CONCURRENCY, STRIPE_ENV, stripeOpsKeySecretName, stripeSecretName, stripeWebhookSecretName } from "../../../backend/src/billing/names.js";
 import { BILLING_WORKER_TAGS } from "../../../backend/src/billing/worker-db.js";
-import { type DeploymentConfig, foundationModelOf, RECEIPT_MODEL_ID, RECEIPT_MODEL_REGIONS, stripeModeOf, stripeOpsKeySecretArn, stripeSecretArn, stripeWebhookSecretArn } from "../config.js";
+import { type DeploymentConfig, foundationModelOf, RECEIPT_MODEL_ID, RECEIPT_MODEL_REGIONS, receiptsReservedConcurrencyFromContext, stripeModeOf, stripeOpsKeySecretArn, stripeSecretArn, stripeWebhookSecretArn } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import { grantPutDeletionRecords } from "../deletions.js";
 import { grantSendEmail } from "../email.js";
@@ -146,7 +149,8 @@ export const bundling: BundlingOptions = {
  *   memory for CPU: its work is JSON and TLS, and more memory means less
  *   latency ("Data API" in docs/infrastructure.md says how to measure p95).
  * - Access logs as JSON, and stage throttling as a ceiling against abuse
- *   (per-user limits are supply-checkout-wxx).
+ *   (receipt reads also have per-user and per-team limits in the receipts
+ *   function, supply-checkout-wxx).
  * - The execute-api endpoint is off: the only way in is the custom domain.
  *   Its DNS records use latency routing from the start, so the second region
  *   (phase 2) adds records instead of replacing them.
@@ -1063,17 +1067,24 @@ export class ApiStack extends SupplyCheckoutStack {
    * The receipts function and the receipt-access role it assumes (ADR 0008).
    *
    * - Like the data function, its own role can't reach the table. Per request
-   *   it assumes the receipt-access role tagged with the path's team, which may
-   *   read only that team's partition (the membership check and the inventory
-   *   it matches lines against) and update only the month's receipt counter
-   *   there, and only its count attributes (RECEIPT_USAGE_ATTRIBUTES). No
-   *   puts, no deletes: reading a receipt saves nothing.
+   *   it assumes the receipt-access role tagged with the path's team and the
+   *   caller (`teamId`, and `userId`: always the token's `sub`), which may
+   *   read only that team's partition (the membership check, the team's
+   *   allowance and the inventory it matches lines against), update only the
+   *   receipt counters' attributes there (RECEIPT_USAGE_ATTRIBUTES), and
+   *   update only the rate counters' attributes in the caller's own
+   *   `RECEIPTRATE#<userId>` partition (RECEIPT_RATE_ATTRIBUTES), returning
+   *   nothing. No puts, no deletes: reading a receipt saves nothing.
    * - Bedrock: InvokeModel on the receipt model's US inference profile in this
    *   region, and on its foundation model in each region the profile routes
    *   to (RECEIPT_MODEL_REGIONS), only when the call came through that profile
    *   (bedrock:InferenceProfileArn). No other model, no streaming, no `*`.
    * - 29 seconds, just under API Gateway's 30; the model call itself has a
    *   25-second deadline (backend/src/api/receipts-handler.ts).
+   * - Reserved concurrency only when the `receiptsReservedConcurrency`
+   *   context value is set (off by default): it caps how many reads run at
+   *   once, but takes that many from the account's unreserved pool, which
+   *   must keep 100, so it needs a concurrency quota the account may not have.
    */
   private addReceipts(table: string, tableArn: string, tableKeyStatement: () => PolicyStatement): { fn: NodejsFunction; role: Role } {
     const fn = this.handler("ReceiptsFunction", "receipts", {
@@ -1081,17 +1092,21 @@ export class ApiStack extends SupplyCheckoutStack {
       description: "Reads receipt photos with Claude on Bedrock for the review screen (ADR 0008); saves nothing",
       timeout: Duration.seconds(29),
       environment: { [API_ENV.tableName]: table, [API_ENV.receiptModelId]: RECEIPT_MODEL_ID },
+      reservedConcurrentExecutions: receiptsReservedConcurrencyFromContext(this.node),
     });
     const fnRole = fn.role;
     if (!fnRole) throw new Error("The receipts function has no role");
-    const teamTag = `\${aws:PrincipalTag/${TEAM_SESSION_TAG}}`;
+    const teamTag = `\${aws:PrincipalTag/${RECEIPT_SESSION_TAGS.teamId}}`;
+    const userTag = `\${aws:PrincipalTag/${RECEIPT_SESSION_TAGS.userId}}`;
+    const sessionTags = Object.values(RECEIPT_SESSION_TAGS);
     const role = new Role(this, "ReceiptAccessRole", {
-      description: "Assumed by the receipts function per request, tagged with the team: reads that team's items and counts its receipts",
+      description: "Assumed by the receipts function per request, tagged with the team and the caller: reads that team's items, counts its receipts and the caller's rate",
       maxSessionDuration: Duration.hours(1),
       assumedBy: new ArnPrincipal(fnRole.roleArn)
         .withConditions({
-          StringLike: { [`aws:RequestTag/${TEAM_SESSION_TAG}`]: "?*" },
-          "ForAllValues:StringEquals": { "aws:TagKeys": [TEAM_SESSION_TAG] },
+          // Every session names a team and a user, and nothing else
+          StringLike: Object.fromEntries(sessionTags.map((key) => [`aws:RequestTag/${key}`, "?*"])),
+          "ForAllValues:StringEquals": { "aws:TagKeys": sessionTags },
         })
         .withSessionTags(),
       inlinePolicies: {
@@ -1113,6 +1128,19 @@ export class ApiStack extends SupplyCheckoutStack {
               conditions: {
                 "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`TEAM#${teamTag}`], "dynamodb:Attributes": [...RECEIPT_USAGE_ATTRIBUTES] },
                 StringEqualsIfExists: { "dynamodb:ReturnValues": ["NONE", "UPDATED_NEW"] },
+              },
+            }),
+            // The caller's per-user rate counters (supply-checkout-wxx): only UpdateItem
+            // (alone or in a transaction), only the counters' attributes, nothing
+            // returned, and only in the partition of the session's user
+            new PolicyStatement({
+              sid: "CallerReceiptRateOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:UpdateItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`${RECEIPT_RATE_PREFIX}${userTag}`], "dynamodb:Attributes": [...RECEIPT_RATE_ATTRIBUTES] },
+                StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
               },
             }),
             tableKeyStatement(),
@@ -1139,7 +1167,12 @@ export class ApiStack extends SupplyCheckoutStack {
   }
 
   /** A function from backend/src/<dir>/<name>.ts. */
-  private handler(id: string, name: string, props: { memorySize: number; description: string; environment: Record<string, string>; timeout?: Duration }, dir = "api"): NodejsFunction {
+  private handler(
+    id: string,
+    name: string,
+    props: { memorySize: number; description: string; environment: Record<string, string>; timeout?: Duration; reservedConcurrentExecutions?: number },
+    dir = "api",
+  ): NodejsFunction {
     // Its own log group and a role that can write only to it (instead of
     // AWSLambdaBasicExecutionRole, which allows every log group)
     const logGroup = new LogGroup(this, `${id}Logs`, { retention: LOG_RETENTION });
@@ -1158,6 +1191,7 @@ export class ApiStack extends SupplyCheckoutStack {
       architecture: Architecture.ARM_64,
       memorySize: props.memorySize,
       timeout: props.timeout ?? Duration.seconds(10),
+      ...(props.reservedConcurrentExecutions === undefined ? {} : { reservedConcurrentExecutions: props.reservedConcurrentExecutions }),
       description: props.description,
       environment: { NODE_OPTIONS: "--enable-source-maps", ...props.environment },
       bundling,

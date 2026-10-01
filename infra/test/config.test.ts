@@ -9,6 +9,8 @@ import {
   RECEIPT_BENCHMARK_MODEL_ID,
   RECEIPT_MODEL_ID,
   configFromContext,
+  MAX_RECEIPTS_RESERVED_CONCURRENCY,
+  receiptsReservedConcurrencyFromContext,
   stripeModeOf,
   stripeOpsKeySecretArn,
   stripeSecretArn,
@@ -34,6 +36,19 @@ describe("receipt reading models", () => {
     expect(RECEIPT_MODEL_ID).toBe("us.anthropic.claude-haiku-4-5-20251001-v1:0");
     expect(RECEIPT_BENCHMARK_MODEL_ID).toBe("us.anthropic.claude-sonnet-4-6");
     for (const id of [RECEIPT_MODEL_ID, RECEIPT_BENCHMARK_MODEL_ID]) expect(id).toMatch(/^us\.anthropic\./);
+  });
+});
+
+describe("receiptsReservedConcurrencyFromContext", () => {
+  it("is off unless set, and a whole number from 1 to the maximum", () => {
+    expect(receiptsReservedConcurrencyFromContext(context({}))).toBeUndefined();
+    expect(receiptsReservedConcurrencyFromContext(context({ receiptsReservedConcurrency: "" }))).toBeUndefined();
+    expect(receiptsReservedConcurrencyFromContext(context({ receiptsReservedConcurrency: "20" }))).toBe(20);
+    expect(receiptsReservedConcurrencyFromContext(context({ receiptsReservedConcurrency: 5 }))).toBe(5);
+    expect(receiptsReservedConcurrencyFromContext(context({ receiptsReservedConcurrency: String(MAX_RECEIPTS_RESERVED_CONCURRENCY) }))).toBe(100);
+    for (const bad of ["0", "-1", "1.5", "ten", "07", String(MAX_RECEIPTS_RESERVED_CONCURRENCY + 1)]) {
+      expect(() => receiptsReservedConcurrencyFromContext(context({ receiptsReservedConcurrency: bad })), bad).toThrow("receiptsReservedConcurrency must be a whole number");
+    }
   });
 });
 

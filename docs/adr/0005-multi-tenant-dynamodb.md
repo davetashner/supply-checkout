@@ -27,6 +27,8 @@ Use **one DynamoDB table** (`app`), on-demand capacity, point-in-time recovery o
 | Product | `TEAM#<teamId>` | `PRODUCT#<key>` | same fields as today; `stock` changed only with atomic `ADD` |
 | Sheet | `TEAM#<teamId>` | `SHEET#<date>#<id>` | same fields as today; sorting by SK gives the existing date order |
 | Receipt usage | `TEAM#<teamId>` | `USAGE#<yyyy-mm>` | atomic counter for the monthly limit |
+| Trial receipt usage | `TEAM#<teamId>` | `USAGE#TRIAL` | atomic counter for a trial team's receipts, for the whole trial (supply-checkout-wxx) |
+| Receipt rate | `RECEIPTRATE#<userId>` | `RECEIPTS#<MINUTE\|HOUR\|DAY>#<stamp>` | per-user rate counters, TTL a day after the window (supply-checkout-wxx) |
 | Audit event | `TEAM#<teamId>` | `AUDIT#<ts>#<id>` | who changed what; TTL after the retention period |
 | Stripe link | `STRIPE#<customerId>` | `TEAM` | maps webhook events to a team |
 | Processed webhook | `WEBHOOK#<eventId>` | `DONE` | idempotency; TTL 30 days |
