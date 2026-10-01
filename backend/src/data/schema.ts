@@ -287,6 +287,22 @@ export const NOTICE_ADDRESS_SK = "NOTICE_ADDRESS";
 export const SECURITY_NOTICE_ATTRIBUTES = [PK, SK, "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash", "totpOnAt"] as const;
 
 /**
+ * What the user pool's triggers (pre token generation and post confirmation,
+ * supply-checkout-8jc.31) may read of a user's NOTICE_ADDRESS item: the keys
+ * and when an address was recorded (hasNoticeAddress), never the address.
+ * GetItem only, in `USER#` partitions; no other item has `noticeAddressAt`.
+ */
+export const NOTICE_ADDRESS_CHECK_ATTRIBUTES = [PK, SK, "noticeAddressAt"] as const;
+
+/**
+ * What those triggers may write (recordNoticeAddress: UpdateItem returning
+ * nothing, and the DELETING mark's ConditionCheckItem naming only the keys):
+ * the keys, the address, when, and the hash of Cognito's address. No other
+ * item has these, so they can't change a user's teams, proofs or notices.
+ */
+export const NOTICE_ADDRESS_RECORD_ATTRIBUTES = [PK, SK, "noticeAddress", "noticeAddressAt", "noticeSeenHash"] as const;
+
+/**
  * The sort key of the item in a user's own `USER#<sub>` partition that holds
  * when two-step sign-in (an authenticator app, TOTP) was last turned on
  * (supply-checkout-8jc.14, two-step.ts): the billing routes refuse a session

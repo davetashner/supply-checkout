@@ -6,6 +6,7 @@
 //   npm run backfill -- stray-ops-keys --table <table> --region <region> --profile <profile>
 //   npm run backfill -- ops-index      --table <table> --region <region> --profile <profile> --apply
 //   npm run backfill -- members        --table <table> --region <region> --profile <profile> --apply
+//   npm run backfill -- notice-address --table <table> --region <region> --profile <profile> --user-pool <app pool ID> --apply
 //
 // --endpoint points it at DynamoDB Local instead (tests, local development).
 
@@ -14,7 +15,9 @@ import { pathToFileURL } from "node:url";
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { createDb, type Db, type DbOptions } from "../src/data/index.js";
-import { BACKFILL_MODES, type BackfillMode, type BackfillReport, runBackfill } from "../src/data/backfill.js";
+import { BACKFILL_MODES, type BackfillMode, type BackfillReport, type NoticeAddressCandidate, runBackfill } from "../src/data/backfill.js";
+import { listPoolUsers, type PoolUser } from "../src/identity/cognito-admin.js";
+import { noticeAddressOf } from "../src/identity/notice-address.js";
 
 export const USAGE = `Usage: npm run backfill -- <mode> --table supply-checkout-<env>-app --region <region> --profile <profile> [--apply]
 
@@ -23,12 +26,19 @@ Modes (run in this order after the deploy):
   ops-index       set GSI3 keys on team META items and owner MEMBER items made before the operators' index
   members         set the members count on team META items made before it existed
 
+  notice-address  record the address an email change is told to, for every app pool user
+                  whose verified address the API trusts and who has none (needs --user-pool)
+
 Without --apply it's a dry run: it reads the table and writes nothing.
 It prints the AWS account the profile signs in to before it reads or writes.
+--user-pool <ID> is the app user pool (notice-address only): /supply-checkout/<env>/identity/user-pool-id in SSM.
 --endpoint <url> uses DynamoDB Local instead of AWS (then --profile isn't needed and any table name goes).`;
 
 /** An app table's name (tableName in src/data/schema.ts), so a typo can't point the backfill at another table. */
 export const APP_TABLE = /^supply-checkout-[a-z0-9-]+-app$/;
+
+/** A user pool ID, `<region>_<id>`: the region is the first group. */
+export const POOL_ID = /^([a-z]+(?:-[a-z]+)+-\d+)_[A-Za-z0-9]{1,64}$/;
 
 type Credentials = ReturnType<typeof defaultProvider>;
 
@@ -37,7 +47,13 @@ export interface Deps {
   readonly callerAccount: (region: string, credentials: Credentials) => Promise<string>;
   /** The table handle (createDb). */
   readonly connect: (options: DbOptions) => Db;
+  /** Every user in the pool (ListUsers); listUsers below unless given. */
+  readonly listUsers?: (region: string, userPoolId: string, credentials: Credentials | undefined) => AsyncIterable<PoolUser>;
 }
+
+/** Every user in the app pool, with the profile's credentials (the owner's: no Lambda role may list the pool for this). */
+const listUsers = (region: string, userPoolId: string, credentials: Credentials | undefined) =>
+  listPoolUsers({ region, userPoolId, timeoutMs: 10_000, ...(credentials ? { credentials } : {}) });
 
 const defaultDeps: Deps = {
   connect: createDb,
@@ -57,11 +73,25 @@ const DESCRIPTIONS: Record<BackfillMode, { found: string; change: string }> = {
   "stray-ops-keys": { found: "Items with GSI3 keys they shouldn't have", change: "keys removed" },
   "ops-index": { found: "Team META and owner MEMBER items without GSI3 keys", change: "keys set" },
   members: { found: "Teams without a members count", change: "count set" },
+  "notice-address": { found: "Accounts with a trusted verified address and no notice address", change: "address recorded" },
 };
+
+/** Each pool user as the backfill sees them: the address the API trusts (never printed), or undefined. */
+async function* candidates(users: AsyncIterable<PoolUser>): AsyncGenerator<NoticeAddressCandidate | undefined> {
+  for await (const user of users) yield noticeAddressOf(user.username, user.attributes);
+}
 
 export function formatReport(report: BackfillReport): string[] {
   const d = DESCRIPTIONS[report.mode];
-  const lines = [`${d.found}: ${report.found}`];
+  const lines: string[] = [];
+  if (report.accounts) {
+    const a = report.accounts;
+    lines.push(`App pool users: ${a.listed}`);
+    lines.push(`  no verified address the API trusts, left alone: ${a.untrusted}`);
+    lines.push(`  address already recorded, left alone: ${a.present}`);
+    if (a.deleting) lines.push(`  being deleted, left alone: ${a.deleting}`);
+  }
+  lines.push(`${d.found}: ${report.found}`);
   lines.push(`  ${d.change}: ${report.changed}${report.apply ? "" : " (dry run: would be)"}`);
   if (report.raced) lines.push(`  changed by something else first, left alone: ${report.raced}`);
   if (report.invalid) lines.push(`  keys that aren't valid IDs, left alone: ${report.invalid}`);
@@ -87,6 +117,7 @@ export async function main(
         region: { type: "string" },
         profile: { type: "string" },
         endpoint: { type: "string" },
+        "user-pool": { type: "string" },
         apply: { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
       },
@@ -107,6 +138,22 @@ export async function main(
   }
   if (!values.table || !values.region) {
     err(`--table and --region are required\n\n${USAGE}`);
+    return 2;
+  }
+
+  const pool = values["user-pool"];
+  if (mode === "notice-address") {
+    const poolRegion = pool === undefined ? undefined : POOL_ID.exec(pool)?.[1];
+    if (!poolRegion) {
+      err(`--user-pool must be the app user pool's ID, <region>_<id>, for notice-address\n\n${USAGE}`);
+      return 2;
+    }
+    if (poolRegion !== values.region) {
+      err(`--user-pool is in ${poolRegion}, not --region ${values.region}\n\n${USAGE}`);
+      return 2;
+    }
+  } else if (pool !== undefined) {
+    err(`--user-pool is for notice-address only\n\n${USAGE}`);
     return 2;
   }
 
@@ -131,9 +178,10 @@ export async function main(
     }
   }
   const db = deps.connect({ tableName: values.table, region: values.region, endpoint: values.endpoint, env: {}, ...(credentials ? { credentials } : {}) });
-  out(`${mode} on ${values.table} in ${values.region} ${where}${values.apply ? "" : " (dry run)"}`);
+  out(`${mode} on ${values.table}${pool ? ` and pool ${pool}` : ""} in ${values.region} ${where}${values.apply ? "" : " (dry run)"}`);
   try {
-    const report = await runBackfill(db, mode as BackfillMode, { apply: values.apply });
+    const sources = pool ? { accounts: candidates((deps.listUsers ?? listUsers)(values.region, pool, credentials)) } : {};
+    const report = await runBackfill(db, mode as BackfillMode, { apply: values.apply }, sources);
     for (const line of formatReport(report)) out(line);
     return 0;
   } catch (e) {

@@ -47,8 +47,9 @@
 //   address Cognito has verified (where it now sends codes and resets) is
 //   another one (noticeEmailChange). Checked on every event, so a later one
 //   catches a change whose own events were missed. The old address is the one recorded in NOTICE_ADDRESS
-//   (data/security-notices.ts), written when /me or this function first saw
-//   the account's verified address. The pool keeps the old address until the
+//   (data/security-notices.ts), written where the account's verified address
+//   first appeared (the user pool's triggers, notice-address.ts; /me; this
+//   function; or the owner's backfill, supply-checkout-8jc.31). The pool keeps the old address until the
 //   new one is verified (keepOriginal), but the event can arrive after that,
 //   so Cognito alone can't say what it was. The recorded address moves to the
 //   new one in the same conditional write that decides to tell the old one,

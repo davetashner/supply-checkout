@@ -5,11 +5,13 @@
 
 import { DeleteCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { createDb, createTeam, type Db, getOpsTeam, listOpsTeams } from "../src/data/index.js";
+import { createDb, createTeam, type Db, emailSeenHash, getOpsTeam, listOpsTeams, noticeAddress, recordNoticeAddress, startAccountDeletion } from "../src/data/index.js";
 import { connection, dbFromConnection } from "../src/data/client.js";
-import { backfillMemberCounts, backfillOpsIndex, expectedOpsKeys, runBackfill, stripStrayOpsKeys } from "../src/data/backfill.js";
+import { backfillMemberCounts, backfillOpsIndex, expectedOpsKeys, type NoticeAddressCandidate, runBackfill, stripStrayOpsKeys } from "../src/data/backfill.js";
+import type { PoolUser } from "../src/identity/cognito-admin.js";
 import { formatReport, main, USAGE } from "../scripts/backfill.js";
 import { endpoint, newUser, rawItem, REGION, useTable } from "./helpers.js";
+import { MemoryTable } from "./memory-table.js";
 
 const op = { sub: "op-sub-backfill" };
 const now = new Date();
@@ -85,6 +87,11 @@ describe("the backfill CLI's arguments", () => {
     [["members", "--table", "supply-checkout-prod-ap", "--region", "r", "--profile", "p"], /--table must be an app table/],
     [["members", "--table", "other-table", "--region", "r", "--profile", "p", "--apply"], /--table must be an app table/],
     [["members", "--table", "supply-checkout-Prod-app", "--region", "r", "--profile", "p"], /--table must be an app table/],
+    [["notice-address", "--table", "supply-checkout-prod-app", "--region", "test-local-1", "--profile", "p"], /--user-pool must be the app user pool's ID/],
+    [["notice-address", "--table", "supply-checkout-prod-app", "--region", "test-local-1", "--profile", "p", "--user-pool", "test-local-1"], /--user-pool must be the app user pool's ID/],
+    [["notice-address", "--table", "supply-checkout-prod-app", "--region", "test-local-1", "--profile", "p", "--user-pool", "test-local-1_ab/c"], /--user-pool must be the app user pool's ID/],
+    [["notice-address", "--table", "supply-checkout-prod-app", "--region", "test-local-1", "--profile", "p", "--user-pool", "test-other-2_AbC123"], /--user-pool is in test-other-2, not --region test-local-1/],
+    [["members", "--table", "supply-checkout-prod-app", "--region", "test-local-1", "--profile", "p", "--user-pool", "test-local-1_AbC123"], /--user-pool is for notice-address only/],
   ])("refuses %j", async (args, message) => {
     const result = await run(args);
     expect(result.code).toBe(2);
@@ -126,6 +133,140 @@ describe("the backfill CLI's arguments", () => {
       "  TEAM#t1 SHEET: 1",
       "Dry run: nothing was written. Run again with --apply to write.",
     ]);
+    expect(formatReport({ mode: "notice-address", apply: true, found: 2, changed: 1, raced: 1, invalid: 0, accounts: { listed: 6, untrusted: 2, present: 1, deleting: 1 } })).toEqual([
+      "App pool users: 6",
+      "  no verified address the API trusts, left alone: 2",
+      "  address already recorded, left alone: 1",
+      "  being deleted, left alone: 1",
+      "Accounts with a trusted verified address and no notice address: 2",
+      "  address recorded: 1",
+      "  changed by something else first, left alone: 1",
+      "Done.",
+    ]);
+  });
+
+  it("needs the pool's users for notice-address", async () => {
+    await expect(runBackfill(new MemoryTable().db(), "notice-address", { apply: false })).rejects.toThrow(/needs the app pool's users/);
+  });
+});
+
+// supply-checkout-8jc.31: every app pool user whose verified address the API trusts gets a NOTICE_ADDRESS
+describe("the notice-address backfill", () => {
+  const POOL = `${REGION}_AppPool1`;
+  const sub = (n: number) => `4f1c2b7e-9a3d-4e5f-8b6a-${String(n).padStart(12, "0")}`;
+  const user = (n: number, attributes: Record<string, string> = {}): PoolUser => ({
+    username: sub(n),
+    status: "CONFIRMED",
+    enabled: true,
+    attributes: { sub: sub(n), email: `Person${n}@Example.com`, email_verified: "true", ...attributes },
+  });
+  async function* listed(users: PoolUser[]) {
+    yield* users;
+  }
+  async function* candidates(list: NoticeAddressCandidate[]) {
+    yield* list;
+  }
+
+  /** Runs the CLI against `db` with the given pool users; returns the exit code and output. */
+  async function run(db: Db, users: PoolUser[], apply: boolean) {
+    const out: string[] = [];
+    const seen: { region?: string; pool?: string } = {};
+    const deps = {
+      callerAccount: async () => "ACCOUNT-PLACEHOLDER",
+      connect: () => db,
+      listUsers: (region: string, pool: string) => {
+        Object.assign(seen, { region, pool });
+        return listed(users);
+      },
+    };
+    const args = ["notice-address", "--table", "supply-checkout-test-app", "--region", REGION, "--profile", "supply-test", "--user-pool", POOL, ...(apply ? ["--apply"] : [])];
+    const code = await main(args, (l) => out.push(l), (l) => out.push(l), deps);
+    return { code, out, seen };
+  }
+
+  /** Each case the backfill tells apart, on `db`. */
+  async function seed(db: Db): Promise<PoolUser[]> {
+    await recordNoticeAddress(db, sub(3), "kept@example.com", emailSeenHash("kept@example.com"));
+    await startAccountDeletion(db, sub(4));
+    return [
+      user(1),
+      user(2, { email: "Second@Example.com" }),
+      user(3),
+      user(4),
+      user(5, { email_verified: "false" }),
+      user(6, { "custom:downgrade_pending": "1" }),
+      { username: "no-sub", status: "UNCONFIRMED", enabled: true, attributes: {} },
+    ];
+  }
+
+  async function check(db: Db) {
+    const users = await seed(db);
+    const dry = await run(db, users, false);
+    expect(dry.code).toBe(0);
+    expect(dry.seen).toEqual({ region: REGION, pool: POOL });
+    expect(dry.out).toEqual([
+      `notice-address on supply-checkout-test-app and pool ${POOL} in ${REGION} in account ACCOUNT-PLACEHOLDER (profile supply-test) (dry run)`,
+      "App pool users: 7",
+      "  no verified address the API trusts, left alone: 3",
+      "  address already recorded, left alone: 1",
+      "  being deleted, left alone: 1",
+      "Accounts with a trusted verified address and no notice address: 2",
+      "  address recorded: 2 (dry run: would be)",
+      "Dry run: nothing was written. Run again with --apply to write.",
+    ]);
+    expect(await noticeAddress(db, sub(1))).toBeUndefined();
+
+    const applied = await run(db, users, true);
+    expect(applied.code).toBe(0);
+    expect(applied.out.slice(-3)).toEqual(["Accounts with a trusted verified address and no notice address: 2", "  address recorded: 2", "Done."]);
+    // Counts only: no address, sub or name
+    expect(applied.out.join("\n")).not.toMatch(/@|4f1c2b7e/);
+    expect(await noticeAddress(db, sub(1))).toEqual({ address: "person1@example.com", seen: emailSeenHash("Person1@Example.com") });
+    expect((await noticeAddress(db, sub(2)))?.address).toBe("second@example.com");
+    expect((await noticeAddress(db, sub(3)))?.address).toBe("kept@example.com");
+    for (const n of [4, 5, 6]) expect(await noticeAddress(db, sub(n)), String(n)).toBeUndefined();
+
+    // Idempotent: a second run finds nothing to do
+    const again = await run(db, users, true);
+    expect(again.out).toContain("  address already recorded, left alone: 3");
+    expect(again.out).toContain("Accounts with a trusted verified address and no notice address: 0");
+  }
+
+  it("records each trusted address once, never over one recorded or for an account being deleted (in memory)", async () => {
+    await check(new MemoryTable().db());
+  });
+
+  describe.skipIf(!endpoint)("on DynamoDB Local", () => {
+    const ddb = useTable();
+
+    it("does the same", async () => {
+      await check(ddb.db);
+    });
+  });
+
+  it("leaves an account alone when its address is recorded, or its deletion starts, between the check and the write", async () => {
+    for (const race of ["recorded", "deleting"] as const) {
+      const table = new MemoryTable();
+      table.beforeTransactWrite = () => {
+        table.beforeTransactWrite = undefined;
+        if (race === "recorded") table.put({ PK: `USER#${sub(1)}`, SK: "NOTICE_ADDRESS", noticeAddress: "first@example.com", noticeAddressAt: "then", noticeSeenHash: "h" });
+        else table.put({ PK: `USER#${sub(1)}`, SK: "DELETING" });
+      };
+      const report = await runBackfill(table.db(), "notice-address", { apply: true }, { accounts: candidates([{ userId: sub(1), address: "person1@example.com", seen: "h" }]) });
+      expect(report, race).toMatchObject({ found: 1, changed: 0, raced: 1 });
+      expect(table.get(`USER#${sub(1)}`, "NOTICE_ADDRESS")?.noticeAddress ?? null, race).toBe(race === "recorded" ? "first@example.com" : null);
+    }
+  });
+
+  it("counts a candidate whose ID isn't valid as invalid, and writes nothing for it", async () => {
+    const table = new MemoryTable();
+    const accounts = candidates([
+      { userId: "bad id", address: "a@example.com", seen: "h" },
+      { userId: sub(1), address: "", seen: "h" },
+    ]);
+    const report = await runBackfill(table.db(), "notice-address", { apply: true }, { accounts });
+    expect(report).toMatchObject({ found: 0, changed: 0, invalid: 2 });
+    expect(table.items.size).toBe(0);
   });
 });
 

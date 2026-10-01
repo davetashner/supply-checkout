@@ -101,6 +101,37 @@ export interface ListedUser {
   readonly Attributes?: unknown;
 }
 
+const attributeMap = (list: unknown): Record<string, string> =>
+  Object.fromEntries(
+    (Array.isArray(list) ? (list as { Name?: unknown; Value?: unknown }[]) : [])
+      .filter((a) => typeof a?.Name === "string" && typeof a.Value === "string")
+      .map((a) => [a.Name as string, a.Value as string]),
+  );
+
+const poolUser = (u: ListedUser): PoolUser => ({
+  username: u.Username as string,
+  status: typeof u.UserStatus === "string" ? u.UserStatus : "",
+  enabled: u.Enabled === true,
+  attributes: attributeMap(u.Attributes),
+});
+
+/**
+ * Every user in the pool, a page of ListUsers (60, its largest) at a time,
+ * for the owner's one-time backfill of notice addresses (data/backfill.ts,
+ * supply-checkout-8jc.31), signed with the owner's own credentials.
+ */
+export async function* listPoolUsers(options: CognitoAdminOptions & { readonly userPoolId: string }): AsyncGenerator<PoolUser> {
+  const call = cognitoRequest(options);
+  let token: string | undefined;
+  do {
+    const answer = (await call("ListUsers", { UserPoolId: options.userPoolId, Limit: 60, ...(token ? { PaginationToken: token } : {}) })) as { Users?: unknown; PaginationToken?: unknown };
+    for (const u of (Array.isArray(answer.Users) ? answer.Users : []) as ListedUser[]) {
+      if (typeof u === "object" && u !== null && typeof u.Username === "string") yield poolUser(u);
+    }
+    token = typeof answer.PaginationToken === "string" && answer.PaginationToken !== "" ? answer.PaginationToken : undefined;
+  } while (token);
+}
+
 /** ListUsers, AdminUpdateUserAttributes (to record the linked email) and AdminLinkProviderForUser, for the account-linking trigger. */
 export function cognitoLinking(options: CognitoAdminOptions): {
   listUsersByEmail: ListUsersByEmail;
@@ -117,16 +148,7 @@ export function cognitoLinking(options: CognitoAdminOptions): {
       const listed = Array.isArray(answer.Users) ? (answer.Users as ListedUser[]) : [];
       const users = listed
         .filter((u): u is ListedUser => typeof u === "object" && u !== null && typeof u.Username === "string")
-        .map((u) => ({
-          username: u.Username as string,
-          status: typeof u.UserStatus === "string" ? u.UserStatus : "",
-          enabled: u.Enabled === true,
-          attributes: Object.fromEntries(
-            (Array.isArray(u.Attributes) ? (u.Attributes as { Name?: unknown; Value?: unknown }[]) : [])
-              .filter((a) => typeof a?.Name === "string" && typeof a.Value === "string")
-              .map((a) => [a.Name as string, a.Value as string]),
-          ),
-        }));
+        .map(poolUser);
       return { users, more: typeof answer.PaginationToken === "string" && answer.PaginationToken !== "" };
     },
     async linkProviderForUser(userPoolId, nativeUsername, providerName, providerUserId) {

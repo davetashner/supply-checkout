@@ -15,6 +15,15 @@
 //   MEMBER item) would put values in the operators' index. This removes them,
 //   on the condition that they're still the values it read.
 //
+// - notice-address: an account that hasn't loaded the app (GET /me) since
+//   PR #278 has no NOTICE_ADDRESS, so its first email change is recorded but
+//   nobody is told (supply-checkout-8jc.31). This records the address for
+//   every user in the app pool the account API would trust (the script lists
+//   the pool and decides that, identity/notice-address.ts), with
+//   recordNoticeAddress: never over one already recorded, never for an
+//   account being deleted. It reads only whether one is recorded, never the
+//   address.
+//
 // Every write is conditioned on the item still existing, so a team the purge
 // deleted in the meantime is never re-created as a stub. Closed teams stay in
 // the index until the purge deletes them, as a team made today does.
@@ -23,17 +32,31 @@
 // and, for strays, only the item's partition type and team ID: never emails,
 // names or user IDs.
 
-import { QueryCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
-import { gsi3, prefixes } from "./keys.js";
+import { gsi3, keys, prefixes } from "./keys.js";
 import { GSI3PK, GSI3SK, OPERATOR_AUDIT_PREFIX, OPS_AUDIT_INDEX_PREFIX } from "./schema.js";
+import { hasNoticeAddress, recordNoticeAddress } from "./security-notices.js";
 
-export const BACKFILL_MODES = ["members", "ops-index", "stray-ops-keys"] as const;
+export const BACKFILL_MODES = ["members", "ops-index", "stray-ops-keys", "notice-address"] as const;
 export type BackfillMode = (typeof BACKFILL_MODES)[number];
 
 export interface BackfillOptions {
   /** Write the changes. Without it, a dry run: read everything, write nothing. */
   readonly apply: boolean;
+}
+
+/** One app pool user whose address the account API trusts: their sub, the address (normalized) and the hash of Cognito's own address. */
+export interface NoticeAddressCandidate {
+  readonly userId: string;
+  readonly address: string;
+  readonly seen: string;
+}
+
+/** What modes that don't scan the table read instead. */
+export interface BackfillSources {
+  /** notice-address: every user in the app pool, undefined for one with no address the API trusts. */
+  readonly accounts?: AsyncIterable<NoticeAddressCandidate | undefined>;
 }
 
 export interface BackfillReport {
@@ -49,6 +72,8 @@ export interface BackfillReport {
   readonly invalid: number;
   /** For stray-ops-keys: how many strays of each kind, e.g. `TEAM# SHEET`, with the team ID where there is one. */
   readonly strays?: readonly string[];
+  /** For notice-address: the users listed, and those left alone before any write. */
+  readonly accounts?: { readonly listed: number; readonly untrusted: number; readonly present: number; readonly deleting: number };
 }
 
 const TEAM = "TEAM#";
@@ -257,8 +282,51 @@ export async function stripStrayOpsKeys(db: Db, { apply }: BackfillOptions): Pro
   return { mode: "stray-ops-keys", apply, found, changed, raced, invalid: 0, strays: summary };
 }
 
+/** Whether the account is being deleted (its DELETING mark), reading only the keys. */
+async function beingDeleted(db: Db, userId: string): Promise<boolean> {
+  const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: keys.accountDeletion(userId), ProjectionExpression: "PK", ConsistentRead: true }));
+  return Item !== undefined;
+}
+
+/**
+ * Records the notice address of every listed account that has none, unless
+ * it's being deleted. recordNoticeAddress's conditions decide at write time:
+ * an address recorded meanwhile (by GET /me, a trigger or the notices
+ * function) or a deletion started meanwhile leaves it alone (`raced`).
+ */
+export async function backfillNoticeAddresses(db: Db, accounts: AsyncIterable<NoticeAddressCandidate | undefined>, { apply }: BackfillOptions, now = () => new Date()): Promise<BackfillReport> {
+  let found = 0, changed = 0, raced = 0, invalid = 0, listed = 0, untrusted = 0, present = 0, deleting = 0;
+  for await (const account of accounts) {
+    listed++;
+    if (!account) {
+      untrusted++;
+      continue;
+    }
+    if (!ID.test(account.userId) || !account.address || !account.seen) {
+      invalid++;
+      continue;
+    }
+    if (await hasNoticeAddress(db, account.userId)) {
+      present++;
+      continue;
+    }
+    if (await beingDeleted(db, account.userId)) {
+      deleting++;
+      continue;
+    }
+    found++;
+    if (!apply) {
+      changed++;
+      continue;
+    }
+    if (await recordNoticeAddress(db, account.userId, account.address, account.seen, now())) changed++;
+    else raced++;
+  }
+  return { mode: "notice-address", apply, found, changed, raced, invalid, accounts: { listed, untrusted, present, deleting } };
+}
+
 /** Runs one mode. */
-export function runBackfill(db: Db, mode: BackfillMode, options: BackfillOptions): Promise<BackfillReport> {
+export function runBackfill(db: Db, mode: BackfillMode, options: BackfillOptions, sources: BackfillSources = {}): Promise<BackfillReport> {
   switch (mode) {
     case "members":
       return backfillMemberCounts(db, options);
@@ -266,5 +334,8 @@ export function runBackfill(db: Db, mode: BackfillMode, options: BackfillOptions
       return backfillOpsIndex(db, options);
     case "stray-ops-keys":
       return stripStrayOpsKeys(db, options);
+    case "notice-address":
+      if (!sources.accounts) return Promise.reject(new Error("notice-address needs the app pool's users"));
+      return backfillNoticeAddresses(db, sources.accounts, options);
   }
 }
