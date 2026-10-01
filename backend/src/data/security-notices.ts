@@ -17,7 +17,9 @@
 // SetUserMFAPreference) to one email.
 //
 // NOTICE_ADDRESS is the account's verified address before an email change,
-// written the first time it's seen (GET /me, or the notices function), never
+// written the first time it's seen (the post confirmation and pre token
+// generation triggers, identity/notice-address.ts; GET /me; the notices
+// function; or the owner's one-time backfill, supply-checkout-8jc.31), never
 // for an account being deleted (the DELETING mark is checked in the same
 // transaction), and moved on only by the notices function, after it has told
 // the old one (moveNoticeAddress). So the old address is known even if the
@@ -114,12 +116,40 @@ export async function noticeAddress(db: Db, userId: string): Promise<NoticeAddre
   return { address, seen: typeof seen === "string" && seen ? seen : emailSeenHash(address) };
 }
 
+/** For a caller with a deadline (the user pool's triggers): each request gives up after `timeoutMs`. */
+export interface NoticeCallOptions {
+  readonly timeoutMs?: number;
+}
+
+const sendOptions = (options: NoticeCallOptions) => (options.timeoutMs === undefined ? undefined : { abortSignal: AbortSignal.timeout(options.timeoutMs) });
+
+/**
+ * Whether an address is recorded (strongly consistent), reading only when it
+ * was recorded (NOTICE_ADDRESS_CHECK_ATTRIBUTES), never the address itself:
+ * what the user pool's triggers check before they record one
+ * (supply-checkout-8jc.31). recordNoticeAddress sets the time with the
+ * address, and nothing else writes the item.
+ */
+export async function hasNoticeAddress(db: Db, userId: string, options: NoticeCallOptions = {}): Promise<boolean> {
+  const { Item } = await connection(db).doc.send(
+    new GetCommand({
+      TableName: db.tableName,
+      Key: keys.noticeAddress(id(userId, "user ID")),
+      ProjectionExpression: "#at",
+      ExpressionAttributeNames: { "#at": "noticeAddressAt" },
+      ConsistentRead: true,
+    }),
+    sendOptions(options),
+  );
+  return typeof Item?.noticeAddressAt === "string";
+}
+
 /**
  * Records `email` (normalized, one the account API trusts) as the address to
  * tell, and `seen` as the Cognito address it came from, if none is recorded
  * yet and the account isn't being deleted. True if it was written.
  */
-export async function recordNoticeAddress(db: Db, userId: string, email: string, seen: string, now = new Date()): Promise<boolean> {
+export async function recordNoticeAddress(db: Db, userId: string, email: string, seen: string, now = new Date(), options: NoticeCallOptions = {}): Promise<boolean> {
   if (!email || !seen) throw new Error("No address to record");
   const user = id(userId, "user ID");
   try {
@@ -140,10 +170,15 @@ export async function recordNoticeAddress(db: Db, userId: string, email: string,
           { ConditionCheck: { TableName: db.tableName, Key: keys.accountDeletion(user), ConditionExpression: "attribute_not_exists(PK)" } },
         ],
       }),
+      sendOptions(options),
     );
     return true;
   } catch (error) {
-    if ((error as { name?: string } | null)?.name === "TransactionCanceledException") return false;
+    // Not recorded only when a condition said so (an address there, or the DELETING mark); a
+    // conflict, throttle or validation error is thrown, so the caller counts and retries it
+    const cancelled = error as { name?: string; CancellationReasons?: { Code?: string }[] } | null;
+    const codes = cancelled?.name === "TransactionCanceledException" ? (cancelled.CancellationReasons ?? []).map((r) => r?.Code) : [];
+    if (codes.includes("ConditionalCheckFailed") && codes.every((code) => code === "ConditionalCheckFailed" || code === "None")) return false;
     throw error;
   }
 }

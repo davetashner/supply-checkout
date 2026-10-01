@@ -41,8 +41,9 @@ import {
   PROVIDER_EMAIL_VERIFIED_ATTRIBUTE,
   PROVIDER_HOSTED_DOMAIN,
   PROVIDER_HOSTED_DOMAIN_ATTRIBUTE,
+  identityResourceNames,
 } from "../../../backend/src/identity/names.js";
-import { tableName, VERIFIED_EMAIL_ATTRIBUTES } from "../../../backend/src/data/schema.js";
+import { NOTICE_ADDRESS_CHECK_ATTRIBUTES, NOTICE_ADDRESS_RECORD_ATTRIBUTES, tableName, VERIFIED_EMAIL_ATTRIBUTES } from "../../../backend/src/data/schema.js";
 import type { DeploymentConfig } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import {
@@ -112,6 +113,8 @@ export class IdentityStack extends SupplyCheckoutStack {
   readonly operatorsGroup: UserPoolGroup;
   /** The pre authentication, pre token generation and pre sign-up triggers, when Google or Apple sign-in is on. */
   readonly federatedTriggers?: { readonly signInGuard: NodejsFunction; readonly emailVerified: NodejsFunction; readonly accountLink: NodejsFunction };
+  /** The post confirmation trigger that records a new account's notice address (supply-checkout-8jc.31), on every app pool. */
+  readonly postConfirmation: NodejsFunction;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "identity", layer: "stateful" });
@@ -213,6 +216,7 @@ export class IdentityStack extends SupplyCheckoutStack {
 
     const providers = this.addSocialProviders(secrets);
     if (providers.length) this.federatedTriggers = this.addFederatedTriggers();
+    this.postConfirmation = this.addPostConfirmationTrigger();
 
     const writable = new ClientAttributes().withStandardAttributes({ email: true, givenName: true, familyName: true });
     const appUrl = `https://${names.app}/`;
@@ -506,9 +510,9 @@ export class IdentityStack extends SupplyCheckoutStack {
     // hash and time (VERIFIED_EMAIL_ATTRIBUTES), which no other item has. IAM can't
     // name the user (the trigger has no per-user session) or the sort key, so
     // this is every USER# partition, but only those attributes: it can't
-    // read teams, names or emails. The table's key only through DynamoDB,
-    // decrypt only. The table and its key are in the primary region's data
-    // stack, which deploys first (supply-checkout.ts).
+    // read teams, names or emails. The table's key comes with the notice
+    // address grant below (one statement for both). The table and its key are
+    // in the primary region's data stack, which deploys first (supply-checkout.ts).
     const tableArn = Stack.of(this).formatArn({ service: "dynamodb", resource: "table", resourceName: table });
     new Policy(this, "EmailVerifiedProvenEmail", {
       roles: [emailVerified.role as Role],
@@ -523,14 +527,10 @@ export class IdentityStack extends SupplyCheckoutStack {
             StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
           },
         }),
-        new PolicyStatement({
-          sid: "TableKeyThroughDynamoDb",
-          actions: ["kms:Decrypt"],
-          resources: [StringParameter.valueForStringParameter(this, `/supply-checkout/${this.config.envName}/data/table-key-arn`)],
-          conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
-        }),
       ],
     });
+    // A user's notice address, once the trigger has settled whether their email is verified (supply-checkout-8jc.31)
+    this.grantNoticeAddress(emailVerified, "EmailVerifiedNoticeAddress");
 
     const accountLink = this.trigger("AccountLink", "account-link", "Links a first Google or Apple sign-in to the existing account with the same verified email");
     this.userPool.addTrigger(UserPoolOperation.PRE_SIGN_UP, accountLink);
@@ -547,8 +547,87 @@ export class IdentityStack extends SupplyCheckoutStack {
     return { signInGuard, emailVerified, accountLink };
   }
 
+  /**
+   * The post confirmation trigger (backend/src/identity/post-confirmation-handler.ts,
+   * supply-checkout-8jc.31): when a native user confirms their sign-up with
+   * Cognito's email code, it records the address an email change is told to
+   * (NOTICE_ADDRESS), so the account has one before it has a token anyone
+   * could change the email with. On every app pool, providers or not. It
+   * never fails the confirmation.
+   */
+  private addPostConfirmationTrigger(): NodejsFunction {
+    // A fixed name, for the "Sign-up trigger failing" alarm (journey-alarms.ts)
+    const fn = this.trigger(
+      "PostConfirmation",
+      "post-confirmation",
+      "Records a new account's verified address for email change notices",
+      { TABLE_NAME: tableName(this.config.envName) },
+      identityResourceNames(this.config.envName).postConfirmationFunction,
+    );
+    this.userPool.addTrigger(UserPoolOperation.POST_CONFIRMATION, fn);
+    this.grantNoticeAddress(fn, "PostConfirmationNoticeAddress");
+    return fn;
+  }
+
+  /**
+   * Lets a trigger record a user's notice address (identity/notice-address.ts,
+   * data/security-notices.ts): GetItem of whether one is recorded, reading
+   * only the keys and when (NOTICE_ADDRESS_CHECK_ATTRIBUTES), never the
+   * address; and recordNoticeAddress's write, UpdateItem naming only the
+   * address record's attributes (NOTICE_ADDRESS_RECORD_ATTRIBUTES) and
+   * returning nothing, with its ConditionCheckItem on the DELETING mark, which
+   * names only the keys. No other item has these attributes, so it can't
+   * change a user's teams, proofs or notices. IAM can't name the user (a
+   * trigger has no per-user session) or the sort key, so this is every USER#
+   * partition, and it can't require the write's condition: the code only
+   * ever writes NOTICE_ADDRESS, on the condition that no address is there.
+   * Residual: DynamoDB has no condition key for
+   * ReturnValuesOnConditionCheckFailure, so changed code on this role could
+   * read a whole USER# item (a membership row's email, say) from a
+   * conditional update made to fail; the code never sets it. The table's key
+   * only through DynamoDB, with the actions every table writer here has (one
+   * statement, which also covers the pre token generation trigger's proof
+   * read). A separate policy, attached after the pool exists (see
+   * addFederatedTriggers).
+   */
+  private grantNoticeAddress(fn: NodejsFunction, id: string): void {
+    const tableArn = Stack.of(this).formatArn({ service: "dynamodb", resource: "table", resourceName: tableName(this.config.envName) });
+    const userPartitions = { "dynamodb:LeadingKeys": ["USER#*"] };
+    new Policy(this, id, {
+      roles: [fn.role as Role],
+      statements: [
+        new PolicyStatement({
+          sid: "ReadNoticeAddressRecorded",
+          actions: ["dynamodb:GetItem"],
+          resources: [tableArn],
+          conditions: {
+            "ForAllValues:StringLike": userPartitions,
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": [...NOTICE_ADDRESS_CHECK_ATTRIBUTES] },
+            StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+          },
+        }),
+        new PolicyStatement({
+          sid: "RecordNoticeAddress",
+          actions: ["dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"],
+          resources: [tableArn],
+          conditions: {
+            "ForAllValues:StringLike": userPartitions,
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": [...NOTICE_ADDRESS_RECORD_ATTRIBUTES] },
+            StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+          },
+        }),
+        new PolicyStatement({
+          sid: "TableKeyThroughDynamoDb",
+          actions: ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"],
+          resources: [StringParameter.valueForStringParameter(this, `/supply-checkout/${this.config.envName}/data/table-key-arn`)],
+          conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
+        }),
+      ],
+    });
+  }
+
   /** A function from backend/src/identity/<name>.ts, with its own log group and a role that can write only to it. */
-  private trigger(id: string, name: string, description: string, environment: Record<string, string> = {}): NodejsFunction {
+  private trigger(id: string, name: string, description: string, environment: Record<string, string> = {}, functionName?: string): NodejsFunction {
     const logGroup = new LogGroup(this, `${id}Logs`, { retention: LOG_RETENTION });
     const role = new Role(this, `${id}Role`, {
       assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
@@ -556,6 +635,7 @@ export class IdentityStack extends SupplyCheckoutStack {
     });
     role.addToPolicy(new PolicyStatement({ actions: ["logs:CreateLogStream", "logs:PutLogEvents"], resources: [logGroup.logGroupArn] }));
     return new NodejsFunction(this, id, {
+      ...(functionName ? { functionName } : {}),
       role,
       logGroup,
       entry: `${BACKEND}src/identity/${name}.ts`,

@@ -122,6 +122,14 @@
 // counts in its own business metric (EmailVerifyFailures,
 // EmailUnverifyFailures), which an alarm watches.
 //
+// The address an email change is told to (supply-checkout-8jc.31): once the
+// outcome is settled, the trigger records the user's address if the API would
+// now trust it and none is recorded yet (rememberNoticeAddress,
+// notice-address.ts; settledAttributes says what this token's writes left),
+// never one it has just unverified or tried to. Only with time left for its
+// two calls within WRITE_BUDGET_MS, and it never fails the token: a failure is
+// logged with the error's name only and counted (SecurityNoticeFailures).
+//
 // Logs carry the provider and the outcome, never the email or the username
 // (which contains the provider's user ID). A linked user's failed downgrade
 // also carries a correlation handle, an HMAC of the user's sub with a key
@@ -140,6 +148,7 @@ import type { PreTokenGenerationTriggerEvent } from "aws-lambda";
 import { verifiedEmailHash } from "../data/index.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import type { UpdateUserAttributes } from "./cognito-admin.js";
+import type { NoticeAddressOutcome, RememberNoticeAddress } from "./notice-address.js";
 import {
   DOWNGRADE_PENDING_ATTRIBUTE,
   FEDERATED_PROVIDERS,
@@ -161,6 +170,11 @@ export interface EmailVerifiedDeps {
   /** For tests. */
   readonly sleep?: (ms: number) => Promise<void>;
   readonly now?: () => number;
+  /**
+   * Records the address an email change is told to (notice-address.ts,
+   * supply-checkout-8jc.31). Without it, nothing is recorded.
+   */
+  readonly rememberNoticeAddress?: RememberNoticeAddress;
 }
 
 /** Each Cognito call's timeout (email-verified.ts passes it to the client). */
@@ -173,6 +187,14 @@ export const RETRY_PAUSE_MS = 250;
  * call at most CALL_TIMEOUT_MS, is 3.85 seconds.
  */
 export const WRITE_BUDGET_MS = 4_000;
+/**
+ * Each DynamoDB call's timeout when recording the notice address (email-verified.ts
+ * passes it to the recorder): best effort, so short. Its two calls start only
+ * while they still fit in WRITE_BUDGET_MS, so the worst case (the linked
+ * path's two calls, then these two) is 3.4 seconds, leaving room for a cold
+ * start in Cognito's 5.
+ */
+export const NOTICE_CALL_TIMEOUT_MS = 500;
 
 /**
  * A user's log correlation handle: the first 16 hex digits of
@@ -303,6 +325,28 @@ export type Outcome =
   | "linked-cleared"
   /** Couldn't clear it: the user stays untrusted until a later token clears it. */
   | "linked-clear-failed";
+
+/**
+ * The user's attributes once this token's writes are in, for deciding whether
+ * the API trusts the email (notice-address.ts); undefined when the trigger
+ * itself just took trust away, or tried to and couldn't (the email isn't one
+ * to record). An outcome that wrote nothing leaves them as they came, and a
+ * failed write changes nothing, so the email stays as untrusted as it was.
+ */
+export function settledAttributes(outcome: Outcome, attributes: Readonly<Record<string, string | undefined>>): Readonly<Record<string, string | undefined>> | undefined {
+  switch (outcome) {
+    case "verified":
+      return { ...attributes, email_verified: "true" };
+    case "linked-recorded":
+      return { ...attributes, [LINKED_EMAIL_ATTRIBUTE]: asciiLower(attributes.email?.trim() ?? ""), [DOWNGRADE_PENDING_ATTRIBUTE]: "" };
+    case "unverified":
+    case "downgrade-failed":
+    case "linked-unverified":
+      return undefined;
+    default:
+      return attributes;
+  }
+}
 
 export function createEmailVerifiedHandler(deps: EmailVerifiedDeps) {
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -436,9 +480,36 @@ export function createEmailVerifiedHandler(deps: EmailVerifiedDeps) {
     return { outcome: verified ? "verified" : "unverified", provider };
   };
 
+  /**
+   * Records the address an email change is told to, if the API would trust
+   * the email once this token's writes are in (settledAttributes) and none is
+   * recorded yet (notice-address.ts). Only with time left for its two calls
+   * within WRITE_BUDGET_MS; otherwise a later token does it. Never throws: a
+   * failure is logged with the error's name only and counted.
+   */
+  const rememberAddress = async (
+    remember: RememberNoticeAddress,
+    event: PreTokenGenerationTriggerEvent,
+    outcome: Outcome,
+    started: number,
+  ): Promise<NoticeAddressOutcome | "deferred" | "failed"> => {
+    const attributes = settledAttributes(outcome, event.request?.userAttributes ?? {});
+    if (!attributes) return "untrusted";
+    if (now() - started + 2 * NOTICE_CALL_TIMEOUT_MS > WRITE_BUDGET_MS) return "deferred";
+    try {
+      return await remember(event.userName, attributes);
+    } catch (error) {
+      deps.obs.logger.error("Notice address not recorded", { outcome: "notice-address-failed", code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      deps.obs.count(BusinessMetric.SecurityNoticeFailures, 1, { kind: "emailChanged", reason: "record_address", via: "sign-in" });
+      return "failed";
+    }
+  };
+
   return async (event: PreTokenGenerationTriggerEvent): Promise<PreTokenGenerationTriggerEvent> => {
+    const started = now();
     const { outcome, provider } = await handle(event);
-    deps.obs.logger.info("Federated email", { triggerSource: String(event.triggerSource), outcome, ...(provider ? { provider } : {}) });
+    const noticeAddress = deps.rememberNoticeAddress ? await rememberAddress(deps.rememberNoticeAddress, event, outcome, started) : undefined;
+    deps.obs.logger.info("Federated email", { triggerSource: String(event.triggerSource), outcome, ...(provider ? { provider } : {}), ...(noticeAddress ? { noticeAddress } : {}) });
     // The tokens are unchanged: the API reads email_verified from Cognito (GetUser), not from a token
     return event;
   };

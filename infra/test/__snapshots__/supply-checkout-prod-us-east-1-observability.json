@@ -1319,6 +1319,94 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmssignuptriggerfailing832D02A3": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "AlarmDescription": "P1 Sign-up trigger failing (J1, us-east-1). Any Errors or Throttles of the app pool's post confirmation trigger in 5 minutes: Cognito reports a failed trigger to the person confirming their sign-up (they're confirmed, but see an error), and the trigger never fails on purpose (a failed notice-address write is counted in SecurityNoticeFailures instead), so this is a crash, a timeout or a throttle (supply-checkout-8jc.31). Its logs are the function's log group. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p1-sign-up-trigger-failing",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Expression": "FILL(e, 0) + FILL(t, 0)",
+            "Id": "expr_1",
+            "Label": "Post confirmation trigger errors and throttles (us-east-1)",
+            "ReturnData": true
+          },
+          {
+            "Id": "e",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "FunctionName",
+                    "Value": "supply-checkout-prod-post-confirmation"
+                  }
+                ],
+                "MetricName": "Errors",
+                "Namespace": "AWS/Lambda"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          },
+          {
+            "Id": "t",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "FunctionName",
+                    "Value": "supply-checkout-prod-post-confirmation"
+                  }
+                ],
+                "MetricName": "Throttles",
+                "Namespace": "AWS/Lambda"
+              },
+              "Period": 300,
+              "Stat": "Sum"
+            },
+            "ReturnData": false
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP1E7C597D3"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmsimportsstuck68033DBE": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -9219,6 +9307,13 @@
               {
                 "Fn::GetAtt": [
                   "JourneyAlarmssecuritynoticesdroppedDBC2F8B3",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmssignuptriggerfailing832D02A3",
                   "Arn"
                 ]
               },

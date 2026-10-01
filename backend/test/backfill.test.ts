@@ -5,11 +5,13 @@
 
 import { DeleteCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { createDb, createTeam, type Db, getOpsTeam, listOpsTeams } from "../src/data/index.js";
+import { createDb, createTeam, type Db, emailSeenHash, getOpsTeam, listOpsTeams, noticeAddress, recordNoticeAddress, startAccountDeletion } from "../src/data/index.js";
 import { connection, dbFromConnection } from "../src/data/client.js";
-import { backfillMemberCounts, backfillOpsIndex, expectedOpsKeys, runBackfill, stripStrayOpsKeys } from "../src/data/backfill.js";
-import { formatReport, main, USAGE } from "../scripts/backfill.js";
+import { backfillMemberCounts, backfillOpsIndex, expectedOpsKeys, type NoticeAddressCandidate, runBackfill, stripStrayOpsKeys } from "../src/data/backfill.js";
+import type { PoolUser } from "../src/identity/cognito-admin.js";
+import { type FoundPool, formatReport, main, USAGE } from "../scripts/backfill.js";
 import { endpoint, newUser, rawItem, REGION, useTable } from "./helpers.js";
+import { MemoryTable } from "./memory-table.js";
 
 const op = { sub: "op-sub-backfill" };
 const now = new Date();
@@ -85,6 +87,9 @@ describe("the backfill CLI's arguments", () => {
     [["members", "--table", "supply-checkout-prod-ap", "--region", "r", "--profile", "p"], /--table must be an app table/],
     [["members", "--table", "other-table", "--region", "r", "--profile", "p", "--apply"], /--table must be an app table/],
     [["members", "--table", "supply-checkout-Prod-app", "--region", "r", "--profile", "p"], /--table must be an app table/],
+    // The pool comes from the table's environment, never from an argument
+    [["notice-address", "--table", "supply-checkout-prod-app", "--region", "test-local-1", "--profile", "p", "--user-pool", "test-local-1_AbC123"], /Unknown option '--user-pool'/],
+    [["notice-address", "--table", "other-table", "--region", "test-local-1", "--profile", "p"], /--table must be an app table, supply-checkout-<env>-app, for notice-address/],
   ])("refuses %j", async (args, message) => {
     const result = await run(args);
     expect(result.code).toBe(2);
@@ -126,6 +131,197 @@ describe("the backfill CLI's arguments", () => {
       "  TEAM#t1 SHEET: 1",
       "Dry run: nothing was written. Run again with --apply to write.",
     ]);
+    expect(formatReport({ mode: "notice-address", apply: true, found: 2, changed: 1, raced: 1, invalid: 0, accounts: { listed: 6, untrusted: 2, present: 1, deleting: 1 } })).toEqual([
+      "App pool users: 6",
+      "  no verified address the API trusts, left alone: 2",
+      "  address already recorded, left alone: 1",
+      "  being deleted, left alone: 1",
+      "Accounts with a trusted verified address and no notice address: 2",
+      "  address recorded: 1",
+      "  changed by something else first, left alone: 1",
+      "Done.",
+    ]);
+  });
+
+  it("needs the pool's users for notice-address", async () => {
+    await expect(runBackfill(new MemoryTable().db(), "notice-address", { apply: false })).rejects.toThrow(/needs the app pool's users/);
+  });
+});
+
+// supply-checkout-8jc.31: every app pool user whose verified address the API trusts gets a NOTICE_ADDRESS
+describe("the notice-address backfill", () => {
+  const POOL = `${REGION}_AppPool1`;
+  const sub = (n: number) => `4f1c2b7e-9a3d-4e5f-8b6a-${String(n).padStart(12, "0")}`;
+  const user = (n: number, attributes: Record<string, string> = {}): PoolUser => ({
+    username: sub(n),
+    status: "CONFIRMED",
+    enabled: true,
+    attributes: { sub: sub(n), email: `Person${n}@Example.com`, email_verified: "true", ...attributes },
+  });
+  async function* listed(users: PoolUser[]) {
+    yield* users;
+  }
+  async function* candidates(list: NoticeAddressCandidate[]) {
+    yield* list;
+  }
+
+  /** Runs the CLI against `db` with the given pool users; returns the exit code and output. */
+  async function run(db: Db, users: PoolUser[], apply: boolean, found: () => Promise<FoundPool> = async () => ({ id: POOL, name: "supply-checkout-test", opsId: `${REGION}_OpsPool1` })) {
+    const out: string[] = [];
+    const seen: { region?: string; pool?: string; asked?: string[] } = {};
+    let connected = false;
+    const deps = {
+      callerAccount: async () => "ACCOUNT-PLACEHOLDER",
+      connect: () => {
+        connected = true;
+        return db;
+      },
+      appPool: async (region: string, envName: string) => {
+        seen.asked = [region, envName];
+        return found();
+      },
+      listUsers: (region: string, pool: string) => {
+        Object.assign(seen, { region, pool });
+        return listed(users);
+      },
+    };
+    const args = ["notice-address", "--table", "supply-checkout-test-app", "--region", REGION, "--profile", "supply-test", ...(apply ? ["--apply"] : [])];
+    const code = await main(args, (l) => out.push(l), (l) => out.push(l), deps);
+    return { code, out, seen, connected };
+  }
+
+  it("refuses to read or write unless the table's environment names its own app pool, in this region", async () => {
+    const ops = `${REGION}_OpsPool1`;
+    const cases: [string, () => Promise<FoundPool>, RegExp][] = [
+      ["the operator pool, by name", async () => ({ id: ops, name: "supply-checkout-test-ops", opsId: ops }), /names the operator pool \(test-local-1_OpsPool1\)/],
+      ["another env's operator pool, by name", async () => ({ id: `${REGION}_OtherOps`, name: "supply-checkout-prod-ops", opsId: ops }), /names the operator pool/],
+      // Even if it were renamed to look like the app pool
+      ["the operator pool, by its ID", async () => ({ id: ops, name: "supply-checkout-test", opsId: ops }), /names the operator pool \(test-local-1_OpsPool1\)/],
+      ["another environment's pool", async () => ({ id: POOL, name: "supply-checkout-prod", opsId: ops }), /not supply-checkout-prod/],
+      ["a pool in another region", async () => ({ id: "test-other-2_AppPool1", name: "supply-checkout-test", opsId: "" }), /in test-local-1, not supply-checkout-test \(test-other-2_AppPool1\)/],
+      ["something that isn't a pool ID", async () => ({ id: "junk", name: "", opsId: ops }), /not an unnamed pool \(junk\)/],
+      ["no parameter value", async () => ({ id: "", name: "", opsId: "" }), /\(no ID\)/],
+      ["a failed lookup", () => Promise.reject(Object.assign(new Error("Parameter not found"), { name: "ParameterNotFound" })), /Failed to find the app pool \(\/supply-checkout\/test\/identity\/user-pool-id\): ParameterNotFound/],
+    ];
+    for (const [name, found, message] of cases) {
+      const result = await run(new MemoryTable().db(), [user(1)], true, found);
+      expect(result.code, name).toBe(1);
+      expect(result.out.join("\n"), name).toMatch(message);
+      expect(result.seen.asked, name).toEqual([REGION, "test"]);
+      expect(result.connected, name).toBe(false);
+      expect(result.seen.pool, name).toBeUndefined();
+    }
+  });
+
+  it("never lists a real pool against --endpoint: only tests, which stand in for the pool, may", async () => {
+    const args = ["notice-address", "--table", "supply-checkout-test-app", "--region", REGION, "--endpoint", "http://127.0.0.1:9"];
+    const refused = { asked: 0 };
+    const connect = () => {
+      throw new Error("must not connect");
+    };
+    const appPool = async () => {
+      refused.asked++;
+      return { id: POOL, name: "supply-checkout-test", opsId: "" };
+    };
+    for (const deps of [undefined, { callerAccount: async () => "x", connect }, { callerAccount: async () => "x", connect, appPool }]) {
+      const out: string[] = [];
+      const code = await main([...args, "--apply"], (l) => out.push(l), (l) => out.push(l), deps);
+      expect(code).toBe(2);
+      expect(out.join("\n")).toMatch(/notice-address lists a real user pool, so it can't run against --endpoint; use --profile/);
+    }
+    expect(refused.asked).toBe(0);
+  });
+
+  it("needs an app table's name to find the pool, even with --endpoint", async () => {
+    const out: string[] = [];
+    const code = await main(["notice-address", "--table", "test-table", "--region", REGION, "--endpoint", "http://127.0.0.1:9"], (l) => out.push(l), (l) => out.push(l));
+    expect(code).toBe(2);
+    expect(out.join("\n")).toMatch(/--table must be an app table, supply-checkout-<env>-app, for notice-address: test-table/);
+  });
+
+  /** Each case the backfill tells apart, on `db`. */
+  async function seed(db: Db): Promise<PoolUser[]> {
+    await recordNoticeAddress(db, sub(3), "kept@example.com", emailSeenHash("kept@example.com"));
+    await startAccountDeletion(db, sub(4));
+    return [
+      user(1),
+      user(2, { email: "Second@Example.com" }),
+      user(3),
+      user(4),
+      user(5, { email_verified: "false" }),
+      user(6, { "custom:downgrade_pending": "1" }),
+      { username: "no-sub", status: "UNCONFIRMED", enabled: true, attributes: {} },
+    ];
+  }
+
+  async function check(db: Db) {
+    const users = await seed(db);
+    const dry = await run(db, users, false);
+    expect(dry.code).toBe(0);
+    expect(dry.seen).toEqual({ region: REGION, pool: POOL, asked: [REGION, "test"] });
+    expect(dry.out).toEqual([
+      `notice-address on supply-checkout-test-app and pool ${POOL} in ${REGION} in account ACCOUNT-PLACEHOLDER (profile supply-test) (dry run)`,
+      "App pool users: 7",
+      "  no verified address the API trusts, left alone: 3",
+      "  address already recorded, left alone: 1",
+      "  being deleted, left alone: 1",
+      "Accounts with a trusted verified address and no notice address: 2",
+      "  address recorded: 2 (dry run: would be)",
+      "Dry run: nothing was written. Run again with --apply to write.",
+    ]);
+    expect(await noticeAddress(db, sub(1))).toBeUndefined();
+
+    const applied = await run(db, users, true);
+    expect(applied.code).toBe(0);
+    expect(applied.out.slice(-3)).toEqual(["Accounts with a trusted verified address and no notice address: 2", "  address recorded: 2", "Done."]);
+    // Counts only: no address, sub or name
+    expect(applied.out.join("\n")).not.toMatch(/@|4f1c2b7e/);
+    expect(await noticeAddress(db, sub(1))).toEqual({ address: "person1@example.com", seen: emailSeenHash("Person1@Example.com") });
+    expect((await noticeAddress(db, sub(2)))?.address).toBe("second@example.com");
+    expect((await noticeAddress(db, sub(3)))?.address).toBe("kept@example.com");
+    for (const n of [4, 5, 6]) expect(await noticeAddress(db, sub(n)), String(n)).toBeUndefined();
+
+    // Idempotent: a second run finds nothing to do
+    const again = await run(db, users, true);
+    expect(again.out).toContain("  address already recorded, left alone: 3");
+    expect(again.out).toContain("Accounts with a trusted verified address and no notice address: 0");
+  }
+
+  it("records each trusted address once, never over one recorded or for an account being deleted (in memory)", async () => {
+    await check(new MemoryTable().db());
+  });
+
+  describe.skipIf(!endpoint)("on DynamoDB Local", () => {
+    const ddb = useTable();
+
+    it("does the same", async () => {
+      await check(ddb.db);
+    });
+  });
+
+  it("leaves an account alone when its address is recorded, or its deletion starts, between the check and the write", async () => {
+    for (const race of ["recorded", "deleting"] as const) {
+      const table = new MemoryTable();
+      table.beforeTransactWrite = () => {
+        table.beforeTransactWrite = undefined;
+        if (race === "recorded") table.put({ PK: `USER#${sub(1)}`, SK: "NOTICE_ADDRESS", noticeAddress: "first@example.com", noticeAddressAt: "then", noticeSeenHash: "h" });
+        else table.put({ PK: `USER#${sub(1)}`, SK: "DELETING" });
+      };
+      const report = await runBackfill(table.db(), "notice-address", { apply: true }, { accounts: candidates([{ userId: sub(1), address: "person1@example.com", seen: "h" }]) });
+      expect(report, race).toMatchObject({ found: 1, changed: 0, raced: 1 });
+      expect(table.get(`USER#${sub(1)}`, "NOTICE_ADDRESS")?.noticeAddress ?? null, race).toBe(race === "recorded" ? "first@example.com" : null);
+    }
+  });
+
+  it("counts a candidate whose ID isn't valid as invalid, and writes nothing for it", async () => {
+    const table = new MemoryTable();
+    const accounts = candidates([
+      { userId: "bad id", address: "a@example.com", seen: "h" },
+      { userId: sub(1), address: "", seen: "h" },
+    ]);
+    const report = await runBackfill(table.db(), "notice-address", { apply: true }, { accounts });
+    expect(report).toMatchObject({ found: 0, changed: 0, invalid: 2 });
+    expect(table.items.size).toBe(0);
   });
 });
 

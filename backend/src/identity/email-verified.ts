@@ -3,13 +3,15 @@
 import { createDb, provenEmailHash } from "../data/index.js";
 import { createObservability, withObservability } from "../observability/index.js";
 import { cognitoAdmin } from "./cognito-admin.js";
-import { CALL_TIMEOUT_MS, createEmailVerifiedHandler, logCorrelation } from "./email-verified-handler.js";
+import { CALL_TIMEOUT_MS, createEmailVerifiedHandler, logCorrelation, NOTICE_CALL_TIMEOUT_MS } from "./email-verified-handler.js";
 import { LOG_CORRELATION_KEY_ENV } from "./names.js";
+import { noticeAddressRecorder } from "./notice-address.js";
 
 const obs = createObservability({ service: "sign-in" });
 const updateUserAttributes = cognitoAdmin({ region: obs.region, timeoutMs: CALL_TIMEOUT_MS });
-// The app table (TABLE_NAME), read with the trigger's own role: GetItem of a
-// user's VERIFIED_EMAIL item, its hash only (identity stack)
+// The app table (TABLE_NAME), with the trigger's own role: GetItem of a user's
+// VERIFIED_EMAIL item, its hash only, and of their NOTICE_ADDRESS item, when it
+// was recorded only; and recording that address (identity stack)
 const db = createDb();
 const key = process.env[LOG_CORRELATION_KEY_ENV];
 export const handler = withObservability(
@@ -17,6 +19,7 @@ export const handler = withObservability(
   createEmailVerifiedHandler({
     updateUserAttributes,
     provenEmailHash: (sub) => provenEmailHash(db, sub, { timeoutMs: CALL_TIMEOUT_MS }),
+    rememberNoticeAddress: noticeAddressRecorder(db, { timeoutMs: NOTICE_CALL_TIMEOUT_MS }),
     obs,
     ...(key ? { correlate: logCorrelation(key) } : {}),
   }),

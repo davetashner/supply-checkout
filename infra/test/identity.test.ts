@@ -125,7 +125,8 @@ describe("Managed Login domain", () => {
         AliasTarget: { DNSName: { "Fn::GetAtt": [domainId, "CloudFrontDistribution"] }, HostedZoneId: Match.anyValue() },
       });
     }
-    template.resourceCountIs("AWS::Lambda::Function", 0);
+    // Only the post confirmation trigger (supply-checkout-8jc.31)
+    template.resourceCountIs("AWS::Lambda::Function", 1);
     template.resourceCountIs("Custom::UserPoolCloudFrontDomainName", 0);
   });
 
@@ -323,20 +324,22 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
   it("aren't there with both providers off", () => {
     const { stacks, template } = build();
     expect(stacks.identity.federatedTriggers).toBeUndefined();
-    template.resourceCountIs("AWS::Lambda::Function", 0);
-    expect(only(template, "AWS::Cognito::UserPool").Properties.LambdaConfig).toBeUndefined();
+    // Only the post confirmation trigger, which every pool has (supply-checkout-8jc.31)
+    template.resourceCountIs("AWS::Lambda::Function", 1);
+    expect(only(template, "AWS::Cognito::UserPool").Properties.LambdaConfig).toEqual({ PostConfirmation: { "Fn::GetAtt": [fnId(template, "PostConfirmation"), "Arn"] } });
   });
 
   it("guard native sign-ins, set email_verified before every token and link sign-ups to existing accounts, with either provider on", () => {
     for (const context of [{ googleSignIn: true }, { appleSignIn: true }]) {
       const { stacks, template } = build({}, context);
       expect(stacks.identity.federatedTriggers).toBeDefined();
-      template.resourceCountIs("AWS::Lambda::Function", 3);
+      template.resourceCountIs("AWS::Lambda::Function", 4);
       template.hasResourceProperties("AWS::Cognito::UserPool", {
         LambdaConfig: {
           PreAuthentication: { "Fn::GetAtt": [fnId(template, "SignInGuard"), "Arn"] },
           PreTokenGeneration: { "Fn::GetAtt": [fnId(template, "EmailVerified"), "Arn"] },
           PreSignUp: { "Fn::GetAtt": [fnId(template, "AccountLink"), "Arn"] },
+          PostConfirmation: { "Fn::GetAtt": [fnId(template, "PostConfirmation"), "Arn"] },
         },
       });
       for (const fn of Object.values(template.findResources("AWS::Lambda::Function"))) {
@@ -348,14 +351,15 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
     expect(source).toMatch(/trigger\("SignInGuard", "sign-in-guard"/);
     expect(source).toMatch(/trigger\("EmailVerified", "email-verified"/);
     expect(source).toMatch(/trigger\("AccountLink", "account-link"/);
+    expect(source).toMatch(/trigger\(\s*"PostConfirmation",\s*"post-confirmation"/);
   });
 
   it("may each be invoked only by this pool", () => {
     const { template } = withProviders();
     const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0];
     const permissions = Object.values(template.findResources("AWS::Lambda::Permission")).map((p) => p.Properties);
-    expect(permissions).toHaveLength(3);
-    for (const id of ["SignInGuard", "EmailVerified", "AccountLink"]) {
+    expect(permissions).toHaveLength(4);
+    for (const id of ["SignInGuard", "EmailVerified", "AccountLink", "PostConfirmation"]) {
       expect(permissions).toContainEqual({
         Action: "lambda:InvokeFunction",
         FunctionName: { "Fn::GetAtt": [fnId(template, id), "Arn"] },
@@ -390,7 +394,36 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
       Resource: { Ref: expect.stringMatching(/tablekeyarn/) },
       Condition: { StringEquals: { "kms:ViaService": { "Fn::Join": ["", ["dynamodb.", { Ref: "AWS::Region" }, ".amazonaws.com"]] } } },
     };
-    sameStatements(statementsOf(template, roleOf(template, "EmailVerified")), [logs("EmailVerified"), xray, setVerified, provenEmail, tableKey]);
+    // The notice address (supply-checkout-8jc.31): whether one is recorded (never the address), and recording it
+    const table = provenEmail.Resource;
+    const noticeAddress = [
+      {
+        Sid: "ReadNoticeAddressRecorded",
+        Effect: "Allow",
+        Action: "dynamodb:GetItem",
+        Resource: table,
+        Condition: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeAddressAt"] },
+          StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      },
+      {
+        Sid: "RecordNoticeAddress",
+        Effect: "Allow",
+        Action: ["dynamodb:ConditionCheckItem", "dynamodb:UpdateItem"],
+        Resource: table,
+        Condition: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeAddress", "noticeAddressAt", "noticeSeenHash"] },
+          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        },
+      },
+      // One statement for the key, which also covers the proven email's read
+      { ...tableKey, Action: ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"] },
+    ];
+    sameStatements(statementsOf(template, roleOf(template, "EmailVerified")), [logs("EmailVerified"), xray, setVerified, provenEmail, ...noticeAddress]);
+    sameStatements(statementsOf(template, roleOf(template, "PostConfirmation")), [logs("PostConfirmation"), xray, ...noticeAddress]);
     const link = { Sid: "LinkToExistingAccount", Effect: "Allow", Action: ["cognito-idp:AdminLinkProviderForUser", "cognito-idp:AdminUpdateUserAttributes", "cognito-idp:ListUsers"], Resource: { "Fn::GetAtt": [poolId, "Arn"] } };
     sameStatements(statementsOf(template, roleOf(template, "AccountLink")), [logs("AccountLink"), xray, link]);
     for (const role of Object.values(template.findResources("AWS::IAM::Role"))) expect(role.Properties.ManagedPolicyArns).toBeUndefined();
@@ -418,6 +451,9 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
     expect(env("EmailVerified").TABLE_NAME).toBe("supply-checkout-staging-app");
     expect(env("SignInGuard").TABLE_NAME).toBeUndefined();
     expect(env("AccountLink").TABLE_NAME).toBeUndefined();
+    expect(env("PostConfirmation").TABLE_NAME).toBe("supply-checkout-staging-app");
+    // A fixed name, for the Sign-up trigger failing alarm
+    expect(template.toJSON().Resources[fnId(template, "PostConfirmation")].Properties.FunctionName).toBe("supply-checkout-staging-post-confirmation");
     template.hasParameter("*", ssmParameter("/supply-checkout/staging/data/table-key-arn"));
     const primary = stacks.regions[stacks.identity.region];
     expect(stacks.identity.dependencies).toContain(primary?.data);
@@ -428,7 +464,7 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
   it("get their grant after the pool exists, so the pool can name the functions (no dependency cycle)", () => {
     const { template } = withProviders();
     const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0] as string;
-    const grantIds = ["EmailVerifiedUpdateUser", "EmailVerifiedProvenEmail", "AccountLinkUsers"].map(
+    const grantIds = ["EmailVerifiedUpdateUser", "EmailVerifiedProvenEmail", "EmailVerifiedNoticeAddress", "AccountLinkUsers", "PostConfirmationNoticeAddress"].map(
       (name) => Object.keys(template.findResources("AWS::IAM::Policy", { Properties: { PolicyName: Match.stringLikeRegexp(name) } }))[0],
     );
     for (const grantId of grantIds) expect(grantId).toBeDefined();

@@ -90,3 +90,12 @@ export const SECURITY_NOTICE_EVENTS = {
 
 /** The security notices function's environment: the app pool it looks users up in. */
 export const SECURITY_NOTICES_ENV = { userPoolId: "USER_POOL_ID" } as const;
+
+/**
+ * Fixed names of the identity stack's resources that alarms watch
+ * (infra/lib/observability/journey-alarms.ts): the post confirmation trigger
+ * (post-confirmation-handler.ts, supply-checkout-8jc.31).
+ */
+export const identityResourceNames = (envName: string) => ({
+  postConfirmationFunction: `supply-checkout-${envName}-post-confirmation`,
+});

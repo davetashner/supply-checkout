@@ -10,6 +10,7 @@ import {
 import { Construct } from "constructs";
 import { billingResourceNames } from "../../../backend/src/billing/names.js";
 import { emailResourceNames } from "../../../backend/src/email/names.js";
+import { identityResourceNames } from "../../../backend/src/identity/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import { PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS } from "../../../backend/src/ops/names.js";
 import { realtimeResourceNames } from "../../../backend/src/realtime/channels.js";
@@ -78,6 +79,7 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
   const realtime = realtimeResourceNames(envName);
   const email = emailResourceNames(envName);
   const billing = billingResourceNames(envName);
+  const identity = identityResourceNames(envName);
   return [
     // Every journey
     {
@@ -168,6 +170,25 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
         region,
       }),
       threshold: 0,
+    },
+    // J1. Sign up
+    {
+      id: "sign-up-trigger-failing",
+      title: "Sign-up trigger failing",
+      journeys: "J1",
+      severity: "P1",
+      rule: "Any Errors or Throttles of the app pool's post confirmation trigger in 5 minutes: Cognito reports a failed trigger to the person confirming their sign-up (they're confirmed, but see an error), and the trigger never fails on purpose (a failed notice-address write is counted in SecurityNoticeFailures instead), so this is a crash, a timeout or a throttle (supply-checkout-8jc.31). Its logs are the function's log group.",
+      metric: new MathExpression({
+        expression: "FILL(e, 0) + FILL(t, 0)",
+        usingMetrics: {
+          e: new Metric({ namespace: "AWS/Lambda", metricName: "Errors", dimensionsMap: { FunctionName: identity.postConfirmationFunction }, statistic: "Sum", period: FIVE_MINUTES, region }),
+          t: new Metric({ namespace: "AWS/Lambda", metricName: "Throttles", dimensionsMap: { FunctionName: identity.postConfirmationFunction }, statistic: "Sum", period: FIVE_MINUTES, region }),
+        },
+        period: FIVE_MINUTES,
+        label: `Post confirmation trigger errors and throttles (${region})`,
+      }),
+      threshold: 0,
+      primaryOnly: true,
     },
     // J2. Set up the inventory
     {
