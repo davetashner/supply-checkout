@@ -15,11 +15,13 @@ import {
   closeTeam,
   ConflictError,
   createTeam,
+  finishReopenResync,
   getBillingTeam,
   isWebhookProcessed,
   linkStripeCustomer,
   listOwnerContacts,
   markWebhookProcessed,
+  reopenTeam,
   stripeCustomerTeam,
   type SubscriptionState,
   teamContextForStripeCustomer,
@@ -97,6 +99,38 @@ describe.skipIf(!endpoint)("billing on DynamoDB Local", () => {
     expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ status: "past_due", stripeSubscriptionId: "sub_test_1" });
     // A read that found no subscription, when there is one now
     await expect(applySubscription(table.db, ctx, state(customer), now, { status: "past_due", plan: "starter", seats: 3 })).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  it("with asRead, also refuses a cancellation applied meanwhile, and takes a team never applied as renewing", async () => {
+    const { team, customer, ctx } = await linkedTeam();
+    expect(await getBillingTeam(table.db, ctx, now)).toMatchObject({ cancelAtPeriodEnd: false });
+    // Never applied reads as false
+    expect(await applySubscription(table.db, ctx, state(customer), now, { status: "trialing", plan: "trial", seats: 1, cancelAtPeriodEnd: false })).toBe("applied");
+    const read = { status: "trialing", plan: "starter", seats: 3, subscriptionId: "sub_test_1", cancelAtPeriodEnd: false };
+    expect(await applySubscription(table.db, ctx, state(customer, { cancelAtPeriodEnd: true }), now)).toBe("applied");
+    await expect(applySubscription(table.db, ctx, state(customer), now, read)).rejects.toBeInstanceOf(ConflictError);
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ cancelAtPeriodEnd: true });
+    expect(await applySubscription(table.db, ctx, state(customer), now, { ...read, cancelAtPeriodEnd: true })).toBe("applied");
+    expect(await getBillingTeam(table.db, ctx, now)).toMatchObject({ cancelAtPeriodEnd: false });
+  });
+
+  it("records a reopen's pending resync, and finishes it only for that closure (supply-checkout-85qp)", async () => {
+    const { team, owner, customer, ctx } = await linkedTeam();
+    const closedAt = new Date(now.getTime() - 60_000);
+    await closeTeam(table.db, owner, { confirmName: team.name }, closedAt);
+    await reopenTeam(table.db, await authorizeTeam(table.db, owner.userId, team.teamId), { confirmName: team.name }, now);
+    const read = await getBillingTeam(table.db, ctx, now);
+    expect(read).toMatchObject({ closed: false, resyncFor: closedAt.toISOString(), reopenedAt: now.toISOString() });
+    expect(read).not.toHaveProperty("cancelledFor");
+    // Another closure's resync doesn't finish it
+    expect(await finishReopenResync(table.db, ctx, "2026-01-01T00:00:00.000Z")).toBe(false);
+    expect(await applySubscription(table.db, ctx, state(customer), now)).toBe("applied");
+    expect(await finishReopenResync(table.db, ctx, closedAt.toISOString())).toBe(true);
+    expect(await getBillingTeam(table.db, ctx, now)).not.toHaveProperty("resyncFor");
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).not.toHaveProperty("stripeResyncFor");
+    // Done already: nothing to finish
+    expect(await finishReopenResync(table.db, ctx, closedAt.toISOString())).toBe(false);
+    await expect(finishReopenResync(table.db, owner, closedAt.toISOString())).rejects.toThrow("Only billing");
   });
 
   it("never touches a closed team", async () => {

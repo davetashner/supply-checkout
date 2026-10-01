@@ -16,10 +16,10 @@ import { authorizeTeam, CLOSED_TEAM_RETENTION_DAYS, createInvite, REOPEN_CUTOFF_
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { CLOSED_TEAMS_TO_END_PER_RUN, MAX_LOGGED_SET_ASIDE, PURGE_BUDGET_MS } from "../src/ops/names.js";
 import { createTeamPurgeHandler } from "../src/ops/team-purge-handler.js";
-import { closingKey, type PurgeStripe } from "../src/billing/closing.js";
+import { CLOSED_AT_METADATA, closingKey, type PurgeStripe, resumeKey } from "../src/billing/closing.js";
 import type { SubscriptionLike } from "../src/billing/worker.js";
 import { TEAM_PURGE_ATTRIBUTES, TEAM_PURGE_MARK_ATTRIBUTES } from "../src/data/schema.js";
-import { REGION, accountPartitions, fakeDb, fakeMailer, memoryDeletionLog, unusedEmailCodes, unusedTotp } from "./helpers.js";
+import { REGION, accountPartitions, stripeSubscriptionUpdate, fakeDb, fakeMailer, memoryDeletionLog, unusedEmailCodes, unusedTotp } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 import { connection } from "../src/data/client.js";
 import { EmailNotSentError, type Mailer } from "../src/email/mailer.js";
@@ -728,6 +728,11 @@ describe("deleting an account", () => {
   });
 });
 
+/** A subscription after a Stripe update: its cancel_at_period_end, and its metadata merged, an empty value removing a key, as Stripe does. */
+function applyUpdate(sub: SubscriptionLike, params: { cancel_at_period_end?: boolean; metadata: Record<string, string> }): SubscriptionLike {
+  return stripeSubscriptionUpdate(sub, params, NOW / 1000);
+}
+
 /** A fake Stripe for the purge: subscriptions by ID, and the calls it was sent. */
 function fakePurgeStripe() {
   const state = {
@@ -744,6 +749,8 @@ function fakePurgeStripe() {
     refuseRetrieve: new Map<string, unknown>(),
     /** Runs as a subscription is fetched: after the purge re-read the team, before it records anything. */
     onRetrieve: undefined as (() => void) | undefined,
+    /** Stripe refuses resuming a subscription (cancel_at_period_end back to false). */
+    refuseResume: false,
   };
   const failIfDown = () => {
     if (state.down) throw Object.assign(new Error("Stripe is down"), { name: "StripeConnectionError" });
@@ -762,8 +769,9 @@ function fakePurgeStripe() {
       async update(id, params, options) {
         failIfDown();
         if (state.refuse.has(id)) throw state.refuse.get(id);
+        if (state.refuseResume && params.cancel_at_period_end === false) throw Object.assign(new Error("Stripe is busy"), { name: "StripeRateLimitError" });
         state.updates.push({ id, params, key: options.idempotencyKey });
-        state.subs.set(id, { ...(state.subs.get(id) as SubscriptionLike), cancel_at_period_end: true });
+        state.subs.set(id, applyUpdate(state.subs.get(id) as SubscriptionLike, params));
       },
       async cancel(id, _params, options) {
         failIfDown();
@@ -966,6 +974,14 @@ describe("purging closed teams", () => {
   });
 
   /** team-a subscribed through Stripe (customer cus_123, subscription sub_123, both linked), then closed by its owner. */
+  /** Reopens team-a, sets its subscription to cancel as its owner would in the Portal, and closes it again; the next run asks Stripe for nothing. */
+  async function subscribedAndClosedAgain() {
+    expect((await reopen()).status).toBe(200);
+    stripe.state.subs.set("sub_123", liveSubscription({ cancel_at_period_end: true, canceled_at: NOW / 1000, metadata: {} }));
+    expect((await close()).status).toBe(200);
+    await purge(NOW + 2 * 3_600_000);
+  }
+
   async function subscribedAndClosed(sub: Partial<SubscriptionLike> = {}) {
     table.put({ ...(meta("team-a") as Record<string, unknown>), stripeCustomerId: "cus_123", stripeSubscriptionId: "sub_123", status: "active", plan: "starter" });
     table.put({ PK: "STRIPE#cus_123", SK: "TEAM", type: "stripeLink", customerId: "cus_123", teamId: "team-a" });
@@ -975,12 +991,23 @@ describe("purging closed teams", () => {
     return new Date(NOW).toISOString();
   }
 
+  it("stamps again a subscription an earlier closure set to cancel, so a reopen from this closure resumes it (supply-checkout-85qp)", async () => {
+    const closedAt = await subscribedAndClosed({ cancel_at_period_end: true, canceled_at: NOW / 1000 - 86400, metadata: { [CLOSED_AT_METADATA]: "2026-01-01T00:00:00.000Z" } });
+    await purge(NOW + 3_600_000);
+    expect(stripe.state.updates).toEqual([{ id: "sub_123", params: { cancel_at_period_end: true, metadata: { [CLOSED_AT_METADATA]: closedAt } }, key: closingKey("cancel_at_period_end", "team-a", closedAt, "sub_123") }]);
+    expect(meta("team-a")).toMatchObject({ stripeCancelledFor: closedAt });
+    // The owner's own cancellation (no stamp) is left alone
+    stripe.state.updates.length = 0;
+    await subscribedAndClosedAgain();
+    expect(stripe.state.updates).toEqual([]);
+  });
+
   it("sets a closed team's subscription to cancel at the period's end at the next run, once, and records it", async () => {
     const closedAt = await subscribedAndClosed();
     // Closing didn't call Stripe: the closure is the pending cancellation
     expect(stripe.state.retrieves).toEqual([]);
     expect(await purge(NOW + 3_600_000)).toEqual({ purged: 0, failed: 0, due: 0, overdue: 0 });
-    expect(stripe.state.updates).toEqual([{ id: "sub_123", params: { cancel_at_period_end: true }, key: closingKey("cancel_at_period_end", "team-a", closedAt, "sub_123") }]);
+    expect(stripe.state.updates).toEqual([{ id: "sub_123", params: { cancel_at_period_end: true, metadata: { [CLOSED_AT_METADATA]: closedAt } }, key: closingKey("cancel_at_period_end", "team-a", closedAt, "sub_123") }]);
     expect(stripe.state.cancels).toEqual([]);
     expect(meta("team-a")).toMatchObject({ stripeCancelledFor: closedAt, closedAt, status: "active" });
     expect(counts[BusinessMetric.ClosedTeamSubscriptionsEnded]).toBe(1);
@@ -1056,7 +1083,7 @@ describe("purging closed teams", () => {
     Reflect.deleteProperty(recovered, "stripeSetAsideFor");
     table.put(recovered);
     expect(await purge(NOW + 3 * 3_600_000)).toMatchObject({ failed: 0 });
-    expect(stripe.state.updates).toEqual([{ id: "sub_123", params: { cancel_at_period_end: true }, key: closingKey("cancel_at_period_end", "team-a", closedAt, "sub_123") }]);
+    expect(stripe.state.updates).toEqual([{ id: "sub_123", params: { cancel_at_period_end: true, metadata: { [CLOSED_AT_METADATA]: closedAt } }, key: closingKey("cancel_at_period_end", "team-a", closedAt, "sub_123") }]);
     expect(meta("team-a")?.stripeCancelledFor).toBe(closedAt);
     expect(gauges[BusinessMetric.ClosedTeamsSetAside]).toBe(0);
   });
@@ -1128,7 +1155,7 @@ describe("purging closed teams", () => {
     // The next run lists past them: the newer team's subscription is ended
     logs.length = 0;
     expect(await purge(NOW + 2 * 3_600_000)).toMatchObject({ failed: 0 });
-    expect(stripe.state.updates).toEqual([{ id: "sub_123", params: { cancel_at_period_end: true }, key: closingKey("cancel_at_period_end", "team-a", closedAt, "sub_123") }]);
+    expect(stripe.state.updates).toEqual([{ id: "sub_123", params: { cancel_at_period_end: true, metadata: { [CLOSED_AT_METADATA]: closedAt } }, key: closingKey("cancel_at_period_end", "team-a", closedAt, "sub_123") }]);
     expect(meta("team-a")?.stripeCancelledFor).toBe(closedAt);
     expect(logs).toContainEqual(["info", "Ended closed teams' subscriptions", { listed: 1, ended: 1, failed: 0, setAside: 0 }]);
     expect(logs.filter(([, message]) => message === "Closed teams' subscriptions listed at the limit")).toEqual([]);
@@ -1307,7 +1334,7 @@ describe("purging closed teams", () => {
     expect(meta("team-a")?.stripeSetAsideFor).toBeUndefined();
   });
 
-  it("skips a team reopened since the index listed it, and flags one reopened while Stripe was being called", async () => {
+  it("skips a team reopened since the index listed it, and resumes one reopened while Stripe was being called", async () => {
     await subscribedAndClosed();
     const closedMeta = structuredClone(meta("team-a") as Record<string, unknown>);
     const open = { ...closedMeta };
@@ -1324,17 +1351,49 @@ describe("purging closed teams", () => {
     await createTeamPurgeHandler({ db: racing, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => NOW + 3_600_000 })();
     expect(reopened).toBe(true);
     expect(stripe.state.retrieves).toEqual([]);
-    // Closed again, then reopened while Stripe is being called: set to cancel, but not recorded, and flagged
+    // Closed again, then reopened while Stripe is being called (after the reopen's resync, say): set to
+    // cancel, not recorded, and resumed at once with a key of the purge's own (supply-checkout-85qp)
+    const closedAt = String(closedMeta.closedAt);
     table.put(closedMeta);
     stripe.state.onRetrieve = () => {
       stripe.state.onRetrieve = undefined;
       table.put(open);
     };
-    await expect(purge(NOW + 2 * 3_600_000)).rejects.toThrow("1 closed teams' subscriptions weren't ended");
-    expect(stripe.state.updates).toHaveLength(1);
+    await purge(NOW + 2 * 3_600_000);
+    expect(stripe.state.updates).toEqual([
+      { id: "sub_123", params: { cancel_at_period_end: true, metadata: { [CLOSED_AT_METADATA]: closedAt } }, key: closingKey("cancel_at_period_end", "team-a", closedAt, "sub_123") },
+      { id: "sub_123", params: { cancel_at_period_end: false, metadata: { [CLOSED_AT_METADATA]: "" } }, key: resumeKey("purge", "team-a", closedAt, "sub_123") },
+    ]);
+    expect(stripe.state.subs.get("sub_123")).toMatchObject({ cancel_at_period_end: false, metadata: {} });
     expect(meta("team-a")?.stripeCancelledFor).toBeUndefined();
+    expect(logs).toContainEqual(["warn", "Team reopened while its subscription was being ended: resumed", { teamId: "team-a", subscriptionId: "sub_123", action: "cancel_at_period_end" }]);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsResumed]).toBe(1);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBeUndefined();
+    // Again, and Stripe refuses the resume: not recorded, and flagged for a person
+    table.put(closedMeta);
+    stripe.state.refuseResume = true;
+    stripe.state.onRetrieve = () => {
+      stripe.state.onRetrieve = undefined;
+      table.put(open);
+    };
+    await expect(purge(NOW + 3 * 3_600_000)).rejects.toThrow("1 closed teams' subscriptions weren't ended");
+    expect(logs).toContainEqual(["warn", "Reopened team's subscription not resumed", { teamId: "team-a", subscriptionId: "sub_123", error: "StripeRateLimitError" }]);
     expect(logs).toContainEqual(["error", "Team reopened while its subscription was being ended", { teamId: "team-a", subscriptionId: "sub_123", action: "cancel_at_period_end" }]);
     expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBe(1);
+    // Reopened and closed again (another closure) while Stripe is being called: that closure keeps it ending
+    stripe.state.refuseResume = false;
+    stripe.state.subs.set("sub_123", liveSubscription());
+    table.put(closedMeta);
+    stripe.state.onRetrieve = () => {
+      stripe.state.onRetrieve = undefined;
+      table.put({ ...closedMeta, closedAt: new Date(NOW + 3_600_000).toISOString(), purgeAfter: new Date(NOW + 31 * DAY).toISOString() });
+    };
+    const before = stripe.state.updates.length;
+    await expect(purge(NOW + 4 * 3_600_000)).rejects.toThrow("1 closed teams' subscriptions weren't ended");
+    expect(stripe.state.updates).toHaveLength(before + 1);
+    expect(stripe.state.subs.get("sub_123")?.cancel_at_period_end).toBe(true);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBe(2);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsResumed]).toBe(1);
   });
 
   it("stops ending subscriptions after half its time budget, leaving the rest for the next run", async () => {
@@ -1520,8 +1579,11 @@ describe("seats (supply-checkout-l50)", () => {
     withCustomer("team-a");
     expect((await close()).status).toBe(200);
     expect(queued).toEqual([]);
+    const closedAt = meta("team-a")?.closedAt;
     expect((await reopen()).status).toBe(200);
     expect(queued).toEqual([["cus_a", "membership"]]);
+    // That sync resyncs its subscription from Stripe (billing/reopening.ts, supply-checkout-85qp)
+    expect(meta("team-a")).toMatchObject({ stripeResyncFor: closedAt, stripeReopenedAt: expect.any(String) });
     // Reopening an open team changes nothing, and queues nothing
     expect((await reopen()).status).toBe(200);
     expect(queued).toHaveLength(1);

@@ -184,6 +184,8 @@ test.describe("a closed team", { tag: ["@J11"] }, () => {
     await bar(page).getByRole("button", { name: "Reopen team" }).click();
     await expect(dialog(page).getByRole("heading", { name: `Reopen ${TEAM.name}` })).toBeVisible();
     await expect(dialog(page)).toContainText("Invites that were cancelled when it closed stay cancelled");
+    // Billing comes back as it was, or the owner is told to subscribe again (supply-checkout-85qp)
+    await expect(dialog(page)).toContainText("If closing the team set its subscription to end, reopening keeps it going. A subscription that has already ended doesn't come back: the team stays read-only until you subscribe again.");
     const name = dialog(page).getByLabel(`Type the team's name, ${TEAM.name}, to reopen it`);
     const go = dialog(page).getByRole("button", { name: "Reopen team" });
     await expect(name).toBeFocused();

@@ -3129,6 +3129,136 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmsreopenresynclate6A4C6C59": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Reopened team's billing not resynced (J7, J11, us-east-1). Any ReopenResyncsLate over an hour: the nightly seat reconciliation (primary region) found a team reopened before the night whose Stripe subscription still hadn't been resynced (stripeResyncFor on its META item): the reopen's seat sync wasn't queued, or failed. The billing worker then resyncs it with the night's message, resuming a subscription its closure set to cancel. If it fires again the next night, that resync is failing too: the log line \"Reopened team's subscription not yet resynced\" has the team ID, and the worker's warnings or the seat syncs dead-letter queue say why. See docs/runbooks/billing-dlq-replay.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-reopen-resync-late",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "ReopenResyncsLate (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "ReopenResyncsLate",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 3600,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmsreopenedteamsubscriptionundecidedDDA450A6": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Reopened team's subscription left to cancel (J7, J11, us-east-1). Any ReopenedTeamSubscriptionsUndecided over an hour: the billing worker resynced a reopened team whose Stripe subscription is set to cancel at the period's end, maybe by the closure (no closure stamp, but the purge recorded ending it for that closure, from before the stamp existed) or maybe by an owner, and Stripe gave no time it was set (canceled_at), or the team has no reopen time. It left it set to cancel rather than risk charging an owner who cancelled. The log line \"Reopened team's subscription left set to cancel\" has the team and subscription IDs: contact the team's owners, with what the subscription's history in the Stripe Dashboard shows, and resume it only if an owner asks; don't resume it by default. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-reopened-team-subscription-undecided",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "ReopenedTeamSubscriptionsUndecided (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "ReopenedTeamSubscriptionsUndecided",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 3600,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmsclosedteamcharged4F2C5715": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -11111,6 +11241,20 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
+                  "JourneyAlarmsreopenresynclate6A4C6C59",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmsreopenedteamsubscriptionundecidedDDA450A6",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
                   "JourneyAlarmsclosedteamcharged4F2C5715",
                   "Arn"
                 ]
@@ -11401,11 +11545,11 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-east-1\",{\"label\":\"DeletionRecordRewrites (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-west-2\",{\"label\":\"DeletionRecordRewrites (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":73,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: closed teams' subscriptions ended (reopened teams', charged after closing, not found, set aside), Stripe customers deleted (already deleted)\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-east-1\",{\"label\":\"DeletionRecordRewrites (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"DeletionRecordRewrites\",\"Region\",\"us-west-2\",{\"label\":\"DeletionRecordRewrites (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":73,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7: closed teams' subscriptions ended (reopened teams' ended, resumed, resyncs late, left to cancel; charged after closing, not found, set aside), Stripe customers deleted (already deleted)\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"ClosedTeamSubscriptionsEnded\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamSubscriptionsEnded (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsEnded\",\"Region\",\"us-east-1\",{\"label\":\"ReopenedTeamSubscriptionsEnded (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamRenewalsCharged\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamRenewalsCharged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsNotFound\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamSubscriptionsNotFound (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsSetAside\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamSubscriptionsSetAside (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersDeleted\",\"Region\",\"us-east-1\",{\"label\":\"StripeCustomersDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersAlreadyDeleted\",\"Region\",\"us-east-1\",{\"label\":\"StripeCustomersAlreadyDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsEnded\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamSubscriptionsEnded (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsEnded\",\"Region\",\"us-west-2\",{\"label\":\"ReopenedTeamSubscriptionsEnded (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamRenewalsCharged\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamRenewalsCharged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsNotFound\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamSubscriptionsNotFound (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsSetAside\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamSubscriptionsSetAside (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersDeleted\",\"Region\",\"us-west-2\",{\"label\":\"StripeCustomersDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersAlreadyDeleted\",\"Region\",\"us-west-2\",{\"label\":\"StripeCustomersAlreadyDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":79,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: group changes, resets and size\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"ClosedTeamSubscriptionsEnded\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamSubscriptionsEnded (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsEnded\",\"Region\",\"us-east-1\",{\"label\":\"ReopenedTeamSubscriptionsEnded (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsResumed\",\"Region\",\"us-east-1\",{\"label\":\"ReopenedTeamSubscriptionsResumed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenResyncsLate\",\"Region\",\"us-east-1\",{\"label\":\"ReopenResyncsLate (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsUndecided\",\"Region\",\"us-east-1\",{\"label\":\"ReopenedTeamSubscriptionsUndecided (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamRenewalsCharged\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamRenewalsCharged (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsNotFound\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamSubscriptionsNotFound (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsSetAside\",\"Region\",\"us-east-1\",{\"label\":\"ClosedTeamSubscriptionsSetAside (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersDeleted\",\"Region\",\"us-east-1\",{\"label\":\"StripeCustomersDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersAlreadyDeleted\",\"Region\",\"us-east-1\",{\"label\":\"StripeCustomersAlreadyDeleted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsEnded\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamSubscriptionsEnded (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsEnded\",\"Region\",\"us-west-2\",{\"label\":\"ReopenedTeamSubscriptionsEnded (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsResumed\",\"Region\",\"us-west-2\",{\"label\":\"ReopenedTeamSubscriptionsResumed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenResyncsLate\",\"Region\",\"us-west-2\",{\"label\":\"ReopenResyncsLate (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReopenedTeamSubscriptionsUndecided\",\"Region\",\"us-west-2\",{\"label\":\"ReopenedTeamSubscriptionsUndecided (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamRenewalsCharged\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamRenewalsCharged (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsNotFound\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamSubscriptionsNotFound (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ClosedTeamSubscriptionsSetAside\",\"Region\",\"us-west-2\",{\"label\":\"ClosedTeamSubscriptionsSetAside (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersDeleted\",\"Region\",\"us-west-2\",{\"label\":\"StripeCustomersDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"StripeCustomersAlreadyDeleted\",\"Region\",\"us-west-2\",{\"label\":\"StripeCustomersAlreadyDeleted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":79,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Operators: group changes, resets and size\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },

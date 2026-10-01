@@ -194,9 +194,12 @@ export const IMPORT_INDEX_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK] as const;
  * read and condition), and the closure fields it removes. Not the operator-access role: with `closedAt`
  * and `purgeAfter` it could close a team and have the purge delete it. The
  * reopen function takes no expressions from its caller and only ever removes
- * them, so the ops function can reopen a team but never close one.
+ * them, so the ops function can reopen a team but never close one. And
+ * `stripeResyncFor` and `stripeReopenedAt`, which the reopen sets to the
+ * closure it ended and when, so the billing worker resyncs the team's Stripe
+ * subscription (billing/reopening.ts).
  */
-export const REOPEN_ATTRIBUTES = [PK, SK, "type", "version", "owners", "closedAt", "closedBy", "purgeAfter", "purging", GSI1PK, GSI1SK] as const;
+export const REOPEN_ATTRIBUTES = [PK, SK, "type", "version", "owners", "closedAt", "closedBy", "purgeAfter", "purging", GSI1PK, GSI1SK, "stripeResyncFor", "stripeReopenedAt"] as const;
 
 /**
  * What an operator audit item holds. Owners read their own team's items
@@ -348,7 +351,10 @@ export const STRIPE_LINK_READ_ATTRIBUTES = [PK, SK, "teamId"] as const;
  * The only attributes the billing worker may read in its team's partition
  * (dynamodb:Attributes, with Select SPECIFIC_ATTRIBUTES): what the META item
  * says about billing, closure and comps, and an owner's role and email for
- * the notices. Never documents, sheets or anything else.
+ * the notices, and `cancelAtPeriodEnd` (the nightly entitlement check compares
+ * it), and `stripeResyncFor`, `stripeReopenedAt` and `stripeCancelledFor` (a
+ * reopen's pending resync and what decides it, billing/reopening.ts).
+ * Never documents, sheets or anything else.
  */
 export const BILLING_READ_ATTRIBUTES = [
   PK,
@@ -364,6 +370,10 @@ export const BILLING_READ_ATTRIBUTES = [
   "stripeSubscriptionId",
   "compPlan",
   "compUntil",
+  "cancelAtPeriodEnd",
+  "stripeResyncFor",
+  "stripeReopenedAt",
+  "stripeCancelledFor",
   "role",
   "email",
   "userId",
@@ -373,8 +383,9 @@ export const BILLING_READ_ATTRIBUTES = [
  * The only attributes the billing worker may name when it updates the META
  * item (dynamodb:Attributes): what it sets from the subscription, the version
  * it moves, and what its condition checks (the customer, the subscription,
- * and that the team isn't closed or being purged). Not `purgeAfter` or the
- * GSI1 keys, so it can never put a team in the purge's index.
+ * and that the team isn't closed or being purged), and `stripeResyncFor`, which
+ * it removes once it has resynced a reopened team (billing/reopening.ts). Not
+ * `purgeAfter` or the GSI1 keys, so it can never put a team in the purge's index.
  */
 export const BILLING_UPDATE_ATTRIBUTES = [
   PK,
@@ -391,6 +402,7 @@ export const BILLING_UPDATE_ATTRIBUTES = [
   "version",
   "closedAt",
   "purging",
+  "stripeResyncFor",
 ] as const;
 
 /**

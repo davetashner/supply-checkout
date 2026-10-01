@@ -956,7 +956,8 @@ describe("reopening a closed team (supply-checkout-6uw.6)", () => {
     expect(res.body).toEqual({ eventId: expect.any(String), replayed: false, version: version + 1 });
     const meta = teamOf(teamC);
     for (const field of ["closedAt", "closedBy", "purgeAfter", "GSI1PK", "GSI1SK"]) expect(meta[field], field).toBeUndefined();
-    expect(meta).toMatchObject({ name: NAME, version: version + 1, owners: 1 });
+    // The billing worker resyncs its Stripe subscription from that closure, through the reopen role (supply-checkout-85qp)
+    expect(meta).toMatchObject({ name: NAME, version: version + 1, owners: 1, stripeResyncFor: closed.closedAt, stripeReopenedAt: expect.any(String) });
     // One transaction: the META item, the audit item and the idempotency record
     const writes = table.requests.filter((r) => r.command === "TransactWriteCommand");
     expect(writes).toHaveLength(1);

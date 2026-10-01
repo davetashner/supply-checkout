@@ -122,6 +122,8 @@ describe.skipIf(!endpoint)("operators (ADR 0015) on DynamoDB Local", () => {
     expect(await reopenOpsTeam(table.db, op, team.teamId, input, now)).toEqual({ ...outcome, replayed: true });
     const meta = await rawItem(table.db, `TEAM#${team.teamId}`, "META");
     for (const field of ["closedAt", "closedBy", "purgeAfter", "GSI1PK", "GSI1SK"]) expect(meta?.[field], field).toBeUndefined();
+    // The billing worker resyncs its Stripe subscription from this closure (supply-checkout-85qp)
+    expect(meta).toMatchObject({ stripeResyncFor: closed.closedAt, stripeReopenedAt: now.toISOString() });
     expect((await listTeamsToPurge(table.db, later, 1000)).map((t) => t.teamId)).not.toContain(team.teamId);
     expect((await getOpsTeam(table.db, op, team.teamId, now)).team.closedAt).toBeUndefined();
     const actions = await listSupportActions(table.db, context, {});

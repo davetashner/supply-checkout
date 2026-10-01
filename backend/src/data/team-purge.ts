@@ -194,6 +194,16 @@ export async function closedTeamToEnd(db: Db, teamId: string): Promise<ClosedTea
 }
 
 /**
+ * Whether the team is open now (a consistent read): its META item is there,
+ * with no `closedAt` and no `purging` mark. The purge asks after a team was
+ * reopened while it set its subscription to cancel (supply-checkout-85qp).
+ */
+export async function isTeamOpen(db: Db, teamId: string): Promise<boolean> {
+  const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: keys.team(id(teamId, "team ID")), ConsistentRead: true, ProjectionExpression: "closedAt, purging" }));
+  return Item !== undefined && Item.closedAt === undefined && Item.purging === undefined;
+}
+
+/**
  * Records that the team's subscription was set to end for this closure
  * (`stripeCancelledFor`, its `closedAt`), on the condition it's still that
  * closure (the same `purgeAfter`). Returns false if it isn't: the team was

@@ -20,16 +20,18 @@
 //    it has ended, list the customer's subscriptions for a live one we never
 //    recorded (a lost checkout or resubscribe), older than
 //    UNRECORDED_GRACE_SECONDS so its own events have had time to arrive.
-// 2. Compare Stripe's subscription, status, plan and seat quantity with the
-//    team's (entitlementDrift). Any difference is drift.
+// 2. Compare Stripe's subscription, status, plan, seat quantity and whether
+//    it's set to cancel (`cancelAtPeriodEnd`, so a reopened team whose events
+//    were skipped while it was closed shows when it ends) with the team's
+//    (entitlementDrift). Any difference is drift.
 // 3. Fix it: apply Stripe's state with applySubscription, conditioned on the
-//    team's status, plan, seats and subscription being as they were read
-//    (`asRead`), so an event applied meanwhile is almost never overwritten
-//    with older state: that conflict throws, and the message's retry finds
-//    the team in sync. The condition compares values, not a version, so an
-//    event that changed a field and changed it back (A to B to A) between the
-//    read and the write slips through, and `cancelAtPeriodEnd` and
-//    `currentPeriodEnd` aren't compared at all. Then the older state can win
+//    team's status, plan, seats, subscription and `cancelAtPeriodEnd` being
+//    as they were read (`asRead`), so an event applied meanwhile is almost
+//    never overwritten with older state: that conflict throws, and the
+//    message's retry finds the team in sync. The condition compares values,
+//    not a version, so an event that changed a field and changed it back (A
+//    to B to A) between the read and the write slips through, and
+//    `currentPeriodEnd` isn't compared at all. Then the older state can win
 //    for a while; the next event for the subscription, or the next night,
 //    puts it right. Only once the fix is written is
 //    the drift counted in EntitlementDrift (the "Entitlements drifting"
@@ -84,15 +86,16 @@ export interface EntitlementCheckDeps {
 export type EntitlementOutcome = "in_sync" | "fixed" | "missing" | "unknown_customer" | "team_gone" | "team_closed" | "no_subscription" | "not_ours";
 
 /** The fields the check compares. */
-export type EntitlementField = "subscription" | "status" | "plan" | "seats";
+export type EntitlementField = "subscription" | "status" | "plan" | "seats" | "cancelAtPeriodEnd";
 
 /** Where the team's record differs from Stripe's subscription. A price we don't sell has no plan, and leaves the plan alone. */
-export function entitlementDrift(team: Pick<BillingTeam, "stripeSubscriptionId" | "status" | "plan" | "seats">, state: SubscriptionState): EntitlementField[] {
+export function entitlementDrift(team: Pick<BillingTeam, "stripeSubscriptionId" | "status" | "plan" | "seats" | "cancelAtPeriodEnd">, state: SubscriptionState): EntitlementField[] {
   const drift: EntitlementField[] = [];
   if (team.stripeSubscriptionId !== state.subscriptionId) drift.push("subscription");
   if (team.status !== state.status) drift.push("status");
   if (state.plan !== undefined && team.plan !== state.plan) drift.push("plan");
   if (team.seats !== state.seats) drift.push("seats");
+  if (team.cancelAtPeriodEnd !== state.cancelAtPeriodEnd) drift.push("cancelAtPeriodEnd");
   return drift;
 }
 
@@ -175,15 +178,15 @@ export function createEntitlementCheck(deps: EntitlementCheckDeps) {
     const state = subscriptionState(sub, customer, replaces);
     const fields = entitlementDrift(team, state);
     if (!fields.length) return "in_sync";
-    const asRead: BillingAsRead = { status: team.status, plan: team.plan, seats: team.seats, ...(team.stripeSubscriptionId ? { subscriptionId: team.stripeSubscriptionId } : {}) };
+    const asRead: BillingAsRead = { status: team.status, plan: team.plan, seats: team.seats, cancelAtPeriodEnd: team.cancelAtPeriodEnd, ...(team.stripeSubscriptionId ? { subscriptionId: team.stripeSubscriptionId } : {}) };
     // Counted once the fix is written: a team an event changed meanwhile throws here, and the retry finds it in sync
     if ((await applySubscription(db, ctx, state, now, asRead)) === "ignored") return "team_closed";
     obs.count(BusinessMetric.EntitlementDrift, 1, { teamId });
     obs.logger.warn("Entitlement drift", {
       teamId,
       fields: fields.join(","),
-      ours: { subscriptionId: team.stripeSubscriptionId ?? "", status: team.status, plan: team.plan, seats: team.seats },
-      stripe: { subscriptionId: state.subscriptionId, status: state.status, plan: state.plan ?? "", seats: state.seats },
+      ours: { subscriptionId: team.stripeSubscriptionId ?? "", status: team.status, plan: team.plan, seats: team.seats, cancelAtPeriodEnd: team.cancelAtPeriodEnd },
+      stripe: { subscriptionId: state.subscriptionId, status: state.status, plan: state.plan ?? "", seats: state.seats, cancelAtPeriodEnd: state.cancelAtPeriodEnd },
     });
     return "fixed";
   }

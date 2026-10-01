@@ -2740,6 +2740,10 @@
                         "stripeSubscriptionId",
                         "compPlan",
                         "compUntil",
+                        "cancelAtPeriodEnd",
+                        "stripeResyncFor",
+                        "stripeReopenedAt",
+                        "stripeCancelledFor",
                         "role",
                         "email",
                         "userId"
@@ -2785,7 +2789,8 @@
                         "stripeCustomerId",
                         "version",
                         "closedAt",
-                        "purging"
+                        "purging",
+                        "stripeResyncFor"
                       ]
                     },
                     "StringEqualsIfExists": {

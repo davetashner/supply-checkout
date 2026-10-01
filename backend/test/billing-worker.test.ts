@@ -7,7 +7,7 @@ import type { AssumeRoleCommand } from "@aws-sdk/client-sts";
 import type { SQSEvent } from "aws-lambda";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BillingMessage } from "../src/billing/webhook-handler.js";
-import { closingKey } from "../src/billing/closing.js";
+import { CLOSED_AT_METADATA, closingKey, resumeKey } from "../src/billing/closing.js";
 import type { EntitlementStripe } from "../src/billing/entitlements.js";
 import type { SeatStripe, SeatSubscription } from "../src/billing/seats.js";
 import { createBillingWorker, noticeFor, parseMessage, type SubscriptionLike, subscriptionState, type WorkerStripe } from "../src/billing/worker.js";
@@ -19,7 +19,7 @@ import { connection } from "../src/data/client.js";
 import { authorizeTeam, createInvite, createProduct, linkStripeCustomer, setOwnMemberEmail, SubscriptionEndedError } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { workerPolicy } from "./billing-policy.js";
-import { fakeMailer, REGION } from "./helpers.js";
+import { fakeMailer, REGION, stripeSubscriptionUpdate } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
 const NOW = Date.parse("2026-09-27T12:00:00Z");
@@ -37,6 +37,12 @@ let cancels: { id: string; key: string }[];
 let updates: { id: string; params: Record<string, unknown>; key: string }[];
 let seatUpdates: { item: string; quantity: number; proration: string; key: string }[];
 let stripeDown: boolean;
+/** Stripe refuses resuming a subscription (cancel_at_period_end back to false). */
+let refuseResume: boolean;
+/** Stripe's clock for the requests it takes (epoch seconds): canceled_at. */
+let stripeClock: number;
+/** The idempotency keys Stripe has seen. */
+let stripeKeys: Set<string>;
 /** Runs as Stripe is asked for a subscription: after the worker read the team, before it writes. */
 let onRetrieve: (() => void) | undefined;
 let denied: { command: string; input: Record<string, unknown> }[];
@@ -90,6 +96,9 @@ beforeEach(() => {
   onRetrieve = undefined;
   seatUpdates = [];
   stripeDown = false;
+  refuseResume = false;
+  stripeClock = NOW / 1000;
+  stripeKeys = new Set();
   denied = [];
   scopes = [];
   counts = {};
@@ -109,13 +118,17 @@ function build() {
         onRetrieve?.();
         if (stripeDown) throw Object.assign(new Error("Stripe is down"), { name: "StripeConnectionError" });
         const found = subs.get(id);
-        if (!found) throw new Error(`No such subscription ${id}`);
+        if (!found) throw Object.assign(new Error(`No such subscription ${id}`), { code: "resource_missing" });
         return found as SubscriptionLike & SeatSubscription;
       },
       async update(id, params, options) {
         if (stripeDown) throw Object.assign(new Error("Stripe is down"), { name: "StripeConnectionError" });
+        if (refuseResume && params.cancel_at_period_end === false) throw Object.assign(new Error("Stripe is busy"), { name: "StripeRateLimitError" });
+        // A key Stripe has seen in the last 24 hours gets the cached answer, and changes nothing
+        if (stripeKeys.has(options.idempotencyKey)) return;
+        stripeKeys.add(options.idempotencyKey);
         updates.push({ id, params, key: options.idempotencyKey });
-        subs.set(id, { ...(subs.get(id) as SubscriptionLike), cancel_at_period_end: params.cancel_at_period_end });
+        subs.set(id, stripeSubscriptionUpdate(subs.get(id) as SubscriptionLike, params, stripeClock));
       },
       async cancel(id, _params, options) {
         cancels.push({ id, key: options.idempotencyKey });
@@ -238,7 +251,7 @@ describe("applying a subscription", () => {
     // A checkout that finished after the team closed: its subscription was never recorded
     expect(await worker(message("checkout.session.completed"))).toBe("team_closed");
     expect(meta()).toEqual(before);
-    expect(updates).toEqual([{ id: "sub_test_1", params: { cancel_at_period_end: true }, key: closingKey("cancel_at_period_end", TEAM, closedAt, "sub_test_1") }]);
+    expect(updates).toEqual([{ id: "sub_test_1", params: { cancel_at_period_end: true, metadata: { [CLOSED_AT_METADATA]: closedAt } }, key: closingKey("cancel_at_period_end", TEAM, closedAt, "sub_test_1", "evt_test_1") }]);
     expect(counts[BusinessMetric.ClosedTeamSubscriptionsEnded]).toBe(1);
     expect(counts[BusinessMetric.BillingEventsApplied]).toBeUndefined();
     expect(logs).toContainEqual(["Closed team's subscription ended", { teamId: TEAM, eventId: "evt_test_1", subscriptionId: "sub_test_1", status: "trialing", action: "cancel_at_period_end" }]);
@@ -249,6 +262,12 @@ describe("applying a subscription", () => {
     expect(meta()).toEqual(before);
     expect(mails.sent).toEqual([]);
     expect(denied).toEqual([]);
+    // Renewed while closed (a Customer Portal page opened before the closure, say): the next event sets it to
+    // cancel again with a key of its own, which Stripe can't answer from its cache of the first
+    subs.set("sub_test_1", { ...(subs.get("sub_test_1") as SubscriptionLike), cancel_at_period_end: false });
+    expect(await worker(message("customer.subscription.updated", { eventId: "evt_test_4" }))).toBe("team_closed");
+    expect(updates.map((u) => u.key)).toEqual([closingKey("cancel_at_period_end", TEAM, closedAt, "sub_test_1", "evt_test_1"), closingKey("cancel_at_period_end", TEAM, closedAt, "sub_test_1", "evt_test_4")]);
+    expect(subs.get("sub_test_1")?.cancel_at_period_end).toBe(true);
   });
 
   it("cancels an unpaid or paused subscription on a closed team at once, and leaves an ended or foreign one", async () => {
@@ -256,7 +275,7 @@ describe("applying a subscription", () => {
     patchTeam({ closedAt });
     subs.set("sub_test_1", subscription({ status: "paused" }));
     expect(await worker(message("customer.subscription.updated"))).toBe("team_closed");
-    expect(cancels).toEqual([{ id: "sub_test_1", key: closingKey("cancel_now", TEAM, closedAt, "sub_test_1") }]);
+    expect(cancels).toEqual([{ id: "sub_test_1", key: closingKey("cancel_now", TEAM, closedAt, "sub_test_1", "evt_test_1") }]);
     // Now canceled: nothing more
     expect(await worker(message("customer.subscription.deleted", { eventId: "evt_test_2" }))).toBe("team_closed");
     subs.set("sub_test_2", subscription({ id: "sub_test_2", status: "active", customer: "cus_test_other" }));
@@ -277,7 +296,7 @@ describe("applying a subscription", () => {
     expect(updates).toHaveLength(1);
   });
 
-  it("fails an event, and flags it, when the team was reopened while its subscription was being set to cancel", async () => {
+  it("fails an event, and resumes the subscription, when the team was reopened while it was being set to cancel", async () => {
     const closedAt = new Date(NOW - DAY_S * 1000).toISOString();
     patchTeam({ closedAt });
     // The owner reopens after the worker read the team as closed, before Stripe answers
@@ -286,19 +305,36 @@ describe("applying a subscription", () => {
       patchTeam({ closedAt: undefined });
     };
     await expect(worker(message("customer.subscription.updated"))).rejects.toThrow("Team reopened while its subscription was being ended");
-    expect(updates).toEqual([{ id: "sub_test_1", params: { cancel_at_period_end: true }, key: closingKey("cancel_at_period_end", TEAM, closedAt, "sub_test_1") }]);
-    expect(logs).toContainEqual(["Team reopened while its subscription was being ended", { teamId: TEAM, eventId: "evt_test_1", subscriptionId: "sub_test_1", action: "cancel_at_period_end" }]);
-    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBe(1);
+    // Set to cancel, then resumed at once with the worker's own key: the reopen's resync may already have run
+    expect(updates).toEqual([
+      { id: "sub_test_1", params: { cancel_at_period_end: true, metadata: { [CLOSED_AT_METADATA]: closedAt } }, key: closingKey("cancel_at_period_end", TEAM, closedAt, "sub_test_1", "evt_test_1") },
+      { id: "sub_test_1", params: { cancel_at_period_end: false, metadata: { [CLOSED_AT_METADATA]: "" } }, key: resumeKey("worker", TEAM, closedAt, "sub_test_1") },
+    ]);
+    expect(subs.get("sub_test_1")).toMatchObject({ cancel_at_period_end: false, metadata: {} });
+    expect(logs).toContainEqual(["Team reopened while its subscription was being ended: resumed", { teamId: TEAM, eventId: "evt_test_1", subscriptionId: "sub_test_1", action: "cancel_at_period_end" }]);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsResumed]).toBe(1);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBeUndefined();
     expect(counts[BusinessMetric.ClosedTeamSubscriptionsEnded]).toBeUndefined();
     expect(processed()).toBeUndefined();
     expect(denied).toEqual([]);
-    // Its redelivery finds the team open: applied as usual, the pending cancellation recorded, and nothing more sent to Stripe
+    // Its redelivery finds the team open: applied as usual, renewing, and nothing more sent to Stripe
     expect(await worker(message("customer.subscription.updated"))).toBe("applied");
-    expect(meta()).toMatchObject({ stripeSubscriptionId: "sub_test_1", cancelAtPeriodEnd: true });
-    expect(updates).toHaveLength(1);
+    expect(meta()).toMatchObject({ stripeSubscriptionId: "sub_test_1", cancelAtPeriodEnd: false });
+    expect(updates).toHaveLength(2);
     expect(cancels).toEqual([]);
     expect(processed()).toBeDefined();
+    // When Stripe refuses the resume, it's flagged for a person instead
+    patchTeam({ closedAt });
+    onRetrieve = () => {
+      onRetrieve = undefined;
+      patchTeam({ closedAt: undefined });
+      refuseResume = true;
+    };
+    await expect(worker(message("customer.subscription.updated", { eventId: "evt_test_r" }))).rejects.toThrow("Team reopened while its subscription was being ended");
+    expect(logs).toContainEqual(["Reopened team's subscription not resumed", { teamId: TEAM, subscriptionId: "sub_test_1", error: "StripeRateLimitError" }]);
+    expect(logs).toContainEqual(["Team reopened while its subscription was being ended", { teamId: TEAM, eventId: "evt_test_r", subscriptionId: "sub_test_1", action: "cancel_at_period_end" }]);
     expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBe(1);
+    refuseResume = false;
     // Closed again with a new closure in between: still not the closure it was ended for
     patchTeam({ closedAt });
     onRetrieve = () => {
@@ -309,6 +345,7 @@ describe("applying a subscription", () => {
     await expect(worker(message("customer.subscription.updated", { eventId: "evt_test_2" }))).rejects.toThrow("Team reopened while its subscription was being ended");
     expect(logs).toContainEqual(["Team reopened while its subscription was being ended", { teamId: TEAM, eventId: "evt_test_2", subscriptionId: "sub_test_1", action: "cancel_now" }]);
     expect(counts[BusinessMetric.ReopenedTeamSubscriptionsEnded]).toBe(2);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsResumed]).toBe(1);
   });
 
   it("carries on when the team is still closed, or purged, once Stripe has answered", async () => {
@@ -339,7 +376,7 @@ describe("applying a subscription", () => {
     };
     expect(await worker(message("customer.subscription.updated"))).toBe("team_closed");
     expect(meta().stripeSubscriptionId).toBeUndefined();
-    expect(updates).toEqual([{ id: "sub_test_1", params: { cancel_at_period_end: true }, key: closingKey("cancel_at_period_end", TEAM, closedAt, "sub_test_1") }]);
+    expect(updates).toEqual([{ id: "sub_test_1", params: { cancel_at_period_end: true, metadata: { [CLOSED_AT_METADATA]: closedAt } }, key: closingKey("cancel_at_period_end", TEAM, closedAt, "sub_test_1", "evt_test_1") }]);
     // Fetched once: the subscription as read is the one ended
     expect(retrieves).toEqual(["sub_test_1"]);
   });
@@ -418,6 +455,269 @@ describe("applying a subscription", () => {
     expect(await worker(message("customer.subscription.updated"))).toBe("applied");
     expect(meta()).toMatchObject({ status: "trialing", stripeSubscriptionId: "sub_test_1", version: 3 });
     expect(processed()).toBeDefined();
+  });
+});
+
+describe("resyncing a reopened team's subscription (supply-checkout-85qp)", () => {
+  // The closure the team was reopened from, as the reopen records it (stripeResyncFor)
+  const CLOSED = new Date(NOW - 3 * DAY_S * 1000).toISOString();
+  // When the purge set it to cancel (Stripe's canceled_at, epoch seconds), and when the team was reopened (stripeReopenedAt)
+  const CANCELLED = NOW / 1000 - 2 * DAY_S;
+  const REOPENED = new Date(NOW - DAY_S * 1000).toISOString();
+  const sync = (reason: "membership" | "reconcile" = "membership", id = "seats-r1") => ({ kind: "seats" as const, id, customer: CUSTOMER, reason, created: NOW / 1000 });
+  /** Active, and set to cancel at the period's end by that closure (closing.ts), while the team was closed. */
+  const endedByClosure = (fields: Partial<SubscriptionLike> = {}) => subscription({ status: "active", trial_end: null, cancel_at_period_end: true, canceled_at: CANCELLED, metadata: { [CLOSED_AT_METADATA]: CLOSED }, ...fields });
+  const resumed = { id: "sub_test_1", params: { cancel_at_period_end: false, metadata: { [CLOSED_AT_METADATA]: "" } }, key: resumeKey("resync", TEAM, CLOSED, "sub_test_1") };
+  const body = () => teamBody(meta() as never, "owner", new Date(NOW));
+
+  beforeEach(() => {
+    // Recorded as trialing when it closed: the events since were skipped while it was closed
+    patchTeam({ plan: "starter", seats: 3, status: "trialing", stripeSubscriptionId: "sub_test_1", cancelAtPeriodEnd: false, stripeResyncFor: CLOSED, stripeReopenedAt: REOPENED });
+  });
+
+  it("resumes a subscription its closure set to cancel, applies Stripe's state, and finishes, inside the worker role", async () => {
+    subs.set("sub_test_1", endedByClosure());
+    expect(await worker(sync())).toBe("in_sync");
+    expect(updates).toEqual([resumed]);
+    expect(subs.get("sub_test_1")).toMatchObject({ cancel_at_period_end: false, metadata: {} });
+    // Stripe's state after the resume: active and renewing, so /me says nothing about it ending
+    expect(meta()).toMatchObject({ status: "active", cancelAtPeriodEnd: false, stripeSyncedAt: new Date(NOW).toISOString() });
+    expect(meta().stripeResyncFor).toBeUndefined();
+    expect(body()).toMatchObject({ subscriptionEnded: false, cancelsAt: null });
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsResumed]).toBe(1);
+    expect(counts[BusinessMetric.ReopenResyncsLate]).toBeUndefined();
+    expect(logs).toContainEqual(["Reopened team's subscription resynced", { teamId: TEAM, subscriptionId: "sub_test_1", status: "active", action: "resume" }]);
+    expect(denied).toEqual([]);
+    expect(JSON.stringify(logs)).not.toMatch(/example\.com|Echo Plumbing/);
+    // Done: the next sync, and the night's, change nothing
+    expect(await worker(sync("membership", "seats-r2"))).toBe("in_sync");
+    expect(await worker(sync("reconcile", "reconcile-r"))).toBe("in_sync");
+    expect(updates).toHaveLength(1);
+    expect(counts[BusinessMetric.ReopenResyncsLate]).toBeUndefined();
+  });
+
+  it("leaves a cancellation the owner made in the Customer Portal, and records it so the owner sees when it ends", async () => {
+    subs.set("sub_test_1", endedByClosure({ metadata: {} }));
+    await worker(sync());
+    expect(updates).toEqual([]);
+    expect(meta()).toMatchObject({ status: "active", cancelAtPeriodEnd: true });
+    expect(meta().stripeResyncFor).toBeUndefined();
+    expect(body().cancelsAt).toBe(new Date(NOW + 13 * DAY_S * 1000).toISOString());
+    expect(logs).toContainEqual(["Reopened team's subscription resynced", { teamId: TEAM, subscriptionId: "sub_test_1", status: "active", action: "none" }]);
+    // A subscription never set to cancel is applied as it is, too
+    patchTeam({ stripeResyncFor: CLOSED });
+    subs.set("sub_test_1", subscription({ status: "active", trial_end: null, metadata: null }));
+    await worker(sync("membership", "seats-r2"));
+    expect(updates).toEqual([]);
+    expect(meta()).toMatchObject({ status: "active", cancelAtPeriodEnd: false });
+  });
+
+  it("never resumes a cancellation the owner made in the Customer Portal after renewing one a closure had stamped", async () => {
+    // Renewed in the Portal after the reopen: the stamp stayed. Its event removes it (with the event's own key)
+    subs.set("sub_test_1", endedByClosure({ cancel_at_period_end: false, canceled_at: null }));
+    patchTeam({ stripeResyncFor: undefined });
+    expect(await worker(message("customer.subscription.updated", { eventId: "evt_renew" }))).toBe("applied");
+    expect(updates).toEqual([{ id: "sub_test_1", params: { metadata: { [CLOSED_AT_METADATA]: "" } }, key: expect.stringMatching(/^team-unstamp-[0-9a-f]{64}$/) }]);
+    expect(subs.get("sub_test_1")?.metadata).toEqual({});
+    // Then cancelled in the Portal, with a resync still pending: left as the owner set it
+    patchTeam({ stripeResyncFor: CLOSED });
+    subs.set("sub_test_1", { ...(subs.get("sub_test_1") as SubscriptionLike), cancel_at_period_end: true, canceled_at: NOW / 1000 });
+    await worker(sync());
+    expect(updates).toHaveLength(1);
+    expect(meta()).toMatchObject({ cancelAtPeriodEnd: true });
+    expect(meta().stripeResyncFor).toBeUndefined();
+    // Renewed and cancelled again before any event removed the stamp: Stripe's canceled_at is after the reopen, so still the owner's
+    patchTeam({ stripeResyncFor: CLOSED });
+    subs.set("sub_test_1", endedByClosure({ canceled_at: NOW / 1000 }));
+    await worker(sync("membership", "seats-r2"));
+    // Not resumed, and the leftover stamp goes with the resync: it means nothing now
+    expect(updates).toHaveLength(2);
+    expect(updates[1]).toEqual({ id: "sub_test_1", params: { metadata: { [CLOSED_AT_METADATA]: "" } }, key: expect.stringMatching(/^team-unstamp-/) });
+    expect(subs.get("sub_test_1")).toMatchObject({ cancel_at_period_end: true, metadata: {} });
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsResumed]).toBeUndefined();
+  });
+
+  it("never carries a leftover stamp onto an owner's cancellation: removed on the open team, so the next closure doesn't stamp it and its reopen doesn't resume it", async () => {
+    // C1 set it to cancel; R1's resync resumed it
+    subs.set("sub_test_1", endedByClosure());
+    await worker(sync());
+    expect(updates).toEqual([resumed]);
+    // The owner renews then cancels in the Portal, and the stamp is still on (as if the resume had left it)
+    subs.set("sub_test_1", endedByClosure({ canceled_at: NOW / 1000 - 3600 }));
+    // An event on the open team, no resync pending: any stamp of ours goes, set to cancel or not
+    expect(meta().stripeResyncFor).toBeUndefined();
+    expect(await worker(message("customer.subscription.updated", { eventId: "evt_owner_cancel" }))).toBe("applied");
+    expect(updates[1]).toEqual({ id: "sub_test_1", params: { metadata: { [CLOSED_AT_METADATA]: "" } }, key: expect.stringMatching(/^team-unstamp-/) });
+    expect(subs.get("sub_test_1")).toMatchObject({ cancel_at_period_end: true, metadata: {} });
+    // C2: unstamped and already set to cancel is the owner's, so closing doesn't stamp it
+    const c2 = new Date(NOW - 1800 * 1000).toISOString();
+    patchTeam({ closedAt: c2 });
+    expect(await worker(message("customer.subscription.updated", { eventId: "evt_c2" }))).toBe("team_closed");
+    expect(updates).toHaveLength(2);
+    // R2: not resumed
+    patchTeam({ closedAt: undefined, stripeResyncFor: c2, stripeReopenedAt: new Date(NOW - 600 * 1000).toISOString(), stripeCancelledFor: c2 });
+    await worker(sync("membership", "seats-r3"));
+    expect(updates).toHaveLength(2);
+    expect(subs.get("sub_test_1")?.cancel_at_period_end).toBe(true);
+    expect(meta()).toMatchObject({ cancelAtPeriodEnd: true });
+    expect(meta().stripeResyncFor).toBeUndefined();
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsResumed]).toBe(1);
+  });
+
+  it("keeps the stamp on a subscription set to cancel while its resync is pending", async () => {
+    subs.set("sub_test_1", endedByClosure());
+    expect(await worker(message("customer.subscription.updated", { eventId: "evt_pending" }))).toBe("applied");
+    expect(updates).toEqual([]);
+    expect(subs.get("sub_test_1")?.metadata).toEqual({ [CLOSED_AT_METADATA]: CLOSED });
+  });
+
+  it("resumes its own cancellation after a team is reopened, closed and reopened again: the second closure stamps it again", async () => {
+    // Reopened from the first closure before its resync, then closed again: the subscription still carries the first stamp
+    const closedAgain = new Date(NOW - 12 * 3600 * 1000).toISOString();
+    patchTeam({ closedAt: closedAgain });
+    subs.set("sub_test_1", endedByClosure());
+    // Stripe takes the new stamp while the team is closed
+    stripeClock = Date.parse(closedAgain) / 1000 + 60;
+    expect(await worker(message("customer.subscription.updated", { eventId: "evt_closed" }))).toBe("team_closed");
+    expect(updates).toEqual([{ id: "sub_test_1", params: { cancel_at_period_end: true, metadata: { [CLOSED_AT_METADATA]: closedAgain } }, key: closingKey("cancel_at_period_end", TEAM, closedAgain, "sub_test_1", "evt_closed") }]);
+    // Reopened from the second closure
+    patchTeam({ closedAt: undefined, stripeResyncFor: closedAgain, stripeReopenedAt: new Date(NOW - 3600 * 1000).toISOString() });
+    await worker(sync());
+    expect(updates[1]).toEqual({ id: "sub_test_1", params: { cancel_at_period_end: false, metadata: { [CLOSED_AT_METADATA]: "" } }, key: resumeKey("resync", TEAM, closedAgain, "sub_test_1") });
+    expect(meta()).toMatchObject({ cancelAtPeriodEnd: false, status: "active" });
+  });
+
+  it("never resumes an unstamped cancellation the owner made before closing, even though the purge recorded it for the closure", async () => {
+    patchTeam({ stripeCancelledFor: CLOSED });
+    subs.set("sub_test_1", endedByClosure({ metadata: {}, canceled_at: Date.parse(CLOSED) / 1000 - DAY_S }));
+    await worker(sync());
+    expect(updates).toEqual([]);
+    expect(meta()).toMatchObject({ cancelAtPeriodEnd: true });
+    expect(meta().stripeResyncFor).toBeUndefined();
+  });
+
+  it("resumes an unstamped cancellation from before the stamp existed only when the purge recorded it and it was set while the team was closed", async () => {
+    subs.set("sub_test_1", endedByClosure({ metadata: {} }));
+    // Not recorded by the purge for this closure: not taken for ours
+    patchTeam({ stripeCancelledFor: "2026-01-01T00:00:00.000Z" });
+    await worker(sync());
+    expect(updates).toEqual([]);
+    // Recorded, and set while closed: ours
+    patchTeam({ stripeResyncFor: CLOSED, stripeCancelledFor: CLOSED });
+    subs.set("sub_test_1", endedByClosure({ metadata: {} }));
+    await worker(sync("membership", "seats-r2"));
+    expect(updates).toEqual([resumed]);
+    expect(meta()).toMatchObject({ cancelAtPeriodEnd: false });
+  });
+
+  it("leaves one it can't tell for a person: counted, warned of, still set to cancel", async () => {
+    patchTeam({ stripeCancelledFor: CLOSED });
+    subs.set("sub_test_1", endedByClosure({ metadata: {}, canceled_at: null }));
+    await worker(sync());
+    expect(updates).toEqual([]);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsUndecided]).toBe(1);
+    expect(logs).toContainEqual(["Reopened team's subscription left set to cancel", { teamId: TEAM, subscriptionId: "sub_test_1", closedAt: CLOSED }]);
+    expect(meta()).toMatchObject({ cancelAtPeriodEnd: true });
+    expect(meta().stripeResyncFor).toBeUndefined();
+    // A team reopened before stripeReopenedAt was recorded can't be told either
+    patchTeam({ stripeResyncFor: CLOSED, stripeReopenedAt: undefined });
+    subs.set("sub_test_1", endedByClosure());
+    await worker(sync("membership", "seats-r2"));
+    expect(updates).toEqual([]);
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsUndecided]).toBe(2);
+  });
+
+  it("removes a stale stamp it finds while resyncing one the owner renewed", async () => {
+    subs.set("sub_test_1", endedByClosure({ cancel_at_period_end: false, canceled_at: null }));
+    await worker(sync());
+    expect(updates).toEqual([{ id: "sub_test_1", params: { metadata: { [CLOSED_AT_METADATA]: "" } }, key: expect.stringMatching(/^team-unstamp-[0-9a-f]{64}$/) }]);
+    expect(meta().stripeResyncFor).toBeUndefined();
+  });
+
+  it("asks the owner to subscribe again when the closure cancelled it at once, or it ended since", async () => {
+    // Unpaid when it closed: cancelled at once, which nothing can resume
+    subs.set("sub_test_1", endedByClosure({ status: "canceled", cancel_at_period_end: false, metadata: {} }));
+    expect(await worker(sync())).toBe("subscription_ended");
+    expect(updates).toEqual([]);
+    expect(meta()).toMatchObject({ status: "canceled" });
+    expect(meta().stripeResyncFor).toBeUndefined();
+    // The team is read-only, and its owners see Subscribe
+    expect(body()).toMatchObject({ subscriptionEnded: true, billingAccount: true });
+    expect(logs).toContainEqual(["Reopened team's subscription resynced", { teamId: TEAM, subscriptionId: "sub_test_1", status: "canceled", action: "needs_payment" }]);
+    // Set to cancel by the closure, and the period ended before the reopen
+    patchTeam({ stripeResyncFor: CLOSED, status: "active" });
+    subs.set("sub_test_1", endedByClosure({ status: "canceled" }));
+    await worker(sync("membership", "seats-r2"));
+    expect(updates).toEqual([]);
+    expect(meta()).toMatchObject({ status: "canceled" });
+    expect(counts[BusinessMetric.ReopenedTeamSubscriptionsResumed]).toBeUndefined();
+  });
+
+  it("never blocks on Stripe: a failed resync is retried, and the night's sync finishes one still waiting and counts it late", async () => {
+    subs.set("sub_test_1", endedByClosure());
+    stripeDown = true;
+    await expect(worker(sync())).rejects.toThrow("Stripe is down");
+    expect(meta()).toMatchObject({ stripeResyncFor: CLOSED, status: "trialing" });
+    stripeDown = false;
+    expect(await worker(sync("reconcile", "reconcile-2026-09-28-cus_test_1"))).toBe("in_sync");
+    expect(counts[BusinessMetric.ReopenResyncsLate]).toBe(1);
+    expect(logs).toContainEqual(["Reopened team's subscription not yet resynced", { teamId: TEAM, closedAt: CLOSED, subscriptionId: "sub_test_1" }]);
+    expect(updates).toEqual([resumed]);
+    expect(meta()).toMatchObject({ status: "active", cancelAtPeriodEnd: false });
+    expect(meta().stripeResyncFor).toBeUndefined();
+    // Resynced first, so the entitlement check finds nothing to fix
+    expect(counts[BusinessMetric.EntitlementDrift]).toBeUndefined();
+    expect(denied).toEqual([]);
+  });
+
+  it("leaves it waiting, for a person, when Stripe doesn't have the subscription or it's another customer's", async () => {
+    subs.delete("sub_test_1");
+    // The entitlement check reports it as missing too
+    expect(await worker(sync("reconcile", "reconcile-1"))).toBe("missing");
+    expect(meta().stripeResyncFor).toBe(CLOSED);
+    expect(logs).toContainEqual(["Reopened team's subscription not resynced: not found in Stripe", { teamId: TEAM, subscriptionId: "sub_test_1" }]);
+    subs.set("sub_test_1", endedByClosure({ customer: "cus_test_other" }));
+    await worker(sync());
+    expect(updates).toEqual([]);
+    expect(meta().stripeResyncFor).toBe(CLOSED);
+    expect(logs).toContainEqual(["Reopened team's subscription not resynced: another customer's subscription", { teamId: TEAM, subscriptionId: "sub_test_1" }]);
+    expect(counts[BusinessMetric.ReopenResyncsLate]).toBe(1);
+  });
+
+  it("finishes at once for a team with no subscription, and leaves a team closed again or linked to another customer", async () => {
+    patchTeam({ stripeSubscriptionId: undefined });
+    await worker(sync());
+    expect(meta().stripeResyncFor).toBeUndefined();
+    expect(retrieves).toEqual([]);
+    // Closed again before the resync: that closure ends it, and the next reopen records itself
+    patchTeam({ stripeSubscriptionId: "sub_test_1", stripeResyncFor: CLOSED, closedAt: new Date(NOW).toISOString() });
+    subs.set("sub_test_1", endedByClosure());
+    expect(await worker(sync("membership", "seats-r2"))).toBe("team_closed");
+    expect(meta().stripeResyncFor).toBe(CLOSED);
+    expect(updates).toEqual([]);
+    patchTeam({ closedAt: undefined, stripeCustomerId: "cus_test_other" });
+    await worker(sync("membership", "seats-r3"));
+    expect(meta().stripeResyncFor).toBe(CLOSED);
+    expect(updates).toEqual([]);
+    expect(logs).toContainEqual(["Reopened team's subscription not resynced: the team has another Stripe customer", { teamId: TEAM, messageId: "seats-r3" }]);
+  });
+
+  it("leaves it for a later reopen when the team closes again while Stripe is asked", async () => {
+    subs.set("sub_test_1", endedByClosure({ cancel_at_period_end: false, metadata: {} }));
+    onRetrieve = () => {
+      onRetrieve = undefined;
+      patchTeam({ closedAt: new Date(NOW).toISOString() });
+    };
+    expect(await worker(sync())).toBe("team_closed");
+    expect(meta()).toMatchObject({ stripeResyncFor: CLOSED, status: "trialing" });
+  });
+
+  it("does nothing more for a team that isn't waiting, or a customer it doesn't know", async () => {
+    patchTeam({ stripeResyncFor: undefined });
+    subs.set("sub_test_1", endedByClosure());
+    await worker(sync());
+    expect(updates).toEqual([]);
+    expect(await worker({ ...sync(), customer: "cus_test_unknown" })).toBe("unknown_customer");
   });
 });
 

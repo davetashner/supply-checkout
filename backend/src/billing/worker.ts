@@ -10,8 +10,10 @@
 //    ended if it's still live (closing.ts): a checkout that finished after
 //    the team closed, whose subscription the team never recorded, would
 //    otherwise renew. The team is never reopened or written to. If an owner
-//    reopened it while Stripe was being asked, that's an error, counted and
-//    alarmed ("Reopened team's subscription ended"), and the event is retried.
+//    reopened it while Stripe was being asked, a subscription set to cancel
+//    at the period's end is resumed at once (supply-checkout-85qp); anything
+//    else is an error, counted and alarmed ("Reopened team's subscription
+//    ended"). Either way the event is retried, and applies to the open team.
 // 3. Fetch the subscription's latest state from Stripe and apply it (plan,
 //    seats, status, interval, period end) with applySubscription, whose
 //    conditions never recreate a purged team or touch a closed one. Applying
@@ -35,13 +37,15 @@
 // The worker also takes seat syncs (seats.ts) from their own queue: the
 // account function queues one after a membership change, and the nightly
 // reconciliation one per team, for which the worker first checks the team's
-// status, plan and seats against Stripe (entitlements.ts). Only the webhook can send to the billing
+// status, plan and seats against Stripe (entitlements.ts). Before any seat
+// sync it resyncs a reopened team's subscription, if it's waiting for that
+// (reopening.ts): reopening queues a seat sync for the purpose. Only the webhook can send to the billing
 // queue, so only a verified Stripe event reaches step 1.
 //
 // Logged: event, team and subscription IDs, statuses, counts and SES error
 // names. Never an owner's email or a name.
 
-import { type ClosingStripe, customerOf, endSubscriptionForClosedTeam } from "./closing.js";
+import { type ClosingStripe, customerOf, endSubscriptionForClosedTeam, removeStamp, resumeSubscription, staleStamp } from "./closing.js";
 import {
   applySubscription,
   type BillingTeam,
@@ -62,6 +66,7 @@ import { BusinessMetric, type Observability } from "../observability/index.js";
 import { BILLING_EVENTS, type BillingEventType } from "./names.js";
 import type { BillingMessage } from "./webhook-handler.js";
 import { createEntitlementCheck, type EntitlementOutcome, type EntitlementStripe } from "./entitlements.js";
+import { createReopenResync } from "./reopening.js";
 import { createSeatSync, parseSeatSync, type SeatOutcome, type SeatStripe, type SeatSyncMessage } from "./seats.js";
 import { iso, type SubscriptionLike, subscriptionState } from "./subscription.js";
 import type { DbForWorker } from "./worker-db.js";
@@ -190,26 +195,54 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
    *
    * Then, if Stripe was asked to change anything, reads the team again (consistent): an
    * owner who reopened it meanwhile (or reopened and closed it again) now has a subscription
-   * set to end that they meant to keep. That's counted (ReopenedTeamSubscriptionsEnded, the
-   * "Reopened team's subscription ended" alarm), logged as an error as the purge does, and
-   * throws, so the event isn't recorded. A team purged meanwhile is fine: deleting its
-   * customer ends the subscription anyway.
+   * set to end that they meant to keep. If it's open and the change was setting it to cancel
+   * at the period's end, that's undone at once (resumeSubscription, its own key), since the
+   * reopen's resync may already have run (supply-checkout-85qp), and warned of. Otherwise
+   * (cancelled at once, closed again, or the resume failed) it's counted
+   * (ReopenedTeamSubscriptionsEnded, the "Reopened team's subscription ended" alarm) and
+   * logged as an error as the purge does. Either way it throws, so the event isn't recorded
+   * and its retry applies the subscription to the open team. A team purged meanwhile is
+   * fine: deleting its customer ends the subscription anyway.
    */
   async function endForClosedTeam(db: Db, ctx: TeamContext, message: BillingMessage, team: BillingTeam, sub?: SubscriptionLike): Promise<void> {
     if (!message.subscription || !team.closedAt) return;
     const stripe = await deps.stripe();
     const current = sub ?? (await stripe.subscriptions.retrieve(message.subscription));
     if (customerOf(current) !== message.customer) return;
-    const action = await endSubscriptionForClosedTeam(stripe, current, { teamId: team.teamId, closedAt: team.closedAt });
+    // Keyed by the event too: a later event's request (after the subscription changed) is never a cached replay of this one
+    const action = await endSubscriptionForClosedTeam(stripe, current, { teamId: team.teamId, closedAt: team.closedAt }, message.eventId);
     if (action !== "none") {
       const after = await getBillingTeam(db, ctx, now());
       if (after && after.closedAt !== team.closedAt) {
-        obs.count(BusinessMetric.ReopenedTeamSubscriptionsEnded, 1, { teamId: team.teamId, action });
-        obs.logger.error(TEAM_REOPENED, { teamId: team.teamId, eventId: message.eventId, subscriptionId: current.id, action });
+        const ids = { teamId: team.teamId, eventId: message.eventId, subscriptionId: current.id, action };
+        if (await resumedAfterReopen(stripe, current.id, after, team.closedAt, action)) {
+          obs.count(BusinessMetric.ReopenedTeamSubscriptionsResumed, 1, { teamId: team.teamId, source: "worker" });
+          obs.logger.warn("Team reopened while its subscription was being ended: resumed", ids);
+        } else {
+          obs.count(BusinessMetric.ReopenedTeamSubscriptionsEnded, 1, { teamId: team.teamId, action });
+          obs.logger.error(TEAM_REOPENED, ids);
+        }
         throw Object.assign(new Error(TEAM_REOPENED), { name: "TeamReopened" });
       }
       obs.count(BusinessMetric.ClosedTeamSubscriptionsEnded, 1, { teamId: team.teamId, action });
       obs.logger.info("Closed team's subscription ended", { teamId: team.teamId, eventId: message.eventId, subscriptionId: current.id, status: current.status, action });
+    }
+  }
+
+  /**
+   * Resumes a subscription this worker just set to cancel at the period's end for a closure
+   * the team has since been reopened from: true if it did. False for a team closed again
+   * (that closure keeps it ending), for one cancelled at once (nothing to resume), and when
+   * Stripe fails, logged, so the caller alarms instead.
+   */
+  async function resumedAfterReopen(stripe: WorkerStripe, subscriptionId: string, after: BillingTeam, closedAt: string, action: string): Promise<boolean> {
+    if (after.closed || action !== "cancel_at_period_end") return false;
+    try {
+      await resumeSubscription(stripe, subscriptionId, { teamId: after.teamId, closedAt }, "worker");
+      return true;
+    } catch (error) {
+      obs.logger.warn("Reopened team's subscription not resumed", { teamId: after.teamId, subscriptionId, error: (error as { name?: string } | null)?.name ?? "Unknown" });
+      return false;
     }
   }
 
@@ -250,6 +283,9 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
       }
       return done("second_subscription_canceled");
     }
+    // A stamp that no longer means anything goes (closing.ts): with no resync pending, any; while one is, one on a renewed
+    // subscription. So an owner's later cancellation is never taken for a closure's, or stamped again at the next closing
+    if (staleStamp(sub, team.resyncFor !== undefined)) await removeStamp(stripe, sub, teamId, eventId);
     const result = await applySubscription(db, ctx, subscriptionState(sub, customer, chosen.replaces), now());
     if (result === "ignored") {
       // Closed (or gone) since it was read: a subscription it never recorded is ended here, or it would renew
@@ -265,6 +301,7 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
   }
 
   const seats = createSeatSync({ dbFor: deps.dbFor, stripe: deps.stripe, obs, now: deps.now });
+  const reopened = createReopenResync({ dbFor: deps.dbFor, stripe: deps.stripe, obs, now: deps.now });
   const entitlements = createEntitlementCheck({ dbFor: deps.dbFor, stripe: deps.stripe, obs, now: deps.now });
 
   /** `delivery` is the SQS message ID that delivered it, when a queue did: part of a seat update's idempotency key (seats.ts). */
@@ -272,6 +309,8 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     // Checked again here, whatever handed it over: only a well-formed seat sync goes to the seat sync
     if ("kind" in message) {
       const sync = parseSeatSync(JSON.stringify(message));
+      // A reopened team's subscription first (reopening.ts): the reopen's own sync, or the night's for one still waiting
+      await reopened(sync);
       // The nightly reconciliation: the team's status, plan and seats against Stripe's first (entitlements.ts), then the quantity.
       // A recorded subscription or customer Stripe no longer has is counted there; the seat sync would only fail on it
       if (sync.reason === "reconcile" && (await entitlements(sync)) === "missing") return "missing";
