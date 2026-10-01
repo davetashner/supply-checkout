@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { GetObjectCommand, ListObjectVersionsCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { PutCommand, QueryCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { acceptInvite, authorizeTeam, closeTeam, createInvite, createTeam, type Db, type MemberRole, setDocument } from "../src/data/index.js";
+import { acceptInvite, authorizeTeam, closeTeam, createInvite, createTeam, type Db, linkStripeCustomer, listStripeCustomerDeletions, type MemberRole, setDocument } from "../src/data/index.js";
 import { connection, dbFromConnection } from "../src/data/client.js";
 import { applyDeletions, checkTableSettings, copyTable, planDeletions } from "../src/data/restore.js";
 import { DELETION_RECORD_RETENTION_DAYS, deletionsBucketName, deletionsReplicaBucketName } from "../src/deletions/names.js";
@@ -869,6 +869,19 @@ describe.skipIf(!endpoint)("re-applying deletions on DynamoDB Local", () => {
     expect(await rawItem(db, `TEAM#${t.teamId}`, `MEMBER#${deleted}`)).toMatchObject({ role: "owner" });
     // Held back for the person too: their switcher row still matches the membership
     expect(await rawItem(db, `USER#${deleted}`, `TEAM#${t.teamId}`)).toBeDefined();
+  });
+
+  it("queues the Stripe customer of a team it purges again for the scheduled purge to delete, so a queue entry the restore lost comes back (supply-checkout-8jc.42)", async () => {
+    const db = table.db;
+    const t = await team(db, newUser());
+    const customerId = `cus_${t.teamId.slice(5, 13)}`;
+    await linkStripeCustomer(db, t.context, customerId);
+    const plan = await planDeletions(db, [{ kind: "team", id: t.teamId, deletedAt: NOW.toISOString(), stripeCustomerId: customerId }]);
+    expect(plan.teamsToPurge).toEqual([t.teamId]);
+    const later = new Date(NOW.getTime() + 60_000);
+    expect(await applyDeletions(db, plan, { apply: true, now: later })).toMatchObject({ teamsPurged: 1 });
+    expect(await partition(db, `TEAM#${t.teamId}`)).toEqual([]);
+    expect((await listStripeCustomerDeletions(db)).deletions).toContainEqual({ teamId: t.teamId, stripeCustomerId: customerId, queuedAt: later.toISOString() });
   });
 
   it("skips a team whose META item went between the plan and the write", async () => {

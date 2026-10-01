@@ -26,9 +26,25 @@
 //
 // Then, for a team with a Stripe customer, it deletes the customer in Stripe
 // (billing/closing.ts, deleteStripeCustomer): its name, email, address and
-// cards, and any subscription still on it. A team whose customer can't be
-// deleted isn't deleted this run either, so its data never goes while the
-// customer stays; after a day of that, "Deletion overdue" alarms. A customer
+// cards, and any subscription still on it. The team's data is deleted on
+// schedule even when Stripe can't do that (supply-checkout-8jc.42, the
+// owner's decision on supply-checkout-8jc.19: the deletion deadline never
+// depends on Stripe being up). On any failure (Stripe down, a timeout, a rate
+// limit, a key that can't be read) it queues the customer's deletion in the
+// table (data/stripe-deletions.ts: the team and customer IDs and when) before
+// any of the team's items go, counts it (StripeCustomerDeletionsQueued) and
+// purges the team; only a queue entry that can't be written leaves the team
+// for the next run. After STRIPE_FAILURES_BEFORE_QUEUEING failures in a row it
+// stops calling Stripe for the rest of the run and queues straight away, so an
+// outage's timeouts can't slow the purge. A held team purged after its grace
+// period (below) goes the same way. After the purge, every run retries the
+// queued deletions, oldest first, within the same budget, removing each one
+// Stripe confirms, and sends two gauges: how many are still queued
+// (StripeCustomerDeletionsPending) and how long the oldest has waited
+// (StripeCustomerDeletionOldestHours, "Stripe customer deletion retrying" at a
+// day, P2, and "stuck" at a week, P1). The team's deletion record keeps the
+// same Stripe IDs for 400 days, so the customer can be found by hand from it.
+// A queue that can't be read or cleared fails the run. A customer
 // Stripe says is already gone is taken as deleted (a run that stopped after
 // deleting it), but it's also what a Stripe key or mode mismatch looks like,
 // with the real customer and any subscription left alone, so it's warned of
@@ -105,7 +121,9 @@
 //
 // Logs have team, subscription and customer IDs and counts, never names,
 // emails or Stripe's messages. The function's role may delete whole items
-// and name only TEAM_PURGE_ATTRIBUTES, and read only the Stripe secret key
+// and name only TEAM_PURGE_ATTRIBUTES, put, list and delete the queued Stripe
+// customer deletions naming only STRIPE_DELETION_ATTRIBUTES in their one
+// partition, and read only the Stripe secret key
 // (infra/lib/observability/ops-checks.ts).
 
 import { type ClosingAction, closingAction, customerOf, deleteStripeCustomer, endSubscriptionForClosedTeam, type PurgeStripe, resumeSubscription } from "../billing/closing.js";
@@ -118,15 +136,35 @@ import {
   isTeamOpen,
   listClosedTeamsToEnd,
   listSetAsideTeams,
+  listStripeCustomerDeletions,
   listTeamsToPurge,
   markSubscriptionEnding,
   markSubscriptionSetAside,
   purgeTeam,
+  queueStripeCustomerDeletion,
+  removeStripeCustomerDeletion,
   type SetAsideReason,
+  type StripeDeletion,
 } from "../data/index.js";
 import type { DeletionLog } from "../deletions/records.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
-import { CLOSED_TEAMS_TO_END_PER_RUN, HELD_PURGE_GRACE_DAYS, MAX_LOGGED_SET_ASIDE, PURGE_BUDGET_MS, PURGE_OVERDUE_AFTER_HOURS } from "./names.js";
+import {
+  CLOSED_TEAMS_TO_END_PER_RUN,
+  HELD_PURGE_GRACE_DAYS,
+  MAX_LOGGED_SET_ASIDE,
+  PURGE_BUDGET_MS,
+  PURGE_OVERDUE_AFTER_HOURS,
+  STRIPE_DELETION_RETRY_ALARM_HOURS,
+  STRIPE_FAILURES_BEFORE_QUEUEING,
+} from "./names.js";
+
+/** What one run keeps track of across teams. */
+interface RunState {
+  /** Stripe customer deletions that failed in a row: at STRIPE_FAILURES_BEFORE_QUEUEING, the run stops asking Stripe. */
+  stripeFailures: number;
+  /** Customer deletions this run queued. */
+  queued: number;
+}
 
 export interface TeamPurgeDeps {
   readonly db: Db;
@@ -323,20 +361,106 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
     return 0;
   }
 
-  /** Deletes a purged team's Stripe customer, before any of its items go. */
-  async function deleteCustomer(teamId: string, customerId: string): Promise<void> {
-    const result = await deleteStripeCustomer(await deps.stripe(), customerId);
-    if (result === "deleted") obs.count(BusinessMetric.StripeCustomersDeleted, 1, { teamId });
+  /** Counts and logs a Stripe customer deletion Stripe confirmed, from the purge or a retry. */
+  function customerDeleted(teamId: string, customerId: string, result: "deleted" | "already_deleted", source: "purge" | "retry"): void {
+    if (result === "deleted") obs.count(BusinessMetric.StripeCustomersDeleted, 1, { teamId, source });
     else {
-      // A run that stopped after deleting it, or a Stripe key or mode mismatch: the IDs are in the deletion record
-      obs.count(BusinessMetric.StripeCustomersAlreadyDeleted, 1, { teamId });
-      obs.logger.warn("Stripe customer already deleted", { teamId, customerId });
+      // A run that stopped after deleting it, a retry whose first try reached Stripe, or a Stripe key or
+      // mode mismatch: the IDs are in the deletion record
+      obs.count(BusinessMetric.StripeCustomersAlreadyDeleted, 1, { teamId, source });
+      obs.logger.warn("Stripe customer already deleted", { teamId, customerId, ...(source === "retry" ? { source } : {}) });
     }
-    obs.logger.info("Stripe customer deleted", { teamId, customerId, result });
+    obs.logger.info("Stripe customer deleted", { teamId, customerId, result, ...(source === "retry" ? { source } : {}) });
+  }
+
+  /**
+   * Deletes a purged team's Stripe customer, before any of its items go. When Stripe can't
+   * (down, a timeout, a rate limit, a key that can't be read, any error), or this run has
+   * stopped asking it, queues the deletion for later runs instead (supply-checkout-8jc.42):
+   * the team's data still goes on schedule. Only a queue entry that can't be written stops
+   * the team, which then fails and is tried again next run, nothing of it deleted.
+   */
+  async function deleteCustomer(run: RunState, teamId: string, customerId: string, at: Date): Promise<void> {
+    let failure: unknown;
+    if (run.stripeFailures < STRIPE_FAILURES_BEFORE_QUEUEING) {
+      try {
+        const result = await deleteStripeCustomer(await deps.stripe(), customerId);
+        run.stripeFailures = 0;
+        customerDeleted(teamId, customerId, result, "purge");
+        return;
+      } catch (error) {
+        run.stripeFailures++;
+        failure = error;
+      }
+    }
+    await queueStripeCustomerDeletion(db, { teamId, stripeCustomerId: customerId, queuedAt: at.toISOString() });
+    run.queued++;
+    obs.count(BusinessMetric.StripeCustomerDeletionsQueued, 1, { teamId });
+    // The error's name and Stripe's safe fields only: never its message
+    obs.logger.warn("Stripe customer deletion queued", { teamId, customerId, error: failure === undefined ? "NotTried" : errorName(failure), ...stripeFields(failure) });
+  }
+
+  /**
+   * Retries the queued Stripe customer deletions, oldest first, until the run's budget is
+   * spent or Stripe has failed STRIPE_FAILURES_BEFORE_QUEUEING times in a row, removing each
+   * one Stripe confirms. Then sends the StripeCustomerDeletionsPending and
+   * StripeCustomerDeletionOldestHours gauges (the "Stripe customer deletion retrying" and
+   * "stuck" alarms). A deletion Stripe still refuses is only logged: the gauges alarm on it
+   * if it keeps failing. Returns how many failed for another reason (the queue couldn't be
+   * read or cleared, or holds an entry this app didn't write), which fail the run; when the
+   * queue can't be read, no gauge is sent.
+   */
+  async function retryQueued(run: RunState, started: number): Promise<number> {
+    let listed;
+    try {
+      listed = await listStripeCustomerDeletions(db);
+    } catch (error) {
+      obs.logger.error("Queued Stripe customer deletions not listed", { error: errorName(error) });
+      return 1;
+    }
+    let failures = listed.invalid;
+    if (listed.invalid) obs.logger.error("Queued Stripe customer deletions not readable", { count: listed.invalid });
+    const left: StripeDeletion[] = [];
+    let deleted = 0;
+    for (const queued of listed.deletions) {
+      const { teamId, stripeCustomerId: customerId, queuedAt } = queued;
+      if (run.stripeFailures >= STRIPE_FAILURES_BEFORE_QUEUEING || now() - started > PURGE_BUDGET_MS) {
+        left.push(queued);
+        continue;
+      }
+      let result: "deleted" | "already_deleted";
+      try {
+        result = await deleteStripeCustomer(await deps.stripe(), customerId);
+        run.stripeFailures = 0;
+      } catch (error) {
+        run.stripeFailures++;
+        left.push(queued);
+        obs.logger.warn("Queued Stripe customer deletion failed", { teamId, customerId, queuedAt, error: errorName(error), ...stripeFields(error) });
+        continue;
+      }
+      customerDeleted(teamId, customerId, result, "retry");
+      try {
+        await removeStripeCustomerDeletion(db, teamId);
+        deleted++;
+      } catch (error) {
+        // Deleted in Stripe, still queued: the next run finds it already deleted
+        failures++;
+        left.push(queued);
+        obs.logger.error("Queued Stripe customer deletion not cleared", { teamId, customerId, error: errorName(error) });
+      }
+    }
+    const oldest = left.reduce<string | undefined>((min, d) => (min === undefined || d.queuedAt < min ? d.queuedAt : min), undefined);
+    const oldestHours = oldest === undefined ? 0 : Math.max(0, (now() - Date.parse(oldest)) / 3_600_000);
+    obs.gauge(BusinessMetric.StripeCustomerDeletionsPending, left.length);
+    obs.gauge(BusinessMetric.StripeCustomerDeletionOldestHours, oldestHours);
+    if (listed.deletions.length) obs.logger.info("Retried queued Stripe customer deletions", { listed: listed.deletions.length, deleted, left: left.length, oldestHours: Math.floor(oldestHours) });
+    if (oldest !== undefined && oldestHours >= STRIPE_DELETION_RETRY_ALARM_HOURS) obs.logger.warn("Queued Stripe customer deletions still failing", { count: left.length, oldestQueuedAt: oldest });
+    return failures;
   }
 
   return async (): Promise<{ purged: number; failed: number; due: number; overdue: number }> => {
     const started = now();
+    const run: RunState = { stripeFailures: 0, queued: 0 };
     const overdueBefore = new Date(started - PURGE_OVERDUE_AFTER_HOURS * 3_600_000).toISOString();
     const ended = await endSubscriptions(started);
     const endFailures = ended + (await gaugeSetAside(new Date(overdueBefore)));
@@ -355,7 +479,7 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
         const at = new Date(now());
         const result = await purgeTeam(db, team.teamId, at, {
           beforeDelete: (stripeIds) => deps.deletions.record({ kind: "team", id: team.teamId, deletedAt: at.toISOString(), ...stripeIds }),
-          deleteStripeCustomer: (customerId) => deleteCustomer(team.teamId, customerId),
+          deleteStripeCustomer: (customerId) => deleteCustomer(run, team.teamId, customerId, at),
           heldDueBefore,
         });
         if (result.held) {
@@ -379,6 +503,8 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
       }
     }
     if (purged) obs.count(BusinessMetric.TeamsPurged, purged);
+    // After the purge, so the data deletions have the run's budget first
+    const retryFailures = await retryQueued(run, started);
     // The overdue teams at the start less those this run deleted (or found weren't due). Held
     // teams stay counted: their data is kept past its date. Not a count after the run: the index
     // is eventually consistent, and a team just deleted could still be counted. ISO timestamps
@@ -386,10 +512,11 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
     const cleared = due.filter((t) => t.purgeAfter < overdueBefore && done.has(t.teamId)).length;
     const overdue = Math.max(0, overdueAtStart - cleared);
     obs.gauge(BusinessMetric.ClosedTeamsOverdue, overdue);
-    obs.logger.info("Purged closed teams", { due: due.length, purged, failed, overdue });
+    obs.logger.info("Purged closed teams", { due: due.length, purged, failed, overdue, ...(run.queued ? { stripeDeletionsQueued: run.queued } : {}) });
     // A run that failed anywhere fails, so the Lambda errors alarm sees it
     if (failed) throw new Error(`${failed} of ${due.length} closed teams weren't purged`);
     if (endFailures) throw new Error(`${endFailures} closed teams' subscriptions weren't ended`);
+    if (retryFailures) throw new Error(`${retryFailures} queued Stripe customer deletions couldn't be read or cleared`);
     return { purged, failed, due: due.length, overdue };
   };
 }

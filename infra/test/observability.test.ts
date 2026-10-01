@@ -30,6 +30,8 @@ import {
   PURGE_SILENT_ALARM_HOURS,
   SEAT_RECONCILE_HOUR_UTC,
   SEAT_RECONCILE_SILENT_ALARM_DAYS,
+  STRIPE_DELETION_RETRY_ALARM_HOURS,
+  STRIPE_DELETION_STUCK_DAYS,
   STUCK_IMPORT_AFTER_MINUTES,
 } from "../../backend/src/ops/names.js";
 import { DELETIONS_BUCKET_CHANGE_EVENTS } from "../lib/observability/deletion-records-watch.js";
@@ -141,6 +143,8 @@ const ALARM_IDS = [
   "closed-team-subscriptions-set-aside-many",
   "stripe-customer-already-deleted",
   "held-team-purged",
+  "stripe-customer-deletion-retrying",
+  "stripe-customer-deletion-stuck",
   "team-reopened-notices-failing",
 ];
 
@@ -160,6 +164,8 @@ const PRIMARY_ONLY_ALARM_IDS = [
   "closed-team-subscriptions-set-aside-many",
   "stripe-customer-already-deleted",
   "held-team-purged",
+  "stripe-customer-deletion-retrying",
+  "stripe-customer-deletion-stuck",
 ];
 
 describe("alarm topics", () => {
@@ -812,6 +818,31 @@ describe("alarms added with the email code routes, the live update budget, team 
     expect(HELD_PURGE_GRACE_DAYS).toBe(14);
   });
 
+  it("alarms on a purged team's Stripe customer still queued for deletion after a day (P2) and after a week (P1), on the purge's gauge (J7, J11, supply-checkout-8jc.42)", () => {
+    const t = observability();
+    const oldest = [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.StripeCustomerDeletionOldestHours }), Stat: "Maximum", Period: 2 * PURGE_EVERY_HOURS * 3600 }) })];
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-stripe-customer-deletion-retrying",
+      Metrics: oldest,
+      Threshold: STRIPE_DELETION_RETRY_ALARM_HOURS,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      AlarmDescription: Match.stringLikeRegexp("^P2 Stripe customer deletion retrying \\(J7, J11.*deleted a closed team's data on schedule.*deletion record"),
+    });
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p1-stripe-customer-deletion-stuck",
+      Metrics: oldest,
+      Threshold: STRIPE_DELETION_STUCK_DAYS * 24,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP1") }],
+      AlarmDescription: Match.stringLikeRegexp("^P1 Stripe customer deletion stuck \\(J7, J11.*by hand in the Stripe Dashboard"),
+    });
+    expect(STRIPE_DELETION_RETRY_ALARM_HOURS).toBe(24);
+    expect(STRIPE_DELETION_STUCK_DAYS).toBe(7);
+  });
+
   it("alarms on any closed team overdue for deletion, over periods that always hold a purge run (J11)", () => {
     observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "supply-checkout-prod-p2-deletion-overdue",
@@ -890,6 +921,8 @@ describe("scheduled checks", () => {
       "dynamodb:Query",
       ["dynamodb:DeleteItem", "dynamodb:GetItem"],
       "dynamodb:UpdateItem",
+      ["dynamodb:DeleteItem", "dynamodb:PutItem"],
+      "dynamodb:Query",
       ["kms:Decrypt", "kms:DescribeKey"],
       "secretsmanager:GetSecretValue",
       "s3:PutObject",
@@ -917,7 +950,7 @@ describe("scheduled checks", () => {
       STRIPE_MODE: "test",
     });
     const attributes = ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "purgeAfter", "purging", "stripeCustomerId", "stripeSubscriptionId", "stripeCancelledFor", "stripeSetAsideFor", "stripeSetAsideReason", "teamId"];
-    const [, index, query, items, mark] = found as Record<string, unknown>[];
+    const [, index, query, items, mark, queue, listQueue] = found as Record<string, unknown>[];
     expect(index?.Condition).toEqual({
       "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAMS#CLOSED"], "dynamodb:Attributes": attributes },
       // COUNT for the overdue gauge, which returns no items
@@ -946,6 +979,13 @@ describe("scheduled checks", () => {
       "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "purgeAfter", "purging", "stripeCancelledFor", "stripeSetAsideFor", "stripeSetAsideReason"] },
       StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
     });
+    // The queued Stripe customer deletions (supply-checkout-8jc.42): their one partition, exactly, naming only its keys,
+    // the team, the customer and when; no update, no GetItem, nothing returned
+    const queueOnly = { "dynamodb:LeadingKeys": ["PURGE#STRIPE_DELETIONS"], "dynamodb:Attributes": ["PK", "SK", "teamId", "stripeCustomerId", "queuedAt"] };
+    expect(queue).toMatchObject({ Sid: "QueueStripeCustomerDeletions", Resource: table });
+    expect(queue?.Condition).toEqual({ "ForAllValues:StringEquals": queueOnly, StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" } });
+    expect(listQueue).toMatchObject({ Sid: "ListStripeCustomerDeletions", Resource: table });
+    expect(listQueue?.Condition).toEqual({ "ForAllValues:StringEquals": queueOnly, StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" } });
   });
 
   it("alarm when the team purge stops sending its gauge for 3 hours, in the primary region only (J11)", () => {

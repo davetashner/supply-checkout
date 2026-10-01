@@ -55,6 +55,25 @@ export const PURGE_OVERDUE_AFTER_HOURS = 24;
 export const HELD_PURGE_GRACE_DAYS = 14;
 
 /**
+ * A purged team's Stripe customer that couldn't be deleted when its data was
+ * (supply-checkout-8jc.42) is queued and retried every run: the purge's
+ * StripeCustomerDeletionOldestHours gauge is the age of the oldest still
+ * queued. "Stripe customer deletion retrying" (P2) fires once one has waited
+ * this many hours, a day of hourly retries, and "Stripe customer deletion
+ * stuck" (P1) once one has waited STRIPE_DELETION_STUCK_DAYS.
+ */
+export const STRIPE_DELETION_RETRY_ALARM_HOURS = 24;
+export const STRIPE_DELETION_STUCK_DAYS = 7;
+
+/**
+ * Stripe customer deletions in a row that fail in one purge run before it
+ * stops calling Stripe for the rest of that run: the next teams' customers
+ * are queued straight away, so a Stripe outage (each call waiting out its
+ * timeout) can't slow the data deletions down. The next run tries again.
+ */
+export const STRIPE_FAILURES_BEFORE_QUEUEING = 3;
+
+/**
  * No ClosedTeamsOverdue sample from the purge for this long alarms ("Deletion
  * job not running"): three hourly runs missed, so one slow or skipped run
  * doesn't page anyone.

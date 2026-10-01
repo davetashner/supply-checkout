@@ -14,12 +14,12 @@ import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, DATA_ROUTES, routeKey } from "../src/api/routes.js";
 import { authorizeTeam, CLOSED_TEAM_RETENTION_DAYS, createInvite, REOPEN_CUTOFF_MINUTES, hashEmail, listTeamsToPurge, liveUpdateRecipients, purgeTeam, recordReceiptRead, startAccountDeletion, TeamClosedError, updateTeam } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
-import { CLOSED_TEAMS_TO_END_PER_RUN, HELD_PURGE_GRACE_DAYS, MAX_LOGGED_SET_ASIDE, PURGE_BUDGET_MS } from "../src/ops/names.js";
+import { CLOSED_TEAMS_TO_END_PER_RUN, HELD_PURGE_GRACE_DAYS, MAX_LOGGED_SET_ASIDE, PURGE_BUDGET_MS, STRIPE_FAILURES_BEFORE_QUEUEING } from "../src/ops/names.js";
 import { createTeamPurgeHandler } from "../src/ops/team-purge-handler.js";
 import { CLOSED_AT_METADATA, closingKey, type PurgeStripe, resumeKey } from "../src/billing/closing.js";
 import type { SubscriptionLike } from "../src/billing/worker.js";
-import { TEAM_PURGE_ATTRIBUTES, TEAM_PURGE_MARK_ATTRIBUTES } from "../src/data/schema.js";
-import { REGION, accountPartitions, stripeSubscriptionUpdate, fakeDb, fakeMailer, memoryDeletionLog, unusedEmailCodes, unusedTotp } from "./helpers.js";
+import { STRIPE_DELETION_ATTRIBUTES, STRIPE_DELETIONS_PARTITION, TEAM_PURGE_ATTRIBUTES, TEAM_PURGE_MARK_ATTRIBUTES } from "../src/data/schema.js";
+import { REGION, accountPartitions, stripeSubscriptionUpdate, fakeDb, fakeMailer, memoryDeletionLog, namedAttributes, unusedEmailCodes, unusedTotp } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 import { connection } from "../src/data/client.js";
 import { EmailNotSentError, type Mailer } from "../src/email/mailer.js";
@@ -737,6 +737,12 @@ function applyUpdate(sub: SubscriptionLike, params: { cancel_at_period_end?: boo
   return stripeSubscriptionUpdate(sub, params, NOW / 1000);
 }
 
+/** Whether a request is to the queue of Stripe customer deletions: its partition in the key, the item or the key condition. */
+function isQueueRequest(input: Record<string, unknown>): boolean {
+  const pk = ((input.Key ?? input.Item) as { PK?: unknown } | undefined)?.PK ?? (input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"];
+  return pk === STRIPE_DELETIONS_PARTITION;
+}
+
 /** A fake Stripe for the purge: subscriptions by ID, and the calls it was sent. */
 function fakePurgeStripe() {
   const state = {
@@ -746,7 +752,11 @@ function fakePurgeStripe() {
     updates: [] as { id: string; params: Record<string, unknown>; key: string }[],
     cancels: [] as { id: string; key: string }[],
     deletes: [] as string[],
+    /** Every customer deletion asked for, including those that failed. */
+    deleteAttempts: [] as string[],
     down: false,
+    /** Stripe can't be reached for customer deletions only. */
+    customersDown: false,
     /** Errors Stripe answers a change to a subscription with, by its ID. */
     refuse: new Map<string, unknown>(),
     /** Errors Stripe answers fetching a subscription with, by its ID. */
@@ -786,7 +796,9 @@ function fakePurgeStripe() {
     },
     customers: {
       async del(id) {
+        state.deleteAttempts.push(id);
         failIfDown();
+        if (state.customersDown) throw new Stripe.errors.StripeAPIError({ type: "api_error", message: "Stripe is down: cus_detail", statusCode: 503, requestId: "req_503" } as never);
         state.deletes.push(id);
         if (!state.customers.delete(id)) throw Object.assign(new Error("No such customer"), { code: "resource_missing", statusCode: 404 });
       },
@@ -870,8 +882,10 @@ describe("purging closed teams", () => {
       const names = Object.values((input.ExpressionAttributeNames ?? {}) as Record<string, string>);
       const text = [input.ProjectionExpression, input.ConditionExpression, input.KeyConditionExpression, input.UpdateExpression].filter(Boolean).join(" ");
       const bare = [...String(text).replace(/:[A-Za-z0-9_]+/g, " ").matchAll(/(?<![#\w])[A-Za-z_][A-Za-z0-9_]*\b(?!\s*\()/g)].map((m) => m[0]).filter((w) => !["AND", "OR", "SET"].includes(w));
-      // The updates (the purging mark, and the record that the subscription was ended) have their own narrower list (their own IAM statement)
-      const allowed: readonly string[] = command === "UpdateCommand" ? TEAM_PURGE_MARK_ATTRIBUTES : TEAM_PURGE_ATTRIBUTES;
+      // The updates (the purging mark, and the record that the subscription was ended) have their own narrower list (their own IAM statement),
+      // and so does the queue of Stripe customer deletions, its one partition with its own statement (supply-checkout-8jc.42)
+      const queue = isQueueRequest(input);
+      const allowed: readonly string[] = queue ? STRIPE_DELETION_ATTRIBUTES : command === "UpdateCommand" ? TEAM_PURGE_MARK_ATTRIBUTES : TEAM_PURGE_ATTRIBUTES;
       for (const a of [...names, ...bare, ...Object.keys((input.Key ?? {}) as object)]) expect(allowed, `${command} ${a}`).toContain(a);
       if (command === "QueryCommand" && input.Select !== "COUNT") expect(input).toMatchObject({ Select: "SPECIFIC_ATTRIBUTES", ProjectionExpression: expect.any(String) });
       if (command === "QueryCommand" && input.Select === "COUNT") expect(input).toMatchObject({ IndexName: "GSI1", ExpressionAttributeValues: expect.objectContaining({ ":pk": "TEAMS#CLOSED" }) });
@@ -889,6 +903,27 @@ describe("purging closed teams", () => {
       expect(["QueryCommand", "GetCommand", "DeleteCommand", "UpdateCommand"]).toContain(command);
     }
     expect([...seen].sort()).toEqual(["DeleteCommand", "GetCommand", "QueryCommand COUNT", "QueryCommand SPECIFIC_ATTRIBUTES", "UpdateCommand"]);
+    // Every run reads the queue of Stripe customer deletions, keys and its own fields only
+    expect(table.requests.filter(({ input }) => isQueueRequest(input)).map(({ command, input }) => [command, input.Select, input.ProjectionExpression])).toEqual([["QueryCommand", "SPECIFIC_ATTRIBUTES", "PK, SK, teamId, stripeCustomerId, queuedAt"]]);
+  });
+
+  it("names only the queue's attributes, in its one partition, when it queues, retries and clears a Stripe customer deletion (supply-checkout-8jc.42)", async () => {
+    await subscribedAndClosed();
+    await purge(NOW + 3_600_000);
+    const due = NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 1000;
+    stripe.state.customersDown = true;
+    await purge(due);
+    stripe.state.customersDown = false;
+    table.requests.length = 0;
+    await purge(due + 3_600_000);
+    expect(stripe.state.deletes).toEqual(["cus_123"]);
+    // The queue entry was put at the purge, and read and deleted at the retry
+    const queued = table.requests.filter(({ input }) => isQueueRequest(input));
+    expect(queued.map(({ command }) => command)).toEqual(["QueryCommand", "DeleteCommand"]);
+    for (const { input } of queued) {
+      for (const a of namedAttributes(input)) expect(STRIPE_DELETION_ATTRIBUTES as readonly string[], a).toContain(a);
+      expect(input.ReturnValues).toBeUndefined();
+    }
   });
 
   it("skips a team listed in the index that isn't closed or isn't due, and leaves another team's Stripe link", async () => {
@@ -1447,23 +1482,180 @@ describe("purging closed teams", () => {
     expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(0);
   });
 
-  it("deletes a purged team's Stripe customer before any of its items, and nothing while Stripe can't be reached", async () => {
+  it("deletes a purged team's Stripe customer before any of its items", async () => {
     await subscribedAndClosed();
     const due = NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 1000;
-    const before = partition("TEAM#team-a").length;
-    stripe.state.down = true;
-    await expect(purge(due)).rejects.toThrow("1 of 1 closed teams weren't purged");
-    expect(partition("TEAM#team-a")).toHaveLength(before);
-    expect(table.get("STRIPE#cus_123", "TEAM")).toBeDefined();
-    expect(logs).toContainEqual(["error", "Team purge failed", { teamId: "team-a", error: "StripeConnectionError" }]);
-    stripe.state.down = false;
-    expect(await purge(due + 3_600_000)).toMatchObject({ purged: 1, failed: 0 });
+    // Stripe is asked before anything goes: a deletion record, then the customer, then the items
+    let itemsWhenDeleted = 0;
+    const del = (await stripe.client()).customers.del;
+    (await stripe.client()).customers.del = async (id) => {
+      itemsWhenDeleted = partition("TEAM#team-a").length;
+      return del(id);
+    };
+    expect(await purge(due)).toMatchObject({ purged: 1, failed: 0 });
+    expect(itemsWhenDeleted).toBeGreaterThan(5);
     expect(stripe.state.deletes).toEqual(["cus_123"]);
     expect(stripe.state.customers.has("cus_123")).toBe(false);
     expect(counts[BusinessMetric.StripeCustomersDeleted]).toBe(1);
+    expect(counts[BusinessMetric.StripeCustomerDeletionsQueued]).toBeUndefined();
     expect(logs).toContainEqual(["info", "Stripe customer deleted", { teamId: "team-a", customerId: "cus_123", result: "deleted" }]);
     expect(partition("TEAM#team-a")).toEqual([]);
     expect(table.get("STRIPE#cus_123", "TEAM")).toBeUndefined();
+    // Nothing queued: both gauges say so (zero, not missing)
+    expect(partition(STRIPE_DELETIONS_PARTITION)).toEqual([]);
+    expect(gauges[BusinessMetric.StripeCustomerDeletionsPending]).toBe(0);
+    expect(gauges[BusinessMetric.StripeCustomerDeletionOldestHours]).toBe(0);
+  });
+
+  it("purges a team on schedule while Stripe can't be reached, queues its customer's deletion, and deletes the customer once Stripe is back (supply-checkout-8jc.42)", async () => {
+    await subscribedAndClosed();
+    // Its subscription is set to end at the first run, while Stripe is up
+    await purge(NOW + 3_600_000);
+    const due = NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 1000;
+    stripe.state.down = true;
+    // The data goes on schedule all the same, and the run doesn't fail for it
+    expect(await purge(due)).toEqual({ purged: 1, failed: 0, due: 1, overdue: 0 });
+    expect(partition("TEAM#team-a")).toEqual([]);
+    expect(table.get("STRIPE#cus_123", "TEAM")).toBeUndefined();
+    for (const user of [OWNER, PAT, VIEWER]) expect(table.get(`USER#${user}`, "TEAM#team-a")).toBeUndefined();
+    expect(stripe.state.customers.has("cus_123")).toBe(true);
+    // The deletion record keeps the Stripe IDs, and the queue the customer to delete: IDs and a time only
+    expect(deletions.records).toEqual([{ kind: "team", id: "team-a", deletedAt: new Date(due).toISOString(), stripeCustomerId: "cus_123", stripeSubscriptionId: "sub_123" }]);
+    expect(partition(STRIPE_DELETIONS_PARTITION)).toEqual([{ PK: STRIPE_DELETIONS_PARTITION, SK: "team-a", teamId: "team-a", stripeCustomerId: "cus_123", queuedAt: new Date(due).toISOString() }]);
+    expect(counts[BusinessMetric.StripeCustomerDeletionsQueued]).toBe(1);
+    expect(counts[BusinessMetric.StripeCustomersDeleted]).toBeUndefined();
+    expect(logs).toContainEqual(["warn", "Stripe customer deletion queued", { teamId: "team-a", customerId: "cus_123", error: "StripeConnectionError" }]);
+    expect(logs).toContainEqual(["info", "Purged closed teams", { due: 1, purged: 1, failed: 0, overdue: 0, stripeDeletionsQueued: 1 }]);
+    // The same run retried it once, and it's still queued
+    expect(logs).toContainEqual(["warn", "Queued Stripe customer deletion failed", { teamId: "team-a", customerId: "cus_123", queuedAt: new Date(due).toISOString(), error: "StripeConnectionError" }]);
+    expect(gauges[BusinessMetric.StripeCustomerDeletionsPending]).toBe(1);
+    expect(gauges[BusinessMetric.StripeCustomerDeletionOldestHours]).toBe(0);
+    // Still down a day later: still queued, and the gauge has its age for the alarms
+    expect(await purge(due + 25 * 3_600_000)).toEqual({ purged: 0, failed: 0, due: 0, overdue: 0 });
+    expect(gauges[BusinessMetric.StripeCustomerDeletionsPending]).toBe(1);
+    expect(gauges[BusinessMetric.StripeCustomerDeletionOldestHours]).toBe(25);
+    expect(logs).toContainEqual(["warn", "Queued Stripe customer deletions still failing", { count: 1, oldestQueuedAt: new Date(due).toISOString() }]);
+    // Stripe is back: the next run deletes the customer and clears the queue
+    stripe.state.down = false;
+    expect(await purge(due + 26 * 3_600_000)).toEqual({ purged: 0, failed: 0, due: 0, overdue: 0 });
+    expect(stripe.state.deletes).toEqual(["cus_123"]);
+    expect(stripe.state.customers.has("cus_123")).toBe(false);
+    expect(partition(STRIPE_DELETIONS_PARTITION)).toEqual([]);
+    expect(counts[BusinessMetric.StripeCustomersDeleted]).toBe(1);
+    expect(logs).toContainEqual(["info", "Stripe customer deleted", { teamId: "team-a", customerId: "cus_123", result: "deleted", source: "retry" }]);
+    expect(gauges[BusinessMetric.StripeCustomerDeletionsPending]).toBe(0);
+    expect(gauges[BusinessMetric.StripeCustomerDeletionOldestHours]).toBe(0);
+    // Done: a later run asks Stripe nothing more
+    await purge(due + 27 * 3_600_000);
+    expect(stripe.state.deleteAttempts.filter((id) => id === "cus_123")).toHaveLength(4);
+    expect(stripe.state.deletes).toEqual(["cus_123"]);
+  });
+
+  it("stops asking Stripe after STRIPE_FAILURES_BEFORE_QUEUEING failures in a row and queues the rest straight away, purging every team", async () => {
+    expect(STRIPE_FAILURES_BEFORE_QUEUEING).toBe(3);
+    const teams = ["team-a", "team-b", "team-c", "team-d", "team-e"];
+    const purgeAfter = "2026-09-26T00:00:00.000Z";
+    for (const [i, teamId] of teams.entries()) {
+      team(teamId, {}, { closedAt: "2026-08-27T00:00:00.000Z", purgeAfter, GSI1PK: "TEAMS#CLOSED", GSI1SK: `${purgeAfter}#${teamId}`, stripeCustomerId: `cus_${i}` });
+      stripe.state.customers.add(`cus_${i}`);
+    }
+    stripe.state.customersDown = true;
+    const due = NOW;
+    expect(await purge(due)).toMatchObject({ purged: 5, failed: 0 });
+    for (const teamId of teams) expect(meta(teamId)).toBeUndefined();
+    // Three tried, then the other two queued without asking; the retries this run aren't tried either
+    expect(stripe.state.deleteAttempts).toHaveLength(STRIPE_FAILURES_BEFORE_QUEUEING);
+    expect(partition(STRIPE_DELETIONS_PARTITION).map((i) => i.stripeCustomerId).sort()).toEqual(["cus_0", "cus_1", "cus_2", "cus_3", "cus_4"]);
+    expect(counts[BusinessMetric.StripeCustomerDeletionsQueued]).toBe(5);
+    expect(logs.filter(([, message, data]) => message === "Stripe customer deletion queued" && (data as { error?: string }).error === "NotTried")).toHaveLength(2);
+    // Stripe's safe fields only, never its message
+    expect(logs).toContainEqual(["warn", "Stripe customer deletion queued", expect.objectContaining({ teamId: "team-a", customerId: "cus_0", type: "StripeAPIError", status: 503, requestId: "req_503" })]);
+    expect(JSON.stringify(logs)).not.toContain("cus_detail");
+    expect(gauges[BusinessMetric.StripeCustomerDeletionsPending]).toBe(5);
+    // Back: the next run clears all of them, oldest first
+    stripe.state.customersDown = false;
+    await purge(due + 3_600_000);
+    expect(partition(STRIPE_DELETIONS_PARTITION)).toEqual([]);
+    expect(stripe.state.deletes.sort()).toEqual(["cus_0", "cus_1", "cus_2", "cus_3", "cus_4"]);
+    expect(gauges[BusinessMetric.StripeCustomerDeletionsPending]).toBe(0);
+  });
+
+  it("deletes nothing of a team whose Stripe customer deletion can't be queued, fails the run, and purges it at the next", async () => {
+    await subscribedAndClosed();
+    await purge(NOW + 3_600_000);
+    const due = NOW + CLOSED_TEAM_RETENTION_DAYS * DAY + 1000;
+    const before = partition("TEAM#team-a").length;
+    stripe.state.customersDown = true;
+    const noQueue = table.guarded((command) => command !== "PutCommand");
+    await expect(createTeamPurgeHandler({ db: noQueue, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => due })()).rejects.toThrow("1 of 1 closed teams weren't purged");
+    expect(partition("TEAM#team-a")).toHaveLength(before);
+    expect(table.get("STRIPE#cus_123", "TEAM")).toBeDefined();
+    expect(logs).toContainEqual(["error", "Team purge failed", { teamId: "team-a", error: "AccessDeniedException" }]);
+    // The next run, with the queue writable: purged, and queued
+    expect(await purge(due + 3_600_000)).toMatchObject({ purged: 1, failed: 0 });
+    expect(partition("TEAM#team-a")).toEqual([]);
+    expect(partition(STRIPE_DELETIONS_PARTITION)).toHaveLength(1);
+  });
+
+  it("queues a held team's customer too when Stripe is down at its forced purge, so both paths end with the data gone (supply-checkout-8jc.40)", async () => {
+    const closedAt = await subscribedAndClosed();
+    table.put({ ...(meta("team-a") as Record<string, unknown>), stripeSetAsideFor: closedAt, stripeSetAsideReason: "PermanentError" });
+    const forcedAt = Date.parse(meta("team-a")?.purgeAfter as string) + HELD_PURGE_GRACE_DAYS * DAY;
+    stripe.state.down = true;
+    expect(await purge(forcedAt)).toEqual({ purged: 1, failed: 0, due: 1, overdue: 0 });
+    expect(partition("TEAM#team-a")).toEqual([]);
+    expect(counts[BusinessMetric.HeldTeamsPurged]).toBe(1);
+    expect(partition(STRIPE_DELETIONS_PARTITION)).toEqual([expect.objectContaining({ teamId: "team-a", stripeCustomerId: "cus_123" })]);
+    expect(deletions.records).toEqual([{ kind: "team", id: "team-a", deletedAt: new Date(forcedAt).toISOString(), stripeCustomerId: "cus_123", stripeSubscriptionId: "sub_123" }]);
+  });
+
+  it("takes a queued customer Stripe says is already gone as deleted, counted for its alarm, and keeps a queued deletion it couldn't clear for the next run", async () => {
+    table.put({ PK: STRIPE_DELETIONS_PARTITION, SK: "team-x", teamId: "team-x", stripeCustomerId: "cus_gone", queuedAt: new Date(NOW - DAY).toISOString() });
+    table.put({ PK: STRIPE_DELETIONS_PARTITION, SK: "team-y", teamId: "team-y", stripeCustomerId: "cus_y", queuedAt: new Date(NOW - 2 * DAY).toISOString() });
+    stripe.state.customers.add("cus_y");
+    // Deleted in Stripe, but the queue entry can't be removed
+    const noDelete = table.guarded((command, input) => !(command === "DeleteCommand" && isQueueRequest(input)));
+    await expect(createTeamPurgeHandler({ db: noDelete, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => NOW })()).rejects.toThrow("2 queued Stripe customer deletions couldn't be read or cleared");
+    // Oldest first
+    expect(stripe.state.deleteAttempts).toEqual(["cus_y", "cus_gone"]);
+    expect(counts[BusinessMetric.StripeCustomersDeleted]).toBe(1);
+    expect(counts[BusinessMetric.StripeCustomersAlreadyDeleted]).toBe(1);
+    expect(logs).toContainEqual(["warn", "Stripe customer already deleted", { teamId: "team-x", customerId: "cus_gone", source: "retry" }]);
+    expect(logs).toContainEqual(["error", "Queued Stripe customer deletion not cleared", { teamId: "team-y", customerId: "cus_y", error: "AccessDeniedException" }]);
+    expect(gauges[BusinessMetric.StripeCustomerDeletionsPending]).toBe(2);
+    expect(gauges[BusinessMetric.StripeCustomerDeletionOldestHours]).toBe(48);
+    // The next run finds both gone in Stripe and clears them
+    expect(await purge(NOW + 3_600_000)).toMatchObject({ failed: 0 });
+    expect(partition(STRIPE_DELETIONS_PARTITION)).toEqual([]);
+    expect(gauges[BusinessMetric.StripeCustomerDeletionsPending]).toBe(0);
+  });
+
+  it("fails the run, with no queue gauges, when it can't read the queue, and fails it for an entry it didn't write, never sending that to Stripe", async () => {
+    await close("team-a");
+    const noQueue = table.guarded((command, input) => !(command === "QueryCommand" && isQueueRequest(input)));
+    await expect(createTeamPurgeHandler({ db: noQueue, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => NOW + 31 * DAY })()).rejects.toThrow("1 queued Stripe customer deletions couldn't be read or cleared");
+    // The purge itself still ran
+    expect(meta("team-a")).toBeUndefined();
+    expect(gauges[BusinessMetric.StripeCustomerDeletionsPending]).toBeUndefined();
+    expect(gauges[BusinessMetric.StripeCustomerDeletionOldestHours]).toBeUndefined();
+    expect(logs).toContainEqual(["error", "Queued Stripe customer deletions not listed", { error: "AccessDeniedException" }]);
+    table.put({ PK: STRIPE_DELETIONS_PARTITION, SK: "team-z", teamId: "team-other", stripeCustomerId: "cus_z", queuedAt: new Date(NOW).toISOString() });
+    table.put({ PK: STRIPE_DELETIONS_PARTITION, SK: "team-w", teamId: "team-w", stripeCustomerId: "cus w", queuedAt: new Date(NOW).toISOString() });
+    table.put({ PK: STRIPE_DELETIONS_PARTITION, SK: "team-v", teamId: "team-v", stripeCustomerId: "cus_v", queuedAt: "yesterday" });
+    await expect(purge(NOW + 31 * DAY)).rejects.toThrow("3 queued Stripe customer deletions couldn't be read or cleared");
+    expect(stripe.state.deleteAttempts).toEqual([]);
+    expect(logs).toContainEqual(["error", "Queued Stripe customer deletions not readable", { count: 3 }]);
+    expect(gauges[BusinessMetric.StripeCustomerDeletionsPending]).toBe(0);
+  });
+
+  it("stops retrying queued deletions once its time budget is spent, and still sends the gauges", async () => {
+    table.put({ PK: STRIPE_DELETIONS_PARTITION, SK: "team-x", teamId: "team-x", stripeCustomerId: "cus_x", queuedAt: new Date(NOW - 3_600_000).toISOString() });
+    let clock = NOW;
+    // Each read of the clock moves it past the budget
+    expect(await createTeamPurgeHandler({ db: table.db(undefined), obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => (clock += PURGE_BUDGET_MS + 1) })()).toMatchObject({ failed: 0 });
+    expect(stripe.state.deleteAttempts).toEqual([]);
+    expect(gauges[BusinessMetric.StripeCustomerDeletionsPending]).toBe(1);
+    expect(gauges[BusinessMetric.StripeCustomerDeletionOldestHours]).toBeGreaterThan(1);
   });
 
   it("carries on with a customer already deleted in Stripe (a run that stopped after deleting it), counting it for its own alarm and keeping the Stripe IDs in the deletion record", async () => {

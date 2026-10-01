@@ -12,7 +12,7 @@ import { billingResourceNames } from "../../../backend/src/billing/names.js";
 import { emailResourceNames } from "../../../backend/src/email/names.js";
 import { identityResourceNames } from "../../../backend/src/identity/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
-import { HELD_PURGE_GRACE_DAYS, PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS } from "../../../backend/src/ops/names.js";
+import { HELD_PURGE_GRACE_DAYS, PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS, STRIPE_DELETION_RETRY_ALARM_HOURS, STRIPE_DELETION_STUCK_DAYS } from "../../../backend/src/ops/names.js";
 import { realtimeResourceNames } from "../../../backend/src/realtime/channels.js";
 import type { AlarmTopics, Severity } from "./alarm-topics.js";
 import { apiGateway, business, dynamoDbSystemErrors, dynamoDbThrottles, FIVE_MINUTES, lambda } from "./metrics.js";
@@ -602,6 +602,26 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       rule: `Any HeldTeamsPurged over an hour: the hourly closed-team purge (primary region) deleted a closed team held because its Stripe subscription was set aside (another customer's, not found in Stripe, or an error retrying won't change), ${HELD_PURGE_GRACE_DAYS} days after its deletion date, with nobody having dealt with it. Its subscription may still be live and billing. The log line "Held team purged with its subscription unresolved" has the team, customer and subscription IDs and the reason, and the team's deletion record keeps the Stripe IDs: end the subscription by hand in the Stripe Dashboard (check both modes). See docs/journeys.md.`,
       metric: business(BusinessMetric.HeldTeamsPurged, region, Duration.hours(1)),
       threshold: 0,
+      primaryOnly: true,
+    },
+    {
+      id: "stripe-customer-deletion-retrying",
+      title: "Stripe customer deletion retrying",
+      journeys: "J7, J11",
+      severity: "P2",
+      rule: `StripeCustomerDeletionOldestHours above ${STRIPE_DELETION_RETRY_ALARM_HOURS} at its maximum over ${2 * PURGE_EVERY_HOURS} hours: the hourly closed-team purge (primary region) deleted a closed team's data on schedule but couldn't delete its Stripe customer (Stripe down, a timeout, a rate limit, a key it couldn't read), queued the customer's deletion, and has retried it every hour for a day without Stripe deleting it. The customer's name, email, address and cards are still in Stripe, and any subscription on it may still bill. The log lines "Stripe customer deletion queued" and "Queued Stripe customer deletion failed" have the team and customer IDs and Stripe's error type and status; the team's deletion record keeps the Stripe IDs. Check Stripe's status and the purge's Stripe key; the purge clears it on its own once Stripe deletes the customer. See docs/journeys.md.`,
+      metric: business(BusinessMetric.StripeCustomerDeletionOldestHours, region, TWO_PURGE_RUNS, "Maximum"),
+      threshold: STRIPE_DELETION_RETRY_ALARM_HOURS,
+      primaryOnly: true,
+    },
+    {
+      id: "stripe-customer-deletion-stuck",
+      title: "Stripe customer deletion stuck",
+      journeys: "J7, J11",
+      severity: "P1",
+      rule: `StripeCustomerDeletionOldestHours above ${STRIPE_DELETION_STUCK_DAYS * 24} (${STRIPE_DELETION_STUCK_DAYS} days) at its maximum over ${2 * PURGE_EVERY_HOURS} hours: a purged team's Stripe customer has been queued for deletion for a week, retried every hour, and Stripe still hasn't deleted it, so it isn't an outage: most likely the purge's Stripe key is wrong, revoked or can't be read, or Stripe refuses that customer. Its details stay in Stripe and any subscription may still bill. Delete the customer by hand in the Stripe Dashboard from the IDs in the log line "Queued Stripe customer deletion failed" (or the team's deletion record), then remove its entry from the queue partition (PURGE#STRIPE_DELETIONS). See docs/journeys.md.`,
+      metric: business(BusinessMetric.StripeCustomerDeletionOldestHours, region, TWO_PURGE_RUNS, "Maximum"),
+      threshold: STRIPE_DELETION_STUCK_DAYS * 24,
       primaryOnly: true,
     },
     {

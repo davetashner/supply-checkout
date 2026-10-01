@@ -10,7 +10,10 @@
 //   app did the first time:
 //     - a recorded team, or a team a deleted user's deletion closed (when the
 //       table bears that out, see planDeletions), is purged (team-purge.ts),
-//       after its META item is marked closed and due;
+//       after its META item is marked closed and due, and its Stripe
+//       customer, if it has one, is queued for the scheduled purge to delete
+//       (stripe-deletions.ts): a queue entry the restore lost is queued again,
+//       and one Stripe already deleted is just cleared;
 //     - a team whose only members are deleted users is purged too: that's
 //       what the account deletion did (it closed the team, and the purge
 //       followed);
@@ -53,6 +56,7 @@ import { type Db, connection } from "./client.js";
 import { ForbiddenError, LastOwnerError } from "./errors.js";
 import { gsi1, keys, prefixes } from "./keys.js";
 import { authorizeTeam } from "./team-context.js";
+import { queueStripeCustomerDeletion } from "./stripe-deletions.js";
 import { purgeTeam } from "./team-purge.js";
 import { removeMember } from "./teams.js";
 import { GSI1, GSI2, GSI3, TTL_ATTRIBUTE } from "./schema.js";
@@ -263,7 +267,11 @@ export async function applyDeletions(db: Db, plan: DeletionPlan, options: { read
   let itemsPurged = 0;
   for (const teamId of plan.teamsToPurge) {
     if (!(await markDue(db, teamId, now))) continue;
-    const result = await purgeTeam(db, teamId, now);
+    // Its Stripe customer is queued for the scheduled purge to delete (supply-checkout-8jc.42): a
+    // queue entry lost with the restore is queued again, and one Stripe already deleted is cleared
+    const result = await purgeTeam(db, teamId, now, {
+      deleteStripeCustomer: (customerId) => queueStripeCustomerDeletion(db, { teamId, stripeCustomerId: customerId, queuedAt: now.toISOString() }),
+    });
     if (result.skipped) continue;
     teamsPurged++;
     itemsPurged += result.deleted;
