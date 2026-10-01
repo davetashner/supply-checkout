@@ -33,6 +33,23 @@ for (const colorScheme of ["light", "dark"]) {
       await expectAccessible(page);
     });
 
+    test("company equipment: the sheet's section, the item editor and Inventory's Out view", async ({ page }) => {
+      const ladder = { code: "LAD-1", name: "Step ladder", kind: "equipment", out: 2, returned: 0, lost: 1, takenBy: "u_test", takenAt: "2026-09-24T13:05:00.000Z" };
+      await openApp(page, { ...usedState, seed: { ...usedState.seed, "products/LAD-1": { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, stock: 2 }, "sheets/s1": { ...usedState.seed["sheets/s1"], items: { ...usedState.seed["sheets/s1"].items, "LAD-1": ladder } } } });
+      await page.getByRole("button", { name: /Echo Studio/ }).click();
+      await expect(page.locator("#sheetBody table.equipment tbody tr")).toHaveCount(1);
+      await expectAccessible(page);
+      await page.getByRole("button", { name: "Inventory" }).click();
+      await page.getByRole("button", { name: "Equipment", exact: true }).click();
+      await page.getByRole("button", { name: "Out on jobs" }).click();
+      await expect(page.locator("#main table.out tbody tr")).toHaveCount(1);
+      await expectAccessible(page);
+      await page.getByRole("button", { name: "In storage" }).click();
+      await page.locator("#main tbody tr", { hasText: "Step ladder" }).click();
+      await expect(modal(page).getByLabel("Value each ($)")).toBeVisible();
+      await expectAccessible(page);
+    });
+
     test("inventory", async ({ page }) => {
       await openApp(page, usedState);
       await page.getByRole("button", { name: "Inventory" }).click();

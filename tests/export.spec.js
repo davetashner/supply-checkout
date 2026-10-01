@@ -33,11 +33,11 @@ test("owners export every sheet and the inventory as CSV, and everything as JSON
   expect(sheets.filename).toMatch(/^Supply Checkout sheets \d{4}-\d{2}-\d{2}\.csv$/);
   // In the list's order (the mock sorts an undated sheet first); returned counts capped at taken; an empty sheet gets one row
   expect(sheets.data.split("\n")).toEqual([
-    "Client,Date,Prepared by,Status,Item,Barcode,Price each,Taken,Returned,Used,Charge,Sheet ID",
-    "Untitled,,Unknown,Checked out,Unnamed item,,0.00,4,4,0,0.00,s3",
-    '"Delta, ""Dry"" Cleaning",2026-09-25,Sam,Returned,,,,,,,,s2',
-    "Echo Studio,2026-09-24,Test User,Checked out,\"Paper towels, 6 roll\",SKU1,8.50,3,1,2,17.00,s1",
-    "Echo Studio,2026-09-24,Test User,Checked out,\"Storage bins, 12 qt\",,5.00,2,0,2,10.00,s1",
+    "Client,Date,Prepared by,Status,Item,Barcode,Price each,Taken,Returned,Used,Charge,Sheet ID,Kind",
+    "Untitled,,Unknown,Checked out,Unnamed item,,0.00,4,4,0,0.00,s3,Supply",
+    '"Delta, ""Dry"" Cleaning",2026-09-25,Sam,Returned,,,,,,,,s2,',
+    "Echo Studio,2026-09-24,Test User,Checked out,\"Paper towels, 6 roll\",SKU1,8.50,3,1,2,17.00,s1,Supply",
+    "Echo Studio,2026-09-24,Test User,Checked out,\"Storage bins, 12 qt\",,5.00,2,0,2,10.00,s1,Supply",
   ]);
 
   await modal(page).getByRole("button", { name: "Inventory (CSV)" }).click();
@@ -46,12 +46,12 @@ test("owners export every sheet and the inventory as CSV, and everything as JSON
   expect(inventory.filename).toMatch(/^Supply Checkout inventory \d{4}-\d{2}-\d{2}\.csv$/);
   // By name, as the Inventory tab lists it; a formula-like name can't run in a spreadsheet
   expect(inventory.data.split("\n")).toEqual([
-    "Item,Barcode,In storage,Price each,Value",
-    "\"'=HYPERLINK(\"\"x\"\")\",UC1,,2.25,",
-    "\"Paper towels, 6 roll\",SKU1,10,8.50,85.00",
-    "Rags,NP,4,0.00,0.00",
-    "\"Storage bins, 12 qt\",,2,5.00,10.00",
-    "Unnamed item,,,3.00,",
+    "Item,Barcode,In storage,Price each,Value,Kind",
+    "\"'=HYPERLINK(\"\"x\"\")\",UC1,,2.25,,Supply",
+    "\"Paper towels, 6 roll\",SKU1,10,8.50,85.00,Supply",
+    "Rags,NP,4,0.00,0.00,Supply",
+    "\"Storage bins, 12 qt\",,2,5.00,10.00,Supply",
+    "Unnamed item,,,3.00,,Supply",
   ]);
 
   await modal(page).getByRole("button", { name: "Everything (JSON)" }).click();

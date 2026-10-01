@@ -1,0 +1,299 @@
+// Company equipment (ADR 0017): items that go to a job and come back, listed on the sheet but
+// not charged. The item editor's kind and value, the sheet's "Equipment (not charged)" section,
+// returns, the line editor, the exports, Inventory's Supplies / Equipment filter and its Out view.
+// In both builds, against the claude.ai runtime's mock; the web build's checkout command is
+// against tests/fake-aws.js at the end.
+import { test, expect, openApp, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
+import { currentBuild } from "../scripts/builds.mjs";
+import { FakeBackend, openAws, connected } from "./fake-aws.js";
+
+const TAKEN = "2026-09-24T13:05:00.000Z";
+const ladder = { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, stock: 3 };
+const towels = { code: "SKU1", name: "Paper towels, 6 roll", price: 8.5, stock: 10 };
+const seed = {
+  "products/LAD-1": ladder,
+  "products/SKU1": towels,
+  "products/vac": { code: "", name: "Shop vacuum", kind: "equipment", cost: 210 },
+  "sheets/s1": {
+    client: "Echo Studio", date: "2026-09-24", createdBy: "u_test", createdAt: "2026-09-24T12:00:00Z", status: "open",
+    items: {
+      SKU1: { code: "SKU1", name: "Paper towels, 6 roll", price: 8.5, out: 3, returned: 1 },
+      "LAD-1": { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, out: 1, returned: 0, takenBy: "u_test", takenAt: TAKEN },
+    },
+  },
+  "sheets/s2": {
+    client: "Delta Dental", date: "2026-09-22", createdByName: "Sam", status: "open",
+    items: { "LAD-1": { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, out: 3, returned: 0, lost: 1, takenBy: "Sam" } },
+  },
+  "sheets/s3": {
+    client: "Foxtrot", date: "2026-09-20", createdByName: "Sam", status: "closed",
+    items: { vac: { code: "", name: "Shop vacuum", kind: "equipment", cost: 210, out: 1, returned: 1 } },
+  },
+};
+
+const ready = (page) => page.waitForFunction(() => { const n = document.getElementById("notice"); return n.hidden || !n.textContent.startsWith("Connecting"); });
+async function open(page, opts = {}) {
+  await openApp(page, { seed, ...opts });
+  await ready(page);
+}
+const openSheet = async (page, client) => page.getByRole("button", { name: new RegExp(client) }).click();
+const doc = (page, path) => page.evaluate((p) => window.__mock.docs.get(p), path);
+const inventory = async (page) => page.getByRole("button", { name: "Inventory" }).click();
+const equipmentRow = (page, name) => page.locator("#sheetBody table.equipment tbody tr", { hasText: name });
+
+test.describe("J13. Take company equipment to a job and bring it back", { tag: ["@J13"] }, () => {
+  test("an item can be company equipment: no client price, and its cost is its value", { tag: ["@J13.1"] }, async ({ page }) => {
+    await open(page);
+    await inventory(page);
+    await page.getByRole("button", { name: "+ Add item" }).click();
+    await expect(modal(page).getByLabel("Supply (used up, charged)")).toBeChecked();
+    await expect(modal(page).getByLabel("Price each ($)")).toBeVisible();
+    await modal(page).getByLabel("Company equipment (reused, not charged)").check();
+    await expect(modal(page).getByLabel("Price each ($)")).toBeHidden();
+    await expect(modal(page).getByLabel("Value each ($)")).toBeVisible();
+    await expect(modal(page)).toContainText("It's listed on sheets but not charged.");
+    await modal(page).getByPlaceholder("Type, scan, or leave blank").fill("CORD-50");
+    await modal(page).getByLabel("Item name").fill("Extension cord, 50 ft");
+    await modal(page).getByLabel("Value each ($)").fill("34.99");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(inventoryRow(page, "Extension cord")).toContainText("Company equipment");
+    await expect(inventoryRow(page, "Extension cord").locator("td").nth(2)).toHaveText("Not charged");
+    await expect(inventoryRow(page, "Extension cord").locator("td").nth(3)).toHaveText("$34.99");
+    const saved = await doc(page, "products/CORD-50");
+    expect(saved).toMatchObject({ code: "CORD-50", name: "Extension cord, 50 ft", kind: "equipment", cost: 34.99 });
+    expect(saved).not.toHaveProperty("price");
+
+    // Back to a supply: the price field again, and the item has no kind
+    await inventoryRow(page, "Step ladder").click();
+    await expect(modal(page).getByLabel("Company equipment (reused, not charged)")).toBeChecked();
+    await expect(modal(page).getByLabel("Value each ($)")).toHaveValue("120");
+    await modal(page).getByLabel("Supply (used up, charged)").check();
+    await expect(modal(page).getByLabel("Cost each ($)")).toBeVisible();
+    await expect(modal(page)).toContainText("Price is what a client is charged.");
+    await modal(page).getByLabel("Price each ($)").fill("15");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(page.locator("#overlay")).toBeHidden();
+    const supply = await doc(page, "products/LAD-1");
+    expect(supply).toMatchObject({ name: "Step ladder", price: 15, cost: 120 });
+    expect(supply).not.toHaveProperty("kind");
+  });
+
+  test("equipment checked out goes in its own section, not in the totals or the client's CSV", { tag: ["@J13.2", "@J6.2"] }, async ({ page }) => {
+    await open(page);
+    // The sheet card counts supplies, and says what equipment is out
+    await expect(page.getByRole("button", { name: /Echo Studio/ })).toContainText("1 item · 3 taken · 1 back · 1 equipment out");
+    await openSheet(page, "Echo Studio");
+    await expect(page.locator("#sheetBody")).toContainText("Equipment (not charged)");
+    await expect(equipmentRow(page, "Step ladder").locator("td")).toHaveText(["Step ladderBarcode LAD-1", "1", "0", "1"]);
+    await expect(page.locator("#sheetBody .totals")).toContainText("Taken3");
+    await expect(page.locator("#sheetBody .totals .charge")).toHaveText("$17.00");
+
+    // Taking another: the item says it isn't charged, and the line keeps no price
+    await enterBarcode(page, "LAD-1");
+    await expect(modal(page)).toContainText("Company equipment · not charged");
+    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await expect(page.locator("#toast")).toHaveText("Checked out 1 × Step ladder");
+    await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("2");
+    await expect(page.locator("#sheetBody .totals .charge")).toHaveText("$17.00");
+    const line = (await doc(page, "sheets/s1")).items["LAD-1"];
+    expect(line).toMatchObject({ kind: "equipment", out: 2, returned: 0, takenBy: "u_test", takenAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/) });
+    expect(line).not.toHaveProperty("price");
+    expect(line.takenAt).not.toBe(TAKEN);
+
+    // The client's CSV has no equipment rows
+    await page.getByRole("button", { name: "Download CSV" }).click();
+    await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
+    const csv = await page.evaluate(() => window.__mock.saves[0].data);
+    expect(csv).not.toContain("Step ladder");
+    expect(csv.split("\n").at(-1)).toBe("Total,,,3,1,2,17.00");
+  });
+
+  test("a new piece of equipment from the pick list starts its own line with who took it", { tag: ["@J13.2"] }, async ({ page }) => {
+    await open(page);
+    await openSheet(page, "Echo Studio");
+    await page.getByRole("button", { name: "Add item without a barcode" }).click();
+    await expect(modal(page).locator("[data-k=vac]")).toContainText("Equipment");
+    await modal(page).locator("[data-k=vac]").click();
+    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await expect(equipmentRow(page, "Shop vacuum")).toBeVisible();
+    expect((await doc(page, "sheets/s1")).items.vac).toEqual({ code: "", name: "Shop vacuum", kind: "equipment", cost: 210, out: 1, returned: 0, takenBy: "u_test", takenAt: expect.any(String), ops: expect.any(Array) });
+  });
+
+  test("returning equipment counts what's still out, not what's used", { tag: ["@J13.3"] }, async ({ page }) => {
+    await open(page);
+    await openSheet(page, "Delta Dental");
+    // Out 3, lost 1: two can come back
+    await expect(equipmentRow(page, "Step ladder").locator("td")).toHaveText(["Step ladderBarcode LAD-1", "3", "0", "1", "2"]);
+    await expect(page.locator("#sheetBody thead").last()).toContainText("Lost or broken");
+    await page.getByRole("button", { name: "Return", exact: true }).click();
+    await enterBarcode(page, "LAD-1");
+    await expect(modal(page).locator("#sum")).toHaveText("Returned 1 of 3Still out 1");
+    await modal(page).getByRole("button", { name: "More" }).click();
+    await expect(modal(page).locator("#sum")).toHaveText("Returned 2 of 3Still out 0");
+    await modal(page).getByRole("button", { name: "Save return" }).click();
+    await expect(page.locator("#toast")).toHaveText("2 returned · 2 of 3 back");
+    await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("0");
+    expect((await doc(page, "sheets/s2")).items["LAD-1"]).toMatchObject({ out: 3, returned: 2, lost: 1 });
+    expect((await doc(page, "products/LAD-1")).stock).toBe(5);
+    // Nothing more is out
+    await enterBarcode(page, "LAD-1");
+    await expect(modal(page)).toContainText("None of Step ladder is still out.");
+  });
+
+  test("the line editor has no price for equipment, and keeps returned and lost within taken", { tag: ["@J13.2"] }, async ({ page }) => {
+    await open(page);
+    await openSheet(page, "Delta Dental");
+    await equipmentRow(page, "Step ladder").click();
+    await expect(modal(page)).toContainText("Company equipment: not charged.");
+    await expect(modal(page).locator("#fPrice")).toHaveCount(0);
+    await modal(page).getByLabel("Taken").fill("0");
+    await modal(page).getByLabel("Returned").fill("9");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(page.locator("#overlay")).toBeHidden();
+    // Taken can't go below the one lost, and nothing else is left to have come back
+    const line = (await doc(page, "sheets/s2")).items["LAD-1"];
+    expect(line).toMatchObject({ out: 1, returned: 0, lost: 1 });
+    expect(line).not.toHaveProperty("price");
+  });
+
+  test("Inventory filters supplies and equipment, and shows where equipment is out", { tag: ["@J13.5"] }, async ({ page }) => {
+    await open(page);
+    await inventory(page);
+    await expect(page.locator("#main")).toContainText("3 items.");
+    await page.getByRole("button", { name: "Supplies" }).click();
+    await expect(page.locator("#main")).toContainText("1 item.");
+    await expect(inventoryRow(page, "Paper towels")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Out on jobs" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Equipment", exact: true }).click();
+    await expect(page.locator("#main")).toContainText("2 items.");
+    await expect(page.locator("#main thead")).toContainText("Value each");
+    await expect(inventoryRow(page, "Step ladder").locator("td").nth(4)).toHaveText("$360.00");
+
+    // Out: each open sheet with equipment still out, who took it last and when
+    await page.getByRole("button", { name: "Out on jobs" }).click();
+    const rows = page.locator("#main table.out tbody tr");
+    await expect(rows).toHaveCount(2);
+    // As the browser formats it (WebKit says "Sep 24 at 9:05 AM", Chromium "Sep 24, 9:05 AM")
+    const when = await page.evaluate((t) => new Date(t).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }), TAKEN);
+    // By item, then the oldest sheet first. The artifact build saves a typed name when there's no
+    // user, and an older line has no time
+    // (The web build's lines name a user, and someone it has no profile for is "Someone")
+    await expect(rows.nth(0).locator("td")).toHaveText(["Step ladderBarcode LAD-1", "2", "Delta DentalSep 22, 2026", currentBuild() === "web" ? "Someone" : "Sam", "—"]);
+    await expect(rows.nth(1).locator("td")).toHaveText(["Step ladderBarcode LAD-1", "1", "Echo StudioSep 24, 2026", "Test User", when]);
+    // The closed sheet's vacuum came back, so it isn't listed; a row opens its sheet
+    await rows.nth(0).click();
+    await expect(page.getByRole("heading", { name: "Delta Dental" })).toBeVisible();
+    await page.getByRole("button", { name: "Inventory" }).click();
+    await page.locator("#main table.out tbody tr").last().press("Enter");
+    await expect(page.getByRole("heading", { name: "Echo Studio" })).toBeVisible();
+    await page.getByRole("button", { name: "Inventory" }).click();
+    await page.getByRole("button", { name: "In storage" }).click();
+    await expect(inventoryRow(page, "Shop vacuum")).toBeVisible();
+  });
+
+  test("the Out view lists each piece by name, and lines from before who took it was kept", { tag: ["@J13.5"] }, async ({ page }) => {
+    await open(page, { seed: {
+      "products/vac": seed["products/vac"],
+      "sheets/s1": { client: "Echo", date: "2026-09-24", status: "open", items: {
+        vac: { name: "Shop vacuum", kind: "equipment", out: 1, returned: 0 },
+        cord: { name: "Extension cord", kind: "equipment", out: 2, returned: 0, takenAt: "soon" },
+      } },
+      "sheets/s2": { date: "2026-09-25", status: "open", items: { z: { code: "", kind: "equipment", out: 1, returned: 0 } } },
+    } });
+    await inventory(page);
+    await page.getByRole("button", { name: "Equipment", exact: true }).click();
+    await page.getByRole("button", { name: "Out on jobs" }).click();
+    const rows = page.locator("#main table.out tbody tr");
+    await expect(rows.nth(0).locator("td")).toHaveText(["Extension cordNo barcode", "2", "EchoSep 24, 2026", "—", "—"]);
+    await expect(rows.nth(1).locator("td")).toHaveText(["Shop vacuumNo barcode", "1", "EchoSep 24, 2026", "—", "—"]);
+    // A line or sheet without a name, as older data may have
+    await expect(rows.nth(2).locator("td")).toHaveText(["Unnamed itemNo barcode", "1", "UntitledSep 25, 2026", "—", "—"]);
+  });
+
+  test("without a signed-in user, equipment names who prepared the sheet, or no one", { tag: ["@J13.2"] }, async ({ page }) => {
+    await open(page, { userErrors: ["id"], seed: { ...seed, "sheets/s4": { client: "Golf", date: "2026-09-25", status: "open", items: {} } } });
+    for (const [client, sheet, taker] of [["Delta Dental", "s2", "Sam"], ["Golf", "s4", ""]]) {
+      await page.getByRole("button", { name: "Sheets", exact: true }).click();
+      await openSheet(page, client);
+      await page.getByRole("button", { name: "Add item without a barcode" }).click();
+      await modal(page).locator("[data-k=vac]").click();
+      await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+      await expect(equipmentRow(page, "Shop vacuum")).toBeVisible();
+      expect((await doc(page, `sheets/${sheet}`)).items.vac.takenBy).toBe(taker);
+    }
+  });
+
+  test("Inventory says when there's no equipment, none out, or no supplies", { tag: ["@J13.5"] }, async ({ page }) => {
+    await open(page, { seed: { "products/SKU1": towels, "sheets/s1": { client: "Echo", date: "2026-09-24", status: "open", items: { x: { name: "Old", kind: "equipment", out: 1, returned: 1 } } } } });
+    await inventory(page);
+    await page.getByRole("button", { name: "Equipment", exact: true }).click();
+    await expect(page.locator("#main")).toContainText("No company equipment yet. Edit an item and choose Company equipment.");
+    await page.getByRole("button", { name: "Out on jobs" }).click();
+    await expect(page.locator("#main")).toContainText("No company equipment is out on a job right now.");
+    await page.evaluate(() => { window.__mock.docs.set("products/SKU1", { ...window.__mock.docs.get("products/SKU1"), kind: "equipment" }); window.__mock.notify(); });
+    await page.getByRole("button", { name: "Supplies" }).click();
+    await expect(page.locator("#main")).toContainText("No supplies yet.");
+  });
+
+  test("the owner's export keeps equipment, with its kind; the inventory export values it at cost", { tag: ["@J13", "@J6"] }, async ({ page }) => {
+    await open(page);
+    await page.getByRole("button", { name: "Export data" }).click();
+    await modal(page).getByRole("button", { name: "Sheets (CSV)" }).click();
+    await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(1);
+    const sheets = (await page.evaluate(() => window.__mock.saves[0].data)).split("\n");
+    expect(sheets).toContain("Delta Dental,2026-09-22,Sam,Checked out,Step ladder,LAD-1,,3,0,,,s2,Equipment");
+    expect(sheets).toContain("Echo Studio,2026-09-24,Test User,Checked out,\"Paper towels, 6 roll\",SKU1,8.50,3,1,2,17.00,s1,Supply");
+    await modal(page).getByRole("button", { name: "Inventory (CSV)" }).click();
+    await expect.poll(() => page.evaluate(() => window.__mock.saves.length)).toBe(2);
+    const items = (await page.evaluate(() => window.__mock.saves[1].data)).split("\n");
+    expect(items).toContain("Step ladder,LAD-1,3,,360.00,Equipment");
+    expect(items).toContain("Shop vacuum,,,,,Equipment");
+  });
+
+  test("a receipt's equipment bought for storage sets its value, never a price", { tag: ["@J13"] }, async ({ page }) => {
+    await page.addInitScript((d) => {
+      if (sessionStorage.getItem("draftSeeded")) return;
+      sessionStorage.setItem("draftSeeded", "1");
+      localStorage.setItem("supplyCheckout.receiptDraft", JSON.stringify(d));
+    }, {
+      store: "", receiptDate: "2026-09-20", date: "2026-09-25", subtotal: null, tax: null, total: null, savePrices: true, by: "",
+      dests: [{ id: "d1", sheetId: "", client: "" }],
+      lines: [{ id: "l1", name: "Ladder", raw: "", qty: 1, price: 130, dest: "stock", code: "", match: "LAD-1", suggested: false, useName: "inv", usePrice: "receipt" }],
+    });
+    await open(page);
+    await page.getByRole("button", { name: "Continue review" }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.locator("#toast")).toHaveText("1 added to storage");
+    const saved = await doc(page, "products/LAD-1");
+    expect(saved).toMatchObject({ kind: "equipment", cost: 130, stock: 4 });
+    expect(saved).not.toHaveProperty("price");
+  });
+});
+
+test.describe("the web build's checkout command", () => {
+  test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
+
+  test("snapshots equipment on the server, and the sheet shows it apart", { tag: ["@J13.2"] }, async ({ page }) => {
+    const docs = Object.fromEntries(Object.entries(seed).map(([k, v]) => [`t1/${k}`, v]));
+    const backend = new FakeBackend({ docs });
+    await openAws(page, backend);
+    await connected(page);
+    await openSheet(page, "Delta Dental");
+    // A new line: the server copies the kind and value, and who took it
+    await page.getByRole("button", { name: "Add item without a barcode" }).click();
+    await modal(page).locator("[data-k=vac]").click();
+    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await expect(equipmentRow(page, "Shop vacuum")).toBeVisible();
+    const [checkout] = backend.requests("POST", "/teams/t1/sheets/s2/checkout");
+    expect(checkout.body).toEqual({ operationId: expect.any(String), productKey: "vac", quantity: 1 });
+    expect(backend.doc("t1", "sheets", "s2").data.items.vac).toEqual({ code: "", name: "Shop vacuum", kind: "equipment", cost: 210, out: 1, returned: 0, takenBy: "u-pat", takenAt: expect.any(String) });
+    // More of a line someone else took: the latest person to take more
+    await enterBarcode(page, "LAD-1");
+    await modal(page).getByRole("button", { name: "Add 1 to sheet" }).click();
+    await expect(equipmentRow(page, "Step ladder").locator("td").last()).toHaveText("3");
+    expect(backend.doc("t1", "sheets", "s2").data.items["LAD-1"]).toMatchObject({ out: 4, lost: 1, takenBy: "u-pat" });
+    // Only the server wrote the sheet: no document write from the page
+    expect(backend.requests("PATCH", /^\/teams\/t1\/sheets\//)).toEqual([]);
+    await expect(lineRow(page, "Step ladder")).toHaveCount(1);
+  });
+});

@@ -49,6 +49,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 | [J10](#j10-cancel-and-take-the-data) | Cancel and take the data | Owner | No | Tested; still to come: deleting a canceled team's data after 30 days |
 | [J11](#j11-delete-an-account) | Delete an account | Anyone | No | Tested |
 | [J12](#j12-choose-a-plan-in-the-mobile-app) | Choose a plan in the mobile app | Owner | No | Planned (phase 2) |
+| [J13](#j13-take-company-equipment-to-a-job-and-bring-it-back) | Take company equipment to a job and bring it back | Crew member | Yes | Partly built |
 <!-- /journeys:table -->
 
 ---
@@ -160,7 +161,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 - **J6.2** Tap **Download CSV**.
 <!-- /journeys:steps J6 -->
 
-**Expected:** a CSV named after the client and date, with each item's price, taken, returned, used and charge, and a total row.
+**Expected:** a CSV named after the client and date, with each item's price, taken, returned, used and charge, and a total row. Company equipment on loan isn't in it: it isn't charged (J13).
 
 **Status:** tested. Owners can also export all of a team's data: on the sheet list, **Export data** offers every sheet (one CSV row per item), the inventory (CSV), or everything (JSON, each document as stored plus each sheet's totals). It's built in the browser from the collections the app has already loaded, so it matches the screens and needs no server route; 1,000 sheets take well under a second once listed. It shows for owners only (`user.isOwner()`), whether or not they can write, so it keeps working while a team is read-only.
 
@@ -247,6 +248,24 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 **Expected:** the app shows the plan as active without reopening it. Where store rules don't allow the link, the app shows "Manage your plan on our website" and no prices ([ADR 0013](adr/0013-web-billing-only.md)).
 
 **Status:** planned for phase 2. `supply-checkout-8jc.5`.
+
+### J13. Take company equipment to a job and bring it back
+
+**Persona:** crew member. **Critical:** it's part of the morning checkout, and the owner relies on it to know where the company's ladders and vacuums are.
+
+<!-- journeys:steps J13 -->
+- **J13.1** In **Inventory**, mark items that go to jobs and come back (ladders, vacuums, cords) as **Company equipment**, with what each is worth.
+- **J13.2** Check equipment out on a sheet like any item. It's listed under **Equipment (not charged)**, apart from the supplies, and isn't in the sheet's total or the client's CSV.
+- **J13.3** Back from the job, switch to **Return** and scan what came back.
+- **J13.4** Tap **Finished Return**: for each piece still out, say it's back, still at the job, or lost or broken (with an optional charge to the client). *Planned: `supply-checkout-h9to`.*
+- **J13.5** See what's out, on which sheet, who took it and when, in **Inventory → Equipment → Out on jobs**.
+<!-- /journeys:steps J13 -->
+
+**Expected:** equipment checked out on a sheet takes storage counts down and its return puts them back, as for supplies, but the client isn't charged for it: it's listed apart, under **Equipment (not charged)**, isn't in the sheet's taken, used or charge totals, and isn't in the sheet's CSV ([ADR 0017](adr/0017-company-equipment-and-ad-hoc-checkout.md)). Unreturned equipment is still out, not used. **Inventory → Equipment → Out on jobs** lists every piece still out on an open sheet, with who took it last and when. The owner's **Export data** keeps equipment rows, with a **Kind** column.
+
+**Status:** partly built (`supply-checkout-h9to`). Equipment items, the sheet's section, returns and the Out view are built; Finished Return's question for each piece still out (J13.4) is still to come, and the server already refuses to close a sheet with equipment out.
+
+**Tests:** `equipment.spec.js` (all tests), and the server's in `backend/test/equipment-api.test.ts` and `backend/test/equipment.test.ts`.
 
 ---
 
@@ -597,6 +616,12 @@ The purge lists at most 100 closed teams' subscriptions a run (`CLOSED_TEAMS_TO_
 | Alarm | Signal | Starting threshold | Severity |
 | --- | --- | --- | --- |
 | **App checkouts abandoned** | Stripe Checkout sessions started from the apps against completed ones | completion below half the web rate over 7 days | P3 |
+
+### J13. Take company equipment to a job and bring it back
+
+| Alarm | Signal | Starting threshold | Severity |
+| --- | --- | --- | --- |
+| **Checkouts stopped** | `Checkouts` business metric across all teams: equipment is checked out with the same command as supplies, so it counts | as for J4 | P1 |
 
 ### Phase 2: second region
 

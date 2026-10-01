@@ -92,7 +92,8 @@ export const checkOut = (db, action, sheetId, key, qty, item, oneOff) =>
 // saved now, in case someone else recorded a return meanwhile.
 export const recordReturn = (db, action, sheetId, key, r) =>
   move(db, action, "return", sheetId, { productKey: key, quantity: r }, true, cur => {
-    const out = int(cur.out), before = Math.min(int(cur.returned), out), back = Math.min(out, before + r);
+    // Never past what's neither back nor lost (company equipment lost or broken, ADR 0017)
+    const out = int(cur.out), before = Math.min(int(cur.returned), out), back = Math.max(before, Math.min(out - int(cur.lost), before + r));
     return { patch: { returned: back }, delta: back - before, quantity: back - before, line: { out, returned: back } };
   });
 // A receipt's lines for a client, added to a sheet that already exists (saveReceipt in

@@ -92,10 +92,10 @@ const IMPORT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 // eslint-disable-next-line no-control-regex -- rejecting control characters is the point
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
-type Field = "name" | "barcode" | "price" | "cost" | "stock" | "packSize";
+type Field = "name" | "barcode" | "kind" | "price" | "cost" | "stock" | "packSize";
 
 /** The column names errors use, as the file would spell them. */
-const LABEL: Record<Field, string> = { name: "name", barcode: "barcode", price: "price", cost: "cost", stock: "stock", packSize: "pack_size" };
+const LABEL: Record<Field, string> = { name: "name", barcode: "barcode", kind: "kind", price: "price", cost: "cost", stock: "stock", packSize: "pack_size" };
 
 /**
  * Header names, lowercased with spaces, underscores and hyphens removed
@@ -106,6 +106,7 @@ const LABEL: Record<Field, string> = { name: "name", barcode: "barcode", price: 
 const HEADERS = new Map<string, Field>([
   ["name", "name"], ["item", "name"], ["itemname", "name"],
   ["barcode", "barcode"], ["code", "barcode"], ["upc", "barcode"],
+  ["kind", "kind"], ["type", "kind"],
   ["price", "price"], ["priceeach", "price"],
   ["cost", "cost"], ["costeach", "cost"], ["unitcost", "cost"],
   ["stock", "stock"], ["instorage", "stock"], ["onhand", "stock"],
@@ -119,8 +120,11 @@ export interface ImportRow {
   readonly name: string;
   /** Empty for an item without one. */
   readonly barcode: string;
-  /** Client price per each, rounded to cents. */
-  readonly price: number;
+  /** Company equipment (ADR 0017): reused, not charged, so it has no price. Absent: a supply (a blank or missing kind cell). */
+  readonly kind?: "equipment";
+  /** Client price per each, rounded to cents. Absent for company equipment. */
+  readonly price?: number;
+  /** What the business paid per each; for company equipment, its value. */
   readonly cost?: number;
   /** Whole eaches. Absent: leave stock as it is (a new item doesn't track stock). */
   readonly stock?: number;
@@ -142,7 +146,7 @@ export interface PlannedRow extends ImportRow {
   /** The product key it writes: the matched item's, or a new one. */
   readonly key: string;
   readonly action: ImportAction;
-  /** The fields that change (all of the row's for a new item): code, name, price, cost, packSize, stock. */
+  /** The fields that change (all of the row's for a new item): code, name, kind, price, cost, packSize, stock. */
   readonly changes: string[];
 }
 
@@ -192,7 +196,8 @@ interface StagedRow {
   readonly key: string;
   readonly name: string;
   readonly barcode: string;
-  readonly price: number;
+  readonly kind?: "equipment";
+  readonly price?: number;
   readonly cost?: number;
   readonly stock?: number;
   readonly packSize?: number;
@@ -272,7 +277,7 @@ export function parseInventoryCsv(csv: unknown): ParsedImport {
   }
   for (const required of ["name", "price"] as const) {
     if (!columns.includes(required)) {
-      throw new InvalidInputError(`The file needs a ${LABEL[required]} column. Its first row names the columns: name, barcode, price, cost, stock, pack_size`);
+      throw new InvalidInputError(`The file needs a ${LABEL[required]} column. Its first row names the columns: name, barcode, kind, price, cost, stock, pack_size`);
     }
   }
   if (!body.length) throw new InvalidInputError("The file has no rows under its header");
@@ -294,7 +299,7 @@ export function parseInventoryCsv(csv: unknown): ParsedImport {
       const raw = cell(field);
       try {
         if (raw === "") {
-          if (field === "name" || field === "price") throw new CellError(field, `${LABEL[field]} is required`);
+          if (field === "name") throw new CellError(field, `${LABEL[field]} is required`);
           return undefined;
         }
         return parse(raw);
@@ -306,11 +311,16 @@ export function parseInventoryCsv(csv: unknown): ParsedImport {
     };
     const name = read("name", (raw) => textCell("name", raw, MAX_NAME_LENGTH));
     const barcode = read("barcode", (raw) => textCell("barcode", raw, MAX_CODE_LENGTH));
+    // Company equipment has no price (ADR 0017); a supply (a blank kind) must have one
+    const kind = read("kind", kindCell);
     const price = read("price", (raw) => moneyCell("price", raw));
+    if (kind === "equipment" && price !== undefined) problems.push({ line: record.line, column: LABEL.price, message: "Company equipment has no price; leave price blank, and put what one is worth in cost" });
+    // Not when the price or the kind already has a problem: one clear error for the row's mistake
+    if (kind !== "equipment" && price === undefined && !problems.some((p) => p.column === LABEL.price || p.column === LABEL.kind)) problems.push({ line: record.line, column: LABEL.price, message: "price is required" });
     const cost = read("cost", (raw) => moneyCell("cost", raw));
     const stock = read("stock", (raw) => wholeCell("stock", raw, 0, MAX_QUANTITY));
     const packSize = read("packSize", (raw) => wholeCell("packSize", raw, 1, MAX_PACK_SIZE));
-    if (problems.length || name === undefined || price === undefined) {
+    if (problems.length || name === undefined) {
       errors.push(...problems);
       continue;
     }
@@ -318,7 +328,8 @@ export function parseInventoryCsv(csv: unknown): ParsedImport {
       line: record.line,
       name,
       barcode: barcode ?? "",
-      price,
+      ...(kind === "equipment" ? { kind } : {}),
+      ...(price === undefined ? {} : { price }),
       ...(cost === undefined ? {} : { cost }),
       ...(stock === undefined ? {} : { stock }),
       ...(packSize === undefined ? {} : { packSize }),
@@ -337,8 +348,16 @@ export function keyOfBarcode(code: string): string {
   return k;
 }
 
+/** A kind cell: "supply" or "equipment" (any case, "company equipment" too). Blank is a supply. */
+function kindCell(raw: string): "supply" | "equipment" {
+  const k = raw.normalize("NFKC").trim().toLowerCase().replace(/\s+/g, " ");
+  if (k === "supply" || k === "supplies") return "supply";
+  if (k === "equipment" || k === "company equipment") return "equipment";
+  throw new CellError("kind", "kind is supply or equipment (or blank for a supply)");
+}
+
 /** The fields an import sets, in the order `changes` lists them. */
-const IMPORTED = ["code", "name", "price", "cost", "packSize", "stock"] as const;
+const IMPORTED = ["code", "name", "kind", "price", "cost", "packSize", "stock"] as const;
 
 /** An item's data after a row is applied: the row's values over what's there, and blank cells keep what's there. */
 function applyRow(current: Item | undefined, row: ImportRow): { data: Item; changes: string[] } {
@@ -348,7 +367,14 @@ function applyRow(current: Item | undefined, row: ImportRow): { data: Item; chan
   if (row.barcode) data.code = row.barcode;
   else if (!current) data.code = "";
   data.name = row.name;
-  data.price = row.price;
+  // Company equipment says so and has no price; a supply row makes the item a supply again
+  if (row.kind === "equipment") {
+    data.kind = "equipment";
+    delete data.price;
+  } else {
+    if (data.kind === "equipment") delete data.kind;
+    data.price = row.price;
+  }
   if (row.cost !== undefined) data.cost = row.cost;
   if (row.packSize !== undefined) data.packSize = row.packSize;
   if (row.stock !== undefined) data.stock = row.stock;
@@ -460,8 +486,19 @@ function importId(value: unknown): string {
 }
 
 function staged(row: PlannedRow): StagedRow {
-  const { line, key, name, barcode, price, cost, stock, packSize } = row;
-  return { line, ...(row.action === "create" ? { create: true as const } : {}), key, name, barcode, price, ...(cost === undefined ? {} : { cost }), ...(stock === undefined ? {} : { stock }), ...(packSize === undefined ? {} : { packSize }) };
+  const { line, key, name, barcode, kind, price, cost, stock, packSize } = row;
+  return {
+    line,
+    ...(row.action === "create" ? { create: true as const } : {}),
+    key,
+    name,
+    barcode,
+    ...(kind === undefined ? {} : { kind }),
+    ...(price === undefined ? {} : { price }),
+    ...(cost === undefined ? {} : { cost }),
+    ...(stock === undefined ? {} : { stock }),
+    ...(packSize === undefined ? {} : { packSize }),
+  };
 }
 
 /**
