@@ -43,12 +43,15 @@ export const OPERATOR_USER_EVENTS = [
 
 /**
  * Configuration calls on the operator pool: its groups, settings, app client,
- * domain and identity providers. Each alerts P1 unless CloudFormation made it
- * for a deploy, which is how they're meant to change. Deleting or changing the
- * ops client or domain locks every operator out; identity provider changes
- * are watched so one can't be added and repointed unseen (the ops client
- * supports only COGNITO, so they aren't themselves a lockout)
- * (supply-checkout-6uw.19).
+ * domain, managed login branding and identity providers. Each alerts P1
+ * unless CloudFormation made it for a deploy, which is how they're meant to
+ * change. Deleting or changing the ops client or domain locks every operator
+ * out; identity provider changes are watched so one can't be added and
+ * repointed unseen (the ops client supports only COGNITO, so they aren't
+ * themselves a lockout) (supply-checkout-6uw.19). A second, custom domain,
+ * and deleting or changing the ops client's branding (its only managed login
+ * style, so deleting it likely breaks operator sign-in) too
+ * (supply-checkout-6uw.20).
  */
 export const OPERATOR_POOL_CONFIG_EVENTS = [
   "CreateGroup",
@@ -61,10 +64,22 @@ export const OPERATOR_POOL_CONFIG_EVENTS = [
   "DeleteUserPoolClient",
   "UpdateUserPoolDomain",
   "DeleteUserPoolDomain",
+  "CreateUserPoolDomain",
+  "DeleteManagedLoginBranding",
+  "UpdateManagedLoginBranding",
   "CreateIdentityProvider",
   "UpdateIdentityProvider",
   "DeleteIdentityProvider",
 ] as const;
+
+/**
+ * The operator pool itself (supply-checkout-6uw.20): DeleteUserPool, and an
+ * UpdateUserPool that leaves deletion protection anything but ACTIVE (an
+ * UpdateUserPool resets a setting it isn't given to its default, which for
+ * DeletionProtection is INACTIVE). OperatorPoolProtection alerts P1 on these
+ * whoever makes them: no deploy should turn the ops pool's protection off.
+ */
+export const OPERATOR_POOL_PROTECTION_EVENTS = ["DeleteUserPool", "UpdateUserPool"] as const;
 
 /**
  * Calls that lock an operator out without deleting them: disabling them, or
@@ -112,6 +127,7 @@ export const operatorRuleName = (envName: string, suffix: string) => `${operator
 /** The suffixes of the operator alert rules' names, by construct ID. */
 export const OPERATOR_RULE_SUFFIXES = {
   OperatorPoolChanges: "pool-changes",
+  OperatorPoolProtection: "pool-protection",
   OperatorSelfServiceChanges: "self-service-changes",
   OperatorAuditWatchChanges: "audit-watch-changes",
   OperatorAuditWatchRoleChanges: "audit-watch-role",
@@ -383,6 +399,14 @@ export class ObservabilityStack extends SupplyCheckoutStack {
    *   still alert. Deleting an operator alerts whoever does it, and disabling
    *   or signing one out everywhere (OPERATOR_LOCKOUT_EVENTS) outside a
    *   deploy (supply-checkout-6uw.16).
+   * - `OperatorPoolProtection` (supply-checkout-6uw.20): DeleteUserPool on
+   *   the operator pool, or an UpdateUserPool on it whose deletionProtection
+   *   is missing (UpdateUserPool then resets it to INACTIVE) or anything but
+   *   ACTIVE (OPERATOR_POOL_PROTECTION_EVENTS), whoever makes it, CloudFormation
+   *   included. DeleteUserPool carries no deletionProtection, so it always
+   *   matches; once the pool is gone, the userPoolId matches above are moot.
+   *   A rule of its own, since the extra requestParameters condition would
+   *   otherwise share a key with OperatorPoolChanges' pool ID.
    * - `OperatorSelfServiceChanges`: what an operator's own access token can
    *   do with the aws.cognito.signin.user.admin scope (OPERATOR_SELF_SERVICE_EVENTS):
    *   replace their TOTP, turn MFA settings, change attributes or delete
@@ -470,6 +494,19 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     );
     // Read-only management events too (OPERATOR_POOL_RULE_STATE)
     (admin.node.defaultChild as CfnRule).state = OPERATOR_POOL_RULE_STATE;
+    const protection = operatorRule(
+      "OperatorPoolProtection",
+      "Operator pool: deleted, or its deletion protection turned off, even by a deploy (supply-checkout-6uw.20)",
+      {
+        ...base,
+        detail: {
+          eventSource: ["cognito-idp.amazonaws.com"],
+          eventName: [...OPERATOR_POOL_PROTECTION_EVENTS],
+          // A missing deletionProtection resets it to INACTIVE, and DeleteUserPool has none
+          requestParameters: { userPoolId: [poolId], deletionProtection: [{ exists: false }, { "anything-but": "ACTIVE" }] },
+        },
+      },
+    );
     const selfService = operatorRule("OperatorSelfServiceChanges", "Operator pool: an operator's token replaced TOTP, changed MFA or attributes, or deleted the user (ADR 0015)", {
       ...base,
       detail: {
@@ -659,7 +696,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       "The same as OperatorRuleTampering, which it watches in turn, so neither can be removed first unseen (supply-checkout-6uw.11)",
       tamperingPattern(watched),
     );
-    const rules = [admin, selfService, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering];
+    const rules = [admin, protection, selfService, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering];
     const topic = this.topics.topics.P1;
     // EventBridge publishes to the encrypted topic: it may use the key, for this account's rules only
     this.topics.key.addToResourcePolicy(
@@ -686,6 +723,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       );
     const messages = new Map([
       [admin, message("the operator pool")],
+      [protection, message("the operator pool itself (deletion or deletion protection)")],
       [selfService, message("the operator pool")],
       [watchChanges, message("the operator audit watch")],
       [roleChanges, message("the operator audit watch's role")],
