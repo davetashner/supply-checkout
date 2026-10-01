@@ -120,5 +120,5 @@ Don't comp a team until its owner has accepted.
 7. **Confidentiality.** Should pilot teams keep the pre-release product and its problems confidential? This draft doesn't ask them to.
 8. **Testimonials.** Section 6 says we won't name the business without permission. Do you want to ask for permission in the agreement itself (a tick-box line)?
 9. **Support response target** of 2 business days during the pilot. Realistic?
-10. **Support mailbox.** The pilot needs a working support mailbox on supplycheckout.com before the first team is sent this. The repository's public-safety check refuses any email address but the no-reply sender, so the address is a placeholder here; to write it out in the drafts, the check's allowlist (`scripts/check-public-safety.mjs`) would need your OK.
+10. **Support mailbox.** The pilot needs a working support mailbox on supplycheckout.com before the first team is sent this. The repository's public-safety check allows only the no-reply address today, so these drafts write it as `[SUPPORT EMAIL]`. Once the support-email change (bead `supply-checkout-6qd`) allows the support address, replace the placeholder here and in the drafts.
 11. **Delivery.** Send the drafts as PDFs (fixed, easy to keep) or as links to the public repository at the version's commit (always the exact text, but shows the open questions)? This draft allows either.
