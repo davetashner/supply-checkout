@@ -258,6 +258,13 @@ paths:
           it had). An item that isn't counted stays as it is, with a movement
           of `delta: 0` and `tracked: false`.
 
+        A count or uncount can send `expectedStock`: the stock the person saw
+        when they started (the edit form's count when it opened), or `null` if
+        the item wasn't counted then. If the stock is something else now, and
+        not already what the command would leave, it's refused with 409
+        `aborted`, reason `stock_changed`, rather than undo someone else's
+        change; the message says what the stock is now.
+
         Contributors and owners only. Idempotent by `operationId`.
       requestBody: { $ref: "#/components/requestBodies/StockAdjust" }
       responses:
@@ -2040,13 +2047,20 @@ components:
                   operationId: { $ref: "#/components/schemas/OperationId" }
                   reason: { const: count }
                   count: { type: integer, minimum: 0, maximum: 1000000, description: The number counted in storage. }
+                  expectedStock: { $ref: "#/components/schemas/ExpectedStock" }
               - type: object
                 additionalProperties: false
                 required: [operationId, reason]
                 properties:
                   operationId: { $ref: "#/components/schemas/OperationId" }
                   reason: { const: uncount }
+                  expectedStock: { $ref: "#/components/schemas/ExpectedStock" }
   schemas:
+    ExpectedStock:
+      type: [integer, "null"]
+      minimum: 0
+      maximum: 1000000
+      description: Optional. The stock the person saw when they started, or `null` for an item that wasn't counted. The command is refused (409 `stock_changed`) when the stock is something else now.
     AuditRecord:
       description: |
         What an operator action changed, before and after, by action:
@@ -2349,7 +2363,7 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_invalid, password_mismatch, federated_sign_in, signout_failed]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_invalid, password_mismatch, federated_sign_in, signout_failed]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -2359,6 +2373,8 @@ components:
                 `team_closed`: the team was closed and is read-only.
                 `team_deleting`: the closed team is about to be deleted and
                 can't be reopened.
+                `stock_changed`: a stock count sent with `expectedStock` found
+                the stock already changed from it (the message says what it is now).
                 Verifying an email address: `code_mismatch` (the code isn't
                 right), `code_expired`, `already_verified`, `email_in_use`
                 (another account has the address), and `email_changed` (the
@@ -2487,9 +2503,10 @@ components:
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     CommandConflict:
       description: |
-        `aborted`, nothing changed: the sheet is closed, or the line or item
-        kept changing under every retry. The message says which. A retry with
-        the same `operationId` is safe.
+        `aborted`, nothing changed: the sheet is closed, the line or item
+        kept changing under every retry, or (reason `stock_changed`) a stock
+        count's `expectedStock` isn't the stock any more. The message says
+        which. A retry with the same `operationId` is safe.
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     Tokens:
       description: Tokens for the app to keep in memory. The refresh token is only in the cookie.

@@ -532,17 +532,19 @@ export class FakeBackend {
   // A stock adjustment as the API runs it (adjustStockCommand in backend/src/data/commands.ts):
   // a receipt adds `quantity` (an item that wasn't counted starts at it), a count sets stock to
   // `count`, an uncount removes it. Each gives a counted item a new version (an uncount of an
-  // item that isn't counted changes nothing). Replays and reused IDs as for checkout.
+  // item that isn't counted changes nothing). A count or uncount with `expectedStock` is refused
+  // (409 stock_changed) when the stock moved from it. Replays and reused IDs as for checkout.
   adjustStock(team, key, body) {
     const err = (status, code, reason) => [status, { error: { code, message: code, ...(reason ? { reason } : {}) } }];
     const member = this.teams.find((t) => t.id === team);
     if (!member) return err(403, "permission_denied", "not_member");
     if (member.role === "viewer") return err(403, "permission_denied", "view_only");
-    const { operationId, reason, quantity, unitCost, count, ...rest } = body;
+    const { operationId, reason, quantity, unitCost, count, expectedStock, ...rest } = body;
     const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
     const whole = (n, min) => Number.isInteger(n) && n >= min && n <= 1e6;
     const valid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId) && !Object.keys(rest).length
-      && (reason === "receipt" ? whole(quantity, 1) && cents(unitCost) && count === undefined
+      && (expectedStock === undefined || expectedStock === null || (reason !== "receipt" && whole(expectedStock, 0)))
+      && (reason === "receipt" ? whole(quantity, 1) && cents(unitCost) && count === undefined && expectedStock === undefined
         : reason === "count" ? whole(count, 0) && quantity === undefined && unitCost === undefined
           : reason === "uncount" && count === undefined && quantity === undefined && unitCost === undefined);
     if (!valid) return err(400, "bad_request");
@@ -551,12 +553,16 @@ export class FakeBackend {
       const d = this.docs.get(productKey);
       return [200, { operationId, replayed, result, product: d ? { id: key, version: d.version, data: d.data } : null }];
     };
-    const request = JSON.stringify([key, reason, quantity, unitCost, count]);
+    const request = JSON.stringify([key, reason, quantity, unitCost, count, expectedStock]);
     const prior = this.operations.get(`${team}/${operationId}`);
     if (prior) return prior.request === request ? answer(prior.result, true) : err(400, "bad_request");
     const product = this.docs.get(productKey);
     if (!product) return err(404, "not_found");
     const tracked = typeof product.data.stock === "number", before = tracked ? product.data.stock : 0;
+    // Moved since the person saw it, and not already what they're setting: refused
+    if (expectedStock !== undefined && (tracked ? before : null) !== expectedStock && (tracked ? before : undefined) !== (reason === "count" ? count : undefined)) {
+      return [409, { error: { code: "aborted", reason: "stock_changed", message: `The count changed while you were editing: ${tracked ? `it's now ${before}` : "it's no longer counted"}` } }];
+    }
     const delta = reason === "receipt" ? quantity : reason === "count" ? count - before : -before;
     if (reason === "uncount") delete product.data.stock;
     else product.data.stock = before + delta;

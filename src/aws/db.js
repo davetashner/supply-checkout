@@ -11,6 +11,7 @@
 // Sheets are listed by ID and sorted here, not with ?orderBy=date: that route reads an
 // index that can lag a write, and a full re-list must not drop a sheet just created.
 import { createLive } from "./live.js";
+import { COUNT_NOT_SAVED } from "../moves.js";
 
 // A burst of events for one collection (a CSV import of hundreds of items, say) is answered
 // by one re-list instead of a fetch per document: past BURST_FETCHES fetches within BURST_MS,
@@ -327,6 +328,8 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
       put("products", key, (await api("POST", `${docPath("products", key)}/stock`, { operationId: operation, ...body })).product);
     } catch (e) {
       if (e.code === "aborted") await fetchDoc("products", key);
+      // The count changed while the form was open: the server's message says what it is now
+      if (e.reason === "stock_changed") throw { code: "refused", message: e.message + COUNT_NOT_SAVED };
       throw denied(e);
     }
   });
@@ -352,9 +355,10 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     const stored = coll("products").docs.get(key).data.stock;
     const count = change.count === undefined ? (change.counted && typeof stored === "number" ? { reason: "uncount" } : null)
       : change.count === stored ? null : { reason: "count", count: change.count };
+    // Refused by the server if the stock isn't what the form opened with any more (stock_changed)
     const changes = change.reason === "receipt"
       ? change.lines.map((l) => [l.action, { reason: "receipt", quantity: l.quantity, unitCost: l.unitCost }])
-      : count ? [[action, count]] : [];
+      : count ? [[action, { ...count, expectedStock: change.expected }]] : [];
     for (const [a, b] of changes) await adjustStock(key, b, a);
   }
 

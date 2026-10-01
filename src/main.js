@@ -621,8 +621,13 @@ function productModal(key) {
       opt("#fStock", "stock", int);
       opt("#fCost", "cost", v => Math.max(0, round2(v)));
       opt("#fPack", "packSize", packInput);
-      // `counted`: the form showed a count when it opened, so a blank one means stop counting
-      saving(form, () => closing(write(() => saveItem(db, action, docKey, body, { reason: "count", count: body.stock, counted: !!hasStock(p) }), "Saved")));
+      // Only a count the person changed is saved: the stock may have moved since the form opened
+      // (a checkout, someone else's count), and the count it opened with would undo that. A
+      // changed one is checked against the count it opened with (`expected`, null: not counted).
+      // `counted`: the form showed a count when it opened, so a blank one means stop counting.
+      const change = m.querySelector("#fStock").value.trim() === (hasStock(p) ? String(p.stock) : "") ? { reason: "count", keep: true }
+        : { reason: "count", count: body.stock, counted: !!hasStock(p), expected: hasStock(p) ? p.stock : null };
+      saving(form, () => closing(write(() => saveItem(db, action, docKey, body, change), "Saved")));
     });
   });
 }
