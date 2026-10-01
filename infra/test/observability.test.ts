@@ -24,6 +24,7 @@ import {
   INITIAL_GROUP_SNAPSHOT,
   HEARTBEAT_EVERY_MINUTES,
   HEARTBEAT_SILENT_ALARM_MINUTES,
+  HELD_PURGE_GRACE_DAYS,
   PURGE_EVERY_HOURS,
   PURGE_OVERDUE_AFTER_HOURS,
   PURGE_SILENT_ALARM_HOURS,
@@ -139,6 +140,7 @@ const ALARM_IDS = [
   "closed-team-subscription-set-aside",
   "closed-team-subscriptions-set-aside-many",
   "stripe-customer-already-deleted",
+  "held-team-purged",
   "team-reopened-notices-failing",
 ];
 
@@ -157,6 +159,7 @@ const PRIMARY_ONLY_ALARM_IDS = [
   "closed-team-subscription-set-aside",
   "closed-team-subscriptions-set-aside-many",
   "stripe-customer-already-deleted",
+  "held-team-purged",
 ];
 
 describe("alarm topics", () => {
@@ -796,12 +799,25 @@ describe("alarms added with the email code routes, the live update budget, team 
     });
   });
 
+  it("alarms on any held team the purge deleted with its subscription unresolved, where the purge runs (J7, J11, supply-checkout-8jc.40)", () => {
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-held-team-purged",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.HeldTeamsPurged }), Stat: "Sum", Period: 3600 }) })],
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      AlarmDescription: Match.stringLikeRegexp(`^P2 Held team purged with its subscription unresolved \\(J7, J11.*${HELD_PURGE_GRACE_DAYS} days after its deletion date.*deletion record`),
+    });
+    expect(HELD_PURGE_GRACE_DAYS).toBe(14);
+  });
+
   it("alarms on any closed team overdue for deletion, over periods that always hold a purge run (J11)", () => {
     observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "supply-checkout-prod-p2-deletion-overdue",
       Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.ClosedTeamsOverdue }), Stat: "Maximum", Period: 2 * PURGE_EVERY_HOURS * 3600 }) })],
       Threshold: 0,
-      AlarmDescription: Match.stringLikeRegexp(`more than ${PURGE_OVERDUE_AFTER_HOURS} hours`),
+      AlarmDescription: Match.stringLikeRegexp(`more than ${PURGE_OVERDUE_AFTER_HOURS} hours.*until the purge deletes it anyway ${HELD_PURGE_GRACE_DAYS} days after its deletion date`),
     });
     expect(PURGE_OVERDUE_AFTER_HOURS).toBeGreaterThanOrEqual(PURGE_EVERY_HOURS);
   });
