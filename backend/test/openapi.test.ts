@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, REFRESH_COOKIE, WEBHOOK_ROUTES } from "../src/api/routes.js";
+import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, RECEIPT_ROUTES, REFRESH_COOKIE, WEBHOOK_ROUTES } from "../src/api/routes.js";
 import { BILLING_EVENTS } from "../src/billing/names.js";
 import { BILLING_INTERVALS, CATALOG } from "../src/billing/catalog.js";
 import { RESERVED_FIELDS } from "../src/data/index.js";
@@ -28,13 +28,13 @@ describe("OpenAPI description", () => {
   });
 
   it("describes every route, and nothing else", () => {
-    const served = [...DATA_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES, ...OPS_ROUTES].map((r) => `${r.method} ${r.path}`).sort();
+    const served = [...DATA_ROUTES, ...RECEIPT_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES, ...OPS_ROUTES].map((r) => `${r.method} ${r.path}`).sort();
     expect(described).toEqual(served);
   });
 
   it("needs a bearer token on data, account and billing routes and not on auth routes", () => {
     expect(spec.security).toEqual([{ cognito: [] }]);
-    for (const r of [...DATA_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES]) expect(spec.paths[r.path]?.[r.method.toLowerCase()]?.security, r.path).toBeUndefined();
+    for (const r of [...DATA_ROUTES, ...RECEIPT_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES]) expect(spec.paths[r.path]?.[r.method.toLowerCase()]?.security, r.path).toBeUndefined();
     for (const r of AUTH_ROUTES) expect(spec.paths[r.path]?.post?.security, r.path).not.toContainEqual({ cognito: [] });
     // Stripe's webhook: the Stripe signature only
     for (const r of WEBHOOK_ROUTES) expect(spec.paths[r.path]?.post?.security, r.path).toEqual([]);
@@ -74,6 +74,14 @@ describe("OpenAPI description", () => {
   it("names every Stripe event the webhook handles", () => {
     const description = String((spec.paths["/billing/webhook"]?.post as unknown as { description: string }).description).replace(/\s+/g, " ");
     for (const type of BILLING_EVENTS) expect(description).toContain(type.startsWith("customer.subscription.") && type !== "customer.subscription.created" ? `.${type.split(".").at(-1)}` : type);
+  });
+
+  it("lists every error code and reason the handlers send", () => {
+    const http = readFileSync(new URL("../src/api/http.ts", import.meta.url), "utf8");
+    const union = (name: string) => [...(new RegExp(`export type ${name} =([^;]+);`).exec(http)?.[1] ?? "").matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    const error = (spec.components as unknown as { schemas: { Error: { properties: { error: { properties: { code: { enum: string[] }; reason: { enum: string[] } } } } } } }).schemas.Error.properties.error.properties;
+    expect(error.code.enum.slice().sort()).toEqual(union("ErrorCode").sort());
+    expect(error.reason.enum.slice().sort()).toEqual(union("ErrorReason").sort());
   });
 
   it("lists the server-owned fields the data layer refuses", () => {

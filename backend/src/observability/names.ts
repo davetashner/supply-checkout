@@ -42,6 +42,8 @@ export const BusinessMetric = {
   ReceiptLines: "ReceiptLines",
   /** Model tokens used reading receipts; the team ID goes in metadata (J5). */
   ReceiptTokens: "ReceiptTokens",
+  /** How long each receipt read's model call took, in milliseconds, success or not (J5). The dashboard reads its p95. */
+  ReceiptReadLatency: "ReceiptReadLatency",
   /** New teams created by sign-up (J1). */
   SignUps: "SignUps",
   /** Invitations sent (J3). */

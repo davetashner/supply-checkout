@@ -1,7 +1,7 @@
 import { testApp } from "./cdk-app.js";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, routeKey, WEBHOOK_ROUTES } from "../../backend/src/api/routes.js";
+import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, RECEIPT_ROUTES, routeKey, WEBHOOK_ROUTES } from "../../backend/src/api/routes.js";
 import {
   BILLING_READ_ATTRIBUTES,
   BILLING_UPDATE_ATTRIBUTES,
@@ -13,13 +13,14 @@ import {
   MEMBER_ROW_ATTRIBUTES,
   MEMBER_SEAT_ATTRIBUTES,
   OWNER_OPERATOR_AUDIT_ATTRIBUTES,
+  RECEIPT_USAGE_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
   STRIPE_LINK_ATTRIBUTES,
   STRIPE_LINK_READ_ATTRIBUTES,
   STUCK_IMPORT_ATTRIBUTES,
   WEBHOOK_RECORD_ATTRIBUTES,
 } from "../../backend/src/data/schema.js";
-import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
+import { APPROVED_REGIONS, type DeploymentConfig, RECEIPT_MODEL_ID, RECEIPT_MODEL_REGIONS } from "../lib/config.js";
 import { apiOutputParameters } from "../lib/stacks/api-stack.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
 
@@ -40,12 +41,13 @@ type Resource = { Properties: Record<string, unknown>; [k: string]: unknown };
 const resources = (t: Template, type: string) => Object.entries(t.findResources(type)) as [string, Resource][];
 
 describe("HTTP API routes", () => {
-  it("serves every data, account, billing, auth and ops route in the primary region, the ops routes nowhere else, and no others", () => {
+  it("serves every data, receipt, account, billing, auth and ops route in the primary region, the ops routes nowhere else, and no others", () => {
     const { template } = api();
     const keys = resources(template, "AWS::ApiGatewayV2::Route").map(([, r]) => r.Properties.RouteKey).sort();
-    expect(keys).toEqual([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES, ...OPS_ROUTES].map(routeKey).sort());
+    expect(keys).toEqual([...DATA_ROUTES, ...RECEIPT_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES, ...OPS_ROUTES].map(routeKey).sort());
     const west = resources(api(WEST).template, "AWS::ApiGatewayV2::Route").map(([, r]) => r.Properties.RouteKey).sort();
-    expect(west).toEqual([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES].map(routeKey).sort());
+    expect(west).toEqual([...DATA_ROUTES, ...RECEIPT_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES, ...WEBHOOK_ROUTES, ...AUTH_ROUTES].map(routeKey).sort());
+    expect(keys).toContain("POST /teams/{teamId}/receipts/read");
     // The inventory commands and the stock history, next to the document routes
     expect(keys).toEqual(
       expect.arrayContaining([
@@ -73,7 +75,7 @@ describe("HTTP API routes", () => {
     expect(jwt(opsAuthorizer)).not.toMatch(/webclientid|identityissuerurl/i);
     for (const [, route] of resources(template, "AWS::ApiGatewayV2::Route")) {
       const key = route.Properties.RouteKey as string;
-      if ([...DATA_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES].some((r) => routeKey(r) === key)) {
+      if ([...DATA_ROUTES, ...RECEIPT_ROUTES, ...ACCOUNT_ROUTES, ...BILLING_ROUTES].some((r) => routeKey(r) === key)) {
         expect(route.Properties, key).toMatchObject({ AuthorizationType: "JWT", AuthorizerId: { Ref: authorizerId } });
       } else if (OPS_ROUTES.some((r) => routeKey(r) === key)) {
         expect(route.Properties, key).toMatchObject({ AuthorizationType: "JWT", AuthorizerId: { Ref: opsAuthorizerId } });
@@ -86,9 +88,9 @@ describe("HTTP API routes", () => {
   it("routes data, account, billing, auth and ops requests to their functions' live aliases", () => {
     const { template } = api();
     const integrations = resources(template, "AWS::ApiGatewayV2::Integration").map(([, r]) => JSON.stringify(r.Properties.IntegrationUri));
-    expect(integrations).toHaveLength(6);
-    for (const fn of ["DataFunctionLive", "AccountFunctionLive", "BillingFunctionLive", "BillingWebhookFunctionLive", "AuthFunctionLive", "OpsFunctionLive"]) expect(integrations.some((i) => i.includes(fn)), fn).toBe(true);
-    template.resourcePropertiesCountIs("AWS::Lambda::Alias", { Name: "live" }, 6);
+    expect(integrations).toHaveLength(7);
+    for (const fn of ["DataFunctionLive", "ReceiptsFunctionLive", "AccountFunctionLive", "BillingFunctionLive", "BillingWebhookFunctionLive", "AuthFunctionLive", "OpsFunctionLive"]) expect(integrations.some((i) => i.includes(fn)), fn).toBe(true);
+    template.resourcePropertiesCountIs("AWS::Lambda::Alias", { Name: "live" }, 7);
   });
 
   it("allows only the app's origin (and localhost outside prod), with credentials for the cookie", () => {
@@ -114,6 +116,7 @@ describe("HTTP API routes", () => {
     const [[, stage]] = resources(template, "AWS::ApiGatewayV2::Stage") as [[string, Resource]];
     expect(stage.Properties.RouteSettings).toEqual({
       "POST /teams/{teamId}/imports": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
+      "POST /teams/{teamId}/receipts/read": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "GET /me": { ThrottlingRateLimit: 50, ThrottlingBurstLimit: 100 },
       "POST /teams": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
       "POST /invites/{inviteId}/accept": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
@@ -176,11 +179,13 @@ describe("functions", () => {
   it("run Node.js 24 on arm64, with the data function at 1 GB, and the ops and reopen functions in the primary region only", () => {
     const { template } = api();
     const fns = resources(template, "AWS::Lambda::Function").map(([id, r]) => [id, r.Properties] as const);
-    expect(fns).toHaveLength(8);
+    expect(fns).toHaveLength(9);
     expect(fns.some(([id]) => id.startsWith("OpsFunction"))).toBe(true);
     expect(fns.some(([id]) => id.startsWith("OpsReopenFunction"))).toBe(true);
     expect(resources(api(WEST).template, "AWS::Lambda::Function").some(([id]) => id.startsWith("Ops"))).toBe(false);
-    for (const [id, p] of fns) expect(p).toMatchObject({ Runtime: "nodejs24.x", Architectures: ["arm64"], Timeout: id.startsWith("BillingWorker") ? 30 : 10, TracingConfig: { Mode: "Active" } });
+    // The receipts function waits on the model for up to 25 seconds, under API Gateway's 30
+    const timeout = (id: string) => (id.startsWith("BillingWorker") ? 30 : id.startsWith("ReceiptsFunction") ? 29 : 10);
+    for (const [id, p] of fns) expect(p).toMatchObject({ Runtime: "nodejs24.x", Architectures: ["arm64"], Timeout: timeout(id), TracingConfig: { Mode: "Active" } });
     expect(fns.find(([id]) => id.startsWith("DataFunction"))?.[1].MemorySize).toBe(1024);
   });
 
@@ -397,6 +402,125 @@ describe("account-access role (LeadingKeys)", () => {
     );
     expect(assumes.filter(([, r]) => /AccountAccessRole/.test(r as string)).map(([id]) => id)).toEqual([expect.stringMatching(/^AccountFunctionRole/)]);
     expect(assumes.filter(([, r]) => /DataAccessRole/.test(r as string)).map(([id]) => id)).toEqual([expect.stringMatching(/^DataFunctionRole/)]);
+  });
+});
+
+describe("receipts function and receipt-access role (ADR 0008)", () => {
+  type Statement = Record<string, unknown> & { Sid?: string; Action: unknown; Resource: unknown; Condition?: unknown };
+  const role = () => {
+    const { template } = api();
+    const [[, r]] = resources(template, "AWS::IAM::Role").filter(([id]) => id.startsWith("ReceiptAccessRole")) as [[string, Resource]];
+    return r.Properties as { AssumeRolePolicyDocument: { Statement: Record<string, unknown>[] }; Policies: { PolicyDocument: { Statement: Statement[] } }[]; MaxSessionDuration: number };
+  };
+  const fnStatements = (t: Template) =>
+    resources(t, "AWS::IAM::Policy")
+      .filter(([id]) => id.startsWith("ReceiptsFunctionRole"))
+      .flatMap(([, p]) => (p.Properties.PolicyDocument as { Statement: Statement[] }).Statement);
+
+  it("serves the receipt route with the customer pool's authorizer, from the receipts function in every region", () => {
+    for (const region of [EAST, WEST]) {
+      const { template } = api(region);
+      const [, route] = resources(template, "AWS::ApiGatewayV2::Route").find(([, r]) => r.Properties.RouteKey === "POST /teams/{teamId}/receipts/read") as [string, Resource];
+      expect(route.Properties).toMatchObject({ AuthorizationType: "JWT" });
+      const target = JSON.stringify(route.Properties.Target);
+      const [integrationId] = resources(template, "AWS::ApiGatewayV2::Integration").find(([, i]) => JSON.stringify(i.Properties.IntegrationUri).includes("ReceiptsFunctionLive")) as [string, Resource];
+      expect(target).toContain(integrationId);
+    }
+  });
+
+  it("gives the function the model, the table and its role, 512 MB and 29 seconds", () => {
+    const { template } = api();
+    const [, fn] = resources(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("ReceiptsFunction")) as [string, Resource];
+    expect(fn.Properties).toMatchObject({ MemorySize: 512, Timeout: 29 });
+    expect((fn.Properties.Environment as { Variables: Record<string, unknown> }).Variables).toMatchObject({
+      TABLE_NAME: "supply-checkout-prod-app",
+      RECEIPT_MODEL_ID: RECEIPT_MODEL_ID,
+      RECEIPT_ROLE_ARN: { "Fn::GetAtt": [expect.stringMatching(/^ReceiptAccessRole/), "Arn"] },
+    });
+    expect(RECEIPT_MODEL_ID).toMatch(/^us\.anthropic\./);
+  });
+
+  it("can be assumed only by the receipts function's role, with exactly one teamId session tag", () => {
+    const r = role();
+    expect(r.MaxSessionDuration).toBe(3600);
+    const [trust, ...rest] = r.AssumeRolePolicyDocument.Statement;
+    expect(rest).toEqual([]);
+    expect(trust).toMatchObject({
+      Effect: "Allow",
+      Action: ["sts:AssumeRole", "sts:TagSession"],
+      Principal: { AWS: { "Fn::GetAtt": [expect.stringMatching(/^ReceiptsFunctionRole/), "Arn"] } },
+      Condition: { StringLike: { "aws:RequestTag/teamId": "?*" }, "ForAllValues:StringEquals": { "aws:TagKeys": ["teamId"] } },
+    });
+  });
+
+  it("reads only the session team's partition, and updates only its receipt counter's attributes: no puts, no deletes, no index, no scan", () => {
+    const [policy, ...others] = role().Policies;
+    expect(others).toEqual([]);
+    const [read, count, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    expect(rest).toEqual([]);
+    expect(read).toEqual({
+      Sid: "TeamItemsReadOnly",
+      Effect: "Allow",
+      Action: ["dynamodb:GetItem", "dynamodb:Query"],
+      Resource: expect.anything(),
+      Condition: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"] } },
+    });
+    expect(count).toEqual({
+      Sid: "ReceiptCountOnly",
+      Effect: "Allow",
+      Action: "dynamodb:UpdateItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": [...RECEIPT_USAGE_ATTRIBUTES] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": ["NONE", "UPDATED_NEW"] },
+      },
+    });
+    expect(RECEIPT_USAGE_ATTRIBUTES).toEqual(["PK", "SK", "receipts", "type", "month"]);
+    for (const s of [read, count]) {
+      const json = JSON.stringify(s?.Resource);
+      expect(json).toContain(":table/supply-checkout-prod-app");
+      expect(json).not.toMatch(/index|\*/);
+    }
+    expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } });
+  });
+
+  it("lets the function invoke only the receipt model, through its US inference profile, in the regions the profile routes to", () => {
+    for (const region of [EAST, WEST]) {
+      const statements = fnStatements(api(region).template);
+      const bedrock = statements.filter((s) => JSON.stringify(s.Action).includes("bedrock:"));
+      expect(bedrock.map((s) => s.Action)).toEqual(["bedrock:InvokeModel", "bedrock:InvokeModel"]);
+      const [profile, model] = bedrock as [Statement, Statement];
+      const profileArn = { "Fn::Join": ["", [`arn:aws:bedrock:${region}:`, { Ref: "AWS::AccountId" }, `:inference-profile/${RECEIPT_MODEL_ID}`]] };
+      expect(profile).toEqual({ Sid: "InvokeReceiptProfile", Effect: "Allow", Action: "bedrock:InvokeModel", Resource: profileArn });
+      const foundation = RECEIPT_MODEL_ID.replace(/^us\./, "");
+      expect(model).toEqual({
+        Sid: "InvokeReceiptModelThroughProfile",
+        Effect: "Allow",
+        Action: "bedrock:InvokeModel",
+        Resource: RECEIPT_MODEL_REGIONS.map((r) => `arn:aws:bedrock:${r}::foundation-model/${foundation}`),
+        Condition: { StringEquals: { "bedrock:InferenceProfileArn": profileArn } },
+      });
+      // Every region is a US one, and the function's own is among them
+      expect(RECEIPT_MODEL_REGIONS.every((r) => r.startsWith("us-"))).toBe(true);
+      expect(RECEIPT_MODEL_REGIONS).toContain(region);
+      expect(JSON.stringify(bedrock)).not.toContain("*");
+      // Besides Bedrock: writing its own logs and assuming its own role; nothing else
+      const other = statements.filter((s) => !JSON.stringify(s.Action).includes("bedrock:")).map((s) => s.Action);
+      expect(other).toEqual([["logs:CreateLogStream", "logs:PutLogEvents"], ["sts:AssumeRole", "sts:TagSession"]]);
+    }
+  });
+
+  it("is the only function that may call Bedrock, and the only one that may assume the receipt-access role", () => {
+    for (const region of [EAST, WEST]) {
+      const { template } = api(region);
+      const policies = resources(template, "AWS::IAM::Policy");
+      const bedrock = policies.filter(([, p]) => JSON.stringify(p.Properties.PolicyDocument).includes("bedrock:")).map(([id]) => id);
+      expect(bedrock).toEqual([expect.stringMatching(/^ReceiptsFunctionRole/)]);
+      const assumes = policies.flatMap(([id, p]) =>
+        (p.Properties.PolicyDocument as { Statement: { Action: unknown; Resource: unknown }[] }).Statement.filter((s) => JSON.stringify(s.Action).includes("sts:AssumeRole") && /ReceiptAccessRole/.test(JSON.stringify(s.Resource))).map(() => id),
+      );
+      expect(assumes).toEqual([expect.stringMatching(/^ReceiptsFunctionRole/)]);
+    }
   });
 });
 

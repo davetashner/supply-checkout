@@ -937,6 +937,433 @@
         ]
       }
     },
+    "ReceiptsFunctionLogs0532A4DC": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "ReceiptsFunctionRole0CF5C1B1": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the receipts function",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "ReceiptsFunctionRoleDefaultPolicy2D104E99": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "ReceiptsFunctionLogs0532A4DC",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": [
+                "sts:AssumeRole",
+                "sts:TagSession"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "ReceiptAccessRoleB0D5F56A",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "bedrock:InvokeModel",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:bedrock:us-west-2:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  ]
+                ]
+              },
+              "Sid": "InvokeReceiptProfile"
+            },
+            {
+              "Action": "bedrock:InvokeModel",
+              "Condition": {
+                "StringEquals": {
+                  "bedrock:InferenceProfileArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:bedrock:us-west-2:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": [
+                "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+                "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+                "arn:aws:bedrock:us-west-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+                "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
+              ],
+              "Sid": "InvokeReceiptModelThroughProfile"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "ReceiptsFunctionRoleDefaultPolicy2D104E99",
+        "Roles": [
+          {
+            "Ref": "ReceiptsFunctionRole0CF5C1B1"
+          }
+        ]
+      }
+    },
+    "ReceiptsFunction8A1ACDCB": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-west-2"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "Reads receipt photos with Claude on Bedrock for the review screen (ADR 0008); saves nothing",
+        "Environment": {
+          "Variables": {
+            "NODE_OPTIONS": "--enable-source-maps",
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "RECEIPT_MODEL_ID": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "RECEIPT_ROLE_ARN": {
+              "Fn::GetAtt": [
+                "ReceiptAccessRoleB0D5F56A",
+                "Arn"
+              ]
+            },
+            "SUPPLY_CHECKOUT_ENV": "prod",
+            "TABLE_NAME": "supply-checkout-prod-app"
+          }
+        },
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "ReceiptsFunctionLogs0532A4DC"
+          }
+        },
+        "MemorySize": 512,
+        "Role": {
+          "Fn::GetAtt": [
+            "ReceiptsFunctionRole0CF5C1B1",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 29,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "ReceiptsFunctionRoleDefaultPolicy2D104E99",
+        "ReceiptsFunctionRole0CF5C1B1"
+      ]
+    },
+    "ReceiptsFunctionCurrentVersion48C3EEB6<code hash>": {
+      "Type": "AWS::Lambda::Version",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "ReceiptsFunction8A1ACDCB"
+        }
+      },
+      "Metadata": {
+        "aws:cdk:do-not-refactor": true
+      }
+    },
+    "ReceiptsFunctionXRayWriteAFECB3CF": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "ReceiptsFunctionXRayWriteAFECB3CF",
+        "Roles": [
+          {
+            "Ref": "ReceiptsFunctionRole0CF5C1B1"
+          }
+        ]
+      }
+    },
+    "ReceiptAccessRoleB0D5F56A": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "sts:AssumeRole",
+                "sts:TagSession"
+              ],
+              "Condition": {
+                "StringLike": {
+                  "aws:RequestTag/teamId": "?*"
+                },
+                "ForAllValues:StringEquals": {
+                  "aws:TagKeys": [
+                    "teamId"
+                  ]
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "ReceiptsFunctionRole0CF5C1B1",
+                    "Arn"
+                  ]
+                }
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Assumed by the receipts function per request, tagged with the team: reads that team's items and counts its receipts",
+        "MaxSessionDuration": 3600,
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "dynamodb:GetItem",
+                    "dynamodb:Query"
+                  ],
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "TEAM#${aws:PrincipalTag/teamId}"
+                      ]
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:dynamodb:us-west-2:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "TeamItemsReadOnly"
+                },
+                {
+                  "Action": "dynamodb:UpdateItem",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "TEAM#${aws:PrincipalTag/teamId}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "receipts",
+                        "type",
+                        "month"
+                      ]
+                    },
+                    "StringEqualsIfExists": {
+                      "dynamodb:ReturnValues": [
+                        "NONE",
+                        "UPDATED_NEW"
+                      ]
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:dynamodb:us-west-2:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "ReceiptCountOnly"
+                },
+                {
+                  "Action": [
+                    "kms:Decrypt",
+                    "kms:DescribeKey",
+                    "kms:Encrypt",
+                    "kms:GenerateDataKey"
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "kms:ViaService": {
+                        "Fn::Join": [
+                          "",
+                          [
+                            "dynamodb.",
+                            {
+                              "Ref": "AWS::Region"
+                            },
+                            ".amazonaws.com"
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+                  },
+                  "Sid": "TableKeyThroughDynamoDb"
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "TeamReadAndReceiptCount"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "api"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
     "AccountAccessRole359B7DFE": {
       "Type": "AWS::IAM::Role",
       "Properties": {
@@ -4042,6 +4469,69 @@
         }
       }
     },
+    "HttpApiPOSTteamsteamIdreceiptsreadReceiptsIntegration5894E935": {
+      "Type": "AWS::ApiGatewayV2::Integration",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "IntegrationType": "AWS_PROXY",
+        "IntegrationUri": {
+          "Ref": "ReceiptsFunctionLiveE3062A03"
+        },
+        "PayloadFormatVersion": "2.0"
+      }
+    },
+    "HttpApiPOSTteamsteamIdreceiptsreadReceiptsIntegrationPermission7D3020C0": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "ReceiptsFunctionLiveE3062A03"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-west-2:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/teams/{teamId}/receipts/read"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiPOSTteamsteamIdreceiptsread1A86768E": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiCognitoJwt4B02D8E4"
+        },
+        "RouteKey": "POST /teams/{teamId}/receipts/read",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiPOSTteamsteamIdreceiptsreadReceiptsIntegration5894E935"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiGETmeAccountIntegration0EFB5255": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -5437,6 +5927,10 @@
             "ThrottlingRateLimit": 5,
             "ThrottlingBurstLimit": 10
           },
+          "POST /teams/{teamId}/receipts/read": {
+            "ThrottlingRateLimit": 5,
+            "ThrottlingBurstLimit": 10
+          },
           "GET /me": {
             "ThrottlingRateLimit": 50,
             "ThrottlingBurstLimit": 100
@@ -5587,6 +6081,9 @@
         "HttpApiPOSTteamsteamIdinvitesinviteIdresend75A0DA29",
         "HttpApiPOSTteamsteamIdinvitesAccountIntegrationPermissionE1270C09",
         "HttpApiPOSTteamsteamIdinvites598792ED",
+        "HttpApiPOSTteamsteamIdreceiptsreadReceiptsIntegrationPermission7D3020C0",
+        "HttpApiPOSTteamsteamIdreceiptsreadReceiptsIntegration5894E935",
+        "HttpApiPOSTteamsteamIdreceiptsread1A86768E",
         "HttpApiPOSTteamsteamIdreopenAccountIntegrationPermission91F8E73F",
         "HttpApiPOSTteamsteamIdreopen4AB88F46",
         "HttpApiPOSTteamsAccountIntegrationPermission37B4CDE2",
@@ -5602,6 +6099,21 @@
         "FunctionVersion": {
           "Fn::GetAtt": [
             "DataFunctionCurrentVersionDAEE8477<code hash>",
+            "Version"
+          ]
+        },
+        "Name": "live"
+      }
+    },
+    "ReceiptsFunctionLiveE3062A03": {
+      "Type": "AWS::Lambda::Alias",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "ReceiptsFunction8A1ACDCB"
+        },
+        "FunctionVersion": {
+          "Fn::GetAtt": [
+            "ReceiptsFunctionCurrentVersion48C3EEB6<code hash>",
             "Version"
           ]
         },

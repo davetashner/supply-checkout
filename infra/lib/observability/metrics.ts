@@ -17,7 +17,7 @@ export const FIVE_MINUTES = Duration.minutes(5);
  * add up (Sum); a gauge, such as a scheduled check's finding, is read at its
  * Maximum, and its SampleCount says whether the check ran at all.
  */
-export function business(name: BusinessMetricName, region: string, period = FIVE_MINUTES, statistic: "Sum" | "Maximum" | "SampleCount" = "Sum"): Metric {
+export function business(name: BusinessMetricName, region: string, period = FIVE_MINUTES, statistic: "Sum" | "Maximum" | "SampleCount" | "p95" = "Sum"): Metric {
   return new Metric({
     namespace: METRICS_NAMESPACE,
     metricName: name,

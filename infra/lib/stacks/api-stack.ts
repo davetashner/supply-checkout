@@ -35,6 +35,7 @@ import {
   IDEMPOTENCY_HEADER,
   OPS_ROUTES,
   OPS_SESSION_TAG,
+  RECEIPT_ROUTES,
   routeKey,
   TEAM_SESSION_TAG,
   WEBHOOK_ROUTES,
@@ -58,6 +59,7 @@ import {
   OPS_OWNERS_PREFIX,
   OPS_TEAMS_PARTITION,
   OWNER_OPERATOR_AUDIT_ATTRIBUTES,
+  RECEIPT_USAGE_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
   STRIPE_LINK_ATTRIBUTES,
   STRIPE_LINK_PREFIX,
@@ -70,7 +72,7 @@ import {
 } from "../../../backend/src/data/schema.js";
 import { BILLING_ENV, BILLING_MAX_RECEIVES, billingResourceNames, OPS_STRIPE_ENV, SEAT_SYNC_MAX_CONCURRENCY, STRIPE_ENV, stripeOpsKeySecretName, stripeSecretName, stripeWebhookSecretName } from "../../../backend/src/billing/names.js";
 import { BILLING_WORKER_TAGS } from "../../../backend/src/billing/worker-db.js";
-import { type DeploymentConfig, stripeModeOf, stripeOpsKeySecretArn, stripeSecretArn, stripeWebhookSecretArn } from "../config.js";
+import { type DeploymentConfig, foundationModelOf, RECEIPT_MODEL_ID, RECEIPT_MODEL_REGIONS, stripeModeOf, stripeOpsKeySecretArn, stripeSecretArn, stripeWebhookSecretArn } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import { grantPutDeletionRecords } from "../deletions.js";
 import { grantSendEmail } from "../email.js";
@@ -161,6 +163,9 @@ export class ApiStack extends SupplyCheckoutStack {
   readonly accountFunction: NodejsFunction;
   readonly dataAccessRole: Role;
   readonly accountAccessRole: Role;
+  /** Reads receipt photos with Claude on Bedrock (ADR 0008): the only function that may invoke a model. */
+  readonly receiptsFunction: NodejsFunction;
+  readonly receiptAccessRole: Role;
   /** Starts Stripe Checkout (ADR 0009): one of only two kinds of function that may read the Stripe secret key. */
   readonly billingFunction: NodejsFunction;
   readonly billingAccessRole: Role;
@@ -281,6 +286,10 @@ export class ApiStack extends SupplyCheckoutStack {
       new PolicyStatement({ actions: ["sts:AssumeRole", "sts:TagSession"], resources: [this.dataAccessRole.roleArn] }),
     );
     this.dataFunction.addEnvironment(API_ENV.dataRoleArn, this.dataAccessRole.roleArn);
+
+    const receipts = this.addReceipts(table, tableArn, tableKeyStatement);
+    this.receiptsFunction = receipts.fn;
+    this.receiptAccessRole = receipts.role;
 
     // The account-access role: the caller's own partition, plus at most one
     // team and one invitee partition, each chosen by a session tag
@@ -443,6 +452,12 @@ export class ApiStack extends SupplyCheckoutStack {
         stage.node.addDependency(...added);
         routeSettings[routeKey(route)] = { ThrottlingRateLimit: route.throttle.rate, ThrottlingBurstLimit: route.throttle.burst };
       }
+    }
+    const receiptsIntegration = new HttpLambdaIntegration("ReceiptsIntegration", this.live(this.receiptsFunction));
+    for (const route of RECEIPT_ROUTES) {
+      const added = this.api.addRoutes({ path: route.path, methods: [route.method as HttpMethod], integration: receiptsIntegration, authorizer });
+      stage.node.addDependency(...added);
+      routeSettings[routeKey(route)] = { ThrottlingRateLimit: route.throttle.rate, ThrottlingBurstLimit: route.throttle.burst };
     }
     const accountIntegration = new HttpLambdaIntegration("AccountIntegration", this.live(this.accountFunction));
     for (const route of ACCOUNT_ROUTES) {
@@ -1042,6 +1057,85 @@ export class ApiStack extends SupplyCheckoutStack {
     fn.addToRolePolicy(new PolicyStatement({ sid: "InvokeReopenOnly", actions: ["lambda:InvokeFunction"], resources: [reopen.functionArn] }));
     fn.addEnvironment(API_ENV.opsReopenFunction, reopen.functionName);
     return { fn, role, reopen, reopenRole };
+  }
+
+  /**
+   * The receipts function and the receipt-access role it assumes (ADR 0008).
+   *
+   * - Like the data function, its own role can't reach the table. Per request
+   *   it assumes the receipt-access role tagged with the path's team, which may
+   *   read only that team's partition (the membership check and the inventory
+   *   it matches lines against) and update only the month's receipt counter
+   *   there, and only its count attributes (RECEIPT_USAGE_ATTRIBUTES). No
+   *   puts, no deletes: reading a receipt saves nothing.
+   * - Bedrock: InvokeModel on the receipt model's US inference profile in this
+   *   region, and on its foundation model in each region the profile routes
+   *   to (RECEIPT_MODEL_REGIONS), only when the call came through that profile
+   *   (bedrock:InferenceProfileArn). No other model, no streaming, no `*`.
+   * - 29 seconds, just under API Gateway's 30; the model call itself has a
+   *   25-second deadline (backend/src/api/receipts-handler.ts).
+   */
+  private addReceipts(table: string, tableArn: string, tableKeyStatement: () => PolicyStatement): { fn: NodejsFunction; role: Role } {
+    const fn = this.handler("ReceiptsFunction", "receipts", {
+      memorySize: 512,
+      description: "Reads receipt photos with Claude on Bedrock for the review screen (ADR 0008); saves nothing",
+      timeout: Duration.seconds(29),
+      environment: { [API_ENV.tableName]: table, [API_ENV.receiptModelId]: RECEIPT_MODEL_ID },
+    });
+    const fnRole = fn.role;
+    if (!fnRole) throw new Error("The receipts function has no role");
+    const teamTag = `\${aws:PrincipalTag/${TEAM_SESSION_TAG}}`;
+    const role = new Role(this, "ReceiptAccessRole", {
+      description: "Assumed by the receipts function per request, tagged with the team: reads that team's items and counts its receipts",
+      maxSessionDuration: Duration.hours(1),
+      assumedBy: new ArnPrincipal(fnRole.roleArn)
+        .withConditions({
+          StringLike: { [`aws:RequestTag/${TEAM_SESSION_TAG}`]: "?*" },
+          "ForAllValues:StringEquals": { "aws:TagKeys": [TEAM_SESSION_TAG] },
+        })
+        .withSessionTags(),
+      inlinePolicies: {
+        TeamReadAndReceiptCount: new PolicyDocument({
+          statements: [
+            // GetItem also covers TransactGetItems (the membership check); Query lists the inventory
+            new PolicyStatement({
+              sid: "TeamItemsReadOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:GetItem", "dynamodb:Query"],
+              resources: [tableArn],
+              conditions: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`TEAM#${teamTag}`] } },
+            }),
+            new PolicyStatement({
+              sid: "ReceiptCountOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:UpdateItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`TEAM#${teamTag}`], "dynamodb:Attributes": [...RECEIPT_USAGE_ATTRIBUTES] },
+                StringEqualsIfExists: { "dynamodb:ReturnValues": ["NONE", "UPDATED_NEW"] },
+              },
+            }),
+            tableKeyStatement(),
+          ],
+        }),
+      },
+    });
+    fn.addToRolePolicy(new PolicyStatement({ actions: ["sts:AssumeRole", "sts:TagSession"], resources: [role.roleArn] }));
+    fn.addEnvironment(API_ENV.receiptRoleArn, role.roleArn);
+
+    // Invoking through an inference profile needs InvokeModel on the profile and
+    // on its foundation model in every region the profile may route to (ADR 0008)
+    const profileArn = Stack.of(this).formatArn({ service: "bedrock", resource: "inference-profile", resourceName: RECEIPT_MODEL_ID });
+    fn.addToRolePolicy(new PolicyStatement({ sid: "InvokeReceiptProfile", actions: ["bedrock:InvokeModel"], resources: [profileArn] }));
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "InvokeReceiptModelThroughProfile",
+        actions: ["bedrock:InvokeModel"],
+        resources: RECEIPT_MODEL_REGIONS.map((r) => `arn:${Stack.of(this).partition}:bedrock:${r}::foundation-model/${foundationModelOf(RECEIPT_MODEL_ID)}`),
+        conditions: { StringEquals: { "bedrock:InferenceProfileArn": profileArn } },
+      }),
+    );
+    return { fn, role };
   }
 
   /** A function from backend/src/<dir>/<name>.ts. */

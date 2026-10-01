@@ -136,6 +136,13 @@ export const MEMBER_ROW_ATTRIBUTES = [PK, SK, "role"] as const;
  */
 export const INVITE_LIMIT_PREFIX = "INVITELIMIT#";
 
+/**
+ * The only attributes the receipts function may name when it counts a
+ * receipt (recordReceiptRead, `TEAM#<teamId>` / `USAGE#<month>`): the keys,
+ * the count, and the item's type and month.
+ */
+export const RECEIPT_USAGE_ATTRIBUTES = [PK, SK, "receipts", "type", "month"] as const;
+
 /** The only attributes a request may name in an `INVITELIMIT#` partition: the keys, the count, its item type and its expiry. */
 export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as const;
 

@@ -37,7 +37,7 @@ export interface ObservabilityOptions {
 export type Metadata = Record<string, string | number | boolean>;
 
 /** Units a gauge can be in. */
-export type GaugeUnit = "Count" | "Percent";
+export type GaugeUnit = "Count" | "Percent" | "Milliseconds";
 
 export interface Observability {
   readonly logger: Logger;
@@ -105,7 +105,7 @@ export function createObservability(options: ObservabilityOptions = {}): Observa
     },
     gauge(metric, value, unit = "Count") {
       if (!Number.isFinite(value) || value < 0) throw new Error(`Metric ${metric} needs a value of 0 or more (got ${value})`);
-      metrics.addMetric(metric, unit === "Percent" ? MetricUnit.Percent : MetricUnit.Count, value);
+      metrics.addMetric(metric, unit === "Percent" ? MetricUnit.Percent : unit === "Milliseconds" ? MetricUnit.Milliseconds : MetricUnit.Count, value);
       pending = true;
     },
   };

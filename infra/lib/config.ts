@@ -48,6 +48,21 @@ export const DEFAULT_DOMAIN_NAME = "supplycheckout.com";
 export const RECEIPT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 
 /**
+ * The regions the US inference profiles route to (AWS's "Supported Regions
+ * and models for inference profiles"). The receipts function may invoke the
+ * receipt model's foundation model in each of them, and only through its
+ * profile (api-stack.ts). If AWS adds a region to the profile, add it here:
+ * until then a request Bedrock routes there is refused (AccessDenied).
+ */
+export const RECEIPT_MODEL_REGIONS = ["us-east-1", "us-east-2", "us-west-1", "us-west-2"] as const;
+
+/** The foundation model behind a `us.` inference profile ID: the ID without its prefix. */
+export function foundationModelOf(profileId: string): string {
+  if (!profileId.startsWith("us.")) throw new Error(`${profileId} is not a US inference profile`);
+  return profileId.slice("us.".length);
+}
+
+/**
  * The model the receipt eval benchmarks against: Claude Sonnet 4.6. Sonnet 5
  * and 5.5 weren't available to the account on 2026-10-01 (ADR 0008).
  */

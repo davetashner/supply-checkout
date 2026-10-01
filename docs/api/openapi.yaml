@@ -135,6 +135,11 @@ tags:
       The team's settings (ADR 0017, section 2a): the markup on company
       equipment bought on a receipt for a client. Owners read and change
       them; everyone else gets none of them back.
+  - name: receipts
+    description: |
+      Reading a receipt photo with Claude on Amazon Bedrock (ADR 0008) for the
+      app's review screen. Nothing is saved: the user checks every line and
+      saves through the document and command routes.
   - name: account
     description: The signed-in user's teams and pending invites, creating a team, and accepting an invite (first sign-in).
   - name: members
@@ -560,6 +565,104 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/CommandConflict" }
         "413": { $ref: "#/components/responses/TooLarge" }
+  /teams/{teamId}/receipts/read:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    post:
+      tags: [receipts]
+      operationId: readReceipt
+      summary: Read a receipt photo's line items for the review screen. Saves nothing.
+      description: |
+        The body is the photo, a JPEG or PNG as base64, at most 1,500,000
+        bytes decoded (the app shrinks photos to about 600 KB first). Its bytes
+        must be the type it says. The server builds the prompt itself: the
+        fixed instructions, then up to 500 of the team's inventory items for
+        matching, then the photo. Nothing else from the request reaches the
+        model, and the photo is never stored or logged.
+
+        Each read counts against the team's monthly limit (provisionally 200
+        a month for every plan, `RECEIPTS_PER_TEAM_PER_MONTH`), counted
+        before the model is called, so a read that then fails still counts.
+        A closed team, or one whose subscription ended, can't read receipts.
+        Contributors and owners only.
+
+        The reply's lines are checked on the server whatever the model sent:
+        a line without a name is dropped, a quantity that isn't a positive
+        number becomes 1, prices and totals that aren't amounts of 0 or more
+        become 0 (prices) or null, and `match` is the key of the team's
+        product the line is, or null. No lines means the photo wasn't a
+        readable receipt. The model has 25 seconds.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [image]
+              additionalProperties: false
+              properties:
+                image:
+                  type: object
+                  required: [mediaType, data]
+                  additionalProperties: false
+                  properties:
+                    mediaType: { type: string, enum: [image/jpeg, image/png] }
+                    data: { type: string, contentEncoding: base64, description: The photo's bytes. }
+      responses:
+        "200":
+          description: The lines read, and the team's receipts read this month.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [store, date, items, subtotal, tax, total, usage]
+                properties:
+                  store: { type: [string, "null"] }
+                  date: { type: [string, "null"], format: date }
+                  items:
+                    type: array
+                    maxItems: 200
+                    items:
+                      type: object
+                      required: [raw, name, qty, price, match]
+                      properties:
+                        raw: { type: string, description: The line as printed, or empty. }
+                        name: { type: string, description: A readable product name. }
+                        qty: { type: number, exclusiveMinimum: 0 }
+                        price: { type: number, minimum: 0, description: One unit's price after discounts. }
+                        match: { type: [string, "null"], description: The key of the team's product this line is. }
+                  subtotal: { type: [number, "null"] }
+                  tax: { type: [number, "null"] }
+                  total: { type: [number, "null"] }
+                  usage:
+                    type: object
+                    required: [month, used, limit]
+                    properties:
+                      month: { type: string, description: The UTC month counted, YYYY-MM. }
+                      used: { type: integer, description: Receipts read this month, this one included. }
+                      limit: { type: integer }
+        "400":
+          description: "`bad_request`: with `reason: \"image_rejected\"`, the photo isn't a JPEG or PNG in base64 matching its type, or the model service couldn't use it; otherwise malformed JSON or an unexpected field."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413":
+          description: "`quota_exceeded`: the photo is over 1,500,000 bytes (`reason: \"image_rejected\"`), or the body is too large."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          description: "`quota_exceeded`: with `reason: \"receipt_limit\"`, the team has read all its receipts this month; with `reason: \"model_busy\"`, the model service is throttling (try again in a minute)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "500":
+          description: "`internal`: something failed on our side before the model was called."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "502":
+          description: "`internal` with `reason: \"invalid_output\"`: the model's reply was refused, cut short or not the expected shape. Try again."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503":
+          description: "`unavailable`: the model service failed. Try again in a few minutes."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "504":
+          description: "`unavailable` with `reason: \"model_timeout\"`: the model didn't answer within 25 seconds."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /teams/{teamId}/sheets/{sheetId}/lines:
     parameters:
       - $ref: "#/components/parameters/teamId"
@@ -2631,11 +2734,11 @@ components:
           properties:
             code:
               type: string
-              enum: [bad_request, unauthenticated, permission_denied, invalid_argument, not_found, aborted, quota_exceeded, internal]
+              enum: [bad_request, unauthenticated, permission_denied, invalid_argument, not_found, aborted, quota_exceeded, unavailable, internal]
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, adhoc_open, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_invalid, password_mismatch, federated_sign_in, signout_failed]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, adhoc_open, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_invalid, password_mismatch, federated_sign_in, signout_failed, image_rejected, receipt_limit, model_busy, model_timeout, invalid_output]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -2671,6 +2774,11 @@ components:
                 or missing), `federated_sign_in` (a Google or Apple user,
                 who has nothing to set up), and `signout_failed` (it's on, but
                 the other sessions haven't ended: `signOutEverywhere`).
+                Reading a receipt: `image_rejected` (the photo can't be used),
+                `receipt_limit` (the team's monthly receipts are used up),
+                `model_busy` (the model service is throttling),
+                `model_timeout` (no answer in time) and `invalid_output` (the
+                model's reply couldn't be used).
   responses:
     OperatorsOnly:
       description: "`permission_denied`: the token's user isn't in the `operators` group (now, according to Cognito)."

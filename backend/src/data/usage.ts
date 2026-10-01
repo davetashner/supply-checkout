@@ -7,6 +7,14 @@ import { InvalidInputError, LimitReachedError } from "./errors.js";
 import { keys, month } from "./keys.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
+/**
+ * Receipts a team may read each month: the provisional limit from ADR 0009's
+ * starting proposal (supply-checkout-akz), the same for every plan until the
+ * tiers are decided. Per-plan limits and per-user rate limits are
+ * supply-checkout-wxx.
+ */
+export const RECEIPTS_PER_TEAM_PER_MONTH = 200;
+
 /** The UTC month, YYYY-MM, that usage counts against. */
 export function usageMonth(now = new Date()): string {
   return now.toISOString().slice(0, 7);
