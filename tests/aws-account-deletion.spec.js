@@ -65,6 +65,8 @@ test.describe("closing a team", { tag: ["@J11.2"] }, () => {
     await bar(page).getByRole("button", { name: "Members" }).click();
     const name = dialog(page).getByLabel(`Type the team's name, ${TEAM.name}, to close it`);
     const close = dialog(page).getByRole("button", { name: "Close team" });
+    // An annual plan closed mid-term isn't refunded (Terms section 7), and the dialog says so
+    await expect(dialog(page)).toContainText("If the team pays yearly, closing it doesn't refund the unused months.");
     await expect(close).toBeDisabled();
     await name.fill("Echo");
     await expect(close).toBeDisabled();
