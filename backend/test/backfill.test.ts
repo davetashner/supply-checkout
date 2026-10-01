@@ -9,7 +9,7 @@ import { createDb, createTeam, type Db, emailSeenHash, getOpsTeam, listOpsTeams,
 import { connection, dbFromConnection } from "../src/data/client.js";
 import { backfillMemberCounts, backfillOpsIndex, expectedOpsKeys, type NoticeAddressCandidate, runBackfill, stripStrayOpsKeys } from "../src/data/backfill.js";
 import type { PoolUser } from "../src/identity/cognito-admin.js";
-import { formatReport, main, USAGE } from "../scripts/backfill.js";
+import { type FoundPool, formatReport, main, USAGE } from "../scripts/backfill.js";
 import { endpoint, newUser, rawItem, REGION, useTable } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
 
@@ -166,7 +166,7 @@ describe("the notice-address backfill", () => {
   }
 
   /** Runs the CLI against `db` with the given pool users; returns the exit code and output. */
-  async function run(db: Db, users: PoolUser[], apply: boolean, found: () => Promise<{ id: string; name: string }> = async () => ({ id: POOL, name: "supply-checkout-test" })) {
+  async function run(db: Db, users: PoolUser[], apply: boolean, found: () => Promise<FoundPool> = async () => ({ id: POOL, name: "supply-checkout-test", opsId: `${REGION}_OpsPool1` })) {
     const out: string[] = [];
     const seen: { region?: string; pool?: string; asked?: string[] } = {};
     let connected = false;
@@ -191,12 +191,16 @@ describe("the notice-address backfill", () => {
   }
 
   it("refuses to read or write unless the table's environment names its own app pool, in this region", async () => {
-    const cases: [string, () => Promise<{ id: string; name: string }>, RegExp][] = [
-      ["the operator pool", async () => ({ id: `${REGION}_OpsPool1`, name: "supply-checkout-test-ops" }), /must name the pool supply-checkout-test in test-local-1, not supply-checkout-test-ops/],
-      ["another environment's pool", async () => ({ id: POOL, name: "supply-checkout-prod" }), /not supply-checkout-prod/],
-      ["a pool in another region", async () => ({ id: "test-other-2_AppPool1", name: "supply-checkout-test" }), /in test-local-1, not supply-checkout-test \(test-other-2_AppPool1\)/],
-      ["something that isn't a pool ID", async () => ({ id: "junk", name: "" }), /not an unnamed pool \(junk\)/],
-      ["no parameter value", async () => ({ id: "", name: "" }), /\(no ID\)/],
+    const ops = `${REGION}_OpsPool1`;
+    const cases: [string, () => Promise<FoundPool>, RegExp][] = [
+      ["the operator pool, by name", async () => ({ id: ops, name: "supply-checkout-test-ops", opsId: ops }), /names the operator pool \(test-local-1_OpsPool1\)/],
+      ["another env's operator pool, by name", async () => ({ id: `${REGION}_OtherOps`, name: "supply-checkout-prod-ops", opsId: ops }), /names the operator pool/],
+      // Even if it were renamed to look like the app pool
+      ["the operator pool, by its ID", async () => ({ id: ops, name: "supply-checkout-test", opsId: ops }), /names the operator pool \(test-local-1_OpsPool1\)/],
+      ["another environment's pool", async () => ({ id: POOL, name: "supply-checkout-prod", opsId: ops }), /not supply-checkout-prod/],
+      ["a pool in another region", async () => ({ id: "test-other-2_AppPool1", name: "supply-checkout-test", opsId: "" }), /in test-local-1, not supply-checkout-test \(test-other-2_AppPool1\)/],
+      ["something that isn't a pool ID", async () => ({ id: "junk", name: "", opsId: ops }), /not an unnamed pool \(junk\)/],
+      ["no parameter value", async () => ({ id: "", name: "", opsId: "" }), /\(no ID\)/],
       ["a failed lookup", () => Promise.reject(Object.assign(new Error("Parameter not found"), { name: "ParameterNotFound" })), /Failed to find the app pool \(\/supply-checkout\/test\/identity\/user-pool-id\): ParameterNotFound/],
     ];
     for (const [name, found, message] of cases) {
@@ -207,6 +211,25 @@ describe("the notice-address backfill", () => {
       expect(result.connected, name).toBe(false);
       expect(result.seen.pool, name).toBeUndefined();
     }
+  });
+
+  it("never lists a real pool against --endpoint: only tests, which stand in for the pool, may", async () => {
+    const args = ["notice-address", "--table", "supply-checkout-test-app", "--region", REGION, "--endpoint", "http://127.0.0.1:9"];
+    const refused = { asked: 0 };
+    const connect = () => {
+      throw new Error("must not connect");
+    };
+    const appPool = async () => {
+      refused.asked++;
+      return { id: POOL, name: "supply-checkout-test", opsId: "" };
+    };
+    for (const deps of [undefined, { callerAccount: async () => "x", connect }, { callerAccount: async () => "x", connect, appPool }]) {
+      const out: string[] = [];
+      const code = await main([...args, "--apply"], (l) => out.push(l), (l) => out.push(l), deps);
+      expect(code).toBe(2);
+      expect(out.join("\n")).toMatch(/notice-address lists a real user pool, so it can't run against --endpoint; use --profile/);
+    }
+    expect(refused.asked).toBe(0);
   });
 
   it("needs an app table's name to find the pool, even with --endpoint", async () => {

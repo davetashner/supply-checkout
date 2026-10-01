@@ -18,7 +18,7 @@
 
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
-import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
+import { GetParametersCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { createDb, type Db, type DbOptions } from "../src/data/index.js";
@@ -39,7 +39,7 @@ Modes (run in this order after the deploy):
 Without --apply it's a dry run: it reads the table and writes nothing.
 It prints the AWS account the profile signs in to before it reads or writes.
 --endpoint <url> uses DynamoDB Local instead of AWS (then --profile isn't needed and any table name goes,
-except for notice-address, which needs an app table's name to find its pool).`;
+except for notice-address, which lists a real user pool and so needs --profile).`;
 
 /** An app table's name (tableName in src/data/schema.ts), so a typo can't point the backfill at another table. */
 export const APP_TABLE = /^supply-checkout-([a-z0-9-]+)-app$/;
@@ -55,7 +55,7 @@ export interface Deps {
   /** The table handle (createDb). */
   readonly connect: (options: DbOptions) => Db;
   /** The app pool's ID (from SSM) and the name Cognito gives it (DescribeUserPool); appPool below unless given. */
-  readonly appPool?: (region: string, envName: string, credentials: Credentials | undefined) => Promise<{ id: string; name: string }>;
+  readonly appPool?: (region: string, envName: string, credentials: Credentials | undefined) => Promise<FoundPool>;
   /** Every user in the pool (ListUsers); listUsers below unless given. */
   readonly listUsers?: (region: string, userPoolId: string, credentials: Credentials | undefined) => AsyncIterable<PoolUser>;
 }
@@ -67,22 +67,35 @@ const listUsers = (region: string, userPoolId: string, credentials: Credentials 
 /** The app pool's SSM parameter (identityOutputParameters(envName).userPoolId in infra/lib/identity.ts). */
 export const appPoolParameter = (envName: string) => `/supply-checkout/${envName}/identity/user-pool-id`;
 
-/** The app pool of an environment: its ID from SSM, then its name from Cognito, with the profile's credentials. */
-async function appPool(region: string, envName: string, credentials: Credentials | undefined): Promise<{ id: string; name: string }> {
+/** The operator pool's SSM parameter (identityOutputParameters(envName).opsUserPoolId): the one pool the backfill must never list. */
+export const opsPoolParameter = (envName: string) => `/supply-checkout/${envName}/identity/ops-user-pool-id`;
+
+/** What appPool found: the app pool's ID, Cognito's name for it, and the operator pool's ID ("" if it has none). */
+export interface FoundPool {
+  readonly id: string;
+  readonly name: string;
+  readonly opsId: string;
+}
+
+/** The app pool of an environment: its ID (and the operator pool's) from SSM, then its name from Cognito, with the profile's credentials. */
+async function appPool(region: string, envName: string, credentials: Credentials | undefined): Promise<FoundPool> {
   const ssm = new SSMClient({ region, ...(credentials ? { credentials } : {}) });
   let id: string;
+  let opsId: string;
   try {
-    const { Parameter } = await ssm.send(new GetParameterCommand({ Name: appPoolParameter(envName) }));
-    id = Parameter?.Value ?? "";
+    const { Parameters } = await ssm.send(new GetParametersCommand({ Names: [appPoolParameter(envName), opsPoolParameter(envName)] }));
+    const value = (name: string) => Parameters?.find((p) => p.Name === name)?.Value ?? "";
+    id = value(appPoolParameter(envName));
+    opsId = value(opsPoolParameter(envName));
   } finally {
     ssm.destroy();
   }
   const match = POOL_ID.exec(id);
-  if (!match) return { id, name: "" };
+  if (!match) return { id, name: "", opsId };
   const described = (await cognitoRequest({ region: match[1] as string, timeoutMs: 10_000, ...(credentials ? { credentials } : {}) })("DescribeUserPool", { UserPoolId: id })) as {
     UserPool?: { Name?: unknown };
   };
-  return { id, name: typeof described.UserPool?.Name === "string" ? described.UserPool.Name : "" };
+  return { id, name: typeof described.UserPool?.Name === "string" ? described.UserPool.Name : "", opsId };
 }
 
 const defaultDeps: Deps = {
@@ -176,6 +189,13 @@ export async function main(
     err(`--table must be an app table, supply-checkout-<env>-app, for notice-address: ${values.table}\n\n${USAGE}`);
     return 2;
   }
+  // With --endpoint there's no profile and no account line, so the pool lookup and listing would
+  // sign with whatever ambient credentials there are (a real pool) and send addresses to that
+  // endpoint. Only tests, which stand in for both, may do it.
+  if (mode === "notice-address" && values.endpoint && !(deps.appPool && deps.listUsers)) {
+    err(`notice-address lists a real user pool, so it can't run against --endpoint; use --profile\n\n${USAGE}`);
+    return 2;
+  }
 
   if (!values.endpoint && !values.profile) {
     err(`--profile is required (or --endpoint for DynamoDB Local)\n\n${USAGE}`);
@@ -201,11 +221,16 @@ export async function main(
   if (mode === "notice-address" && envName) {
     // Before anything is read or written: the table's environment's app pool, in this region, and no other
     const expected = `supply-checkout-${envName}`;
-    let found: { id: string; name: string };
+    let found: FoundPool;
     try {
       found = await (deps.appPool ?? appPool)(values.region, envName, credentials);
     } catch (e) {
       err(`Failed to find the app pool (${appPoolParameter(envName)}): ${(e as Error).name}: ${(e as Error).message}`);
+      return 1;
+    }
+    // Defence in depth: the name check below refuses the operator pool too, by its name
+    if (found.name.endsWith("-ops") || (found.opsId !== "" && found.id === found.opsId)) {
+      err(`${appPoolParameter(envName)} names the operator pool (${found.id}): nothing was read or written`);
       return 1;
     }
     const poolRegion = POOL_ID.exec(found.id)?.[1];
