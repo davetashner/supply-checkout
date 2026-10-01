@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.8.0](https://github.com/davetashner/supply-checkout/compare/v1.7.1...v1.8.0) (2026-10-01)
+
+
+### Features
+
+* add AWS Budgets and cost anomaly alerts ([#384](https://github.com/davetashner/supply-checkout/issues/384)) ([10efcf9](https://github.com/davetashner/supply-checkout/commit/10efcf9694a16b79bafac7bff6a8660d8815deed))
+* ask about equipment still out at Finished Return ([#399](https://github.com/davetashner/supply-checkout/issues/399)) ([3048f95](https://github.com/davetashner/supply-checkout/commit/3048f95fd7fda04077e2763510fa61a85137f775))
+* bill equipment bought for a client and set its markup ([#401](https://github.com/davetashner/supply-checkout/issues/401)) ([f348a85](https://github.com/davetashner/supply-checkout/commit/f348a8505804b28f0182dc9018c07d1e1f9bda4e))
+* company equipment and the equipment markup on the server ([#385](https://github.com/davetashner/supply-checkout/issues/385)) ([d094753](https://github.com/davetashner/supply-checkout/commit/d0947533fdf67332a32407e098bb93480fad1c98))
+* company equipment in inventory and on sheets ([#395](https://github.com/davetashner/supply-checkout/issues/395)) ([52a1f43](https://github.com/davetashner/supply-checkout/commit/52a1f43ccf059b1e08b5c032dc2d9becc6b5571f))
+* quick take onto the ad hoc sheet and move its lines on the server ([#405](https://github.com/davetashner/supply-checkout/issues/405)) ([4fbfc58](https://github.com/davetashner/supply-checkout/commit/4fbfc58fd6e594337afa235c4ba4ed252114ef11))
+* say closing an annual plan doesn't refund unused months ([#383](https://github.com/davetashner/supply-checkout/issues/383)) ([a6d496d](https://github.com/davetashner/supply-checkout/commit/a6d496d2dc6eeeaf56f164b977dce19a484adde6))
+* take supplies without a job sheet, and return them from anywhere ([#408](https://github.com/davetashner/supply-checkout/issues/408)) ([e978cad](https://github.com/davetashner/supply-checkout/commit/e978cadc39c57d51e0abb931d51b59f4e66e4732))
+* trace typed prices and keep equipment fields server-owned ([#388](https://github.com/davetashner/supply-checkout/issues/388)) ([1708ce0](https://github.com/davetashner/supply-checkout/commit/1708ce075c58108d94a29a847ff7dbcd79fd44c0))
+
+
+### Bug Fixes
+
+* purge a closed team on schedule even when Stripe is down ([#386](https://github.com/davetashner/supply-checkout/issues/386)) ([e082cb3](https://github.com/davetashner/supply-checkout/commit/e082cb35cb0241e526f26d09a34bbf5b1b28255d))
+
 ## [1.7.1](https://github.com/davetashner/supply-checkout/compare/v1.7.0...v1.7.1) (2026-10-01)
 
 
