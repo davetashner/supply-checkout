@@ -120,6 +120,10 @@ export const BusinessMetric = {
   ReopenedTeamSubscriptionsEnded: "ReopenedTeamSubscriptionsEnded",
   /** Closed teams whose subscription was charged for a period that began after the team closed, found by the purge: a person refunds it (supply-checkout-8jc.18, J7, J11). */
   ClosedTeamRenewalsCharged: "ClosedTeamRenewalsCharged",
+  /** Closed teams whose subscription Stripe doesn't have, found by the purge and recorded as nothing to end. Any at all may be a Stripe key or mode mismatch, under which every closed team would be recorded this way with none cancelled (supply-checkout-8jc.17, J7, J11). */
+  ClosedTeamSubscriptionsNotFound: "ClosedTeamSubscriptionsNotFound",
+  /** Closed teams' subscriptions the purge won't end and won't retry (another customer's subscription): set aside for a person, so they don't crowd newer closures out of the purge's listing (supply-checkout-8jc.17, J7, J11). */
+  ClosedTeamSubscriptionsSetAside: "ClosedTeamSubscriptionsSetAside",
   /** Purged teams' Stripe customers deleted (their name, email, address and cards). */
   StripeCustomersDeleted: "StripeCustomersDeleted",
   /** Operator audit items (OPAUDIT#) changed or deleted other than by their TTL: the audit trail was tampered with (ADR 0015). From the operator audit watch (primary region). */

@@ -127,11 +127,23 @@ const ALARM_IDS = [
   "team-closed-notices-failing",
   "reopened-team-subscription-ended",
   "closed-team-charged",
+  "closed-team-subscription-not-found",
+  "closed-team-subscription-set-aside",
   "team-reopened-notices-failing",
 ];
 
 /** Alarms on gauges that only the primary region's scheduled checks and purge send (ops-checks.ts), and on the user pool's trigger, which is there alone. */
-const PRIMARY_ONLY_ALARM_IDS = ["sign-up-trigger-failing", "imports-stuck", "near-sending-limit", "seat-counts-drifting", "entitlements-drifting", "deletion-overdue", "closed-team-charged"];
+const PRIMARY_ONLY_ALARM_IDS = [
+  "sign-up-trigger-failing",
+  "imports-stuck",
+  "near-sending-limit",
+  "seat-counts-drifting",
+  "entitlements-drifting",
+  "deletion-overdue",
+  "closed-team-charged",
+  "closed-team-subscription-not-found",
+  "closed-team-subscription-set-aside",
+];
 
 describe("alarm topics", () => {
   it("has a P1 and a P2 topic, encrypted with a rotating key that CloudWatch may use, refusing plain HTTP", () => {
@@ -677,6 +689,23 @@ describe("alarms added with the email code routes, the live update budget, team 
     });
   });
 
+  it("alarms on any closed team's subscription Stripe doesn't have, or that the purge set aside, where the purge runs (J7, J11, supply-checkout-8jc.17)", () => {
+    for (const [id, metric, title] of [
+      ["closed-team-subscription-not-found", BusinessMetric.ClosedTeamSubscriptionsNotFound, "Closed-team subscription not found in Stripe"],
+      ["closed-team-subscription-set-aside", BusinessMetric.ClosedTeamSubscriptionsSetAside, "Closed-team subscription set aside"],
+    ]) {
+      observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+        AlarmName: `supply-checkout-prod-p2-${id}`,
+        Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: metric }), Stat: "Sum", Period: 3600 }) })],
+        Threshold: 0,
+        ComparisonOperator: "GreaterThanThreshold",
+        TreatMissingData: "notBreaching",
+        AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+        AlarmDescription: Match.stringLikeRegexp(`^P2 ${title} \\(J7, J11`),
+      });
+    }
+  });
+
   it("alarms on any closed team overdue for deletion, over periods that always hold a purge run (J11)", () => {
     observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "supply-checkout-prod-p2-deletion-overdue",
@@ -781,7 +810,7 @@ describe("scheduled checks", () => {
       STRIPE_SECRET_ID: "supply-checkout/prod/stripe/test-secret-key",
       STRIPE_MODE: "test",
     });
-    const attributes = ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "purgeAfter", "purging", "stripeCustomerId", "stripeSubscriptionId", "stripeCancelledFor", "teamId"];
+    const attributes = ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "purgeAfter", "purging", "stripeCustomerId", "stripeSubscriptionId", "stripeCancelledFor", "stripeSetAsideFor", "teamId"];
     const [, index, query, items, mark] = found as Record<string, unknown>[];
     expect(index?.Condition).toEqual({
       "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAMS#CLOSED"], "dynamodb:Attributes": attributes },
@@ -808,7 +837,7 @@ describe("scheduled checks", () => {
     expect(mark?.Resource).toEqual(table);
     expect(mark?.Condition).toEqual({
       "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
-      "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "purgeAfter", "purging", "stripeCancelledFor"] },
+      "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "purgeAfter", "purging", "stripeCancelledFor", "stripeSetAsideFor"] },
       StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
     });
   });

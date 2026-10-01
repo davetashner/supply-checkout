@@ -28,6 +28,7 @@ import {
   LimitReachedError,
   linkStripeCustomer,
   markSubscriptionEnding,
+  markSubscriptionSetAside,
   listClosedTeamsToEnd,
   listInvitesForEmail,
   listTeamsForUser,
@@ -253,6 +254,39 @@ describe.skipIf(!endpoint)("closing teams and deleting accounts (DynamoDB Local)
     expect(await markSubscriptionEnding(table.db, expected)).toBe(false);
     await closeTeam(table.db, await authorizeTeam(table.db, owner.userId, teamId), { confirmName: "Echo Cleaning" }, later);
     expect(await closedTeamToEnd(table.db, teamId)).toMatchObject({ closedAt: later.toISOString() });
+  });
+
+  it("leaves a team set aside for this closure out of the listing, so it can't crowd out newer closures", async () => {
+    // Earlier than any other test's closures, so these two list first
+    const now = new Date("2025-01-01T00:00:00.000Z");
+    const stuck = await team(now);
+    const newer = await team(new Date(now.getTime() + 1000));
+    for (const [i, t] of [stuck, newer].entries()) {
+      await linkStripeCustomer(table.db, t.owner, `cus_${t.teamId.slice(0, 8)}`);
+      await connection(table.db).doc.send(
+        new UpdateCommand({ TableName: table.db.tableName, Key: { PK: `TEAM#${t.teamId}`, SK: "META" }, UpdateExpression: "SET stripeSubscriptionId = :sub", ExpressionAttributeValues: { ":sub": `sub_aside_${i}` } }),
+      );
+    }
+    await closeTeam(table.db, stuck.owner, { confirmName: "Echo Cleaning" }, now);
+    await closeTeam(table.db, newer.owner, { confirmName: "Echo Cleaning" }, new Date(now.getTime() + 1000));
+    const [first] = await listClosedTeamsToEnd(table.db, 1);
+    if (!first) throw new Error("Nothing listed");
+    expect(first?.teamId).toBe(stuck.teamId);
+    // Another closure's purgeAfter: refused, nothing recorded
+    expect(await markSubscriptionSetAside(table.db, { ...first, purgeAfter: new Date(now.getTime() + DAY).toISOString() })).toBe(false);
+    expect(await rawItem(table.db, `TEAM#${stuck.teamId}`, "META")).not.toHaveProperty("stripeSetAsideFor");
+    expect(await markSubscriptionSetAside(table.db, first)).toBe(true);
+    expect(await rawItem(table.db, `TEAM#${stuck.teamId}`, "META")).toMatchObject({ stripeSetAsideFor: now.toISOString(), closedAt: now.toISOString() });
+    expect(await rawItem(table.db, `TEAM#${stuck.teamId}`, "META")).not.toHaveProperty("stripeCancelledFor");
+    // The same limit now reaches the newer team
+    expect((await listClosedTeamsToEnd(table.db, 1)).map((t) => t.teamId)).toEqual([newer.teamId]);
+    expect(await closedTeamToEnd(table.db, stuck.teamId)).toBeUndefined();
+    // Reopened and closed again: a new closure, listed again
+    const later = new Date(now.getTime() + DAY);
+    await reopenTeam(table.db, await authorizeTeam(table.db, stuck.ownerId, stuck.teamId), { confirmName: "Echo Cleaning" }, later);
+    expect(await markSubscriptionSetAside(table.db, first)).toBe(false);
+    await closeTeam(table.db, await authorizeTeam(table.db, stuck.ownerId, stuck.teamId), { confirmName: "Echo Cleaning" }, later);
+    expect(await closedTeamToEnd(table.db, stuck.teamId)).toMatchObject({ closedAt: later.toISOString() });
   });
 
   it("counts the closed teams due before a time on the index, without listing them", async () => {

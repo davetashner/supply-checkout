@@ -27,7 +27,9 @@
 // listClosedTeamsToEnd lists every closed team with a subscription not yet set
 // to end for its closure, closedTeamToEnd re-reads one before Stripe is
 // called, and markSubscriptionEnding records it (`stripeCancelledFor`, the
-// closure's `closedAt`), so later runs skip it. purgeTeam's
+// closure's `closedAt`), so later runs skip it. markSubscriptionSetAside
+// records one the purge won't end or retry (`stripeSetAsideFor`), which later
+// runs skip too, so it can't crowd newer closures out. purgeTeam's
 // `deleteStripeCustomer` deletes a team's Stripe customer before any of its
 // items go.
 
@@ -111,14 +113,14 @@ export interface ClosedTeamToEnd {
   readonly stripeSubscriptionId: string;
 }
 
-const TO_END = "closedAt, purgeAfter, purging, stripeCustomerId, stripeSubscriptionId, stripeCancelledFor";
+const TO_END = "closedAt, purgeAfter, purging, stripeCustomerId, stripeSubscriptionId, stripeCancelledFor, stripeSetAsideFor";
 
-/** The team as ClosedTeamToEnd, if it's closed, not being purged, has a subscription, and it isn't recorded as ended for this closure. */
+/** The team as ClosedTeamToEnd, if it's closed, not being purged, has a subscription, and it isn't recorded as ended or set aside for this closure. */
 function toEnd(teamId: string, item: Record<string, unknown> | undefined): ClosedTeamToEnd | undefined {
   if (!item || item.purging !== undefined) return undefined;
-  const { closedAt, purgeAfter, stripeCustomerId, stripeSubscriptionId, stripeCancelledFor } = item;
+  const { closedAt, purgeAfter, stripeCustomerId, stripeSubscriptionId, stripeCancelledFor, stripeSetAsideFor } = item;
   if (typeof closedAt !== "string" || typeof purgeAfter !== "string" || typeof stripeCustomerId !== "string" || typeof stripeSubscriptionId !== "string") return undefined;
-  if (stripeCancelledFor === closedAt) return undefined;
+  if (stripeCancelledFor === closedAt || stripeSetAsideFor === closedAt) return undefined;
   return { teamId, closedAt, purgeAfter, stripeCustomerId, stripeSubscriptionId };
 }
 
@@ -126,7 +128,10 @@ function toEnd(teamId: string, item: Record<string, unknown> | undefined): Close
  * Every closed team whose Stripe subscription hasn't been set to end for its
  * closure (no `stripeCancelledFor` equal to its `closedAt`), at most `limit`,
  * the soonest due first. Teams the purge has started on are left out: deleting
- * their customer ends the subscription. Read from the closed-teams index
+ * their customer ends the subscription. So are teams set aside for this
+ * closure (`stripeSetAsideFor`, markSubscriptionSetAside), so a pile of
+ * subscriptions that will never end can't fill the limit and starve newer
+ * closures. Read from the closed-teams index
  * (which projects every attribute), so it may lag a write by a moment:
  * closedTeamToEnd re-reads each one before Stripe is called.
  */
@@ -175,13 +180,29 @@ export async function closedTeamToEnd(db: Db, teamId: string): Promise<ClosedTea
  * closure (the same `purgeAfter`). Returns false if it isn't: the team was
  * reopened, or reopened and closed again, while Stripe was being called.
  */
-export async function markSubscriptionEnding(db: Db, team: Pick<ClosedTeamToEnd, "teamId" | "closedAt" | "purgeAfter">): Promise<boolean> {
+export function markSubscriptionEnding(db: Db, team: Pick<ClosedTeamToEnd, "teamId" | "closedAt" | "purgeAfter">): Promise<boolean> {
+  return recordForClosure(db, team, "stripeCancelledFor");
+}
+
+/**
+ * Records that the purge won't end the team's subscription, or try again,
+ * for this closure (`stripeSetAsideFor`, its `closedAt`): a person has to look
+ * (another customer's subscription, say). listClosedTeamsToEnd leaves it out
+ * from then on; a new closure lists it again. On the same condition as
+ * markSubscriptionEnding, and false the same way.
+ */
+export function markSubscriptionSetAside(db: Db, team: Pick<ClosedTeamToEnd, "teamId" | "closedAt" | "purgeAfter">): Promise<boolean> {
+  return recordForClosure(db, team, "stripeSetAsideFor");
+}
+
+/** Sets `attribute` to the team's `closedAt`, on the condition it's still that closure. False if it isn't. */
+function recordForClosure(db: Db, team: Pick<ClosedTeamToEnd, "teamId" | "closedAt" | "purgeAfter">, attribute: "stripeCancelledFor" | "stripeSetAsideFor"): Promise<boolean> {
   return connection(db)
     .doc.send(
       new UpdateCommand({
         TableName: db.tableName,
         Key: keys.team(id(team.teamId, "team ID")),
-        UpdateExpression: "SET stripeCancelledFor = :at",
+        UpdateExpression: `SET ${attribute} = :at`,
         // purgeAfter is set with closedAt and goes with it (see the mark below): still this closure
         ConditionExpression: "purgeAfter = :purge",
         ExpressionAttributeValues: { ":at": team.closedAt, ":purge": team.purgeAfter },
