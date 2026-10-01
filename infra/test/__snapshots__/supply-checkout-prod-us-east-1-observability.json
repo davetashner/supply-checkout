@@ -280,7 +280,31 @@
                     },
                     {
                       "Fn::GetAtt": [
-                        "OperatorRuleInputChanges175D896D",
+                        "OperatorInputOpsPoolIdD5DD1CA6",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorInputOpsBrandingId18A1833B",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorInputTrailKeyArnF9F861A2",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorInputTableKeyArn74161CDB",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "OperatorInputTableStreamArn6969E604",
                         "Arn"
                       ]
                     },
@@ -8472,9 +8496,8 @@
                 ],
                 "requestParameters": {
                   "name": [
-                    "/supply-checkout/prod/observability/operator-group-snapshot",
                     {
-                      "wildcard": "*:parameter/supply-checkout/prod/observability/operator-group-snapshot"
+                      "wildcard": "*/supply-checkout/prod/observability/operator-group-snapshot*"
                     }
                   ]
                 },
@@ -8512,9 +8535,8 @@
                 ],
                 "requestParameters": {
                   "names": [
-                    "/supply-checkout/prod/observability/operator-group-snapshot",
                     {
-                      "wildcard": "*:parameter/supply-checkout/prod/observability/operator-group-snapshot"
+                      "wildcard": "*/supply-checkout/prod/observability/operator-group-snapshot*"
                     }
                   ]
                 },
@@ -8591,10 +8613,10 @@
         ]
       }
     },
-    "OperatorRuleInputChanges175D896D": {
+    "OperatorInputOpsPoolIdD5DD1CA6": {
       "Type": "AWS::Events::Rule",
       "Properties": {
-        "Description": "An SSM parameter the operator alerts read at deploy time was changed or deleted outside a deploy (supply-checkout-6uw.22)",
+        "Description": "The SSM parameter /supply-checkout/prod/identity/ops-user-pool-id, which the operator alerts read at deploy time, was changed or deleted outside a deploy (supply-checkout-6uw.22)",
         "EventPattern": {
           "source": [
             "aws.ssm"
@@ -8616,11 +8638,9 @@
                 ],
                 "requestParameters": {
                   "name": [
-                    "/supply-checkout/prod/identity/ops-user-pool-id",
-                    "/supply-checkout/prod/identity/ops-branding-id",
-                    "/supply-checkout/prod/audit/trail-key-arn",
-                    "/supply-checkout/prod/data/table-key-arn",
-                    "/supply-checkout/prod/data/table-stream-arn"
+                    {
+                      "wildcard": "*/supply-checkout/prod/identity/ops-user-pool-id*"
+                    }
                   ]
                 },
                 "userIdentity": {
@@ -8640,11 +8660,9 @@
                 ],
                 "requestParameters": {
                   "names": [
-                    "/supply-checkout/prod/identity/ops-user-pool-id",
-                    "/supply-checkout/prod/identity/ops-branding-id",
-                    "/supply-checkout/prod/audit/trail-key-arn",
-                    "/supply-checkout/prod/data/table-key-arn",
-                    "/supply-checkout/prod/data/table-stream-arn"
+                    {
+                      "wildcard": "*/supply-checkout/prod/identity/ops-user-pool-id*"
+                    }
                   ]
                 },
                 "userIdentity": {
@@ -8661,7 +8679,7 @@
             ]
           }
         },
-        "Name": "supply-checkout-prod-operator-rule-input-params",
+        "Name": "supply-checkout-prod-operator-input-ops-pool-id",
         "State": "ENABLED",
         "Tags": [
           {
@@ -8697,7 +8715,439 @@
                 "detail-eventTime": "$.detail.eventTime",
                 "detail-eventID": "$.detail.eventID"
               },
-              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on an SSM parameter the operator alerts read at deploy time at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the SSM parameter /supply-checkout/prod/identity/ops-user-pool-id, which the operator alerts read at deploy time at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorInputOpsBrandingId18A1833B": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The SSM parameter /supply-checkout/prod/identity/ops-branding-id, which the operator alerts read at deploy time, was changed or deleted outside a deploy (supply-checkout-6uw.22)",
+        "EventPattern": {
+          "source": [
+            "aws.ssm"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "ssm.amazonaws.com"
+            ],
+            "$or": [
+              {
+                "eventName": [
+                  "PutParameter",
+                  "DeleteParameter",
+                  "LabelParameterVersion",
+                  "UnlabelParameterVersion"
+                ],
+                "requestParameters": {
+                  "name": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/identity/ops-branding-id*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "DeleteParameters"
+                ],
+                "requestParameters": {
+                  "names": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/identity/ops-branding-id*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-input-ops-branding-id",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the SSM parameter /supply-checkout/prod/identity/ops-branding-id, which the operator alerts read at deploy time at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorInputTrailKeyArnF9F861A2": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The SSM parameter /supply-checkout/prod/audit/trail-key-arn, which the operator alerts read at deploy time, was changed or deleted outside a deploy (supply-checkout-6uw.22)",
+        "EventPattern": {
+          "source": [
+            "aws.ssm"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "ssm.amazonaws.com"
+            ],
+            "$or": [
+              {
+                "eventName": [
+                  "PutParameter",
+                  "DeleteParameter",
+                  "LabelParameterVersion",
+                  "UnlabelParameterVersion"
+                ],
+                "requestParameters": {
+                  "name": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/audit/trail-key-arn*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "DeleteParameters"
+                ],
+                "requestParameters": {
+                  "names": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/audit/trail-key-arn*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-input-trail-key-arn",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the SSM parameter /supply-checkout/prod/audit/trail-key-arn, which the operator alerts read at deploy time at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorInputTableKeyArn74161CDB": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The SSM parameter /supply-checkout/prod/data/table-key-arn, which the operator alerts read at deploy time, was changed or deleted outside a deploy (supply-checkout-6uw.22)",
+        "EventPattern": {
+          "source": [
+            "aws.ssm"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "ssm.amazonaws.com"
+            ],
+            "$or": [
+              {
+                "eventName": [
+                  "PutParameter",
+                  "DeleteParameter",
+                  "LabelParameterVersion",
+                  "UnlabelParameterVersion"
+                ],
+                "requestParameters": {
+                  "name": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/data/table-key-arn*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "DeleteParameters"
+                ],
+                "requestParameters": {
+                  "names": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/data/table-key-arn*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-input-table-key-arn",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the SSM parameter /supply-checkout/prod/data/table-key-arn, which the operator alerts read at deploy time at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "OperatorInputTableStreamArn6969E604": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The SSM parameter /supply-checkout/prod/data/table-stream-arn, which the operator alerts read at deploy time, was changed or deleted outside a deploy (supply-checkout-6uw.22)",
+        "EventPattern": {
+          "source": [
+            "aws.ssm"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "ssm.amazonaws.com"
+            ],
+            "$or": [
+              {
+                "eventName": [
+                  "PutParameter",
+                  "DeleteParameter",
+                  "LabelParameterVersion",
+                  "UnlabelParameterVersion"
+                ],
+                "requestParameters": {
+                  "name": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/data/table-stream-arn*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "DeleteParameters"
+                ],
+                "requestParameters": {
+                  "names": [
+                    {
+                      "wildcard": "*/supply-checkout/prod/data/table-stream-arn*"
+                    }
+                  ]
+                },
+                "userIdentity": {
+                  "invokedBy": [
+                    {
+                      "exists": false
+                    },
+                    {
+                      "anything-but": "cloudformation.amazonaws.com"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-input-table-stream-arn",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP1E7C597D3"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the SSM parameter /supply-checkout/prod/data/table-stream-arn, which the operator alerts read at deploy time at <detail-eventTime> (CloudTrail event <detail-eventID> says who). If nobody expected it, follow \\\"Operators\\\" in docs/infrastructure.md.\""
             }
           }
         ]
