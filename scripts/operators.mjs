@@ -99,6 +99,9 @@ export function withSecretFile(body, fn, base = tmpdir()) {
  * Keep in step with OPERATOR_USER_EVENTS and OPERATOR_LOCKOUT_EVENTS in
  * infra/lib/stacks/observability-stack.ts (scripts/operators.test.mjs checks):
  * deleting, disabling and signing out an operator alert too (supply-checkout-6uw.16).
+ * The pool's configuration calls (OPERATOR_POOL_CONFIG_EVENTS: its client,
+ * domain, groups and identity providers) alert outside a deploy too, but
+ * this script never makes them (supply-checkout-6uw.19).
  */
 export const ALERTING_CALLS = {
   "admin-create-user": "AdminCreateUser",

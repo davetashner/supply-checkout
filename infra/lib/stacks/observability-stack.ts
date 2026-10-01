@@ -42,9 +42,11 @@ export const OPERATOR_USER_EVENTS = [
 ] as const;
 
 /**
- * Configuration calls on the operator pool: its groups, settings, app client
- * and identity providers. Each alerts P1 unless CloudFormation made it for a
- * deploy, which is how they're meant to change.
+ * Configuration calls on the operator pool: its groups, settings, app client,
+ * domain and identity providers. Each alerts P1 unless CloudFormation made it
+ * for a deploy, which is how they're meant to change. Deleting or changing the
+ * ops client, domain or an identity provider locks every operator out as
+ * surely as deleting them (supply-checkout-6uw.19).
  */
 export const OPERATOR_POOL_CONFIG_EVENTS = [
   "CreateGroup",
@@ -54,7 +56,12 @@ export const OPERATOR_POOL_CONFIG_EVENTS = [
   "SetUserPoolMfaConfig",
   "CreateUserPoolClient",
   "UpdateUserPoolClient",
+  "DeleteUserPoolClient",
+  "UpdateUserPoolDomain",
+  "DeleteUserPoolDomain",
   "CreateIdentityProvider",
+  "UpdateIdentityProvider",
+  "DeleteIdentityProvider",
 ] as const;
 
 /**

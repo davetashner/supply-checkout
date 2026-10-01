@@ -7058,7 +7058,12 @@
                   "SetUserPoolMfaConfig",
                   "CreateUserPoolClient",
                   "UpdateUserPoolClient",
-                  "CreateIdentityProvider"
+                  "DeleteUserPoolClient",
+                  "UpdateUserPoolDomain",
+                  "DeleteUserPoolDomain",
+                  "CreateIdentityProvider",
+                  "UpdateIdentityProvider",
+                  "DeleteIdentityProvider"
                 ],
                 "userIdentity": {
                   "invokedBy": [

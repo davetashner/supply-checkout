@@ -1225,6 +1225,10 @@ describe("operator pool alerts (ADR 0015)", () => {
     for (const name of ["AdminDeleteUser", "AdminDisableUser", "AdminUserGlobalSignOut", "AdminCreateUser", "AdminAddUserToGroup", "AdminRemoveUserFromGroup", "UpdateUserPool", "SetUserPoolMfaConfig", "CreateUserPoolClient", "UpdateUserPoolClient", "AdminSetUserPassword", "AdminResetUserPassword", "AdminEnableUser", "AdminSetUserMFAPreference", "AdminUpdateUserAttributes", "CreateGroup", "UpdateGroup", "DeleteGroup", "CreateIdentityProvider", "AdminLinkProviderForUser"]) {
       expect(OPERATOR_POOL_ADMIN_EVENTS, name).toContain(name);
     }
+    // Deleting or changing the ops client, domain or identity providers locks every operator out as surely as deleting them: outside a deploy (supply-checkout-6uw.19)
+    for (const name of ["DeleteUserPoolClient", "DeleteUserPoolDomain", "UpdateUserPoolDomain", "DeleteIdentityProvider", "UpdateIdentityProvider"]) {
+      expect(OPERATOR_POOL_CONFIG_EVENTS, name).toContain(name);
+    }
     expect(self.props.EventPattern).toEqual({
       source: ["aws.cognito-idp"],
       "detail-type": ["AWS API Call via CloudTrail"],
@@ -1277,7 +1281,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     }
     // Every exempt call configures the pool, a client, a group or a provider: none names a user
     for (const name of OPERATOR_POOL_CONFIG_EVENTS) {
-      expect(name).toMatch(/^(Create|Update|Delete|Set)(Group|UserPool|UserPoolMfaConfig|UserPoolClient|IdentityProvider)$/);
+      expect(name).toMatch(/^(Create|Update|Delete|Set)(Group|UserPool|UserPoolMfaConfig|UserPoolClient|UserPoolDomain|IdentityProvider)$/);
       expect(name).not.toMatch(/User(?!Pool)|Password|MFAPreference|Admin/);
     }
     const { admin } = operatorRules();
