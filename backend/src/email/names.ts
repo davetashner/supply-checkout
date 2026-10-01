@@ -22,6 +22,8 @@ export const emailResourceNames = (envName: string) => ({
   eventsTopic: `supply-checkout-${envName}-email-events`,
   /** Events the handler couldn't process after Lambda's retries. */
   deadLetterQueue: `supply-checkout-${envName}-email-events-dlq`,
+  /** Security notice events (CloudTrail records) the function or EventBridge gave up on, to replay ("Security notices dropped"). */
+  securityNoticesDeadLetterQueue: `supply-checkout-${envName}-security-notices-dlq`,
 });
 
 /** Environment variables a sending Lambda needs (set by grantSendEmail in infra/lib/email.ts). */
@@ -44,7 +46,7 @@ export const EMAIL_ENV = {
 export const EMAIL_TAGS = { kind: "kind", teamId: "teamId", inviteId: "inviteId" } as const;
 
 /** The kinds of message the app sends (templates.ts). */
-export const EMAIL_KINDS = ["invite", "trialEnding", "paymentFailed", "readOnly", "exportReady", "teamClosed", "teamReopened", "passwordSet", "twoStepOn"] as const;
+export const EMAIL_KINDS = ["invite", "trialEnding", "paymentFailed", "readOnly", "exportReady", "teamClosed", "teamReopened", "passwordSet", "twoStepOn", "emailChanged"] as const;
 export type EmailKind = (typeof EMAIL_KINDS)[number];
 
 /**

@@ -11,7 +11,7 @@ import type { CognitoUser, TotpSetup } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, routeKey } from "../src/api/routes.js";
-import { authorizeTeam, createInvite, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, MEMBERS_PER_TRIAL_TEAM, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS, verifiedEmailHash } from "../src/data/index.js";
+import { authorizeTeam, createInvite, emailSeenHash, EMAIL_CODES_PER_USER_PER_DAY, hashEmail, MAX_TEAMS_PER_USER, MEMBERS_PER_TRIAL_TEAM, TEAMS_PER_USER_PER_DAY, TRIAL_DAYS, verifiedEmailHash } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { connection } from "../src/data/client.js";
 import { REGION, accountPartitions, fakeDb, fakeMailer, unusedDeleteUser, unusedDeletionLog } from "./helpers.js";
@@ -725,6 +725,78 @@ describe("two-step sign-in", () => {
       expect(mails.sent).toEqual([]);
       expect(counts[BusinessMetric.SecurityNotices]).toBeUndefined();
       expect(counts[BusinessMetric.SecurityNoticeFailures]).toBeUndefined();
+      // Nor marks one sent, so the same change made directly isn't kept quiet
+      expect(table.get(`USER#${OWNER}`, "NOTICE#passwordSet")).toBeUndefined();
+      expect(table.get(`USER#${OWNER}`, "NOTICE#twoStepOn")).toBeUndefined();
+    });
+
+    // supply-checkout-8jc.28: the CloudTrail notices function skips a kind marked in the last NOTICE_DEDUPE_MS
+    it("marks each notice's kind sent once SES has taken it, so CloudTrail's copy of the change isn't emailed again", async () => {
+      expect(await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).toMatchObject({ status: 204 });
+      expect(table.get(`USER#${OWNER}`, "NOTICE#passwordSet")).toEqual({ PK: `USER#${OWNER}`, SK: "NOTICE#passwordSet", noticeSentAt: at() });
+      signOutFailures = 3;
+      expect((await call("POST", "/me/mfa/totp/verify", { body: { code: "654321" } })).status).toBe(503);
+      expect(table.get(`USER#${OWNER}`, "NOTICE#twoStepOn")).toEqual({ PK: `USER#${OWNER}`, SK: "NOTICE#twoStepOn", noticeSentAt: at() });
+    });
+
+    it("doesn't mark a notice that wasn't sent, so CloudTrail's copy of the change sends it", async () => {
+      mails.state.fail = "SendingPausedException";
+      expect(await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).toMatchObject({ status: 204 });
+      expect(table.get(`USER#${OWNER}`, "NOTICE#passwordSet")).toBeUndefined();
+    });
+
+    it("still sends the notice when the kind can't be marked, and logs it without the address", async () => {
+      table.failingUpdates = (input) => JSON.stringify(input.ExpressionAttributeNames).includes("noticeSentAt");
+      expect(await call("POST", "/me/password", { body: { password: "Correct-Horse-9" } })).toEqual({ status: 204, body: undefined });
+      expect(mails.sent.map((m) => m.input.kind)).toEqual(["passwordSet"]);
+      expect(logs).toContainEqual(["Security notice not marked", { userId: OWNER, kind: "passwordSet", code: "ProvisionedThroughputExceededException" }]);
+      expect(JSON.stringify(logs)).not.toContain("owner@");
+    });
+  });
+
+  // supply-checkout-8jc.29: the address an email change is told to
+  describe("the account's address for security notices", () => {
+    it("is recorded on /me the first time the account has a verified address, and never replaced there", async () => {
+      expect((await call("GET", "/me")).status).toBe(200);
+      expect(table.get(`USER#${OWNER}`, "NOTICE_ADDRESS")).toMatchObject({ noticeAddress: "owner@example.com", noticeAddressAt: new Date(now).toISOString() });
+      // Someone who changed the email and loads the app can't move it: only the notices function does, after telling the old address
+      USERS[OWNER] = { ...(USERS[OWNER] as CognitoUser), email: "mallory@example.com" };
+      try {
+        expect((await call("GET", "/me")).status).toBe(200);
+      } finally {
+        USERS[OWNER] = { ...(USERS[OWNER] as CognitoUser), email: "owner@example.com" };
+      }
+      expect(table.get(`USER#${OWNER}`, "NOTICE_ADDRESS")).toMatchObject({ noticeAddress: "owner@example.com" });
+      // Normalized, as the notices function compares it
+      expect((await call("GET", "/me", { user: PAT })).status).toBe(200);
+      expect(table.get(`USER#${PAT}`, "NOTICE_ADDRESS")).toMatchObject({ noticeAddress: "pat@example.com" });
+    });
+
+    it("is recorded with a hash of Cognito's own address as it was, which is what the notices function compares", async () => {
+      expect((await call("GET", "/me", { user: PAT })).status).toBe(200);
+      expect(table.get(`USER#${PAT}`, "NOTICE_ADDRESS")).toMatchObject({ noticeAddress: "pat@example.com", noticeSeenHash: emailSeenHash("Pat@Example.com") });
+    });
+
+    // supply-checkout-8jc.28 review: deleting an account deletes its rows before its Cognito user, so a /me
+    // in between mustn't put an address back
+    it("isn't recorded for an account being deleted", async () => {
+      table.put({ PK: `USER#${OWNER}`, SK: "DELETING", type: "accountDeletion", userId: OWNER });
+      expect((await call("GET", "/me")).status).toBe(200);
+      expect(table.get(`USER#${OWNER}`, "NOTICE_ADDRESS")).toBeUndefined();
+    });
+
+    it("isn't recorded for an unverified address", async () => {
+      expect((await call("GET", "/me", { user: UNVERIFIED })).status).toBe(200);
+      expect(table.get(`USER#${UNVERIFIED}`, "NOTICE_ADDRESS")).toBeUndefined();
+    });
+
+    it("doesn't fail /me when it can't be recorded", async () => {
+      table.beforeTransactWrite = () => {
+        throw Object.assign(new Error("Throughput exceeded"), { name: "ProvisionedThroughputExceededException" });
+      };
+      expect((await call("GET", "/me")).status).toBe(200);
+      expect(logs).toContainEqual(["Notice address not recorded", { userId: OWNER, code: "ProvisionedThroughputExceededException" }]);
+      expect(JSON.stringify(logs)).not.toContain("owner@");
     });
   });
 

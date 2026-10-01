@@ -114,6 +114,8 @@ export function addSupplyCheckout(app: App, config: DeploymentConfig): SupplyChe
   const email = new EmailStack(app, config, config.primaryRegion);
   email.addStackDependency(regions[config.primaryRegion]?.data as DataStack);
   email.addStackDependency(domain[config.primaryRegion] as DomainStack);
+  // The security notices rule and function name the app pool (supply-checkout-8jc.28)
+  email.addStackDependency(identity);
   // CloudFront's web ACL and certificate must be in GLOBAL_SERVICES_REGION
   const web = new WebStack(app, config, GLOBAL_SERVICES_REGION);
   for (const { data } of Object.values(regions)) web.addStackDependency(data);

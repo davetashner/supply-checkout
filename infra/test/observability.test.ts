@@ -96,6 +96,7 @@ const ALARM_IDS = [
   "database-throttled",
   "sign-out-not-revoking",
   "security-notices-failing",
+  "security-notices-dropped",
   "imports-stuck",
   "email-verification-not-saved",
   "email-codes-failing",

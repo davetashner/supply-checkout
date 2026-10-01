@@ -1,6 +1,7 @@
 // Cognito's admin API, signed with the Lambda's role (IAM): AdminUpdateUserAttributes
-// for the email_verified trigger, and ListUsers and AdminLinkProviderForUser for the
-// account-linking trigger. Each role may call only its own actions, and only on the
+// for the email_verified trigger, ListUsers and AdminLinkProviderForUser for the
+// account-linking trigger (and cognito-accounts.ts builds the security notices
+// function's lookup on cognitoRequest). Each role may call only its own actions, and only on the
 // environment's user pool (identity stack). The endpoint is the regional Cognito
 // endpoint for the Lambda's own region, which is the pool's region: the triggers run
 // beside the pool.
@@ -93,7 +94,7 @@ function updateWith(call: ReturnType<typeof cognitoRequest>): UpdateUserAttribut
   };
 }
 
-interface ListedUser {
+export interface ListedUser {
   readonly Username?: unknown;
   readonly UserStatus?: unknown;
   readonly Enabled?: unknown;

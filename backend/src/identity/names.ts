@@ -68,3 +68,22 @@ export const DOWNGRADE_PENDING_ATTRIBUTE = `custom:${DOWNGRADE_PENDING}`;
  * failure log names no user yet an operator can find them.
  */
 export const LOG_CORRELATION_KEY_ENV = "LOG_CORRELATION_KEY";
+
+/**
+ * The Cognito calls, recorded by CloudTrail, that the security notices
+ * function tells the account about (supply-checkout-8jc.28, 8jc.29), and the
+ * notice each sends. A user's own access token can make each of them directly
+ * (the web client has the aws.cognito.signin.user.admin scope), not only
+ * through the account API. The identity rule in the email stack matches these
+ * names on the app pool.
+ */
+export const SECURITY_NOTICE_EVENTS = {
+  ChangePassword: "passwordSet",
+  VerifySoftwareToken: "twoStepOn",
+  SetUserMFAPreference: "twoStepOn",
+  UpdateUserAttributes: "emailChanged",
+  VerifyUserAttribute: "emailChanged",
+} as const;
+
+/** The security notices function's environment: the app pool it looks users up in. */
+export const SECURITY_NOTICES_ENV = { userPoolId: "USER_POOL_ID" } as const;

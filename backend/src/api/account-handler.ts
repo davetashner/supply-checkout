@@ -121,13 +121,14 @@
 // from the request. Best effort: the change stands if the email isn't sent,
 // which is logged with the user ID, the kind and the error's name only, and
 // counted (SecurityNoticeFailures). The send waits at most NOTICE_TIMEOUT_MS.
-// Only changes made through these routes are noticed: the same changes made
-// with direct Cognito calls and the user's own token (ChangePassword,
-// AssociateSoftwareToken, VerifySoftwareToken and SetUserMFAPreference, or
-// UpdateUserAttributes and VerifyUserAttribute for the email) send nothing,
-// and someone who changes the email first gets the notice at their own
-// address. Detecting those, and telling the old address of an email change,
-// are tracked as follow-ups.
+// The same changes made with direct Cognito calls and the user's own token
+// (ChangePassword, VerifySoftwareToken and SetUserMFAPreference), and email
+// changes (UpdateUserAttributes and VerifyUserAttribute), are told by the
+// security notices function from CloudTrail (identity/security-notices-handler.ts,
+// supply-checkout-8jc.28, 8jc.29). So that a change made here isn't emailed
+// twice, these routes mark its kind sent once SES has taken the notice
+// (markNotice; one that wasn't sent is left to that function), and /me records the account's first verified address, which
+// an email change is told to (rememberNoticeAddress).
 //
 // Seats (supply-checkout-l50): after a membership change commits (an invite
 // accepted, a role changed, a member removed or leaving, an account deleted,
@@ -175,6 +176,10 @@ import {
   listInvites,
   listInvitesForEmail,
   listTeamsForUser,
+  markNoticeSent,
+  emailSeenHash,
+  noticeAddress,
+  recordNoticeAddress,
   hasEnded,
   isReadOnlyForBilling,
   liveComp,
@@ -407,7 +412,11 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const user = await cognitoUser(event, userId);
     const email = verifiedEmail(user);
     const own = dbFor({ userId, invitee: email && hashEmail(email) });
-    const [rows, invites] = await Promise.all([listTeamsForUser(own, userId), email ? listInvitesForEmail(own, email, new Date(now())) : []]);
+    const [rows, invites] = await Promise.all([
+      listTeamsForUser(own, userId),
+      email ? listInvitesForEmail(own, email, new Date(now())) : [],
+      email ? rememberNoticeAddress(own, userId, email, user.email ?? email) : undefined,
+    ]);
     // Each team's details on a session for that team, after the membership
     // check: a stale switcher row (a removed member) shows nothing. Capped, so
     // one request never needs more role sessions than that.
@@ -452,6 +461,27 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
       if (member && member.email !== email) await setOwnMemberEmail(db, ctx, email);
     } catch (error) {
       obs.logger.warn("Member email not updated", { teamId: ctx.teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+    }
+  }
+
+  /**
+   * Records the caller's verified address as the one an email change is told
+   * to (NOTICE_ADDRESS, data/security-notices.ts), the first time there is
+   * one. Never replaces it: after an email change, only the security notices
+   * function moves it, once it has told the old address, so someone who
+   * changed the email and then loads the app can't, and never for an account
+   * being deleted (recordNoticeAddress checks its DELETING mark in the same
+   * transaction, so a /me racing a deletion can't leave an address behind).
+   * Also records Cognito's own address as it was (emailSeenHash), which is
+   * what the notices function compares. Reads first, so an
+   * account that has one costs no write. Best effort: a failure is logged
+   * (the user ID and error name only) and /me goes on.
+   */
+  async function rememberNoticeAddress(db: ReturnType<DbForAccount>, userId: string, email: string, cognitoEmail: string): Promise<void> {
+    try {
+      if (!(await noticeAddress(db, userId))) await recordNoticeAddress(db, userId, email, emailSeenHash(cognitoEmail), new Date(now()));
+    } catch (error) {
+      obs.logger.warn("Notice address not recorded", { userId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
     }
   }
 
@@ -744,12 +774,30 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
         }),
       ]);
       obs.count(BusinessMetric.SecurityNotices, 1, { kind });
+      // Only once it's sent: a notice that didn't go out leaves the CloudTrail copy to send it
+      await markNotice(userId, kind);
     } catch (error) {
       const code = error instanceof EmailNotSentError ? error.code : ((error as { name?: string } | null)?.name ?? "Unknown");
       obs.logger.warn("Security notice not sent", { userId, kind, code });
       obs.count(BusinessMetric.SecurityNoticeFailures, 1, { kind, reason: to ? "not_sent" : "no_address" });
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Marks a notice of `kind` as sent, once SES has taken it, so the security
+   * notices function doesn't email it again when CloudTrail's record of the
+   * call reaches it (see "Security notices" at the top). One that wasn't sent
+   * isn't marked, so that copy sends it. Never throws: without the mark the
+   * account may get two emails, which is better than failing a change that's
+   * made.
+   */
+  async function markNotice(userId: string, kind: AccountNotice): Promise<void> {
+    try {
+      await markNoticeSent(dbFor({ userId }), userId, kind, new Date(now()));
+    } catch (error) {
+      obs.logger.warn("Security notice not marked", { userId, kind, code: (error as { name?: string } | null)?.name ?? "Unknown" });
     }
   }
 

@@ -5,7 +5,9 @@ import { describe, expect, it } from "vitest";
 import { EMAIL_ENV } from "../../backend/src/email/names.js";
 import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
 import { emailSettings, grantSendEmail } from "../lib/email.js";
+import { SECURITY_NOTICE_EVENTS } from "../../backend/src/identity/names.js";
 import { EmailStack } from "../lib/stacks/email-stack.js";
+import { EVENT_PATTERN_LIMIT } from "../lib/stacks/observability-stack.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
 
 // Region names come from lib/config.ts only (ADR 0010)
@@ -20,8 +22,10 @@ function build(overrides: Partial<DeploymentConfig> = {}) {
 
 type Resource = { Properties: Record<string, unknown> };
 const resources = (t: Template, type: string) => Object.entries(t.findResources(type)) as [string, Resource][];
-const statements = (t: Template) =>
-  resources(t, "AWS::IAM::Policy").flatMap(([, p]) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
+const statements = (t: Template, rolePrefix?: string) =>
+  resources(t, "AWS::IAM::Policy")
+    .filter(([, p]) => !rolePrefix || JSON.stringify(p.Properties.Roles).includes(`"${rolePrefix}`))
+    .flatMap(([, p]) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
 
 describe("settings", () => {
   it("sends from noreply at the env domain, links to the app, and uses SES in the primary region", () => {
@@ -110,7 +114,7 @@ describe("email stack", () => {
   });
 
   it("lets the function read only a team's home region and write only an invite's failure fields, and nothing in SES", () => {
-    const all = statements(email());
+    const all = statements(email(), "EventsFunctionRole");
     const dynamo = all.filter((s) => JSON.stringify(s.Action).includes("dynamodb:"));
     expect(dynamo).toEqual([
       expect.objectContaining({
@@ -167,6 +171,107 @@ describe("email stack", () => {
     const app = new App();
     expect(() => new EmailStack(app, config, WEST)).toThrow("primary region only");
   });
+
+  // supply-checkout-8jc.28, 8jc.29
+  describe("security notices", () => {
+    const rule = (t: Template) => {
+      const [[, r]] = resources(t, "AWS::Events::Rule").filter(([, x]) => x.Properties.Name === "supply-checkout-prod-security-notices") as [[string, Resource]];
+      return r.Properties;
+    };
+    const noticesFn = (t: Template) =>
+      resources(t, "AWS::Lambda::Function").find(([, r]) => JSON.stringify(r.Properties.Environment ?? {}).includes("USER_POOL_ID")) as [string, Resource];
+
+    it("sends the app pool's password, two-step and email calls, from any client, to the function", () => {
+      const t = email();
+      const props = rule(t);
+      const pattern = props.EventPattern as { account: unknown[]; source: string[]; "detail-type": string[]; detail: Record<string, unknown> };
+      // This account's events only
+      expect(pattern.account).toEqual([{ Ref: "AWS::AccountId" }]);
+      expect(pattern.source).toEqual(["aws.cognito-idp"]);
+      expect(pattern["detail-type"]).toEqual(["AWS API Call via CloudTrail"]);
+      expect(pattern.detail.eventSource).toEqual(["cognito-idp.amazonaws.com"]);
+      expect(pattern.detail.eventName).toEqual(Object.keys(SECURITY_NOTICE_EVENTS));
+      expect(pattern.detail.eventName).toEqual(["ChangePassword", "VerifySoftwareToken", "SetUserMFAPreference", "UpdateUserAttributes", "VerifyUserAttribute"]);
+      // The app pool, wherever CloudTrail puts its ID, or none named; never the operator pool's parameter
+      const or = pattern.detail.$or as Record<string, { userPoolId: unknown[] }>[];
+      expect(or).toHaveLength(3);
+      expect(JSON.stringify(or)).toMatch(/SsmParameterValuesupplycheckoutprodidentityuserpoolid/);
+      expect(JSON.stringify(props)).not.toMatch(/opsuserpool/i);
+      expect(or[2]).toEqual({ requestParameters: { userPoolId: [{ exists: false }] }, additionalEventData: { userPoolId: [{ exists: false }] } });
+      // No caller filter: a direct call with the user's own token is the point
+      expect(JSON.stringify(pattern)).not.toContain("userIdentity");
+      expect(JSON.stringify(pattern).length).toBeLessThan(EVENT_PATTERN_LIMIT * 0.5);
+      const [fnId] = noticesFn(t);
+      const [[dlqId]] = resources(t, "AWS::SQS::Queue").filter(([, q]) => q.Properties.QueueName === "supply-checkout-prod-security-notices-dlq") as [[string, Resource]];
+      expect(props.Targets).toEqual([
+        expect.objectContaining({
+          Arn: { "Fn::GetAtt": [fnId, "Arn"] },
+          RetryPolicy: { MaximumRetryAttempts: 4, MaximumEventAgeInSeconds: 6 * 3600 },
+          DeadLetterConfig: { Arn: { "Fn::GetAtt": [dlqId, "Arn"] } },
+        }),
+      ]);
+      t.hasResourceProperties("AWS::Lambda::Permission", { Action: "lambda:InvokeFunction", Principal: "events.amazonaws.com", FunctionName: { "Fn::GetAtt": [fnId, "Arn"] } });
+    });
+
+    it("runs the function on Node.js 24 with the app pool, the table and the mailer's settings, retrying twice", () => {
+      const t = email();
+      const [, fn] = noticesFn(t);
+      expect(fn.Properties).toMatchObject({ Runtime: "nodejs24.x", Architectures: ["arm64"], Timeout: 30 });
+      const vars = (fn.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+      expect(vars).toMatchObject({ TABLE_NAME: "supply-checkout-prod-app", [EMAIL_ENV.fromAddress]: "noreply@supplycheckout.com", [EMAIL_ENV.appUrl]: "https://app.supplycheckout.com" });
+      expect(JSON.stringify(vars.USER_POOL_ID)).toMatch(/SsmParameterValuesupplycheckoutprodidentityuserpoolid/);
+      t.hasResourceProperties("AWS::Lambda::EventInvokeConfig", { FunctionName: { Ref: Match.anyValue() }, MaximumRetryAttempts: 2 });
+      // What Lambda and EventBridge gave up on waits to be replayed, encrypted
+      const [[dlqId, dlq]] = resources(t, "AWS::SQS::Queue").filter(([, q]) => q.Properties.QueueName === "supply-checkout-prod-security-notices-dlq") as [[string, Resource]];
+      expect(dlq.Properties).toMatchObject({ SqsManagedSseEnabled: true, MessageRetentionPeriod: 14 * 86400 });
+      expect(fn.Properties.DeadLetterConfig).toEqual({ TargetArn: { "Fn::GetAtt": [dlqId, "Arn"] } });
+      t.hasResourceProperties("AWS::SQS::QueuePolicy", {
+        Queues: [{ Ref: dlqId }],
+        PolicyDocument: Match.objectLike({ Statement: Match.arrayWith([Match.objectLike({ Action: "sqs:SendMessage", Principal: { Service: "events.amazonaws.com" } })]) }),
+      });
+    });
+
+    it("lets the function look users up in the app pool, send only the app's email, and touch only the notices' attributes", () => {
+      const all = statements(email(), "SecurityNoticesRole");
+      const byAction = (prefix: string) => all.filter((s) => JSON.stringify(s.Action).includes(prefix));
+      expect(byAction("cognito-idp:")).toEqual([
+        expect.objectContaining({ Sid: "FindAppUsers", Action: ["cognito-idp:ListUsers", "cognito-idp:AdminGetUser"], Resource: expect.objectContaining({ Ref: expect.stringMatching(/userpoolarn/i) }) }),
+      ]);
+      expect(byAction("dynamodb:")).toEqual([
+        expect.objectContaining({
+          Sid: "ReadNoticeRecords",
+          Action: "dynamodb:GetItem",
+          Condition: {
+            "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash"] },
+            StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+          },
+        }),
+        expect.objectContaining({
+          Sid: "WriteNoticeRecords",
+          Action: ["dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"],
+          Condition: {
+            "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+            "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "noticeSentAt", "noticeFor", "noticeAddress", "noticeAddressAt", "noticeSeenHash"] },
+            StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+          },
+        }),
+      ]);
+      // No TTL attribute: it can't make DynamoDB delete a user's rows
+      expect(JSON.stringify(byAction("dynamodb:"))).not.toContain("expiresAt");
+      expect(byAction("ses:")).toEqual([expect.objectContaining({ Sid: "SendAppEmail", Action: "ses:SendEmail", Condition: { StringEquals: { "ses:FromAddress": "noreply@supplycheckout.com" } } })]);
+      // Only X-Ray's (every function traces, observability/defaults.ts) is on "*"
+      for (const s of all) if (!JSON.stringify(s.Action).includes("xray:")) expect(JSON.stringify(s.Resource)).not.toBe('"*"');
+      expect(all.find((s) => s.Sid === "TableKeyThroughDynamoDb")?.Condition).toMatchObject({ StringEquals: { "kms:ViaService": expect.anything() } });
+      // Nothing else: no Put, Delete, Query or Scan, no other Cognito action
+      expect(JSON.stringify(all)).not.toMatch(/dynamodb:(PutItem|DeleteItem|Query|Scan|BatchWriteItem)|cognito-idp:Admin(?!GetUser)|"cognito-idp:\*"/);
+    });
+
+    it("deploys after the identity stack, whose pool it names", () => {
+      const { stacks } = build();
+      expect(stacks.email.dependencies.map((d) => d.stackName)).toContain(stacks.identity.stackName);
+    });
+  });
 });
 
 describe("grantSendEmail", () => {
@@ -207,7 +312,7 @@ describe("grantSendEmail", () => {
     });
   });
 
-  it("is given only to the account function, which sends invites, and the billing worker, which emails owners about billing", () => {
+  it("is given only to the account function, which sends invites, the billing worker, which emails owners about billing, and the security notices function", () => {
     const { app, stacks } = build();
     void app;
     for (const stack of stacks.all) {
@@ -216,7 +321,12 @@ describe("grantSendEmail", () => {
         .filter(([, p]) => JSON.stringify(p).includes("ses:SendEmail"))
         .map(([id]) => id);
       // In every region's api stack, the account function's role; nowhere else
-      expect(senders, stack.stackName).toEqual(stack.stackName.endsWith("-api") ? [expect.stringMatching(/^AccountFunctionRole/), expect.stringMatching(/^BillingWorkerFunctionRole/)] : []);
+      const expected = stack.stackName.endsWith("-api")
+        ? [expect.stringMatching(/^AccountFunctionRole/), expect.stringMatching(/^BillingWorkerFunctionRole/)]
+        : stack.stackName.endsWith("-email")
+          ? [expect.stringMatching(/^SecurityNoticesRole/)]
+          : [];
+      expect(senders, stack.stackName).toEqual(expected);
       // No other SES action anywhere (no raw or templated sends)
       expect(JSON.stringify(policies)).not.toMatch(/ses:Send(Raw|Templated|Bulk)/);
     }

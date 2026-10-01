@@ -543,6 +543,9 @@ describe("deleting an account", () => {
     // The proven address and the last code's address (supply-checkout-ytr2, supply-checkout-cjw7) go too
     table.put({ PK: `USER#${PAT}`, SK: "VERIFIED_EMAIL", type: "verifiedEmail", verifiedEmailHash: "a".repeat(64), verifiedAt: new Date(NOW).toISOString() });
     table.put({ PK: `USER#${PAT}`, SK: "EMAIL_CODE_SENT", type: "emailCodeSent", sentEmailHash: "b".repeat(64), sentAt: new Date(NOW).toISOString(), expiresAt: NOW / 1000 + 86400 });
+    // And the security notices' records, which hold the account's address (supply-checkout-8jc.28, 8jc.29)
+    table.put({ PK: `USER#${PAT}`, SK: "NOTICE_ADDRESS", noticeAddress: "pat@example.com", noticeAddressAt: new Date(NOW).toISOString() });
+    table.put({ PK: `USER#${PAT}`, SK: "NOTICE#passwordSet", noticeSentAt: new Date(NOW).toISOString() });
 
     expect(await deleteAccount(PAT, " delete ")).toEqual({ status: 204, body: undefined });
     expect(deleted).toEqual([PAT]);
@@ -567,7 +570,7 @@ describe("deleting an account", () => {
     expect(counts).toMatchObject({ [BusinessMetric.AccountsDeleted]: 1, [BusinessMetric.TeamsClosed]: 1 });
     // The deletion record: Pat's ID, when, and the team the deletion closed. No address or name
     expect(deletions.records).toEqual([{ kind: "user", id: PAT, deletedAt: new Date(NOW).toISOString(), teamsClosed: ["team-solo"] }]);
-    expect(logs).toContainEqual(["info", "Account deleted", { userId: PAT, teamsLeft: 3, teamsClosed: 1, invitesDeleted: 2, rowsDeleted: 3 }]);
+    expect(logs).toContainEqual(["info", "Account deleted", { userId: PAT, teamsLeft: 3, teamsClosed: 1, invitesDeleted: 2, rowsDeleted: 5 }]);
     // No addresses or team names in any log line
     expect(JSON.stringify(logs)).not.toMatch(/@|Team /);
     // Every session was for Pat, and reached only Pat's teams and the teams that invited Pat's verified address

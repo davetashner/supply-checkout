@@ -262,6 +262,7 @@
     { "name": "Social sign-in failing", "journeys": ["J0"] },
     { "name": "Sign-out not revoking", "journeys": ["J0"], "infra": "sign-out-not-revoking" },
     { "name": "Security notices failing", "journeys": ["J0"], "infra": "security-notices-failing" },
+    { "name": "Security notices dropped", "journeys": ["J0"], "infra": "security-notices-dropped" },
 
     { "name": "Sign-up canary failing", "journeys": ["J1"] },
     { "name": "No sign-ups", "journeys": ["J1"] },
