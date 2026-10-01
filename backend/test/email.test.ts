@@ -159,8 +159,12 @@ describe("templates", () => {
     expect(email.text).toContain("An owner of Echo Cleaning reopened the team, so it won't be deleted.");
     expect(email.text).toContain("Invites that were cancelled when it closed stay cancelled");
     // What happened to billing (supply-checkout-8jc.39). It's sent before the billing worker resyncs the subscription, so it covers both outcomes
-    expect(email.text).toContain("If closing the team set its subscription to end, we're resuming it, so it renews as before. If its subscription had already ended, an owner can subscribe again in the app.");
-    expect(email.html).toContain("so it renews as before.");
+    // Never a promise it renews: a resume can fail or be left for a person, so the owner is told where to check (the app's note, then Billing)
+    expect(email.text).toContain(
+      "If closing the team set its subscription to end, we'll set it to renew again. If the app still says the subscription will end, an owner can renew it from Billing. If its subscription had already ended, an owner can subscribe again in the app.",
+    );
+    expect(email.text).not.toMatch(/resuming it|renews as before/);
+    expect(email.html).toContain("an owner can renew it from Billing.");
     const hostile = renderEmail({ kind: "teamReopened", teamName: "<b>Pay</b> at https://evil.example/pay" }, { appUrl: APP });
     for (const part of [hostile.subject, hostile.html, hostile.text]) expect(part).not.toMatch(/evil\.example|https:\/\/evil/);
     expect(hostile.html).not.toContain("<b>");
