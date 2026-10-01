@@ -735,7 +735,7 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
         };
       }
       return {
-        result: { ...base, reason: "uncount", stockDelta: -current },
+        result: { ...base, reason: "uncount", stockDelta: 0 - current },
         writes: [
           {
             Update: {
@@ -748,7 +748,7 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
               ExpressionAttributeValues: { ":current": current, ":one": 1 },
             },
           },
-          movementPut(db, ctx, { ...movement, delta: -current, tracked: true }),
+          movementPut(db, ctx, { ...movement, delta: 0 - current, tracked: true }),
         ],
       };
     }
