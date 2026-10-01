@@ -4,12 +4,13 @@
 import { API_ENV } from "../api/routes.js";
 import { BILLING_ENV, OPS_STRIPE_ENV, STRIPE_ENV } from "../billing/names.js";
 import { sqsSeatSyncQueue } from "../billing/seat-queue.js";
-import { cachedStripe, createStripe, secretsManagerReader, stripeModeFrom } from "../billing/stripe.js";
+import { createStripe, secretsManagerReader, stripeModeFrom } from "../billing/stripe.js";
 import { createObservability, withObservability } from "../observability/index.js";
 import { operatorDirectory } from "./cognito.js";
 import { createOpsHandler } from "./ops-handler.js";
 import { opsScopedDbs } from "./ops-db.js";
 import { lambdaReopener } from "./reopen-client.js";
+import { opsStripeClient } from "./stripe-detail.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -29,7 +30,7 @@ export const handler = withObservability(
     seats: sqsSeatSyncQueue(required(BILLING_ENV.seatQueueUrl)),
     // The ops restricted key, never the billing functions' (stripe-detail.ts): read on first use, so a
     // missing secret only makes a team's Stripe detail unavailable
-    stripe: cachedStripe({ secretId: required(OPS_STRIPE_ENV.secretId), mode: stripeModeFrom(process.env[STRIPE_ENV.mode]), read: secretsManagerReader(process.env.AWS_REGION), create: createStripe }),
+    stripe: opsStripeClient({ secretId: required(OPS_STRIPE_ENV.secretId), mode: stripeModeFrom(process.env[STRIPE_ENV.mode]), read: secretsManagerReader(process.env.AWS_REGION), create: createStripe }),
     issuerUrl,
     clientId: required(API_ENV.opsClientId),
     obs,

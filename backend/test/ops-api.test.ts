@@ -38,7 +38,7 @@ import { MemoryTable } from "./memory-table.js";
 import { createReopenHandler, type ReopenRequest } from "../src/operator/reopen-handler.js";
 import { opsPolicy, reopenPolicy } from "./ops-policy.js";
 import Stripe from "stripe";
-import { OPS_INVOICE_PAGE, OPS_SUBSCRIPTION_PAGE, type OpsInvoiceLike, type OpsStripe, type OpsSubscriptionLike } from "../src/operator/stripe-detail.js";
+import { OPS_INVOICE_PAGE, OPS_SUBSCRIPTION_PAGE, type OpsInvoiceLike, type OpsStripe, opsStripeClient, type OpsSubscriptionLike } from "../src/operator/stripe-detail.js";
 
 const OPS_ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_ops";
 const CUSTOMER_ISSUER = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_pool";
@@ -584,6 +584,34 @@ describe("a team's Stripe subscription and invoices (supply-checkout-6uw.4)", ()
     expect(res.body.stripe).toEqual({ error: "unavailable" });
     expect(logged()).toContain("Stripe detail unavailable");
     for (const leak of ["rk_test_SECRET", "payer@example.com", "lacks rights", "can't find"]) expect(logged()).not.toContain(leak);
+  });
+
+  // Built from pieces, so the public-safety check doesn't take them for real keys
+  const FULL_KEY = `sk_test_${"F".repeat(24)}`;
+  const LIVE_RESTRICTED = `rk_live_${"L".repeat(24)}`;
+  const RESTRICTED = `rk_test_${"R".repeat(24)}`;
+  it("uses only a restricted key: a full secret key stored by mistake makes the detail unavailable, and is never logged", async () => {
+    withCustomer();
+    stripeSubs = [sub()];
+    const created: string[] = [];
+    const client = (value: string) => opsStripeClient({ secretId: "supply-checkout/prod/stripe/test-ops-restricted-key", mode: "test", read: async () => value, create: (key) => (created.push(key), fakeOpsStripe) });
+    opsStripe = client(FULL_KEY);
+    const refused = await call("GET", `/ops/teams/${teamA}`);
+    expect(refused.status).toBe(200);
+    expect(refused.body.stripe).toEqual({ error: "unavailable" });
+    expect(created).toEqual([]);
+    expect(stripeCalls).toEqual([]);
+    expect(JSON.stringify(logs)).not.toContain("FFFFFFFF");
+    expect(JSON.stringify(refused.body)).not.toContain("FFFFFFFF");
+    // A live key where test mode is configured is refused too
+    opsStripe = client(LIVE_RESTRICTED);
+    expect((await call("GET", `/ops/teams/${teamA}`)).body.stripe).toEqual({ error: "unavailable" });
+    expect(created).toEqual([]);
+    // A restricted key of the configured mode works
+    opsStripe = client(RESTRICTED);
+    expect((await call("GET", `/ops/teams/${teamA}`)).body.stripe.subscription).toMatchObject({ id: "sub_1" });
+    expect(created).toEqual([RESTRICTED]);
+    expect(JSON.stringify(logs)).not.toContain("RRRRRRRR");
   });
 
   it("never calls Stripe for a customer ID that isn't one", async () => {

@@ -30,9 +30,10 @@ export const stripeWebhookSecretName = (envName: string, mode: StripeMode) => `s
 
 /**
  * The Secrets Manager secret holding the ops function's own Stripe restricted
- * key (`rk_<mode>_…`, ADR 0015 §2, supply-checkout-6uw.4): read customers,
- * subscriptions and invoices, write coupons and promotion codes, nothing
- * else. Separate from stripeSecretName so the ops function never holds the
+ * key (`rk_<mode>_…`, ADR 0015 §2, supply-checkout-6uw.4): Subscriptions:
+ * Read and Invoices: Read, nothing else. Promo campaigns
+ * (supply-checkout-8jc.8) add Coupons and Promotion Codes: Write when they
+ * ship. Separate from stripeSecretName so the ops function never holds the
  * billing functions' full key, and only the ops function may read it. The
  * owner creates the key in the Stripe Dashboard and stores it here
  * (docs/infrastructure.md, "Operators"); nothing in the repo does.

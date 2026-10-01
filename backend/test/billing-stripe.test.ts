@@ -12,6 +12,8 @@ import {
   keyFromSecret,
   keyMode,
   requireMode,
+  requireRestricted,
+  secretsManagerClientConfig,
   secretsManagerReader,
   STRIPE_CLIENT_TTL_MS,
   stripeErrorFields,
@@ -128,7 +130,28 @@ describe("cachedStripe", () => {
   });
 });
 
+describe("requireRestricted", () => {
+  it("takes a restricted key and refuses a full secret key without naming it", () => {
+    expect(requireRestricted(RESTRICTED_TEST_KEY)).toBe(RESTRICTED_TEST_KEY);
+    expect(() => requireRestricted(TEST_KEY)).toThrow("not a restricted key");
+    try {
+      requireRestricted(TEST_KEY);
+    } catch (error) {
+      expect(String((error as Error).message)).not.toContain(TEST_KEY.slice(8));
+    }
+  });
+});
+
 describe("secretsManagerReader", () => {
+  // supply-checkout-6uw.4 review: a hung read mustn't hold cachedSecret's shared pending read
+  it("bounds every read: 1 second to connect, 3 to answer (failing the call, not only warning), 2 tries", async () => {
+    expect(secretsManagerClientConfig("test-local-1")).toEqual({ region: "test-local-1", maxAttempts: 2, requestHandler: { connectionTimeout: 1_000, requestTimeout: 3_000, throwOnRequestTimeout: true } });
+    const client = new SecretsManagerClient(secretsManagerClientConfig("test-local-1", { accessKeyId: "a", secretAccessKey: "b" }));
+    const handler = client.config.requestHandler as unknown as { configProvider: Promise<Record<string, unknown>> };
+    expect(await handler.configProvider).toMatchObject({ connectionTimeout: 1_000, requestTimeout: 3_000, throwOnRequestTimeout: true });
+    client.destroy();
+  });
+
   it("reads the secret's string by ID", async () => {
     const send = vi.spyOn(SecretsManagerClient.prototype, "send").mockImplementation(async (command: unknown) => {
       expect(command).toBeInstanceOf(GetSecretValueCommand);

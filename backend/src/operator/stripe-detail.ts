@@ -4,9 +4,11 @@
 // The ops function calls Stripe with its own restricted key, separate from
 // the billing functions' secret key (stripeOpsKeySecretName in
 // billing/names.ts; only the ops function's role may read it). The key is
-// limited in Stripe to reading customers, subscriptions and invoices and
-// writing coupons and promotion codes, so even a bug here can't charge,
-// refund or cancel anything.
+// limited in Stripe to Subscriptions: Read and Invoices: Read (promo
+// campaigns, supply-checkout-8jc.8, add Coupons and Promotion Codes: Write),
+// so even a bug here can't charge, refund or cancel anything. Only a
+// restricted key (`rk_`) is accepted (opsStripeClient): a full secret key
+// stored there by mistake is refused, never used.
 //
 // The customer is the one on the team's index entry (GSI3), never anything
 // from the request. Only what an operator needs comes back: IDs, statuses,
@@ -24,7 +26,7 @@
 
 import type { Observability } from "../observability/index.js";
 import { planForLookupKey } from "../billing/catalog.js";
-import { stripeErrorFields } from "../billing/stripe.js";
+import { cachedStripe, type CachedStripeOptions, requireRestricted, stripeErrorFields } from "../billing/stripe.js";
 import { iso } from "../billing/subscription.js";
 
 /** The fields of a Stripe subscription the ops detail reads. */
@@ -66,6 +68,16 @@ export interface OpsStripe {
   readonly invoices: {
     list(params: { customer: string; limit: number }): PromiseLike<{ readonly data: readonly OpsInvoiceLike[]; readonly has_more: boolean }>;
   };
+}
+
+/**
+ * The ops Stripe client, from the ops restricted key (cachedStripe): a key of
+ * the other mode, or anything but a restricted key, is refused and never
+ * reaches `create`, so the detail is unavailable rather than run on a full
+ * secret key.
+ */
+export function opsStripeClient<S>(options: CachedStripeOptions<S>): () => Promise<S> {
+  return cachedStripe({ ...options, create: (key) => options.create(requireRestricted(key)) });
 }
 
 /** How many of the customer's subscriptions are read to find the current one. */
