@@ -2,7 +2,7 @@
 // documents the app already holds and shows (both collections are loaded in full to draw
 // the lists), with the same math and labels as the screens, so an export matches them.
 import { hasStock, isEquipment, unitValue } from "./format.js";
-import { lines, lineCounts, lineCharge, totals, isEquipmentLine, equipmentCounts } from "./sheet-math.js";
+import { lines, lineCounts, lineCharge, totals, isEquipmentLine, equipmentCounts, lostCharge, lostRows } from "./sheet-math.js";
 
 // One CSV cell. Text that a spreadsheet would run as a formula (=, +, -, @, tab or return
 // first) gets a leading apostrophe, so a name a team member typed can't run in the
@@ -19,13 +19,15 @@ const statusText = s => s.status === "closed" ? "Returned" : "Checked out";
 const fixed = n => (Number(n) || 0).toFixed(2);
 
 // One sheet, as its "Download CSV" button saves it: the file that goes to the client, so
-// company equipment on loan isn't in it (ADR 0017); it isn't charged
+// company equipment on loan isn't in it (ADR 0017); it isn't charged. A charge for equipment
+// lost or broken is, as its own row.
 export function sheetCsv(s, preparedBy) {
   const t = totals(s);
   return toCsv([
     ["Client", s.client], ["Date", s.date], ["Prepared by", preparedBy], ["Status", statusText(s)], [],
     ["Item", "Barcode", "Price each", "Taken", "Returned", "Used", "Charge"],
     ...lines(s).filter(l => !isEquipmentLine(l)).map(l => { const { o, r, u, p } = lineCounts(l); return [l.name, l.code || "", fixed(p), o, r, u, fixed(lineCharge(l))]; }),
+    ...lostRows(s).map(r => [r.name, r.code || "", "", "", "", r.used, fixed(r.charge)]),
     ["Total", "", "", t.out, t.ret, t.used, fixed(t.charge)],
   ]);
 }
@@ -41,7 +43,13 @@ export function sheetsCsv(sheets, preparedBy) {
     if (!ls.length) rows.push([...head, "", "", "", "", "", "", "", s.id, ""]);
     for (const l of ls) {
       const name = l.name || "Unnamed item", code = l.code || "";
-      if (isEquipmentLine(l)) { const { o, r } = equipmentCounts(l); rows.push([...head, name, code, "", o, r, "", "", s.id, "Equipment"]); continue; }
+      if (isEquipmentLine(l)) {
+        const { o, r, lost } = equipmentCounts(l), lc = lostCharge(l);
+        rows.push([...head, name, code, "", o, r, "", "", s.id, "Equipment"]);
+        // A charge for what was lost or broken is billed, so it's a row as on the sheet
+        if (lc > 0) rows.push([...head, `${name} (lost or broken)`, code, "", "", "", lost, fixed(lc), s.id, "Equipment"]);
+        continue;
+      }
       const { o, r, u, p } = lineCounts(l);
       rows.push([...head, name, code, fixed(p), o, r, u, fixed(lineCharge(l)), s.id, "Supply"]);
     }
