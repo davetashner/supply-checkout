@@ -26,12 +26,26 @@
 //
 // Only TOTP_RECORD_ATTRIBUTES are named, and nothing is returned, which is all
 // the billing-access role's and the notices function's IAM policies allow.
+// IAM can't limit the sort key, so as defence in depth the key is checked to
+// be TOTP_ON before any call (recordKey), and each update's condition also
+// names it: neither ever creates or touches any other item.
 
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { id, keys } from "./keys.js";
+import { PK, SK, TOTP_ON_SK } from "./schema.js";
 
 const failedCondition = (error: unknown) => (error as { name?: string } | null)?.name === "ConditionalCheckFailedException";
+
+/** The record's key, checked to be TOTP_ON in the user's own partition. */
+function recordKey(userId: string) {
+  const key = keys.totpOn(id(userId, "user ID"));
+  if (key.SK !== TOTP_ON_SK || key.PK !== `USER#${userId}`) throw new Error("Not the two-step sign-in record");
+  return key;
+}
+
+/** Names and values for the condition that the item is the TOTP_ON record (or, for a new one, none yet). */
+const recordOnly = { names: { "#pk": PK, "#sk": SK }, values: { ":sk": TOTP_ON_SK } };
 
 const iso = (at: Date) => {
   if (!Number.isFinite(at.getTime())) throw new Error("Not a time");
@@ -44,11 +58,11 @@ export async function recordTotpOn(db: Db, userId: string, at: Date): Promise<bo
     await connection(db).doc.send(
       new UpdateCommand({
         TableName: db.tableName,
-        Key: keys.totpOn(id(userId, "user ID")),
+        Key: recordKey(userId),
         UpdateExpression: "SET #at = :at",
-        ConditionExpression: "attribute_not_exists(#at) OR #at < :at",
-        ExpressionAttributeNames: { "#at": "totpOnAt" },
-        ExpressionAttributeValues: { ":at": iso(at) },
+        ConditionExpression: "(attribute_not_exists(#pk) OR #sk = :sk) AND (attribute_not_exists(#at) OR #at < :at)",
+        ExpressionAttributeNames: { ...recordOnly.names, "#at": "totpOnAt" },
+        ExpressionAttributeValues: { ...recordOnly.values, ":at": iso(at) },
       }),
     );
     return true;
@@ -64,11 +78,11 @@ export async function clearTotpOn(db: Db, userId: string, offAt: Date): Promise<
     await connection(db).doc.send(
       new UpdateCommand({
         TableName: db.tableName,
-        Key: keys.totpOn(id(userId, "user ID")),
+        Key: recordKey(userId),
         UpdateExpression: "REMOVE #at",
-        ConditionExpression: "#at < :at",
-        ExpressionAttributeNames: { "#at": "totpOnAt" },
-        ExpressionAttributeValues: { ":at": iso(offAt) },
+        ConditionExpression: "#sk = :sk AND #at < :at",
+        ExpressionAttributeNames: { "#sk": SK, "#at": "totpOnAt" },
+        ExpressionAttributeValues: { ...recordOnly.values, ":at": iso(offAt) },
       }),
     );
     return true;
@@ -83,7 +97,7 @@ export async function totpOnAt(db: Db, userId: string): Promise<number | undefin
   const { Item } = await connection(db).doc.send(
     new GetCommand({
       TableName: db.tableName,
-      Key: keys.totpOn(id(userId, "user ID")),
+      Key: recordKey(userId),
       ProjectionExpression: "#at",
       ExpressionAttributeNames: { "#at": "totpOnAt" },
       ConsistentRead: true,

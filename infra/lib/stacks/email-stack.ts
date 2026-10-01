@@ -47,7 +47,8 @@ const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
  *
  * - A rule on CloudTrail's management events (the audit stack's trail) sends
  *   the app pool's ChangePassword, VerifySoftwareToken, SetUserMFAPreference,
- *   UpdateUserAttributes and VerifyUserAttribute calls (SECURITY_NOTICE_EVENTS)
+ *   AdminSetUserMFAPreference (supply-checkout-8jc.14), UpdateUserAttributes
+ *   and VerifyUserAttribute calls (SECURITY_NOTICE_EVENTS)
  *   to the security notices function. CloudTrail puts the pool ID in
  *   requestParameters or additionalEventData, so the rule matches either, and
  *   an event naming no pool too: the function looks the user up in the app

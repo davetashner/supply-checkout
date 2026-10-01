@@ -1143,6 +1143,7 @@
               "ChangePassword",
               "VerifySoftwareToken",
               "SetUserMFAPreference",
+              "AdminSetUserMFAPreference",
               "UpdateUserAttributes",
               "VerifyUserAttribute"
             ],
