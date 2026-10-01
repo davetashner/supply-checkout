@@ -39,10 +39,11 @@
 // a person deals with it (supply-checkout-8jc.37): listTeamsToPurge leaves it
 // out and purgeTeam holds it, so a subscription Stripe couldn't find (maybe
 // the same mismatch) isn't followed by deleting the team and every trace of
-// its Stripe IDs. Held teams past their deletion date aren't counted in
-// ClosedTeamsOverdue, since the set-aside gauge already keeps its own alarm
-// on for each of them; a run that can't count those teams can't tell which
-// are held, so its overdue gauge counts them.
+// its Stripe IDs. A held team past its deletion date still counts in
+// ClosedTeamsOverdue: its data is being kept past the date its owners were
+// told, so "Deletion overdue" fires for it too, and the responder clears the
+// set-aside so the purge can run. Each run also logs how many held teams are
+// past that line ("Closed teams held past their deletion date").
 //
 // Before any purging, each run ends closed teams' Stripe subscriptions
 // (supply-checkout-t0en): closing a team doesn't call Stripe, so the closure
@@ -253,22 +254,24 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
   }
 
   /**
-   * Sends the ClosedTeamsSetAside gauge and logs the first of them by ID. Returns
-   * `failed` 1 if they couldn't be counted, else 0, and `heldOverdue`, how many
-   * of them (held from the purge) are due before `overdueBefore`.
+   * Sends the ClosedTeamsSetAside gauge and logs the first of them by ID, and
+   * how many of them (held from the purge) are due before `overdueBefore`.
+   * Returns 1 if they couldn't be counted, else 0.
    */
-  async function gaugeSetAside(overdueBefore: Date): Promise<{ failed: number; heldOverdue: number }> {
+  async function gaugeSetAside(overdueBefore: Date): Promise<number> {
     let found;
     try {
       found = await listSetAsideTeams(db, MAX_LOGGED_SET_ASIDE, overdueBefore);
     } catch (error) {
       obs.logger.error("Closed teams set aside not counted", { error: errorName(error) });
-      return { failed: 1, heldOverdue: 0 };
+      return 1;
     }
     obs.gauge(BusinessMetric.ClosedTeamsSetAside, found.count);
     for (const team of found.teams) obs.logger.warn("Closed team's subscription still set aside", { teamId: team.teamId, reason: team.reason ?? "Unknown" });
     if (found.count) obs.logger.warn("Closed teams' subscriptions set aside", { count: found.count, logged: found.teams.length });
-    return { failed: 0, heldOverdue: found.overdue };
+    // Counted in ClosedTeamsOverdue like any other overdue team: held past the date the owners were told
+    if (found.overdue) obs.logger.warn("Closed teams held past their deletion date", { count: found.overdue });
+    return 0;
   }
 
   /** Deletes a purged team's Stripe customer, before any of its items go. */
@@ -287,8 +290,7 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
     const started = now();
     const overdueBefore = new Date(started - PURGE_OVERDUE_AFTER_HOURS * 3_600_000).toISOString();
     const ended = await endSubscriptions(started);
-    const setAside = await gaugeSetAside(new Date(overdueBefore));
-    const endFailures = ended + setAside.failed;
+    const endFailures = ended + (await gaugeSetAside(new Date(overdueBefore)));
     // Counted before the listing, from the same index: every overdue team is also due, and they list first
     const overdueAtStart = await countTeamsDueBefore(db, new Date(overdueBefore));
     const due = await listTeamsToPurge(db, new Date(started));
@@ -305,7 +307,7 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
           deleteStripeCustomer: (customerId) => deleteCustomer(team.teamId, customerId),
         });
         if (result.held) {
-          // Set aside since the listing: the set-aside gauge counts it from the next run
+          // Set aside since the listing (or since purgeTeam read it): the set-aside gauge counts it from the next run
           obs.logger.warn("Closed team not purged: its subscription is set aside", { teamId: team.teamId, purgeAfter: team.purgeAfter });
           continue;
         }
@@ -319,12 +321,12 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
       }
     }
     if (purged) obs.count(BusinessMetric.TeamsPurged, purged);
-    // The overdue teams at the start less those this run deleted (or found weren't due), and less
-    // those held because they're set aside (their own gauge keeps their alarm on). Not a count
-    // after the run: the index is eventually consistent, and a team just deleted could still
-    // be counted. ISO timestamps compare as strings.
+    // The overdue teams at the start less those this run deleted (or found weren't due). Held
+    // teams stay counted: their data is kept past its date. Not a count after the run: the index
+    // is eventually consistent, and a team just deleted could still be counted. ISO timestamps
+    // compare as strings.
     const cleared = due.filter((t) => t.purgeAfter < overdueBefore && done.has(t.teamId)).length;
-    const overdue = Math.max(0, overdueAtStart - cleared - setAside.heldOverdue);
+    const overdue = Math.max(0, overdueAtStart - cleared);
     obs.gauge(BusinessMetric.ClosedTeamsOverdue, overdue);
     obs.logger.info("Purged closed teams", { due: due.length, purged, failed, overdue });
     // A run that failed anywhere fails, so the Lambda errors alarm sees it

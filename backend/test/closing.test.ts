@@ -367,7 +367,7 @@ describe.skipIf(!endpoint)("closing teams and deleting accounts (DynamoDB Local)
     await connection(table.db).doc.send(
       new UpdateCommand({ TableName: table.db.tableName, Key: { PK: `TEAM#${teamId}`, SK: "META" }, UpdateExpression: "REMOVE stripeSetAsideFor" }),
     );
-    expect(await purgeTeam(racing, teamId, after)).toEqual({ deleted: 0, skipped: true });
+    expect(await purgeTeam(racing, teamId, after)).toEqual({ deleted: 0, skipped: true, held: true });
     expect(await rawItem(table.db, `TEAM#${teamId}`, "META")).not.toHaveProperty("purging");
     // A person records it as done (the runbook): purged, its Stripe IDs handed to the deletion record first
     await connection(table.db).doc.send(

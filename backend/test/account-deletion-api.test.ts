@@ -1390,7 +1390,7 @@ describe("purging closed teams", () => {
     expect(closedAt).toBe(new Date(NOW).toISOString());
   });
 
-  it("doesn't purge a team set aside for its closure, for any reason, until a person deals with it, and doesn't count it overdue meanwhile (supply-checkout-8jc.37)", async () => {
+  it("doesn't purge a team set aside for its closure, for any reason, until a person deals with it, and still counts it overdue: its data is kept past its date (supply-checkout-8jc.37)", async () => {
     // A Stripe key or mode mismatch: Stripe has neither the subscription nor the customer
     const closedAt = await subscribedAndClosed();
     stripe.state.subs.delete("sub_123");
@@ -1400,14 +1400,15 @@ describe("purging closed teams", () => {
     const items = partition("TEAM#team-a").length;
     // Two days past its deletion date: still there, nothing sent to Stripe, no record, nothing failed
     const overdueAt = NOW + (CLOSED_TEAM_RETENTION_DAYS + 2) * DAY;
-    expect(await purge(overdueAt)).toEqual({ purged: 0, failed: 0, due: 0, overdue: 0 });
+    expect(await purge(overdueAt)).toEqual({ purged: 0, failed: 0, due: 0, overdue: 1 });
     expect(partition("TEAM#team-a")).toHaveLength(items);
     expect(meta("team-a")?.purging).toBeUndefined();
     expect(stripe.state.deletes).toEqual([]);
     expect(deletions.records).toEqual([]);
-    // The set-aside alarm stays on instead of a second one for the same team
+    // Both alarms: the set-aside one, and Deletion overdue, since its data is kept past the date its owners were told
     expect(gauges[BusinessMetric.ClosedTeamsSetAside]).toBe(1);
-    expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(0);
+    expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(1);
+    expect(logs).toContainEqual(["warn", "Closed teams held past their deletion date", { count: 1 }]);
     expect(logs).toContainEqual(["warn", "Closed team's subscription still set aside", { teamId: "team-a", reason: "NotFound" }]);
     // Held even when asked directly, whatever the reason
     for (const reason of ["NotFound", "CustomerMismatch", "PermanentError"]) {
@@ -1426,7 +1427,7 @@ describe("purging closed teams", () => {
     expect(deletions.records).toEqual([{ kind: "team", id: "team-a", deletedAt: new Date(overdueAt + 3_600_000).toISOString(), stripeCustomerId: "cus_123", stripeSubscriptionId: "sub_123" }]);
   });
 
-  it("counts a held team overdue only when the teams set aside can't be counted, and still purges the others", async () => {
+  it("counts a held team overdue even in a run that can't count the teams set aside, and still purges the others", async () => {
     const closedAt = await subscribedAndClosed();
     table.put({ ...(meta("team-a") as Record<string, unknown>), stripeSetAsideFor: closedAt, stripeSetAsideReason: "CustomerMismatch" });
     await close("team-b");
@@ -1435,8 +1436,8 @@ describe("purging closed teams", () => {
     await expect(createTeamPurgeHandler({ db, obs: observability(), deletions: deletions.log, stripe: stripe.client, now: () => overdueAt })()).rejects.toThrow("1 closed teams' subscriptions weren't ended");
     expect(meta("team-a")).toBeDefined();
     expect(meta("team-b")).toBeUndefined();
-    // Not knowing which teams are held, the gauge errs towards alarming
     expect(gauges[BusinessMetric.ClosedTeamsOverdue]).toBe(1);
+    expect(logs.filter(([, message]) => message === "Closed teams held past their deletion date")).toEqual([]);
   });
 
   it("warns of a team set aside after it was listed, and neither purges it nor counts it purged", async () => {
@@ -1458,17 +1459,31 @@ describe("purging closed teams", () => {
     expect(logs).toContainEqual(["warn", "Closed team not purged: its subscription is set aside", { teamId: "team-a", purgeAfter: meta("team-a")?.purgeAfter }]);
   });
 
-  it("leaves a team alone that was set aside between reading it and marking it", async () => {
+  it("holds a team that was set aside between reading it and marking it, and the run neither purges it nor counts it cleared", async () => {
     const closedAt = await subscribedAndClosed();
-    table.afterGet = (item) => {
-      if (item?.PK === "TEAM#team-a" && item.SK === "META") {
-        table.afterGet = undefined;
-        table.put({ ...(item as Record<string, unknown>), stripeSetAsideFor: closedAt, stripeSetAsideReason: "NotFound" });
-      }
+    const setAsideAfterRead = () => {
+      table.afterGet = (item) => {
+        if (item?.PK === "TEAM#team-a" && item.SK === "META") {
+          table.afterGet = undefined;
+          table.put({ ...(item as Record<string, unknown>), stripeSetAsideFor: closedAt, stripeSetAsideReason: "NotFound" });
+        }
+      };
     };
-    expect(await purgeTeam(table.db(undefined), "team-a", new Date(NOW + 31 * DAY))).toEqual({ deleted: 0, skipped: true });
+    setAsideAfterRead();
+    expect(await purgeTeam(table.db(undefined), "team-a", new Date(NOW + 31 * DAY))).toEqual({ deleted: 0, skipped: true, held: true });
     expect(meta("team-a")?.purging).toBeUndefined();
     expect(stripe.state.deletes).toEqual([]);
+    // Through the run: its subscription was ended first (recorded), then it's set aside as the purge reads it
+    const ended = { ...(meta("team-a") as Record<string, unknown>), stripeCancelledFor: closedAt };
+    Reflect.deleteProperty(ended, "stripeSetAsideFor");
+    table.put(ended);
+    stripe.state.retrieves.length = 0;
+    setAsideAfterRead();
+    const at = NOW + (CLOSED_TEAM_RETENTION_DAYS + 2) * DAY;
+    expect(await purge(at)).toEqual({ purged: 0, failed: 0, due: 1, overdue: 1 });
+    expect(meta("team-a")?.purging).toBeUndefined();
+    expect(deletions.records).toEqual([]);
+    expect(logs).toContainEqual(["warn", "Closed team not purged: its subscription is set aside", { teamId: "team-a", purgeAfter: meta("team-a")?.purgeAfter }]);
   });
 
   it("leaves a team alone that was reopened between reading it and marking it", async () => {

@@ -253,8 +253,8 @@ export interface SetAsideTeam {
  * (`stripeSetAsideFor` equal to `closedAt`), however many there are: `count`
  * is all of them, and `teams` the first `limit`, soonest due first, for the
  * log. `overdue` is how many of them have a `purgeAfter` before
- * `overdueBefore` (0 without it): purgeTeam holds them back, so the purge
- * leaves them out of its overdue gauge, and this one keeps the alarm on.
+ * `overdueBefore` (0 without it): purgeTeam holds them back, so they're
+ * kept past their deletion date, and the purge logs how many.
  * Read from the closed-teams index, every page: it holds only teams closed
  * in the last CLOSED_TEAM_RETENTION_DAYS (and set-aside teams held past it),
  * and a team leaves it when it's purged or reopened. The purge sends `count`
@@ -335,7 +335,8 @@ const CONCURRENCY = 10;
  * (supply-checkout-8jc.37). Its subscription may still be live: under a
  * Stripe key or mode mismatch, deleting its customer would get "not found"
  * too, end nothing, and leave nothing in the table to find it by. The mark's
- * condition holds it too, if it's set aside after the read.
+ * condition holds it too, if it's set aside after the read (a re-read then
+ * tells a held team from one reopened or gone).
  *
  * `beforeDelete` runs once the team is marked and before anything is deleted
  * (the purge writes the team's deletion record there, with the team's Stripe
@@ -387,7 +388,11 @@ export async function purgeTeam(
         throw error;
       },
     );
-  if (!marked) return { deleted: 0, skipped: true };
+  if (!marked) {
+    // Set aside since the read? Then it's held, not just skipped
+    const { Item: current } = await doc.send(new GetCommand({ TableName: db.tableName, Key: keys.team(teamId), ConsistentRead: true, ProjectionExpression: "closedAt, stripeSetAsideFor" }));
+    return current && isSetAside(current) ? { deleted: 0, skipped: true, held: true } : { deleted: 0, skipped: true };
+  }
   const stripeIds: { stripeCustomerId?: string; stripeSubscriptionId?: string } = {};
   if (typeof meta.stripeCustomerId === "string") stripeIds.stripeCustomerId = meta.stripeCustomerId;
   if (typeof meta.stripeSubscriptionId === "string") stripeIds.stripeSubscriptionId = meta.stripeSubscriptionId;
