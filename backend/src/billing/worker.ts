@@ -72,7 +72,7 @@ import { BILLING_EVENTS, type BillingEventType } from "./names.js";
 import type { BillingMessage } from "./webhook-handler.js";
 import { createEntitlementCheck, type EntitlementOutcome, type EntitlementStripe } from "./entitlements.js";
 import { createReopenResync } from "./reopening.js";
-import { createSeatSync, parseSeatSync, type SeatOutcome, type SeatStripe, type SeatSyncMessage } from "./seats.js";
+import { createSeatSync, findSeatTeam, parseSeatSync, readSeatTeamAgain, type SeatOutcome, type SeatStripe, type SeatSyncMessage } from "./seats.js";
 import { iso, type SubscriptionLike, subscriptionState } from "./subscription.js";
 import type { DbForWorker } from "./worker-db.js";
 
@@ -412,12 +412,19 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
         obs.logger.info("Seat sync", { messageId: sync.id, reason: sync.reason, outcome });
         return outcome;
       }
-      // A reopened team's subscription first (reopening.ts): the reopen's own sync, or the night's for one still waiting
-      await reopened(sync);
+      // The link, the team context and the team, read once for the resync and the seat sync (supply-checkout-8jc.39)
+      let found = await findSeatTeam(deps.dbFor, sync, now());
+      // A reopened team's subscription first (reopening.ts): the reopen's own sync, or the night's for one still waiting.
+      // Whatever it did, the seat sync sees the team as it left it
+      if ((await reopened(sync, found)) !== "none") found = await readSeatTeamAgain(found, now());
       // The nightly reconciliation: the team's status, plan and seats against Stripe's first (entitlements.ts), then the quantity.
       // A recorded subscription or customer Stripe no longer has is counted there; the seat sync would only fail on it
-      if (sync.reason === "reconcile" && (await entitlements(sync)) === "missing") return "missing";
-      return seats(sync, delivery);
+      if (sync.reason === "reconcile") {
+        if ((await entitlements(sync)) === "missing") return "missing";
+        // It may have fixed the team
+        found = await readSeatTeamAgain(found, now());
+      }
+      return seats(sync, delivery, found);
     }
     const outcome = await process(message);
     obs.logger.info("Billing event", { eventId: message.eventId, type: message.type, outcome });

@@ -752,6 +752,50 @@ describe("resyncing a reopened team's subscription (supply-checkout-85qp)", () =
     expect(updates).toEqual([]);
     expect(await worker({ ...sync(), customer: "cus_test_unknown" })).toBe("unknown_customer");
   });
+
+  // supply-checkout-8jc.39: the resync uses the seat sync's link, context and team reads instead of making its own
+  describe("reads", () => {
+    const reads = () => table.calls.filter((c) => c.command === "GetCommand" || c.command === "QueryCommand").map((c) => `${c.command} ${c.partitions.join(",")}`);
+    // Our link for the customer, the team context (the link again, then the team's home region), and the team
+    const find = [`GetCommand STRIPE#${CUSTOMER}`, `GetCommand STRIPE#${CUSTOMER}`, `GetCommand TEAM#${TEAM}`, `GetCommand TEAM#${TEAM}`];
+    const team = `GetCommand TEAM#${TEAM}`;
+    const members = `QueryCommand TEAM#${TEAM}`;
+
+    it("finds the team once for a seat sync with no resync waiting", async () => {
+      patchTeam({ stripeResyncFor: undefined });
+      table.calls.length = 0;
+      expect(await worker(sync())).toBe("in_sync");
+      expect(reads()).toEqual([...find, members]);
+      expect(scopes).toEqual([{ eventId: "seats-r1", stripeCustomer: CUSTOMER }, { eventId: "seats-r1", stripeCustomer: CUSTOMER, teamId: TEAM }]);
+    });
+
+    it("reads only the team again after a resync, so the seat sync sees what it applied", async () => {
+      subs.set("sub_test_1", endedByClosure());
+      table.calls.length = 0;
+      expect(await worker(sync())).toBe("in_sync");
+      expect(updates).toEqual([resumed]);
+      expect(reads()).toEqual([...find, team, members]);
+      // One that ended: the seat sync sees the ended status the resync applied, and changes nothing
+      patchTeam({ stripeResyncFor: CLOSED, status: "active" });
+      subs.set("sub_test_1", endedByClosure({ status: "canceled", cancel_at_period_end: false }));
+      table.calls.length = 0;
+      expect(await worker(sync("membership", "seats-r2"))).toBe("subscription_ended");
+      expect(meta()).toMatchObject({ status: "canceled" });
+      expect(reads()).toEqual([...find, team]);
+      expect(seatUpdates).toEqual([]);
+    });
+
+    it("reads the team again after the night's entitlement check, which may have fixed it", async () => {
+      patchTeam({ stripeResyncFor: undefined });
+      subs.set("sub_test_1", subscription({ status: "active", trial_end: null }));
+      table.calls.length = 0;
+      // The check applies Stripe's status (its own reads), then the seat sync reads the team again
+      expect(await worker(sync("reconcile", "reconcile-r"))).toBe("in_sync");
+      expect(counts[BusinessMetric.EntitlementDrift]).toBe(1);
+      expect(meta()).toMatchObject({ status: "active" });
+      expect(reads()).toEqual([...find, ...find, team, members]);
+    });
+  });
 });
 
 describe("ending a subscription as the team closes (supply-checkout-8jc.30)", () => {

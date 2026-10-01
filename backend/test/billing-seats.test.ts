@@ -166,9 +166,8 @@ describe("a seat sync after a membership change", () => {
     // Not drift: the change is what the sync is for
     expect(counts.map(([m]) => m)).not.toContain(BusinessMetric.SeatQuantityDrift);
     expect(denied).toEqual([]);
-    // The team comes from our link for the customer, never the message: for the reopen resync's check, then the sync
-    const scoped = [{ eventId: "seats-1", stripeCustomer: CUSTOMER }, { eventId: "seats-1", stripeCustomer: CUSTOMER, teamId: TEAM }];
-    expect(scopes).toEqual([...scoped, ...scoped]);
+    // The team comes from our link for the customer, never the message: found once, for the reopen resync's check and the sync (supply-checkout-8jc.39)
+    expect(scopes).toEqual([{ eventId: "seats-1", stripeCustomer: CUSTOMER }, { eventId: "seats-1", stripeCustomer: CUSTOMER, teamId: TEAM }]);
     // IDs and numbers only: never a name or an address
     expect(JSON.stringify(logs)).not.toMatch(/example\.com|Echo Plumbing/);
     expect(logs).toContainEqual(["info", "Seat quantity updated", { teamId: TEAM, subscriptionId: SUB, from: 5, to: 3, reason: "membership" }]);
