@@ -420,7 +420,7 @@ const TOO_OFTEN = `A team can be reopened ${REOPENS_PER_TEAM_PER_DAY} times a da
  *
  * Stripe isn't called (supply-checkout-85qp): a Stripe outage can't refuse a
  * reopen. The same update sets `stripeResyncFor` to the closure it ends (its
- * `closedAt`), and the seat sync the account function queues after a reopen
+ * `closedAt`) and `stripeReopenedAt` to now, and the seat sync the account function queues after a reopen
  * has the billing worker resync the subscription from Stripe, resuming one
  * the closure set to cancel (billing/reopening.ts); the nightly
  * reconciliation finishes one that didn't happen. The closure's
@@ -457,10 +457,10 @@ export async function reopenTeam(
               TableName: db.tableName,
               Key: keys.team(ctx.teamId),
               // stripeResyncFor: the billing worker resyncs (and resumes) its Stripe subscription (billing/reopening.ts)
-              UpdateExpression: "REMOVE closedAt, closedBy, purgeAfter, GSI1PK, GSI1SK SET #version = #version + :one, stripeResyncFor = :at",
+              UpdateExpression: "REMOVE closedAt, closedBy, purgeAfter, GSI1PK, GSI1SK SET #version = #version + :one, stripeResyncFor = :at, stripeReopenedAt = :now",
               ConditionExpression: "closedAt = :at AND purgeAfter = :purge AND purgeAfter > :cutoff AND attribute_not_exists(purging) AND owners > :zero",
               ExpressionAttributeNames: { "#version": "version" },
-              ExpressionAttributeValues: { ":at": current.closedAt, ":purge": current.purgeAfter, ":cutoff": cutoff, ":one": 1, ":zero": 0 },
+              ExpressionAttributeValues: { ":at": current.closedAt, ":purge": current.purgeAfter, ":cutoff": cutoff, ":one": 1, ":zero": 0, ":now": now.toISOString() },
             },
           },
           // The caller's own membership, as it is now

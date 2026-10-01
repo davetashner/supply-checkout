@@ -20,13 +20,20 @@
 //    not resynced" alarm) and warned of, before anything can fail.
 // 2. A team with no subscription has nothing to resync. Otherwise fetch the
 //    subscription.
-// 3. If one of our closures set it to cancel at the period's end (closing.ts,
-//    resumeAction), resume it: `cancel_at_period_end` back to false, with an
-//    idempotency key from the team, the closure and the subscription. A
-//    cancellation the owner made in the Customer Portal stays. One that has
-//    ended (cancelled at closing because nothing was being paid, or since)
-//    can't be resumed: the team needs a new subscription, which its status
-//    says once it's applied, so its owners see "Subscribe" (needs_payment).
+// 3. If the closure it was reopened from set it to cancel at the period's
+//    end (closing.ts, resumeAction: the stamp names that closure, or for an
+//    older closure the purge recorded it, and Stripe's `canceled_at` is
+//    before the reopen), resume it: `cancel_at_period_end` back to false,
+//    with an idempotency key from the team, the closure and the
+//    subscription. A cancellation the owner made in the Customer Portal
+//    stays, and a stale stamp on one that isn't set to cancel is removed.
+//    One that may be the closure's but Stripe gives no time for is left as
+//    it is, counted (ReopenedTeamSubscriptionsUndecided, the "Reopened
+//    team's subscription left to cancel" alarm) and warned of, for a person.
+//    One that has ended (cancelled at closing because nothing was being
+//    paid, or since) can't be resumed: the team needs a new subscription,
+//    which its status says once it's applied, so its owners see "Subscribe"
+//    (needs_payment).
 // 4. Apply the subscription's latest state to the team (applySubscription),
 //    as for a Stripe event: the events the worker skipped while it was closed.
 // 5. Remove `stripeResyncFor`, on the condition it's still that closure.
@@ -42,7 +49,7 @@
 
 import { applySubscription, finishReopenResync, getBillingTeam, stripeCustomerTeam, teamContextForStripeCustomer } from "../data/index.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
-import { type ClosingStripe, customerOf, resumeAction, resumeSubscription } from "./closing.js";
+import { type ClosingStripe, customerOf, removeStamp, resumeAction, resumeSubscription, staleStamp } from "./closing.js";
 import type { SeatSyncMessage } from "./seat-queue.js";
 import { type SubscriptionLike, subscriptionState } from "./subscription.js";
 import type { DbForWorker } from "./worker-db.js";
@@ -60,7 +67,7 @@ export interface ReopenResyncDeps {
  * as ended (`needs_payment`), no subscription to resync, or left pending for a
  * person (`missing`, `not_ours`) or for a later reopen (`team_closed`).
  */
-export type ResyncOutcome = "none" | "resumed" | "synced" | "needs_payment" | "no_subscription" | "missing" | "not_ours" | "team_closed";
+export type ResyncOutcome = "none" | "resumed" | "synced" | "needs_payment" | "undecided" | "no_subscription" | "missing" | "not_ours" | "team_closed";
 
 const isMissing = (error: unknown) => (error as { code?: unknown } | null)?.code === "resource_missing";
 
@@ -107,7 +114,14 @@ export function createReopenResync(deps: ReopenResyncDeps) {
       obs.logger.warn("Reopened team's subscription not resynced: another customer's subscription", { teamId, subscriptionId: sub.id });
       return "not_ours";
     }
-    const action = resumeAction(sub);
+    const action = resumeAction(sub, { closedAt, ...(team.reopenedAt ? { reopenedAt: team.reopenedAt } : {}), ...(team.cancelledFor ? { cancelledFor: team.cancelledFor } : {}) });
+    if (action === "undecided") {
+      // Maybe the closure's, maybe the owner's: a person decides (docs/journeys.md)
+      obs.count(BusinessMetric.ReopenedTeamSubscriptionsUndecided, 1, { teamId });
+      obs.logger.warn("Reopened team's subscription left set to cancel", { teamId, subscriptionId: sub.id, closedAt });
+    } else if (staleStamp(sub)) {
+      await removeStamp(stripe, sub, teamId, id);
+    }
     if (action === "resume") {
       await resumeSubscription(stripe, sub.id, { teamId, closedAt }, "resync");
       obs.count(BusinessMetric.ReopenedTeamSubscriptionsResumed, 1, { teamId, source: "resync" });
@@ -118,7 +132,7 @@ export function createReopenResync(deps: ReopenResyncDeps) {
     if ((await applySubscription(db, ctx, subscriptionState(sub, customer), now())) === "ignored") return "team_closed";
     await finishReopenResync(db, ctx, closedAt);
     obs.logger.info("Reopened team's subscription resynced", { teamId, subscriptionId: sub.id, status: sub.status, action });
-    return action === "resume" ? "resumed" : action === "needs_payment" ? "needs_payment" : "synced";
+    return action === "resume" ? "resumed" : action === "none" ? "synced" : action;
   }
 
   return async (message: SeatSyncMessage): Promise<ResyncOutcome> => {

@@ -467,7 +467,7 @@ describe.skipIf(!endpoint)("closing teams and deleting accounts (DynamoDB Local)
     const meta = await rawItem(table.db, `TEAM#${teamId}`, "META");
     for (const name of ["closedAt", "closedBy", "purgeAfter", "GSI1PK", "GSI1SK"]) expect(meta?.[name]).toBeUndefined();
     // The billing worker resyncs its Stripe subscription from this closure (supply-checkout-85qp)
-    expect(meta?.stripeResyncFor).toBe(now.toISOString());
+    expect(meta).toMatchObject({ stripeResyncFor: now.toISOString(), stripeReopenedAt: later.toISOString() });
     const due = new Date(now.getTime() + (CLOSED_TEAM_RETENTION_DAYS + 1) * DAY);
     expect((await listTeamsToPurge(table.db, due)).map((t) => t.teamId)).not.toContain(teamId);
     expect(await purgeTeam(table.db, teamId, due)).toEqual({ deleted: 0, skipped: true });

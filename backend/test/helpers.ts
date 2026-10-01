@@ -134,3 +134,20 @@ export function namedAttributes(input: Record<string, unknown>): Set<string> {
   const key = (input.Key ?? {}) as Record<string, unknown>;
   return new Set([...Object.keys(key), ...words].filter((w): w is string => typeof w === "string"));
 }
+
+/**
+ * A Stripe subscription after `subscriptions.update`, as Stripe does it:
+ * metadata merges and an empty value removes a key; setting
+ * `cancel_at_period_end` records `canceled_at` (the request's time, `at` in
+ * epoch seconds), and clearing it clears `canceled_at`.
+ */
+export function stripeSubscriptionUpdate<S extends { cancel_at_period_end: boolean; canceled_at?: number | null; metadata?: Readonly<Record<string, string>> | null }>(
+  sub: S,
+  params: { cancel_at_period_end?: boolean; metadata: Record<string, string> },
+  at: number,
+): S {
+  const metadata: Record<string, string> = { ...(sub.metadata ?? {}), ...params.metadata };
+  for (const [k, v] of Object.entries(metadata)) if (v === "") Reflect.deleteProperty(metadata, k);
+  if (params.cancel_at_period_end === undefined) return { ...sub, metadata };
+  return { ...sub, metadata, cancel_at_period_end: params.cancel_at_period_end, canceled_at: params.cancel_at_period_end ? at : null };
+}

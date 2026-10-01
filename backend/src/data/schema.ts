@@ -195,10 +195,11 @@ export const IMPORT_INDEX_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK] as const;
  * and `purgeAfter` it could close a team and have the purge delete it. The
  * reopen function takes no expressions from its caller and only ever removes
  * them, so the ops function can reopen a team but never close one. And
- * `stripeResyncFor`, which the reopen sets to the closure it ended, so the
- * billing worker resyncs the team's Stripe subscription (billing/reopening.ts).
+ * `stripeResyncFor` and `stripeReopenedAt`, which the reopen sets to the
+ * closure it ended and when, so the billing worker resyncs the team's Stripe
+ * subscription (billing/reopening.ts).
  */
-export const REOPEN_ATTRIBUTES = [PK, SK, "type", "version", "owners", "closedAt", "closedBy", "purgeAfter", "purging", GSI1PK, GSI1SK, "stripeResyncFor"] as const;
+export const REOPEN_ATTRIBUTES = [PK, SK, "type", "version", "owners", "closedAt", "closedBy", "purgeAfter", "purging", GSI1PK, GSI1SK, "stripeResyncFor", "stripeReopenedAt"] as const;
 
 /**
  * What an operator audit item holds. Owners read their own team's items
@@ -351,7 +352,8 @@ export const STRIPE_LINK_READ_ATTRIBUTES = [PK, SK, "teamId"] as const;
  * (dynamodb:Attributes, with Select SPECIFIC_ATTRIBUTES): what the META item
  * says about billing, closure and comps, and an owner's role and email for
  * the notices, and `cancelAtPeriodEnd` (the nightly entitlement check compares
- * it) and `stripeResyncFor` (a reopen's pending resync, billing/reopening.ts).
+ * it), and `stripeResyncFor`, `stripeReopenedAt` and `stripeCancelledFor` (a
+ * reopen's pending resync and what decides it, billing/reopening.ts).
  * Never documents, sheets or anything else.
  */
 export const BILLING_READ_ATTRIBUTES = [
@@ -370,6 +372,8 @@ export const BILLING_READ_ATTRIBUTES = [
   "compUntil",
   "cancelAtPeriodEnd",
   "stripeResyncFor",
+  "stripeReopenedAt",
+  "stripeCancelledFor",
   "role",
   "email",
   "userId",

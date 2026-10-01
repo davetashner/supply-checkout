@@ -132,6 +132,10 @@ export interface BillingTeam {
   readonly cancelAtPeriodEnd: boolean;
   /** Reopened from this closure (its `closedAt`), and its subscription not yet resynced from Stripe (billing/reopening.ts). */
   readonly resyncFor?: string;
+  /** When it was last reopened (`stripeReopenedAt`). */
+  readonly reopenedAt?: string;
+  /** The closure the purge recorded ending its subscription for (`stripeCancelledFor`). */
+  readonly cancelledFor?: string;
 }
 
 /** The team's billing state, or undefined if its META item is gone (purged). */
@@ -142,7 +146,7 @@ export async function getBillingTeam(db: Db, ctx: TeamContext, now = new Date())
       TableName: db.tableName,
       Key: keys.team(ctx.teamId),
       ConsistentRead: true,
-      ProjectionExpression: "#name, #status, #plan, seats, closedAt, purging, stripeCustomerId, stripeSubscriptionId, compPlan, compUntil, cancelAtPeriodEnd, stripeResyncFor",
+      ProjectionExpression: "#name, #status, #plan, seats, closedAt, purging, stripeCustomerId, stripeSubscriptionId, compPlan, compUntil, cancelAtPeriodEnd, stripeResyncFor, stripeReopenedAt, stripeCancelledFor",
       ExpressionAttributeNames: { "#name": "name", "#status": "status", "#plan": "plan" },
     }),
   );
@@ -162,6 +166,8 @@ export async function getBillingTeam(db: Db, ctx: TeamContext, now = new Date())
     readOnly: isReadOnlyForBilling(Item, now),
     cancelAtPeriodEnd: Item.cancelAtPeriodEnd === true,
     ...(str(Item.stripeResyncFor) ? { resyncFor: Item.stripeResyncFor as string } : {}),
+    ...(str(Item.stripeReopenedAt) ? { reopenedAt: Item.stripeReopenedAt as string } : {}),
+    ...(str(Item.stripeCancelledFor) ? { cancelledFor: Item.stripeCancelledFor as string } : {}),
   };
 }
 

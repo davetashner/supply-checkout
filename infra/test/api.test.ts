@@ -894,7 +894,7 @@ describe("operator reopen function and role (supply-checkout-6uw.6)", () => {
       },
     });
     // Nothing about the team's name, plan, status, members or data: and the reopen's pending Stripe resync (supply-checkout-85qp)
-    expect([...REOPEN_ATTRIBUTES]).toEqual(["PK", "SK", "type", "version", "owners", "closedAt", "closedBy", "purgeAfter", "purging", "GSI1PK", "GSI1SK", "stripeResyncFor"]);
+    expect([...REOPEN_ATTRIBUTES]).toEqual(["PK", "SK", "type", "version", "owners", "closedAt", "closedBy", "purgeAfter", "purging", "GSI1PK", "GSI1SK", "stripeResyncFor", "stripeReopenedAt"]);
     expect(JSON.stringify(closure?.Resource)).not.toMatch(/index|\*/);
     expect(audit).toEqual({
       Sid: "TeamOperatorAuditAppendOnly",

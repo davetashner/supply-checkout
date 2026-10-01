@@ -208,7 +208,7 @@ export function createTeamPurgeHandler(deps: TeamPurgeDeps) {
           }
           continue;
         }
-        const planned = closingAction(sub);
+        const planned = closingAction(sub, team.closedAt);
         if (planned !== "none") request = planned;
         const action = await endSubscriptionForClosedTeam(stripe, sub, team);
         if (action !== "none") worked[action]++;

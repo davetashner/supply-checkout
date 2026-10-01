@@ -120,7 +120,8 @@ describe.skipIf(!endpoint)("billing on DynamoDB Local", () => {
     await closeTeam(table.db, owner, { confirmName: team.name }, closedAt);
     await reopenTeam(table.db, await authorizeTeam(table.db, owner.userId, team.teamId), { confirmName: team.name }, now);
     const read = await getBillingTeam(table.db, ctx, now);
-    expect(read).toMatchObject({ closed: false, resyncFor: closedAt.toISOString() });
+    expect(read).toMatchObject({ closed: false, resyncFor: closedAt.toISOString(), reopenedAt: now.toISOString() });
+    expect(read).not.toHaveProperty("cancelledFor");
     // Another closure's resync doesn't finish it
     expect(await finishReopenResync(table.db, ctx, "2026-01-01T00:00:00.000Z")).toBe(false);
     expect(await applySubscription(table.db, ctx, state(customer), now)).toBe("applied");

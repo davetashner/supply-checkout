@@ -2742,6 +2742,8 @@
                         "compUntil",
                         "cancelAtPeriodEnd",
                         "stripeResyncFor",
+                        "stripeReopenedAt",
+                        "stripeCancelledFor",
                         "role",
                         "email",
                         "userId"
@@ -6696,7 +6698,8 @@
                         "purging",
                         "GSI1PK",
                         "GSI1SK",
-                        "stripeResyncFor"
+                        "stripeResyncFor",
+                        "stripeReopenedAt"
                       ]
                     },
                     "StringEqualsIfExists": {

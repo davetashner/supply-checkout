@@ -124,6 +124,8 @@ export const BusinessMetric = {
   ReopenedTeamSubscriptionsResumed: "ReopenedTeamSubscriptionsResumed",
   /** Reopened teams the nightly reconciliation found still waiting for their subscription to be resynced from Stripe: the reopen's own seat sync wasn't queued or didn't finish, so the night's message does it (supply-checkout-85qp, J7, J11). */
   ReopenResyncsLate: "ReopenResyncsLate",
+  /** Reopened teams' subscriptions set to cancel that the resync couldn't attribute (no stamp, the purge recorded ending it for the closure, but Stripe gave no time it was set): left set to cancel for a person to decide (supply-checkout-85qp, J7, J11). */
+  ReopenedTeamSubscriptionsUndecided: "ReopenedTeamSubscriptionsUndecided",
   /** Closed teams whose subscription was charged for a period that began after the team closed, found by the purge: a person refunds it (supply-checkout-8jc.18, J7, J11). */
   ClosedTeamRenewalsCharged: "ClosedTeamRenewalsCharged",
   /** Closed teams whose subscription Stripe doesn't have, found by the purge and recorded as nothing to end. Any at all may be a Stripe key or mode mismatch, under which every closed team would be recorded this way with none cancelled (supply-checkout-8jc.17, J7, J11). */

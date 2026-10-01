@@ -45,7 +45,7 @@
 // Logged: event, team and subscription IDs, statuses, counts and SES error
 // names. Never an owner's email or a name.
 
-import { type ClosingStripe, customerOf, endSubscriptionForClosedTeam, resumeSubscription } from "./closing.js";
+import { type ClosingStripe, customerOf, endSubscriptionForClosedTeam, removeStamp, resumeSubscription, staleStamp } from "./closing.js";
 import {
   applySubscription,
   type BillingTeam,
@@ -209,7 +209,8 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     const stripe = await deps.stripe();
     const current = sub ?? (await stripe.subscriptions.retrieve(message.subscription));
     if (customerOf(current) !== message.customer) return;
-    const action = await endSubscriptionForClosedTeam(stripe, current, { teamId: team.teamId, closedAt: team.closedAt });
+    // Keyed by the event too: a later event's request (after the subscription changed) is never a cached replay of this one
+    const action = await endSubscriptionForClosedTeam(stripe, current, { teamId: team.teamId, closedAt: team.closedAt }, message.eventId);
     if (action !== "none") {
       const after = await getBillingTeam(db, ctx, now());
       if (after && after.closedAt !== team.closedAt) {
@@ -282,6 +283,8 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
       }
       return done("second_subscription_canceled");
     }
+    // Renewed (in the Customer Portal) after a closure set it to cancel: its stamp goes, so a later cancellation is never taken for a closure's
+    if (staleStamp(sub)) await removeStamp(stripe, sub, teamId, eventId);
     const result = await applySubscription(db, ctx, subscriptionState(sub, customer, chosen.replaces), now());
     if (result === "ignored") {
       // Closed (or gone) since it was read: a subscription it never recorded is ended here, or it would renew
