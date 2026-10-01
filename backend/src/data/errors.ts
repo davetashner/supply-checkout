@@ -45,6 +45,15 @@ export class StockChangedError extends ConflictError {
   override readonly name = "StockChangedError";
 }
 
+/**
+ * Finished Return on a sheet that still has company equipment out (ADR 0017,
+ * section 3): every piece must be back, still at the job (the sheet stays
+ * open) or lost or broken first. (409, reason `equipment_out`)
+ */
+export class EquipmentOutError extends ConflictError {
+  override readonly name = "EquipmentOutError";
+}
+
 /** The change would leave the team without an owner. (409) */
 export class LastOwnerError extends ConflictError {
   override readonly name = "LastOwnerError";

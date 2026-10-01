@@ -16,7 +16,7 @@
 //    whose IAM policy allows only that team's partition (team-db.ts).
 //
 // Next to the document routes are the inventory commands (checkout, return,
-// adding a receipt's lines, stock adjust), each one transaction that's idempotent by operation ID, and
+// adding a receipt's lines, marking equipment lost, stock adjust), each one transaction that's idempotent by operation ID, and
 // a product's stock history (backend/src/data/commands.ts, docs/api/commands.md),
 // and the CSV inventory import, owners only (backend/src/data/imports.ts).
 
@@ -34,18 +34,22 @@ import {
   type CommandOutcome,
   ConflictError,
   deleteDocument,
+  EquipmentOutError,
   ForbiddenError,
   getDocument,
+  getTeamSettings,
   importProducts,
   InvalidInputError,
   LimitReachedError,
   listDocuments,
   listMovements,
   listSupportActions,
+  markLost,
   NotFoundError,
   returnItems,
   StockChangedError,
   setDocument,
+  setTeamSettings,
   type StoredDocument,
   SubscriptionEndedError,
   TeamClosedError,
@@ -79,6 +83,7 @@ export function errorFor(error: unknown): ApiError {
   if (error instanceof InvalidInputError) return new ApiError(400, "bad_request", error.message);
   if (error instanceof NotFoundError) return new ApiError(404, "not_found", error.message);
   if (error instanceof StockChangedError) return new ApiError(409, "aborted", error.message, "stock_changed");
+  if (error instanceof EquipmentOutError) return new ApiError(409, "aborted", error.message, "equipment_out");
   if (error instanceof ConflictError) return new ApiError(409, "aborted", error.message);
   if (error instanceof TooLargeError) return new ApiError(413, "quota_exceeded", error.message);
   if (error instanceof LimitReachedError) return new ApiError(429, "quota_exceeded", error.message);
@@ -158,6 +163,7 @@ export function sheetMovement(result: WriteResult): { checkouts: number; returns
 
 const CHECKOUT_FIELDS = ["operationId", "productKey", "quantity", "name", "price", "code", "cost"];
 const RETURN_FIELDS = ["operationId", "productKey", "quantity"];
+const LOST_FIELDS = ["operationId", "productKey", "quantity", "charge"];
 const LINES_FIELDS = ["operationId", "lines"];
 const STOCK_FIELDS = ["operationId", "reason", "quantity", "unitCost", "count", "expectedStock"];
 
@@ -217,6 +223,10 @@ async function runCommand(deps: DataHandlerDeps, route: DataRoute, event: DataEv
     const sheet = await getDocument(db, ctx, "sheets", sheetId);
     return json(200, { operationId: result.operationId, replayed, result, sheet: sheet ? toBody(sheet) : null });
   }
+  if (route.operation === "lost") {
+    const body = jsonBody(event, LOST_FIELDS);
+    return commandResponse(deps, ctx, await markLost(db, ctx, { ...body, sheetId } as Parameters<typeof markLost>[2], at));
+  }
   if (route.operation === "checkout") {
     const body = jsonBody(event, CHECKOUT_FIELDS);
     return commandResponse(deps, ctx, await checkout(db, ctx, { ...body, sheetId } as Parameters<typeof checkout>[2], at));
@@ -225,7 +235,22 @@ async function runCommand(deps: DataHandlerDeps, route: DataRoute, event: DataEv
   return commandResponse(deps, ctx, await returnItems(db, ctx, { ...body, sheetId } as Parameters<typeof returnItems>[2], at));
 }
 
-const COMMANDS = new Set(["checkout", "return", "addLines", "adjustStock", "movements"]);
+const COMMANDS = new Set(["checkout", "return", "lost", "addLines", "adjustStock", "movements"]);
+const SETTINGS_FIELDS = ["equipmentMarkup", "expectedVersion"];
+
+/**
+ * The team's settings (data/settings.ts, ADR 0017 section 2a). GET answers
+ * every member, with the equipment markup for owners only; PUT is owners only
+ * (the route's minRole, and setTeamSettings checks again).
+ */
+async function settings(deps: DataHandlerDeps, route: DataRoute, event: DataEvent, ctx: TeamContext): Promise<APIGatewayProxyStructuredResultV2> {
+  const db = deps.dbForTeam(ctx.teamId);
+  if (route.operation === "getSettings") return json(200, await getTeamSettings(db, ctx));
+  const body = jsonBody(event, SETTINGS_FIELDS);
+  const view = await setTeamSettings(db, ctx, { equipmentMarkup: body.equipmentMarkup }, expectedVersionFrom(body.expectedVersion), new Date((deps.now ?? Date.now)()));
+  deps.obs.count(BusinessMetric.Writes, 1, { teamId: ctx.teamId });
+  return json(200, view);
+}
 const IMPORT_FIELDS = ["importId", "csv", "dryRun"];
 
 /**
@@ -266,6 +291,7 @@ async function supportActions(deps: DataHandlerDeps, event: DataEvent, ctx: Team
 async function run(deps: DataHandlerDeps, route: DataRoute, event: DataEvent, ctx: TeamContext): Promise<APIGatewayProxyStructuredResultV2> {
   if (route.operation === "importProducts") return runImport(deps, event, ctx);
   if (route.operation === "supportActions") return supportActions(deps, event, ctx);
+  if (route.operation === "getSettings" || route.operation === "setSettings") return settings(deps, route, event, ctx);
   if (COMMANDS.has(route.operation)) return runCommand(deps, route, event, ctx);
   const db = deps.dbForTeam(ctx.teamId);
   const collection = route.collection as Collection;
@@ -347,9 +373,10 @@ export function createDataHandler(deps: DataHandlerDeps) {
     } catch (error) {
       const apiError = errorFor(error);
       status = apiError.status;
-      // A count refused because the stock moved since the form opened (stock_changed) is the
-      // refusal working as meant, not a write that lost a race, so it isn't counted as one
-      if (apiError.status === 409 && apiError.reason !== "stock_changed") deps.obs.count(BusinessMetric.ConditionalWriteConflicts, 1, teamId ? { teamId } : {});
+      // A count refused because the stock moved since the form opened (stock_changed), or a
+      // Finished Return refused while equipment is still out (equipment_out), is the refusal
+      // working as meant, not a write that lost a race, so it isn't counted as one
+      if (apiError.status === 409 && apiError.reason !== "stock_changed" && apiError.reason !== "equipment_out") deps.obs.count(BusinessMetric.ConditionalWriteConflicts, 1, teamId ? { teamId } : {});
       if (apiError.status >= 500) deps.obs.logger.error("Request failed", error as Error);
       // DynamoDB's refusal behind a 413, when the data layer kept it: its name and the start of its message
       else if (error instanceof TooLargeError && error.cause !== undefined) deps.obs.logger.warn("Refused as too large", { cause: error.cause });

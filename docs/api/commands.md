@@ -99,6 +99,15 @@ rather than rounding ([ADR 0014](../adr/0014-units-cost-and-rounding.md)).
   ignored when the item is in inventory.
 - An existing line's `code`, `name`, `price` and `cost` never change on a
   checkout; only `out` goes up.
+- **Company equipment** ([ADR 0017](../adr/0017-company-equipment-and-ad-hoc-checkout.md)):
+  a product with `kind: "equipment"` has no client price, so its new line
+  copies `code`, `name` and `cost` (its value each) and `kind: "equipment"`,
+  without a `price`. An equipment line also records `takenBy` (the caller's
+  user ID, from the token) and `takenAt`, set again by every checkout of the
+  line, so they name the latest person to take more. Later changes to the
+  product's kind never change a line.
+- A key ending in `:bought` is refused (400): those lines are bought for a
+  client and never come from storage.
 
 **Add a receipt's lines**: `POST /teams/{teamId}/sheets/{sheetId}/lines`
 
@@ -115,6 +124,26 @@ rather than rounding ([ADR 0014](../adr/0014-units-cost-and-rounding.md)).
   as one request per 40, each its own operation. The sheet must be open.
 - The response has `result` (each line, with `lineCreated`) and the `sheet`
   as it is now; there's no `product`.
+- **Company equipment bought for the client** ([ADR 0017](../adr/0017-company-equipment-and-ad-hoc-checkout.md),
+  section 2a). The server reads each line's product inside the transaction.
+  When it's equipment, the line goes on the sheet under `<productKey>:bought`
+  with `purchased: true` and no `kind`, whatever the request says, so it
+  never merges with the same item on loan. Its price is either:
+  - worked out by the server (`priceSet: "markup"`): the line's `cost` (the
+    receipt price each, after any pack conversion; required) plus the team's
+    `equipmentMarkup` (team settings, 0% when unset), rounded to the cent with
+    halves up. Send no `price`.
+  - typed by the reviewer (`priceSet: "manual"`): send `price` and
+    `"priceSet": "manual"`.
+
+  A `price` for equipment without `"manual"`, `priceSet` with any other
+  value, and a `productKey` ending in `:bought` are all `400`. The transaction
+  checks that each line's product is still the kind it was read as, and that
+  the markup is the one the price was worked out from; if either changed, the
+  command reads again. An existing `:bought` line keeps its price and adds to
+  `out`. Each result line for equipment has `lineKey` and `purchased: true`.
+  `priceSet` on a supply's line is ignored: a supply's `price` is required,
+  as before.
 - The app keeps each request's operation ID with the receipt draft, so
   saving again after a lost answer, even after a reload, adds nothing twice.
   A new sheet from a receipt keeps its ID with the draft too, and a retry
@@ -126,9 +155,44 @@ rather than rounding ([ADR 0014](../adr/0014-units-cost-and-rounding.md)).
 { "operationId": "…", "productKey": "0123", "quantity": 2 }
 ```
 
-The line must be on the sheet, and `returned + quantity` can't be more than
-`out`. The app's stepper already stops at what's left; the server enforces it
-too, inside the transaction.
+The line must be on the sheet, and `returned + lost + quantity` can't be more
+than `out`. The app's stepper already stops at what's left; the server
+enforces it too, inside the transaction. A line bought for the client
+(`purchased: true`) doesn't come back: `400`.
+
+**Lost or broken** (company equipment, [ADR 0017](../adr/0017-company-equipment-and-ad-hoc-checkout.md)
+section 3): `POST /teams/{teamId}/sheets/{sheetId}/lost`
+
+```json
+{ "operationId": "…", "productKey": "ladder", "quantity": 1, "charge": 80 }
+```
+
+- Equipment lines only (`kind: "equipment"`), on an open sheet, and
+  `quantity` at most what's still out (`out − returned − lost`).
+- Adds `quantity` to the line's `lost`. Stock doesn't change: it went down at
+  checkout, and the item has left the business. A movement with
+  `reason: "lost"`, `delta: 0`, the `quantity` and any `charge` goes into
+  the item's history.
+- `charge` (optional) is dollars for the lot, not each, following the money
+  rule. It's added to the line's `lostCharge`, which the sheet charges the
+  client. Not on an ad hoc sheet, which has no client.
+- The response is a command's, with `stockDelta: 0`.
+
+**Team settings**: `GET` and `PUT /teams/{teamId}/settings`
+
+```json
+{ "equipmentMarkup": 25, "expectedVersion": 0 }
+```
+
+Not a command, but next to them: the equipment markup above. `PUT` is owners
+only (`403 owners_only` for anyone else, checked from the membership item),
+and needs `expectedVersion` (0 before the first save; a stale one is `409`).
+The markup is a percentage from 0 to 1,000 with at most two decimals. A change
+is written to the team's audit log in the same transaction, with who, when,
+and the old and new value. `GET` answers `{ "version": 1, "settings": {
+"equipmentMarkup": 25 } }` to owners and `{ "version": 1, "settings": {} }` to
+everyone else: no response a contributor or viewer gets carries the
+percentage, only the prices worked out from it.
 
 **Stock adjustment**: `POST /teams/{teamId}/products/{key}/stock`
 
@@ -250,6 +314,7 @@ movement or the operation record changed.
 | `403 permission_denied`, `reason: "not_member"` | Not a member of the team | As for document writes |
 | `404 not_found` | No such sheet, or (stock adjustment) no such item | Show the message (the web build handles it as for `400`) |
 | `409 aborted` | The sheet is closed ("Reopen it to …"), or the line or item changed on every retry | Show the message. Safe to retry with the same ID |
+| `409 aborted`, `reason: "equipment_out"` | A document write closing a sheet (Finished Return) while company equipment is still out on it | Ask about each piece still out (back, still at the job, or lost or broken), then close |
 | `429`, `5xx`, timeout, network error | Unknown whether it ran | Retry with the same ID, with backoff |
 
 The server already retries a busy line or item several times on a fresh read
@@ -263,7 +328,21 @@ before answering `409`, so `409` from contention is rare.
   return, and finish the return again, or correct the line's counts with a
   line edit (which doesn't move stock). This matches the app, which hides the
   scan bar on a closed sheet ([section 4a](../architecture/README.md#4a-sheet-states)).
-- **Returned never exceeds out**, checked inside the transaction.
+- **Returned never exceeds out**, checked inside the transaction. With
+  equipment lost or broken, `returned + lost` never exceeds `out`.
+- **No sheet closes with equipment out.** A `PUT` or `PATCH` that sets
+  `status: "closed"` is refused with `409 aborted`, reason `equipment_out`,
+  while any equipment line has `out − returned − lost > 0`.
+- **The line fields are checked on document writes too** (`documents.ts`):
+  a line's `kind` is `"equipment"` or missing and can't change once the line
+  exists; `lost` and `lostCharge` are only on equipment lines (a charge only
+  on a client's sheet); `takenBy` is text and `takenAt` an ISO time; a changed
+  line keeps `returned + lost ≤ out`. A document write can't add a line
+  bought for the client or a `:bought` key, or mark or unmark one; it may
+  change a bought line's counts or price, and a changed price is stored with
+  `priceSet: "manual"`. A sheet's `kind` can't be set, changed or removed by
+  a document write. A product's `kind` is `"supply"` or `"equipment"`, and
+  no new product's key ends in `:bought`.
 - **Stock can go below zero.** A checkout takes the full quantity off, even
   when that's more than the count, where `bumpStock` stops at 0. A negative
   count says the storage count was wrong, and a `count` adjustment fixes it;
@@ -279,9 +358,9 @@ before answering `409`, so `409` from contention is rare.
 `GET /teams/{teamId}/products/{key}/movements?limit=50&cursor=…` returns the
 item's movements, newest first, a page at a time (up to 100). Any member can
 read it. Each movement has who (`userId`), when (`at`), why (`reason`:
-`checkout`, `return`, `receipt`, `count`, `uncount` when someone stopped counting it, `import`, or `delete` when the item was deleted; an uncount and a delete take its stock to 0), the `sheetId` for checkouts and
-returns, the `quantity` or `count`, the change to stock (`delta`), whether the
-item tracked stock (`tracked`), the `unitCost` for receipts, and the
+`checkout`, `return`, `receipt`, `count`, `uncount` when someone stopped counting it, `import`, `delete` when the item was deleted, or `lost` for equipment lost or broken; an uncount and a delete take its stock to 0, and a lost movement doesn't change it), the `sheetId` for checkouts,
+returns and lost equipment, the `quantity` or `count`, the change to stock (`delta`), whether the
+item tracked stock (`tracked`), the `unitCost` for receipts, any `charge` for lost equipment, and the
 `operationId`. Movements are kept as long as the team's data.
 
 ## Reconciling stock
@@ -311,5 +390,8 @@ drifting") is a separate bead. It reconciles each item from the movements:
   item reconciled at S, uncounted and counted again at C has movements since
   that add up to C − S, and C still equals S plus their deltas.
 - Sheet lines can be reconciled the same way: the checkout and return
-  movements for a sheet and item add up to its `out` and `returned`, unless the
-  line was corrected with a line edit.
+  movements for a sheet and item add up to its `out` and `returned`, and its
+  `lost` movements to its `lost`, unless the line was corrected with a line
+  edit. A `lost` movement's `delta` is always 0, so it never changes an
+  item's sum. Lines bought for the client (`:bought`) have no movements, as
+  no receipt line put on a sheet does.

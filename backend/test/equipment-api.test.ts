@@ -1,0 +1,556 @@
+// Company equipment through the data API's handler (ADR 0017), against the
+// in-memory table (memory-table.ts): the item's kind, equipment lines on a
+// sheet, lost or broken, Finished Return's refusal while equipment is out,
+// equipment bought for a client at the team's markup, and the team settings
+// that hold the markup, readable and writable by owners only.
+// equipment.test.ts runs the transactions against DynamoDB Local.
+
+import { randomUUID } from "node:crypto";
+import { beforeEach, describe, expect, it } from "vitest";
+import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
+import { DATA_ROUTES, routeKey } from "../src/api/routes.js";
+import { InvalidInputError } from "../src/data/index.js";
+import type { Observability } from "../src/observability/index.js";
+import { MemoryTable } from "./memory-table.js";
+
+const NOW = Date.parse("2026-10-01T12:00:00Z");
+const OWNER = "user-owner";
+const CONTRIBUTOR = "user-contributor";
+const VIEWER = "user-viewer";
+
+let table: MemoryTable;
+let clock: number;
+let counts: Record<string, number>;
+let handler: ReturnType<typeof createDataHandler>;
+
+beforeEach(() => {
+  table = new MemoryTable();
+  table.seedTeam("team-a", { [OWNER]: "owner", [CONTRIBUTOR]: "contributor", [VIEWER]: "viewer" });
+  counts = {};
+  clock = NOW;
+  const obs = {
+    region: "test-local-1",
+    logger: { info: () => {}, warn: () => {}, error: () => {}, addContext: () => {} },
+    count: (metric: string, value = 1) => {
+      counts[metric] = (counts[metric] ?? 0) + value;
+    },
+    flush: () => {},
+  } as unknown as Observability;
+  handler = createDataHandler({
+    dbForTeam: (teamId) => {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(teamId)) throw new InvalidInputError("Invalid team ID");
+      return table.db(teamId);
+    },
+    obs,
+    now: () => clock,
+  });
+});
+
+function event(method: string, path: string, user: string, body?: unknown, query?: Record<string, string>): DataEvent {
+  const segments = path.split("/");
+  const route = DATA_ROUTES.find((r) => {
+    const parts = r.path.split("/");
+    return r.method === method && parts.length === segments.length && parts.every((p, i) => p.startsWith("{") || p === segments[i]);
+  });
+  const pathParameters: Record<string, string> = {};
+  route?.path.split("/").forEach((p, i) => {
+    if (p.startsWith("{")) pathParameters[p.slice(1, -1)] = decodeURIComponent(segments[i] as string);
+  });
+  return {
+    version: "2.0",
+    routeKey: route ? routeKey(route) : `${method} ${path}`,
+    rawPath: path,
+    rawQueryString: "",
+    headers: {},
+    queryStringParameters: query,
+    pathParameters,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    isBase64Encoded: false,
+    requestContext: {
+      http: { method, path, protocol: "HTTP/1.1", sourceIp: "192.0.2.1", userAgent: "test" },
+      authorizer: { principalId: "", integrationLatency: 0, jwt: { claims: { sub: user, token_use: "access", exp: String(NOW / 1000 + 600) }, scopes: null } },
+    },
+  } as unknown as DataEvent;
+}
+
+async function call(method: string, path: string, body?: unknown, user = CONTRIBUTOR, query?: Record<string, string>) {
+  const response = await handler(event(method, path, user, body, query));
+  return { status: response.statusCode, body: response.body ? JSON.parse(response.body) : undefined, text: response.body ?? "" };
+}
+
+const op = () => randomUUID();
+type Line = Record<string, unknown>;
+const ladder = { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, stock: 4 };
+const gloves = { code: "0123", name: "Nitrile gloves", price: 12.5, cost: 9.99, stock: 10 };
+
+function product(key: string, data: Record<string, unknown>, version = 1) {
+  table.put({ PK: "TEAM#team-a", SK: `PRODUCT#${key}`, type: "product", key, version, ...data });
+}
+function sheet(data: Record<string, unknown> = {}, id = "s1") {
+  table.put({ PK: "TEAM#team-a", SK: `SHEET#${id}`, type: "sheet", id, version: 1, client: "Echo", date: "2026-10-01", status: "open", items: {}, ...data });
+}
+function seed() {
+  product("ladder", ladder);
+  product("0123", gloves);
+  sheet();
+}
+const items = (id = "s1") => table.get("TEAM#team-a", `SHEET#${id}`)?.items as Record<string, Line>;
+const sheetVersion = (id = "s1") => table.get("TEAM#team-a", `SHEET#${id}`)?.version as number;
+const stockOf = (key: string) => table.get("TEAM#team-a", `PRODUCT#${key}`)?.stock;
+const movements = () => [...table.items.values()].filter((i) => String(i.SK).startsWith("MOVE#"));
+const audits = () => [...table.items.values()].filter((i) => String(i.SK).startsWith("AUDIT#"));
+const settingsItem = () => table.get("TEAM#team-a", "SETTINGS");
+const setMarkup = (equipmentMarkup: number, version = 1) => table.put({ PK: "TEAM#team-a", SK: "SETTINGS", type: "settings", equipmentMarkup, version });
+
+const CHECKOUT = "/teams/team-a/sheets/s1/checkout";
+const RETURN = "/teams/team-a/sheets/s1/return";
+const LOST = "/teams/team-a/sheets/s1/lost";
+const LINES = "/teams/team-a/sheets/s1/lines";
+const SETTINGS = "/teams/team-a/settings";
+const patchSheet = (data: Record<string, unknown>, user = CONTRIBUTOR) => call("PATCH", "/teams/team-a/sheets/s1", { data, expectedVersion: sheetVersion() }, user);
+
+describe("items: a supply or company equipment", () => {
+  it("saves equipment without a price, its value in cost, and refuses any other kind", async () => {
+    const saved = await call("PUT", "/teams/team-a/products/mat", { data: { code: "", name: "Cutting mat", kind: "equipment", cost: 35 }, expectedVersion: 0 });
+    expect(saved).toMatchObject({ status: 200, body: { data: { name: "Cutting mat", kind: "equipment", cost: 35 } } });
+    expect(saved.body.data.price).toBeUndefined();
+    expect(await call("PUT", "/teams/team-a/products/rags", { data: { code: "", name: "Rags", kind: "supply", price: 2 }, expectedVersion: 0 })).toMatchObject({ status: 200 });
+    for (const kind of ["tool", "", null, "Equipment"]) {
+      expect(await call("PUT", "/teams/team-a/products/odd", { data: { name: "Odd", kind }, expectedVersion: 0 })).toMatchObject({ status: 400, body: { error: { message: 'kind is "supply" or "equipment"' } } });
+    }
+  });
+
+  it("keeps the `:bought` ending for lines bought for a client: no new item may have it", async () => {
+    expect(await call("PUT", "/teams/team-a/products/ladder%3Abought", { data: { name: "Ladder" }, expectedVersion: 0 })).toMatchObject({ status: 400, body: { error: { message: 'An item\'s key can\'t end in ":bought"' } } });
+    // One stored before the rule can still be edited
+    product("old:bought", { name: "Legacy", price: 1 });
+    expect(await call("PATCH", "/teams/team-a/products/old%3Abought", { data: { name: "Legacy 2" }, expectedVersion: 1 })).toMatchObject({ status: 200 });
+  });
+});
+
+describe("checking equipment out", () => {
+  it("snapshots the kind and value, not a price, and records who took it and when, moving stock as for a supply", async () => {
+    seed();
+    const res = await call("POST", CHECKOUT, { operationId: op(), productKey: "ladder", quantity: 2 });
+    expect(res).toMatchObject({ status: 200, body: { result: { lineCreated: true, stockDelta: -2, snapshot: { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120 } } } });
+    expect(res.body.result.snapshot.price).toBeUndefined();
+    expect(items().ladder).toEqual({ code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, out: 2, returned: 0, takenBy: CONTRIBUTOR, takenAt: "2026-10-01T12:00:00.000Z" });
+    expect(stockOf("ladder")).toBe(2);
+
+    // A later checkout names the latest person to take more; the snapshot stays
+    clock += 60_000;
+    product("ladder", { ...ladder, stock: 2, name: "Renamed ladder", kind: "supply", price: 9 }, 5);
+    await call("POST", CHECKOUT, { operationId: op(), productKey: "ladder", quantity: 1 }, OWNER);
+    expect(items().ladder).toEqual({ code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, out: 3, returned: 0, takenBy: OWNER, takenAt: "2026-10-01T12:01:00.000Z" });
+    expect(movements().map((m) => [m.reason, m.delta, m.userId])).toEqual([
+      ["checkout", -2, CONTRIBUTOR],
+      ["checkout", -1, OWNER],
+    ]);
+  });
+
+  it("leaves a supply line as it was: a price, no kind, no taker", async () => {
+    seed();
+    await call("POST", CHECKOUT, { operationId: op(), productKey: "0123", quantity: 1 });
+    await call("POST", CHECKOUT, { operationId: op(), productKey: "0123", quantity: 1 });
+    expect(items()["0123"]).toEqual({ code: "0123", name: "Nitrile gloves", price: 12.5, cost: 9.99, out: 2, returned: 0 });
+  });
+
+  it("refuses a line bought for the client: it never came from storage", async () => {
+    seed();
+    expect(await call("POST", CHECKOUT, { operationId: op(), productKey: "ladder:bought", quantity: 1 })).toMatchObject({ status: 400, body: { error: { message: "Items bought for the client aren't checked out from storage" } } });
+  });
+});
+
+describe("returns", () => {
+  it("take back at most what's neither returned nor lost", async () => {
+    seed();
+    sheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 3, returned: 1, lost: 1 } } });
+    expect(await call("POST", RETURN, { operationId: op(), productKey: "ladder", quantity: 2 })).toMatchObject({ status: 400, body: { error: { message: "Only 1 of this item is left to return" } } });
+    expect(await call("POST", RETURN, { operationId: op(), productKey: "ladder", quantity: 1 })).toMatchObject({ status: 200, body: { result: { stockDelta: 1 } } });
+    expect(items().ladder).toMatchObject({ out: 3, returned: 2, lost: 1 });
+    expect(stockOf("ladder")).toBe(5);
+  });
+
+  it("refuse a line bought for the client, which doesn't come back", async () => {
+    seed();
+    sheet({ items: { "ladder:bought": { name: "Step ladder", price: 150, cost: 120, purchased: true, priceSet: "markup", out: 1, returned: 0 } } });
+    expect(await call("POST", RETURN, { operationId: op(), productKey: "ladder:bought", quantity: 1 })).toMatchObject({ status: 400, body: { error: { message: "This was bought for the client, so it doesn't come back" } } });
+    expect(stockOf("ladder")).toBe(4);
+  });
+
+  it("don't count a lost piece that a concurrent write recorded between the read and the transaction", async () => {
+    seed();
+    sheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0 } } });
+    let once = false;
+    table.beforeTransactWrite = () => {
+      if (once) return;
+      once = true;
+      const s = table.get("TEAM#team-a", "SHEET#s1") as Record<string, unknown>;
+      table.put({ ...s, items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0, lost: 2 } } });
+    };
+    expect(await call("POST", RETURN, { operationId: op(), productKey: "ladder", quantity: 1 })).toMatchObject({ status: 400, body: { error: { message: "Only 0 of this item are left to return" } } });
+    expect(stockOf("ladder")).toBe(4);
+  });
+});
+
+describe("lost or broken", () => {
+  beforeEach(() => {
+    seed();
+    sheet({ items: { ladder: { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, out: 3, returned: 0 }, "0123": { name: "Nitrile gloves", price: 12.5, out: 2, returned: 0 } } });
+  });
+
+  it("adds to lost and the client's charge, records a lost movement, and leaves stock alone", async () => {
+    const id = op();
+    const res = await call("POST", LOST, { operationId: id, productKey: "ladder", quantity: 1, charge: 0.1 });
+    expect(res).toMatchObject({
+      status: 200,
+      body: {
+        replayed: false,
+        result: { command: "lost", reason: "lost", productKey: "ladder", sheetId: "s1", quantity: 1, stockDelta: 0, charge: 0.1, userId: CONTRIBUTOR },
+        sheet: { version: 2 },
+        product: { data: { stock: 4 } },
+      },
+    });
+    expect(items().ladder).toMatchObject({ out: 3, returned: 0, lost: 1, lostCharge: 0.1 });
+    // Several lost records add up, in whole cents (0.1 + 0.2 is 0.3)
+    await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1, charge: 0.2 });
+    expect(items().ladder).toMatchObject({ lost: 2, lostCharge: 0.3 });
+    // Without a charge, only lost moves
+    await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1 });
+    expect(items().ladder).toMatchObject({ lost: 3, lostCharge: 0.3 });
+    expect(stockOf("ladder")).toBe(4);
+    expect(movements().map((m) => ({ reason: m.reason, delta: m.delta, tracked: m.tracked, quantity: m.quantity, charge: m.charge, sheetId: m.sheetId }))).toEqual([
+      { reason: "lost", delta: 0, tracked: true, quantity: 1, charge: 0.1, sheetId: "s1" },
+      { reason: "lost", delta: 0, tracked: true, quantity: 1, charge: 0.2, sheetId: "s1" },
+      { reason: "lost", delta: 0, tracked: true, quantity: 1, charge: undefined, sheetId: "s1" },
+    ]);
+    // A retry changes nothing and returns the first result
+    const again = await call("POST", LOST, { operationId: id, productKey: "ladder", quantity: 1, charge: 0.1 });
+    expect(again.body).toMatchObject({ replayed: true, result: res.body.result });
+    expect(items().ladder).toMatchObject({ lost: 3 });
+    expect(counts.Writes).toBe(3);
+  });
+
+  it("takes at most what's still out, equipment only, on an open sheet, and a charge only for a client", async () => {
+    await call("POST", RETURN, { operationId: op(), productKey: "ladder", quantity: 2 });
+    expect(await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 2 })).toMatchObject({ status: 400, body: { error: { message: "Only 1 of this item is still out" } } });
+    expect(await call("POST", LOST, { operationId: op(), productKey: "0123", quantity: 1 })).toMatchObject({ status: 400, body: { error: { message: "Only company equipment is recorded as lost or broken" } } });
+    expect(await call("POST", LOST, { operationId: op(), productKey: "mat", quantity: 1 })).toMatchObject({ status: 400, body: { error: { message: "This item isn't on this sheet" } } });
+    for (const charge of [-1, 1.005, "5", 1_000_001]) expect((await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1, charge })).status).toBe(400);
+    expect((await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 0 })).status).toBe(400);
+    expect((await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1, note: "x" })).status).toBe(400);
+    expect((await call("POST", "/teams/team-a/sheets/nope/lost", { operationId: op(), productKey: "ladder", quantity: 1 })).status).toBe(404);
+    sheet({ kind: "adhoc", items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } }, "adhoc-1");
+    expect(await call("POST", "/teams/team-a/sheets/adhoc-1/lost", { operationId: op(), productKey: "ladder", quantity: 1, charge: 5 })).toMatchObject({ status: 400, body: { error: { message: "This sheet has no client to charge" } } });
+    expect(await call("POST", "/teams/team-a/sheets/adhoc-1/lost", { operationId: op(), productKey: "ladder", quantity: 1 })).toMatchObject({ status: 200 });
+    sheet({ status: "closed", items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } });
+    expect(await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1 })).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
+    expect(await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1 }, VIEWER)).toMatchObject({ status: 403, body: { error: { reason: "view_only" } } });
+  });
+
+  it("refuses a line whose stored counts or charge aren't usable, and a total charge over the limit", async () => {
+    sheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0, lostCharge: "lots" } } });
+    expect(await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1, charge: 1 })).toMatchObject({ status: 400, body: { error: { message: "This line's charge isn't an amount; correct the line first" } } });
+    sheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0, lost: 0.5 } } });
+    expect(await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1 })).toMatchObject({ status: 400, body: { error: { message: expect.stringMatching(/whole numbers/) } } });
+    sheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0, lost: 1, lostCharge: 999_999.5 } } });
+    expect(await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1, charge: 1 })).toMatchObject({ status: 400, body: { error: { message: "A line's charge can't be more than 1000000" } } });
+  });
+
+  it("adds to the charge a concurrent record left, not the one it read", async () => {
+    let once = false;
+    table.beforeTransactWrite = () => {
+      if (once) return;
+      once = true;
+      const s = table.get("TEAM#team-a", "SHEET#s1") as Record<string, unknown>;
+      table.put({ ...s, version: 2, items: { ...(s.items as object), ladder: { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, out: 3, returned: 0, lost: 1, lostCharge: 40 } } });
+    };
+    expect(await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1, charge: 60 })).toMatchObject({ status: 200 });
+    expect(items().ladder).toMatchObject({ lost: 2, lostCharge: 100 });
+  });
+});
+
+describe("Finished Return with equipment out", () => {
+  beforeEach(() => {
+    seed();
+    sheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 1 }, "0123": { name: "Nitrile gloves", price: 12.5, out: 2, returned: 0 } } });
+  });
+
+  it("is refused with 409 equipment_out while any piece is still out, and isn't counted as a write conflict", async () => {
+    const res = await patchSheet({ status: "closed", closedAt: "2026-10-01T12:00:00.000Z" });
+    expect(res).toMatchObject({ status: 409, body: { error: { code: "aborted", reason: "equipment_out", message: "Equipment is still out on this sheet" } } });
+    expect(table.get("TEAM#team-a", "SHEET#s1")?.status).toBe("open");
+    expect(counts.ConditionalWriteConflicts).toBeUndefined();
+    // A PUT closing it is refused the same way
+    const { PK, SK, type, id, version, ...whole } = table.get("TEAM#team-a", "SHEET#s1") as Record<string, unknown>;
+    void [PK, SK, type, id, version];
+    expect(await call("PUT", "/teams/team-a/sheets/s1", { data: { ...whole, status: "closed" }, expectedVersion: 1 })).toMatchObject({ status: 409, body: { error: { reason: "equipment_out" } } });
+  });
+
+  it("closes once each piece is back or lost; unreturned supplies don't stop it", async () => {
+    await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1, charge: 80 });
+    expect(await patchSheet({ status: "closed" })).toMatchObject({ status: 200, body: { data: { status: "closed" } } });
+  });
+
+  it("refuses an edit to a closed sheet that puts more equipment out, but not other edits to one that already had some out", async () => {
+    // Closed before the rule (an imported artifact sheet, say)
+    sheet({ status: "closed", items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 1 } } });
+    expect(await patchSheet({ client: "Echo Ltd" })).toMatchObject({ status: 200 });
+    expect(await patchSheet({ items: { ladder: { returned: 0 } } })).toMatchObject({ status: 409, body: { error: { reason: "equipment_out" } } });
+    expect(await patchSheet({ items: { ladder: { returned: 2 } } })).toMatchObject({ status: 200 });
+  });
+});
+
+describe("sheet documents and the new fields", () => {
+  beforeEach(seed);
+
+  it("take an equipment line with its taker, and keep a line's kind as it was first saved", async () => {
+    const takenAt = "2026-10-01T12:00:00.000Z";
+    expect(await patchSheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0, takenBy: "Sam", takenAt } } })).toMatchObject({ status: 200 });
+    expect(await patchSheet({ items: { ladder: { kind: "supply" } } })).toMatchObject({ status: 400, body: { error: { message: 'A line\'s kind is "equipment" or left out' } } });
+    await call("POST", CHECKOUT, { operationId: op(), productKey: "0123", quantity: 1 });
+    expect(await patchSheet({ items: { "0123": { kind: "equipment" } } })).toMatchObject({ status: 400, body: { error: { message: "A line's kind can't change" } } });
+    // A PUT can't drop it either
+    const whole = { client: "Echo", date: "2026-10-01", status: "open", items: { ...items(), ladder: { name: "Step ladder", out: 1, returned: 0 } } };
+    expect(await call("PUT", "/teams/team-a/sheets/s1", { data: whole, expectedVersion: sheetVersion() })).toMatchObject({ status: 400, body: { error: { message: "A line's kind can't change" } } });
+  });
+
+  it("allow lost and a charge on equipment lines only, the charge on a client's sheet only, and check their types", async () => {
+    await patchSheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 2, returned: 0 } } });
+    expect(await patchSheet({ items: { ladder: { lost: 1, lostCharge: 25.5 } } })).toMatchObject({ status: 200 });
+    const refused = [
+      [{ ladder: { lost: 1.5 } }, "lost is a whole number, on company equipment lines only"],
+      [{ ladder: { lost: -1 } }, "lost is a whole number, on company equipment lines only"],
+      [{ gloves: { name: "Gloves", price: 1, out: 1, returned: 0, lost: 1 } }, "lost is a whole number, on company equipment lines only"],
+      [{ gloves: { name: "Gloves", price: 1, out: 1, returned: 0, lostCharge: 1 } }, "lostCharge is only on company equipment lines of a client's sheet"],
+      [{ ladder: { lostCharge: 1.234 } }, "lostCharge must be an amount from 0 to 1000000 with at most two decimals"],
+      [{ ladder: { takenBy: "x".repeat(201) } }, "takenBy is text of up to 200 characters"],
+      [{ ladder: { takenBy: 7 } }, "takenBy is text of up to 200 characters"],
+      [{ ladder: { takenAt: "yesterday" } }, "takenAt is an ISO time"],
+      [{ ladder: { returned: 2 } }, "A line's returned and lost can't add up to more than its out"],
+    ] as const;
+    for (const [lines, message] of refused) expect(await patchSheet({ items: lines }), message).toMatchObject({ status: 400, body: { error: { message } } });
+    sheet({ kind: "adhoc", items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } }, "adhoc-1");
+    expect(await call("PATCH", "/teams/team-a/sheets/adhoc-1", { data: { items: { ladder: { lost: 1 } } }, expectedVersion: 1 })).toMatchObject({ status: 200 });
+    expect(await call("PATCH", "/teams/team-a/sheets/adhoc-1", { data: { items: { ladder: { lostCharge: 5 } } }, expectedVersion: 2 })).toMatchObject({ status: 400 });
+  });
+
+  it("don't hold a line the write doesn't change to returned + lost <= out", async () => {
+    sheet({ items: { odd: { name: "Odd", price: 1, out: 1, returned: 3 } } });
+    expect(await patchSheet({ client: "Echo 2" })).toMatchObject({ status: 200 });
+  });
+
+  it("can't set a sheet's kind: only the server makes an ad hoc sheet", async () => {
+    expect(await call("PUT", "/teams/team-a/sheets/s2", { data: { client: "Van", date: "2026-10-01", kind: "adhoc", items: {} }, expectedVersion: 0 })).toMatchObject({ status: 400, body: { error: { message: "A sheet's kind is set by the server" } } });
+    expect(await patchSheet({ kind: "adhoc" })).toMatchObject({ status: 400 });
+    sheet({ kind: "adhoc" }, "adhoc-1");
+    expect(await call("PATCH", "/teams/team-a/sheets/adhoc-1", { data: { kind: "job" }, expectedVersion: 1 })).toMatchObject({ status: 400 });
+    expect(await call("PUT", "/teams/team-a/sheets/adhoc-1", { data: { client: "", date: "2026-10-01", items: {} }, expectedVersion: 1 })).toMatchObject({ status: 400 });
+    expect(await call("PATCH", "/teams/team-a/sheets/adhoc-1", { data: { date: "2026-10-02" }, expectedVersion: 1 })).toMatchObject({ status: 200 });
+  });
+
+  it("can't add a line bought for the client, or mark or unmark one; a changed price is recorded as typed", async () => {
+    const bought = { name: "Step ladder", price: 150, cost: 120, purchased: true, out: 1, returned: 0 };
+    expect(await patchSheet({ items: { "ladder:bought": bought } })).toMatchObject({ status: 400, body: { error: { message: expect.stringMatching(/Only a receipt's lines/) } } });
+    expect(await patchSheet({ items: { other: bought } })).toMatchObject({ status: 400 });
+    expect(await patchSheet({ items: { "ladder:bought": { ...bought, purchased: undefined } } })).toMatchObject({ status: 400 });
+    expect(await call("PUT", "/teams/team-a/sheets/s3", { data: { client: "New", date: "2026-10-01", items: { "x:bought": bought } }, expectedVersion: 0 })).toMatchObject({ status: 400 });
+
+    sheet({ items: { "ladder:bought": { ...bought, priceSet: "markup" }, "0123": { name: "Gloves", price: 1, out: 1, returned: 0 } } });
+    expect(await patchSheet({ items: { "ladder:bought": { purchased: false } } })).toMatchObject({ status: 400, body: { error: { message: "purchased is true or left out" } } });
+    expect(await patchSheet({ items: { "0123": { purchased: true } } })).toMatchObject({ status: 400 });
+    expect(await patchSheet({ items: { "ladder:bought": { kind: "equipment" } } })).toMatchObject({ status: 400 });
+    expect(await patchSheet({ items: { "0123": { priceSet: "manual" } } })).toMatchObject({ status: 400, body: { error: { message: "priceSet is set by the server, on lines bought for the client" } } });
+    expect(await patchSheet({ items: { "ladder:bought": { priceSet: "typed" } } })).toMatchObject({ status: 400 });
+    // Counts change freely; a priceSet sent without a price change stays the server's
+    expect(await patchSheet({ items: { "ladder:bought": { out: 2, priceSet: "manual" } } })).toMatchObject({ status: 200, body: { data: { items: { "ladder:bought": { out: 2, priceSet: "markup" } } } } });
+    expect(await patchSheet({ items: { "ladder:bought": { price: 140 } } })).toMatchObject({ status: 200, body: { data: { items: { "ladder:bought": { price: 140, priceSet: "manual" } } } } });
+    // One without a priceSet (written before it) stays without one until its price changes
+    sheet({ items: { "ladder:bought": bought } });
+    const kept = await patchSheet({ items: { "ladder:bought": { out: 3 } } });
+    expect(kept.status).toBe(200);
+    expect(kept.body.data.items["ladder:bought"].priceSet).toBeUndefined();
+  });
+});
+
+describe("equipment bought on a receipt for a client", () => {
+  beforeEach(() => {
+    seed();
+    product("mat", { code: "", name: "Cutting mat", kind: "equipment", cost: 30 });
+  });
+  const boughtLine = (key = "ladder") => items()[`${key}:bought`];
+
+  it("goes on its own charged line at the receipt price plus the team's markup, worked out on the server, and moves no stock", async () => {
+    setMarkup(25);
+    const res = await call("POST", LINES, { operationId: op(), lines: [{ productKey: "ladder", quantity: 1, name: "Step ladder", code: "LAD-1", cost: 99.99 }, { productKey: "0123", quantity: 2, name: "Gloves", price: 12.5, cost: 9 }] });
+    expect(res).toMatchObject({
+      status: 200,
+      body: {
+        result: {
+          lines: [
+            { productKey: "ladder", quantity: 1, lineCreated: true, lineKey: "ladder:bought", purchased: true },
+            { productKey: "0123", quantity: 2, lineCreated: true },
+          ],
+        },
+      },
+    });
+    // 99.99 × 1.25 = 124.9875, rounded to the cent
+    expect(boughtLine()).toEqual({ code: "LAD-1", name: "Step ladder", cost: 99.99, price: 124.99, purchased: true, priceSet: "markup", out: 1, returned: 0 });
+    expect(items()["0123"]).toEqual({ code: "", name: "Gloves", price: 12.5, cost: 9, out: 2, returned: 0 });
+    expect(items().ladder).toBeUndefined();
+    expect(stockOf("ladder")).toBe(4);
+    expect(movements()).toEqual([]);
+    // Nothing in the response gives the percentage away
+    expect(res.text).not.toMatch(/markup"?:\s*25|equipmentMarkup/);
+  });
+
+  it("rounds halves up, works from a pack's price each, and bills the receipt price at 0% when no markup was ever set", async () => {
+    await call("POST", LINES, { operationId: op(), lines: [{ productKey: "ladder", quantity: 1, name: "Step ladder", cost: 120 }] });
+    expect(boughtLine()).toMatchObject({ price: 120, priceSet: "markup" });
+    setMarkup(1);
+    // 0.5 × 1.01 = 0.505: half a cent, up
+    await call("POST", "/teams/team-a/sheets/s2/lines", { operationId: op(), lines: [{ productKey: "mat", quantity: 1, name: "Cutting mat", cost: 0.5 }] }).then((r) => expect(r.status).toBe(404));
+    sheet({}, "s2");
+    await call("POST", "/teams/team-a/sheets/s2/lines", { operationId: op(), lines: [{ productKey: "mat", quantity: 1, name: "Cutting mat", cost: 0.5 }] });
+    expect(items("s2")["mat:bought"]).toMatchObject({ price: 0.51, cost: 0.5 });
+    // A pack of 12 for $14.76 is 1.23 each (the app divides); 1.23 × 1.25 = 1.5375
+    setMarkup(25);
+    sheet({}, "s3");
+    await call("POST", "/teams/team-a/sheets/s3/lines", { operationId: op(), lines: [{ productKey: "mat", quantity: 12, name: "Cutting mat", cost: 1.23 }] });
+    expect(items("s3")["mat:bought"]).toMatchObject({ price: 1.54, cost: 1.23, out: 12 });
+  });
+
+  it("saves a typed price as manual, and refuses a price sent as the markup's", async () => {
+    setMarkup(25);
+    const typed = await call("POST", LINES, { operationId: op(), lines: [{ productKey: "ladder", quantity: 1, name: "Step ladder", cost: 100, price: 135, priceSet: "manual" }] }, OWNER);
+    expect(typed.status).toBe(200);
+    expect(boughtLine()).toMatchObject({ price: 135, cost: 100, priceSet: "manual", purchased: true });
+    const refused = [
+      [{ productKey: "mat", quantity: 1, name: "Mat", cost: 30, price: 37.5 }, /leave its price out/],
+      [{ productKey: "mat", quantity: 1, name: "Mat", cost: 30, price: 37.5, priceSet: "markup" }, /priceSet is "manual"/],
+      [{ productKey: "mat", quantity: 1, name: "Mat", cost: 30, priceSet: "manual" }, /needs its price/],
+      [{ productKey: "mat", quantity: 1, name: "Mat" }, /receipt price each, as cost/],
+      [{ productKey: "mat:bought", quantity: 1, name: "Mat", cost: 30 }, /own key/],
+      [{ productKey: "0123", quantity: 1, name: "Gloves" }, /price must be an amount/],
+    ] as const;
+    for (const [line, message] of refused) expect(await call("POST", LINES, { operationId: op(), lines: [line] })).toMatchObject({ status: 400, body: { error: { message: expect.stringMatching(message) } } });
+    // A typed price on a supply is simply its price
+    await call("POST", LINES, { operationId: op(), lines: [{ productKey: "0123", quantity: 1, name: "Gloves", price: 11, priceSet: "manual" }] });
+    expect(items()["0123"]).toEqual({ code: "", name: "Gloves", price: 11, out: 1, returned: 0 });
+    // A markup price over the money limit is refused rather than stored
+    setMarkup(1000);
+    expect(await call("POST", LINES, { operationId: op(), lines: [{ productKey: "mat", quantity: 1, name: "Mat", cost: 999_999 }] })).toMatchObject({ status: 400, body: { error: { message: expect.stringMatching(/type a price instead/) } } });
+  });
+
+  it("adds a second receipt to the bought line at its first price, apart from the same item on loan", async () => {
+    setMarkup(25);
+    await call("POST", CHECKOUT, { operationId: op(), productKey: "ladder", quantity: 1 });
+    await call("POST", LINES, { operationId: op(), lines: [{ productKey: "ladder", quantity: 1, name: "Step ladder", cost: 100 }] });
+    setMarkup(50, 2);
+    const second = await call("POST", LINES, { operationId: op(), lines: [{ productKey: "ladder", quantity: 2, name: "Step ladder", cost: 110 }] });
+    expect(second.body.result.lines).toEqual([{ productKey: "ladder", quantity: 2, lineCreated: false, lineKey: "ladder:bought", purchased: true }]);
+    expect(items().ladder).toMatchObject({ kind: "equipment", out: 1 });
+    expect(boughtLine()).toMatchObject({ price: 125, cost: 100, out: 3, purchased: true });
+    expect(stockOf("ladder")).toBe(3);
+  });
+
+  it("prices with the markup the transaction commits with, when an owner changes it meanwhile", async () => {
+    setMarkup(10);
+    let once = false;
+    table.beforeTransactWrite = () => {
+      if (once) return;
+      once = true;
+      setMarkup(20, 2);
+    };
+    expect((await call("POST", LINES, { operationId: op(), lines: [{ productKey: "ladder", quantity: 1, name: "Step ladder", cost: 100 }] })).status).toBe(200);
+    expect(boughtLine()).toMatchObject({ price: 120 });
+  });
+
+  it("follows the item's kind as the transaction commits, when someone changes it meanwhile", async () => {
+    let once = false;
+    table.beforeTransactWrite = () => {
+      if (once) return;
+      once = true;
+      product("0123", { ...gloves, kind: "equipment" }, 2);
+    };
+    // Sent as a supply with its price; by the retry it's equipment, priced only by the server
+    expect(await call("POST", LINES, { operationId: op(), lines: [{ productKey: "0123", quantity: 1, name: "Gloves", price: 12.5, cost: 9 }] })).toMatchObject({ status: 400, body: { error: { message: expect.stringMatching(/leave its price out/) } } });
+    expect(items()).toEqual({});
+    once = false;
+    table.beforeTransactWrite = () => {
+      if (once) return;
+      once = true;
+      product("ladder", { ...ladder, kind: "supply", price: 5 }, 2);
+    };
+    expect((await call("POST", LINES, { operationId: op(), lines: [{ productKey: "ladder", quantity: 1, name: "Step ladder", cost: 100, price: 130, priceSet: "manual" }] })).status).toBe(200);
+    expect(items()).toEqual({ ladder: { code: "", name: "Step ladder", price: 130, cost: 100, out: 1, returned: 0 } });
+  });
+});
+
+describe("team settings", () => {
+  it("an owner reads 0% until they set it, then saves it with expectedVersion, audited with the old and new value", async () => {
+    expect(await call("GET", SETTINGS, undefined, OWNER)).toMatchObject({ status: 200, body: { version: 0, settings: { equipmentMarkup: 0 } } });
+    const saved = await call("PUT", SETTINGS, { equipmentMarkup: 25, expectedVersion: 0 }, OWNER);
+    expect(saved).toMatchObject({ status: 200, body: { version: 1, settings: { equipmentMarkup: 25 } } });
+    expect(settingsItem()).toMatchObject({ type: "settings", equipmentMarkup: 25, version: 1, updatedBy: OWNER, updatedAt: "2026-10-01T12:00:00.000Z" });
+    expect(audits()).toEqual([expect.objectContaining({ type: "audit", userId: OWNER, action: "settings.equipment-markup", detail: { from: 0, to: 25 }, ts: "2026-10-01T12:00:00.000Z" })]);
+    expect(await call("PUT", SETTINGS, { equipmentMarkup: 30, expectedVersion: 0 }, OWNER)).toMatchObject({ status: 409, body: { error: { code: "aborted" } } });
+    expect(await call("PUT", SETTINGS, { equipmentMarkup: 12.75, expectedVersion: 1 }, OWNER)).toMatchObject({ status: 200, body: { version: 2, settings: { equipmentMarkup: 12.75 } } });
+    // Saving the same value again isn't a change to audit
+    expect(await call("PUT", SETTINGS, { equipmentMarkup: 12.75, expectedVersion: 2 }, OWNER)).toMatchObject({ status: 200, body: { version: 3 } });
+    expect(audits().map((a) => a.detail)).toEqual([
+      { from: 0, to: 25 },
+      { from: 25, to: 12.75 },
+    ]);
+    expect(await call("GET", SETTINGS, undefined, OWNER)).toMatchObject({ body: { version: 3, settings: { equipmentMarkup: 12.75 } } });
+  });
+
+  it("takes a percentage from 0 to 1,000 with at most two decimals, and nothing else", async () => {
+    for (const equipmentMarkup of [-1, 1000.01, 1.234, "25", null, Number.NaN]) {
+      expect((await call("PUT", SETTINGS, { equipmentMarkup, expectedVersion: 0 }, OWNER)).status, String(equipmentMarkup)).toBe(400);
+    }
+    expect((await call("PUT", SETTINGS, { equipmentMarkup: 5 }, OWNER)).status).toBe(400);
+    expect((await call("PUT", SETTINGS, { equipmentMarkup: 5, expectedVersion: 0, supplyMarkup: 5 }, OWNER)).status).toBe(400);
+    expect(await call("PUT", SETTINGS, { equipmentMarkup: 1000, expectedVersion: 0 }, OWNER)).toMatchObject({ status: 200 });
+    expect(await call("PUT", SETTINGS, { equipmentMarkup: 0, expectedVersion: 1 }, OWNER)).toMatchObject({ status: 200 });
+  });
+
+  it("reads a stored markup that isn't a usable percentage as 0%", async () => {
+    table.put({ PK: "TEAM#team-a", SK: "SETTINGS", type: "settings", equipmentMarkup: "lots", version: 4 });
+    expect(await call("GET", SETTINGS, undefined, OWNER)).toMatchObject({ body: { version: 4, settings: { equipmentMarkup: 0 } } });
+  });
+
+  it("only owners change it: contributors and viewers get owners_only and nothing is written", async () => {
+    for (const user of [CONTRIBUTOR, VIEWER]) {
+      expect(await call("PUT", SETTINGS, { equipmentMarkup: 50, expectedVersion: 0 }, user)).toMatchObject({ status: 403, body: { error: { code: "permission_denied", reason: "owners_only" } } });
+    }
+    expect(settingsItem()).toBeUndefined();
+    expect(audits()).toEqual([]);
+  });
+
+  it("never reaches a contributor or viewer, in any response they get", async () => {
+    seed();
+    setMarkup(37.77);
+    sheet({ items: { ladder: { name: "Step ladder", kind: "equipment", out: 1, returned: 0 } } });
+    const bodies: string[] = [];
+    for (const user of [CONTRIBUTOR, VIEWER]) {
+      const mine = await call("GET", SETTINGS, undefined, user);
+      expect(mine).toMatchObject({ status: 200, body: { version: 1, settings: {} } });
+      bodies.push(mine.text);
+      for (const path of ["/teams/team-a/products", "/teams/team-a/sheets", "/teams/team-a/sheets/s1", "/teams/team-a/products/ladder", "/teams/team-a/products/ladder/movements"]) {
+        bodies.push((await call("GET", path, undefined, user)).text);
+      }
+    }
+    const lines = await call("POST", LINES, { operationId: op(), lines: [{ productKey: "ladder", quantity: 1, name: "Step ladder", cost: 80 }] }, CONTRIBUTOR);
+    expect(lines.status).toBe(200);
+    bodies.push(lines.text, (await call("POST", LOST, { operationId: op(), productKey: "ladder", quantity: 1 }, CONTRIBUTOR)).text);
+    for (const text of bodies) {
+      expect(text).not.toContain("equipmentMarkup");
+      expect(text).not.toContain("37.77");
+    }
+    // The price it gave (80 × 1.3777) is everyone's to see, as for any line
+    expect(boughtPrice()).toBe(110.22);
+  });
+});
+
+const boughtPrice = () => items()["ladder:bought"]?.price;

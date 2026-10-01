@@ -32,6 +32,14 @@ export function productKey(value: unknown): string {
   return value;
 }
 
+/**
+ * The suffix of a sheet line for company equipment bought for the client
+ * (ADR 0017, section 2a): `<productKey>:bought`. Only the receipt's lines
+ * command (addLines) makes such a line, and no new product may have a key
+ * ending in it.
+ */
+export const BOUGHT_SUFFIX = ":bought";
+
 /** The longest barcode: the same bound as a product key, which the app makes from the barcode. */
 export const MAX_CODE_LENGTH = 256;
 
@@ -145,6 +153,8 @@ export const keys = {
   webhook: (eventId: string) => ({ PK: `WEBHOOK#${id(eventId, "webhook event ID")}`, SK: "DONE" }),
   /** That an owner was emailed about a Stripe event (claimBillingNotice), so a retry doesn't email them again. */
   webhookNotice: (eventId: string, userId: string) => ({ PK: `WEBHOOK#${id(eventId, "webhook event ID")}`, SK: `NOTICE#${id(userId, "user ID")}` }),
+  /** The team's settings (ADR 0017, section 2a): owners write it; only owners read its markup. */
+  settings: (teamId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: "SETTINGS" }),
   /** A checkout, return or stock command's record, for replaying a retry (commands.ts). */
   operation: (teamId: string, operationId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `OP#${id(operationId, "operation ID")}` }),
   /** A CSV inventory import's job record: its request, plan size and progress (imports.ts). */

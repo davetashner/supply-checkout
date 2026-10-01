@@ -130,6 +130,11 @@ tags:
       Checkout, return and stock adjustments as single transactions, each
       idempotent by a client-generated operation ID, and an item's stock
       history. The client contract is in [commands.md](commands.md).
+  - name: settings
+    description: |
+      The team's settings (ADR 0017, section 2a): the markup on company
+      equipment bought on a receipt for a client. Owners read and change
+      them; everyone else gets none of them back.
   - name: account
     description: The signed-in user's teams and pending invites, creating a team, and accepting an invite (first sign-in).
   - name: members
@@ -479,7 +484,10 @@ paths:
         Adds `quantity` to the line's `out`, creating the line if it isn't on
         the sheet yet, and takes `quantity` off the product's `stock` if the
         product tracks stock. A new line copies `code`, `name`, `price` and
-        `cost` from the product as the transaction finds it (ADR 0014); the
+        `cost` from the product as the transaction finds it (ADR 0014), and for
+        company equipment (ADR 0017) `kind: "equipment"` instead of a `price`,
+        with `takenBy` (the caller) and `takenAt`, which each later checkout
+        of the line updates; the
         request's `name`, `price`, `code` and `cost` are used only for an item
         that isn't in inventory, and then `name` and `price` are required. An
         existing line's copy never changes. The sheet must be open (any
@@ -506,6 +514,14 @@ paths:
         Adds each line's `quantity` to the sheet's `out` for its product,
         creating the line, with the request's `code`, `name`, `price` and
         `cost`, if the sheet doesn't have it. An existing line keeps its copy.
+        A line whose product is company equipment (read in the transaction)
+        is bought for the client (ADR 0017, section 2a): it goes on the line
+        `<productKey>:bought` with `purchased: true`, at the request's `price`
+        when it says `priceSet: "manual"`, or else at its `cost` (the receipt
+        price each, required then) plus the team's equipment markup, worked
+        out on the server and rounded to the cent (`priceSet: "markup"`). A
+        `price` for equipment without `priceSet: "manual"`, or any other
+        `priceSet`, is refused with 400.
         Every line changes or none does. Stock doesn't move: the items were
         bought for the client and never were in storage. 1 to 40 lines, each
         product at most once. The sheet must be open. Contributors and owners
@@ -528,12 +544,13 @@ paths:
       operationId: returnItems
       summary: Record whole eaches of a line coming back, and put them back in stock, in one transaction.
       description: |
-        Adds `quantity` to the line's `returned`, which can never go above
-        `out`, and adds `quantity` to the product's `stock` if the product
+        Adds `quantity` to the line's `returned`, which with `lost` can never
+        go above `out`, and adds `quantity` to the product's `stock` if the product
         tracks stock. Prices aren't touched. The sheet must be open: a closed
         sheet takes no returns (reopen it first, or correct the line's counts
-        with a `PATCH`, which doesn't move stock). Contributors and owners
-        only. Idempotent by `operationId`.
+        with a `PATCH`, which doesn't move stock). A line bought for the
+        client (`purchased: true`) doesn't come back: 400. Contributors and
+        owners only. Idempotent by `operationId`.
       requestBody: { $ref: "#/components/requestBodies/Return" }
       responses:
         "200": { $ref: "#/components/responses/CommandDone" }
@@ -543,6 +560,73 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/CommandConflict" }
         "413": { $ref: "#/components/responses/TooLarge" }
+  /teams/{teamId}/sheets/{sheetId}/lost:
+    parameters:
+      - $ref: "#/components/parameters/teamId"
+      - $ref: "#/components/parameters/sheetId"
+    post:
+      tags: [commands]
+      operationId: markLost
+      summary: Record company equipment lost or broken on the job, in one transaction, without moving stock.
+      description: |
+        Adds `quantity` to an equipment line's `lost`, which with `returned`
+        can never go above `out`, and records a movement with `reason: "lost"`
+        and `delta: 0` (stock went down at checkout). With `charge` (dollars
+        for the lot, a job sheet only), adds it to the line's `lostCharge`,
+        which the sheet charges the client (ADR 0017, section 3). Equipment
+        lines only, and the sheet must be open. Contributors and owners only.
+        Idempotent by `operationId`.
+      requestBody: { $ref: "#/components/requestBodies/Lost" }
+      responses:
+        "200": { $ref: "#/components/responses/CommandDone" }
+        "400": { $ref: "#/components/responses/CommandRefused" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/CommandConflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+  /teams/{teamId}/settings:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    get:
+      tags: [settings]
+      operationId: getTeamSettings
+      summary: The team's settings, as the caller may see them.
+      description: |
+        Any member may ask. Owners get every setting; contributors and viewers
+        get none of them (`settings` is empty), so the equipment markup never
+        reaches them. `version` is 0 until an owner first saves the settings.
+      responses:
+        "200": { $ref: "#/components/responses/Settings" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [settings]
+      operationId: setTeamSettings
+      summary: Change the team's settings. Owners only.
+      description: |
+        Saves `equipmentMarkup`, a percentage from 0 to 1,000 with at most two
+        decimals (0 until it's set), if nobody else has since
+        `expectedVersion` (0 for settings never saved). A change to the
+        markup goes into the team's audit log with who changed it and the old
+        and new value.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [equipmentMarkup, expectedVersion]
+              properties:
+                equipmentMarkup: { type: number, minimum: 0, maximum: 1000, description: Percent, at most two decimals. }
+                expectedVersion: { type: integer, minimum: 0 }
+            example: { equipmentMarkup: 25, expectedVersion: 0 }
+      responses:
+        "200": { $ref: "#/components/responses/Settings" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
   /me:
     get:
       tags: [account]
@@ -2011,18 +2095,32 @@ components:
                 items:
                   type: object
                   additionalProperties: false
-                  required: [productKey, quantity, name, price]
+                  required: [productKey, quantity, name]
                   properties:
-                    productKey: { type: string, minLength: 1, maxLength: 256, description: "The line's key. Each product at most once." }
+                    productKey: { type: string, minLength: 1, maxLength: 256, description: "The product's key (never one ending in `:bought`). Each product at most once." }
                     quantity: { $ref: "#/components/schemas/Quantity" }
                     name: { type: string, minLength: 1, maxLength: 200, description: For a new line. Trimmed. }
-                    price: { allOf: [{ $ref: "#/components/schemas/Money" }], description: For a new line. The client price per each. }
+                    price: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "For a new line. The client price per each: required for a supply; for company equipment only with `priceSet: \"manual\"`." }
                     code: { type: string, maxLength: 256, description: For a new line. Its barcode, or empty. }
-                    cost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: For a new line. What the business paid per each. }
+                    cost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "For a new line. What the business paid per each (the receipt price): required for company equipment priced by the markup." }
+                    priceSet: { const: manual, description: "Company equipment only: `price` is one the reviewer typed, not the markup price." }
           examples:
             receipt:
               summary: Two receipt lines for a client
               value: { operationId: "6ec0bd7f-11c0-43da-975e-2a8ad9ebae0b", lines: [{ productKey: "0123", quantity: 4, name: "Nitrile gloves", price: 12.5, code: "0123", cost: 9.99 }, { productKey: "k-7f3a", quantity: 2, name: "Painter's tape", price: 6.25, cost: 6.25 }] }
+    Lost:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [operationId, productKey, quantity]
+            properties:
+              operationId: { $ref: "#/components/schemas/OperationId" }
+              productKey: { type: string, minLength: 1, maxLength: 256, description: The equipment line's key. }
+              quantity: { $ref: "#/components/schemas/Quantity" }
+              charge: { allOf: [{ $ref: "#/components/schemas/Money" }], description: Dollars to charge the client for the lot (not each). Job sheets only. }
     Return:
       required: true
       content:
@@ -2226,11 +2324,12 @@ components:
       description: US dollars before tax, at most two decimals (ADR 0014). More decimals are refused, not rounded.
     LineSnapshot:
       type: object
-      required: [code, name, price]
+      required: [code, name]
       properties:
         code: { type: string }
         name: { type: string }
-        price: { type: number }
+        price: { type: number, description: Absent for company equipment, which has no client price. }
+        kind: { const: equipment, description: Company equipment (ADR 0017). Absent for a supply. }
         cost: { type: number, description: Absent when unknown. }
     CommandResult:
       type: object
@@ -2238,8 +2337,8 @@ components:
       required: [operationId, command, reason, productKey, stockDelta, userId, at]
       properties:
         operationId: { type: string, format: uuid }
-        command: { type: string, enum: [checkout, return, stockAdjust] }
-        reason: { type: string, enum: [checkout, return, receipt, count, uncount] }
+        command: { type: string, enum: [checkout, return, lost, stockAdjust] }
+        reason: { type: string, enum: [checkout, return, lost, receipt, count, uncount] }
         productKey: { type: string }
         sheetId: { type: string, description: Checkout and return. }
         quantity: { type: integer, description: Eaches checked out, returned or received. Absent for a count or uncount. }
@@ -2248,6 +2347,7 @@ components:
         lineCreated: { type: boolean, description: Checkout only. }
         snapshot: { $ref: "#/components/schemas/LineSnapshot" }
         unitCost: { type: number, description: Receipt only. }
+        charge: { type: number, description: "Lost only: what the client is charged for it, if anything." }
         userId: { type: string }
         at: { type: string, format: date-time }
     Movement:
@@ -2257,13 +2357,14 @@ components:
       properties:
         type: { const: movement }
         productKey: { type: string }
-        reason: { type: string, enum: [checkout, return, receipt, count, uncount, import, delete], description: "`import`: a CSV import set the stock (`count`). `uncount`: someone stopped counting the item, removing its stock, recorded as taking it to 0. `delete`: the item was deleted, taking its stock to 0." }
+        reason: { type: string, enum: [checkout, return, receipt, count, uncount, import, delete, lost], description: "`import`: a CSV import set the stock (`count`). `uncount`: someone stopped counting the item, removing its stock, recorded as taking it to 0. `delete`: the item was deleted, taking its stock to 0. `lost`: company equipment lost or broken on a job (`delta` 0: stock went down at checkout)." }
         delta: { type: integer, description: The change to `stock`. 0 when the item didn't track stock. }
         tracked: { type: boolean, description: Whether the item tracked stock. }
         quantity: { type: integer }
         count: { type: integer }
         sheetId: { type: string }
         unitCost: { type: number }
+        charge: { type: number, description: "Lost only: what the client is charged for it, if anything." }
         operationId: { type: string, format: uuid }
         userId: { type: string }
         at: { type: string, format: date-time }
@@ -2311,7 +2412,9 @@ components:
       properties:
         code: { type: string, maxLength: 256, description: The barcode; empty for an item without one. }
         name: { type: string }
-        price: { type: number, minimum: 0 }
+        price: { type: number, minimum: 0, description: The client price each. Absent for company equipment. }
+        cost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "What the business paid per each; for company equipment, its value each." }
+        kind: { type: string, enum: [supply, equipment], description: "A supply (used up and charged; the default when absent) or company equipment (reused, and not charged), ADR 0017." }
         stock: { type: number, description: "The count in storage; absent if not counted. Read-only here: only the stock commands and the CSV import change it, and a write may only repeat the stored value." }
         updatedAt: { type: string, format: date-time }
     Sheet:
@@ -2323,8 +2426,9 @@ components:
         createdBy: { type: [string, "null"], description: "The creator's user ID, or `null` without a signed-in user." }
         createdByName: { type: string, description: "Who prepared the sheet, when `createdBy` is `null`." }
         createdAt: { type: string, format: date-time }
-        status: { type: string, enum: [open, closed] }
+        status: { type: string, enum: [open, closed], description: "Closing is refused (409 `equipment_out`) while company equipment is still out." }
         closedAt: { type: string, format: date-time }
+        kind: { const: adhoc, description: Set only by the server; a document write can't add, change or remove it. }
         items:
           type: object
           description: The sheet's lines, keyed by product key.
@@ -2344,7 +2448,14 @@ components:
         price: { type: number, minimum: 0 }
         cost: { allOf: [{ $ref: "#/components/schemas/Money" }], description: "What the business paid per each (ADR 0014): copied from the product at the line's first checkout, or the receipt's cost each for a line a receipt adds. Absent when unknown; any other value is refused with 400 `bad_request`." }
         out: { type: integer, minimum: 0, description: How many were taken. }
-        returned: { type: integer, minimum: 0, description: How many came back. }
+        returned: { type: integer, minimum: 0, description: "How many came back. With `lost`, never more than `out`." }
+        kind: { const: equipment, description: "Company equipment (ADR 0017), from the product at the line's first checkout; it can't change. Not charged." }
+        lost: { type: integer, minimum: 0, description: Equipment only. How many were lost or broken. }
+        lostCharge: { allOf: [{ $ref: "#/components/schemas/Money" }], description: Equipment on a job sheet only. What the client is charged for what was lost or broken. }
+        takenBy: { type: string, maxLength: 200, description: Who took equipment last. }
+        takenAt: { type: string, format: date-time, description: When equipment was last taken. }
+        purchased: { const: true, description: "Company equipment bought for the client, on the line `<productKey>:bought` (ADR 0017, section 2a). Only the receipt's lines command adds one." }
+        priceSet: { type: string, enum: [markup, manual], description: "Lines bought for the client: whether the server worked the price out from the markup, or someone typed it. Set by the server." }
     Team:
       type: object
       required: [id, name, role, plan, status, trialEndsAt, homeRegion, closedAt, deletesAt]
@@ -2423,7 +2534,7 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_invalid, password_mismatch, federated_sign_in, signout_failed]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_invalid, password_mismatch, federated_sign_in, signout_failed]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -2435,6 +2546,9 @@ components:
                 can't be reopened.
                 `stock_changed`: a stock count sent with `expectedStock` found
                 the stock already changed from it (the message says what it is now).
+                `equipment_out`: Finished Return (closing a sheet) while company
+                equipment is still out on it; each piece must be back, lost or
+                broken first (ADR 0017).
                 Verifying an email address: `code_mismatch` (the code isn't
                 right), `code_expired`, `already_verified`, `email_in_use`
                 (another account has the address), and `email_changed` (the
@@ -2548,6 +2662,8 @@ components:
                         productKey: { type: string }
                         quantity: { type: integer }
                         lineCreated: { type: boolean, description: "False: it added to a line already on the sheet." }
+                        lineKey: { type: string, description: "Company equipment bought for the client: the line it went on, `<productKey>:bought`." }
+                        purchased: { const: true }
                   userId: { type: string }
                   at: { type: string, format: date-time }
               sheet:
@@ -2596,6 +2712,20 @@ components:
     TooManyTeams:
       description: "`quota_exceeded`: the caller has created 5 teams today (UTC), or is already in 20 teams (the message says which)."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Settings:
+      description: The team's settings as the caller may see them.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [version, settings]
+            properties:
+              version: { type: integer, minimum: 0, description: 0 until an owner first saves the settings. }
+              settings:
+                type: object
+                description: Every setting for an owner; empty for anyone else.
+                properties:
+                  equipmentMarkup: { type: number, minimum: 0, maximum: 1000, description: "Percent added to the receipt price of company equipment bought for a client. Owners only." }
     BadRequest:
       description: "`bad_request`: malformed JSON, ID, field, query or cursor."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }

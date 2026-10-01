@@ -10,7 +10,22 @@
  * idempotent by operation ID, and a product's stock history. And the CSV
  * inventory import.
  */
-export type Operation = "list" | "get" | "set" | "update" | "delete" | "checkout" | "return" | "addLines" | "adjustStock" | "movements" | "importProducts" | "supportActions";
+export type Operation =
+  | "list"
+  | "get"
+  | "set"
+  | "update"
+  | "delete"
+  | "checkout"
+  | "return"
+  | "lost"
+  | "addLines"
+  | "adjustStock"
+  | "movements"
+  | "importProducts"
+  | "supportActions"
+  | "getSettings"
+  | "setSettings";
 export type HttpMethod = "GET" | "PUT" | "PATCH" | "DELETE" | "POST";
 
 /**
@@ -48,6 +63,8 @@ const collectionRoutes = (collection: "products" | "sheets", param: string): Dat
 const commandRoutes: DataRoute[] = [
   { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/checkout", collection: "sheets", operation: "checkout", minRole: "contributor" },
   { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/return", collection: "sheets", operation: "return", minRole: "contributor" },
+  // Company equipment lost or broken on a job (ADR 0017, section 3): no stock moves
+  { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/lost", collection: "sheets", operation: "lost", minRole: "contributor" },
   // A receipt's lines for a client, added to an existing sheet in one transaction (no stock moves)
   { method: "POST", path: "/teams/{teamId}/sheets/{sheetId}/lines", collection: "sheets", operation: "addLines", minRole: "contributor" },
   { method: "POST", path: "/teams/{teamId}/products/{key}/stock", collection: "products", operation: "adjustStock", minRole: "contributor" },
@@ -55,6 +72,10 @@ const commandRoutes: DataRoute[] = [
   // CSV inventory import, all or nothing and idempotent by import ID (backend/src/data/imports.ts). Owners only.
   // Up to 1,000 rows each, so it has its own throttle: imports are occasional, onboarding work.
   { method: "POST", path: "/teams/{teamId}/imports", collection: "products", operation: "importProducts", minRole: "owner", throttle: { rate: 5, burst: 10 } },
+  // The team's settings (ADR 0017, section 2a): any member may ask, but only owners get the
+  // equipment markup back, and only owners change it
+  { method: "GET", path: "/teams/{teamId}/settings", collection: "team", operation: "getSettings", minRole: "viewer" },
+  { method: "PUT", path: "/teams/{teamId}/settings", collection: "team", operation: "setSettings", minRole: "owner" },
   // What platform operators did to the team (ADR 0015), attributed to "Supply Checkout support". Owners only.
   { method: "GET", path: "/teams/{teamId}/support-actions", collection: "team", operation: "supportActions", minRole: "owner" },
 ];
