@@ -91,7 +91,7 @@
         },
         {
           "id": "J4.3",
-          "text": "Back from the job, switch to **Return**, scan what came back unused, and tap **Finished Return**.",
+          "text": "Back from the job, switch to **Return**, scan what came back unused, and tap **Finished Return** (which first asks where any company equipment still out is, J13.4).",
           "status": "built",
           "tests": ["backend/test/commands-api.test.ts", "backend/test/commands.test.ts"]
         }
@@ -262,7 +262,13 @@
           "beads": ["supply-checkout-h9to"],
           "tests": ["backend/test/equipment-api.test.ts", "backend/test/equipment.test.ts"]
         },
-        { "id": "J13.4", "text": "Tap **Finished Return**: for each piece still out, say it's back, still at the job, or lost or broken (with an optional charge to the client).", "status": "planned", "beads": ["supply-checkout-h9to"] },
+        {
+          "id": "J13.4",
+          "text": "Tap **Finished Return**: for each piece still out, say it's back, still at the job, or lost or broken (with an optional charge to the client).",
+          "status": "built",
+          "beads": ["supply-checkout-h9to"],
+          "tests": ["backend/test/equipment-api.test.ts", "backend/test/equipment.test.ts"]
+        },
         { "id": "J13.5", "text": "See what's out, on which sheet, who took it and when, in **Inventory → Equipment → Out on jobs**.", "status": "built", "beads": ["supply-checkout-h9to"] }
       ]
     }

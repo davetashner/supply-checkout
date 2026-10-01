@@ -39,6 +39,13 @@ for (const colorScheme of ["light", "dark"]) {
       await page.getByRole("button", { name: /Echo Studio/ }).click();
       await expect(page.locator("#sheetBody table.equipment tbody tr")).toHaveCount(1);
       await expectAccessible(page);
+      // Finished Return's question about the piece still out, with the charge field showing
+      await page.getByRole("button", { name: "Finished Return" }).click();
+      await modal(page).getByLabel("Lost or broken", { exact: true }).fill("1");
+      await modal(page).getByLabel("Lost or broken", { exact: true }).dispatchEvent("input");
+      await expect(modal(page).getByLabel(/Charge the client/)).toBeVisible();
+      await expectAccessible(page);
+      await modal(page).getByRole("button", { name: "Cancel" }).click();
       await page.getByRole("button", { name: "Inventory" }).click();
       await page.getByRole("button", { name: "Equipment", exact: true }).click();
       await page.getByRole("button", { name: "Out on jobs" }).click();

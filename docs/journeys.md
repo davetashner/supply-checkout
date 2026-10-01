@@ -49,7 +49,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 | [J10](#j10-cancel-and-take-the-data) | Cancel and take the data | Owner | No | Tested; still to come: deleting a canceled team's data after 30 days |
 | [J11](#j11-delete-an-account) | Delete an account | Anyone | No | Tested |
 | [J12](#j12-choose-a-plan-in-the-mobile-app) | Choose a plan in the mobile app | Owner | No | Planned (phase 2) |
-| [J13](#j13-take-company-equipment-to-a-job-and-bring-it-back) | Take company equipment to a job and bring it back | Crew member | Yes | Partly built |
+| [J13](#j13-take-company-equipment-to-a-job-and-bring-it-back) | Take company equipment to a job and bring it back | Crew member | Yes | Tested |
 <!-- /journeys:table -->
 
 ---
@@ -119,7 +119,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 <!-- journeys:steps J4 -->
 - **J4.1** Create a sheet for the client and date, or open today's sheet.
 - **J4.2** Scan each item's barcode with the phone camera (or type the number, or pick an item that has no barcode) and choose how many.
-- **J4.3** Back from the job, switch to **Return**, scan what came back unused, and tap **Finished Return**.
+- **J4.3** Back from the job, switch to **Return**, scan what came back unused, and tap **Finished Return** (which first asks where any company equipment still out is, J13.4).
 <!-- /journeys:steps J4 -->
 
 **Expected:** each checkout takes storage counts down and each return puts them back. The sheet shows taken, returned, used and the charge. Other people's phones show the changes within 2 seconds. Nothing is lost if two people work on the same sheet. On a slow or flaky connection, a checkout or return never shows as saved before the server confirms it, a double tap or a retry never counts twice, and one that didn't save keeps what was entered and says so, with Try again.
@@ -257,13 +257,13 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 - **J13.1** In **Inventory**, mark items that go to jobs and come back (ladders, vacuums, cords) as **Company equipment**, with what each is worth.
 - **J13.2** Check equipment out on a sheet like any item. It's listed under **Equipment (not charged)**, apart from the supplies, and isn't in the sheet's total or the client's CSV.
 - **J13.3** Back from the job, switch to **Return** and scan what came back.
-- **J13.4** Tap **Finished Return**: for each piece still out, say it's back, still at the job, or lost or broken (with an optional charge to the client). *Planned: `supply-checkout-h9to`.*
+- **J13.4** Tap **Finished Return**: for each piece still out, say it's back, still at the job, or lost or broken (with an optional charge to the client).
 - **J13.5** See what's out, on which sheet, who took it and when, in **Inventory → Equipment → Out on jobs**.
 <!-- /journeys:steps J13 -->
 
 **Expected:** equipment checked out on a sheet takes storage counts down and its return puts them back, as for supplies, but the client isn't charged for it: it's listed apart, under **Equipment (not charged)**, isn't in the sheet's taken, used or charge totals, and isn't in the sheet's CSV ([ADR 0017](adr/0017-company-equipment-and-ad-hoc-checkout.md)). Unreturned equipment is still out, not used. **Inventory → Equipment → Out on jobs** lists every piece still out on an open sheet, with who took it last and when. The owner's **Export data** keeps equipment rows, with a **Kind** column.
 
-**Status:** partly built (`supply-checkout-h9to`). Equipment items, the sheet's section, returns and the Out view are built; Finished Return's question for each piece still out (J13.4) is still to come, and the server already refuses to close a sheet with equipment out.
+**Status:** tested (`supply-checkout-h9to`). **Finished Return** on a sheet with equipment still out asks first, for each piece, how many are back (a return), how many were lost or broken (the `lost` command, with an optional charge for the lot, which goes on the sheet as "<item> (lost or broken)", in its total and the client's CSV), and leaves the rest still at the job: the sheet stays open until nothing is out, and the server refuses to close it otherwise (409 `equipment_out`).
 
 **Tests:** `equipment.spec.js` (all tests), and the server's in `backend/test/equipment-api.test.ts` and `backend/test/equipment.test.ts`.
 
