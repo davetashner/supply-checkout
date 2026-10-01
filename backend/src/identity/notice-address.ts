@@ -3,7 +3,7 @@
 // (supply-checkout-8jc.31), so an account has one before anyone can change its
 // email, not only once it has loaded the app (GET /me):
 //
-// - the post confirmation trigger (notice-address-handler.ts), when a native
+// - the post confirmation trigger (post-confirmation-handler.ts), when a native
 //   user confirms their sign-up with Cognito's email code, before they have any
 //   token to change the email with;
 // - the pre token generation trigger (email-verified-handler.ts, only when

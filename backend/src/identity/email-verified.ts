@@ -3,7 +3,7 @@
 import { createDb, provenEmailHash } from "../data/index.js";
 import { createObservability, withObservability } from "../observability/index.js";
 import { cognitoAdmin } from "./cognito-admin.js";
-import { CALL_TIMEOUT_MS, createEmailVerifiedHandler, logCorrelation } from "./email-verified-handler.js";
+import { CALL_TIMEOUT_MS, createEmailVerifiedHandler, logCorrelation, NOTICE_CALL_TIMEOUT_MS } from "./email-verified-handler.js";
 import { LOG_CORRELATION_KEY_ENV } from "./names.js";
 import { noticeAddressRecorder } from "./notice-address.js";
 
@@ -19,7 +19,7 @@ export const handler = withObservability(
   createEmailVerifiedHandler({
     updateUserAttributes,
     provenEmailHash: (sub) => provenEmailHash(db, sub, { timeoutMs: CALL_TIMEOUT_MS }),
-    rememberNoticeAddress: noticeAddressRecorder(db, { timeoutMs: CALL_TIMEOUT_MS }),
+    rememberNoticeAddress: noticeAddressRecorder(db, { timeoutMs: NOTICE_CALL_TIMEOUT_MS }),
     obs,
     ...(key ? { correlate: logCorrelation(key) } : {}),
   }),

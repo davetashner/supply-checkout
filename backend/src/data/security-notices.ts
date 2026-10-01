@@ -174,7 +174,11 @@ export async function recordNoticeAddress(db: Db, userId: string, email: string,
     );
     return true;
   } catch (error) {
-    if ((error as { name?: string } | null)?.name === "TransactionCanceledException") return false;
+    // Not recorded only when a condition said so (an address there, or the DELETING mark); a
+    // conflict, throttle or validation error is thrown, so the caller counts and retries it
+    const cancelled = error as { name?: string; CancellationReasons?: { Code?: string }[] } | null;
+    const codes = cancelled?.name === "TransactionCanceledException" ? (cancelled.CancellationReasons ?? []).map((r) => r?.Code) : [];
+    if (codes.includes("ConditionalCheckFailed") && codes.every((code) => code === "ConditionalCheckFailed" || code === "None")) return false;
     throw error;
   }
 }

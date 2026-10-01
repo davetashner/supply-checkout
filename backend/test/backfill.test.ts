@@ -87,11 +87,9 @@ describe("the backfill CLI's arguments", () => {
     [["members", "--table", "supply-checkout-prod-ap", "--region", "r", "--profile", "p"], /--table must be an app table/],
     [["members", "--table", "other-table", "--region", "r", "--profile", "p", "--apply"], /--table must be an app table/],
     [["members", "--table", "supply-checkout-Prod-app", "--region", "r", "--profile", "p"], /--table must be an app table/],
-    [["notice-address", "--table", "supply-checkout-prod-app", "--region", "test-local-1", "--profile", "p"], /--user-pool must be the app user pool's ID/],
-    [["notice-address", "--table", "supply-checkout-prod-app", "--region", "test-local-1", "--profile", "p", "--user-pool", "test-local-1"], /--user-pool must be the app user pool's ID/],
-    [["notice-address", "--table", "supply-checkout-prod-app", "--region", "test-local-1", "--profile", "p", "--user-pool", "test-local-1_ab/c"], /--user-pool must be the app user pool's ID/],
-    [["notice-address", "--table", "supply-checkout-prod-app", "--region", "test-local-1", "--profile", "p", "--user-pool", "test-other-2_AbC123"], /--user-pool is in test-other-2, not --region test-local-1/],
-    [["members", "--table", "supply-checkout-prod-app", "--region", "test-local-1", "--profile", "p", "--user-pool", "test-local-1_AbC123"], /--user-pool is for notice-address only/],
+    // The pool comes from the table's environment, never from an argument
+    [["notice-address", "--table", "supply-checkout-prod-app", "--region", "test-local-1", "--profile", "p", "--user-pool", "test-local-1_AbC123"], /Unknown option '--user-pool'/],
+    [["notice-address", "--table", "other-table", "--region", "test-local-1", "--profile", "p"], /--table must be an app table, supply-checkout-<env>-app, for notice-address/],
   ])("refuses %j", async (args, message) => {
     const result = await run(args);
     expect(result.code).toBe(2);
@@ -168,21 +166,55 @@ describe("the notice-address backfill", () => {
   }
 
   /** Runs the CLI against `db` with the given pool users; returns the exit code and output. */
-  async function run(db: Db, users: PoolUser[], apply: boolean) {
+  async function run(db: Db, users: PoolUser[], apply: boolean, found: () => Promise<{ id: string; name: string }> = async () => ({ id: POOL, name: "supply-checkout-test" })) {
     const out: string[] = [];
-    const seen: { region?: string; pool?: string } = {};
+    const seen: { region?: string; pool?: string; asked?: string[] } = {};
+    let connected = false;
     const deps = {
       callerAccount: async () => "ACCOUNT-PLACEHOLDER",
-      connect: () => db,
+      connect: () => {
+        connected = true;
+        return db;
+      },
+      appPool: async (region: string, envName: string) => {
+        seen.asked = [region, envName];
+        return found();
+      },
       listUsers: (region: string, pool: string) => {
         Object.assign(seen, { region, pool });
         return listed(users);
       },
     };
-    const args = ["notice-address", "--table", "supply-checkout-test-app", "--region", REGION, "--profile", "supply-test", "--user-pool", POOL, ...(apply ? ["--apply"] : [])];
+    const args = ["notice-address", "--table", "supply-checkout-test-app", "--region", REGION, "--profile", "supply-test", ...(apply ? ["--apply"] : [])];
     const code = await main(args, (l) => out.push(l), (l) => out.push(l), deps);
-    return { code, out, seen };
+    return { code, out, seen, connected };
   }
+
+  it("refuses to read or write unless the table's environment names its own app pool, in this region", async () => {
+    const cases: [string, () => Promise<{ id: string; name: string }>, RegExp][] = [
+      ["the operator pool", async () => ({ id: `${REGION}_OpsPool1`, name: "supply-checkout-test-ops" }), /must name the pool supply-checkout-test in test-local-1, not supply-checkout-test-ops/],
+      ["another environment's pool", async () => ({ id: POOL, name: "supply-checkout-prod" }), /not supply-checkout-prod/],
+      ["a pool in another region", async () => ({ id: "test-other-2_AppPool1", name: "supply-checkout-test" }), /in test-local-1, not supply-checkout-test \(test-other-2_AppPool1\)/],
+      ["something that isn't a pool ID", async () => ({ id: "junk", name: "" }), /not an unnamed pool \(junk\)/],
+      ["no parameter value", async () => ({ id: "", name: "" }), /\(no ID\)/],
+      ["a failed lookup", () => Promise.reject(Object.assign(new Error("Parameter not found"), { name: "ParameterNotFound" })), /Failed to find the app pool \(\/supply-checkout\/test\/identity\/user-pool-id\): ParameterNotFound/],
+    ];
+    for (const [name, found, message] of cases) {
+      const result = await run(new MemoryTable().db(), [user(1)], true, found);
+      expect(result.code, name).toBe(1);
+      expect(result.out.join("\n"), name).toMatch(message);
+      expect(result.seen.asked, name).toEqual([REGION, "test"]);
+      expect(result.connected, name).toBe(false);
+      expect(result.seen.pool, name).toBeUndefined();
+    }
+  });
+
+  it("needs an app table's name to find the pool, even with --endpoint", async () => {
+    const out: string[] = [];
+    const code = await main(["notice-address", "--table", "test-table", "--region", REGION, "--endpoint", "http://127.0.0.1:9"], (l) => out.push(l), (l) => out.push(l));
+    expect(code).toBe(2);
+    expect(out.join("\n")).toMatch(/--table must be an app table, supply-checkout-<env>-app, for notice-address: test-table/);
+  });
 
   /** Each case the backfill tells apart, on `db`. */
   async function seed(db: Db): Promise<PoolUser[]> {
@@ -203,7 +235,7 @@ describe("the notice-address backfill", () => {
     const users = await seed(db);
     const dry = await run(db, users, false);
     expect(dry.code).toBe(0);
-    expect(dry.seen).toEqual({ region: REGION, pool: POOL });
+    expect(dry.seen).toEqual({ region: REGION, pool: POOL, asked: [REGION, "test"] });
     expect(dry.out).toEqual([
       `notice-address on supply-checkout-test-app and pool ${POOL} in ${REGION} in account ACCOUNT-PLACEHOLDER (profile supply-test) (dry run)`,
       "App pool users: 7",

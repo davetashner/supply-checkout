@@ -5,8 +5,8 @@ import { createObservability, withObservability } from "../observability/index.j
 import { noticeAddressRecorder } from "./notice-address.js";
 import { createPostConfirmationHandler } from "./post-confirmation-handler.js";
 
-/** Each DynamoDB call's timeout: two calls fit Cognito's 5 seconds for a trigger with room to spare. */
-const CALL_TIMEOUT_MS = 1_500;
+/** Each DynamoDB call's timeout: two calls take at most 2 seconds of the 5 Cognito gives a trigger, leaving room for a cold start. */
+const CALL_TIMEOUT_MS = 1_000;
 
 const obs = createObservability({ service: "sign-in" });
 // The app table (TABLE_NAME), with the trigger's own role: GetItem of a user's

@@ -266,6 +266,7 @@
 
     { "name": "Sign-up canary failing", "journeys": ["J1"] },
     { "name": "No sign-ups", "journeys": ["J1"] },
+    { "name": "Sign-up trigger failing", "journeys": ["J1"], "infra": "sign-up-trigger-failing" },
 
     { "name": "Imports stuck", "journeys": ["J2"], "infra": "imports-stuck" },
 

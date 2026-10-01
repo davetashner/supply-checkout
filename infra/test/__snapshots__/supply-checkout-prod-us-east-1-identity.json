@@ -400,6 +400,7 @@
             "SUPPLY_CHECKOUT_ENV": "prod"
           }
         },
+        "FunctionName": "supply-checkout-prod-post-confirmation",
         "Handler": "index.handler",
         "LoggingConfig": {
           "LogGroup": {
@@ -575,7 +576,7 @@
               "Resource": {
                 "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
               },
-              "Sid": "NoticeAddressTableKey"
+              "Sid": "TableKeyThroughDynamoDb"
             }
           ],
           "Version": "2012-10-17"

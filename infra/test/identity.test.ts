@@ -351,7 +351,7 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
     expect(source).toMatch(/trigger\("SignInGuard", "sign-in-guard"/);
     expect(source).toMatch(/trigger\("EmailVerified", "email-verified"/);
     expect(source).toMatch(/trigger\("AccountLink", "account-link"/);
-    expect(source).toMatch(/trigger\("PostConfirmation", "post-confirmation"/);
+    expect(source).toMatch(/trigger\(\s*"PostConfirmation",\s*"post-confirmation"/);
   });
 
   it("may each be invoked only by this pool", () => {
@@ -419,9 +419,10 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
           StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
         },
       },
-      { ...tableKey, Sid: "NoticeAddressTableKey", Action: ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"] },
+      // One statement for the key, which also covers the proven email's read
+      { ...tableKey, Action: ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"] },
     ];
-    sameStatements(statementsOf(template, roleOf(template, "EmailVerified")), [logs("EmailVerified"), xray, setVerified, provenEmail, tableKey, ...noticeAddress]);
+    sameStatements(statementsOf(template, roleOf(template, "EmailVerified")), [logs("EmailVerified"), xray, setVerified, provenEmail, ...noticeAddress]);
     sameStatements(statementsOf(template, roleOf(template, "PostConfirmation")), [logs("PostConfirmation"), xray, ...noticeAddress]);
     const link = { Sid: "LinkToExistingAccount", Effect: "Allow", Action: ["cognito-idp:AdminLinkProviderForUser", "cognito-idp:AdminUpdateUserAttributes", "cognito-idp:ListUsers"], Resource: { "Fn::GetAtt": [poolId, "Arn"] } };
     sameStatements(statementsOf(template, roleOf(template, "AccountLink")), [logs("AccountLink"), xray, link]);
@@ -451,6 +452,8 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
     expect(env("SignInGuard").TABLE_NAME).toBeUndefined();
     expect(env("AccountLink").TABLE_NAME).toBeUndefined();
     expect(env("PostConfirmation").TABLE_NAME).toBe("supply-checkout-staging-app");
+    // A fixed name, for the Sign-up trigger failing alarm
+    expect(template.toJSON().Resources[fnId(template, "PostConfirmation")].Properties.FunctionName).toBe("supply-checkout-staging-post-confirmation");
     template.hasParameter("*", ssmParameter("/supply-checkout/staging/data/table-key-arn"));
     const primary = stacks.regions[stacks.identity.region];
     expect(stacks.identity.dependencies).toContain(primary?.data);

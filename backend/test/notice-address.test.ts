@@ -11,7 +11,7 @@ import { emailSeenHash, hasNoticeAddress, noticeAddress, recordNoticeAddress } f
 import { keys } from "../src/data/keys.js";
 import { NOTICE_ADDRESS_CHECK_ATTRIBUTES, NOTICE_ADDRESS_RECORD_ATTRIBUTES, SECURITY_NOTICE_ATTRIBUTES } from "../src/data/schema.js";
 import { listPoolUsers } from "../src/identity/cognito-admin.js";
-import { CALL_TIMEOUT_MS, createEmailVerifiedHandler, settledAttributes, WRITE_BUDGET_MS } from "../src/identity/email-verified-handler.js";
+import { createEmailVerifiedHandler, NOTICE_CALL_TIMEOUT_MS, settledAttributes, WRITE_BUDGET_MS } from "../src/identity/email-verified-handler.js";
 import { DOWNGRADE_PENDING_ATTRIBUTE, LINKED_EMAIL_ATTRIBUTE, PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "../src/identity/names.js";
 import { noticeAddressOf, noticeAddressRecorder, type RememberNoticeAddress } from "../src/identity/notice-address.js";
 import { createPostConfirmationHandler } from "../src/identity/post-confirmation-handler.js";
@@ -166,6 +166,24 @@ describe("noticeAddressRecorder", () => {
     };
     expect(await remember()(SUB, native())).toBe("not-recorded");
     expect(recorded()?.noticeAddress).toBe("first@example.com");
+  });
+
+  it("counts a cancelled write as not recorded only when a condition failed, and throws a conflict or throttle", async () => {
+    const cancelled = (codes: string[] | undefined) => Object.assign(new Error("Transaction cancelled"), { name: "TransactionCanceledException", ...(codes ? { CancellationReasons: codes.map((Code) => ({ Code })) } : {}) });
+    const attempt = (error: Error) => {
+      table.beforeTransactWrite = () => {
+        table.beforeTransactWrite = undefined;
+        throw error;
+      };
+      return recordNoticeAddress(table.db(), SUB, "owner@example.com", emailSeenHash(EMAIL), new Date(NOW));
+    };
+    expect(await attempt(cancelled(["ConditionalCheckFailed", "None"]))).toBe(false);
+    expect(await attempt(cancelled(["None", "ConditionalCheckFailed"]))).toBe(false);
+    for (const codes of [["None", "TransactionConflict"], ["ConditionalCheckFailed", "ThrottlingError"], ["None", "None"], [], undefined]) {
+      await expect(attempt(cancelled(codes)), JSON.stringify(codes)).rejects.toThrow("Transaction cancelled");
+    }
+    await expect(attempt(Object.assign(new Error("slow down"), { name: "ProvisionedThroughputExceededException" }))).rejects.toThrow("slow down");
+    expect(recorded()).toBeUndefined();
   });
 
   it("has hasNoticeAddress say no for a record without its time, so the conditional write decides", async () => {
@@ -328,7 +346,7 @@ describe("pre token generation trigger", () => {
     const { handler, seen } = trigger({
       now: () => {
         const at = t;
-        t += WRITE_BUDGET_MS - 2 * CALL_TIMEOUT_MS + 1;
+        t += WRITE_BUDGET_MS - 2 * NOTICE_CALL_TIMEOUT_MS + 1;
         return at;
       },
     });

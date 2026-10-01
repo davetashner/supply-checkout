@@ -287,6 +287,7 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Site down, Web router failing | Every journey | P1 | CloudFront's `5xxErrorRate` on the web distribution (at least 50 requests), and the router function's execution and validation errors and throttles (5 or more in 5 minutes), in us-east-1 only, where CloudFront's metrics are (`supply-checkout-3sv.2`). Runbook: [When the web app is down](observability.md#when-the-web-app-is-down). |
 | RUM events surge, RUM events flood | Every journey | P2, P1 | The RUM app monitor's ingested events (`AWS/RUM` `RumEventPayloadSize`, `SampleCount`) above 100,000 and 1,000,000 in an hour, in us-east-1 only, where the app monitor is (`supply-checkout-3sv.7`). Not a blocked journey: anyone can send the app monitor billed events. Runbook: [When RUM events surge](observability.md#when-rum-events-surge). |
 | Sign-out not revoking, Security notices failing, Security notices dropped | J0 | P2 | As below |
+| Sign-up trigger failing | J1 | P1 | As below. In the primary region only, where the user pool is. |
 | Imports stuck | J2 | P2 | As below, from the stuck-import check. In the primary region only, where the check runs. |
 | Email verification not saved, Email codes failing, Near the sending limit | J3 | P2 | As below. Near the sending limit reads the SES quota check's gauge, and is in the primary region only, where the check runs. |
 | Invite surge | J3 | P2 | As below: `InvitesSent` summed over every team |
@@ -348,6 +349,9 @@ Every other alarm on this page waits for the resource or code it watches, and is
 | --- | --- | --- | --- |
 | **Sign-up canary failing** | Synthetics canary every 15 minutes: load the landing and pricing pages, open sign-up, start a trial with a `+canary` test address in a canary team that's cleaned up afterwards | 2 failures in a row | P1 |
 | **No sign-ups** | `SignUps` business metric | zero for 24 hours when the 7-day average is above 1 a day | P3 |
+| **Sign-up trigger failing** | Lambda `Errors` + `Throttles` of the app pool's post confirmation trigger (`supply-checkout-<env>-post-confirmation`, `supply-checkout-8jc.31`). It never fails on purpose, so any is a crash, a timeout or a throttle, and Cognito shows the person confirming their sign-up an error (they're confirmed; signing in works) | any, over 5 minutes | P1 |
+
+**Sign-up trigger failing: what to do.** Read the function's log group (`/aws/lambda/supply-checkout-<env>-post-confirmation`, the identity stack) for the error or `Task timed out`; its lines carry the outcome and the error's name only. A timeout usually means DynamoDB or the table's KMS key was slow or refused: check Database errors and throttled. Throttles mean the account's Lambda concurrency is used up (Functions throttled). People who saw the error are confirmed and can sign in; their notice address is recorded at their first sign-in to the app (GET /me). If it's a bad deploy, roll the identity stack back.
 
 ### J2. Set up the inventory
 

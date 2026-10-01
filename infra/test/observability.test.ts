@@ -99,6 +99,7 @@ const ALARM_IDS = [
   "sign-out-not-revoking",
   "security-notices-failing",
   "security-notices-dropped",
+  "sign-up-trigger-failing",
   "imports-stuck",
   "email-verification-not-saved",
   "email-codes-failing",
@@ -128,8 +129,8 @@ const ALARM_IDS = [
   "team-reopened-notices-failing",
 ];
 
-/** Alarms on gauges that only the primary region's scheduled checks and purge send (ops-checks.ts). */
-const PRIMARY_ONLY_ALARM_IDS = ["imports-stuck", "near-sending-limit", "seat-counts-drifting", "entitlements-drifting", "deletion-overdue", "closed-team-charged"];
+/** Alarms on gauges that only the primary region's scheduled checks and purge send (ops-checks.ts), and on the user pool's trigger, which is there alone. */
+const PRIMARY_ONLY_ALARM_IDS = ["sign-up-trigger-failing", "imports-stuck", "near-sending-limit", "seat-counts-drifting", "entitlements-drifting", "deletion-overdue", "closed-team-charged"];
 
 describe("alarm topics", () => {
   it("has a P1 and a P2 topic, encrypted with a rotating key that CloudWatch may use, refusing plain HTTP", () => {
@@ -643,6 +644,23 @@ describe("alarms added with the email code routes, the live update budget, team 
       TreatMissingData: "notBreaching",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
       AlarmDescription: Match.stringLikeRegexp("^P2 Reopened team's subscription ended \\(J7, J11"),
+    });
+  });
+
+  it("alarms on any error or throttle of the post confirmation trigger, P1, where the user pool is (J1, supply-checkout-8jc.31)", () => {
+    const fn = { Name: "FunctionName", Value: "supply-checkout-prod-post-confirmation" };
+    observability().hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p1-sign-up-trigger-failing",
+      Metrics: Match.arrayWith([
+        Match.objectLike({ Expression: "FILL(e, 0) + FILL(t, 0)" }),
+        Match.objectLike({ Id: "e", MetricStat: Match.objectLike({ Metric: { Namespace: "AWS/Lambda", MetricName: "Errors", Dimensions: [fn] }, Stat: "Sum", Period: 300 }) }),
+        Match.objectLike({ Id: "t", MetricStat: Match.objectLike({ Metric: { Namespace: "AWS/Lambda", MetricName: "Throttles", Dimensions: [fn] }, Stat: "Sum", Period: 300 }) }),
+      ]),
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP1") }],
+      AlarmDescription: Match.stringLikeRegexp("^P1 Sign-up trigger failing \\(J1"),
     });
   });
 

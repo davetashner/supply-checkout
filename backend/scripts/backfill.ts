@@ -6,17 +6,24 @@
 //   npm run backfill -- stray-ops-keys --table <table> --region <region> --profile <profile>
 //   npm run backfill -- ops-index      --table <table> --region <region> --profile <profile> --apply
 //   npm run backfill -- members        --table <table> --region <region> --profile <profile> --apply
-//   npm run backfill -- notice-address --table <table> --region <region> --profile <profile> --user-pool <app pool ID> --apply
+//   npm run backfill -- notice-address --table <table> --region <region> --profile <profile> --apply
+//
+// notice-address lists the app user pool of the table's environment: its ID
+// from SSM (/supply-checkout/<env>/identity/user-pool-id, the identity stack's
+// output), and it refuses to go on unless that pool is in --region and
+// Cognito names it supply-checkout-<env> (not the operator pool,
+// supply-checkout-<env>-ops, or another environment's pool).
 //
 // --endpoint points it at DynamoDB Local instead (tests, local development).
 
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
+import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { createDb, type Db, type DbOptions } from "../src/data/index.js";
 import { BACKFILL_MODES, type BackfillMode, type BackfillReport, type NoticeAddressCandidate, runBackfill } from "../src/data/backfill.js";
-import { listPoolUsers, type PoolUser } from "../src/identity/cognito-admin.js";
+import { cognitoRequest, listPoolUsers, type PoolUser } from "../src/identity/cognito-admin.js";
 import { noticeAddressOf } from "../src/identity/notice-address.js";
 
 export const USAGE = `Usage: npm run backfill -- <mode> --table supply-checkout-<env>-app --region <region> --profile <profile> [--apply]
@@ -27,15 +34,15 @@ Modes (run in this order after the deploy):
   members         set the members count on team META items made before it existed
 
   notice-address  record the address an email change is told to, for every app pool user
-                  whose verified address the API trusts and who has none (needs --user-pool)
+                  whose verified address the API trusts and who has none (the table's env's app pool)
 
 Without --apply it's a dry run: it reads the table and writes nothing.
 It prints the AWS account the profile signs in to before it reads or writes.
---user-pool <ID> is the app user pool (notice-address only): /supply-checkout/<env>/identity/user-pool-id in SSM.
---endpoint <url> uses DynamoDB Local instead of AWS (then --profile isn't needed and any table name goes).`;
+--endpoint <url> uses DynamoDB Local instead of AWS (then --profile isn't needed and any table name goes,
+except for notice-address, which needs an app table's name to find its pool).`;
 
 /** An app table's name (tableName in src/data/schema.ts), so a typo can't point the backfill at another table. */
-export const APP_TABLE = /^supply-checkout-[a-z0-9-]+-app$/;
+export const APP_TABLE = /^supply-checkout-([a-z0-9-]+)-app$/;
 
 /** A user pool ID, `<region>_<id>`: the region is the first group. */
 export const POOL_ID = /^([a-z]+(?:-[a-z]+)+-\d+)_[A-Za-z0-9]{1,64}$/;
@@ -47,6 +54,8 @@ export interface Deps {
   readonly callerAccount: (region: string, credentials: Credentials) => Promise<string>;
   /** The table handle (createDb). */
   readonly connect: (options: DbOptions) => Db;
+  /** The app pool's ID (from SSM) and the name Cognito gives it (DescribeUserPool); appPool below unless given. */
+  readonly appPool?: (region: string, envName: string, credentials: Credentials | undefined) => Promise<{ id: string; name: string }>;
   /** Every user in the pool (ListUsers); listUsers below unless given. */
   readonly listUsers?: (region: string, userPoolId: string, credentials: Credentials | undefined) => AsyncIterable<PoolUser>;
 }
@@ -54,6 +63,27 @@ export interface Deps {
 /** Every user in the app pool, with the profile's credentials (the owner's: no Lambda role may list the pool for this). */
 const listUsers = (region: string, userPoolId: string, credentials: Credentials | undefined) =>
   listPoolUsers({ region, userPoolId, timeoutMs: 10_000, ...(credentials ? { credentials } : {}) });
+
+/** The app pool's SSM parameter (identityOutputParameters(envName).userPoolId in infra/lib/identity.ts). */
+export const appPoolParameter = (envName: string) => `/supply-checkout/${envName}/identity/user-pool-id`;
+
+/** The app pool of an environment: its ID from SSM, then its name from Cognito, with the profile's credentials. */
+async function appPool(region: string, envName: string, credentials: Credentials | undefined): Promise<{ id: string; name: string }> {
+  const ssm = new SSMClient({ region, ...(credentials ? { credentials } : {}) });
+  let id: string;
+  try {
+    const { Parameter } = await ssm.send(new GetParameterCommand({ Name: appPoolParameter(envName) }));
+    id = Parameter?.Value ?? "";
+  } finally {
+    ssm.destroy();
+  }
+  const match = POOL_ID.exec(id);
+  if (!match) return { id, name: "" };
+  const described = (await cognitoRequest({ region: match[1] as string, timeoutMs: 10_000, ...(credentials ? { credentials } : {}) })("DescribeUserPool", { UserPoolId: id })) as {
+    UserPool?: { Name?: unknown };
+  };
+  return { id, name: typeof described.UserPool?.Name === "string" ? described.UserPool.Name : "" };
+}
 
 const defaultDeps: Deps = {
   connect: createDb,
@@ -117,7 +147,6 @@ export async function main(
         region: { type: "string" },
         profile: { type: "string" },
         endpoint: { type: "string" },
-        "user-pool": { type: "string" },
         apply: { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
       },
@@ -141,19 +170,10 @@ export async function main(
     return 2;
   }
 
-  const pool = values["user-pool"];
-  if (mode === "notice-address") {
-    const poolRegion = pool === undefined ? undefined : POOL_ID.exec(pool)?.[1];
-    if (!poolRegion) {
-      err(`--user-pool must be the app user pool's ID, <region>_<id>, for notice-address\n\n${USAGE}`);
-      return 2;
-    }
-    if (poolRegion !== values.region) {
-      err(`--user-pool is in ${poolRegion}, not --region ${values.region}\n\n${USAGE}`);
-      return 2;
-    }
-  } else if (pool !== undefined) {
-    err(`--user-pool is for notice-address only\n\n${USAGE}`);
+  // notice-address finds its pool from the table's environment, so it needs an app table's name even with --endpoint
+  const envName = APP_TABLE.exec(values.table)?.[1];
+  if (mode === "notice-address" && !envName) {
+    err(`--table must be an app table, supply-checkout-<env>-app, for notice-address: ${values.table}\n\n${USAGE}`);
     return 2;
   }
 
@@ -176,6 +196,24 @@ export async function main(
       err(`Failed to identify the profile's account: ${(e as Error).name}: ${(e as Error).message}`);
       return 1;
     }
+  }
+  let pool: string | undefined;
+  if (mode === "notice-address" && envName) {
+    // Before anything is read or written: the table's environment's app pool, in this region, and no other
+    const expected = `supply-checkout-${envName}`;
+    let found: { id: string; name: string };
+    try {
+      found = await (deps.appPool ?? appPool)(values.region, envName, credentials);
+    } catch (e) {
+      err(`Failed to find the app pool (${appPoolParameter(envName)}): ${(e as Error).name}: ${(e as Error).message}`);
+      return 1;
+    }
+    const poolRegion = POOL_ID.exec(found.id)?.[1];
+    if (!poolRegion || poolRegion !== values.region || found.name !== expected) {
+      err(`${appPoolParameter(envName)} must name the pool ${expected} in ${values.region}, not ${found.name || "an unnamed pool"} (${found.id || "no ID"}): nothing was read or written`);
+      return 1;
+    }
+    pool = found.id;
   }
   const db = deps.connect({ tableName: values.table, region: values.region, endpoint: values.endpoint, env: {}, ...(credentials ? { credentials } : {}) });
   out(`${mode} on ${values.table}${pool ? ` and pool ${pool}` : ""} in ${values.region} ${where}${values.apply ? "" : " (dry run)"}`);

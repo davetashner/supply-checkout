@@ -187,6 +187,14 @@ export const RETRY_PAUSE_MS = 250;
  * call at most CALL_TIMEOUT_MS, is 3.85 seconds.
  */
 export const WRITE_BUDGET_MS = 4_000;
+/**
+ * Each DynamoDB call's timeout when recording the notice address (email-verified.ts
+ * passes it to the recorder): best effort, so short. Its two calls start only
+ * while they still fit in WRITE_BUDGET_MS, so the worst case (the linked
+ * path's two calls, then these two) is 3.4 seconds, leaving room for a cold
+ * start in Cognito's 5.
+ */
+export const NOTICE_CALL_TIMEOUT_MS = 500;
 
 /**
  * A user's log correlation handle: the first 16 hex digits of
@@ -487,7 +495,7 @@ export function createEmailVerifiedHandler(deps: EmailVerifiedDeps) {
   ): Promise<NoticeAddressOutcome | "deferred" | "failed"> => {
     const attributes = settledAttributes(outcome, event.request?.userAttributes ?? {});
     if (!attributes) return "untrusted";
-    if (now() - started + 2 * CALL_TIMEOUT_MS > WRITE_BUDGET_MS) return "deferred";
+    if (now() - started + 2 * NOTICE_CALL_TIMEOUT_MS > WRITE_BUDGET_MS) return "deferred";
     try {
       return await remember(event.userName, attributes);
     } catch (error) {
