@@ -18,7 +18,7 @@ import { addGithubDeploy } from "../lib/supply-checkout.js";
 const [EAST, WEST] = APPROVED_REGIONS;
 const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.com", regions: [EAST], primaryRegion: EAST };
 const REPO: GithubRepository = { name: "example-owner/example-repo", ownerId: 1234, repositoryId: 567890 };
-const SUBJECT = "repository_owner_id:1234:repository_id:567890:environment:production";
+const SUBJECT = "repo:example-owner@1234/example-repo@567890:environment:production";
 
 function build(overrides: Partial<DeploymentConfig> = {}, repository = REPO) {
   const app = testApp();
@@ -58,7 +58,7 @@ describe("GitHub repository config", () => {
     expect(githubRepositoryFromContext(context({ ...full, githubOwnerId: 1234, githubRepositoryId: 567890 }))).toEqual(REPO);
   });
 
-  it.each(["", "owner", "owner/", "/repo", "owner/repo/extra", "owner/*", "*/repo", "own*er/repo", "owner/repo:environment:x", "-owner/repo", "owner/re po"])(
+  it.each(["", "owner", "owner/", "/repo", "owner/repo/extra", "owner/*", "*/repo", "own*er/repo", "owner/repo:environment:x", "-owner/repo", "owner/re po", "owner@1/repo", "owner/repo@2", "owner@1/repo@2", "owner:1/repo"])(
     "rejects the name %o",
     (value) => {
       expect(() => githubRepositoryFromContext(context({ ...full, githubRepository: value }))).toThrow(/githubRepository/);
@@ -95,9 +95,10 @@ describe("GitHub Actions deploy role (supply-checkout-5ik)", () => {
     template.hasResourceProperties("AWS::IAM::OIDCProvider", { Url: GITHUB_OIDC_URL, ClientIdList: [GITHUB_OIDC_AUDIENCE] });
   });
 
-  it("builds the subject GitHub's OIDC subject customization gives: owner ID, repository ID, environment", () => {
+  it("builds GitHub's immutable subject: owner and repository names, each with its ID, then the environment", () => {
     expect(githubDeploySubject(REPO)).toBe(SUBJECT);
-    expect(githubDeploySubject(DEFAULT_GITHUB_REPOSITORY)).toBe("repository_owner_id:5702882:repository_id:1388338851:environment:production");
+    // What GitHub's sub_claim_prefix for this repository is, plus the environment
+    expect(githubDeploySubject(DEFAULT_GITHUB_REPOSITORY)).toBe("repo:davetashner@5702882/supply-checkout@1388338851:environment:production");
   });
 
   it("can be assumed only with a GitHub token for this repository's production environment, matched on immutable IDs", () => {
@@ -121,14 +122,13 @@ describe("GitHub Actions deploy role (supply-checkout-5ik)", () => {
     expect(others).toEqual([]);
     expect(Object.keys(trust?.Condition as object)).toEqual(["StringEquals"]);
     expect(JSON.stringify(trust)).not.toContain("*");
-    // Not the default subject keyed on the mutable owner/name
-    expect(JSON.stringify(trust)).not.toContain("repo:");
-    expect(JSON.stringify(trust)).not.toContain(REPO.name);
+    // Not the old subject keyed on the mutable owner/name alone
+    expect(JSON.stringify(trust)).not.toContain(`repo:${REPO.name}:`);
   });
 
   it("follows the configured repository", () => {
     const { template } = build({}, { name: "someone/fork", ownerId: 42, repositoryId: 4242 });
-    expect(JSON.stringify(role(template).Properties.AssumeRolePolicyDocument)).toContain('"repository_owner_id:42:repository_id:4242:environment:production"');
+    expect(JSON.stringify(role(template).Properties.AssumeRolePolicyDocument)).toContain('"repo:someone@42/fork@4242:environment:production"');
     expect(role(template).Properties.Description).toBe("GitHub Actions deploys from someone/fork (owner ID 42, repository ID 4242), environment production only");
     expect(githubDeployRoleName("staging")).toBe("supply-checkout-staging-github-deploy");
   });

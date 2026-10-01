@@ -134,9 +134,9 @@ export function configFromContext(
 /**
  * A GitHub repository whose Actions workflows may deploy (supply-checkout-5ik):
  * its `owner/name`, and GitHub's numeric IDs for its owner and for the
- * repository. The deploy role's trust matches the IDs, not the name
- * (supply-checkout-pbp.23): a name can be freed by a rename or deletion and
- * registered again by someone else, an ID never is.
+ * repository. The deploy role's trust matches GitHub's immutable subject,
+ * which has both (supply-checkout-pbp.23): a name can be freed by a rename or
+ * deletion and registered again by someone else, an ID never is.
  */
 export interface GithubRepository {
   readonly name: string;
@@ -165,7 +165,8 @@ export const GITHUB_DEPLOY_ENVIRONMENT = "production";
 
 // GitHub's own rules: an owner is 1-39 letters, digits or single dashes, not
 // starting with a dash; a repository name is letters, digits, `.`, `_` and `-`.
-// Nothing else, so the value can't widen the role's `sub` condition.
+// Nothing else (no `:`, `@` or wildcard), so the value can't widen or reshape
+// the role's `sub` condition.
 const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
 
 // A GitHub ID: a positive integer in decimal, no sign, no leading zero, and

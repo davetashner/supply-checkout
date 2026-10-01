@@ -16,13 +16,16 @@ export const githubDeployRoleName = (envName: string) => `supply-checkout-${envN
 
 /**
  * The `sub` claim of a GitHub OIDC token for a job in `repository`'s
- * production environment, once the repository's OIDC subject customization
- * is `include_claim_keys: ["repository_owner_id", "repository_id",
- * "environment"]` (docs/infrastructure.md). GitHub joins each claim's key and
- * value with `:`, in that order.
+ * production environment, with GitHub's immutable subjects (the default for
+ * repositories created after 2026-07-15, this one included):
+ * `repo:<owner>@<owner ID>/<name>@<repository ID>:environment:production`.
+ * The name and IDs are validated in lib/config.ts, so no `:`, `@`, `/` or
+ * wildcard can come from them.
  */
-export const githubDeploySubject = (repository: GithubRepository) =>
-  `repository_owner_id:${repository.ownerId}:repository_id:${repository.repositoryId}:environment:${GITHUB_DEPLOY_ENVIRONMENT}`;
+export const githubDeploySubject = (repository: GithubRepository) => {
+  const [owner, name] = repository.name.split("/");
+  return `repo:${owner}@${repository.ownerId}/${name}@${repository.repositoryId}:environment:${GITHUB_DEPLOY_ENVIRONMENT}`;
+};
 
 /** The CDK bootstrap roles a `cdk deploy` (and `cdk diff`) assumes, by their bootstrap template names. */
 /** CDK's rule for a bootstrap qualifier (`cdk bootstrap --qualifier`). */
@@ -37,13 +40,13 @@ const BOOTSTRAP_ROLES = ["deploy", "file-publishing", "image-publishing", "looku
  * the role's short-lived credentials.
  *
  * - The role trusts only tokens with audience `sts.amazonaws.com` and subject
- *   `repository_owner_id:<n>:repository_id:<n>:environment:production`,
+ *   `repo:<owner>@<owner ID>/<name>@<repository ID>:environment:production`,
  *   exactly (StringEquals): a job in this repository that runs in the
- *   `production` GitHub environment, named by GitHub's immutable IDs rather
- *   than the owner/name a rename or deletion could free up
- *   (supply-checkout-pbp.23). GitHub sends that subject only once the
- *   repository's OIDC subject customization is set; until then every token
- *   has the default `repo:...` subject and is refused. A job without that
+ *   `production` GitHub environment. That's GitHub's immutable subject
+ *   (supply-checkout-pbp.23): with the IDs in it, a new account or
+ *   repository that takes over a freed name doesn't match. A rename changes
+ *   the subject and fails closed until the stack is deployed with the new
+ *   name; a transfer changes the owner ID too. A job without that
  *   environment, a pull request, or another repository gets a different
  *   subject and is refused. The environment's
  *   protection rules on GitHub (required reviewers, which branches and tags
