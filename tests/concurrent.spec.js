@@ -219,6 +219,19 @@ test.describe("an item's count changed while its form is open", { tag: ["@J4"] }
     expect(await saved(page)).toMatchObject({ price: 9, stock: 8 });
   });
 
+  test("a form save keeps the mark of a checkout made elsewhere meanwhile, so its retry takes nothing more", async ({ page }) => {
+    await openItem(page);
+    // Another device's checkout of 2 saved its storage count with its mark, but its answer was
+    // lost, so that device will try the storage count again
+    await elsewhere(page, (docs) => { Object.assign(docs.get("products/SKU1"), { stock: 8, ops: ["other-device-mark"] }); });
+    await modal(page).getByLabel("Price each ($)").fill("9");
+    await save(page);
+    await expect(page.locator("#toast")).toHaveText("Saved");
+    // The mark is still there, so that device's retry (addStock in src/moves.js) finds it and
+    // takes nothing more
+    expect(await saved(page)).toMatchObject({ price: 9, stock: 8, ops: ["other-device-mark"] });
+  });
+
   test("an edit that doesn't touch the count keeps a change this page hasn't heard of yet", async ({ page }) => {
     await openItem(page);
     // Saved, but the live update hasn't arrived

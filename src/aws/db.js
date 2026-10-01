@@ -336,8 +336,11 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
 
   // An item saved from the inventory form or a receipt (src/moves.js saveItem). Stock moves only
   // through the stock command (the document routes keep the stored stock and refuse another), so
-  // the PUT leaves it out and the new stock goes through the command, after the item exists. A
-  // count that matches what's stored changes nothing. A blank count stops counting the item
+  // the PUT leaves it out and the new stock goes through the command, after the item exists. The
+  // form sends a count only when the person changed it, with the count it opened with
+  // (`expected`), and the server decides: it refuses one over stock that moved since
+  // (stock_changed), and answers one that's already what's stored with no change. This page's
+  // copy may be behind, so it isn't asked. A blank count stops counting the item
   // (`reason: "uncount"`, which removes its stock with a movement), as the artifact's write
   // without stock does, but only when the form showed a count when it opened (`counted`) and
   // the item still has one: a form opened on an item that wasn't counted leaves alone a count
@@ -354,8 +357,7 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     if (!held || fields(held.data) !== fields(data)) await docRef("products/" + key).set(data);
     const stored = coll("products").docs.get(key).data.stock;
     const count = change.count === undefined ? (change.counted && typeof stored === "number" ? { reason: "uncount" } : null)
-      : change.count === stored ? null : { reason: "count", count: change.count };
-    // Refused by the server if the stock isn't what the form opened with any more (stock_changed)
+      : { reason: "count", count: change.count };
     const changes = change.reason === "receipt"
       ? change.lines.map((l) => [l.action, { reason: "receipt", quantity: l.quantity, unitCost: l.unitCost }])
       : count ? [[action, { ...count, expectedStock: change.expected }]] : [];

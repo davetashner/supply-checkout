@@ -1149,13 +1149,28 @@ test.describe("stock commands", { tag: ["@J2"] }, () => {
     await modal(page).getByLabel("Single items in storage now").fill("8");
     await modal(page).getByRole("button", { name: "Save" }).click();
     await expect(toast(page)).toHaveText("Saved");
-    expect(backend.requests("POST", STOCK)).toEqual([]);
+    // The server decides: it's what's stored, so it changes nothing
+    expect(backend.requests("POST", STOCK).map((r) => r.body)).toEqual([{ operationId: expect.any(String), reason: "count", count: 8, expectedStock: 10 }]);
+    expect([...backend.operations.values()][0].result).toMatchObject({ reason: "count", count: 8, stockDelta: 0 });
     await expect(page.locator("#overlay")).toBeHidden();
     // Opened again, a count of 6 over the 8 it shows saves
     await editStock(page, "6");
     await expect(toast(page)).toHaveText("Saved");
-    expect(backend.requests("POST", STOCK).map((r) => r.body)).toEqual([{ operationId: expect.any(String), reason: "count", count: 6, expectedStock: 8 }]);
+    expect(backend.requests("POST", STOCK).map((r) => r.body).at(-1)).toEqual({ operationId: expect.any(String), reason: "count", count: 6, expectedStock: 8 });
     expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(6);
+  });
+
+  test("a new count that matches this page's copy is still refused when the server's stock moved on", async ({ page }) => {
+    const backend = await open(page);
+    await checkedOutMeanwhile(page, backend);
+    // Another checkout takes it to 7, and this page hasn't heard yet: it still shows 8
+    backend.write("t1", "products", "SKU1", { ...backend.doc("t1", "products", "SKU1").data, stock: 7 });
+    await modal(page).getByLabel("Single items in storage now").fill("8");
+    await modal(page).getByRole("button", { name: "Save" }).click();
+    await expect(toast(page)).toHaveText("The count changed while you were editing: it's now 7, so your count wasn't saved. The latest is showing.");
+    expect(backend.requests("POST", STOCK).map((r) => r.body)).toEqual([{ operationId: expect.any(String), reason: "count", count: 8, expectedStock: 10 }]);
+    expect(backend.doc("t1", "products", "SKU1").data.stock).toBe(7);
+    await expect(stockCell(page, "Paper towels")).toHaveText("7");
   });
 
   test("a blank count on an item that isn't counted sends no stock command", async ({ page }) => {

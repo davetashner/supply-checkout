@@ -163,6 +163,10 @@ async function setCount(ref, body, change) {
   const now = hasStock(cur) ? cur.stock : null, moved = !change.keep && now !== change.expected && now !== (hasStock(body) ? body.stock : null);
   const next = { ...body };
   if (change.keep || moved) { delete next.stock; if (now !== null) next.stock = now; }
+  // The marks are the stored ones too: one a checkout or return elsewhere added while the form
+  // was open keeps that action's retry from moving the stock again (see move above)
+  delete next.ops;
+  if (cur && Array.isArray(cur.ops)) next.ops = cur.ops;
   await ref.set(next);
   if (moved) throw countChanged(now);
 }

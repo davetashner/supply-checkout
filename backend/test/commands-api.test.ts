@@ -395,6 +395,8 @@ describe("stock adjust", () => {
     expect((await call("POST", path, { operationId: op(), reason: "uncount", expectedStock: 7 })).body.result).toMatchObject({ reason: "uncount", stockDelta: 0 });
     expect((await call("POST", path, { operationId: op(), reason: "count", count: 3, expectedStock: null })).body.result).toMatchObject({ count: 3, stockDelta: 3 });
     expect(stock()).toBe(3);
+    // Expected refusals, not lost races: they don't feed the write-conflicts alarm
+    expect(counts.ConditionalWriteConflicts ?? 0).toBe(0);
   });
 
   it("replays a count sent with expectedStock, and treats another expectedStock as another request", async () => {
