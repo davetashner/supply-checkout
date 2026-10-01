@@ -14,24 +14,28 @@
 //   npm run journeys:video -- --pace 0.3            shorter pauses, for a quick check
 //   npm run journeys:video -- --slow-mo 100         the browser's slowMo, in milliseconds (default 0)
 //   npm run journeys:video -- --skip-build          use the dist/web already built
+//   npm run journeys:video -- --evidence            also keep each test's trace and a screenshot at the
+//                                                   end of each step, for the release evidence pack
+//                                                   (npm run journeys:report, report.mjs)
 //
 // For each journey it writes dist/journey-videos/<J#-slug>.webm and <J#-slug>.json (the
 // sidecar: each step's result, its tests and where each shows in the video). With --viewport
-// phone the names end in -phone. It holds the Playwright run lock (tests/run-lock.js) from start
+// phone the names end in -phone. With --evidence, the traces and screenshots go in
+// dist/journey-videos/evidence/ (t<n>-trace.zip, t<n>-shot-<k>.jpg), named in the sidecar. It holds the Playwright run lock (tests/run-lock.js) from start
 // to end, runs one test at a time in one Chromium, and exits 1 if any recorded test failed; the
 // videos are still written, showing the failure.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const CONFIG = fileURLToPath(new URL("./playwright.config.mjs", import.meta.url));
-const USAGE = "Usage: npm run journeys:video -- [--only J4[,J7]] [--viewport desktop|phone] [--headless] [--pace 1] [--slow-mo 0] [--skip-build]";
+const USAGE = "Usage: npm run journeys:video -- [--only J4[,J7]] [--viewport desktop|phone] [--headless] [--pace 1] [--slow-mo 0] [--skip-build] [--evidence]";
 
 export function parseArgs(argv) {
-  const opts = { headless: false, only: null, pace: 1, slowMo: 0, build: true, viewport: "desktop" };
+  const opts = { headless: false, only: null, pace: 1, slowMo: 0, build: true, viewport: "desktop", evidence: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const value = () => {
@@ -43,6 +47,7 @@ export function parseArgs(argv) {
     if (arg === "--headless") opts.headless = true;
     else if (arg === "--headed") opts.headless = false;
     else if (arg === "--skip-build") opts.build = false;
+    else if (arg === "--evidence") opts.evidence = true;
     else if (is("--only")) opts.only = [...(opts.only || []), ...value().split(",").map((s) => s.trim().toUpperCase()).filter(Boolean)];
     else if (is("--pace")) opts.pace = Number(value());
     else if (is("--slow-mo")) opts.slowMo = Number(value());
@@ -93,7 +98,7 @@ async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) return console.log(USAGE);
   const { playwrightTests, journeyStatus } = await import("../journeys.mjs");
-  const { planVideos, grepFor, readReport, stepResults, clipsFor, sidecar, summarize, journeySlug } = await import("./assemble.mjs");
+  const { planVideos, grepFor, readReport, stepResults, clipsFor, sidecar, summarize, journeySlug, evidenceFiles } = await import("./assemble.mjs");
   const { frame, titleCard, stepCard, endCard } = await import("./director.mjs");
   const { concatWebm, webmDuration } = await import("./webm.mjs");
   const { acquireRunLock, releaseRunLock } = await import("../../tests/run-lock.js");
@@ -108,7 +113,7 @@ async function main() {
   const env = {
     BUILD: "web",
     JOURNEY_VIDEO: "1",
-    JOURNEY_VIDEO_OPTIONS: JSON.stringify({ viewport: opts.viewport, pace: opts.pace, slowMo: opts.slowMo, headless: opts.headless, outputDir: join(scratch, "results"), report: join(scratch, "report.json") }),
+    JOURNEY_VIDEO_OPTIONS: JSON.stringify({ viewport: opts.viewport, pace: opts.pace, slowMo: opts.slowMo, headless: opts.headless, evidence: opts.evidence, outputDir: join(scratch, "results"), report: join(scratch, "report.json") }),
   };
   const written = [];
   let failed = 0, browser, done = false;
@@ -137,13 +142,22 @@ async function main() {
     const recording = count ? await playwright(run, ["--grep", grepFor(plans)], env) : { status: 0 };
     const report = existsSync(join(scratch, "report.json")) ? JSON.parse(readFileSync(join(scratch, "report.json"), "utf8")) : {};
     if (count && !report.suites) throw new Error(`The recording run didn't finish (exit ${recording.status})`);
-    const results = readReport(report, (videos) => videos.reduce((a, b) => (webmDuration(b) > webmDuration(a) ? b : a)));
+    let results = readReport(report, (videos) => videos.reduce((a, b) => (webmDuration(b) > webmDuration(a) ? b : a)));
+    mkdirSync(outDir, { recursive: true });
+    if (opts.evidence) {
+      // The traces and screenshots are in the scratch folder: keep them in dist/journey-videos/evidence/
+      const kept = evidenceFiles(results);
+      rmSync(join(outDir, "evidence"), { recursive: true, force: true });
+      mkdirSync(join(outDir, "evidence"));
+      for (const [from, to] of kept.copies) if (existsSync(from)) copyFileSync(from, join(outDir, to));
+      results = kept.results;
+    }
 
     const { chromium } = await import("@playwright/test");
     browser = await chromium.launch();
     const cardDir = join(scratch, "cards");
-    const meta = { viewport: opts.viewport, size: size.video, build: "web", commit: commit(), recordedAt: new Date().toISOString() };
-    mkdirSync(outDir, { recursive: true });
+    // runtime: the test suite's fakes and demo data, never a real account (report.mjs checks it)
+    const meta = { viewport: opts.viewport, size: size.video, build: "web", runtime: "fakes", commit: commit(), recordedAt: new Date().toISOString() };
     for (const plan of plans) {
       const steps = stepResults(plan, results);
       const clips = clipsFor(plan, steps, results);

@@ -3,7 +3,8 @@ name: Release
 # release-please keeps a "chore(main): release x.y.z" pull request up to date
 # from Conventional Commit messages. Merging it tags the version and creates a
 # GitHub Release; the claude.ai artifact (dist/artifact/index.html, built from
-# the tag) and an SPDX SBOM are attached once the full check suite passes.
+# the tag) and an SPDX SBOM are attached once the full check suite passes, and
+# then the journey evidence pack (a report, one video per journey and the traces).
 on:
   push:
     branches: [main]
@@ -81,6 +82,71 @@ jobs:
         run: npm run build:artifact
       - name: Attach index.html and the SBOM to the release
         run: gh release upload "$TAG" dist/artifact/index.html "supply-checkout-$TAG.spdx.json" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+
+  evidence:
+    # The journey evidence pack (docs/releases.md): records the tests tagged with journey steps
+    # from the tag, with video, trace and a screenshot at each step's end, and builds the report.
+    # It runs against the test suite's fakes and demo data (tests/fake-aws.js, tests/mock-claude.js):
+    # release assets are public, so this job gets no secrets, no cloud credentials and a read-only
+    # token, and the upload is a separate job.
+    needs: [release-please, checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      # One test at a time in one Chromium. A failed test still gets its video and is shown failed
+      # in the report, so the pack is attached either way (CI passed on this commit just before)
+      - name: Record the journeys
+        id: record
+        continue-on-error: true
+        run: npm run journeys:video -- --headless --evidence
+      - name: Build the report
+        run: npm run journeys:report -- --tag "$TAG" --repo "$GITHUB_REPOSITORY"
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+      - name: Bundle the traces
+        working-directory: dist/journey-videos
+        run: zip -q -r journey-traces.zip evidence -i '*.zip'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: journey-evidence
+          path: |
+            dist/journey-videos/journey-evidence.html
+            dist/journey-videos/*.webm
+            dist/journey-videos/journey-traces.zip
+          if-no-files-found: error
+          retention-days: 7
+      - name: Report failed journey tests
+        if: steps.record.outcome == 'failure'
+        run: echo "::warning::Some journey tests failed while recording; the evidence report shows which"
+
+  evidence-upload:
+    needs: [release-please, evidence]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: journey-evidence
+          path: evidence
+      - name: Attach the evidence report, videos and traces to the release
+        run: gh release upload "$TAG" evidence/* --clobber --repo "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release-please.outputs.tag_name }}

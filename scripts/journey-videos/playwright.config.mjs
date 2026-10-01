@@ -27,7 +27,8 @@ export default defineConfig({
     ...emulate,
     viewport: page,
     video: { mode: "on", size: video },
-    trace: "off",
+    // The release evidence pack (--evidence) keeps each test's trace, without its screenshots: the video has those
+    trace: options.evidence ? { mode: "on", screenshots: false } : "off",
     launchOptions: { slowMo: options.slowMo ?? 0 },
   },
   projects: [{ name: `journey-video-${options.viewport || "desktop"}` }],
