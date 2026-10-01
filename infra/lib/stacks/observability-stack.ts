@@ -7,7 +7,7 @@ import { tableName } from "../../../backend/src/data/schema.js";
 import { operatorGroupSnapshotParameter, opsResourceNames } from "../../../backend/src/ops/names.js";
 import { backupAlertRuleArns } from "../backup-alerts.js";
 import { type DeploymentConfig, GLOBAL_SERVICES_REGION, stripeModeOf } from "../config.js";
-import { AlarmTopics, alarmContactsFromContext } from "../observability/alarm-topics.js";
+import { AlarmTopics, alarmContactsFromContext, alarmRecipientParameterPrefix } from "../observability/alarm-topics.js";
 import { apiOutputParameters } from "./api-stack.js";
 import { auditOutputParameters, trailBucketName } from "./audit-stack.js";
 import { webOutputParameters } from "./web-stack.js";
@@ -145,6 +145,9 @@ export const OPERATOR_RULE_SUFFIXES = {
   OperatorAuditWatchTableChanges: "audit-watch-table",
   OperatorAlarmChanges: "alarm-changes",
   OperatorAlertRouteChanges: "alert-route-changes",
+  // Alarm recipients (supply-checkout-6uw.23): P2 only, CloudFormation included
+  OperatorAlarmRecipientChanges: "alarm-recipients",
+  OperatorAlarmSubscriptionChanges: "alarm-subscriptions",
   OperatorAlertKeyAndTrailChanges: "alert-key-and-trail",
   OperatorTrailBucketChanges: "trail-bucket-changes",
   OperatorRuleTampering: "rule-tampering",
@@ -326,6 +329,16 @@ export const ALARM_TOPIC_EVENTS = { always: ["DeleteTopic", "RemovePermission"],
 /** SNS calls that name the topic in `resourceArn`: a data protection policy can deny every inbound message, and neither topic has one. */
 export const ALARM_TOPIC_RESOURCE_EVENTS = { always: ["PutDataProtectionPolicy"] } as const;
 export const ALARM_SUBSCRIPTION_EVENTS = { outsideDeploys: ["Unsubscribe", "SetSubscriptionAttributes"] } as const;
+/**
+ * SNS calls that change who an alarm topic reaches, for
+ * OperatorAlarmSubscriptionChanges (supply-checkout-6uw.23): a new
+ * subscription whoever makes it, and CloudFormation's own Unsubscribe or
+ * SetSubscriptionAttributes during a deploy (anyone else's already alert
+ * through OperatorAlertRouteChanges, ALARM_SUBSCRIPTION_EVENTS). A deploy
+ * after an alarm recipient parameter is rewritten replaces that
+ * subscription: Subscribe to the new endpoint, then Unsubscribe the old one.
+ */
+export const ALARM_RECIPIENT_SUBSCRIPTION_EVENTS = { always: ["Subscribe"], byDeploys: ALARM_SUBSCRIPTION_EVENTS.outsideDeploys } as const;
 /** KMS calls that stop the alarm topics' key working, or will. */
 export const ALARM_KEY_EVENTS = { always: ["DisableKey", "ScheduleKeyDeletion"], outsideDeploys: ["PutKeyPolicy"] } as const;
 /** KMS calls that point an alias at the topics' key: none is ever made for it, so each alerts, and a call through an alias still names the key in `resources`. */
@@ -363,6 +376,8 @@ export const TRAIL_KEY_EVENTS = { always: ["CreateGrant", "DisableKeyRotation"] 
  * `outsideDeploys` call unseen (docs/infrastructure.md, "What the rules don't list").
  */
 const NOT_CLOUDFORMATION = { invokedBy: [{ exists: false }, { "anything-but": "cloudformation.amazonaws.com" }] };
+/** CloudFormation's own calls during a deploy: the other side of NOT_CLOUDFORMATION. */
+const BY_CLOUDFORMATION = { invokedBy: ["cloudformation.amazonaws.com"] };
 
 /** What an operator's own access token can change (the aws.cognito.signin.user.admin scope); each alerts P1. */
 export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySoftwareToken", "SetUserMFAPreference", "UpdateUserAttributes", "DeleteUser"] as const;
@@ -560,6 +575,19 @@ export class ObservabilityStack extends SupplyCheckoutStack {
    *   policy or key) or a subscription to it, including unsubscribing,
    *   outside a deploy; and a data protection policy on either topic,
    *   whoever sets it.
+   * - `OperatorAlarmRecipientChanges` and `OperatorAlarmSubscriptionChanges`
+   *   (supply-checkout-6uw.23), P2 only, CloudFormation included (the
+   *   owner's decision): any PutParameter, DeleteParameter(s) or
+   *   (Un)LabelParameterVersion on an SSM parameter under
+   *   /supply-checkout/<env>/alarms/ (alarmRecipientParameterPrefix, with any
+   *   padding); and any Subscribe to either alarm topic, and CloudFormation's
+   *   own Unsubscribe or SetSubscriptionAttributes on a subscription to one.
+   *   The subscriptions take their endpoints from those parameters only when
+   *   the stack deploys, so the parameter alert goes to the recipients from
+   *   before the change. The deploy then subscribes the new endpoint before
+   *   it unsubscribes the old (a replacement, the old one removed in the
+   *   stack's cleanup), so its Subscribe alert usually reaches the old
+   *   recipient too, and its Unsubscribe alert the ones still subscribed.
    * - `OperatorAlertKeyAndTrailChanges`: disabling or scheduling the
    *   deletion of the topics' key or the audit stack's trail key whoever does
    *   it, changing either's policy outside a deploy, or pointing an alias at
@@ -781,6 +809,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     ];
     const topics = Object.values(this.topics.topics);
     const topicArns = topics.map((t) => t.topicArn);
+    const subscriptionArns = topicArns.map((arn) => ({ prefix: `${arn}:` }));
     const routeChanges = operatorRule("OperatorAlertRouteChanges", "An alarm topic or a subscription to one was deleted, lost its permissions or was changed outside a deploy (supply-checkout-6uw.11)", {
       source: ["aws.sns"],
       ...cloudTrail,
@@ -791,7 +820,37 @@ export class ObservabilityStack extends SupplyCheckoutStack {
           // PutDataProtectionPolicy names the topic in `resourceArn`, not `topicArn`
           ...calls(ALARM_TOPIC_RESOURCE_EVENTS, { requestParameters: { resourceArn: topicArns } }),
           // A subscription's ARN is its topic's ARN, a colon and an ID
-          ...calls(ALARM_SUBSCRIPTION_EVENTS, { requestParameters: { subscriptionArn: topicArns.map((arn) => ({ prefix: `${arn}:` })) } }),
+          ...calls(ALARM_SUBSCRIPTION_EVENTS, { requestParameters: { subscriptionArn: subscriptionArns } }),
+        ],
+      },
+    });
+    // Who the alarms reach (supply-checkout-6uw.23): the owner edits these legitimately, so P2 only, and with no CloudFormation
+    // exemption. The SSM write alerts the recipients from before it (the subscriptions only change at the next deploy); the
+    // deploy's own Subscribe and Unsubscribe alert too, since that's when the recipients actually change
+    const recipientPrefix = alarmRecipientParameterPrefix(envName);
+    const recipientNames = [ssmParameterNameMatch(recipientPrefix)];
+    const recipientChanges = operatorRule("OperatorAlarmRecipientChanges", `An alarm recipient parameter under ${recipientPrefix} was changed or deleted, by anyone, deploys included (supply-checkout-6uw.23)`, {
+      source: ["aws.ssm"],
+      ...cloudTrail,
+      detail: {
+        eventSource: ["ssm.amazonaws.com"],
+        $or: [
+          { eventName: [...RULE_INPUT_PARAMETER_EVENTS], requestParameters: { name: recipientNames } },
+          // DeleteParameters names it in a list
+          { eventName: ["DeleteParameters"], requestParameters: { names: recipientNames } },
+        ],
+      },
+    });
+    const subscriptionChanges = operatorRule("OperatorAlarmSubscriptionChanges", "A subscription to an alarm topic was made, or changed or removed by a deploy (supply-checkout-6uw.23)", {
+      source: ["aws.sns"],
+      ...cloudTrail,
+      detail: {
+        eventSource: ["sns.amazonaws.com"],
+        $or: [
+          // Subscribe names the topic; whoever makes it
+          { eventName: [...ALARM_RECIPIENT_SUBSCRIPTION_EVENTS.always], requestParameters: { topicArn: topicArns } },
+          // A deploy's own; anyone else's alerts P1 and P2 through OperatorAlertRouteChanges
+          { eventName: [...ALARM_RECIPIENT_SUBSCRIPTION_EVENTS.byDeploys], requestParameters: { subscriptionArn: subscriptionArns }, userIdentity: BY_CLOUDFORMATION },
         ],
       },
     });
@@ -853,6 +912,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       "The same as OperatorRuleTampering, which it watches in turn, so neither can be removed first unseen (supply-checkout-6uw.11)",
       tamperingPattern(watched),
     );
+    // The rules that tell P1; the alarm recipient rules tell P2 only (below)
     const rules = [admin, protection, branding, selfService, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, ...inputRules.map((i) => i.rule), routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering];
     const topic = this.topics.topics.P1;
     // EventBridge publishes to the encrypted topic: it may use the key, for this account's rules only
@@ -892,6 +952,8 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       [snapshotChanges, message("the operator group watch's snapshot")],
       ...inputRules.map(({ rule, what }) => [rule, message(what)] as const),
       [routeChanges, message("the alarm topics")],
+      [recipientChanges, message(`the alarm recipient parameters under ${recipientPrefix}`)],
+      [subscriptionChanges, message("a subscription to an alarm topic")],
       [keyAndTrailChanges, message("the alarm topics' key or CloudTrail")],
       [trailBucketChanges, message("the CloudTrail trail's bucket or key")],
       [tampering, message("an operator alert rule")],
@@ -902,19 +964,23 @@ export class ObservabilityStack extends SupplyCheckoutStack {
       // A plain target: events-targets' SnsTopic would add a topic policy for every rule in the account
       rule.addTarget({ bind: () => ({ arn: topic.topicArn, input: messages.get(rule) }) });
     }
-    // Changes to the route an alert takes also go to P2: deleting or breaking the P1 topic still reaches someone
+    // Changes to the route an alert takes also go to P2: deleting or breaking the P1 topic still reaches someone.
+    // The alarm recipient rules go to P2 only (supply-checkout-6uw.23)
     const p2 = this.topics.topics.P2;
     const routeRules = [routeChanges, keyAndTrailChanges];
-    for (const rule of routeRules) rule.addTarget({ bind: () => ({ arn: p2.topicArn, input: messages.get(rule) }) });
+    const recipientRules = [recipientChanges, subscriptionChanges];
+    const p2Rules = [...routeRules, ...recipientRules];
+    for (const rule of p2Rules) rule.addTarget({ bind: () => ({ arn: p2.topicArn, input: messages.get(rule) }) });
+    // Only these rules may publish to P2 (not any rule in the account)
     p2.addToResourcePolicy(
       new PolicyStatement({
         sid: "AllowAlertRouteChangesToPublish",
         principals: [new ServicePrincipal("events.amazonaws.com")],
         actions: ["sns:Publish"],
         resources: [p2.topicArn],
-        conditions: { ArnEquals: { "aws:SourceArn": routeRules.map((r) => r.ruleArn) } },
+        conditions: { ArnEquals: { "aws:SourceArn": p2Rules.map((r) => r.ruleArn) } },
       }),
     );
-    return rules;
+    return [...rules, ...recipientRules];
   }
 }

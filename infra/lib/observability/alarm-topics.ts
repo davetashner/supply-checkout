@@ -29,9 +29,16 @@ export interface AlarmContacts {
 export const DEFAULT_ALARM_CONTACTS: AlarmContacts = { email: 1, sms: 1 };
 const MAX_CONTACTS = 5;
 
+/**
+ * Every alarm recipient parameter's name starts with this. Any change to a
+ * parameter under it alerts P2 (OperatorAlarmRecipientChanges in the
+ * observability stack, supply-checkout-6uw.23).
+ */
+export const alarmRecipientParameterPrefix = (envName: string) => `/supply-checkout/${envName}/alarms/`;
+
 /** The SSM parameter holding the n-th (1-based) email address or phone number. */
 export function alarmContactParameter(envName: string, kind: keyof AlarmContacts, n: number): string {
-  return `/supply-checkout/${envName}/alarms/${kind}-${n}`;
+  return `${alarmRecipientParameterPrefix(envName)}${kind}-${n}`;
 }
 
 interface ContextReader {

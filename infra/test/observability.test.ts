@@ -9,7 +9,7 @@ import type { Construct } from "constructs";
 import { describe, expect, it } from "vitest";
 import { BusinessMetric } from "../../backend/src/observability/names.js";
 import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
-import { alarmContactParameter, alarmContactsFromContext } from "../lib/observability/alarm-topics.js";
+import { alarmContactParameter, alarmContactsFromContext, alarmRecipientParameterPrefix } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
 import { journeyAlarmSpecs, SET_ASIDE_INCIDENT_AT } from "../lib/observability/journey-alarms.js";
 import { ROUTER_FAILING_ABOVE, RUM_EVENTS_FLOOD_PER_HOUR, RUM_EVENTS_SURGE_PER_HOUR, SITE_DOWN_MIN_REQUESTS, SITE_DOWN_PERCENT } from "../lib/observability/web-alarms.js";
@@ -36,6 +36,7 @@ import { addBackupAccount, addSupplyCheckout } from "../lib/supply-checkout.js";
 import {
   ALARM_KEY_ALIAS_EVENTS,
   ALARM_KEY_EVENTS,
+  ALARM_RECIPIENT_SUBSCRIPTION_EVENTS,
   ALARM_SUBSCRIPTION_EVENTS,
   ALARM_TOPIC_EVENTS,
   ALARM_TOPIC_RESOURCE_EVENTS,
@@ -1356,6 +1357,7 @@ function eventMatches(pattern: unknown, event: unknown): boolean {
       const r = rule as Record<string, unknown>;
       if ("exists" in r) return r.exists === (value !== undefined);
       if ("anything-but" in r) return value !== undefined && !same(value, r["anything-but"]);
+      if ("prefix" in r && typeof r.prefix === "string") return typeof value === "string" && value.startsWith(r.prefix);
       if ("wildcard" in r) {
         const pattern = String(r.wildcard).split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*");
         return typeof value === "string" && new RegExp(`^${pattern}$`, "s").test(value);
@@ -1437,7 +1439,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     const t = observability();
     // The deletion records watch's rules are tested with the watch
     const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch"));
-    expect(rules).toHaveLength(28);
+    expect(rules).toHaveLength(30);
     const byId = (prefix: string) => {
       // Logical IDs end in an 8-character hash
       const found = rules.find(([id]) => id.startsWith(prefix) && /^[0-9A-F]{8}$/.test(id.slice(prefix.length)));
@@ -1460,6 +1462,8 @@ describe("operator pool alerts (ADR 0015)", () => {
       inputs: ["OperatorInputOpsPoolId", "OperatorInputOpsBrandingId", "OperatorInputTrailKeyArn", "OperatorInputTableKeyArn", "OperatorInputTableStreamArn"].map(byId),
       authorizers: ["OperatorAuthorizerIssuerUrl", "OperatorAuthorizerWebClientId", "OperatorAuthorizerUserPoolId", "OperatorAuthorizerOpsIssuerUrl", "OperatorAuthorizerOpsClientId", "OperatorAuthorizerAuthUrl"].map(byId),
       routeChanges: byId("OperatorAlertRouteChanges"),
+      recipientChanges: byId("OperatorAlarmRecipientChanges"),
+      subscriptionChanges: byId("OperatorAlarmSubscriptionChanges"),
       keyAndTrailChanges: byId("OperatorAlertKeyAndTrailChanges"),
       trailBucketChanges: byId("OperatorTrailBucketChanges"),
       tampering: byId("OperatorRuleTampering"),
@@ -1472,7 +1476,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     const { region } = build();
     const west = Template.fromStack(region(WEST).observability);
     expect(Object.values(west.findResources("AWS::Events::Rule")).filter((r) => r.Properties.EventPattern)).toEqual([]);
-    const { t, admin, protection, branding, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, inputs, authorizers, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering } = operatorRules();
+    const { t, admin, protection, branding, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, inputs, authorizers, routeChanges, recipientChanges, subscriptionChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering } = operatorRules();
     const poolId = { Ref: expect.stringMatching(/identityopsuserpoolid/i) };
     expect(admin.props.EventPattern).toEqual({
       source: ["aws.cognito-idp"],
@@ -1550,11 +1554,11 @@ describe("operator pool alerts (ADR 0015)", () => {
         Sid: "AllowOperatorPoolAlertToPublish",
         Condition: { ArnEquals: { "aws:SourceArn": [admin, protection, branding, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, ...inputs, ...authorizers, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering].map((r) => ({ "Fn::GetAtt": [r.id, "Arn"] })) } },
       }),
-      // The two route rules on the P2 topic, and nothing else
+      // The two route rules and the two alarm recipient rules on the P2 topic, and nothing else (supply-checkout-6uw.23)
       expect.objectContaining({
         Sid: "AllowAlertRouteChangesToPublish",
         Resource: { Ref: expect.stringMatching(/^AlarmTopicsP2/) },
-        Condition: { ArnEquals: { "aws:SourceArn": [routeChanges, keyAndTrailChanges].map((r) => ({ "Fn::GetAtt": [r.id, "Arn"] })) } },
+        Condition: { ArnEquals: { "aws:SourceArn": [routeChanges, keyAndTrailChanges, recipientChanges, subscriptionChanges].map((r) => ({ "Fn::GetAtt": [r.id, "Arn"] })) } },
       }),
       // The deletion records bucket's change rule (tested with the watch)
       expect.objectContaining({ Sid: "AllowDeletionsBucketAlertToPublish" }),
@@ -1966,6 +1970,138 @@ describe("operator pool alerts (ADR 0015)", () => {
     expect([...ALARM_KEY_EVENTS.always, ...ALARM_KEY_EVENTS.outsideDeploys]).toEqual(["DisableKey", "ScheduleKeyDeletion", "PutKeyPolicy"]);
     expect([...ALARM_KEY_ALIAS_EVENTS.always]).toEqual(["CreateAlias", "UpdateAlias"]);
     expect([...ALARM_TOPIC_RESOURCE_EVENTS.always]).toEqual(["PutDataProtectionPolicy"]);
+  });
+
+  it("tell P2 about any change to an alarm recipient parameter, CloudFormation included, however its name is padded (supply-checkout-6uw.23)", () => {
+    const { t, recipientChanges: rule } = operatorRules();
+    const prefix = "/supply-checkout/prod/alarms/";
+    expect(alarmRecipientParameterPrefix("prod")).toBe(prefix);
+    // Every recipient parameter is under the prefix
+    for (const kind of ["email", "sms"] as const) for (let n = 1; n <= 5; n++) expect(alarmContactParameter("prod", kind, n).startsWith(prefix)).toBe(true);
+    const match = [{ wildcard: `*${prefix}*` }];
+    expect(rule.props.EventPattern).toEqual({
+      source: ["aws.ssm"],
+      "detail-type": ["AWS API Call via CloudTrail"],
+      detail: {
+        eventSource: ["ssm.amazonaws.com"],
+        // No userIdentity anywhere: CloudFormation's own calls alert too
+        $or: [
+          { eventName: [...RULE_INPUT_PARAMETER_EVENTS], requestParameters: { name: match } },
+          { eventName: ["DeleteParameters"], requestParameters: { names: match } },
+        ],
+      },
+    });
+    expect(JSON.stringify(rule.props.EventPattern)).not.toContain("userIdentity");
+    // Two wildcards, the shape the other SSM rules deploy with
+    expect(JSON.stringify(rule.props.EventPattern).split("*").length - 1).toBe(4);
+    // Under the operator prefix, so the rule-tampering rules watch it, inside 64 characters with the longest envName
+    expect(rule.props.Name).toBe(operatorRuleName("prod", OPERATOR_RULE_SUFFIXES.OperatorAlarmRecipientChanges));
+    expect(String(rule.props.Name).startsWith(operatorRulePrefix("prod"))).toBe(true);
+    expect(operatorRuleName("a".repeat(16), OPERATOR_RULE_SUFFIXES.OperatorAlarmRecipientChanges).length).toBeLessThanOrEqual(64);
+    expect(rule.props.State).toBe("ENABLED");
+    // P2 only: an email to the recipients subscribed now, the ones from before the change (the owner's decision)
+    expect(rule.props.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP2/) } })]);
+    const target = JSON.stringify(rule.props.Targets);
+    expect(target).toContain(`the alarm recipient parameters under ${prefix}`);
+    expect(target).toContain("$.detail.eventID");
+    // The message names the call, never the value (an address or a number)
+    expect(target).not.toContain("requestParameters");
+
+    const record = (eventName: string, requestParameters: Record<string, unknown>, invokedBy?: string) => ({
+      source: "aws.ssm",
+      "detail-type": "AWS API Call via CloudTrail",
+      detail: { eventSource: "ssm.amazonaws.com", eventName, requestParameters, userIdentity: { type: "AssumedRole", ...(invokedBy ? { invokedBy } : {}) } },
+    });
+    const alerts = (event: unknown) => eventMatches(rule.props.EventPattern, event);
+    // Every recipient parameter the template subscribes from, and any other under the prefix
+    const subscribed = Object.values(ssmReads(t).parameters).map((p) => String(p.Default)).filter((n) => n.startsWith(prefix));
+    expect(subscribed.sort()).toEqual(["/supply-checkout/prod/alarms/email-1", "/supply-checkout/prod/alarms/sms-1"]);
+    for (const name of [...subscribed, alarmContactParameter("prod", "email", 5), alarmContactParameter("prod", "sms", 3), `${prefix}anything-new`]) {
+      for (const padded of [name, ` ${name}`, `${name} `, `   ${name}  `]) {
+        const label = JSON.stringify(padded);
+        for (const invokedBy of [undefined, "cloudformation.amazonaws.com", "ssm.amazonaws.com"]) {
+          for (const eventName of RULE_INPUT_PARAMETER_EVENTS) expect(alerts(record(eventName, { name: padded, overwrite: true }, invokedBy)), `${eventName} ${label} ${invokedBy}`).toBe(true);
+          expect(alerts(record("DeleteParameters", { names: ["/supply-checkout/prod/other", padded] }, invokedBy)), `DeleteParameters ${label} ${invokedBy}`).toBe(true);
+        }
+      }
+      expect(alerts(record("GetParameter", { name })), `GetParameter ${name}`).toBe(false);
+      expect(alerts(record("DeleteParameter", { names: [name] })), `DeleteParameter with names ${name}`).toBe(false);
+    }
+    // Another environment's, a sibling path and the prefix's parent don't alert
+    for (const name of ["/supply-checkout/staging/alarms/email-1", "/supply-checkout/prod/alarmsx/email-1", "/supply-checkout/prod/alarms", "/supply-checkout/prod/identity/issuer-url"]) {
+      expect(alerts(record("PutParameter", { name })), name).toBe(false);
+      expect(alerts(record("DeleteParameters", { names: [name] })), name).toBe(false);
+    }
+    // Another service's call carrying the name isn't this rule's
+    expect(alerts({ ...record("PutParameter", { name: `${prefix}email-1` }), source: "aws.cognito-idp" })).toBe(false);
+  });
+
+  it("tell P2 when a subscription to an alarm topic is made, whoever makes it, or changed or removed by a deploy, so a deploy that swaps recipients is seen (supply-checkout-6uw.23)", () => {
+    const { t, subscriptionChanges: rule, routeChanges } = operatorRules();
+    const topics = [{ Ref: expect.stringMatching(/^AlarmTopicsP1/) }, { Ref: expect.stringMatching(/^AlarmTopicsP2/) }];
+    const subscriptions = topics.map((ref) => ({ prefix: { "Fn::Join": ["", [ref, ":"]] } }));
+    expect([...ALARM_RECIPIENT_SUBSCRIPTION_EVENTS.always]).toEqual(["Subscribe"]);
+    expect([...ALARM_RECIPIENT_SUBSCRIPTION_EVENTS.byDeploys]).toEqual([...ALARM_SUBSCRIPTION_EVENTS.outsideDeploys]);
+    expect(rule.props.EventPattern).toEqual({
+      source: ["aws.sns"],
+      "detail-type": ["AWS API Call via CloudTrail"],
+      detail: {
+        eventSource: ["sns.amazonaws.com"],
+        $or: [
+          // A new subscription, whoever makes it: a deploy's, for a rewritten recipient parameter, or anyone's listening in
+          { eventName: ["Subscribe"], requestParameters: { topicArn: topics } },
+          // A deploy's own Unsubscribe or SetSubscriptionAttributes; anyone else's already alerts P1 and P2 through OperatorAlertRouteChanges
+          { eventName: ["Unsubscribe", "SetSubscriptionAttributes"], requestParameters: { subscriptionArn: subscriptions }, userIdentity: { invokedBy: ["cloudformation.amazonaws.com"] } },
+        ],
+      },
+    });
+    expect(rule.props.Name).toBe(operatorRuleName("prod", OPERATOR_RULE_SUFFIXES.OperatorAlarmSubscriptionChanges));
+    expect(String(rule.props.Name).startsWith(operatorRulePrefix("prod"))).toBe(true);
+    expect(operatorRuleName("a".repeat(16), OPERATOR_RULE_SUFFIXES.OperatorAlarmSubscriptionChanges).length).toBeLessThanOrEqual(64);
+    expect(rule.props.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP2/) } })]);
+    expect(JSON.stringify(rule.props.Targets)).toContain("a subscription to an alarm topic");
+
+    // With the topic references as ARNs: which rules each call reaches
+    const topicIds = Object.keys(t.findResources("AWS::SNS::Topic")).filter((id) => /^AlarmTopicsP[12]/.test(id));
+    expect(topicIds).toHaveLength(2);
+    const arnOf = (id: string) => `arn:aws:sns:${EAST}:000000000000:${id}`;
+    const resolveTopics = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(resolveTopics);
+      if (!value || typeof value !== "object") return value;
+      const v = value as Record<string, unknown>;
+      if (typeof v.Ref === "string" && topicIds.includes(v.Ref)) return arnOf(v.Ref);
+      if (Array.isArray(v["Fn::Join"])) {
+        const [sep, parts] = v["Fn::Join"] as [string, unknown[]];
+        return parts.map((p) => String(resolveTopics(p))).join(sep);
+      }
+      return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resolveTopics(x)]));
+    };
+    const ours = resolveTopics(rule.props.EventPattern);
+    const route = resolveTopics(routeChanges.props.EventPattern);
+    const record = (eventName: string, requestParameters: Record<string, unknown>, invokedBy?: string) => ({
+      source: "aws.sns",
+      "detail-type": "AWS API Call via CloudTrail",
+      detail: { eventSource: "sns.amazonaws.com", eventName, requestParameters, userIdentity: { type: "AssumedRole", ...(invokedBy ? { invokedBy } : {}) } },
+    });
+    const reaches = (event: unknown) => ({ subscriptions: eventMatches(ours, event), route: eventMatches(route, event) });
+    for (const id of topicIds) {
+      const topicArn = arnOf(id);
+      const subscriptionArn = `${topicArn}:11111111-2222-3333-4444-555555555555`;
+      for (const invokedBy of [undefined, "cloudformation.amazonaws.com"]) {
+        // Subscribe: this rule, a deploy's included
+        expect(reaches(record("Subscribe", { topicArn, protocol: "email" }, invokedBy)), `Subscribe ${id} ${invokedBy}`).toEqual({ subscriptions: true, route: false });
+        // Unsubscribe and SetSubscriptionAttributes: exactly one of the two rules, whoever makes them
+        const deploy = invokedBy === "cloudformation.amazonaws.com";
+        for (const eventName of ALARM_RECIPIENT_SUBSCRIPTION_EVENTS.byDeploys) {
+          expect(reaches(record(eventName, { subscriptionArn }, invokedBy)), `${eventName} ${id} ${invokedBy}`).toEqual({ subscriptions: deploy, route: !deploy });
+        }
+      }
+    }
+    // Another topic's subscriptions don't alert, nor do reads
+    const other = `arn:aws:sns:${EAST}:000000000000:another-topic`;
+    expect(reaches(record("Subscribe", { topicArn: other }, "cloudformation.amazonaws.com"))).toEqual({ subscriptions: false, route: false });
+    expect(reaches(record("Unsubscribe", { subscriptionArn: `${other}:1` }, "cloudformation.amazonaws.com"))).toEqual({ subscriptions: false, route: false });
+    expect(reaches(record("ListSubscriptionsByTopic", { topicArn: arnOf(topicIds[0]) }))).toEqual({ subscriptions: false, route: false });
   });
 
   it("tell P1 when the CloudTrail trail's bucket or key is changed so the log archive could be destroyed or cut off (supply-checkout-3sv.4)", () => {
