@@ -253,6 +253,10 @@ paths:
           and `cost` don't change; update the document for that.
         - `reason: "count"`: someone counted `count` in storage. Stock is set
           to it, and the movement records the difference.
+        - `reason: "uncount"`: the item is no longer counted. Its `stock` is
+          removed and the movement takes it to 0 (`delta` is minus the stock
+          it had). An item that isn't counted stays as it is, with a movement
+          of `delta: 0` and `tracked: false`.
 
         Contributors and owners only. Idempotent by `operationId`.
       requestBody: { $ref: "#/components/requestBodies/StockAdjust" }
@@ -2036,6 +2040,12 @@ components:
                   operationId: { $ref: "#/components/schemas/OperationId" }
                   reason: { const: count }
                   count: { type: integer, minimum: 0, maximum: 1000000, description: The number counted in storage. }
+              - type: object
+                additionalProperties: false
+                required: [operationId, reason]
+                properties:
+                  operationId: { $ref: "#/components/schemas/OperationId" }
+                  reason: { const: uncount }
   schemas:
     AuditRecord:
       description: |
@@ -2155,12 +2165,12 @@ components:
       properties:
         operationId: { type: string, format: uuid }
         command: { type: string, enum: [checkout, return, stockAdjust] }
-        reason: { type: string, enum: [checkout, return, receipt, count] }
+        reason: { type: string, enum: [checkout, return, receipt, count, uncount] }
         productKey: { type: string }
         sheetId: { type: string, description: Checkout and return. }
-        quantity: { type: integer, description: Eaches checked out, returned or received. Absent for a count. }
+        quantity: { type: integer, description: Eaches checked out, returned or received. Absent for a count or uncount. }
         count: { type: integer, description: The level counted (count only). }
-        stockDelta: { type: integer, description: "The change to the product's `stock`: 0 when it doesn't track stock or isn't in inventory." }
+        stockDelta: { type: integer, description: "The change to the product's `stock`: 0 when it doesn't track stock or isn't in inventory. For an uncount, minus the stock it had." }
         lineCreated: { type: boolean, description: Checkout only. }
         snapshot: { $ref: "#/components/schemas/LineSnapshot" }
         unitCost: { type: number, description: Receipt only. }
@@ -2173,7 +2183,7 @@ components:
       properties:
         type: { const: movement }
         productKey: { type: string }
-        reason: { type: string, enum: [checkout, return, receipt, count, import, delete], description: "`import`: a CSV import set the stock (`count`). `delete`: the item was deleted, taking its stock to 0." }
+        reason: { type: string, enum: [checkout, return, receipt, count, uncount, import, delete], description: "`import`: a CSV import set the stock (`count`). `uncount`: someone stopped counting the item, removing its stock, recorded as taking it to 0. `delete`: the item was deleted, taking its stock to 0." }
         delta: { type: integer, description: The change to `stock`. 0 when the item didn't track stock. }
         tracked: { type: boolean, description: Whether the item tracked stock. }
         quantity: { type: integer }

@@ -49,9 +49,10 @@ export type CommandName = "checkout" | "return" | "stockAdjust" | "addLines";
 /**
  * Why a product's stock moved. `import` is a CSV inventory import setting
  * stock (imports.ts); `delete` is the product's document being deleted,
- * taking its stock to 0 (documents.ts).
+ * taking its stock to 0 (documents.ts); `uncount` is someone no longer
+ * counting the item, which removes its stock, recorded as taking it to 0.
  */
-export type MovementReason = "checkout" | "return" | "receipt" | "count" | "import" | "delete";
+export type MovementReason = "checkout" | "return" | "receipt" | "count" | "uncount" | "import" | "delete";
 
 /** How long a retry with the same operation ID returns the first result. */
 export const OPERATION_TTL_DAYS = 7;
@@ -80,7 +81,7 @@ export interface CommandResult {
   readonly reason: MovementReason;
   readonly productKey: string;
   readonly sheetId?: string;
-  /** Eaches checked out, returned or received. Absent for a count. */
+  /** Eaches checked out, returned or received. Absent for a count or uncount. */
   readonly quantity?: number;
   /** For a count: the stock level counted. */
   readonly count?: number;
@@ -142,7 +143,10 @@ export interface ReturnInput {
 export interface StockAdjustInput {
   readonly operationId: unknown;
   readonly productKey: unknown;
-  /** `receipt`: `quantity` eaches bought at `unitCost` each. `count`: stock was counted at `count`. */
+  /**
+   * `receipt`: `quantity` eaches bought at `unitCost` each. `count`: stock was counted at `count`.
+   * `uncount`: the item is no longer counted (nothing else).
+   */
   readonly reason: unknown;
   readonly quantity?: unknown;
   readonly unitCost?: unknown;
@@ -665,20 +669,28 @@ export async function addLines(db: Db, ctx: TeamContext, input: AddLinesInput, n
  *   stock starts at `quantity`. The product's own price and cost don't change.
  * - `count`: someone counted `count` in storage; stock is set to it, and the
  *   movement records the difference.
+ * - `uncount`: the item is no longer counted. Its `stock` is removed, and the
+ *   movement records taking it to 0 (`delta` is minus the stock it had), as a
+ *   delete does, so its movements still add up when it's counted again (from
+ *   0). An item that wasn't counted stays as it is, with a movement of
+ *   `delta: 0, tracked: false`, like a checkout of it.
  */
 export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockAdjustInput, now = new Date()): Promise<CommandOutcome> {
   writable(db, ctx);
   const opId = operationId(input.operationId);
   const key = productKey(input.productKey);
-  let parsed: { reason: "receipt"; qty: number; unitCost: number } | { reason: "count"; counted: number };
+  let parsed: { reason: "receipt"; qty: number; unitCost: number } | { reason: "count"; counted: number } | { reason: "uncount" };
   if (input.reason === "receipt") {
     if (input.count !== undefined) throw new InvalidInputError("A receipt takes quantity and unitCost, not count");
     parsed = { reason: "receipt", qty: checkQuantity(input.quantity), unitCost: money(input.unitCost, "unitCost") };
   } else if (input.reason === "count") {
     if (input.quantity !== undefined || input.unitCost !== undefined) throw new InvalidInputError("A count takes count only");
     parsed = { reason: "count", counted: checkCount(input.count) };
+  } else if (input.reason === "uncount") {
+    if (input.quantity !== undefined || input.unitCost !== undefined || input.count !== undefined) throw new InvalidInputError("Stopping the count takes no quantity, unitCost or count");
+    parsed = { reason: "uncount" };
   } else {
-    throw new InvalidInputError('reason must be "receipt" or "count"');
+    throw new InvalidInputError('reason must be "receipt", "count" or "uncount"');
   }
   const request = JSON.stringify({ command: "stockAdjust", userId: ctx.userId, key, ...parsed });
   const at = now.toISOString();
@@ -710,6 +722,36 @@ export async function adjustStockCommand(db: Db, ctx: TeamContext, input: StockA
     }
     const current = product.stock;
     if (current !== undefined && typeof current !== "number") throw new InvalidInputError("This item's stock isn't a number");
+    if (parsed.reason === "uncount") {
+      const movement = { productKey: key, reason: "uncount" as const, operationId: opId, userId: ctx.userId, at };
+      if (current === undefined) {
+        return {
+          result: { ...base, reason: "uncount", stockDelta: 0 },
+          writes: [
+            // Still not counted when this commits, or the movement would be wrong
+            { ConditionCheck: { TableName: db.tableName, Key, ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(#stock)", ExpressionAttributeNames: { "#stock": "stock" } } },
+            movementPut(db, ctx, { ...movement, delta: 0, tracked: false }),
+          ],
+        };
+      }
+      return {
+        result: { ...base, reason: "uncount", stockDelta: -current },
+        writes: [
+          {
+            Update: {
+              TableName: db.tableName,
+              Key,
+              UpdateExpression: `SET ${BUMP_VERSION} REMOVE #stock`,
+              // Removed from the level just read, so the movement's delta is exact
+              ConditionExpression: "attribute_exists(PK) AND #stock = :current",
+              ExpressionAttributeNames: { "#stock": "stock", "#version": "version" },
+              ExpressionAttributeValues: { ":current": current, ":one": 1 },
+            },
+          },
+          movementPut(db, ctx, { ...movement, delta: -current, tracked: true }),
+        ],
+      };
+    }
     const delta = parsed.counted - (current ?? 0);
     return {
       result: { ...base, reason: "count", count: parsed.counted, stockDelta: delta },

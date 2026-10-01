@@ -334,8 +334,9 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
   // An item saved from the inventory form or a receipt (src/moves.js saveItem). Stock moves only
   // through the stock command (the document routes keep the stored stock and refuse another), so
   // the PUT leaves it out and the new stock goes through the command, after the item exists. A
-  // count that matches what's stored changes nothing. The web build doesn't stop counting an
-  // item: a blank count leaves its stock as it is.
+  // count that matches what's stored changes nothing. A blank count on a counted item stops
+  // counting it (`reason: "uncount"`, which removes its stock with a movement), as the
+  // artifact's write without stock does; on an item that isn't counted it changes nothing.
   //
   // The PUT is skipped when the item's own fields are what's held already (the time it was
   // saved aside): a count on its own, or saving again after the stock command's answer was lost.
@@ -347,9 +348,11 @@ export function createDb({ api, config, teamId, userId, token, onRemoved, onClos
     delete data.stock;
     if (!held || fields(held.data) !== fields(data)) await docRef("products/" + key).set(data);
     const stored = coll("products").docs.get(key).data.stock;
+    const count = change.count === undefined ? (typeof stored === "number" ? { reason: "uncount" } : null)
+      : change.count === stored ? null : { reason: "count", count: change.count };
     const changes = change.reason === "receipt"
       ? change.lines.map((l) => [l.action, { reason: "receipt", quantity: l.quantity, unitCost: l.unitCost }])
-      : change.count === undefined || change.count === stored ? [] : [[action, { reason: "count", count: change.count }]];
+      : count ? [[action, count]] : [];
     for (const [a, b] of changes) await adjustStock(key, b, a);
   }
 

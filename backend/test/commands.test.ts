@@ -212,6 +212,50 @@ describe.skipIf(!endpoint)("inventory commands (DynamoDB Local)", () => {
     expect((await history(ctx, "nb-1")).map((m) => m.delta)).toEqual([0, 0]);
   });
 
+  it("stops counting an item: removes its stock with a movement of the count it had, replays a retry, and adds up when it's counted again", async () => {
+    const ctx = await team();
+    let clock = Date.parse("2026-09-26T12:00:00.000Z");
+    const tick = () => new Date((clock += 1000));
+    await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 5 }, tick());
+    const input = { operationId: randomUUID(), productKey: "0123", reason: "uncount" };
+    const first = await adjustStockCommand(db, ctx, input, tick());
+    expect(first).toMatchObject({ replayed: false, result: { command: "stockAdjust", reason: "uncount", stockDelta: -95 } });
+    const raw = await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#0123");
+    expect(raw).not.toHaveProperty("stock");
+    expect(raw).toMatchObject({ version: 3, name: "Nitrile gloves" });
+    // A retry changes nothing
+    expect(await adjustStockCommand(db, ctx, input, tick())).toEqual({ result: first.result, replayed: true });
+    expect(await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#0123")).toEqual(raw);
+    await expect(adjustStockCommand(db, ctx, { ...input, reason: "count", count: 1 })).rejects.toThrow(InvalidInputError);
+    // Untracked now: a checkout doesn't start counting it, and stopping again changes nothing
+    await checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 2 }, tick());
+    expect((await adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "uncount" }, tick())).result.stockDelta).toBe(0);
+    expect(await stock(ctx)).toBeUndefined();
+    expect((await rawItem(db, `TEAM#${ctx.teamId}`, "PRODUCT#0123"))?.version).toBe(3);
+    await adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "count", count: 40 }, tick());
+    const moves = await history(ctx);
+    expect(moves.map((m) => [m.reason, m.delta, m.tracked])).toEqual([
+      ["count", 40, true],
+      ["uncount", 0, false],
+      ["checkout", 0, false],
+      ["uncount", -95, true],
+      ["checkout", -5, true],
+    ]);
+    expect(moves.reduce((sum, m) => sum + m.delta, 0)).toBe(40 - 100);
+  });
+
+  it("keeps the history exact when stopping the count races checkouts", async () => {
+    const ctx = await team();
+    const outcomes = await Promise.allSettled([
+      adjustStockCommand(db, ctx, { operationId: randomUUID(), productKey: "0123", reason: "uncount" }),
+      ...Array.from({ length: 4 }, () => checkout(db, ctx, { operationId: randomUUID(), sheetId: "s1", productKey: "0123", quantity: 1 })),
+    ]);
+    for (const o of outcomes) if (o.status === "rejected") expect(o.reason).toBeInstanceOf(ConflictError);
+    const after = (await stock(ctx)) ?? 0;
+    expect(typeof after).toBe("number");
+    expect((await history(ctx)).reduce((sum, m) => sum + m.delta, 0)).toBe((after as number) - 100);
+  });
+
   it("refuses viewers", async () => {
     const ctx = await team();
     const { invite, token } = await createInvite(db, ctx, { email: "viewer@example.com", role: "viewer" });

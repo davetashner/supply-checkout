@@ -35,7 +35,7 @@ the artifact's document write.
 | --- | --- | --- |
 | Check out (`checkoutModal`) | `PATCH sheets/<id>` with the whole line, then `addStock(key, -qty)` | `POST /teams/{teamId}/sheets/{sheetId}/checkout`. No `addStock`. |
 | Return (`returnModal`) | `PATCH sheets/<id>` with `returned`, then `addStock(key, back - before)` | `POST /teams/{teamId}/sheets/{sheetId}/return`. No `addStock`. |
-| Inventory form, "Single items in storage now" (`productModal`) | `PUT products/<key>` with the new `stock` | `PUT products/<key>` without `stock`, if any other field changed, then, if the count differs, `POST /teams/{teamId}/products/{key}/stock` with `reason: "count"`. A blank count leaves stock as it is. |
+| Inventory form, "Single items in storage now" (`productModal`) | `PUT products/<key>` with the new `stock` | `PUT products/<key>` without `stock`, if any other field changed, then, if the count differs, `POST /teams/{teamId}/products/{key}/stock` with `reason: "count"`. A blank count on a counted item stops counting it: `reason: "uncount"`. A blank count on an item that isn't counted sends no command. |
 | Receipt save, General inventory lines (`saveReceipt`) | `PUT products/<key>` with `stock` plus the lines' quantities | `PUT products/<key>` without `stock` (price and name updates), if they changed, then one `POST .../products/{key}/stock` with `reason: "receipt"` per line: its quantity in eaches and its receipt price as `unitCost` |
 | Receipt save, a client's lines on an existing sheet (`saveReceipt`) | Reads the sheet, then `PATCH sheets/<id>` with the lines added to it and a mark for this receipt in `savedReceipts`; an attempt that finds its mark writes nothing | `POST /teams/{teamId}/sheets/{sheetId}/lines`, up to 40 lines each, no stock moved |
 | Item history (new) | none | `GET /teams/{teamId}/products/{key}/movements` (not used by the app yet) |
@@ -135,11 +135,19 @@ too, inside the transaction.
 ```json
 { "operationId": "…", "reason": "receipt", "quantity": 24, "unitCost": 0.42 }
 { "operationId": "…", "reason": "count", "count": 17 }
+{ "operationId": "…", "reason": "uncount" }
 ```
 
 The item must exist. A receipt adds to stock (an item that wasn't counted
 starts at `quantity`) and records `unitCost`; it doesn't change the item's
 `price` or `cost`. A count sets stock to `count` and records the difference.
+An uncount stops counting the item: it takes no other field, removes the
+item's `stock`, and records a movement taking it to 0 (`delta` is minus the
+stock it had, `tracked: true`), with no `count`. Afterwards the item doesn't
+track stock, as before its first count. An uncount of an item that isn't
+counted changes nothing, and records a movement with `delta: 0` and
+`tracked: false`, as a checkout of it does. Like any command, a retry with the
+same operation ID changes nothing more.
 
 ## Responses
 
@@ -175,7 +183,8 @@ starts at `quantity`) and records `unitCost`; it doesn't change the item's
   item that isn't in inventory; `sheet` is `null` if the sheet was deleted
   since. Stock adjustments have no `sheet`.
 - `stockDelta` is 0 when the item doesn't track stock (it has no numeric
-  `stock`), and for a one-off item.
+  `stock`), and for a one-off item. For an uncount it's minus the stock the
+  item had.
 - The sheet's `version` goes up by one with each checkout or return, so an
   edit screen that sends `expectedVersion` sees the change. So does the
   product's with every change to its `stock` (not for an item that doesn't
@@ -249,14 +258,15 @@ before answering `409`, so `409` from contention is rare.
 - **Untracked items stay untracked.** Checkouts and returns of an item with no
   `stock` don't change it (a movement with `delta: 0` is still recorded).
   `bumpStock` would start counting such an item at the returned quantity; the
-  commands don't. A receipt or a count starts tracking it.
+  commands don't. A receipt or a count starts tracking it, and an uncount
+  stops tracking it.
 
 ## Stock history
 
 `GET /teams/{teamId}/products/{key}/movements?limit=50&cursor=…` returns the
 item's movements, newest first, a page at a time (up to 100). Any member can
 read it. Each movement has who (`userId`), when (`at`), why (`reason`:
-`checkout`, `return`, `receipt`, `count`, `import`, or `delete` when the item was deleted, taking its stock to 0), the `sheetId` for checkouts and
+`checkout`, `return`, `receipt`, `count`, `uncount` when someone stopped counting it, `import`, or `delete` when the item was deleted; an uncount and a delete take its stock to 0), the `sheetId` for checkouts and
 returns, the `quantity` or `count`, the change to stock (`delta`), whether the
 item tracked stock (`tracked`), the `unitCost` for receipts, and the
 `operationId`. Movements are kept as long as the team's data.
@@ -282,6 +292,11 @@ drifting") is a separate bead. It reconciles each item from the movements:
 - Deleting an item that tracks stock records a `delete` movement taking it to
   0, so an item made again under the same key (which starts untracked) still
   adds up from its whole history when it's next counted.
+- Stopping the count (`uncount`) does the same: its movement takes the stock
+  to 0, and the item has no `stock` afterwards, so the check skips it while
+  it isn't counted. Its baseline can stay: a later count starts from 0, so an
+  item reconciled at S, uncounted and counted again at C has movements since
+  that add up to C − S, and C still equals S plus their deltas.
 - Sheet lines can be reconciled the same way: the checkout and return
   movements for a sheet and item add up to its `out` and `returned`, unless the
   line was corrected with a line edit.

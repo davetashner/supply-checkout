@@ -531,7 +531,8 @@ export class FakeBackend {
 
   // A stock adjustment as the API runs it (adjustStockCommand in backend/src/data/commands.ts):
   // a receipt adds `quantity` (an item that wasn't counted starts at it), a count sets stock to
-  // `count`. Either gives the item a new version. Replays and reused IDs as for checkout.
+  // `count`, an uncount removes it. Each gives a counted item a new version (an uncount of an
+  // item that isn't counted changes nothing). Replays and reused IDs as for checkout.
   adjustStock(team, key, body) {
     const err = (status, code, reason) => [status, { error: { code, message: code, ...(reason ? { reason } : {}) } }];
     const member = this.teams.find((t) => t.id === team);
@@ -541,7 +542,9 @@ export class FakeBackend {
     const cents = (n) => typeof n === "number" && n >= 0 && n <= 1e6 && Math.abs(Math.round(n * 100) - n * 100) < 1e-6;
     const whole = (n, min) => Number.isInteger(n) && n >= min && n <= 1e6;
     const valid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId) && !Object.keys(rest).length
-      && (reason === "receipt" ? whole(quantity, 1) && cents(unitCost) && count === undefined : reason === "count" && whole(count, 0) && quantity === undefined && unitCost === undefined);
+      && (reason === "receipt" ? whole(quantity, 1) && cents(unitCost) && count === undefined
+        : reason === "count" ? whole(count, 0) && quantity === undefined && unitCost === undefined
+          : reason === "uncount" && count === undefined && quantity === undefined && unitCost === undefined);
     if (!valid) return err(400, "bad_request");
     const productKey = `${team}/products/${key}`;
     const answer = (result, replayed) => {
@@ -553,11 +556,12 @@ export class FakeBackend {
     if (prior) return prior.request === request ? answer(prior.result, true) : err(400, "bad_request");
     const product = this.docs.get(productKey);
     if (!product) return err(404, "not_found");
-    const before = typeof product.data.stock === "number" ? product.data.stock : 0;
-    const delta = reason === "receipt" ? quantity : count - before;
-    product.data.stock = before + delta;
-    product.version++;
-    const result = { operationId, command: "stockAdjust", reason, productKey: key, ...(reason === "receipt" ? { quantity, unitCost } : { count }), stockDelta: delta, userId: this.user.id, at: new Date().toISOString() };
+    const tracked = typeof product.data.stock === "number", before = tracked ? product.data.stock : 0;
+    const delta = reason === "receipt" ? quantity : reason === "count" ? count - before : -before;
+    if (reason === "uncount") delete product.data.stock;
+    else product.data.stock = before + delta;
+    if (tracked || reason !== "uncount") product.version++;
+    const result = { operationId, command: "stockAdjust", reason, productKey: key, ...(reason === "receipt" ? { quantity, unitCost } : reason === "count" ? { count } : {}), stockDelta: delta, userId: this.user.id, at: new Date().toISOString() };
     this.operations.set(`${team}/${operationId}`, { request, result });
     return answer(result, false);
   }
