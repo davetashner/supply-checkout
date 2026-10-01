@@ -87,7 +87,11 @@ async function addStock(db, key, delta, mark) {
 // isn't in inventory, which the command needs to add its line ({} for an item in inventory).
 export const checkOut = (db, action, sheetId, key, qty, item, oneOff) =>
   move(db, action, "checkout", sheetId, { productKey: key, quantity: qty, ...oneOff }, false,
-    cur => ({ patch: { ...item, out: int(cur && cur.out) + qty, returned: int(cur && cur.returned) }, delta: -qty }));
+    cur => {
+      // A line moved off the ad hoc sheet left a marker (moveLine below): taking it again starts afresh
+      const live = cur && !cur.moved ? cur : undefined;
+      return { patch: { ...item, out: int(live && live.out) + qty, returned: int(live && live.returned), ...(cur && cur.moved ? { moved: false, lost: 0 } : {}) }, delta: -qty };
+    });
 // r: how many the person is returning. The command adds it on the server, which refuses more
 // than are left. The artifact writes the line's new returned count, added to the line as it's
 // saved now, in case someone else recorded a return meanwhile.
@@ -108,6 +112,69 @@ export const markLost = (db, action, sheetId, key, q, charge) =>
     const lost = Math.min(out - back, before + q);
     return { patch: { lost, ...(charge === undefined ? {} : { lostCharge: round2((Number(cur.lostCharge) || 0) + charge) }) }, delta: 0, quantity: lost - before };
   });
+
+// Quick take (ADR 0017, section 4): a checkout onto the team's open ad hoc sheet, without choosing
+// a sheet. start: { id, body, date }, the sheet it aims at (the open ad hoc sheet this page holds,
+// or the next `adhoc-<n>`), the sheet to make if it isn't there, and the person's date. Resolves
+// to the checkout's answer and the sheet it went on (sheetId).
+//
+// - The web build's db sends the quick-take command, which picks the sheet on the server, in the
+//   checkout's transaction, so two first takes at once end on one sheet (docs/api/commands.md).
+// - claude.ai's db has no transactions, so the artifact build reads the sheet it aims at, makes it
+//   if it isn't there (a `set` with no lines), or moves on to the next number if someone finished
+//   it meanwhile, then adds the line as a checkout does, with the action's mark. A `set` can't be
+//   conditional, so one from another page that read before this line landed can wipe it: the
+//   take reads the sheet again and, if its mark isn't there, writes the line again. Stock is
+//   right either way: its mark is on the item (addStock).
+export async function quickTake(db, action, key, qty, item, oneOff, start) {
+  // WEB: the artifact build leaves this path out, since claude.ai's db has no commands (src/build.js)
+  if (WEB && db.quickTake) return db.quickTake({ productKey: key, quantity: qty, ...oneOff, date: start.date }, action);
+  let id = action.sheetId || start.id;
+  for (;;) {
+    const got = await db.doc("sheets/" + id).get();
+    if (!got.exists) await db.doc("sheets/" + id).set(start.body);
+    // Finished by someone else meanwhile: the next one
+    else if (got.data().status === "closed") { id = "adhoc-" + (Number(id.slice(6)) + 1); continue; }
+    break;
+  }
+  action.sheetId = id;
+  const take = () => checkOut(db, action, id, key, qty, item, oneOff);
+  let done = await take();
+  const after = await db.doc("sheets/" + id).get();
+  if (!marked(own(Object(after.data().items), key), action.mark)) done = await take();
+  return { ...done, sheetId: id };
+}
+
+// Moving a whole line from the open ad hoc sheet to an open job sheet (ADR 0017, section 5): its
+// counts go onto the job sheet's line for the item, which keeps its own price, or the line goes
+// as it is, with the price it was taken at. Stock doesn't move: it left storage at the quick take.
+//
+// - The web build's db sends the move command: both sheets change in one transaction.
+// - The artifact build makes two writes with the move's mark: the counts onto the job sheet, then
+//   the ad hoc line replaced by a hidden "moved" marker (shown nowhere, left out of exports, as a
+//   removed line is). A retry that finds the mark on the job sheet skips the first write, and one
+//   that finds it on the ad hoc line writes nothing.
+export async function moveLine(db, action, fromId, key, toId) {
+  // WEB: the artifact build leaves this path out, since claude.ai's db has no commands (src/build.js)
+  if (WEB && db.moveLine) return db.moveLine(fromId, key, toId, action);
+  const mark = markOf(action), from = db.doc("sheets/" + fromId), to = db.doc("sheets/" + toId);
+  return attempt(action, async () => {
+    // A sheet that's gone has no lines (data() is undefined)
+    const line = own(Object(Object((await from.get()).data()).items), key);
+    if (!line || (line.moved && !marked(line, mark))) throw { code: "refused", message: "Someone else moved or removed this line, so it wasn't moved." };
+    if (marked(line, mark)) return;
+    const there = await to.get();
+    if (!there.exists) throw { code: "not_found" };
+    const cur = own(Object(there.data().items), key);
+    if (!marked(cur, mark)) {
+      if (cur && cur.kind !== line.kind) throw { code: "refused", message: "That sheet has this item as the other kind (a supply, or company equipment), so it wasn't moved. Correct the lines by hand." };
+      const moved = { ...line, ops: [mark] };
+      const added = cur && { out: int(cur.out) + int(line.out), returned: int(cur.returned) + int(line.returned), ...(line.lost ? { lost: int(cur.lost) + int(line.lost) } : {}), ops: remember(cur, mark) };
+      await to.update({ items: { [key]: added || moved } });
+    }
+    await from.update({ items: { [key]: { moved: toId, out: 0, returned: 0, lost: 0, ops: remember(line, mark) } } });
+  });
+}
 
 // A receipt's lines for a client, added to a sheet that already exists (saveReceipt in
 // src/main.js). items: { [key]: line }, each as a new line would be ({ code, name, price, cost

@@ -2,7 +2,7 @@
 // documents the app already holds and shows (both collections are loaded in full to draw
 // the lists), with the same math and labels as the screens, so an export matches them.
 import { hasStock, isEquipment, unitValue } from "./format.js";
-import { lines, lineCounts, lineCharge, totals, isEquipmentLine, equipmentCounts, lostCharge, lostRows, lineLabel } from "./sheet-math.js";
+import { lines, lineCounts, lineCharge, totals, isEquipmentLine, equipmentCounts, lostCharge, lostRows, lineLabel, sheetTitle } from "./sheet-math.js";
 
 // One CSV cell. Text that a spreadsheet would run as a formula (=, +, -, @, tab or return
 // first) gets a leading apostrophe, so a name a team member typed can't run in the
@@ -38,7 +38,8 @@ export function sheetCsv(s, preparedBy) {
 export function sheetsCsv(sheets, preparedBy) {
   const rows = [["Client", "Date", "Prepared by", "Status", "Item", "Barcode", "Price each", "Taken", "Returned", "Used", "Charge", "Sheet ID", "Kind"]];
   for (const s of sheets) {
-    const head = [s.client || "Untitled", s.date || "", preparedBy(s), statusText(s)];
+    // The ad hoc sheet (ADR 0017) has no client: "Ad hoc"
+    const head = [sheetTitle(s), s.date || "", preparedBy(s), statusText(s)];
     const ls = lines(s);
     if (!ls.length) rows.push([...head, "", "", "", "", "", "", "", s.id, ""]);
     for (const l of ls) {

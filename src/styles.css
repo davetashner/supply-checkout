@@ -138,6 +138,7 @@ select{background:var(--ground);border:1px solid var(--line);border-radius:9px;p
 .sheet-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
 .scanbar{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px;display:grid;gap:12px;margin-block:0 16px}
 .scanbar[hidden]{display:none}
+.mode[hidden]{display:none}
 .mode{display:grid;grid-template-columns:1fr 1fr;background:var(--sunk);border-radius:10px;padding:3px;gap:3px}
 .mode button{border:0;background:none;border-radius:8px;padding:9px;font-family:var(--display);font-weight:700;font-size:17px;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;color:var(--muted)}
 .mode button[aria-pressed="true"][data-mode="out"]{background:var(--out);color:var(--surface)}
