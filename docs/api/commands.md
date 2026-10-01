@@ -149,8 +149,11 @@ section 4): `POST /teams/{teamId}/adhoc/checkout`
 { "operationId": "…", "productKey": "0123", "toSheetId": "s1" }
 ```
 
-- `sheetId` is the open ad hoc sheet; `toSheetId` an open job sheet (no
-  `kind`). The whole line moves, with its `out`, `returned` and `lost`.
+- `sheetId` is the open ad hoc sheet, the one the team's `ADHOC` item names
+  (checked in the transaction); `toSheetId` an open job sheet (no `kind`).
+  The whole line moves, with its `out`, `returned` and `lost`. The
+  transaction also checks that the job sheet's line, if it has one, is still
+  the kind (supply or equipment) it was read as.
 - One transaction: the line comes off the ad hoc sheet, on the condition
   that the sheet's version is still the one read (so the counts moved are
   exactly the ones removed; a return that lands meanwhile makes the command

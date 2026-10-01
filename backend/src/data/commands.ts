@@ -917,13 +917,15 @@ export async function moveLine(db: Db, ctx: TeamContext, input: MoveInput, now =
   const at = now.toISOString();
 
   return execute(db, ctx, opId, "move", request, now, async () => {
-    const [rawFrom, rawTo, product] = await Promise.all([
+    const [rawFrom, rawTo, product, pointer] = await Promise.all([
       getItem(db, keys.sheet(ctx.teamId, sheetId)),
       getItem(db, keys.sheet(ctx.teamId, toSheetId)),
       getItem(db, keys.product(ctx.teamId, key)),
+      readAdhoc(db, ctx.teamId),
     ]);
     const from = openSheet(rawFrom, "move its lines");
-    if (from.kind !== "adhoc") throw new InvalidInputError("Only a line on the ad hoc sheet moves to a job sheet");
+    // The team's open ad hoc sheet, the one its ADHOC item names (checked in the transaction)
+    if (from.kind !== "adhoc" || adhocOpen(pointer) !== sheetId) throw new InvalidInputError("Only a line on the open ad hoc sheet moves to a job sheet");
     if (!rawTo) throw new NotFoundError("No such job sheet");
     const to = openSheet(rawTo, "move a line to it");
     if (to.kind !== undefined) throw new InvalidInputError("A line moves to a client's sheet only");
@@ -962,6 +964,11 @@ export async function moveLine(db: Db, ctx: TeamContext, input: MoveInput, now =
       Object.assign(values, { ":out": out, ":returned": returned, ":zero": 0 });
       const sets = ["#items.#line.#out = #items.#line.#out + :out", "#items.#line.#returned = if_not_exists(#items.#line.#returned, :zero) + :returned"];
       clauses = ["attribute_exists(#items.#line.#out)"];
+      // Still the kind it was read as when this commits (a line's kind never changes, but the line could be replaced)
+      if (typeof existing.kind === "string") {
+        values[":lineKind"] = existing.kind;
+        clauses.push("#items.#line.#kind = :lineKind");
+      } else clauses.push("attribute_not_exists(#items.#line.#kind)");
       if (lost > 0) {
         names["#lost"] = "lost";
         values[":lost"] = lost;
@@ -1026,6 +1033,8 @@ export async function moveLine(db: Db, ctx: TeamContext, input: MoveInput, now =
       writes: [
         fromWrite,
         toWrite,
+        // The ADHOC item still names the ad hoc sheet when this commits
+        { ConditionCheck: { TableName: db.tableName, Key: keys.adhoc(ctx.teamId), ConditionExpression: "#open = :from", ExpressionAttributeNames: { "#open": "open" }, ExpressionAttributeValues: { ":from": sheetId } } },
         movementPut(db, ctx, { productKey: key, reason: "move", delta: 0, tracked, quantity: out, returned, lost, sheetId: toSheetId, fromSheetId: sheetId, operationId: opId, userId: ctx.userId, at }),
       ],
     };
