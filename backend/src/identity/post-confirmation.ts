@@ -4,14 +4,10 @@ import { createDb } from "../data/index.js";
 import { createObservability, withObservability } from "../observability/index.js";
 import { noticeAddressRecorder } from "./notice-address.js";
 import { WELCOME_FUNCTION_ENV } from "../email/names.js";
-import { createPostConfirmationHandler } from "./post-confirmation-handler.js";
+import { createPostConfirmationHandler, WELCOME_INVOKE_TIMEOUT_MS } from "./post-confirmation-handler.js";
 import { welcomeInvoker } from "./welcome-invoke.js";
 
-/**
- * Each DynamoDB call's timeout, and the welcome email's invoke: three calls
- * take at most 3 seconds of the 5 Cognito gives a trigger, leaving room for a
- * cold start.
- */
+/** Each DynamoDB call's timeout: two calls take at most 2 seconds of the 5 Cognito gives a trigger, leaving room for a cold start (the welcome email's invoke has its own budget). */
 const CALL_TIMEOUT_MS = 1_000;
 
 const obs = createObservability({ service: "sign-in" });
@@ -25,6 +21,6 @@ export const handler = withObservability(
   createPostConfirmationHandler({
     rememberNoticeAddress: noticeAddressRecorder(db, { timeoutMs: CALL_TIMEOUT_MS }),
     obs,
-    ...(welcomeFunction ? { sendWelcome: welcomeInvoker({ region: obs.region, functionName: welcomeFunction, timeoutMs: CALL_TIMEOUT_MS }) } : {}),
+    ...(welcomeFunction ? { sendWelcome: welcomeInvoker({ region: obs.region, functionName: welcomeFunction, timeoutMs: WELCOME_INVOKE_TIMEOUT_MS }) } : {}),
   }),
 );

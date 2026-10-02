@@ -9,9 +9,11 @@
 // the same transaction). So a retried trigger, a second trigger for the same
 // account, or Lambda trying the function again, never sends a second one. If
 // SES refuses the message, the function gives its claim up (releaseWelcome,
-// only while it's still the one it made) and Lambda tries again. If the
+// only while it's still the one it made) and doesn't try again: a replay (an
+// operator invoking the function for the account) can then send it. If the
 // function dies between claiming and sending, the claim stays and no welcome
-// goes out: at most one, never two.
+// goes out, and Lambda's retry finds it claimed: at most one, never two (the
+// function's Errors alarm shows the death).
 //
 // It also reads, to word the email, whether the account is already in a team
 // (hasTeam: the keys of its `TEAM#` rows) and whether a live invite is waiting

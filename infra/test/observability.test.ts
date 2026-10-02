@@ -12,7 +12,7 @@ import { APPROVED_REGIONS, configFromContext, type DeploymentConfig, GLOBAL_SERV
 import { alarmContactParameter, alarmContactsFromContext, alarmRecipientParameterPrefix } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
 import { costAlertsFromContext, DEFAULT_COST_ANOMALY_USD, DEFAULT_MONTHLY_BUDGET_USD } from "../lib/observability/cost-alerts.js";
-import { journeyAlarmSpecs, SET_ASIDE_INCIDENT_AT } from "../lib/observability/journey-alarms.js";
+import { journeyAlarmSpecs, SET_ASIDE_INCIDENT_AT, WELCOME_REFUSALS_ALARM_PER_HOUR } from "../lib/observability/journey-alarms.js";
 import { ROUTER_FAILING_ABOVE, RUM_EVENTS_FLOOD_PER_HOUR, RUM_EVENTS_SURGE_PER_HOUR, SITE_DOWN_MIN_REQUESTS, SITE_DOWN_PERCENT } from "../lib/observability/web-alarms.js";
 import { rumAppMonitorName } from "../lib/web/rum.js";
 import { webOutputParameters } from "../lib/stacks/web-stack.js";
@@ -120,6 +120,8 @@ const ALARM_IDS = [
   "sign-in-trigger-failing",
   "sign-up-trigger-failing",
   "welcome-emails-failing",
+  "welcome-emails-refused",
+  "welcome-email-function-failing",
   "welcome-emails-dropped",
   "imports-stuck",
   "email-verification-not-saved",
@@ -170,6 +172,8 @@ const PRIMARY_ONLY_ALARM_IDS = [
   "sign-in-trigger-failing",
   "sign-up-trigger-failing",
   "welcome-emails-failing",
+  "welcome-emails-refused",
+  "welcome-email-function-failing",
   "welcome-emails-dropped",
   "imports-stuck",
   "near-sending-limit",
@@ -880,7 +884,7 @@ describe("alarms added with the email code routes, the live update budget, team 
     });
   });
 
-  it("alarms on any welcome email not sent, and any welcome request dropped, P2, where the user pool is (J1, supply-checkout-6uw.25)", () => {
+  it("alarms on any welcome email not sent, SES refusals at a rate, the function failing, and any welcome request dropped, P2, where the user pool is (J1, supply-checkout-6uw.25)", () => {
     const t = observability();
     t.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "supply-checkout-prod-p2-welcome-emails-failing",
@@ -901,6 +905,26 @@ describe("alarms added with the email code routes, the live update budget, team 
       ComparisonOperator: "GreaterThanThreshold",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
       AlarmDescription: Match.stringLikeRegexp("^P2 Welcome emails dropped \\(J1"),
+    });
+    // SES's refusals apart, at a rate (the sandbox refuses unverified addresses until production access)
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-welcome-emails-refused",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.WelcomeEmailsRefused }), Stat: "Sum", Period: 3600 }) })],
+      Threshold: WELCOME_REFUSALS_ALARM_PER_HOUR - 1,
+      ComparisonOperator: "GreaterThanThreshold",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+    });
+    // A try that died (a timeout) after claiming counts nothing else
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-welcome-email-function-failing",
+      Namespace: "AWS/Lambda",
+      MetricName: "Errors",
+      Dimensions: [{ Name: "FunctionName", Value: "supply-checkout-prod-welcome-email" }],
+      Statistic: "Sum",
+      Period: 900,
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
     });
   });
 

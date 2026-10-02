@@ -68,6 +68,15 @@ export interface JourneyAlarmsProps {
   readonly topics: AlarmTopics;
 }
 
+/**
+ * Welcome emails SES refused in an hour at which "Welcome emails refused"
+ * alarms (supply-checkout-6uw.25). Until SES production access
+ * (supply-checkout-3sv.18), its sandbox refuses every unverified address, so
+ * one refusal is normal; several in an hour is sending paused or something
+ * wrong. Lower it to 1 once production access is granted.
+ */
+export const WELCOME_REFUSALS_ALARM_PER_HOUR = 3;
+
 /** Invites sent in an hour, across every team, that "Invite surge" alarms above. */
 export const INVITE_SURGE_PER_HOUR = 300;
 
@@ -245,8 +254,28 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       title: "Welcome emails failing",
       journeys: "J1",
       severity: "P2",
-      rule: "Any WelcomeEmailFailures over an hour: a new account's welcome email wasn't handed to the welcome email function (the invoke failed, or the pre token generation trigger had no time left), or the function couldn't send it (SES refused it, no verified address, a failed Cognito or DynamoDB call, or a request that isn't the triggers'). Sign-up went ahead either way (supply-checkout-6uw.25).",
+      rule: "Any WelcomeEmailFailures over an hour: a new account's welcome email wasn't handed to the welcome email function (the invoke failed, or a trigger had no time left), or the function couldn't send it (no verified address, a failed Cognito or DynamoDB call, or a request that isn't the triggers'). SES refusing a message is counted apart (Welcome emails refused). Sign-up went ahead either way (supply-checkout-6uw.25).",
       metric: business(BusinessMetric.WelcomeEmailFailures, region, Duration.hours(1)),
+      threshold: 0,
+      primaryOnly: true,
+    },
+    {
+      id: "welcome-emails-refused",
+      title: "Welcome emails refused",
+      journeys: "J1",
+      severity: "P2",
+      rule: `WelcomeEmailsRefused at least ${WELCOME_REFUSALS_ALARM_PER_HOUR} in an hour: SES refused that many welcome emails (sending paused, suppressed addresses, or, until SES production access (supply-checkout-3sv.18), its sandbox refusing unverified addresses). A rate, not any, so the sandbox's occasional refusal doesn't keep it on; lower it to 1 once production access is granted (supply-checkout-6uw.25).`,
+      metric: business(BusinessMetric.WelcomeEmailsRefused, region, Duration.hours(1)),
+      threshold: WELCOME_REFUSALS_ALARM_PER_HOUR - 1,
+      primaryOnly: true,
+    },
+    {
+      id: "welcome-email-function-failing",
+      title: "Welcome email function failing",
+      journeys: "J1",
+      severity: "P2",
+      rule: "Any Errors of the welcome email function in 15 minutes: a try that threw (also counted in WelcomeEmailFailures) or died, by a timeout or a crash, which counts nothing else. One that died after claiming the account's welcome record sent nothing, and Lambda's retry finds it claimed, so that account has no welcome until an operator gives the claim up and replays it (supply-checkout-6uw.25).",
+      metric: new Metric({ namespace: "AWS/Lambda", metricName: "Errors", dimensionsMap: { FunctionName: email.welcomeFunction }, statistic: "Sum", period: FIFTEEN_MINUTES, region }),
       threshold: 0,
       primaryOnly: true,
     },

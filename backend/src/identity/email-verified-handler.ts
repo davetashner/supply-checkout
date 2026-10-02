@@ -142,6 +142,9 @@
 // existed is never sent one. Only with time left for the call within
 // WRITE_BUDGET_MS, and it never fails the token: a failure (or no time left)
 // is logged with the error's name only and counted (WelcomeEmailFailures).
+// Nothing tries a failed hand-over again: the account's next sign-in is
+// "unchanged", so it gets no welcome unless an operator invokes the function
+// for it (docs/journeys.md, "Welcome emails failing").
 //
 // Logs carry the provider and the outcome, never the email or the username
 // (which contains the provider's user ID). A linked user's failed downgrade

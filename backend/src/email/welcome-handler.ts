@@ -28,9 +28,13 @@
 //
 // Failures never touch sign-up, which finished before this ran:
 // - SES refusing the message (EmailNotSentError: sending paused, an address
-//   SES won't send to, SES's sandbox) is counted (WelcomeEmailFailures,
-//   `not_sent`) and the claim given up, so a replay can send it; it isn't
-//   retried, since trying again won't change SES's mind.
+//   SES won't send to, SES's sandbox) is counted in its own metric,
+//   WelcomeEmailsRefused ("Welcome emails refused", a rate alarm), not in
+//   WelcomeEmailFailures: until SES production access its sandbox refuses
+//   every unverified address, and that mustn't hide the failures below. The
+//   claim is given up, so a replay can send it; it isn't retried, since trying
+//   again won't change SES's mind. Anything else the send throws is counted
+//   (`error`) and thrown, so Lambda tries again.
 // - A failed Cognito lookup or DynamoDB call is counted (`lookup_failed`,
 //   `error`) and thrown, so Lambda tries twice more, then puts the request on
 //   the dead-letter queue ("Welcome emails dropped"), to replay.
@@ -139,14 +143,24 @@ export function createWelcomeHandler(deps: WelcomeDeps) {
       failed("error", errorCode(error), via, userId);
       throw new CountedError(error);
     }
-    if (claim === "sent") return "already-sent";
+    if (claim === "sent") {
+      // Usually a retried trigger or a replay. If no welcome went out, an earlier try died between
+      // claiming and sending (a timeout, say): the function's Errors alarm ("Welcome email function failing") says so
+      obs.logger.info("Welcome email already claimed", { userId, via });
+      return "already-sent";
+    }
     if (claim === "deleting") return "deleting";
 
     const invite = await invited(userId, to, at);
     try {
       await deps.mailer.send(to, { kind: "welcome", ...(account.givenName ? { givenName: account.givenName } : {}), invited: invite, supportAddress: deps.supportAddress });
     } catch (error) {
-      failed("not_sent", errorCode(error), via, userId);
+      if (error instanceof EmailNotSentError) {
+        obs.logger.warn("Welcome email not sent", { userId, via, reason: "refused", code: error.code });
+        obs.count(BusinessMetric.WelcomeEmailsRefused, 1, { via });
+      } else {
+        failed("error", errorCode(error), via, userId);
+      }
       // Give the claim up, so a replay can send it; if that fails too, it stays claimed and no welcome goes out
       try {
         await releaseWelcome(db, userId, at);

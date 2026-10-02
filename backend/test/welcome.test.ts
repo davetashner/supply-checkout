@@ -18,7 +18,7 @@ import { createWelcomeHandler, welcomeRequest } from "../src/email/welcome-handl
 import { cognitoAccounts, type FindAccount, type PoolAccount } from "../src/identity/cognito-accounts.js";
 import { createEmailVerifiedHandler, WELCOME_CALL_TIMEOUT_MS, WRITE_BUDGET_MS } from "../src/identity/email-verified-handler.js";
 import { PROVIDER_EMAIL_VERIFIED_ATTRIBUTE } from "../src/identity/names.js";
-import { createPostConfirmationHandler } from "../src/identity/post-confirmation-handler.js";
+import { createPostConfirmationHandler, WELCOME_BUDGET_MS, WELCOME_INVOKE_TIMEOUT_MS } from "../src/identity/post-confirmation-handler.js";
 import { welcomeInvoker } from "../src/identity/welcome-invoke.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { endpoint, fakeDb, fakeMailer, REGION, useTable } from "./helpers.js";
@@ -251,6 +251,10 @@ describe("welcome email function", () => {
       await handler(request({ via: "Google" }));
       expect(sent).toHaveLength(1);
       expect(outcome()).toEqual(["sent", "already-sent", "already-sent"]);
+      expect(logs.filter((l) => l.message === "Welcome email already claimed").map((l) => l.data)).toEqual([
+        { userId: SUB, via },
+        { userId: SUB, via: "Google" },
+      ]);
       expect(denied).toEqual([]);
       expectNothingPersonal();
     }
@@ -353,8 +357,9 @@ describe("welcome email function", () => {
     first.state.fail = "MessageRejected";
     await first.handler(request());
     expect(first.sent).toEqual([]);
-    expect(metrics).toEqual([{ metric: BusinessMetric.WelcomeEmailFailures, metadata: { reason: "not_sent", via: "email" } }]);
-    expect(logs).toContainEqual({ level: "warn", message: "Welcome email not sent", data: { userId: SUB, via: "email", reason: "not_sent", code: "MessageRejected" } });
+    // Its own metric, so SES's sandbox can't hide real failures behind an alarm that's always on
+    expect(metrics).toEqual([{ metric: BusinessMetric.WelcomeEmailsRefused, metadata: { via: "email" } }]);
+    expect(logs).toContainEqual({ level: "warn", message: "Welcome email not sent", data: { userId: SUB, via: "email", reason: "refused", code: "MessageRejected" } });
     expect(outcome()).toEqual(["not-sent"]);
     expect(table.get(`USER#${SUB}`, "WELCOME")?.welcomeSentAt).toBeUndefined();
     first.state.fail = undefined;
@@ -382,7 +387,7 @@ describe("welcome email function", () => {
     await expect(handler(request())).rejects.toThrow("Counted");
     expect(logs).toContainEqual({ level: "error", message: "Welcome email claim not given up", data: { userId: SUB, code: "AccessDeniedException" } });
     expect(table.get(`USER#${SUB}`, "WELCOME")?.welcomeSentAt).toBe(new Date(NOW).toISOString());
-    expect(metrics).toEqual([{ metric: BusinessMetric.WelcomeEmailFailures, metadata: { reason: "not_sent", via: "email" } }]);
+    expect(metrics).toEqual([{ metric: BusinessMetric.WelcomeEmailFailures, metadata: { reason: "error", via: "email" } }]);
   });
 
   it("finds the user's given name in Cognito, and none when they have none", async () => {
@@ -469,8 +474,8 @@ describe("the triggers hand new accounts over", () => {
         request: { userAttributes: attributes },
         response: {},
       }) as unknown as PostConfirmationTriggerEvent;
-    const handler = (send?: ReturnType<typeof sender>["send"]) =>
-      createPostConfirmationHandler({ rememberNoticeAddress: async () => "recorded", obs: fakeObservability(), ...(send ? { sendWelcome: send } : {}) });
+    const handler = (send?: ReturnType<typeof sender>["send"], now?: () => number) =>
+      createPostConfirmationHandler({ rememberNoticeAddress: async () => "recorded", obs: fakeObservability(), ...(send ? { sendWelcome: send } : {}), ...(now ? { now } : {}) });
     const welcomeLogged = () => logs.filter((l) => l.message === "Notice address").map((l) => l.data.welcome);
 
     it("hands over a native user's sign-up, and never a forgotten password's confirmation", async () => {
@@ -511,6 +516,24 @@ describe("the triggers hand new accounts over", () => {
         expect(metrics).toEqual([{ metric: BusinessMetric.WelcomeEmailFailures, metadata: { reason: "invoke", via: "email" } }]);
         expectNothingPersonal();
       }
+    });
+
+    it("hands over only while the invoke fits the trigger's budget, and counts it when it doesn't", async () => {
+      for (const spent of [WELCOME_BUDGET_MS - WELCOME_INVOKE_TIMEOUT_MS, WELCOME_BUDGET_MS - WELCOME_INVOKE_TIMEOUT_MS + 1]) {
+        logs = [];
+        metrics = [];
+        const times = [NOW, NOW + spent];
+        const { queued, send } = sender();
+        const confirmed = event(native());
+        expect(await handler(send, () => times.shift() ?? NOW)(confirmed)).toBe(confirmed);
+        const fits = spent + WELCOME_INVOKE_TIMEOUT_MS <= WELCOME_BUDGET_MS;
+        expect(queued).toEqual(fits ? [{ userId: SUB, via: "email" }] : []);
+        expect(welcomeLogged()).toEqual([fits ? "queued" : "failed"]);
+        expect(metrics).toEqual(fits ? [] : [{ metric: BusinessMetric.WelcomeEmailFailures, metadata: { reason: "deferred", via: "email" } }]);
+      }
+      // Well inside Cognito's 5 seconds, with room for a cold start
+      expect(WELCOME_BUDGET_MS).toBeLessThanOrEqual(4_000);
+      expect(WELCOME_INVOKE_TIMEOUT_MS).toBeLessThanOrEqual(500);
     });
 
     it("hands nothing over without the welcome function, and doesn't mention it", async () => {
