@@ -29,22 +29,23 @@ test("each group's kinds are stacks in the app", () => {
 test("the stateless group holds only stateless stacks", () => {
   const layers = stackLayers();
   for (const kind of GROUPS.stateless) assert.equal(layers[kind], "stateless", kind);
-  assert.deepEqual(GROUPS.stateless, ["api", "realtime", "observability"]);
+  assert.deepEqual(GROUPS.stateless, [...GROUPS.web, ...GROUPS.api]);
+  assert.deepEqual(GROUPS.api, ["api", "realtime", "observability"]);
 });
 
-test("the stateless and stateful groups between them hold every stack the app deploys but web", () => {
+test("the stateless and stateful groups between them hold every stack the app deploys", () => {
   const layers = stackLayers();
   // Separate CDK apps, never in the main app's deploys
   const own = ["backup-vault", "github-deploy"];
   const app = Object.keys(layers).filter((kind) => !own.includes(kind)).sort();
-  assert.deepEqual([...GROUPS.web, ...GROUPS.stateless, ...GROUPS.stateful].sort(), app);
+  assert.deepEqual([...GROUPS.stateless, ...GROUPS.stateful].sort(), app);
   for (const kind of Object.keys(layers).filter((k) => layers[k] === "stateful" && !own.includes(k))) {
     assert.ok(GROUPS.stateful.includes(kind), `${kind} is a stateful stack`);
   }
 });
 
 test("patterns pick each kind in every region of the environment", () => {
-  assert.deepEqual(stackPatterns("stateless"), [
+  assert.deepEqual(stackPatterns("api"), [
     "supply-checkout-prod-*-api",
     "supply-checkout-prod-*-realtime",
     "supply-checkout-prod-*-observability",
@@ -59,7 +60,7 @@ test("refuses an unknown group or a malformed environment", () => {
 });
 
 test("the command line prints space-separated patterns, or the region", () => {
-  assert.equal(main(["stateless", "--env", "prod"]), "supply-checkout-prod-*-api supply-checkout-prod-*-realtime supply-checkout-prod-*-observability");
+  assert.equal(main(["stateless", "--env", "prod"]), "supply-checkout-prod-*-web supply-checkout-prod-*-api supply-checkout-prod-*-realtime supply-checkout-prod-*-observability");
   assert.equal(main(["web"]), "supply-checkout-prod-*-web");
   assert.equal(main(["region"]), DEFAULT_REGION);
   assert.throws(() => main(["stateless", "--frob"]), /Unknown argument: --frob/);

@@ -1,7 +1,7 @@
 import { Aws, CfnOutput, DefaultStackSynthesizer, Duration, RemovalPolicy } from "aws-cdk-lib";
 import { Effect, OidcProviderNative, PolicyStatement, Role, WebIdentityPrincipal } from "aws-cdk-lib/aws-iam";
 import type { Construct } from "constructs";
-import { type DeploymentConfig, GITHUB_DEPLOY_ENVIRONMENT, GITHUB_DEPLOY_ENVIRONMENTS, type GithubRepository, GLOBAL_SERVICES_REGION } from "../config.js";
+import { type DeploymentConfig, GITHUB_DEPLOY_ENVIRONMENT, GITHUB_DEPLOY_ENVIRONMENTS, type GithubRepository, GLOBAL_SERVICES_REGION, webPublisherRoleName } from "../config.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
 /** GitHub Actions' OIDC issuer. */
@@ -53,11 +53,13 @@ const BOOTSTRAP_ROLES = ["deploy", "file-publishing", "image-publishing", "looku
  *   subject and is refused. The environment's
  *   protection rules on GitHub (required reviewers, which branches and tags
  *   may deploy) decide which jobs get that subject.
- * - Its only permission is to assume this account's CDK bootstrap roles
- *   (deploy, file publishing, image publishing, lookup) in the deployed
- *   regions and GLOBAL_SERVICES_REGION. Everything a deploy changes is done
- *   by CloudFormation through those roles, as when the owner deploys from a
- *   laptop. No managed policy, no wildcard.
+ * - Its permissions: assume this account's CDK bootstrap roles (deploy, file
+ *   publishing, image publishing, lookup) in the deployed regions and
+ *   GLOBAL_SERVICES_REGION, and the web stack's publisher role
+ *   (supply-checkout-pbp.28). Everything a deploy changes is done by
+ *   CloudFormation through the bootstrap roles, as when the owner deploys
+ *   from a laptop; the publisher role uploads web releases and switches the
+ *   live version. No managed policy, no wildcard.
  * - It is NOT part of the main app: the owner deploys it once, from
  *   bin/github-deploy.ts (`npm run deploy:github-deploy`), so a pipeline
  *   running `cdk deploy --all` never changes it by accident. It is not a
@@ -117,6 +119,18 @@ export class GithubDeployStack extends SupplyCheckoutStack {
         resources: regions.flatMap((r) =>
           BOOTSTRAP_ROLES.map((kind) => `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:role/cdk-${qualifier}-${kind}-role-${Aws.ACCOUNT_ID}-${r}`),
         ),
+      }),
+    );
+
+    // The web stack's publisher role (lib/web/publisher.ts, supply-checkout-pbp.28): uploading a
+    // release and switching the live version need S3, KeyValueStore and CloudFront Function
+    // calls that no bootstrap role makes. That role trusts only this one.
+    this.role.addToPolicy(
+      new PolicyStatement({
+        sid: "AssumeWebPublisher",
+        effect: Effect.ALLOW,
+        actions: ["sts:AssumeRole"],
+        resources: [`arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:role/${webPublisherRoleName(config.envName)}`],
       }),
     );
 

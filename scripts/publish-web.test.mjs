@@ -211,6 +211,35 @@ test("activate refuses a release from the other channel", () => {
   assert.deepEqual(writes(demo.calls), []);
 });
 
+test("publish --reuse makes an existing release live again, without uploading, on its own channel only", () => {
+  const dir = build();
+  const app = fakeAws({ apps: ["app-v1.0.0"] });
+  main(["publish", "--channel", "app", "--dir", dir, "--version", "app-v1.0.0", "--reuse"], app.deps);
+  assert.deepEqual(writes(app.calls).map(([, op]) => op), ["put-key"]);
+  assert.ok(!existsSync(path.join(dir, "config.json")), "no config.json written for a release that isn't uploaded");
+  assert.match(app.log[0], /already exists, so it isn't uploaded again/);
+  const quiet = fakeAws({ apps: ["app-v1.0.0"] });
+  main(["publish", "--channel", "app", "--dir", dir, "--version", "app-v1.0.0", "--reuse", "--no-activate"], quiet.deps);
+  assert.deepEqual(writes(quiet.calls), []);
+  const wrong = fakeAws({ existing: ["demo-v1.0.0"] });
+  assert.throws(() => main(["publish", "--channel", "app", "--dir", dir, "--version", "demo-v1.0.0", "--reuse"], wrong.deps), /is a demo release/);
+  assert.deepEqual(writes(wrong.calls), []);
+  // A new release still uploads
+  const fresh = fakeAws();
+  main(["publish", "--channel", "demo", "--dir", build(), "--version", "demo-v2.0.0", "--reuse"], fresh.deps);
+  assert.deepEqual(writes(fresh.calls).map(([, op]) => op), ["sync", "sync", "put-key"]);
+});
+
+test("live prints a channel's live version, or none", () => {
+  const aws = fakeAws();
+  main(["live", "--channel", "demo"], aws.deps);
+  assert.deepEqual(aws.log, ["d1"]);
+  const app = fakeAws();
+  main(["live", "--channel", "app"], app.deps);
+  assert.deepEqual(app.log, ["none"]);
+  assert.throws(() => parseArgs(["live"], {}), /--channel/);
+});
+
 test("publishing the demo refuses an app build (a folder with config.json)", () => {
   const dir = build();
   writeFileSync(path.join(dir, "config.json"), "{}");

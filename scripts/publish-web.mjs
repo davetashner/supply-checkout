@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Uploads a web build as a release and makes it live (supply-checkout-qk1).
 //
-//   node scripts/publish-web.mjs publish  --channel demo --dir dist/demo [--version V] [--no-activate]
+//   node scripts/publish-web.mjs publish  --channel demo --dir dist/demo [--version V] [--no-activate] [--reuse]
 //   node scripts/publish-web.mjs activate --channel app --version V     switch (or roll back) the live release
+//   node scripts/publish-web.mjs live     --channel app                 print the channel's live version ("none" if nothing)
 //   node scripts/publish-web.mjs status                                  live versions and uploaded releases
 //   node scripts/publish-web.mjs config                                  print the app's config.json
 //   node scripts/publish-web.mjs check-router                            run the live router on test requests
@@ -10,6 +11,10 @@
 // Common options: --env prod (default), --profile supply-prod (default: $AWS_PROFILE, else
 // supply-prod), --region <the web stack's region> (default: GLOBAL_SERVICES_REGION in
 // infra/lib/config.ts), --dry-run (print the AWS CLI commands instead of running them).
+//
+// --reuse (the deploy workflow, .github/workflows/deploy.yml): when the release already exists,
+// make it live again instead of failing, so deploying a release twice, or an older one, works.
+// It never uploads over an existing release, and the channel check of `activate` still applies.
 //
 // Channels: "demo" is served at the apex's /demo/, "app" at app. (infra/lib/web/router.js).
 // A release is uploaded once to s3://<bucket>/releases/<version>/ and never changed;
@@ -91,10 +96,11 @@ export function parseArgs(argv, env = process.env) {
     else if (arg === "--profile") opts.profile = value();
     else if (arg === "--region") opts.region = value();
     else if (arg === "--no-activate") opts.activate = false;
+    else if (arg === "--reuse") opts.reuse = true;
     else if (arg === "--dry-run") opts.dryRun = true;
     else throw new Error(`Unknown option ${arg}`);
   }
-  if (!["publish", "activate", "status", "config", "check-router"].includes(command)) throw new Error("Usage: publish-web.mjs publish|activate|status|config|check-router [options]");
+  if (!["publish", "activate", "live", "status", "config", "check-router"].includes(command)) throw new Error("Usage: publish-web.mjs publish|activate|live|status|config|check-router [options]");
   if (!["status", "config", "check-router"].includes(command) && !CHANNELS.includes(opts.channel)) throw new Error(`--channel must be one of ${CHANNELS.join(", ")}`);
   if (command === "publish" && !opts.dir) throw new Error("--dir is required (the built folder, e.g. dist/demo)");
   if (command === "activate" && !opts.version) throw new Error("--version is required");
@@ -329,6 +335,12 @@ export function main(argv, deps = {}) {
   }
   const { bucket, bucketRegion, store } = lookup(aws, opts.env);
 
+  if (opts.command === "live") {
+    const keys = aws.read(["cloudfront-keyvaluestore", "list-keys", "--kvs-arn", store]);
+    aws.log((keys?.Items ?? []).find((item) => item.Key === opts.channel)?.Value ?? "none");
+    return;
+  }
+
   if (opts.command === "status") {
     const keys = aws.read(["cloudfront-keyvaluestore", "list-keys", "--kvs-arn", store]);
     for (const item of keys?.Items ?? []) aws.log(`live  ${item.Key}: ${item.Value}`);
@@ -345,7 +357,11 @@ export function main(argv, deps = {}) {
     const version = opts.version ?? defaultVersion(opts.channel);
     if (!VERSION.test(version)) throw new Error(`Bad version ${version}`);
     if (aws.exists(bucket, releaseIndexKey(version), bucketRegion)) {
-      throw new Error(`Release ${version} already exists; releases never change. Pick another --version, or activate it.`);
+      if (!opts.reuse) throw new Error(`Release ${version} already exists; releases never change. Pick another --version, or activate it.`);
+      aws.log(`Release ${version} already exists, so it isn't uploaded again.`);
+      checkReleaseChannel(aws, { bucket, bucketRegion, channel: opts.channel, version });
+      if (opts.activate) activate(aws, { store, channel: opts.channel, version });
+      return;
     }
     if (opts.channel === "demo" && existsSync(path.join(dir, "config.json"))) {
       throw new Error(`${opts.dir} has a config.json, so it's an app build, not the demo (npm run build:demo builds dist/demo).`);
@@ -369,11 +385,16 @@ export function main(argv, deps = {}) {
   if (!aws.exists(bucket, releaseIndexKey(opts.version), bucketRegion)) {
     throw new Error(`No release ${opts.version} in ${bucket} (see: node scripts/publish-web.mjs status)`);
   }
-  const releaseChannel = aws.exists(bucket, releaseConfigKey(opts.version), bucketRegion) ? "app" : "demo";
-  if (releaseChannel !== opts.channel) {
-    throw new Error(`Release ${opts.version} is ${releaseChannel === "app" ? "an app" : "a demo"} release (it ${releaseChannel === "app" ? "has" : "has no"} config.json), so it can't go live on the ${opts.channel} channel.`);
-  }
+  checkReleaseChannel(aws, { bucket, bucketRegion, channel: opts.channel, version: opts.version });
   activate(aws, { store, channel: opts.channel, version: opts.version });
+}
+
+/** App releases have config.json and demo releases don't; neither goes live on the other's channel. */
+function checkReleaseChannel(aws, { bucket, bucketRegion, channel, version }) {
+  const releaseChannel = aws.exists(bucket, releaseConfigKey(version), bucketRegion) ? "app" : "demo";
+  if (releaseChannel !== channel) {
+    throw new Error(`Release ${version} is ${releaseChannel === "app" ? "an app" : "a demo"} release (it ${releaseChannel === "app" ? "has" : "has no"} config.json), so it can't go live on the ${channel} channel.`);
+  }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {

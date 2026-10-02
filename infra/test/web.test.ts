@@ -11,6 +11,7 @@ import { DELETIONS_REPLICATION_RULE_ID, deletionsReplicationRoleName } from "../
 import { MANAGED_RULE_GROUPS, RATE_LIMIT_PER_5_MINUTES, RELEASE_CHANNELS, webOutputParameters } from "../lib/stacks/web-stack.js";
 import { contentSecurityPolicy, cspDirectives } from "../lib/web/content-security-policy.js";
 import { RUM_SESSION_SAMPLE_RATE, RUM_TELEMETRIES, rumAppMonitorName } from "../lib/web/rum.js";
+import { PUBLISHER_PARAMETERS } from "../lib/web/publisher.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
 
 // Region names live only in lib/config.ts (ADR 0010); tests use its constants.
@@ -343,6 +344,81 @@ describe("web stack", () => {
       web.hasResourceProperties("AWS::SSM::Parameter", { Name: name, Type: "String" });
     }
     web.hasResourceProperties("AWS::SSM::Parameter", { Name: webOutputParameters("prod").bucketRegion, Value: EAST });
+  });
+});
+
+describe("web publisher role (supply-checkout-pbp.28)", () => {
+  type Statement = { Sid: string; Effect: string; Action: string | string[]; Resource: unknown; Condition?: unknown };
+  const publisher = () => {
+    const { web } = build();
+    const roles = web.findResources("AWS::IAM::Role", { Properties: { RoleName: "supply-checkout-prod-web-publisher" } });
+    const [id, role] = Object.entries(roles)[0] ?? [];
+    expect(id).toBeDefined();
+    const policies = Object.values(web.findResources("AWS::IAM::Policy")).filter((p) =>
+      (p.Properties.Roles as { Ref: string }[]).some((r) => r.Ref === id),
+    );
+    expect(policies).toHaveLength(1);
+    return { role, statements: policies[0]?.Properties.PolicyDocument.Statement as Statement[] };
+  };
+
+  it("can be assumed only by the GitHub deploy role, with no managed policy and one-hour sessions", () => {
+    const { role } = publisher();
+    expect(role.Properties.ManagedPolicyArns).toBeUndefined();
+    expect(role.Properties.MaxSessionDuration).toBe(3600);
+    expect(role.Properties.AssumeRolePolicyDocument.Statement).toEqual([
+      {
+        Effect: "Allow",
+        Action: "sts:AssumeRole",
+        // This account (the stack's region fixes the partition), narrowed to the deploy role by the condition
+        Principal: { AWS: { "Fn::Join": ["", ["arn:aws:iam::", { Ref: "AWS::AccountId" }, ":root"]] } },
+        Condition: {
+          ArnEquals: {
+            "aws:PrincipalArn": { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":iam::", { Ref: "AWS::AccountId" }, ":role/supply-checkout-prod-github-deploy"]] },
+          },
+        },
+      },
+    ]);
+  });
+
+  it("may only read publish-web's parameters, upload under releases/, switch live versions and test the router", () => {
+    const { statements } = publisher();
+    const bySid = Object.fromEntries(statements.map((s) => [s.Sid, s]));
+    expect(Object.keys(bySid).sort()).toEqual(["CheckRouter", "ListReleases", "ReadDistributionAliases", "ReadPublishParameters", "SwitchLiveVersions", "UploadReleases"]);
+    const all = statements.flatMap((s) => (Array.isArray(s.Action) ? s.Action : [s.Action]));
+    expect(all.sort()).toEqual([
+      "cloudfront-keyvaluestore:DescribeKeyValueStore",
+      "cloudfront-keyvaluestore:GetKey",
+      "cloudfront-keyvaluestore:ListKeys",
+      "cloudfront-keyvaluestore:PutKey",
+      "cloudfront:DescribeFunction",
+      "cloudfront:GetDistributionConfig",
+      "cloudfront:TestFunction",
+      "s3:GetObject",
+      "s3:ListBucket",
+      "s3:PutObject",
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+    ]);
+    expect(statements.every((s) => s.Effect === "Allow")).toBe(true);
+    expect(JSON.stringify(bySid.UploadReleases?.Resource)).toContain(`${webBucketName("prod", EAST, "")}`.replace(/-$/, ""));
+    expect(JSON.stringify(bySid.UploadReleases?.Resource)).toMatch(/\/releases\/\*"/);
+    expect(bySid.ListReleases?.Condition).toEqual({ StringLike: { "s3:prefix": ["releases/*"] } });
+    // Exactly the store, the router and the distribution: each a reference, not a wildcard
+    for (const sid of ["SwitchLiveVersions", "CheckRouter", "ReadDistributionAliases"]) {
+      expect(JSON.stringify(bySid[sid]?.Resource)).not.toContain("*");
+    }
+  });
+
+  it("reads every parameter publish-web reads, and only under /supply-checkout/<env>/", () => {
+    const source = readFileSync(new URL("../../scripts/publish-web.mjs", import.meta.url), "utf8");
+    const read = [...source.matchAll(/`\/supply-checkout\/\$\{envName\}\/([a-z/-]+)`/g)].map((m) => m[1] as string);
+    expect(read.length).toBeGreaterThan(10);
+    for (const name of read) {
+      expect(PUBLISHER_PARAMETERS.some((p) => (p.endsWith("/*") ? name.startsWith(p.slice(0, -1)) : name === p)), name).toBe(true);
+    }
+    const { statements } = publisher();
+    const resources = JSON.stringify(statements.find((s) => s.Sid === "ReadPublishParameters")?.Resource);
+    for (const p of PUBLISHER_PARAMETERS) expect(resources).toContain(`:parameter/supply-checkout/prod/${p}`);
   });
 });
 

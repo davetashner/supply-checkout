@@ -231,6 +231,13 @@ export const GITHUB_DEPLOY_ENVIRONMENT = "production";
  */
 export const GITHUB_STATEFUL_DEPLOY_ENVIRONMENT = "production-stateful";
 
+/**
+ * The web publisher role (lib/web/publisher.ts, supply-checkout-pbp.28): what the deploy
+ * workflow publishes the web app and demo with. A fixed name, so the GitHub deploy role's policy
+ * can name it before the web stack exists.
+ */
+export const webPublisherRoleName = (envName: string) => `supply-checkout-${envName}-web-publisher`;
+
 /** Every GitHub environment whose jobs may assume the deploy role. */
 export const GITHUB_DEPLOY_ENVIRONMENTS = [GITHUB_DEPLOY_ENVIRONMENT, GITHUB_STATEFUL_DEPLOY_ENVIRONMENT] as const;
 

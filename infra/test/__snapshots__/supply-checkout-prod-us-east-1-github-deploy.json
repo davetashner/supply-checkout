@@ -278,6 +278,27 @@
                 }
               ],
               "Sid": "AssumeCdkBootstrapRoles"
+            },
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":iam::",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":role/supply-checkout-prod-web-publisher"
+                  ]
+                ]
+              },
+              "Sid": "AssumeWebPublisher"
             }
           ],
           "Version": "2012-10-17"

@@ -15,20 +15,23 @@ import { DEFAULT_REGION } from "./publish-web.mjs";
 
 /**
  * Groups of stack kinds (the `component` of each stack in infra/lib/stacks).
- * stateless: the API, live updates and alarms. Nothing in them holds data, so a release
- * deploys them with one approval (ADR 0012). deploy-stacks.test.mjs checks each is a
- * stateless stack.
+ * web: CloudFront, WAF, the router and its live-version store, RUM and the web publisher role
+ * (`npm run deploy -- web`).
+ * api: the API, live updates and alarms (`npm run deploy -- api`).
+ * stateless: web and api, what the release pipeline deploys with one approval, before it
+ * publishes the web app (ADR 0012). Nothing in them holds data; deploy-stacks.test.mjs checks
+ * each is a stateless stack. CDK orders them by their dependencies (web before observability).
  * stateful: what holds data or can't be recreated without users noticing: the table, keys and
  * buckets (data), the user pool (identity), backups, the CloudTrail trail (audit), and the
  * domain's DNS and SES setup (domain, email; stateless in CDK's sense, but a replaced hosted
  * zone record or SES identity breaks sign-in mail). The release pipeline deploys them only
  * when their diff isn't empty, behind a second approval, and only when the diff replaces or
  * deletes nothing that holds data (scripts/check-replacements.mjs).
- * The web stack has its own step.
  */
 export const GROUPS = {
   web: ["web"],
-  stateless: ["api", "realtime", "observability"],
+  api: ["api", "realtime", "observability"],
+  stateless: ["web", "api", "realtime", "observability"],
   stateful: ["domain", "data", "identity", "email", "backup", "audit"],
 };
 
