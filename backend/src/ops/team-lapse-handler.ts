@@ -363,7 +363,8 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
     try {
       return await runOnce(started, now);
     } finally {
-      await releaseLapseRun(db, now);
+      // Never in place of the run's own result or error: an unreleased lease frees itself after LAPSE_LEASE_MS
+      await releaseLapseRun(db, now).catch((error: unknown) => obs.logger.warn("Lapsed-team job's lease not released", { error: errorName(error) }));
     }
   };
 }
