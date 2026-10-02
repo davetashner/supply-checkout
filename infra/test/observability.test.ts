@@ -26,8 +26,11 @@ import {
   HEARTBEAT_EVERY_MINUTES,
   HEARTBEAT_SILENT_ALARM_MINUTES,
   HELD_PURGE_GRACE_DAYS,
+  LAPSE_CLOSURES_ALARM_PER_DAY,
   LAPSE_EVERY_HOURS,
+  LAPSE_MAX_CLOSURES_PER_RUN,
   LAPSE_SILENT_ALARM_HOURS,
+  LAPSE_UNSTARTED_ALARM_HOURS,
   PURGE_EVERY_HOURS,
   PURGE_OVERDUE_AFTER_HOURS,
   PURGE_SILENT_ALARM_HOURS,
@@ -154,6 +157,9 @@ const ALARM_IDS = [
   "stripe-customer-deletion-stuck",
   "team-reopened-notices-failing",
   "lapse-job-failing",
+  "lapse-closures-held",
+  "lapse-closures-high",
+  "lapse-job-out-of-time",
 ];
 
 /** Alarms on gauges that only the primary region's scheduled checks and purge send (ops-checks.ts), and on the user pool's triggers, which are there alone. */
@@ -175,6 +181,9 @@ const PRIMARY_ONLY_ALARM_IDS = [
   "stripe-customer-deletion-retrying",
   "stripe-customer-deletion-stuck",
   "lapse-job-failing",
+  "lapse-closures-held",
+  "lapse-closures-high",
+  "lapse-job-out-of-time",
 ];
 
 describe("alarm topics", () => {
@@ -1237,11 +1246,33 @@ describe("scheduled checks", () => {
     expect(by("OwnerEmailsIndexOnly")).toMatchObject({ Action: "dynamodb:Query", Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["OPS#OWNERS#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "GSI3PK", "GSI3SK", "email"] } } });
     expect(by("ReadTeamBilling")).toMatchObject({ Action: "dynamodb:GetItem", Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LAPSE_READ_ATTRIBUTES] } } });
     // The closure, never status, plan, comps or Stripe IDs
-    expect(by("CloseLapsedTeam")).toMatchObject({ Action: "dynamodb:UpdateItem", Condition: { "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "closedBy", "purgeAfter", "purging", "version", "stripeCustomerId", "stripeSubscriptionId"] }, StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" } } });
+    expect(by("CloseLapsedTeam")).toMatchObject({ Action: "dynamodb:UpdateItem", Condition: { "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "closedBy", "purgeAfter", "purging", "version"] }, StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" } } });
     expect(by("LapseRecords")).toMatchObject({ Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["LAPSE#*"] } } });
     expect(JSON.stringify(found)).not.toMatch(/dynamodb:(Scan|DeleteItem|BatchWriteItem|TransactWriteItems)/);
     const [fn] = functions(t).filter((f) => f.FunctionName === "supply-checkout-prod-team-lapse");
     expect(fn?.Timeout).toBe(300);
+  });
+
+  it("alarm when the lapsed-team job holds closures at its cap, closes many in a day, or runs out of time run after run, in the primary region only", () => {
+    const { region } = build();
+    const east = Template.fromStack(region(EAST).observability);
+    const alarm = (name: string, metric: string, stat: string, period: number, threshold: number, periods = 1) =>
+      east.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        AlarmName: name,
+        Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: metric }), Stat: stat, Period: period }) })],
+        Threshold: threshold,
+        ComparisonOperator: "GreaterThanThreshold",
+        EvaluationPeriods: periods,
+        DatapointsToAlarm: periods,
+        AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      });
+    alarm("supply-checkout-prod-p2-lapse-closures-held", BusinessMetric.LapseClosuresHeld, "Sum", 2 * LAPSE_EVERY_HOURS * 3600, 0);
+    alarm("supply-checkout-prod-p2-lapse-closures-high", BusinessMetric.LapsedTeamsClosed, "Sum", 86400, LAPSE_CLOSURES_ALARM_PER_DAY);
+    alarm("supply-checkout-prod-p2-lapse-job-out-of-time", BusinessMetric.LapseTeamsUnstarted, "Maximum", LAPSE_EVERY_HOURS * 3600, 0, LAPSE_UNSTARTED_ALARM_HOURS / LAPSE_EVERY_HOURS);
+    // The daily alarm sees a runaway well before the cap would let it through a day's runs
+    expect(LAPSE_CLOSURES_ALARM_PER_DAY).toBeLessThan((24 / LAPSE_EVERY_HOURS) * LAPSE_MAX_CLOSURES_PER_RUN);
+    const west = Object.values(Template.fromStack(region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties.AlarmName);
+    expect(west.filter((n: string) => /lapse/.test(n))).toEqual([]);
   });
 
   it("alarm when the lapsed-team job stops sending its gauge, in the primary region only", () => {

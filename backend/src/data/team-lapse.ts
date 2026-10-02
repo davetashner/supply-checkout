@@ -31,6 +31,13 @@ export const LAPSE_WARNING_DAYS = 7;
 /** How long the job's own records (LAPSE#) are kept: longer than any notice's date can matter. */
 export const LAPSE_RECORD_DAYS = 120;
 
+/**
+ * How long after the job closes a lapsed team the purge deletes it
+ * (`purgeAfter`): a day in which an operator (or an owner) can still reopen a
+ * team closed by mistake, after "Lapsed-team closures held" or "high" fires.
+ */
+export const LAPSE_PURGE_DELAY_HOURS = 24;
+
 /** `system:` closer of a lapsed team (`closedBy`): never a user ID. */
 export const LAPSED_CLOSER = "system:lapsed";
 
@@ -196,36 +203,30 @@ export async function recordWarning(db: Db, teamId: string, deleteAfter: string,
 
 /**
  * Closes a lapsed team so the hourly purge deletes it (team-purge.ts): sets
- * `closedAt` and `purgeAfter` to now, `closedBy` to LAPSED_CLOSER, and puts
- * it in the closed-teams index, as closeTeam does, with the version moved.
- * Conditioned on the team being there, not closed or being purged, its
- * version being the one read (`team.version`: a Stripe event, a comp, an
- * owner's change or a closure since then moves it), and its Stripe customer
- * and subscription being the ones read (an owner starting Checkout links a
- * customer without moving the version); otherwise nothing is closed (false),
- * and the next run decides again. Its invites go with the
- * purge, within the hour; nobody can accept them meanwhile (a closed team
- * takes nobody).
+ * `closedAt` to now, `purgeAfter` LAPSE_PURGE_DELAY_HOURS later, `closedBy`
+ * to LAPSED_CLOSER, and puts it in the closed-teams index, as closeTeam does,
+ * with the version moved. Until the purge starts, it can be reopened as an
+ * owner's closure can.
+ * Conditioned on the team being there, not closed or being purged, and its
+ * version being the one read (`team.version`: a Stripe event, a customer
+ * linked at Checkout, a comp, an owner's change or a closure since then
+ * moves it); otherwise nothing is closed (false), and the next run decides
+ * again. Its invites go with the purge; nobody can accept
+ * them meanwhile (a closed team takes nobody).
  */
-export async function closeLapsedTeam(db: Db, team: Pick<LapseTeam, "teamId" | "version" | "stripeCustomerId" | "stripeSubscriptionId">, now: Date): Promise<boolean> {
+export async function closeLapsedTeam(db: Db, team: Pick<LapseTeam, "teamId" | "version">, now: Date): Promise<boolean> {
   const at = now.toISOString();
-  const index = gsi1.closedTeam(at, team.teamId);
-  // The Stripe IDs as read too: an owner starting Checkout links a customer without moving the version
-  const asRead = (name: string, value: string | undefined, key: string) => (value === undefined ? `attribute_not_exists(${name})` : `${name} = ${key}`);
-  const stripeValues = { ...(team.stripeCustomerId !== undefined ? { ":customer": team.stripeCustomerId } : {}), ...(team.stripeSubscriptionId !== undefined ? { ":subscription": team.stripeSubscriptionId } : {}) };
+  const purgeAfter = new Date(now.getTime() + LAPSE_PURGE_DELAY_HOURS * 3_600_000).toISOString();
+  const index = gsi1.closedTeam(purgeAfter, team.teamId);
   try {
     await connection(db).doc.send(
       new UpdateCommand({
         TableName: db.tableName,
         Key: keys.team(id(team.teamId, "team ID")),
-        UpdateExpression: "SET closedAt = :at, closedBy = :by, purgeAfter = :at, GSI1PK = :gpk, GSI1SK = :gsk, #version = #version + :one",
-        ConditionExpression: [
-          "attribute_exists(PK) AND attribute_not_exists(closedAt) AND attribute_not_exists(purging) AND #version = :version",
-          asRead("stripeCustomerId", team.stripeCustomerId, ":customer"),
-          asRead("stripeSubscriptionId", team.stripeSubscriptionId, ":subscription"),
-        ].join(" AND "),
+        UpdateExpression: "SET closedAt = :at, closedBy = :by, purgeAfter = :purge, GSI1PK = :gpk, GSI1SK = :gsk, #version = #version + :one",
+        ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(closedAt) AND attribute_not_exists(purging) AND #version = :version",
         ExpressionAttributeNames: { "#version": "version" },
-        ExpressionAttributeValues: { ":at": at, ":by": LAPSED_CLOSER, ":gpk": index.GSI1PK, ":gsk": index.GSI1SK, ":one": 1, ":version": team.version, ...stripeValues },
+        ExpressionAttributeValues: { ":at": at, ":purge": purgeAfter, ":by": LAPSED_CLOSER, ":gpk": index.GSI1PK, ":gsk": index.GSI1SK, ":one": 1, ":version": team.version },
       }),
     );
     return true;

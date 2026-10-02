@@ -1,6 +1,6 @@
 # Lapsed teams: the hourly job that warns and closes them
 
-When: **Lapsed-team job failing** or **Lapsed-team job not running** (both P2) fired, an owner asks why their team was or wasn't deleted, or you need to save a lapsing team. Bead `supply-checkout-qdx`. Background: the access rules in [infrastructure](../infrastructure.md#billing) ("Billing access rules"), [journeys](../journeys.md) (J7, J8, J10), and Terms sections 4, 5.6 and 6.
+When: **Lapsed-team job failing**, **Lapsed-team job not running**, **Lapsed-team job out of time**, **Lapsed-team closures held** or **Lapsed-team closures high** (all P2) fired, an owner asks why their team was or wasn't deleted, or you need to save a lapsing team. Bead `supply-checkout-qdx`. Background: the access rules in [infrastructure](../infrastructure.md#billing) ("Billing access rules"), [journeys](../journeys.md) (J7, J8, J10), and Terms sections 4, 5.6 and 6.
 
 ## What the job does
 
@@ -15,13 +15,14 @@ When: **Lapsed-team job failing** or **Lapsed-team job not running** (both P2) f
 | `canceled` or `incomplete_expired` (`subscription_ended`), with `subscriptionEndedAt` | None here (the billing worker sent the read-only email) | Yes, see below |
 | `canceled` without `subscriptionEndedAt` | None | Not until the nightly entitlement check records the date (counted in `LapseFailures` meanwhile) |
 
-**Closing.** A team's deletion date (`readOnlyDeletesAt` on `/me`, `deleteAfter` in the logs) is 30 days after its trial or subscription ended, or after its comp ran out if that's later. From 7 days before it, the job emails each owner a deletion warning. It records the warning (`LAPSE#<teamId>` / `WARNED#<deleteAfter>`, with `sentAt`) only once at least one owner was sent it, and tries again each UTC day until then. The team is closed no earlier than the later of the deletion date and 7 days after the warning. So a team found already past its date (comped until recently, or from before the job existed) still gets 7 days.
+**Closing.** A team's deletion time (`readOnlyDeletesAt` on `/me`, `deleteAfter` in the logs) is 30 days after its trial or subscription ended, or after its comp ran out if that's later, rounded up to 12:00 UTC the day after that date's UTC date: the moment that date has ended in every time zone (UTC−12). Owners are told that date, the last day the team is kept ("deleted after October 31"; `readOnlyLastDay` on `/me`). From 7 days before the deletion time, the job emails each owner a deletion warning. It records the warning (`LAPSE#<teamId>` / `WARNED#<deleteAfter>`, with `sentAt`) only once at least one owner was sent it, and tries again each UTC day until then. The team is closed at the deletion time, or, if the warning went out less than 7 days before it, 7 days after the warning rounded up the same way (the warning states that later date). So a team found already past its date (comped until recently, or from before the job existed) still gets 7 days.
 
 Before closing, the job asks Stripe again:
 - The team's recorded subscription must exist, be the customer's, and be `canceled` or `incomplete_expired`.
 - None of the customer's subscriptions may be anything else.
+- The customer may have no open Checkout Session (an owner subscribing right now).
 
-Then it sets `closedAt` and `purgeAfter` to now and `closedBy` to `system:lapsed`, and adds the team to the closed-teams index. The write only succeeds if the team's `version` is the one it read. Within the hour the closed-team purge writes the deletion record, deletes or queues the Stripe customer, and deletes the data, exactly as for a team an owner closed. A team closed this way can't be reopened: its `purgeAfter` has already passed.
+At most 10 teams are closed a run (`LAPSE_MAX_CLOSURES_PER_RUN`); the rest due are held for the next run and counted (`LapseClosuresHeld`). Then it sets `closedAt` to now, `purgeAfter` 24 hours later (`LAPSE_PURGE_DELAY_HOURS`) and `closedBy` to `system:lapsed`, and adds the team to the closed-teams index. The write only succeeds if the team's `version` is the one it read. Every change to the team's billing moves it: a Stripe event, a comp, a reopen, and an owner starting Checkout (linking the Stripe customer). Once `purgeAfter` passes, the hourly closed-team purge writes the deletion record, deletes or queues the Stripe customer, and deletes the data, exactly as for a team an owner closed. Until then the team can be reopened, as a closed team can: by an operator (`npm run ops -- reopen <teamId> --reason …`, until 5 minutes before) or by an owner in the app (until an hour before). Reopened, it's lapsed again, so the job closes it again on its next run unless it's subscribed or comped first (see Saving a lapsing team).
 
 **Never touched:**
 - teams with a live comp;
@@ -52,14 +53,35 @@ fields @timestamp, message, teamId, why, step, error, subscriptionId, customerId
   - Replay the billing events ([billing DLQ replay](billing-dlq-replay.md)), or wait for the nightly entitlement check, which applies Stripe's state. The team then stops lapsing or gets the right status.
   - If it's an `unpaid` or `paused` subscription nobody will pay, cancel it in the Stripe Dashboard. The webhook then records `canceled`, and the 30 days start from Stripe's `ended_at`.
 - **`CustomerMismatch`, `SubscriptionNotFound` or `CustomerNotFound`.** Our IDs don't match Stripe. Check first that the job reads the right mode's key (`STRIPE_SECRET_ID` and `STRIPE_MODE` on the function), since a key or mode mismatch looks like this for every team. If the key is right, look the team's customer up in the Dashboard (both modes) and correct the record with the owner's agreement, or decide, and note on the bead, that the team may be deleted anyway. Nothing closes it until Stripe agrees.
+- **`CheckoutOpen`.** An owner has a Checkout Session open (they may be paying now). Nothing to do: the session completes (the webhook makes the team active) or expires within 24 hours, and the next run decides again. If it keeps firing for days, look for a session the team's owners keep reopening without paying.
 - **`TooManySubscriptions`.** The customer has more than 10 subscriptions, so a live one could be past the first page. List them all in the Dashboard and cancel or record what's live; the next run closes the team once nothing is.
 - **`Lapsed team has no date its subscription ended`** (`step: undated`). A `canceled` or `incomplete_expired` team without `subscriptionEndedAt`, applied before the date was kept. The nightly entitlement check records it (drift field `accessDates`); if it doesn't, check the team has a Stripe customer the reconciliation lists, or replay its last event. Until then it's never deleted.
 - **`Lapsed team has no version`** (`step: noVersion`). A META item this app didn't write as usual. Look at it by hand; nothing closes it.
+- **`Lapsed team has no owners to warn`** (`step: noOwners`). The operators' index has no owner for the team (GSI3 `OPS#OWNERS#<teamId>`), so nobody can be warned and the team is never closed. Check the team's `MEMBER#` items: an owner whose item lacks the index keys needs them restored (the backfill script), and a team with no owner at all needs a person to decide, with a note on the bead, whether it may be deleted.
 - **`Lapsed team's deletion warning not delivered`.** No owner could be emailed: SES refused (`Lapse emails not sent` has SES's error names), or no owner has an address. Check SES's account dashboard and suppression list. The job tries again each day. The team isn't closed until an owner gets the warning.
 - **`Lapsed team check failed`** (an error, with `error` and Stripe's `type` and `status`). The usual causes:
   - Stripe was unreachable or rate limiting. The next run retries.
   - An `AccessDeniedException`: the role in `infra/lib/observability/ops-checks.ts` no longer matches the code's attribute lists (`LAPSE_*` in `backend/src/data/schema.ts`).
   - A KMS `AccessDenied`: add `kms:Encrypt` and `kms:GenerateDataKey` with the same `kms:ViaService` condition, as the purge's note says.
+
+## Lapsed-team closures held, or closures high
+
+The job closed its cap of 10 teams in one run and held the rest (`Lapsed-team job held teams at its closure cap`), or closed more than 20 in a day. That's expected only for a real batch: many trials that ended in the same week, or the first runs after the job ships. A bug or bad data (dates read wrong, a status mapped wrong) would look the same, and every closed team is deleted by the purge within the hour.
+
+1. Stop it first if you aren't sure. Disable the schedule, so no run closes more while you look (a deploy turns it back on):
+
+   ```bash
+   RULE=$(aws events list-rules --query "Rules[?contains(Name, 'TeamLapseSchedule')].Name" --output text)
+   aws events disable-rule --name "$RULE"
+   ```
+
+2. List what it closed (Logs Insights on `$LOGS`): `filter message = "Lapsed team closed for deletion" | fields @timestamp, teamId, reason, deleteAfter, warnedAt, subscriptionId`. Check a few in the Stripe Dashboard and with `npm run ops -- team <teamId>`: each should have ended 30 days or more ago, with no live subscription.
+3. If they're wrong, save the teams the job closed by mistake: each stays closed for 24 hours before the purge deletes it, so with the job's schedule disabled, reopen each as an operator (`npm run ops -- reopen <teamId> --reason "Closed by mistake: <bead>"`) and comp it if it needs to stay open while the cause is fixed. Fix the cause before turning the schedule back on.
+4. If they're right and more are due, turn the schedule back on (`aws events enable-rule --name "$RULE"`); the job works through them at 10 an hour. To clear a known backlog faster, raise `LAPSE_MAX_CLOSURES_PER_RUN` in `backend/src/ops/names.ts` (and `LAPSE_CLOSURES_ALARM_PER_DAY` if the daily alarm should stay quiet), with a note on why, and deploy; lower it again afterwards.
+
+## Lapsed-team job out of time
+
+Every run for 3 hours ran out of its 4 minutes before it started every lapsing team (`Lapsed-team job ran out of time`, with `unstarted`). Each run starts at a random place in the list, so no team is always skipped, but emails and closures run late. Check how many teams it lists (`Lapsed-team job ran` has `listed`) and what's slow: Stripe calls (`Lapsed team check failed` with timeouts) or SES. If the list has simply grown, the job needs batching or a shorter interval (`LAPSE_EVERY_HOURS`); open a bead.
 
 ## Lapsed-team job not running
 
@@ -72,11 +94,11 @@ fields @timestamp, message, teamId, why, step, error, subscriptionId, customerId
    aws lambda invoke --function-name $FN /dev/stdout
    ```
 
-   It answers `{"checked":…,"closed":…,"failed":…}`. Running it twice is safe: every email and closure is claimed or conditioned.
+   It answers `{"checked":…,"closed":…,"failed":…,"held":…}`. Running it twice is safe: every email and closure is claimed or conditioned.
 
 ## Saving a lapsing team
 
-An owner who subscribes before the date (Checkout, from the team bar) keeps the team: the subscription goes `active`, and the team is no longer read-only. A team that should be kept without paying (a pilot, a dispute) gets a comp from support (ADR 0015, the `ops` skill). With a live comp the job leaves it alone, and when the comp ends its clocks start from then. A team the job already closed can't be reopened, and the purge deletes it within the hour.
+An owner who subscribes before the date (Checkout, from the team bar) keeps the team: the subscription goes `active`, and the team is no longer read-only. A team that should be kept without paying (a pilot, a dispute) gets a comp from support (ADR 0015, the `ops` skill). With a live comp the job leaves it alone, and when the comp ends its clocks start from then. A team the job already closed is deleted 24 hours later; until then an operator can reopen it (`npm run ops -- reopen`) and comp it straight away, before the job's next run closes it again, or an owner can reopen it and subscribe within the hour.
 
 ## Checking it after a deploy
 

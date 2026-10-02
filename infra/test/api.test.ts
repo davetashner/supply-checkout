@@ -633,7 +633,7 @@ describe("billing function and billing-access role (ADR 0009)", () => {
       Action: "dynamodb:UpdateItem",
       Resource: expect.anything(),
       Condition: {
-        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": ["PK", "SK", "stripeCustomerId", "closedAt"] },
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["TEAM#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": ["PK", "SK", "stripeCustomerId", "closedAt", "version"] },
         StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
       },
     });
@@ -670,7 +670,7 @@ describe("billing function and billing-access role (ADR 0009)", () => {
     });
     // The same lists the handler's requests are tested against (backend/test/billing-policy.ts)
     expect([...TOTP_RECORD_ATTRIBUTES]).toEqual(["PK", "SK", "totpOnAt"]);
-    expect([...CUSTOMER_LINK_TEAM_ATTRIBUTES]).toEqual(["PK", "SK", "stripeCustomerId", "closedAt"]);
+    expect([...CUSTOMER_LINK_TEAM_ATTRIBUTES]).toEqual(["PK", "SK", "stripeCustomerId", "closedAt", "version"]);
     expect([...STRIPE_LINK_ATTRIBUTES]).toEqual(["PK", "SK", "type", "customerId", "teamId"]);
     expect([...MEMBER_SEAT_ATTRIBUTES]).toEqual(["PK", "SK", "role"]);
     for (const s of [read, members, update, link, totpRead, totpUpdate]) {

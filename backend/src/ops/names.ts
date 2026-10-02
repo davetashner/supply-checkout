@@ -128,6 +128,21 @@ export const LAPSE_EVERY_HOURS = 1;
 /** How long one lapsed-team run may start new teams for; the function's timeout is a minute more. */
 export const LAPSE_BUDGET_MS = 4 * 60_000;
 
+/**
+ * The most lapsed teams one run closes for deletion: past it, teams due are
+ * held for the next run (LapseClosuresHeld, "Lapsed-team closures held"), so
+ * a bug or bad data can't delete teams en masse before a person looks. To
+ * raise it for a known backlog (a batch of trials that all ended the same
+ * week), change it here and deploy (docs/runbooks/lapsed-teams.md).
+ */
+export const LAPSE_MAX_CLOSURES_PER_RUN = 10;
+
+/** More LapsedTeamsClosed than this in a day alarms ("Lapsed-team closures high"), even under the per-run cap. */
+export const LAPSE_CLOSURES_ALARM_PER_DAY = 20;
+
+/** LapseTeamsUnstarted above 0 in every run for this long alarms ("Lapsed-team job out of time"): one short run is fine, three in a row aren't. */
+export const LAPSE_UNSTARTED_ALARM_HOURS = 3;
+
 /** No LapseTeamsChecked sample for this long alarms ("Lapsed-team job not running"): three hourly runs missed. */
 export const LAPSE_SILENT_ALARM_HOURS = 3;
 

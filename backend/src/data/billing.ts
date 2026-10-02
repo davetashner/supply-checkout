@@ -35,10 +35,12 @@ export async function linkStripeCustomer(db: Db, ctx: TeamContext, customerId: s
             Update: {
               TableName: db.tableName,
               Key: keys.team(ctx.teamId),
-              UpdateExpression: "SET stripeCustomerId = :customer",
+              // The version moves, so a writer conditioned on the version it read (the lapsed-team job's closure) sees the link
+              UpdateExpression: "SET stripeCustomerId = :customer, #version = if_not_exists(#version, :zero) + :one",
               // Not once the team is closed, even if it closed after the caller's context was issued
               ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(closedAt) AND (attribute_not_exists(stripeCustomerId) OR stripeCustomerId = :customer)",
-              ExpressionAttributeValues: { ":customer": customerId },
+              ExpressionAttributeNames: { "#version": "version" },
+              ExpressionAttributeValues: { ":customer": customerId, ":zero": 0, ":one": 1 },
             },
           },
         ],

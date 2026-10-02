@@ -609,7 +609,7 @@ export class ApiStack extends SupplyCheckoutStack {
                 StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
               },
             }),
-            // The team's Stripe customer, in the same transaction as the link
+            // The team's Stripe customer (and the version it moves), in the same transaction as the link
             new PolicyStatement({
               sid: "TeamStripeCustomerOnly",
               effect: Effect.ALLOW,

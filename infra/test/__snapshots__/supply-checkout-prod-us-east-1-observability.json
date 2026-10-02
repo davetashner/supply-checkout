@@ -4325,6 +4325,201 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmslapseclosuresheld9C0F0BCE": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Lapsed-team closures held (J10, us-east-1). Any LapseClosuresHeld over 2 hours: a run of the hourly lapsed-team job (primary region) found more than 10 lapsed teams due to close for deletion (LAPSE_MAX_CLOSURES_PER_RUN), closed that many and held the rest for the next run. Each run closes up to that many more, so if it's a bug or bad data rather than a real batch of lapsed teams, disable the TeamLapseSchedule rule now. Logs Insights on the job: \"Lapsed team closed for deletion\" lists the teams. See docs/runbooks/lapsed-teams.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-lapse-closures-held",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "LapseClosuresHeld (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "LapseClosuresHeld",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 7200,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmslapseclosureshigh505F7CD1": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Lapsed-team closures high (J10, us-east-1). More than 20 LapsedTeamsClosed in a day: the hourly lapsed-team job (primary region) is closing more teams for deletion than expected, even if no single run reached its cap. Check they really lapsed (Logs Insights: \"Lapsed team closed for deletion\"), and disable the TeamLapseSchedule rule if not. See docs/runbooks/lapsed-teams.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-lapse-closures-high",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "LapsedTeamsClosed (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "LapsedTeamsClosed",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 86400,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 20,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmslapsejoboutoftime23531AE4": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Lapsed-team job out of time (J7, J8, J10, us-east-1). LapseTeamsUnstarted above 0 in every hour for 3 hours: each run of the hourly lapsed-team job (primary region) ran out of time before it started every lapsing team, so owners' emails and closures are late. Runs start at a random place in the list, so no team is always left, but the list has outgrown one run. See docs/runbooks/lapsed-teams.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-lapse-job-out-of-time",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 3,
+        "EvaluationPeriods": 3,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "LapseTeamsUnstarted (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "LapseTeamsUnstarted",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 3600,
+              "Stat": "Maximum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "WebAlarmssitedownF6F1E7CF": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -7002,9 +7197,7 @@
                     "closedBy",
                     "purgeAfter",
                     "purging",
-                    "version",
-                    "stripeCustomerId",
-                    "stripeSubscriptionId"
+                    "version"
                   ]
                 },
                 "StringEqualsIfExists": {
@@ -13319,6 +13512,27 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
+                  "JourneyAlarmslapseclosuresheld9C0F0BCE",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmslapseclosureshigh505F7CD1",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmslapsejoboutoftime23531AE4",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
                   "WebAlarmssitedownF6F1E7CF",
                   "Arn"
                 ]
@@ -13601,15 +13815,15 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"SecurityNotices\",\"Region\",\"us-east-1\",{\"label\":\"SecurityNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"SecurityNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNotices\",\"Region\",\"us-west-2\",{\"label\":\"SecurityNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"SecurityNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":97,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8, J10: lapsing teams' owners emailed (and not), lapsed teams closed for deletion, failures\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"SecurityNotices\",\"Region\",\"us-east-1\",{\"label\":\"SecurityNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"SecurityNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNotices\",\"Region\",\"us-west-2\",{\"label\":\"SecurityNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"SecurityNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":97,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8, J10: lapsing teams' owners emailed (and not), lapsed teams closed for deletion (and held at the cap), failures\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"LapseNotices\",\"Region\",\"us-east-1\",{\"label\":\"LapseNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"LapseNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapsedTeamsClosed\",\"Region\",\"us-east-1\",{\"label\":\"LapsedTeamsClosed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseFailures\",\"Region\",\"us-east-1\",{\"label\":\"LapseFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNotices\",\"Region\",\"us-west-2\",{\"label\":\"LapseNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"LapseNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapsedTeamsClosed\",\"Region\",\"us-west-2\",{\"label\":\"LapsedTeamsClosed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseFailures\",\"Region\",\"us-west-2\",{\"label\":\"LapseFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":97,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8, J10: teams the lapsed-team job checked, and read-only for billing\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"LapseNotices\",\"Region\",\"us-east-1\",{\"label\":\"LapseNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"LapseNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapsedTeamsClosed\",\"Region\",\"us-east-1\",{\"label\":\"LapsedTeamsClosed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseClosuresHeld\",\"Region\",\"us-east-1\",{\"label\":\"LapseClosuresHeld (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseFailures\",\"Region\",\"us-east-1\",{\"label\":\"LapseFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNotices\",\"Region\",\"us-west-2\",{\"label\":\"LapseNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"LapseNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapsedTeamsClosed\",\"Region\",\"us-west-2\",{\"label\":\"LapsedTeamsClosed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseClosuresHeld\",\"Region\",\"us-west-2\",{\"label\":\"LapseClosuresHeld (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseFailures\",\"Region\",\"us-west-2\",{\"label\":\"LapseFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":97,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8, J10: teams the lapsed-team job checked, read-only for billing, and left for lack of time\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"LapseTeamsChecked\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsChecked (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsReadOnly\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsReadOnly (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsChecked\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsChecked (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsReadOnly\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsReadOnly (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}}]}"
+              "\",\"metrics\":[[\"SupplyCheckout\",\"LapseTeamsChecked\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsChecked (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsReadOnly\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsReadOnly (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsUnstarted\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsUnstarted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsChecked\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsChecked (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsReadOnly\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsReadOnly (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsUnstarted\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsUnstarted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}}]}"
             ]
           ]
         },

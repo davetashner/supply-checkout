@@ -19,7 +19,7 @@ import { conflictOnConditionFailure, isCancelledAsTooLarge, isItemTooLarge, star
 import { retryDelay } from "../src/data/documents.js";
 import { MAX_MONEY, money } from "../src/data/money.js";
 import { gsi1, keys, strip } from "../src/data/keys.js";
-import { billingAccess, MEMBERS_PER_TEAM, MEMBERS_PER_TRIAL_TEAM, memberCap, PAYMENT_GRACE_DAYS, READ_ONLY_RETENTION_DAYS, teamCounts } from "../src/data/model.js";
+import { billingAccess, deletionLastDay, deletionTime, MEMBERS_PER_TEAM, MEMBERS_PER_TRIAL_TEAM, memberCap, PAYMENT_GRACE_DAYS, READ_ONLY_RETENTION_DAYS, teamCounts } from "../src/data/model.js";
 import { tableName } from "../src/data/schema.js";
 import { assertContext, writable } from "../src/data/team-context.js";
 import * as teamContextFile from "../src/data/team-context.js";
@@ -342,17 +342,42 @@ describe("billing access (billingAccess, ADR 0009, supply-checkout-qdx)", () => 
     }
   });
 
+  it("rounds a deletion up to the end of its UTC date everywhere (UTC-12), and states that date, so nobody loses data on the day they were told", () => {
+    const cases: [string, string, string][] = [
+      // Due at 12:00 UTC on Nov 1: told November 1, deleted at 12:00 UTC on Nov 2 (04:00 or 05:00 Pacific, midnight in UTC-12)
+      ["2026-11-01T12:00:00.000Z", "2026-11-02T12:00:00.000Z", "2026-11-01"],
+      // The first and last moments of a UTC date round to the same time
+      ["2026-11-01T00:00:00.000Z", "2026-11-02T12:00:00.000Z", "2026-11-01"],
+      ["2026-11-01T23:59:59.999Z", "2026-11-02T12:00:00.000Z", "2026-11-01"],
+      // Across a month and a year
+      ["2026-12-31T20:00:00.000Z", "2027-01-01T12:00:00.000Z", "2026-12-31"],
+    ];
+    for (const [due, time, day] of cases) {
+      const rounded = deletionTime(Date.parse(due));
+      expect(new Date(rounded).toISOString(), due).toBe(time);
+      expect(rounded).toBeGreaterThanOrEqual(Date.parse(due));
+      expect(deletionLastDay(new Date(rounded).toISOString())).toBe(day);
+    }
+    // November 1 is over in every US time zone (Hawaii is UTC-10, Samoa UTC-11) before it's deleted
+    for (const zone of ["America/New_York", "America/Los_Angeles", "America/Anchorage", "Pacific/Honolulu", "Pacific/Pago_Pago"]) {
+      const local = new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date("2026-11-02T12:00:00.000Z"));
+      expect(local, zone).toBe("2026-11-02");
+    }
+    // billingAccess gives the rounded time: 30 days from noon is the next day's noon
+    expect(billingAccess({ status: "trialing", trialEndsAt: "2026-10-02T03:00:00.000Z" }, NOW)).toMatchObject({ deleteAfter: "2026-11-02T12:00:00.000Z" });
+  });
+
   it("makes an app trial read-only when it ends, with a deletion date 30 days on, and never on a date it can't read", () => {
     expect(billingAccess({ status: "trialing", trialEndsAt: at(1) }, NOW)).toEqual({ readOnly: false });
-    expect(billingAccess({ status: "trialing", trialEndsAt: at(0) }, NOW)).toEqual({ readOnly: true, reason: "trial_ended", readOnlyFrom: at(0), deleteAfter: at(30) });
+    expect(billingAccess({ status: "trialing", trialEndsAt: at(0) }, NOW)).toEqual({ readOnly: true, reason: "trial_ended", readOnlyFrom: at(0), deleteAfter: at(31) });
     // A team from before trials: TRIAL_DAYS after it was made
-    expect(billingAccess({ status: "trialing", createdAt: at(-20) }, NOW)).toEqual({ readOnly: true, reason: "trial_ended", readOnlyFrom: at(-6), deleteAfter: at(24) });
+    expect(billingAccess({ status: "trialing", createdAt: at(-20) }, NOW)).toEqual({ readOnly: true, reason: "trial_ended", readOnlyFrom: at(-6), deleteAfter: at(25) });
     expect(billingAccess({ status: "trialing", trialEndsAt: "soon", createdAt: "long ago" }, NOW)).toEqual({ readOnly: false });
   });
 
   it("makes an ended subscription read-only, and deletes it 30 days after it ended only when that's recorded", () => {
     for (const status of ["canceled", "incomplete_expired"]) {
-      expect(billingAccess({ status, subscriptionEndedAt: at(-3) }, NOW)).toEqual({ readOnly: true, reason: "subscription_ended", readOnlyFrom: at(-3), deleteAfter: at(27) });
+      expect(billingAccess({ status, subscriptionEndedAt: at(-3) }, NOW)).toEqual({ readOnly: true, reason: "subscription_ended", readOnlyFrom: at(-3), deleteAfter: at(28) });
       expect(billingAccess({ status }, NOW)).toEqual({ readOnly: true, reason: "subscription_ended" });
       expect(billingAccess({ status, subscriptionEndedAt: "yesterday" }, NOW)).toEqual({ readOnly: true, reason: "subscription_ended" });
     }
@@ -382,8 +407,8 @@ describe("billing access (billingAccess, ADR 0009, supply-checkout-qdx)", () => 
       expect(billingAccess({ ...team, ...comp }, NOW)).toEqual({ readOnly: false });
     }
     const ran = { compPlan: "starter", compUntil: at(-2) };
-    expect(billingAccess({ status: "trialing", trialEndsAt: at(-90), ...ran }, NOW)).toEqual({ readOnly: true, reason: "trial_ended", readOnlyFrom: at(-2), deleteAfter: at(28) });
-    expect(billingAccess({ status: "canceled", subscriptionEndedAt: at(-90), ...ran }, NOW)).toEqual({ readOnly: true, reason: "subscription_ended", readOnlyFrom: at(-2), deleteAfter: at(28) });
+    expect(billingAccess({ status: "trialing", trialEndsAt: at(-90), ...ran }, NOW)).toEqual({ readOnly: true, reason: "trial_ended", readOnlyFrom: at(-2), deleteAfter: at(29) });
+    expect(billingAccess({ status: "canceled", subscriptionEndedAt: at(-90), ...ran }, NOW)).toEqual({ readOnly: true, reason: "subscription_ended", readOnlyFrom: at(-2), deleteAfter: at(29) });
     // A fresh grace from the comp's end
     expect(billingAccess({ status: "past_due", pastDueSince: at(-90), ...ran }, NOW)).toEqual({ readOnly: false, graceEndsAt: at(5) });
     // A comp that ran out before the clock started changes nothing
