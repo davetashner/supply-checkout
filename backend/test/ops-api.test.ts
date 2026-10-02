@@ -11,6 +11,7 @@ import { createDataHandler } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { OPS_ROUTES, routeKey } from "../src/api/routes.js";
 import {
+  billingAccess,
   CLOSED_TEAM_RETENTION_DAYS,
   closeTeam,
   createTeam,
@@ -741,8 +742,27 @@ describe("comps", () => {
     const res = await call("DELETE", `/ops/teams/${teamA}/comp`, { body: { reason: "Pilot over", expectedVersion: 2 }, key: "end-key-0002" });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ comp: null, version: 3 });
-    expect(Object.keys(teamOf(teamA)).filter((k) => k.startsWith("comp"))).toEqual([]);
+    // Only when it stopped stays: the access rules' anchor (billingAccess), and no comp without compPlan
+    expect(Object.keys(teamOf(teamA)).filter((k) => k.startsWith("comp"))).toEqual(["compUntil"]);
+    expect(teamOf(teamA).compUntil).toBe(new Date(NOW).toISOString());
     expect(auditItems(teamA).map((a) => a.action).sort()).toEqual(["ops.comp.end", "ops.comp.set"]);
+    expect((await call("GET", `/ops/teams/${teamA}`)).body.team.comp).toBeNull();
+    expect(denied).toEqual([]);
+  });
+
+  it("starts an uncomped team's clocks from the uncomp, not from a trial or subscription that ended while it was comped (supply-checkout-qdx)", async () => {
+    const DAY = 86400_000;
+    const iso = (ms: number) => new Date(ms).toISOString();
+    table.put({ ...teamOf(teamA), status: "trialing", trialEndsAt: iso(NOW - 200 * DAY) });
+    await comp({ plan: "free", until, reason: "Pilot", expectedVersion: 1 });
+    expect(billingAccess(teamOf(teamA), new Date(NOW))).toEqual({ readOnly: false });
+    expect((await call("DELETE", `/ops/teams/${teamA}/comp`, { body: { reason: "Pilot over", expectedVersion: 2 }, key: "end-key-0003" })).status).toBe(200);
+    expect(billingAccess(teamOf(teamA), new Date(NOW))).toEqual({ readOnly: true, reason: "trial_ended", readOnlyFrom: iso(NOW), deleteAfter: iso(NOW + 30 * DAY) });
+    // A comp that had already run out keeps its own end: ending it later starts nothing anew
+    table.put({ ...teamOf(teamA), compPlan: "free", compUntil: iso(NOW - 10 * DAY) });
+    expect((await call("DELETE", `/ops/teams/${teamA}/comp`, { body: { reason: "Tidy", expectedVersion: 3 }, key: "end-key-0004" })).status).toBe(200);
+    expect(teamOf(teamA).compUntil).toBe(iso(NOW - 10 * DAY));
+    expect(billingAccess(teamOf(teamA), new Date(NOW))).toMatchObject({ readOnlyFrom: iso(NOW - 10 * DAY) });
     expect(denied).toEqual([]);
   });
 

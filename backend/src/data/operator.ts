@@ -398,6 +398,12 @@ export async function opsTeamStripeCustomer(db: Db, operator: Operator, teamId: 
 }
 
 /** The comp as the audit records it: never who granted it (owners read the audit). */
+/** When a comp ended now stopped: now, or its `compUntil` if that was already past (or now, if it isn't a date). */
+function compStopped(compUntil: string | undefined, now: Date): string {
+  const until = Date.parse(compUntil ?? "");
+  return Number.isFinite(until) && until < now.getTime() ? new Date(until).toISOString() : now.toISOString();
+}
+
 function compRecord(team: Pick<OpsTeam, "compPlan" | "compSeats" | "compUntil" | "compReason">): Record<string, unknown> | null {
   if (team.compPlan === undefined) return null;
   return { plan: team.compPlan, seats: team.compSeats ?? null, until: team.compUntil ?? null, reason: team.compReason ?? null };
@@ -596,7 +602,7 @@ export async function setComp(
   );
 }
 
-/** Ends a team's comp now. ConflictError if it has none (or the version moved). */
+/** Ends a team's comp now, keeping `compUntil` as when it stopped (compStopped). ConflictError if it has none (or the version moved). */
 export async function endComp(
   db: Db,
   operator: Operator,
@@ -626,9 +632,12 @@ export async function endComp(
       before: compRecord(team),
       after: null,
       update: {
-        UpdateExpression: "SET #version = #version + :one REMOVE compPlan, compSeats, compUntil, compReason, compBy, compAt",
+        // compUntil stays, as when the comp stopped (now, or its end if it had already run out): the access
+        // rules start no clock before it (billingAccess), so an uncomped team isn't read-only, or due for
+        // deletion, from a trial or subscription that ended while it was comped. Without compPlan it's no comp
+        UpdateExpression: "SET #version = #version + :one, compUntil = :ended REMOVE compPlan, compSeats, compReason, compBy, compAt",
         ExpressionAttributeNames: {},
-        ExpressionAttributeValues: {},
+        ExpressionAttributeValues: { ":ended": compStopped(team.compUntil, now) },
         extraCondition: "attribute_exists(compPlan)",
       },
       comp: null,

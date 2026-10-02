@@ -10,7 +10,7 @@ import type { BillingMessage } from "../src/billing/webhook-handler.js";
 import { CLOSED_AT_METADATA, closingAction, closingKey, resumeKey } from "../src/billing/closing.js";
 import type { EntitlementStripe } from "../src/billing/entitlements.js";
 import type { SeatStripe, SeatSubscription, SeatSyncMessage } from "../src/billing/seats.js";
-import { createBillingWorker, noticeFor, parseMessage, type SubscriptionLike, subscriptionState, type WorkerStripe } from "../src/billing/worker.js";
+import { createBillingWorker, endedEarlier, noticeFor, parseMessage, type SubscriptionLike, subscriptionState, type WorkerStripe } from "../src/billing/worker.js";
 import { workerScopedDbs, type WorkerScope } from "../src/billing/worker-db.js";
 import { createWorkerHandler } from "../src/billing/worker-handler.js";
 import { teamBody } from "../src/api/account-handler.js";
@@ -1084,6 +1084,36 @@ describe("the dates the access rules count from (billingAccess, supply-checkout-
     expect(meta()).toMatchObject({ status: "active", stripeSubscriptionId: "sub_test_2" });
     expect(meta().subscriptionEndedAt).toBeUndefined();
     expect(denied).toEqual([]);
+  });
+
+  it("never lets an older ended subscription replace the team's ended one and pull its deletion date in, but takes a later one", async () => {
+    const recorded = NOW - 2 * DAY_S * 1000;
+    patchTeam({ status: "canceled", stripeSubscriptionId: "sub_test_2", subscriptionEndedAt: at(recorded) });
+    // A late or replayed event for the team's earlier subscription, which ended 40 days ago
+    subs.set("sub_test_1", subscription({ status: "canceled", ended_at: (NOW - 40 * DAY_S * 1000) / 1000 }));
+    expect(await worker(message("customer.subscription.deleted", { status: "canceled" }))).toBe("ignored");
+    expect(meta()).toMatchObject({ stripeSubscriptionId: "sub_test_2", subscriptionEndedAt: at(recorded) });
+    expect(mails.sent).toEqual([]);
+    // Ended at the same time: still the team's own
+    subs.set("sub_test_1", subscription({ status: "canceled", ended_at: recorded / 1000 }));
+    expect(await worker(message("customer.subscription.deleted", { eventId: "evt_test_2", status: "canceled" }))).toBe("ignored");
+    // One that ended later replaces it, with its later date
+    subs.set("sub_test_1", subscription({ status: "canceled", ended_at: (NOW - DAY_S * 1000) / 1000 }));
+    expect(await worker(message("customer.subscription.deleted", { eventId: "evt_test_3", status: "canceled" }))).toBe("applied");
+    expect(meta()).toMatchObject({ stripeSubscriptionId: "sub_test_1", subscriptionEndedAt: at(NOW - DAY_S * 1000) });
+    expect(denied).toEqual([]);
+  });
+
+  it("decides an older ended subscription only from dates it has", () => {
+    const team = { stripeSubscriptionId: "sub_test_2", status: "canceled", subscriptionEndedAt: at(NOW) };
+    const old = subscription({ status: "canceled", ended_at: NOW / 1000 - DAY_S });
+    expect(endedEarlier(old, team)).toBe(true);
+    expect(endedEarlier({ ...old, ended_at: null }, team)).toBe(false);
+    expect(endedEarlier(old, { ...team, subscriptionEndedAt: undefined })).toBe(false);
+    expect(endedEarlier(old, { ...team, status: "active" })).toBe(false);
+    expect(endedEarlier({ ...old, status: "active" }, team)).toBe(false);
+    expect(endedEarlier({ ...old, id: "sub_test_2" }, team)).toBe(false);
+    expect(endedEarlier(old, { ...team, stripeSubscriptionId: undefined })).toBe(false);
   });
 
   it("counts an unpaid subscription, which has no ended_at, from when it first saw it", async () => {

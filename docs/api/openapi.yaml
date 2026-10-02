@@ -1907,6 +1907,12 @@ paths:
       tags: [ops]
       operationId: opsEndComp
       summary: End the team's comp now. Audited as `ops.comp.end`.
+      description: >-
+        The team falls back to its Stripe status at once. The billing access
+        rules count from when the comp stopped (now, or its own end if it had
+        already run out), so a team whose trial or subscription ended while it
+        was comped becomes read-only now, and its 30 days before deletion start
+        now, not from that earlier date.
       security: [{ opsCognito: [] }]
       parameters: [{ $ref: "#/components/parameters/opsIdempotencyKey" }]
       requestBody:
