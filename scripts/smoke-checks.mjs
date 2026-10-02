@@ -71,7 +71,8 @@ export async function runCheck(check, { fetch, lookup }) {
   try {
     response = await fetch(check.url, { redirect: "manual", cache: "no-store", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   } catch (e) {
-    return `request failed (${e.message})`;
+    // fetch's own message is just "fetch failed"; the cause says why (ENOTFOUND, a timeout, ...)
+    return `request failed (${e.cause?.code ?? e.cause?.message ?? e.message})`;
   }
   return check.ok(response.status) ? "" : `answered ${response.status}`;
 }

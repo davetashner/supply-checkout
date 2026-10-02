@@ -724,12 +724,14 @@ jobs:
             echo "| Web rollback | ${ROLLBACK:-not run} |"
             echo
             if [[ "$SMOKE" == failure ]]; then
-              echo "**The post-deploy checks failed.** The web app stays on app-$TAG. Roll the stacks back by hand: docs/releases.md, \"When a post-deploy check fails\"."
+              echo "**The post-deploy checks failed.** The web app stays on app-$TAG. See docs/releases.md, \"When a post-deploy check fails\": if users are affected, deploy the previous tag again; otherwise fix forward."
             elif [[ "$ROLLBACK" == success ]]; then
-              echo "**The web publish failed and was rolled back** to what was live before."
+              echo "**The web publish failed or was cancelled, and was rolled back** to what was live before."
             elif [[ "$ROLLBACK" == failure ]]; then
-              echo "**The web publish failed and its rollback didn't finish.** Check the live versions by hand (docs/web-app.md)."
+              echo "**The web publish failed or was cancelled, and its rollback didn't finish.** Check the live versions by hand (docs/web-app.md)."
             elif [[ "$SMOKE" == success ]]; then
               echo "Deployed, published and checked."
+            else
+              echo "**The deploy failed before publishing:** nothing on the web changed; see the failed step."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

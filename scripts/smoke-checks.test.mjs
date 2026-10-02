@@ -61,6 +61,9 @@ test("what fails each check", async () => {
   assert.equal(await run(me, { [me.url]: 200 }), "answered 200");
   assert.equal(await run(me, { [me.url]: 502 }), "answered 502");
   assert.equal(await run(me, { [me.url]: new Error("ECONNRESET") }), "request failed (ECONNRESET)");
+  const failed = (cause) => Object.assign(new TypeError("fetch failed"), { cause });
+  assert.equal(await run(me, { [me.url]: failed(Object.assign(new Error("connect"), { code: "ECONNREFUSED" })) }), "request failed (ECONNREFUSED)");
+  assert.equal(await run(me, { [me.url]: failed(new Error("The operation was aborted due to timeout")) }), "request failed (The operation was aborted due to timeout)");
   assert.equal(await run(realtime, { [realtime.url]: 503 }), "answered 503");
   assert.equal(await run(realtime, { [realtime.url]: 404 }, []), "doesn't resolve (ENOTFOUND)");
   assert.equal(await run(realtime, { [realtime.url]: 400 }), "");
