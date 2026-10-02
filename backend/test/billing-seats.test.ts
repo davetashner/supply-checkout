@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { entitlementDrift, type EntitlementStripe, UNRECORDED_GRACE_SECONDS } from "../src/billing/entitlements.js";
 import { parseSeatSync, seatQuantity, type SeatStripe, type SeatSubscription, type SeatSyncMessage, seatUpdateKey, sqsSeatSyncQueue } from "../src/billing/seats.js";
 import type { SQSEvent } from "aws-lambda";
+import type { CompDiscountStripe } from "../src/billing/comp-discount.js";
 import { createBillingWorker, type QueueMessage, type SubscriptionLike, type WorkerStripe } from "../src/billing/worker.js";
 import { createWorkerHandler } from "../src/billing/worker-handler.js";
 import type { WorkerScope } from "../src/billing/worker-db.js";
@@ -97,7 +98,16 @@ beforeEach(() => {
   scopes = [];
   counts = [];
   logs = [];
-  const stripe: WorkerStripe & SeatStripe & EntitlementStripe = {
+  const stripe: WorkerStripe & SeatStripe & EntitlementStripe & CompDiscountStripe = {
+    // Comp discounts have their own tests (comp-discount.test.ts)
+    coupons: {
+      async retrieve() {
+        throw new Error("not used");
+      },
+      async create() {
+        throw new Error("not used");
+      },
+    },
     subscriptions: {
       async retrieve(id: string) {
         if (stripeDown) throw Object.assign(new Error("Stripe is down"), { name: "StripeConnectionError" });

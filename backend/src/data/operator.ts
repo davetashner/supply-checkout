@@ -80,7 +80,22 @@ export interface OperatorAuditEvent {
   readonly expiresAt: number;
 }
 
-export type OperatorAction = "ops.teams.list" | "ops.team.read" | "ops.receipts.usage" | "ops.comp.set" | "ops.comp.end" | "ops.import.clear" | "ops.team.reopen";
+export type OperatorAction =
+  | "ops.teams.list"
+  | "ops.team.read"
+  | "ops.receipts.usage"
+  | "ops.comp.set"
+  | "ops.comp.end"
+  | "ops.comp.discount"
+  | "ops.import.clear"
+  | "ops.team.reopen";
+
+/**
+ * Who the audit names for what the billing worker did after an operator's
+ * comp (`ops.comp.discount`, billing/comp-discount.ts): not an operator, so
+ * not an operator pool `sub`.
+ */
+export const BILLING_WORKER_ACTOR = "system-billing-worker";
 
 /** The operator audit partition for actions on no one team: listing and searching teams (and, later, campaigns). */
 export const PLATFORM_AUDIT = "PLATFORM";
@@ -149,6 +164,27 @@ export function latestCompEnd(now: Date): Date {
   end.setUTCMonth(end.getUTCMonth() + MAX_COMP_MONTHS);
   // 31 March + 12 months is 31 March; 29 February + 12 months rolls to 1 March, which is fine
   return end;
+}
+
+/** A comp's length in months (`months`, supply-checkout-6e4b): a whole number from 1 to MAX_COMP_MONTHS. */
+export function compMonths(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > MAX_COMP_MONTHS) throw new InvalidInputError(`months must be a whole number from 1 to ${MAX_COMP_MONTHS}`);
+  return value;
+}
+
+/**
+ * When a comp of `months` made at `now` ends: the same time of day `months`
+ * calendar months on, on the same day of the month or, in a shorter month,
+ * its last day (31 January + 1 month is 28 or 29 February, never early March).
+ */
+export function compEndAfter(months: number, now: Date): string {
+  const end = new Date(now.getTime());
+  const day = end.getUTCDate();
+  end.setUTCDate(1);
+  end.setUTCMonth(end.getUTCMonth() + compMonths(months));
+  const last = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() + 1, 0)).getUTCDate();
+  end.setUTCDate(Math.min(day, last));
+  return end.toISOString();
 }
 
 /** When a comp ends: an ISO 8601 time or date, in the future and at most MAX_COMP_MONTHS ahead. */
@@ -345,7 +381,8 @@ async function findTeam(db: Db, teamId: string): Promise<OpsTeam | undefined> {
   return team?.teamId === teamId ? team : undefined;
 }
 
-function auditItem(
+/** An operator audit item, as every operator action (and the billing worker's comp discount outcome, data/billing.ts) writes it. */
+export function auditItem(
   operator: Operator,
   teamId: string,
   input: { readonly action: OperatorAction; readonly reason?: string; readonly before?: Record<string, unknown> | null; readonly after?: Record<string, unknown> | null; readonly idempotencyKey?: string },
@@ -422,6 +459,8 @@ export interface CompOutcome {
   readonly eventId: string;
   readonly replayed: boolean;
   readonly comp: Comp | null;
+  /** The comp's length in months, for a comp made with `months` (its Stripe discount, billing/comp-discount.ts). */
+  readonly months?: number;
   /** The team's version after the change. */
   readonly version: number;
 }
@@ -527,6 +566,7 @@ function change(
     readonly after: Record<string, unknown> | null;
     readonly update: { UpdateExpression: string; ExpressionAttributeNames: Record<string, string>; ExpressionAttributeValues: Record<string, unknown>; extraCondition?: string };
     readonly comp: Comp | null;
+    readonly months?: number;
   },
   now: Date,
 ): Promise<CompOutcome> {
@@ -544,7 +584,7 @@ function change(
         ExpressionAttributeNames: { "#type": "type", "#version": "version", ...input.update.ExpressionAttributeNames },
         ExpressionAttributeValues: { ":team": "team", ":v": input.expectedVersion, ":one": 1, ...input.update.ExpressionAttributeValues },
       },
-      outcome: (eventId) => ({ eventId, replayed: false, comp: input.comp, version: input.expectedVersion + 1 }),
+      outcome: (eventId) => ({ eventId, replayed: false, comp: input.comp, ...(input.months ? { months: input.months } : {}), version: input.expectedVersion + 1 }),
       changed: "The team changed since you read it; read it again and retry",
     },
     now,
@@ -556,12 +596,28 @@ function change(
  * for a pilot), optional `seats`, until when (at most MAX_COMP_MONTHS ahead)
  * and why. Writes only the comp attributes (never `plan` or `status`, ADR
  * 0009), and the audit item, in one transaction.
+ *
+ * Instead of `until`, `months` (1 to MAX_COMP_MONTHS, supply-checkout-6e4b)
+ * comps the team until that many months from now (compEndAfter) and records
+ * `compMonths`, which has the billing worker give a paying team's Stripe
+ * subscription a 100%-off discount for those months (billing/comp-discount.ts;
+ * the ops function queues that). A comp with `until` removes `compMonths`, so
+ * a discount from an earlier one is removed too. The Idempotency-Key's record
+ * holds `months`, not the end it made, so a retry later replays.
  */
 export async function setComp(
   db: Db,
   operator: Operator,
   teamId: string,
-  input: { readonly plan: unknown; readonly seats?: unknown; readonly until: unknown; readonly reason: unknown; readonly expectedVersion: unknown; readonly idempotencyKey: unknown },
+  input: {
+    readonly plan: unknown;
+    readonly seats?: unknown;
+    readonly until?: unknown;
+    readonly months?: unknown;
+    readonly reason: unknown;
+    readonly expectedVersion: unknown;
+    readonly idempotencyKey: unknown;
+  },
   now = new Date(),
 ): Promise<CompOutcome> {
   const sub = operatorSub(operator);
@@ -570,7 +626,9 @@ export async function setComp(
   const version = expectedVersion(input.expectedVersion);
   const plan = compPlan(input.plan);
   const seats = compSeats(input.seats);
-  const until = compUntil(input.until, now);
+  if ((input.until === undefined) === (input.months === undefined)) throw new InvalidInputError("Give until or months, not both");
+  const months = input.months === undefined ? undefined : compMonths(input.months);
+  const until = months === undefined ? compUntil(input.until, now) : compEndAfter(months, now);
   const reason = operatorReason(input.reason);
   const team = await findTeam(db, teamId);
   if (!team) throw new NotFoundError("No such team");
@@ -582,7 +640,12 @@ export async function setComp(
     sets.push("compSeats = :seats");
     values[":seats"] = seats;
   }
-  const after = { plan, seats: seats ?? null, until, reason };
+  if (months !== undefined) {
+    sets.push("compMonths = :months");
+    values[":months"] = months;
+  }
+  const removes = [...(seats === undefined ? ["compSeats"] : []), ...(months === undefined ? ["compMonths"] : [])];
+  const after = { plan, seats: seats ?? null, until, reason, ...(months === undefined ? {} : { months }) };
   return change(
     db,
     operator,
@@ -590,13 +653,15 @@ export async function setComp(
     {
       action: "ops.comp.set",
       key,
-      body: { plan, seats: seats ?? null, until, reason, expectedVersion: version },
+      // The request as sent: with months, not the end it made now, so a retry later is the same request
+      body: months === undefined ? { plan, seats: seats ?? null, until, reason, expectedVersion: version } : { plan, seats: seats ?? null, months, reason, expectedVersion: version },
       expectedVersion: version,
       reason,
       before: compRecord(team),
       after,
-      update: { UpdateExpression: `SET ${sets.join(", ")}${seats === undefined ? " REMOVE compSeats" : ""}`, ExpressionAttributeNames: {}, ExpressionAttributeValues: values },
+      update: { UpdateExpression: `SET ${sets.join(", ")}${removes.length ? ` REMOVE ${removes.join(", ")}` : ""}`, ExpressionAttributeNames: {}, ExpressionAttributeValues: values },
       comp: liveComp({ compPlan: plan, compSeats: seats, compUntil: until }, now) ?? null,
+      ...(months === undefined ? {} : { months }),
     },
     now,
   );
@@ -635,7 +700,8 @@ export async function endComp(
         // compUntil stays, as when the comp stopped (now, or its end if it had already run out): the access
         // rules start no clock before it (billingAccess), so an uncomped team isn't read-only, or due for
         // deletion, from a trial or subscription that ended while it was comped. Without compPlan it's no comp
-        UpdateExpression: "SET #version = #version + :one, compUntil = :ended REMOVE compPlan, compSeats, compReason, compBy, compAt",
+        // compMonths goes too: the billing worker then removes the comp's Stripe discount (billing/comp-discount.ts)
+        UpdateExpression: "SET #version = #version + :one, compUntil = :ended REMOVE compPlan, compSeats, compReason, compBy, compAt, compMonths",
         ExpressionAttributeNames: {},
         ExpressionAttributeValues: { ":ended": compStopped(team.compUntil, now) },
         extraCondition: "attribute_exists(compPlan)",

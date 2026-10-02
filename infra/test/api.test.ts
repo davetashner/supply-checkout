@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { ACCOUNT_ROUTES, AUTH_ROUTES, BILLING_ROUTES, DATA_ROUTES, OPS_ROUTES, RECEIPT_ROUTES, routeKey, WEBHOOK_ROUTES } from "../../backend/src/api/routes.js";
 import {
   BILLING_READ_ATTRIBUTES,
+  COMP_DISCOUNT_AUDIT_ATTRIBUTES,
   BILLING_UPDATE_ATTRIBUTES,
   COMP_ATTRIBUTES,
   CUSTOMER_LINK_TEAM_ATTRIBUTES,
@@ -803,10 +804,10 @@ describe("Stripe webhook, billing queue and worker (ADR 0009)", () => {
     expect(assumes.filter(([, r]) => /BillingWorkerRole/.test(r as string)).map(([id]) => id)).toEqual([expect.stringMatching(/^BillingWorkerFunctionRole/)]);
   });
 
-  it("reaches only the event's records, the customer's link, and the team's billing attributes", () => {
+  it("reaches only the event's records, the customer's link, the team's billing attributes, and puts of its comp discount audit", () => {
     const [policy, ...others] = worker().Policies;
     expect(others).toEqual([]);
-    const [records, link, read, update, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    const [records, link, read, audit, update, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
     expect(rest).toEqual([]);
     expect(records).toEqual({
       Sid: "EventRecordsOnly",
@@ -838,6 +839,18 @@ describe("Stripe webhook, billing queue and worker (ADR 0009)", () => {
         StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
       },
     });
+    // supply-checkout-6e4b: PutItem only (append-only), the tagged team's operator audit only, an audit item's attributes only
+    expect(audit).toEqual({
+      Sid: "CompDiscountAuditPutOnly",
+      Effect: "Allow",
+      Action: "dynamodb:PutItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["OPAUDIT#${aws:PrincipalTag/teamId}"], "dynamodb:Attributes": [...COMP_DISCOUNT_AUDIT_ATTRIBUTES] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+      },
+    });
+    expect([...COMP_DISCOUNT_AUDIT_ATTRIBUTES]).not.toContain("reason");
     expect(update).toEqual({
       Sid: "TeamBillingUpdateOnly",
       Effect: "Allow",
@@ -852,7 +865,7 @@ describe("Stripe webhook, billing queue and worker (ADR 0009)", () => {
     expect(BILLING_UPDATE_ATTRIBUTES).not.toContain("purgeAfter");
     expect(BILLING_UPDATE_ATTRIBUTES).not.toContain("GSI1PK");
     expect([...STRIPE_LINK_READ_ATTRIBUTES]).toEqual(["PK", "SK", "teamId"]);
-    for (const s of [records, link, read, update]) expect(JSON.stringify(s?.Resource)).not.toMatch(/index|\*/);
+    for (const s of [records, link, read, audit, update]) expect(JSON.stringify(s?.Resource)).not.toMatch(/index|\*/);
     expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb" });
   });
 });
@@ -946,7 +959,7 @@ describe("operator-access role (ADR 0015)", () => {
       },
     });
     // ADR 0009: never plan or status; and nothing about the team's data
-    expect([...COMP_ATTRIBUTES]).toEqual(["PK", "SK", "type", "version", "compPlan", "compSeats", "compUntil", "compReason", "compBy", "compAt"]);
+    expect([...COMP_ATTRIBUTES]).toEqual(["PK", "SK", "type", "version", "compPlan", "compSeats", "compUntil", "compReason", "compBy", "compAt", "compMonths"]);
     expect(JSON.stringify(comp?.Resource)).not.toMatch(/index|\*/);
     expect(audit).toEqual({
       Sid: "OperatorAuditAppendOnly",

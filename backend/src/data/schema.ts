@@ -221,7 +221,29 @@ export const COMP_FIELDS = ["compPlan", "compSeats", "compUntil", "compReason", 
  * `version` (the comp's condition), and the comp fields. So it can't change a
  * team's name, plan, status or anything else, or touch a sheet's content.
  */
-export const COMP_ATTRIBUTES = [PK, SK, "type", "version", ...COMP_FIELDS] as const;
+export const COMP_ATTRIBUTES = [PK, SK, "type", "version", ...COMP_FIELDS, "compMonths"] as const;
+
+/**
+ * A comp for a number of months (`npm run ops -- comp --months N`,
+ * supply-checkout-6e4b): N, set with the comp. It asks the billing worker to
+ * give the team's Stripe subscription a 100%-off discount for those months
+ * (billing/comp-discount.ts), so a paying team isn't charged while it's
+ * comped. Not in COMP_FIELDS on purpose: GSI3 projects COMP_FIELDS and has no
+ * room for another attribute (OPS_INDEX_ATTRIBUTES), and the operators see
+ * the discount from Stripe instead.
+ */
+export const COMP_MONTHS = "compMonths";
+
+/**
+ * The only attributes the billing worker may name when it writes an
+ * operator audit item in its team's `OPAUDIT#` partition: the outcome of a
+ * comp's Stripe discount (`ops.comp.discount`, billing/comp-discount.ts).
+ * The keys, the audit fields but the reason, and the TTL. Not the GSI3 keys:
+ * with them the worker could put items into the operators' index (a fake team
+ * or owner entry), and IAM can't limit their values. So these items are in
+ * the team's audit, not the audit by month.
+ */
+export const COMP_DISCOUNT_AUDIT_ATTRIBUTES = [PK, SK, "type", "eventId", "ts", "teamId", "operatorSub", "action", "target", "before", "after", "idempotencyKey", TTL_ATTRIBUTE] as const;
 
 /**
  * The only attributes the operator-access role may name when it takes a
@@ -481,6 +503,7 @@ export const BILLING_READ_ATTRIBUTES = [
   "stripeSubscriptionId",
   "compPlan",
   "compUntil",
+  "compMonths",
   "cancelAtPeriodEnd",
   "stripeResyncFor",
   "stripeReopenedAt",

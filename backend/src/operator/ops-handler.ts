@@ -46,6 +46,17 @@
 // and counted (SeatSyncQueueFailures); the nightly reconciliation puts it
 // right. Its only other permission for that is sqs:SendMessage on the seat
 // sync queue.
+//
+// After every comp change (set, extend or end; a replay too), it queues a
+// message with reason `comp` on the same queue for the team's Stripe customer,
+// from the team's index entry, never the request (supply-checkout-6e4b). The
+// billing worker, which holds the Stripe secret key, then makes the team's
+// subscription's comp discount match the comp (billing/comp-discount.ts), and
+// audits what it did (`ops.comp.discount`). This function never writes to
+// Stripe: its restricted key stays read-only. The answer says whether it was
+// queued (`stripeDiscount`: `queued`, `no_stripe_customer` or `not_queued`);
+// one that couldn't be is logged and counted like a seat sync, and the
+// nightly reconciliation puts it right.
 
 import type { APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyStructuredResultV2, Context } from "aws-lambda";
 import {
@@ -227,6 +238,21 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
     }
   }
 
+  /** A comp discount sync for the team's Stripe customer (see the top). Never throws. */
+  async function queueCompSync(op: Operator, teamId: string): Promise<"queued" | "no_stripe_customer" | "not_queued"> {
+    if (!deps.seats) return "not_queued";
+    try {
+      const customer = await opsTeamStripeCustomer(deps.dbFor(op.sub), op, teamId);
+      if (!customer) return "no_stripe_customer";
+      await deps.seats(customer, "comp");
+      return "queued";
+    } catch (error) {
+      obs.logger.warn("Comp discount sync not queued", { teamId, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      obs.count(BusinessMetric.SeatSyncQueueFailures, 1, { teamId });
+      return "not_queued";
+    }
+  }
+
   const actions: Record<OpsRoute["action"], (event: OpsEvent, op: Operator) => Promise<Result>> = {
     async listTeams(event, op) {
       const q = event.queryStringParameters ?? {};
@@ -243,7 +269,7 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
       const db = deps.dbFor(op.sub);
       const { team, owners } = await getOpsTeam(db, op, teamId, at);
       // The customer on the team's index entry, never one from the request; never throws
-      const stripe = await opsStripeDetail(teamId, team.stripeCustomerId, { stripe: deps.stripe, obs, deadlineMs: deps.stripeDeadlineMs });
+      const stripe = await opsStripeDetail(teamId, team.stripeCustomerId, { stripe: deps.stripe, obs, deadlineMs: deps.stripeDeadlineMs, now: at });
       // Part of the record's read, which getOpsTeam audited. If the counters can't be read, the
       // record still comes back, with receipts: null, as Stripe's part does when it's unavailable
       const receipts = await getOpsReceiptUsage(db, op, teamId, at).catch((error: unknown) => {
@@ -254,15 +280,15 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
     },
     async setComp(event, op) {
       const teamId = teamIdFrom(event);
-      const body = jsonBody(event, ["plan", "seats", "until", "reason", "expectedVersion"]);
+      const body = jsonBody(event, ["plan", "seats", "until", "months", "reason", "expectedVersion"]);
       const outcome = await setComp(deps.dbFor(op.sub, teamId), op, teamId, { ...body, idempotencyKey: header(event, IDEMPOTENCY_HEADER) } as Parameters<typeof setComp>[3], new Date(now()));
-      return { teamId, response: json(200, outcome) };
+      return { teamId, response: json(200, { ...outcome, stripeDiscount: await queueCompSync(op, teamId) }) };
     },
     async endComp(event, op) {
       const teamId = teamIdFrom(event);
       const body = jsonBody(event, ["reason", "expectedVersion"]);
       const outcome = await endComp(deps.dbFor(op.sub, teamId), op, teamId, { ...body, idempotencyKey: header(event, IDEMPOTENCY_HEADER) } as Parameters<typeof endComp>[3], new Date(now()));
-      return { teamId, response: json(200, outcome) };
+      return { teamId, response: json(200, { ...outcome, stripeDiscount: await queueCompSync(op, teamId) }) };
     },
     async listStuckImports(event, op) {
       if (event.body) jsonBody(event, []);

@@ -10,7 +10,7 @@ import type { CognitoUser } from "../src/api/cognito-user.js";
 import type { DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { BILLING_ROUTES, routeKey } from "../src/api/routes.js";
-import { PORTAL_METADATA, type PortalConfigurationLike, type PortalConfigurationLister, portalConfigurationResolver } from "../src/billing/portal.js";
+import { COMPED_PORTAL_GRACE_MS, COMPED_PORTAL_METADATA, PORTAL_METADATA, type PortalConfigurationLike, type PortalConfigurationLister, portalConfigurationResolver } from "../src/billing/portal.js";
 import { priceResolver, type StripePriceLike } from "../src/billing/prices.js";
 import { MEMBERS_PER_TEAM, TRIAL_DAYS } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
@@ -70,6 +70,7 @@ function fakeStripe() {
       { id: "bpc_default", active: true, metadata: {} },
       { id: "bpc_old", active: false, metadata: { ...PORTAL_METADATA } },
       { id: "bpc_ours", active: true, metadata: { ...PORTAL_METADATA } },
+      { id: "bpc_comped", active: true, metadata: { ...COMPED_PORTAL_METADATA } },
     ] as PortalConfigurationLike[],
     configurationLists: 0,
     /** The customers' invoices in Stripe, newest first. */
@@ -723,6 +724,30 @@ describe("POST /teams/{teamId}/billing/portal", () => {
     now += 11 * 60_000;
     await portal();
     expect(stripe.state.configurationLists).toBe(2);
+  });
+
+  it("opens a comped team's portal with no switching of price, until a day after its comp ends (supply-checkout-6e4b)", async () => {
+    const at = (ms: number) => new Date(ms).toISOString();
+    const configurationFor = async (compUntil: string | undefined) => {
+      patchTeam({ compPlan: compUntil ? "starter" : undefined, compUntil });
+      stripe.state.portalSessions = [];
+      expect((await portal()).status).toBe(201);
+      return stripe.state.portalSessions[0]?.configuration;
+    };
+    expect(await configurationFor(at(now + 30 * DAY))).toBe("bpc_comped");
+    // Ended an hour ago (an uncomp leaves compUntil as when it stopped): its discount may not be gone yet
+    expect(await configurationFor(at(now - 60 * 60_000))).toBe("bpc_comped");
+    expect(await configurationFor(at(now - COMPED_PORTAL_GRACE_MS - 1000))).toBe("bpc_ours");
+    expect(await configurationFor(undefined)).toBe("bpc_ours");
+    expect(await configurationFor("not a date")).toBe("bpc_ours");
+    expect(denied).toEqual([]);
+  });
+
+  it("never falls back to the usual configuration for a comped team when the comped one isn't there", async () => {
+    stripe.state.configurations = stripe.state.configurations.filter((c) => c.id !== "bpc_comped");
+    patchTeam({ compPlan: "starter", compUntil: new Date(now + 30 * DAY).toISOString() });
+    expect((await portal()).status).toBe(500);
+    expect(stripe.state.portalSessions).toHaveLength(0);
   });
 
   it("opens it for a team whose subscription ended, for its invoices and card", async () => {

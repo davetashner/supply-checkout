@@ -2,7 +2,7 @@
 // the in-memory table runs before each call. The infra tests check the real
 // policy; this keeps the billing handler's and worker's requests inside them.
 
-import { BILLING_READ_ATTRIBUTES, BILLING_UPDATE_ATTRIBUTES, CUSTOMER_LINK_TEAM_ATTRIBUTES, MEMBER_SEAT_ATTRIBUTES, STRIPE_LINK_ATTRIBUTES, STRIPE_LINK_READ_ATTRIBUTES, TOTP_RECORD_ATTRIBUTES, WEBHOOK_RECORD_ATTRIBUTES } from "../src/data/schema.js";
+import { BILLING_READ_ATTRIBUTES, BILLING_UPDATE_ATTRIBUTES, COMP_DISCOUNT_AUDIT_ATTRIBUTES, CUSTOMER_LINK_TEAM_ATTRIBUTES, MEMBER_SEAT_ATTRIBUTES, STRIPE_LINK_ATTRIBUTES, STRIPE_LINK_READ_ATTRIBUTES, TOTP_RECORD_ATTRIBUTES, WEBHOOK_RECORD_ATTRIBUTES } from "../src/data/schema.js";
 import type { BillingScope } from "../src/api/billing-db.js";
 import { namedAttributes } from "./helpers.js";
 
@@ -55,7 +55,8 @@ export function billingPolicy(scope: BillingScope, denied: { command: string; in
  * The calls the billing-worker role allows for a session with these tags
  * (infra/lib/stacks/api-stack.ts): its event's records, its customer's link
  * (the team only), and in its team's partition reads of BILLING_READ_ATTRIBUTES
- * and updates of BILLING_UPDATE_ATTRIBUTES only.
+ * and updates of BILLING_UPDATE_ATTRIBUTES only, and puts of its team's comp
+ * discount audit items (OPAUDIT#<teamId>, COMP_DISCOUNT_AUDIT_ATTRIBUTES).
  */
 export function workerPolicy(scope: { eventId: string; stripeCustomer: string; teamId?: string }, denied: { command: string; input: Input }[] = []) {
   const records = `WEBHOOK#${scope.eventId}`;
@@ -74,6 +75,7 @@ export function workerPolicy(scope: { eventId: string; stripeCustomer: string; t
         case "QueryCommand":
           return input.IndexName === undefined && queryPartition(input) === team && only(input, BILLING_READ_ATTRIBUTES) && projected(input);
         case "PutCommand":
+          if (scope.teamId !== undefined && partitionKey(input) === `OPAUDIT#${scope.teamId}`) return only(input, COMP_DISCOUNT_AUDIT_ATTRIBUTES) && returnsNothing(input);
           return partitionKey(input) === records && only(input, WEBHOOK_RECORD_ATTRIBUTES) && returnsNothing(input);
         case "UpdateCommand":
           return partitionKey(input) === team && only(input, BILLING_UPDATE_ATTRIBUTES) && returnsNothing(input);

@@ -9,9 +9,11 @@ import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 /**
  * Why a seat sync was queued: a membership change, the nightly reconciliation, a Stripe event for the
  * subscription, or the team just closed (`closed`: not a seat sync, the worker sets the team's
- * subscription to end instead; worker.ts, endAtClose, supply-checkout-8jc.30).
+ * subscription to end instead; worker.ts, endAtClose, supply-checkout-8jc.30), or an operator changed
+ * the team's comp (`comp`: not a seat sync either, the worker makes the subscription's comp discount
+ * match the comp; billing/comp-discount.ts, supply-checkout-6e4b).
  */
-export const SEAT_SYNC_REASONS = ["membership", "reconcile", "subscription", "closed"] as const;
+export const SEAT_SYNC_REASONS = ["membership", "reconcile", "subscription", "closed", "comp"] as const;
 export type SeatSyncReason = (typeof SEAT_SYNC_REASONS)[number];
 
 /** A seat sync on the seat sync queue. It names only the Stripe customer: the worker finds the team from our own link. */

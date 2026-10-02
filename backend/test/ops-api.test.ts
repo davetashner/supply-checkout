@@ -16,6 +16,7 @@ import {
   CLOSED_TEAM_RETENTION_DAYS,
   closeTeam,
   createTeam,
+  compEndAfter,
   latestCompEnd,
   listOpsOwnersOf,
   listTeamsToPurge,
@@ -511,6 +512,8 @@ describe("a team's Stripe subscription and invoices (supply-checkout-6uw.4)", ()
         cancelAt: "2026-10-01T00:00:00.000Z",
         trialEnd: null,
         createdAt: "2026-08-01T00:00:00.000Z",
+        discountCount: 0,
+        compDiscountUntil: null,
       },
       subscriptionCount: 1,
       invoices: [{ id: "in_1", number: "ABC-0001", status: "paid", createdAt: "2026-09-01T00:00:00.000Z", currency: "usd", total: 2700, amountDue: 2700, amountPaid: 2700 }],
@@ -526,6 +529,18 @@ describe("a team's Stripe subscription and invoices (supply-checkout-6uw.4)", ()
     // Still audited, and still only through the operator-access role
     expect(auditItems(teamA)).toEqual([expect.objectContaining({ action: "ops.team.read" })]);
     expect(denied).toEqual([]);
+  });
+
+  it("shows a comp's discount from the subscription's stamp, only while it's to come and there's a discount (supply-checkout-6e4b)", async () => {
+    withCustomer();
+    const stamp = (until: string, discounts: string[]) => sub({ metadata: { supply_checkout_comp_until: until }, discounts });
+    stripeSubs = [stamp("2026-11-26T12:00:00.000Z", ["di_1"])];
+    expect((await call("GET", `/ops/teams/${teamA}`)).body.stripe.subscription).toMatchObject({ discountCount: 1, compDiscountUntil: "2026-11-26T12:00:00.000Z" });
+    // Its months are up (a stale stamp), or the discount is gone, or the stamp isn't a time: none
+    for (const s of [stamp("2026-09-01T00:00:00.000Z", ["di_1"]), stamp("2026-11-26T12:00:00.000Z", []), stamp("soon", ["di_1"])]) {
+      stripeSubs = [s];
+      expect((await call("GET", `/ops/teams/${teamA}`)).body.stripe.subscription.compDiscountUntil).toBeNull();
+    }
   });
 
   it("shows the current subscription over a newer one that's over, and the newest when all are over", async () => {
@@ -706,6 +721,75 @@ describe("comps", () => {
     expect(teamOf(teamA).compPlan).toBeUndefined();
   });
 
+  describe("for a number of months (supply-checkout-6e4b)", () => {
+    it("comps until that many months from now, records compMonths, and queues the Stripe discount for the team's own customer", async () => {
+      table.put({ ...teamOf(teamA), stripeCustomerId: "cus_TeamA1" });
+      const res = await comp({ plan: "starter", months: 2, reason: "Two months on us", expectedVersion: 1 });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ replayed: false, months: 2, stripeDiscount: "queued", comp: { plan: "starter", until: "2026-11-26T12:00:00.000Z" } });
+      expect(teamOf(teamA)).toMatchObject({ compPlan: "starter", compUntil: "2026-11-26T12:00:00.000Z", compMonths: 2, version: 2 });
+      expect(auditItems(teamA)[0]).toMatchObject({ action: "ops.comp.set", after: { plan: "starter", seats: null, until: "2026-11-26T12:00:00.000Z", reason: "Two months on us", months: 2 } });
+      // The customer from the team's index entry: the request names none
+      expect(seatSyncs).toEqual([["cus_TeamA1", "comp"]]);
+      expect(denied).toEqual([]);
+    });
+
+    it("replays a retry later with the same key, though now has moved, and queues the discount again (harmless)", async () => {
+      table.put({ ...teamOf(teamA), stripeCustomerId: "cus_TeamA1" });
+      const body = { plan: "starter", months: 3, reason: "Pilot", expectedVersion: 1 };
+      const first = await comp(body);
+      now += 60_000;
+      const again = await comp(body);
+      expect(again.body).toEqual({ ...first.body, replayed: true });
+      expect(auditItems(teamA)).toHaveLength(1);
+      expect(seatSyncs).toEqual([["cus_TeamA1", "comp"], ["cus_TeamA1", "comp"]]);
+    });
+
+    it("says when there's no Stripe customer, or the queue is down, and the comp stands either way", async () => {
+      expect((await comp({ plan: "free", months: 1, reason: "Pilot", expectedVersion: 1 })).body).toMatchObject({ stripeDiscount: "no_stripe_customer", months: 1 });
+      table.put({ ...teamOf(teamA), stripeCustomerId: "cus_TeamA1" });
+      seatQueueDown = true;
+      const res = await comp({ plan: "free", months: 1, reason: "Again", expectedVersion: 2 }, "comp-key-0002");
+      expect(res.status).toBe(200);
+      expect(res.body.stripeDiscount).toBe("not_queued");
+      expect(teamOf(teamA).version).toBe(3);
+    });
+
+    it("removes compMonths when a comp with until replaces it, and when the comp ends, queueing the discount's removal", async () => {
+      table.put({ ...teamOf(teamA), stripeCustomerId: "cus_TeamA1" });
+      await comp({ plan: "free", months: 2, reason: "Pilot", expectedVersion: 1 });
+      expect((await comp({ plan: "free", until, reason: "Pilot, by date", expectedVersion: 2 }, "comp-key-0002")).body.months).toBeUndefined();
+      expect(teamOf(teamA).compMonths).toBeUndefined();
+      await comp({ plan: "free", months: 2, reason: "Pilot", expectedVersion: 3 }, "comp-key-0003");
+      const end = await call("DELETE", `/ops/teams/${teamA}/comp`, { body: { reason: "Over", expectedVersion: 4 }, key: "end-key-0001" });
+      expect(end.body).toMatchObject({ comp: null, stripeDiscount: "queued" });
+      expect(teamOf(teamA).compMonths).toBeUndefined();
+      expect(seatSyncs).toHaveLength(4);
+      expect(denied).toEqual([]);
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      ["both until and months", { plan: "free", until, months: 2, reason: "Pilot", expectedVersion: 1 }],
+      ["neither until nor months", { plan: "free", reason: "Pilot", expectedVersion: 1 }],
+      ["0 months", { plan: "free", months: 0, reason: "Pilot", expectedVersion: 1 }],
+      ["13 months", { plan: "free", months: 13, reason: "Pilot", expectedVersion: 1 }],
+      ["half a month", { plan: "free", months: 1.5, reason: "Pilot", expectedVersion: 1 }],
+      ["months as text", { plan: "free", months: "2", reason: "Pilot", expectedVersion: 1 }],
+    ])("refuses %s", async (_what, body) => {
+      expect((await comp(body)).status).toBe(400);
+      expect(teamOf(teamA).compPlan).toBeUndefined();
+      expect(seatSyncs).toEqual([]);
+    });
+
+    it("ends on the same day of the month, or the last day of a shorter month, and 12 months is the most", () => {
+      expect(compEndAfter(1, new Date("2027-01-31T10:00:00Z"))).toBe("2027-02-28T10:00:00.000Z");
+      expect(compEndAfter(1, new Date("2028-01-31T10:00:00Z"))).toBe("2028-02-29T10:00:00.000Z");
+      expect(compEndAfter(12, new Date("2028-02-29T10:00:00Z"))).toBe("2029-02-28T10:00:00.000Z");
+      expect(compEndAfter(12, new Date(NOW))).toBe(latestCompEnd(new Date(NOW)).toISOString());
+      expect(() => compEndAfter(13, new Date(NOW))).toThrow(/1 to 12/);
+    });
+  });
+
   it("allows exactly 12 months, and needs an Idempotency-Key", async () => {
     expect(latestCompEnd(new Date(NOW)).toISOString()).toBe("2027-09-26T12:00:00.000Z");
     expect((await call("PUT", `/ops/teams/${teamA}/comp`, { body: { plan: "free", until: "2027-09-26T12:00:00Z", reason: "Pilot", expectedVersion: 1 } })).status).toBe(400);
@@ -806,6 +890,8 @@ describe("the operator audit", () => {
     await call("GET", "/ops/receipts");
     await call("PUT", `/ops/teams/${teamA}/comp`, { body: { plan: "free", until: "2026-12-31", reason: "Pilot", expectedVersion: 1 }, key: "comp-key-0001" });
     await call("DELETE", `/ops/teams/${teamA}/comp`, { body: { reason: "Over", expectedVersion: 2 }, key: "comp-key-0002" });
+    await call("PUT", `/ops/teams/${teamA}/comp`, { body: { plan: "free", months: 2, reason: "Two months", expectedVersion: 3 }, key: "comp-key-0003" });
+    await call("PUT", `/ops/teams/${teamA}/comp`, { body: { plan: "free", months: 3, reason: "Three months", expectedVersion: 4 }, key: "comp-key-0004" });
     table.put({ PK: `TEAM#${teamB}`, SK: "IMPORT#imp-old", GSI1PK: "IMPORTS#COMMITTING", GSI1SK: "2026-09-26T09:00:00.000Z#imp-old", type: "import", status: "committing", committed: 1, total: 2 });
     await call("POST", `/ops/teams/${teamB}/imports/imp-old/clear`, { body: { reason: "Owner re-imported it" }, key: "clear-key-0001" });
     const made = await createTeam(table.db(), { userId: "user-e" }, { name: "Echo Clean" }, new Date(NOW - 2 * DAY));
