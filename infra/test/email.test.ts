@@ -313,7 +313,7 @@ describe("grantSendEmail", () => {
     });
   });
 
-  it("is given only to the account function, which sends invites, the billing worker, which emails owners about billing, and the security notices function", () => {
+  it("is given only to the account function, which sends invites, the billing worker, which emails owners about billing, the security notices function, and the lapsed-team job", () => {
     const { app, stacks } = build();
     void app;
     for (const stack of stacks.all) {
@@ -326,7 +326,9 @@ describe("grantSendEmail", () => {
         ? [expect.stringMatching(/^AccountFunctionRole/), expect.stringMatching(/^BillingWorkerFunctionRole/)]
         : stack.stackName.endsWith("-email")
           ? [expect.stringMatching(/^SecurityNoticesRole/)]
-          : [];
+          : stack.stackName === `supply-checkout-prod-${EAST}-observability`
+            ? [expect.stringMatching(/^OpsChecksTeamLapseRole/)]
+            : [];
       expect(senders, stack.stackName).toEqual(expected);
       // No other SES send anywhere: no templated or bulk sends, and raw sends
       // only for the support SMTP user (supply-checkout-6qd), as support@

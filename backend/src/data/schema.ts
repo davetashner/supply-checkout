@@ -294,6 +294,65 @@ export const OPS_INDEX_ATTRIBUTES = [
 ] as const;
 
 /**
+ * The lapsed-team job (supply-checkout-qdx, ops/team-lapse-handler.ts): the
+ * only attributes it may name when it lists teams from the operators' index
+ * (GSI3's OPS#TEAMS partition, Select SPECIFIC_ATTRIBUTES): the keys, and
+ * what tells a team whose billing may have lapsed (status, the trial's end,
+ * closure and comp). No names, emails or Stripe IDs.
+ */
+export const LAPSE_LIST_ATTRIBUTES = [PK, SK, GSI3PK, GSI3SK, "status", "trialEndsAt", "createdAt", "closedAt", "compPlan", "compUntil"] as const;
+
+/**
+ * What the lapsed-team job may read of a team's META item (GetItem,
+ * consistent): what billingAccess reads, the team's name for the owner
+ * emails, its closure, Stripe IDs and version (the closure's condition).
+ * Never documents, sheets or members.
+ */
+export const LAPSE_READ_ATTRIBUTES = [
+  PK,
+  SK,
+  "name",
+  "status",
+  "trialEndsAt",
+  "createdAt",
+  "closedAt",
+  "purging",
+  "stripeCustomerId",
+  "stripeSubscriptionId",
+  "pastDueSince",
+  "subscriptionEndedAt",
+  "compPlan",
+  "compUntil",
+  "version",
+] as const;
+
+/**
+ * What the lapsed-team job may name when it closes a lapsed team's META item
+ * (UpdateItem, nothing returned): the closure it sets (`closedAt`,
+ * `closedBy`, `purgeAfter` and the closed-teams index keys, so the hourly
+ * purge deletes it) and the version it moves, and what its condition checks
+ * (no closure or purge mark yet, and the version as read). Not status, plan,
+ * comps or Stripe IDs.
+ */
+export const LAPSE_CLOSE_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "closedAt", "closedBy", "purgeAfter", "purging", "version"] as const;
+
+/** What the lapsed-team job may read of a team's owners in the operators' index (GSI3's `OPS#OWNERS#<teamId>` partitions): the keys and the owner's email, for the notices. */
+export const LAPSE_OWNER_ATTRIBUTES = [PK, SK, GSI3PK, GSI3SK, "email"] as const;
+
+/**
+ * The partition prefix of the lapsed-team job's own records, `LAPSE#<teamId>`:
+ * `NOTICE#<kind>#<anchor>#<userId>` (an owner emailed, so never twice) and
+ * `WARNED#<deleteAfter>` (when the deletion warning went out, which the
+ * closure waits LAPSE_WARNING_DAYS after). Outside the team's partition, so
+ * the job never writes a team's own items but its META; IDs and times only,
+ * kept LAPSE_RECORD_DAYS (TTL).
+ */
+export const LAPSE_PREFIX = "LAPSE#";
+
+/** The only attributes the lapsed-team job may name in a `LAPSE#` partition (GetItem and PutItem). */
+export const LAPSE_RECORD_ATTRIBUTES = [PK, SK, "type", "sentAt", "expiresAt"] as const;
+
+/**
  * The sort key of the item in a user's own `USER#<sub>` partition that holds
  * the address they last proved with a Cognito code through the account API
  * (POST /me/email/verify, supply-checkout-ytr2): see verified-email.ts. Not a

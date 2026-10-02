@@ -36,6 +36,7 @@ const samples: EmailInput[] = [
   { kind: "readOnly", teamName: "Echo Cleaning", reason: "subscription_ended", deletesAt: "2026-11-01T00:00:00.000Z" },
   { kind: "readOnly", teamName: "Echo Cleaning", reason: "trial_ended", deletesAt: "2026-11-01T00:00:00.000Z" },
   { kind: "readOnly", teamName: "Echo Cleaning", reason: "payment_overdue" },
+  { kind: "deletionWarning", teamName: "Echo Cleaning", deletesAt: "2026-11-01T00:00:00.000Z" },
 ];
 
 describe("templates", () => {
@@ -131,6 +132,14 @@ describe("templates", () => {
     // The trial and payment notices state the periods the access rules use
     expect(text(samples[1] as EmailInput)).toContain("for 30 days. After that, the team and everything in it are deleted.");
     expect(text(samples[2] as EmailInput)).toContain("keeps working for 7 days while we try again");
+  });
+
+  it("warns owners of a lapsed team's deletion, with the date, what to do, and that it can't be undone (supply-checkout-qdx)", () => {
+    const email = renderEmail({ kind: "deletionWarning", teamName: "Echo", deletesAt: "2026-11-01T00:00:00.000Z" }, { appUrl: APP });
+    expect(email.subject).toBe("Echo will be deleted on November 1, 2026");
+    expect(email.text).toContain("On November 1, 2026, or soon after, the team, its sheets and its inventory will be deleted for good");
+    expect(email.text).toContain("subscribe in the app before then");
+    expect(email.text).toContain("Export data");
   });
 
   it("leaves out the retry date when Stripe gave none", () => {

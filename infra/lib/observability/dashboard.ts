@@ -167,6 +167,9 @@ export class OpsDashboard extends Construct {
     this.dashboard.addWidgets(
       // The account's own address told of a password set or two-step sign-in turned on (supply-checkout-8jc.15)
       businessGraph("J0: security notices emailed, and not", [BusinessMetric.SecurityNotices, BusinessMetric.SecurityNoticeFailures]),
+      // The lapsed-team job (primary region, supply-checkout-qdx): its emails, closures and failures, and its gauges
+      businessGraph("J7, J8, J10: lapsing teams' owners emailed (and not), lapsed teams closed for deletion, failures", [BusinessMetric.LapseNotices, BusinessMetric.LapseNoticeFailures, BusinessMetric.LapsedTeamsClosed, BusinessMetric.LapseFailures]),
+      graph("J7, J8, J10: teams the lapsed-team job checked, and read-only for billing", each((r) => [BusinessMetric.LapseTeamsChecked, BusinessMetric.LapseTeamsReadOnly].map((name) => business(name, r, FIVE_MINUTES, "Maximum"))), WIDTH / 4),
     );
   }
 }

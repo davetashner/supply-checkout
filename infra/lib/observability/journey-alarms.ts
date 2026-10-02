@@ -12,7 +12,7 @@ import { billingResourceNames } from "../../../backend/src/billing/names.js";
 import { emailResourceNames } from "../../../backend/src/email/names.js";
 import { identityResourceNames } from "../../../backend/src/identity/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
-import { HELD_PURGE_GRACE_DAYS, PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS, STRIPE_DELETION_RETRY_ALARM_HOURS, STRIPE_DELETION_STUCK_DAYS } from "../../../backend/src/ops/names.js";
+import { HELD_PURGE_GRACE_DAYS, LAPSE_EVERY_HOURS, PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS, STRIPE_DELETION_RETRY_ALARM_HOURS, STRIPE_DELETION_STUCK_DAYS } from "../../../backend/src/ops/names.js";
 import { realtimeResourceNames } from "../../../backend/src/realtime/channels.js";
 import type { AlarmTopics, Severity } from "./alarm-topics.js";
 import { apiGateway, business, dynamoDbSystemErrors, dynamoDbThrottles, FIVE_MINUTES, lambda } from "./metrics.js";
@@ -665,6 +665,16 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       rule: "Any TeamReopenedNoticeFailures over 15 minutes: an owner of a team that was just reopened wasn't told it will no longer be deleted (SES refused the message, no address on file, or the owners couldn't be listed). The team reopened anyway.",
       metric: business(BusinessMetric.TeamReopenedNoticeFailures, region, FIFTEEN_MINUTES),
       threshold: 0,
+    },
+    {
+      id: "lapse-job-failing",
+      title: "Lapsed-team job failing",
+      journeys: "J7, J8, J10",
+      severity: "P2",
+      rule: `Any LapseFailures over ${2 * LAPSE_EVERY_HOURS} hours: the hourly lapsed-team job (primary region) couldn't handle a team whose trial or subscription lapsed (a read, write or Stripe call failed), couldn't deliver a team's deletion warning to any owner (so it won't close it), or wouldn't close a lapsed team because Stripe disagrees with our record (a live subscription for the customer, or the team's subscription or customer missing, maybe a Stripe key or mode mismatch). The team stays read-only and isn't deleted until it's resolved, past the date its owners were told. The log lines "Lapsed team not closed: Stripe disagrees", "Lapsed team's deletion warning not delivered" and "Lapsed team check failed" have the team, subscription and customer IDs. See docs/runbooks/lapsed-teams.md.`,
+      metric: business(BusinessMetric.LapseFailures, region, Duration.hours(2 * LAPSE_EVERY_HOURS)),
+      threshold: 0,
+      primaryOnly: true,
     },
   ];
 }

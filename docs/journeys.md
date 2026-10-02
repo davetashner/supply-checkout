@@ -46,7 +46,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 | [J7](#j7-subscribe-add-seats-and-see-invoices) | Subscribe, add seats and see invoices | Owner | Yes | Partly built |
 | [J8](#j8-a-payment-fails-and-is-fixed) | A payment fails and is fixed | Owner | Yes | Partly built |
 | [J9](#j9-a-viewer-can-see-but-not-change) | A viewer can see but not change | Bookkeeper | No | Tested |
-| [J10](#j10-cancel-and-take-the-data) | Cancel and take the data | Owner | No | Tested; still to come: deleting a canceled team's data after 30 days |
+| [J10](#j10-cancel-and-take-the-data) | Cancel and take the data | Owner | No | Tested |
 | [J11](#j11-delete-an-account) | Delete an account | Anyone | No | Tested |
 | [J12](#j12-choose-a-plan-in-the-mobile-app) | Choose a plan in the mobile app | Owner | No | Planned (phase 2) |
 | [J13](#j13-take-company-equipment-to-a-job-and-bring-it-back) | Take company equipment to a job and bring it back | Crew member | Yes | Tested |
@@ -220,11 +220,12 @@ The sheet list has a search box that matches a sheet's client ("Ad hoc" for the 
 <!-- journeys:steps J10 -->
 - **J10.1** Open the Customer Portal from **Billing** and cancel.
 - **J10.2** Export all sheets and inventory.
+- **J10.3** After 30 days read-only, and at least 7 days after a warning email, the team is closed and its data deleted.
 <!-- /journeys:steps J10 -->
 
 **Expected:** access continues to the end of the paid period, then the team is read-only for 30 days with export available. After that the data is deleted, as the privacy policy says.
 
-**Status:** tested; still to come: deleting a canceled team's data after 30 days. Cancelling in the Customer Portal is built (`supply-checkout-121`): the subscription runs to the end of the period, the team bar says when it ends, and then the team is read-only with export available. Deleting canceled teams is `supply-checkout-qdx`. Export is built (`supply-checkout-zuv`, see J6); it only reads, through the list routes, so read-only mode must keep those open to owners.
+**Status:** tested. Cancelling in the Customer Portal is built (`supply-checkout-121`): the subscription runs to the end of the period, the team bar says when it ends, and then the team is read-only with export available. Deleting it is built (`supply-checkout-qdx`): the hourly lapsed-team job warns each owner by email at least 7 days ahead, asks Stripe again that nothing is live, then closes the team 30 days after it ended (or 7 days after the warning, if later), and the hourly purge deletes it as it deletes a team an owner closed. A trial that ends without a plan goes the same way. Export is built (`supply-checkout-zuv`, see J6); it only reads, through the list routes, so read-only mode must keep those open to owners.
 
 ### J11. Delete an account
 
@@ -347,6 +348,7 @@ Alarms that fire during a deploy also trigger the automatic rollback (`supply-ch
 | Billing events late | J7, J8 | P2 | The billing events queue's `ApproximateAgeOfOldestMessage` above 5 minutes |
 | Seat syncs stuck, Seat counts drifting, Seat reconciliation not running | J7 | P2 | As below (`supply-checkout-l50`). Seat syncs stuck watches the seat syncs dead-letter queue. The other two read the nightly seat reconciliation's metrics, and are in the primary region only, where it runs. |
 | Entitlements drifting | J7, J8 | P2 | As below (`supply-checkout-8jc.9`). Reads the nightly entitlement check's metric, in the primary region only. |
+| Lapsed-team job failing, Lapsed-team job not running | J7, J8, J10 | P2 | As below (`supply-checkout-qdx`). Read the hourly lapsed-team job's metrics, in the primary region only, where it runs. |
 | Reopened team's subscription ended | J7, J11 | P2 | As below (`supply-checkout-8jc.16`). Counted by the billing worker and the closed-team purge, in every region. |
 | Reopened team's billing not resynced | J7, J11 | P2 | As below (`supply-checkout-85qp`). Counted by the billing worker for the nightly reconciliation's messages, so in the primary region only. |
 | Reopened team's subscription left to cancel | J7, J11 | P2 | As below (`supply-checkout-85qp`). Counted by the billing worker, in every region. |
@@ -500,6 +502,8 @@ Receipt reading is not critical: people can still enter items by hand.
 | **Billing events late** | Age of the oldest message in the billing queue | above 5 minutes | P2 |
 | **Seat syncs stuck** | Seat syncs dead-letter queue `ApproximateNumberOfMessagesVisible`: a sync after a membership change that the billing worker couldn't apply after 5 tries (Stripe or DynamoDB failing). The nightly reconciliation fixes the team's seats anyway. | any message | P2 |
 | **Seat counts drifting** | `SeatQuantityDrift`: the nightly seat reconciliation found a subscription whose quantity isn't the team's billed members (owners and editors), or a seat sync found more billed members than a team can have and changed nothing. Primary region only | any, over an hour | P2 |
+| **Lapsed-team job failing** | `LapseFailures`: the hourly lapsed-team job (`supply-checkout-<env>-team-lapse`) couldn't handle a team whose trial or subscription lapsed (a read, write or Stripe call failed), couldn't deliver a deletion warning to any of a team's owners (it won't close a team until one was), or wouldn't close a lapsed team because Stripe disagrees with our record (a live subscription, or the team's subscription or customer missing). Primary region only | any, over 2 hours | P2 |
+| **Lapsed-team job not running** | `LapseTeamsChecked` samples: none means the job didn't run (its schedule is disabled or deleted) or every run failed before it listed the teams. Missing data breaches. Primary region only (`infra/lib/observability/ops-checks.ts`) | fewer than 1 sample in 3 hours | P2 |
 | **Seat reconciliation not running** | `SeatReconcileTeams` samples: none means the nightly reconciliation didn't run (its schedule is disabled or deleted) or every run failed before it listed the teams. Missing data breaches. Primary region only (`infra/lib/observability/ops-checks.ts`) | fewer than 1 sample a day for 2 days (`SEAT_RECONCILE_SILENT_ALARM_DAYS`) | P2 |
 | **Entitlements drifting** | `EntitlementDrift`: the nightly entitlement check (run with the seat reconciliation) found a team whose subscription, status, plan, seats or cancellation at the period's end weren't what Stripe has, such as a team that paid still read-only, or one whose subscription ended still active. Primary region only | any, over an hour | P2 |
 | **Reopened team's subscription ended** | `ReopenedTeamSubscriptionsEnded`: an owner reopened a closed team while the billing worker or the closed-team purge was asking Stripe to end its subscription, and it couldn't be resumed at once: it was cancelled (not just set to cancel), or Stripe refused the resume, so an open team's subscription is set to cancel (or was cancelled). Also counted when the worker or the purge set a closed team's subscription to end and then couldn't read (or record) the team again, so couldn't tell whether it had been reopened meanwhile (`supply-checkout-8jc.30`). Every region (the worker runs in each) | any, over 15 minutes | P2 |
@@ -513,6 +517,8 @@ Receipt reading is not critical: people can still enter items by hand.
 | **Held team purged with its subscription unresolved** | `HeldTeamsPurged`: the hourly closed-team purge deleted a closed team held because its subscription was set aside (`CustomerMismatch`, `NotFound` or `PermanentError`), 14 days after its deletion date (`HELD_PURGE_GRACE_DAYS` in `backend/src/ops/names.ts`), nobody having dealt with it: the owner's decision, so its data isn't kept indefinitely past the date its owners were told. Its subscription may still be live and billing (`supply-checkout-8jc.40`). Primary region only | any, over an hour | P2 |
 | **Stripe customer deletion retrying** | `StripeCustomerDeletionOldestHours`, a gauge the hourly closed-team purge sends every run that can read its queue: how long the oldest queued Stripe customer deletion has waited. The purge deletes a closed team's data on schedule even when Stripe can't delete its customer (an outage, a timeout, a rate limit, a key it can't read), queues the customer's deletion and retries it every run (`supply-checkout-8jc.42`). Primary region only | above 24 hours (`STRIPE_DELETION_RETRY_ALARM_HOURS`), maximum over 2 hours | P2 |
 | **Stripe customer deletion stuck** | The same gauge: a queued deletion a week old (`STRIPE_DELETION_STUCK_DAYS`) isn't an outage. The customer's details stay in Stripe and any subscription on it may still bill. Primary region only | above 168 hours, maximum over 2 hours | P1 |
+
+**Lapsed-team job failing, Lapsed-team job not running: what to do.** See [the lapsed-teams runbook](runbooks/lapsed-teams.md). A lapsed team that isn't closed stays read-only, with its owners told it would be deleted, so it's kept past that date until this is resolved; nothing is deleted early.
 
 **Seat counts drifting: what to do.** The billing worker has already set the quantity right, so the customer is billed correctly from now on; the question is why the sync after the membership change missed it. Find `Seat quantity drift` in the billing worker's log (team and subscription IDs, the Stripe quantity and the billed members), then look for the team's missed sync: `Seat sync not queued` in the account or ops function's log (`SeatSyncQueueFailures`), a message in the seat syncs dead-letter queue (Seat syncs stuck), or a membership change made outside the account and ops APIs (a restore, until the reconciliation is run by hand as its runbook says). `Seat sync skipped: more billed members than a team can have` in the worker's log means the count is over `MEMBERS_PER_TEAM` and the quantity wasn't changed: find how the team got past the member cap before setting its seats by hand. If the drift overbilled the team, credit the difference in the Stripe Dashboard. A mismatch found moments after a membership change, whose own sync was still queued behind the reconciliation's, fixes itself and can be ignored.
 
@@ -603,6 +609,8 @@ The purge lists at most 100 closed teams' subscriptions a run (`CLOSED_TEAMS_TO_
 | **Billing portal broken** | See J7 | | P1 |
 | **Billing events late** | See J7 | | P2 |
 | **Entitlements drifting** | See J7 | | P2 |
+| **Lapsed-team job failing** | See J7 | | P2 |
+| **Lapsed-team job not running** | See J7 | | P2 |
 | **Failed payments rising** | `invoice.payment_failed` events | more than 2× the 30-day average in a day | P3 |
 
 ### J9, J10, J11: roles, cancellation and deletion
@@ -610,6 +618,8 @@ The purge lists at most 100 closed teams' subscriptions a run (`CLOSED_TEAMS_TO_
 | Alarm | Signal | Starting threshold | Severity |
 | --- | --- | --- | --- |
 | **Cross-team access attempts** | Authorizer denials where the signed-in user asked for a team they don't belong to | any, over 15 minutes. Could be a client bug or someone probing. | P2 |
+| **Lapsed-team job failing** | See J7 | | P2 |
+| **Lapsed-team job not running** | See J7 | | P2 |
 | **Export failing** | Export runs in the browser from the data API's list routes, so there's no export function: the API errors alarm covers it | as API errors | P2 |
 | **Deletion job failing** | The hourly closed-team purge (`supply-checkout-<env>-team-purge`) throws when any team fails, any closed team's Stripe subscription couldn't be ended, or its queue of Stripe customer deletions couldn't be read or cleared (`Queued Stripe customer deletions not listed`, `not readable` or `not cleared`, `supply-checkout-8jc.42`), which the Functions failing alarm counts. A Stripe customer Stripe can't delete doesn't fail it: the team is purged and the deletion queued | as Functions failing | P2. The privacy policy promises a deadline, and a closed team shouldn't be charged again. In Logs Insights, `message = "Closed team's subscription not ended"` names the team and the error; `"Team reopened while its subscription was being ended"` needs the subscription resumed in Stripe by hand; `"Closed team's subscription renewed after it closed"` (a warning, not a failure) needs a refund. |
 | **Deletion overdue** | `ClosedTeamsOverdue`: closed teams still there more than 24 hours (`PURGE_OVERDUE_AFTER_HOURS`) after their deletion date, counted on the closed-teams index however many there are (not capped at the 100 a run lists), including index entries the app didn't write and teams held because they're set aside (`supply-checkout-8jc.37`), until the purge deletes a held team anyway 14 days past its deletion date (`supply-checkout-8jc.40`). The purge (`backend/src/ops/team-purge-handler.ts`, primary region) sends it every run that can read the index, zero included, even a run where teams fail | above 0 (maximum over 2 hours, so every period holds a run) | P2 |

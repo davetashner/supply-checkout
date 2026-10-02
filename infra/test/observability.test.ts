@@ -16,7 +16,7 @@ import { journeyAlarmSpecs, SET_ASIDE_INCIDENT_AT } from "../lib/observability/j
 import { ROUTER_FAILING_ABOVE, RUM_EVENTS_FLOOD_PER_HOUR, RUM_EVENTS_SURGE_PER_HOUR, SITE_DOWN_MIN_REQUESTS, SITE_DOWN_PERCENT } from "../lib/observability/web-alarms.js";
 import { rumAppMonitorName } from "../lib/web/rum.js";
 import { webOutputParameters } from "../lib/stacks/web-stack.js";
-import { OPERATOR_AUDIT_HEARTBEAT } from "../../backend/src/data/schema.js";
+import { LAPSE_LIST_ATTRIBUTES, LAPSE_READ_ATTRIBUTES, OPERATOR_AUDIT_HEARTBEAT } from "../../backend/src/data/schema.js";
 import { DELETION_PREFIXES, LIFECYCLE_EXPIRATION } from "../../backend/src/deletions/names.js";
 import {
   CHECK_EVERY_MINUTES,
@@ -26,6 +26,8 @@ import {
   HEARTBEAT_EVERY_MINUTES,
   HEARTBEAT_SILENT_ALARM_MINUTES,
   HELD_PURGE_GRACE_DAYS,
+  LAPSE_EVERY_HOURS,
+  LAPSE_SILENT_ALARM_HOURS,
   PURGE_EVERY_HOURS,
   PURGE_OVERDUE_AFTER_HOURS,
   PURGE_SILENT_ALARM_HOURS,
@@ -151,6 +153,7 @@ const ALARM_IDS = [
   "stripe-customer-deletion-retrying",
   "stripe-customer-deletion-stuck",
   "team-reopened-notices-failing",
+  "lapse-job-failing",
 ];
 
 /** Alarms on gauges that only the primary region's scheduled checks and purge send (ops-checks.ts), and on the user pool's triggers, which are there alone. */
@@ -171,6 +174,7 @@ const PRIMARY_ONLY_ALARM_IDS = [
   "held-team-purged",
   "stripe-customer-deletion-retrying",
   "stripe-customer-deletion-stuck",
+  "lapse-job-failing",
 ];
 
 describe("alarm topics", () => {
@@ -314,8 +318,8 @@ describe("alarm topics", () => {
     }
   });
 
-  it("never puts an address or phone number in the template", () => {
-    const json = JSON.stringify(observability().toJSON());
+  it("never puts an address or phone number in the template, but the app's own From address (the lapsed-team job sends as it)", () => {
+    const json = JSON.stringify(observability().toJSON()).replace(/"noreply@[a-z0-9.-]+"/g, '"FROM"');
     expect(json).not.toMatch(/@[a-z0-9-]+\.[a-z]/i);
     expect(json).not.toMatch(/\+\d{10,}/);
   });
@@ -469,7 +473,7 @@ describe("journey alarms (docs/journeys.md)", () => {
       // The purge's own alarm is with the purge, and the operator audit and group watches' are with the watches, in the primary region only (tested below)
       const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm"))
         .map((a) => a.Properties)
-        .filter((a) => !["supply-checkout-prod-p2-deletion-not-running", "supply-checkout-prod-p2-seat-reconcile-not-running"].includes(a.AlarmName) && !/operator-audit|operator-group|deletion-record|support-smtp|site-down|web-router|rum-events/.test(String(a.AlarmName)));
+        .filter((a) => !["supply-checkout-prod-p2-deletion-not-running", "supply-checkout-prod-p2-seat-reconcile-not-running", "supply-checkout-prod-p2-lapse-not-running"].includes(a.AlarmName) && !/operator-audit|operator-group|deletion-record|support-smtp|site-down|web-router|rum-events/.test(String(a.AlarmName)));
       const specs = journeyAlarmSpecs(r, "t", "api", "prod").filter((s) => r === config.primaryRegion || !s.primaryOnly);
       expect(alarms.map((a) => a.AlarmName).sort()).toEqual(
         specs.map((s) => `supply-checkout-prod-${s.severity.toLowerCase()}-${s.id}`).sort(),
@@ -1010,11 +1014,12 @@ describe("scheduled checks", () => {
       "supply-checkout-prod-operator-group-watch",
       "supply-checkout-prod-seat-reconcile",
       "supply-checkout-prod-stuck-imports",
+      "supply-checkout-prod-team-lapse",
       "supply-checkout-prod-team-purge",
     ]);
     const rules = Object.values(t.findResources("AWS::Events::Rule")).map((r) => r.Properties).filter((r) => r.ScheduleExpression !== undefined);
-    expect(rules).toHaveLength(5);
-    expect(rules.map((r) => r.ScheduleExpression).sort()).toEqual([`cron(0 ${SEAT_RECONCILE_HOUR_UTC} * * ? *)`, "rate(1 hour)", `rate(${CHECK_EVERY_MINUTES} minutes)`, `rate(${CHECK_EVERY_MINUTES} minutes)`, `rate(${GROUP_WATCH_EVERY_MINUTES} minutes)`].sort());
+    expect(rules).toHaveLength(6);
+    expect(rules.map((r) => r.ScheduleExpression).sort()).toEqual([`cron(0 ${SEAT_RECONCILE_HOUR_UTC} * * ? *)`, "rate(1 hour)", "rate(1 hour)", `rate(${CHECK_EVERY_MINUTES} minutes)`, `rate(${CHECK_EVERY_MINUTES} minutes)`, `rate(${GROUP_WATCH_EVERY_MINUTES} minutes)`].sort());
     for (const rule of rules) expect(rule.Targets).toEqual([expect.objectContaining({ RetryPolicy: { MaximumRetryAttempts: 0 } })]);
     t.hasResourceProperties("AWS::Lambda::Function", { FunctionName: "supply-checkout-prod-team-purge", Timeout: 300 });
     t.hasResourceProperties("AWS::Lambda::Function", {
@@ -1205,6 +1210,53 @@ describe("scheduled checks", () => {
     });
     const west = Object.values(Template.fromStack(region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties.AlarmName);
     expect(west).not.toContain("supply-checkout-prod-p2-seat-reconcile-not-running");
+  });
+
+  it("let the lapsed-team job read teams' billing fields and owners' emails, close a team, keep its own records, send the app's email and read the Stripe key, and nothing else (supply-checkout-qdx)", () => {
+    const t = observability();
+    const found = statements(t, "supply-checkout-prod-team-lapse");
+    expect(found.map((s) => s.Sid ?? s.Action)).toEqual([
+      ["logs:CreateLogStream", "logs:PutLogEvents"],
+      "LapsingTeamsIndexOnly",
+      "OwnerEmailsIndexOnly",
+      "ReadTeamBilling",
+      "CloseLapsedTeam",
+      "LapseRecords",
+      "TableKeyThroughDynamoDb",
+      "ReadStripeSecretKey",
+      "SendAppEmail",
+    ]);
+    const by = (sid: string) => found.find((x) => x.Sid === sid) as Record<string, unknown>;
+    expect(by("LapsingTeamsIndexOnly")).toMatchObject({
+      Action: "dynamodb:Query",
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["OPS#TEAMS"], "dynamodb:Attributes": [...LAPSE_LIST_ATTRIBUTES] },
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
+    });
+    expect(by("OwnerEmailsIndexOnly")).toMatchObject({ Action: "dynamodb:Query", Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["OPS#OWNERS#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "GSI3PK", "GSI3SK", "email"] } } });
+    expect(by("ReadTeamBilling")).toMatchObject({ Action: "dynamodb:GetItem", Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LAPSE_READ_ATTRIBUTES] } } });
+    // The closure, never status, plan, comps or Stripe IDs
+    expect(by("CloseLapsedTeam")).toMatchObject({ Action: "dynamodb:UpdateItem", Condition: { "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "closedBy", "purgeAfter", "purging", "version"] }, StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" } } });
+    expect(by("LapseRecords")).toMatchObject({ Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["LAPSE#*"] } } });
+    expect(JSON.stringify(found)).not.toMatch(/dynamodb:(Scan|DeleteItem|BatchWriteItem|TransactWriteItems)/);
+    const [fn] = functions(t).filter((f) => f.FunctionName === "supply-checkout-prod-team-lapse");
+    expect(fn?.Timeout).toBe(300);
+  });
+
+  it("alarm when the lapsed-team job stops sending its gauge, in the primary region only", () => {
+    const { region } = build();
+    Template.fromStack(region(EAST).observability).hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-lapse-not-running",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.LapseTeamsChecked }), Stat: "SampleCount", Period: LAPSE_SILENT_ALARM_HOURS * 3600 }) })],
+      Threshold: 1,
+      ComparisonOperator: "LessThanThreshold",
+      TreatMissingData: "breaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+    });
+    expect(LAPSE_SILENT_ALARM_HOURS).toBeGreaterThan(2 * LAPSE_EVERY_HOURS);
+    const west = Object.values(Template.fromStack(region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties.AlarmName);
+    expect(west).not.toContain("supply-checkout-prod-p2-lapse-not-running");
   });
 
   it("let the SES quota check read the account's quota and nothing else", () => {

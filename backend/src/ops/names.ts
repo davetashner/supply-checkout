@@ -118,6 +118,19 @@ export const SEAT_RECONCILE_BATCH = 10;
  */
 export const SEAT_RECONCILE_SILENT_ALARM_DAYS = 2;
 
+/**
+ * How often the lapsed-team job runs (supply-checkout-qdx,
+ * team-lapse-handler.ts): a lapsed team is closed for the purge within this
+ * long of its date, and an email goes within this long of its moment.
+ */
+export const LAPSE_EVERY_HOURS = 1;
+
+/** How long one lapsed-team run may start new teams for; the function's timeout is a minute more. */
+export const LAPSE_BUDGET_MS = 4 * 60_000;
+
+/** No LapseTeamsChecked sample for this long alarms ("Lapsed-team job not running"): three hourly runs missed. */
+export const LAPSE_SILENT_ALARM_HOURS = 3;
+
 /** Functions the observability stack names. */
 export const opsResourceNames = (envName: string) => ({
   stuckImportsFunction: `supply-checkout-${envName}-stuck-imports`,
@@ -127,6 +140,7 @@ export const opsResourceNames = (envName: string) => ({
   deletionRecordsWatchFunction: `supply-checkout-${envName}-deletion-records-watch`,
   operatorGroupWatchFunction: `supply-checkout-${envName}-operator-group-watch`,
   seatReconcileFunction: `supply-checkout-${envName}-seat-reconcile`,
+  teamLapseFunction: `supply-checkout-${envName}-team-lapse`,
 });
 
 /** Environment variables the checks read. */

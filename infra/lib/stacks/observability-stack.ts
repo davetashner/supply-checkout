@@ -498,7 +498,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     }
 
     if (this.isPrimaryRegion) {
-      this.checks = new OpsChecks(this, "OpsChecks", { envName: config.envName, tableName: table, topics: this.topics, stripeMode: stripeModeOf(config) });
+      this.checks = new OpsChecks(this, "OpsChecks", { envName: config.envName, tableName: table, topics: this.topics, stripeMode: stripeModeOf(config), config });
       this.operatorAudit = new OperatorAuditWatch(this, "OperatorAuditWatch", { envName: config.envName, region, tableName: table, topics: this.topics });
       this.operatorGroup = new OperatorGroupWatch(this, "OperatorGroupWatch", {
         envName: config.envName,

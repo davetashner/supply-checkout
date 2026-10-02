@@ -3,7 +3,7 @@
 // into another key (for example, a sheet ID containing "#").
 
 import { InvalidInputError } from "./errors.js";
-import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, EMAIL_CODE_SENT_SK, INVITE_LIMIT_PREFIX, NOTICE_ADDRESS_SK, RECEIPT_RATE_PREFIX, NOTICE_SENT_PREFIX, OPERATOR_AUDIT_PREFIX, OPS_AUDIT_INDEX_PREFIX, OPS_OWNERS_PREFIX, OPS_TEAMS_PARTITION, TOTP_ON_SK, VERIFIED_EMAIL_SK } from "./schema.js";
+import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, EMAIL_CODE_SENT_SK, INVITE_LIMIT_PREFIX, LAPSE_PREFIX, NOTICE_ADDRESS_SK, RECEIPT_RATE_PREFIX, NOTICE_SENT_PREFIX, OPERATOR_AUDIT_PREFIX, OPS_AUDIT_INDEX_PREFIX, OPS_OWNERS_PREFIX, OPS_TEAMS_PARTITION, TOTP_ON_SK, VERIFIED_EMAIL_SK } from "./schema.js";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
@@ -11,6 +11,14 @@ const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
 const HASH = /^[0-9a-f]{64}$/;
 // eslint-disable-next-line no-control-regex -- rejecting control characters is the point
 const CONTROL = /[\u0000-\u001f\u007f]/;
+
+const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** A time as toISOString() writes it (`2026-10-02T12:00:00.000Z`), for a key. */
+function isoInstant(value: unknown): string {
+  if (typeof value !== "string" || !INSTANT.test(value) || new Date(value).toISOString() !== value) throw new InvalidInputError("Invalid time");
+  return value;
+}
 
 /** Team, user, sheet, invite, Stripe customer and event IDs: letters, digits, _ and -. */
 export function id(value: unknown, what: string): string {
@@ -186,6 +194,13 @@ export const keys = {
   webhook: (eventId: string) => ({ PK: `WEBHOOK#${id(eventId, "webhook event ID")}`, SK: "DONE" }),
   /** That an owner was emailed about a Stripe event (claimBillingNotice), so a retry doesn't email them again. */
   webhookNotice: (eventId: string, userId: string) => ({ PK: `WEBHOOK#${id(eventId, "webhook event ID")}`, SK: `NOTICE#${id(userId, "user ID")}` }),
+  /** The lapsed-team job's record that it emailed one owner one notice, for one date (`anchor`, ISO 8601: the trial's end, the grace's end or the deletion date). */
+  lapseNotice: (teamId: string, kind: string, anchor: string, userId: string) => ({
+    PK: `${LAPSE_PREFIX}${id(teamId, "team ID")}`,
+    SK: `NOTICE#${id(kind, "notice kind")}#${isoInstant(anchor)}#${id(userId, "user ID")}`,
+  }),
+  /** The lapsed-team job's record of when it warned a team's owners of its deletion on `deleteAfter`. */
+  lapseWarned: (teamId: string, deleteAfter: string) => ({ PK: `${LAPSE_PREFIX}${id(teamId, "team ID")}`, SK: `WARNED#${isoInstant(deleteAfter)}` }),
   /** The team's settings (ADR 0017, section 2a): owners write it; only owners read its markup. */
   settings: (teamId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: "SETTINGS" }),
   /**
