@@ -79,7 +79,7 @@ import { LAPSE_BUDGET_MS } from "./names.js";
 export interface LapseStripe {
   readonly subscriptions: {
     retrieve(id: string): PromiseLike<SubscriptionLike>;
-    list(params: { customer: string; status: "all"; limit: number }): PromiseLike<{ readonly data: readonly SubscriptionLike[] }>;
+    list(params: { customer: string; status: "all"; limit: number }): PromiseLike<{ readonly data: readonly SubscriptionLike[]; readonly has_more?: boolean }>;
   };
 }
 
@@ -96,7 +96,7 @@ export interface TeamLapseDeps {
 export type LapseOutcome = "closed" | "waiting" | "nothing" | "failed" | "gone";
 
 /** Why Stripe wouldn't let a lapsed team close. */
-export type StripeDisagreement = "SubscriptionLive" | "CustomerMismatch" | "SubscriptionNotFound" | "CustomerNotFound";
+export type StripeDisagreement = "SubscriptionLive" | "CustomerMismatch" | "SubscriptionNotFound" | "CustomerNotFound" | "TooManySubscriptions";
 
 /** How many of a customer's subscriptions the check lists, newest first. */
 const SUBSCRIPTIONS_LISTED = 10;
@@ -110,13 +110,15 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
   const { db, obs } = deps;
   const clock = deps.now ?? Date.now;
 
-  /** Emails each owner `input` once for (`kind`, `anchor`). Returns how many it sent now. */
-  async function notify(team: LapseTeam, kind: string, anchor: string, input: TeamNoticeInput, now: Date): Promise<number> {
+  /** Emails each owner `input` once for (`kind`, `anchor`). Returns how many owners it claimed now, and sent to. */
+  async function notify(team: LapseTeam, kind: string, anchor: string, input: TeamNoticeInput, now: Date): Promise<{ claimed: number; sent: number }> {
     const owners = await listOwnerEmails(db, team.teamId);
     let sent = 0;
+    let claimed = 0;
     const failures: string[] = [];
     for (const owner of owners) {
       if (!(await claimLapseNotice(db, team.teamId, kind, anchor, owner.userId, now))) continue;
+      claimed++;
       try {
         if (!owner.email) throw new EmailNotSentError("NoAddress");
         await sendTeamNotice(deps.mailer, owner.email, team.teamId, input);
@@ -130,7 +132,7 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
       obs.count(BusinessMetric.LapseNoticeFailures, failures.length, { teamId: team.teamId, kind: input.kind });
       obs.logger.warn("Lapse emails not sent", { teamId: team.teamId, kind: input.kind, failed: failures.length, codes: [...new Set(failures)].join(",") });
     }
-    return sent;
+    return { claimed, sent };
   }
 
   /** Whether Stripe agrees the team has nothing live: true, or why not. Throws on a Stripe failure. */
@@ -149,15 +151,17 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
       if (customerOf(sub) !== team.stripeCustomerId) return { why: "CustomerMismatch", subscriptionId: sub.id };
       if (!hasStopped(sub.status)) return { why: "SubscriptionLive", subscriptionId: sub.id, status: sub.status };
     }
-    let data: readonly SubscriptionLike[];
+    let page: { readonly data: readonly SubscriptionLike[]; readonly has_more?: boolean };
     try {
-      ({ data } = await stripe.subscriptions.list({ customer: team.stripeCustomerId, status: "all", limit: SUBSCRIPTIONS_LISTED }));
+      page = await stripe.subscriptions.list({ customer: team.stripeCustomerId, status: "all", limit: SUBSCRIPTIONS_LISTED });
     } catch (error) {
       if (isMissing(error)) return { why: "CustomerNotFound" };
       throw error;
     }
-    const live = data.find((s) => !hasStopped(s.status));
-    return live ? { why: "SubscriptionLive", subscriptionId: live.id, status: live.status } : true;
+    const live = page.data.find((s) => !hasStopped(s.status));
+    if (live) return { why: "SubscriptionLive", subscriptionId: live.id, status: live.status };
+    // More than a page: a live one could be further down, so a person looks
+    return page.has_more === true ? { why: "TooManySubscriptions" } : true;
   }
 
   /** One team (see the top). Throws on a failure, for the caller to count. */
@@ -191,12 +195,23 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
     if (access.reason === "payment_overdue" && team.status === "past_due" && access.readOnlyFrom) {
       await notify(team, "paymentOverdue", access.readOnlyFrom, { kind: "readOnly", teamName: team.name, reason: "payment_overdue" }, now);
     }
-    if (!access.deleteAfter || deletesAt === undefined) return "nothing";
+    if (!access.deleteAfter || deletesAt === undefined) {
+      // A canceled or expired subscription with no date it ended is never deleted: the nightly entitlement check should
+      // have recorded it, so a person looks, rather than its data being kept past the Terms' 30 days with nothing said
+      if (access.reason === "subscription_ended") {
+        obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "undated" });
+        obs.logger.warn("Lapsed team has no date its subscription ended", { teamId, status: team.status ?? "", subscriptionId: team.stripeSubscriptionId ?? "" });
+        return "failed";
+      }
+      return "nothing";
+    }
     const deleteAfter = Date.parse(access.deleteAfter);
     if (at < deleteAfter - LAPSE_WARNING_DAYS * DAY_MS) return "nothing";
     if (!warned) {
       // 4: retried each UTC day until an owner gets it; recorded only then
-      const sent = await notify(team, `deletionWarning-${now.toISOString().slice(0, 10).replaceAll("-", "")}`, access.deleteAfter, { kind: "deletionWarning", teamName: team.name, deletesAt: iso(deletesAt) }, now);
+      const { claimed, sent } = await notify(team, `deletionWarning-${now.toISOString().slice(0, 10).replaceAll("-", "")}`, access.deleteAfter, { kind: "deletionWarning", teamName: team.name, deletesAt: iso(deletesAt) }, now);
+      // Every owner already claimed today, by a run that counted its failures or stopped before recording: tomorrow's tries again
+      if (!claimed && !sent) return "waiting";
       if (!sent) {
         obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "warning" });
         obs.logger.warn("Lapsed team's deletion warning not delivered", { teamId, deleteAfter: access.deleteAfter });
@@ -220,6 +235,11 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
         ...(agrees.subscriptionId ? { subscriptionId: agrees.subscriptionId } : {}),
         ...(agrees.status ? { stripeStatus: agrees.status } : {}),
       });
+      return "failed";
+    }
+    if (team.version < 0) {
+      obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "noVersion" });
+      obs.logger.warn("Lapsed team has no version, so it can't be closed safely", { teamId });
       return "failed";
     }
     if (!(await closeLapsedTeam(db, team, now))) {

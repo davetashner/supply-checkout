@@ -106,7 +106,8 @@ export interface LapseTeam {
 export async function readLapseTeam(db: Db, teamId: string): Promise<LapseTeam | undefined> {
   const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: keys.team(id(teamId, "team ID")), ConsistentRead: true, ...projection(LAPSE_READ_ATTRIBUTES) }));
   if (!Item) return undefined;
-  const team: Record<string, unknown> = { teamId, name: typeof Item.name === "string" ? Item.name : "", version: typeof Item.version === "number" ? Item.version : 0 };
+  // A META item without a version (none this app writes) reads as -1, which no closure's condition matches: the job counts it
+  const team: Record<string, unknown> = { teamId, name: typeof Item.name === "string" ? Item.name : "", version: typeof Item.version === "number" ? Item.version : -1 };
   for (const field of ["status", "trialEndsAt", "createdAt", "closedAt", "purging", "stripeCustomerId", "stripeSubscriptionId", "pastDueSince", "subscriptionEndedAt", "compPlan", "compUntil"] as const) {
     if (typeof Item[field] === "string") team[field] = Item[field];
   }

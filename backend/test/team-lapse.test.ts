@@ -30,6 +30,7 @@ let customers: Set<string>;
 let stripeCalls: string[];
 let stripeDown: boolean;
 let onStripe: (() => void) | undefined;
+let hasMore: boolean;
 
 function obs(): Observability {
   const log = (level: string) => (message: string, data: Record<string, unknown> = {}) => logs.push([level, message, data]);
@@ -57,7 +58,7 @@ const stripe: LapseStripe = {
     async list({ customer }) {
       stripeCalls.push(`list ${customer}`);
       if (!customers.has(customer)) throw Object.assign(new Error("No such customer"), { code: "resource_missing" });
-      return { data: [...subs.values()].filter((s) => (typeof s.customer === "string" ? s.customer : s.customer.id) === customer) };
+      return { data: [...subs.values()].filter((s) => (typeof s.customer === "string" ? s.customer : s.customer.id) === customer), has_more: hasMore };
     },
   },
 };
@@ -90,6 +91,7 @@ beforeEach(() => {
   stripeCalls = [];
   stripeDown = false;
   onStripe = undefined;
+  hasMore = false;
 });
 
 describe("the app's own trial", () => {
@@ -206,7 +208,10 @@ describe("an ended subscription", () => {
       [() => subs.set("sub_1", sub("sub_1", "cus_other", "canceled")), "CustomerMismatch"],
       [() => subs.delete("sub_1"), "SubscriptionNotFound"],
       [() => customers.delete("cus_1"), "CustomerNotFound"],
+      // More subscriptions than one page: a live one could be further down
+      [() => (hasMore = true), "TooManySubscriptions"],
     ] as const) {
+      hasMore = false;
       subs.clear();
       customers.add("cus_1");
       subs.set("sub_1", sub("sub_1", "cus_1", "canceled"));
@@ -240,11 +245,19 @@ describe("an ended subscription", () => {
     expect(logs.find(([level]) => level === "error")?.[2]).toMatchObject({ teamId: "gone", error: "StripeConnectionError" });
   });
 
-  it("never dates an ended team without subscriptionEndedAt (the nightly check records it first)", async () => {
-    table.put({ ...meta("gone"), subscriptionEndedAt: undefined });
-    table.put(Object.fromEntries(Object.entries(meta("gone")).filter(([, v]) => v !== undefined)));
-    await run(NOW + 400 * DAY);
+  it("never dates an ended team without subscriptionEndedAt (the nightly check records it first), but counts it for a person", async () => {
+    table.put(Object.fromEntries(Object.entries(meta("gone")).filter(([k]) => k !== "subscriptionEndedAt")));
+    expect(await run(NOW + 400 * DAY)).toMatchObject({ closed: 0, failed: 1 });
+    expect(counts.find(([m]) => m === BusinessMetric.LapseFailures)?.[2]).toMatchObject({ teamId: "gone", step: "undated" });
     expect(mails.sent).toEqual([]);
+    expect(meta("gone").closedAt).toBeUndefined();
+  });
+
+  it("never closes a team without a version (none this app writes), and counts it", async () => {
+    await run();
+    table.put(Object.fromEntries(Object.entries(meta("gone")).filter(([k]) => k !== "version")));
+    expect(await run(NOW + 7 * DAY)).toMatchObject({ closed: 0, failed: 1 });
+    expect(counts.find(([m]) => m === BusinessMetric.LapseFailures)?.[2]).toMatchObject({ teamId: "gone", step: "noVersion" });
     expect(meta("gone").closedAt).toBeUndefined();
   });
 });
@@ -256,8 +269,8 @@ describe("the deletion warning", () => {
     expect(await run()).toMatchObject({ failed: 1 });
     expect(counts.find(([m, , d]) => m === BusinessMetric.LapseFailures && d.step === "warning")).toBeDefined();
     expect(counted(BusinessMetric.LapseNoticeFailures)).toBe(4);
-    // Same day: already claimed, so nothing is sent and it's still unwarned
-    expect(await run(NOW + 3_600_000)).toMatchObject({ failed: 1 });
+    // Same day: already claimed (and counted), so nothing is sent, it's still unwarned, and it isn't counted again
+    expect(await run(NOW + 3_600_000)).toMatchObject({ failed: 0, closed: 0 });
     mails.state.fail = undefined;
     const next = NOW + DAY;
     await run(next);
