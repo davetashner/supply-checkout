@@ -23,7 +23,9 @@
 // 2. Compare Stripe's subscription, status, plan, seat quantity and whether
 //    it's set to cancel (`cancelAtPeriodEnd`, so a reopened team whose events
 //    were skipped while it was closed shows when it ends) with the team's
-//    (entitlementDrift). Any difference is drift.
+//    (entitlementDrift). Any difference is drift, and so is a `past_due` or
+//    ended team without the date its access rules count from (`accessDates`:
+//    applied before those were kept).
 // 3. Fix it: apply Stripe's state with applySubscription, conditioned on the
 //    team's status, plan, seats, subscription and `cancelAtPeriodEnd` being
 //    as they were read (`asRead`), so an event applied meanwhile is almost
@@ -50,7 +52,7 @@
 // Logged: team, subscription and message IDs, statuses, plans and numbers.
 // Never a name, an email or the Stripe key.
 
-import { type BillingAsRead, type BillingTeam, applySubscription, getBillingTeam, hasEnded, stripeCustomerTeam, type SubscriptionState, teamContextForStripeCustomer } from "../data/index.js";
+import { type BillingAsRead, type BillingTeam, applySubscription, getBillingTeam, hasEnded, hasStopped, stripeCustomerTeam, type SubscriptionState, teamContextForStripeCustomer } from "../data/index.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import { customerOf } from "./closing.js";
 import type { SeatSyncMessage } from "./seats.js";
@@ -85,17 +87,25 @@ export interface EntitlementCheckDeps {
 /** What one check found. */
 export type EntitlementOutcome = "in_sync" | "fixed" | "missing" | "unknown_customer" | "team_gone" | "team_closed" | "no_subscription" | "not_ours";
 
-/** The fields the check compares. */
-export type EntitlementField = "subscription" | "status" | "plan" | "seats" | "cancelAtPeriodEnd";
+/** The fields the check compares. `accessDates`: a `past_due`, `canceled` or `incomplete_expired` team without the date its access rules count from (billingAccess). */
+export type EntitlementField = "subscription" | "status" | "plan" | "seats" | "cancelAtPeriodEnd" | "accessDates";
 
-/** Where the team's record differs from Stripe's subscription. A price we don't sell has no plan, and leaves the plan alone. */
-export function entitlementDrift(team: Pick<BillingTeam, "stripeSubscriptionId" | "status" | "plan" | "seats" | "cancelAtPeriodEnd">, state: SubscriptionState): EntitlementField[] {
+/**
+ * Where the team's record differs from Stripe's subscription. A price we don't sell has no plan, and leaves the plan alone.
+ * A team whose status matches but that lacks `pastDueSince` or `subscriptionEndedAt` (applied before they were kept) is
+ * drift too: until applySubscription records it, the grace never ends, or the team is never deleted.
+ */
+export function entitlementDrift(
+  team: Pick<BillingTeam, "stripeSubscriptionId" | "status" | "plan" | "seats" | "cancelAtPeriodEnd" | "pastDueSince" | "subscriptionEndedAt">,
+  state: SubscriptionState,
+): EntitlementField[] {
   const drift: EntitlementField[] = [];
   if (team.stripeSubscriptionId !== state.subscriptionId) drift.push("subscription");
   if (team.status !== state.status) drift.push("status");
   if (state.plan !== undefined && team.plan !== state.plan) drift.push("plan");
   if (team.seats !== state.seats) drift.push("seats");
   if (team.cancelAtPeriodEnd !== state.cancelAtPeriodEnd) drift.push("cancelAtPeriodEnd");
+  if (team.status === state.status && ((state.status === "past_due" && !team.pastDueSince) || (hasStopped(state.status) && !team.subscriptionEndedAt))) drift.push("accessDates");
   return drift;
 }
 

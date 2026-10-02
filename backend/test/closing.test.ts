@@ -69,6 +69,10 @@ describe.skipIf(!endpoint)("closing teams and deleting accounts (DynamoDB Local)
     const db = table.db;
     const ownerId = newUser();
     const { team: created, context: owner } = await createTeam(db, { userId: ownerId, email: `owner.${ownerId}@example.com` }, { name: "Echo Cleaning" }, now);
+    // Paying, so contexts issued later (at today's date) aren't read-only for a trial that ended long ago (billingAccess)
+    await connection(db).doc.send(
+      new UpdateCommand({ TableName: db.tableName, Key: { PK: `TEAM#${created.teamId}`, SK: "META" }, UpdateExpression: "SET #status = :active", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":active": "active" } }),
+    );
     const email = `crew.${ownerId}@example.com`;
     const made = await createInvite(db, owner, { email, role: "contributor" }, now);
     const crewId = newUser();

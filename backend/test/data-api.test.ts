@@ -794,3 +794,91 @@ describe("errors", () => {
     expect(error).toHaveBeenCalled();
   });
 });
+
+describe("billing access (ADR 0009, supply-checkout-qdx): reads stay open for export, writes follow billingAccess", () => {
+  const DAY_MS = 86400_000;
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const patchMeta = (fields: Record<string, unknown>) => table.put({ ...(table.get("TEAM#team-a", "META") as Record<string, unknown>), ...fields });
+  const refused = (message: string) => ({ status: 403, body: { error: { code: "permission_denied", message, reason: "subscription_ended" } } });
+  const TRIAL = "This team's free trial ended, so it's read-only. An owner can subscribe to make changes.";
+  const ENDED = "This team's subscription ended, so it's read-only. An owner can subscribe again to make changes.";
+  const OVERDUE = "This team's payment is overdue, so it's read-only. An owner can update the payment method in Billing to make changes.";
+
+  beforeEach(async () => {
+    await call("PUT", "/teams/team-a/products/0123", { body: { data: product } });
+    await call("PUT", "/teams/team-a/sheets/s1", { body: { data: sheet("2026-09-20") } });
+  });
+
+  /** Every member can still list and read everything (the app's Export data), and nobody can write. */
+  async function readOnly(message: string) {
+    const before = table.get("TEAM#team-a", "PRODUCT#0123");
+    for (const user of [OWNER, CONTRIBUTOR, VIEWER]) {
+      expect((await call("GET", "/teams/team-a/products", { user })).body.documents).toHaveLength(1);
+      expect((await call("GET", "/teams/team-a/sheets", { user })).body.documents).toHaveLength(1);
+      expect((await call("GET", "/teams/team-a/products/0123", { user })).status).toBe(200);
+    }
+    for (const user of [OWNER, CONTRIBUTOR]) {
+      expect(await call("PUT", "/teams/team-a/products/0123", { user, body: { data: { ...product, price: 99 } } })).toEqual(refused(message));
+      expect(await call("PUT", "/teams/team-a/sheets/s2", { user, body: { data: sheet("2026-09-26") } })).toEqual(refused(message));
+      expect(await call("DELETE", "/teams/team-a/products/0123", { user })).toEqual(refused(message));
+    }
+    expect(table.get("TEAM#team-a", "PRODUCT#0123")).toEqual(before);
+    expect(table.get("TEAM#team-a", "SHEET#s2")).toBeUndefined();
+  }
+
+  const writable = async () => expect((await call("PUT", "/teams/team-a/products/0123", { body: { data: { ...product, price: 13 } } })).status).toBe(200);
+
+  it("a trial that ended without a subscription: read-only from its end", async () => {
+    patchMeta({ status: "trialing", trialEndsAt: iso(NOW + 1000) });
+    await writable();
+    patchMeta({ trialEndsAt: iso(NOW) });
+    await readOnly(TRIAL);
+  });
+
+  it("a team from before trials: its trial ends TRIAL_DAYS after it was made", async () => {
+    patchMeta({ status: "trialing", createdAt: iso(NOW - 13 * DAY_MS) });
+    await writable();
+    patchMeta({ createdAt: iso(NOW - 14 * DAY_MS) });
+    await readOnly(TRIAL);
+  });
+
+  it("a Stripe trial (a subscription) is Stripe's to end, so it stays writable past the app's date", async () => {
+    patchMeta({ status: "trialing", trialEndsAt: iso(NOW - DAY_MS), stripeSubscriptionId: "sub_1" });
+    await writable();
+  });
+
+  it("an ended subscription, with its date or without", async () => {
+    for (const status of ["canceled", "incomplete_expired"]) {
+      patchMeta({ status, stripeSubscriptionId: "sub_1", subscriptionEndedAt: iso(NOW - DAY_MS) });
+      await readOnly(ENDED);
+    }
+    patchMeta({ subscriptionEndedAt: undefined });
+    await readOnly(ENDED);
+  });
+
+  it("an unpaid subscription: read-only as an overdue payment until it's paid", async () => {
+    patchMeta({ status: "unpaid", stripeSubscriptionId: "sub_1" });
+    await readOnly(OVERDUE);
+    patchMeta({ status: "active" });
+    await writable();
+  });
+
+  it("a past-due payment: full access through the 7-day grace, then read-only until it's paid", async () => {
+    patchMeta({ status: "past_due", stripeSubscriptionId: "sub_1", pastDueSince: iso(NOW - 7 * DAY_MS + 1000) });
+    await writable();
+    patchMeta({ pastDueSince: iso(NOW - 7 * DAY_MS) });
+    await readOnly(OVERDUE);
+    // Paid
+    patchMeta({ status: "active", pastDueSince: undefined });
+    await writable();
+  });
+
+  it("a live comp keeps any of them writable", async () => {
+    patchMeta({ status: "canceled", stripeSubscriptionId: "sub_1", subscriptionEndedAt: iso(NOW - 90 * DAY_MS), compPlan: "starter", compUntil: iso(NOW + DAY_MS) });
+    await writable();
+    patchMeta({ status: "trialing", stripeSubscriptionId: undefined, trialEndsAt: iso(NOW - 90 * DAY_MS) });
+    await writable();
+    patchMeta({ compUntil: iso(NOW) });
+    await readOnly(TRIAL);
+  });
+});

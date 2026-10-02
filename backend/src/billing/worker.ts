@@ -22,7 +22,10 @@
 //    time (FIFO, grouped by customer).
 // 4. Email each owner, at most once per event (claimBillingNotice before
 //    sending), when the event is a trial ending without a card, a failed
-//    payment, or the subscription ending (the team turns read-only).
+//    payment, or the subscription ending (the team turns read-only, and the
+//    notice says when it's deleted unless an owner subscribes). A payment
+//    overdue past its grace period has no event, so no notice here
+//    (supply-checkout-qdx adds a scheduled one).
 // 5. Only then record the event as processed.
 //
 // A failure anywhere before 5 throws: the message goes back on the queue and
@@ -58,6 +61,7 @@ import {
   type Db,
   getBillingTeam,
   hasEnded,
+  hasStopped,
   isWebhookProcessed,
   listOwnerContacts,
   markWebhookProcessed,
@@ -172,6 +176,27 @@ export function noticeFor(message: BillingMessage, sub: SubscriptionLike | undef
     return { kind: "readOnly", teamName };
   }
   return undefined;
+}
+
+/**
+ * Whether `sub` is another subscription than the team's, it's over (STOPPED_STATUSES), and it must not replace
+ * the team's, so it's ignored:
+ * - the team's is `unpaid`: a payment still owed on a live subscription, never deleted for (billingAccess). An
+ *   over one replacing it would give the team a deletion date (often past) that nothing puts back. Only a live
+ *   subscription (a resubscription) replaces an unpaid one.
+ * - the team's is over too, and `sub` ended no later than its recorded `subscriptionEndedAt`: applying it would
+ *   replace the team's subscription with an older one and move its deletion date earlier. One that ended
+ *   later, one without `ended_at`, or a team with no recorded end, is applied as before (the date is kept if
+ *   it's there).
+ */
+export function endedEarlier(sub: SubscriptionLike, team: Pick<BillingTeam, "stripeSubscriptionId" | "status" | "subscriptionEndedAt">): boolean {
+  if (!team.stripeSubscriptionId || sub.id === team.stripeSubscriptionId || !hasStopped(sub.status)) return false;
+  if (team.status === "unpaid") return true;
+  if (!hasStopped(team.status)) return false;
+  const recorded = Date.parse(team.subscriptionEndedAt ?? "");
+  if (!Number.isFinite(recorded)) return false;
+  // Without ended_at the date can only be when the worker first saw it: never earlier, so only a dated older one is ignored
+  return typeof sub.ended_at === "number" && sub.ended_at * 1000 <= recorded;
 }
 
 export function createBillingWorker(deps: BillingWorkerDeps) {
@@ -343,6 +368,17 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     }
   }
 
+  /**
+   * A read-only notice only if the team is read-only now, as it was just applied (no comp keeps it going),
+   * with the date it's deleted unless an owner subscribes (billingAccess). Any other notice as it is.
+   */
+  async function withAccess(db: Db, ctx: TeamContext, notice: TeamNoticeInput | undefined): Promise<TeamNoticeInput | undefined> {
+    if (notice?.kind !== "readOnly") return notice;
+    const after = await getBillingTeam(db, ctx, now());
+    if (!after?.readOnly) return undefined;
+    return { ...notice, ...(after.readOnlyReason ? { reason: after.readOnlyReason } : {}), ...(after.deleteAfter ? { deletesAt: after.deleteAfter } : {}) };
+  }
+
   /** Applies one event. Throws to have it retried. */
   async function process(message: BillingMessage): Promise<Outcome> {
     const { eventId, customer } = message;
@@ -370,6 +406,9 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     const stripe = await deps.stripe();
     const sub = await stripe.subscriptions.retrieve(message.subscription);
     if (customerOf(sub) !== customer) return done("ignored");
+    // An older ended subscription (a replayed or late event) never replaces the team's unpaid one, or an ended
+    // one that ended later: it would give the team a deletion date, or pull it in (billingAccess)
+    if (endedEarlier(sub, team)) return done("ignored");
     const chosen = await choose(stripe, sub, team.stripeSubscriptionId, team.status);
     if (!chosen) {
       // One subscription per team: cancel the second at once, so its trial never turns
@@ -391,9 +430,8 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
       return done("team_closed");
     }
     obs.count(BusinessMetric.BillingEventsApplied, 1, { teamId, type: message.type });
-    const notice = noticeFor(message, sub, team.name);
-    // Read-only only if no comp keeps the team going
-    if (notice && (notice.kind !== "readOnly" || (await getBillingTeam(db, ctx, now()))?.readOnly)) await notify(db, ctx, eventId, notice);
+    const notice = await withAccess(db, ctx, noticeFor(message, sub, team.name));
+    if (notice) await notify(db, ctx, eventId, notice);
     return done("applied");
   }
 

@@ -20,9 +20,14 @@ export {
   type Role,
 } from "./team-context.js";
 export {
+  type BillingAccess,
+  type BillingAccessFields,
+  billingAccess,
   type Comp,
   ENDED_STATUSES,
   hasEnded,
+  hasStopped,
+  STOPPED_STATUSES,
   isReadOnlyForBilling,
   liveComp,
   MAX_TEAMS_PER_USER,
@@ -31,10 +36,14 @@ export {
   memberCap,
   memberRole,
   PAID_STATUSES,
+  PAYMENT_GRACE_DAYS,
   normalizeEmail,
+  READ_ONLY_RETENTION_DAYS,
+  type ReadOnlyReason,
   TEAMS_PER_USER_PER_DAY,
   teamIdForRequest,
   TRIAL_DAYS,
+  trialEnd,
 } from "./model.js";
 export type { Page } from "./query.js";
 export * from "./teams.js";

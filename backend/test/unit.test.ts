@@ -19,7 +19,7 @@ import { conflictOnConditionFailure, isCancelledAsTooLarge, isItemTooLarge, star
 import { retryDelay } from "../src/data/documents.js";
 import { MAX_MONEY, money } from "../src/data/money.js";
 import { gsi1, keys, strip } from "../src/data/keys.js";
-import { MEMBERS_PER_TEAM, MEMBERS_PER_TRIAL_TEAM, memberCap, teamCounts } from "../src/data/model.js";
+import { billingAccess, MEMBERS_PER_TEAM, MEMBERS_PER_TRIAL_TEAM, memberCap, PAYMENT_GRACE_DAYS, READ_ONLY_RETENTION_DAYS, teamCounts } from "../src/data/model.js";
 import { tableName } from "../src/data/schema.js";
 import { assertContext, writable } from "../src/data/team-context.js";
 import * as teamContextFile from "../src/data/team-context.js";
@@ -316,6 +316,80 @@ describe("member cap", () => {
     const first = teamCounts("t", "team", { members: -1, counted: 0 }).Update;
     expect(first).toMatchObject({ UpdateExpression: "SET #members = :members", ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(#members)", ExpressionAttributeValues: { ":members": 0 } });
     expect(() => teamCounts("t", "team", { members: 1 })).toThrow("cap");
+  });
+});
+
+describe("billing access (billingAccess, ADR 0009, supply-checkout-qdx)", () => {
+  const NOW = new Date("2026-10-02T12:00:00.000Z");
+  const DAY = 86400_000;
+  const at = (days: number) => new Date(NOW.getTime() + days * DAY).toISOString();
+
+  it("uses the Terms' periods", () => {
+    expect(PAYMENT_GRACE_DAYS).toBe(7);
+    expect(READ_ONLY_RETENTION_DAYS).toBe(30);
+  });
+
+  it("gives full access to an active team, a Stripe trial, an incomplete or paused subscription, and anything it doesn't know", () => {
+    for (const team of [
+      { status: "active" },
+      { status: "trialing", stripeSubscriptionId: "sub_1", trialEndsAt: at(-5) },
+      { status: "incomplete", stripeSubscriptionId: "sub_1" },
+      { status: "paused", stripeSubscriptionId: "sub_1" },
+      {},
+      { status: 7 },
+    ]) {
+      expect(billingAccess(team, NOW)).toEqual({ readOnly: false });
+    }
+  });
+
+  it("makes an app trial read-only when it ends, with a deletion date 30 days on, and never on a date it can't read", () => {
+    expect(billingAccess({ status: "trialing", trialEndsAt: at(1) }, NOW)).toEqual({ readOnly: false });
+    expect(billingAccess({ status: "trialing", trialEndsAt: at(0) }, NOW)).toEqual({ readOnly: true, reason: "trial_ended", readOnlyFrom: at(0), deleteAfter: at(30) });
+    // A team from before trials: TRIAL_DAYS after it was made
+    expect(billingAccess({ status: "trialing", createdAt: at(-20) }, NOW)).toEqual({ readOnly: true, reason: "trial_ended", readOnlyFrom: at(-6), deleteAfter: at(24) });
+    expect(billingAccess({ status: "trialing", trialEndsAt: "soon", createdAt: "long ago" }, NOW)).toEqual({ readOnly: false });
+  });
+
+  it("makes an ended subscription read-only, and deletes it 30 days after it ended only when that's recorded", () => {
+    for (const status of ["canceled", "incomplete_expired"]) {
+      expect(billingAccess({ status, subscriptionEndedAt: at(-3) }, NOW)).toEqual({ readOnly: true, reason: "subscription_ended", readOnlyFrom: at(-3), deleteAfter: at(27) });
+      expect(billingAccess({ status }, NOW)).toEqual({ readOnly: true, reason: "subscription_ended" });
+      expect(billingAccess({ status, subscriptionEndedAt: "yesterday" }, NOW)).toEqual({ readOnly: true, reason: "subscription_ended" });
+    }
+  });
+
+  it("makes an unpaid subscription read-only as an overdue payment at once, and never gives it a deletion date (Terms 5.6)", () => {
+    expect(billingAccess({ status: "unpaid" }, NOW)).toEqual({ readOnly: true, reason: "payment_overdue" });
+    expect(billingAccess({ status: "unpaid", subscriptionEndedAt: at(-60), pastDueSince: at(-1) }, NOW)).toEqual({ readOnly: true, reason: "payment_overdue" });
+    expect(billingAccess({ status: "unpaid", compPlan: "starter", compUntil: at(1) }, NOW)).toEqual({ readOnly: false });
+  });
+
+  it("gives a past-due team 7 days, then makes it read-only with no deletion date; with no date recorded, it stays in grace", () => {
+    expect(billingAccess({ status: "past_due", pastDueSince: at(-6) }, NOW)).toEqual({ readOnly: false, graceEndsAt: at(1) });
+    expect(billingAccess({ status: "past_due", pastDueSince: at(-7) }, NOW)).toEqual({ readOnly: true, reason: "payment_overdue", readOnlyFrom: at(0) });
+    expect(billingAccess({ status: "past_due" }, NOW)).toEqual({ readOnly: false });
+  });
+
+  it("drops a date past what Date can hold rather than throwing (corrupt data)", () => {
+    const far = "+275760-09-13T00:00:00.000Z";
+    expect(billingAccess({ status: "canceled", subscriptionEndedAt: far }, NOW)).toEqual({ readOnly: true, reason: "subscription_ended", readOnlyFrom: far });
+    expect(billingAccess({ status: "past_due", pastDueSince: far }, new Date(far))).toEqual({ readOnly: false });
+  });
+
+  it("gives full access, and no deletion date, while a comp is live; once it runs out, no clock starts before it did", () => {
+    const comp = { compPlan: "starter", compUntil: at(10) };
+    for (const team of [{ status: "trialing", trialEndsAt: at(-90) }, { status: "canceled", subscriptionEndedAt: at(-90) }, { status: "past_due", pastDueSince: at(-90) }]) {
+      expect(billingAccess({ ...team, ...comp }, NOW)).toEqual({ readOnly: false });
+    }
+    const ran = { compPlan: "starter", compUntil: at(-2) };
+    expect(billingAccess({ status: "trialing", trialEndsAt: at(-90), ...ran }, NOW)).toEqual({ readOnly: true, reason: "trial_ended", readOnlyFrom: at(-2), deleteAfter: at(28) });
+    expect(billingAccess({ status: "canceled", subscriptionEndedAt: at(-90), ...ran }, NOW)).toEqual({ readOnly: true, reason: "subscription_ended", readOnlyFrom: at(-2), deleteAfter: at(28) });
+    // A fresh grace from the comp's end
+    expect(billingAccess({ status: "past_due", pastDueSince: at(-90), ...ran }, NOW)).toEqual({ readOnly: false, graceEndsAt: at(5) });
+    // A comp that ran out before the clock started changes nothing
+    expect(billingAccess({ status: "trialing", trialEndsAt: at(-1), compPlan: "starter", compUntil: at(-9) }, NOW)).toMatchObject({ readOnlyFrom: at(-1) });
+    // A comp end that isn't a date is ignored
+    expect(billingAccess({ status: "trialing", trialEndsAt: at(-1), compPlan: "starter", compUntil: "never" }, NOW)).toMatchObject({ readOnlyFrom: at(-1) });
   });
 });
 

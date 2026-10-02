@@ -450,11 +450,30 @@ describe("the nightly entitlement check (supply-checkout-8jc.9)", () => {
 
   it("ignores another customer's subscription in the listing, and changes nothing for an ended team with no newer one", async () => {
     subs.set(SUB, subscription(3, { status: "canceled" }));
-    patchTeam({ status: "canceled" });
+    // As the worker applied it: with the date it ended
+    patchTeam({ status: "canceled", subscriptionEndedAt: "2026-09-27T00:00:00.000Z" });
     subs.set("sub_other", subscription(3, { id: "sub_other", created: OLD, customer: { id: "cus_other" } }));
     expect(await nightly()).toBe("subscription_ended");
     expect(counts).toEqual([]);
     expect(meta()).toMatchObject({ stripeSubscriptionId: SUB, status: "canceled" });
+  });
+
+  it("records the date a past-due or ended team's access rules count from, when it was applied without one (supply-checkout-qdx)", async () => {
+    subs.set(SUB, subscription(3, { status: "canceled", ended_at: Date.parse("2026-09-20T00:00:00.000Z") / 1000 }));
+    patchTeam({ status: "canceled" });
+    // The listing finds no newer subscription
+    subs.set("sub_other", subscription(3, { id: "sub_other", created: OLD, customer: { id: "cus_other" } }));
+    expect(await nightly()).toBe("subscription_ended");
+    expect(drift()).toHaveLength(1);
+    expect(logs.find(([, message]) => message === "Entitlement drift")?.[2]).toMatchObject({ fields: "accessDates" });
+    expect(meta()).toMatchObject({ status: "canceled", subscriptionEndedAt: "2026-09-20T00:00:00.000Z" });
+    subs.set(SUB, subscription(3, { status: "past_due" }));
+    patchTeam({ status: "past_due", subscriptionEndedAt: undefined });
+    counts = [];
+    expect(await worker(seats("reconcile", "reconcile-2026-09-29-cus_test_1"))).toBe("in_sync");
+    expect(drift()).toHaveLength(1);
+    expect(meta().pastDueSince).toEqual(expect.any(String));
+    expect(denied).toEqual([]);
   });
 
   it("counts an ended team whose customer Stripe doesn't have, and stops there instead of failing every night", async () => {
@@ -502,7 +521,7 @@ describe("the nightly entitlement check (supply-checkout-8jc.9)", () => {
     // The billing worker applies the same change between the check's read and its write
     onRetrieve = () => {
       onRetrieve = undefined;
-      patchTeam({ status: "past_due" });
+      patchTeam({ status: "past_due", pastDueSince: "2026-09-27T00:00:00.000Z" });
     };
     await expect(nightly()).rejects.toThrow("The team's subscription changed meanwhile");
     expect(counts).toEqual([]);

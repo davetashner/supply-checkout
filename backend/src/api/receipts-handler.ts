@@ -223,7 +223,7 @@ export function createReceiptsHandler(deps: ReceiptsHandlerDeps) {
       if (typeof teamId !== "string") throw new ApiError(400, "bad_request", "Missing team ID");
       let ctx: TeamContext;
       try {
-        ctx = await authorizeTeam(deps.dbFor(teamId, userId), userId, teamId);
+        ctx = await authorizeTeam(deps.dbFor(teamId, userId), userId, teamId, new Date(now()));
       } catch (error) {
         // Not a member, or no such team: one answer for both
         if (error instanceof ForbiddenError) throw notMember();

@@ -308,7 +308,7 @@ export class MemoryTable {
   /**
    * All or nothing, like DynamoDB: every condition is checked first, and a
    * failure cancels the lot with a reason per item. Update understands
-   * `ADD a :v, ...`, `REMOVE a, b` and `SET a = :v, b = b + :v, c = if_not_exists(c, :z) + :v`, on paths (`#items.#line.#out`)
+   * `ADD a :v, ...`, `REMOVE a, b` and `SET a = :v, b = b + :v, c = if_not_exists(c, :z) + :v, d = if_not_exists(d, :z)`, on paths (`#items.#line.#out`)
    * whose parent exists, as DynamoDB requires. ConditionCheck only checks.
    * `beforeTransactWrite` runs first: a concurrent writer.
    */
@@ -380,10 +380,12 @@ export class MemoryTable {
         } else {
           const [name, expression] = part.split(" = ") as [string, string];
           const path = MemoryTable.path(name, input.ExpressionAttributeNames);
-          // `:v`, `a + :v` or `if_not_exists(a, :z) + :v`
+          // `:v`, `if_not_exists(a, :z)`, `a + :v` or `if_not_exists(a, :z) + :v`
           const sum = /^(?:if_not_exists\((\S+), (:\S+)\)|(\S+)) \+ (:\S+)$/.exec(expression);
+          const keep = /^if_not_exists\((\S+), (:\S+)\)$/.exec(expression);
           let value: unknown;
-          if (!sum) value = structuredClone(values[expression]);
+          if (keep) value = structuredClone(MemoryTable.resolve(next, MemoryTable.path(keep[1] as string, input.ExpressionAttributeNames)) ?? values[keep[2] as string]);
+          else if (!sum) value = structuredClone(values[expression]);
           else if (sum[1]) {
             const current = MemoryTable.resolve(next, MemoryTable.path(sum[1], input.ExpressionAttributeNames));
             value = ((current ?? values[sum[2] as string]) as number) + (values[sum[4] as string] as number);

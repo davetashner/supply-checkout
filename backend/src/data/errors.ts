@@ -14,9 +14,9 @@ export class TeamClosedError extends Error {
 }
 
 /**
- * The team's subscription has ended (canceled, unpaid, or its first payment
- * never went through) and it has no live comp: it's read-only until an owner
- * subscribes again (ADR 0009). (403, reason `subscription_ended`)
+ * The team is read-only for billing (billingAccess: its trial or subscription
+ * ended, or a payment is overdue) and it has no live comp: it's read-only
+ * until an owner subscribes, or pays (ADR 0009). (403, reason `subscription_ended`)
  */
 export class SubscriptionEndedError extends Error {
   override readonly name = "SubscriptionEndedError";

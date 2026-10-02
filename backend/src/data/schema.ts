@@ -398,7 +398,9 @@ export const STRIPE_LINK_READ_ATTRIBUTES = [PK, SK, "teamId"] as const;
  * says about billing, closure and comps, and an owner's role and email for
  * the notices, and `cancelAtPeriodEnd` (the nightly entitlement check compares
  * it), and `stripeResyncFor`, `stripeReopenedAt` and `stripeCancelledFor` (a
- * reopen's pending resync and what decides it, billing/reopening.ts).
+ * reopen's pending resync and what decides it, billing/reopening.ts), and
+ * what the access rules read (billingAccess: the trial's end and the team's
+ * creation, and when it went past due or ended).
  * Never documents, sheets or anything else.
  */
 export const BILLING_READ_ATTRIBUTES = [
@@ -419,6 +421,10 @@ export const BILLING_READ_ATTRIBUTES = [
   "stripeResyncFor",
   "stripeReopenedAt",
   "stripeCancelledFor",
+  "trialEndsAt",
+  "createdAt",
+  "pastDueSince",
+  "subscriptionEndedAt",
   "role",
   "email",
   "userId",
@@ -429,8 +435,10 @@ export const BILLING_READ_ATTRIBUTES = [
  * item (dynamodb:Attributes): what it sets from the subscription, the version
  * it moves, and what its condition checks (the customer, the subscription,
  * and that the team isn't closed or being purged), and `stripeResyncFor`, which
- * it removes once it has resynced a reopened team (billing/reopening.ts). Not
- * `purgeAfter` or the GSI1 keys, so it can never put a team in the purge's index.
+ * it removes once it has resynced a reopened team (billing/reopening.ts), and
+ * `pastDueSince` and `subscriptionEndedAt`, the dates the access rules count
+ * from (applySubscription). Not `purgeAfter` or the GSI1 keys, so it can never
+ * put a team in the purge's index.
  */
 export const BILLING_UPDATE_ATTRIBUTES = [
   PK,
@@ -448,6 +456,8 @@ export const BILLING_UPDATE_ATTRIBUTES = [
   "closedAt",
   "purging",
   "stripeResyncFor",
+  "pastDueSince",
+  "subscriptionEndedAt",
 ] as const;
 
 /**

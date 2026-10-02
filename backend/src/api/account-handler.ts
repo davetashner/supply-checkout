@@ -196,7 +196,7 @@ import {
   recordNoticeAddress,
   recordTotpOn,
   hasEnded,
-  isReadOnlyForBilling,
+  billingAccess,
   liveComp,
   mailAddress,
   memberCap,
@@ -290,14 +290,19 @@ export function errorFor(error: unknown): ApiError {
  * `members` and `memberCap` are for the members screen's seat count
  * (`members` is null on a team from before the count), and `reopenBy` is when
  * a closed team stops being reopenable (REOPEN_CUTOFF_MINUTES before it's
- * deleted). `subscriptionEnded` says the team is read-only because its
- * subscription ended (isReadOnlyForBilling). `billingAccount` says the team
+ * deleted). `subscriptionEnded` says the team is read-only for billing
+ * (billingAccess), and `readOnlyReason` why: `trial_ended`,
+ * `subscription_ended` (an owner subscribes) or `payment_overdue` (an owner
+ * pays in Billing). `readOnlyDeletesAt` is when such a team is closed and
+ * deleted unless it subscribes, and `paymentGraceEndsAt` when a `past_due`
+ * team still in its grace period becomes read-only. `billingAccount` says the team
  * has a Stripe customer, so its owners can open the Customer Portal, and
  * `cancelsAt` when a subscription that was canceled (in the portal) ends: its
  * current period's end, until then.
  */
 export function teamBody(team: Team, role: Role, now = new Date()) {
   const comp = liveComp(team, now);
+  const access = billingAccess(team, now);
   const deletesAt = team.closedAt ? (team.purgeAfter ?? null) : null;
   // A purgeAfter that isn't a date gives no reopenBy rather than failing all of /me
   const purgeMs = deletesAt ? Date.parse(deletesAt) : NaN;
@@ -314,8 +319,11 @@ export function teamBody(team: Team, role: Role, now = new Date()) {
     deletesAt,
     reopenBy: Number.isFinite(purgeMs) ? new Date(purgeMs - REOPEN_CUTOFF_MINUTES * 60_000).toISOString() : null,
     comp: comp ? { plan: comp.plan, until: comp.until } : null,
-    // Read-only because the subscription ended (and no comp keeps it going): an owner subscribes again
-    subscriptionEnded: isReadOnlyForBilling(team, now),
+    // Read-only for billing (and no comp keeps it going): an owner subscribes again, or pays
+    subscriptionEnded: access.readOnly,
+    readOnlyReason: access.reason ?? null,
+    readOnlyDeletesAt: access.deleteAfter ?? null,
+    paymentGraceEndsAt: access.graceEndsAt ?? null,
     // The Customer Portal needs the team's Stripe customer (made by its first checkout)
     billingAccount: typeof team.stripeCustomerId === "string",
     // Canceled but not ended yet: it ends with the current period
@@ -439,7 +447,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
       await Promise.all(
         rows.slice(0, MAX_TEAMS_PER_USER).map(async (row) => {
           const db = dbFor({ userId, teamId: row.teamId });
-          const ctx = await authorizeTeam(db, userId, row.teamId).catch((error: unknown) => {
+          const ctx = await authorizeTeam(db, userId, row.teamId, new Date(now())).catch((error: unknown) => {
             if (error instanceof ForbiddenError) return undefined;
             throw error;
           });
@@ -506,7 +514,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     await Promise.all(
       rows.slice(0, MAX_TEAMS_PER_USER).map(async (row) => {
         const db = dbFor({ userId, teamId: row.teamId });
-        const ctx = await authorizeTeam(db, userId, row.teamId).catch((error: unknown) => {
+        const ctx = await authorizeTeam(db, userId, row.teamId, new Date(now())).catch((error: unknown) => {
           if (error instanceof ForbiddenError) return undefined;
           throw error;
         });
@@ -554,7 +562,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
   /** The caller's context for the path's team, or 403 `not_member` (the same for a team that doesn't exist). */
   async function teamContext(event: DataEvent, userId: string): Promise<{ teamId: string; ctx: TeamContext }> {
     const teamId = pathId(event, "teamId", "team ID");
-    const ctx = await authorizeTeam(dbFor({ userId, teamId }), userId, teamId).catch((error: unknown) => {
+    const ctx = await authorizeTeam(dbFor({ userId, teamId }), userId, teamId, new Date(now())).catch((error: unknown) => {
       if (error instanceof ForbiddenError) throw notMember();
       throw error;
     });
@@ -846,7 +854,7 @@ export function createAccountHandler(deps: AccountHandlerDeps) {
     const found = await Promise.all(
       rows.map(async (row) => {
         const db = dbFor({ userId, teamId: row.teamId });
-        const ctx = await authorizeTeam(db, userId, row.teamId).catch((error: unknown) => {
+        const ctx = await authorizeTeam(db, userId, row.teamId, new Date(now())).catch((error: unknown) => {
           // A stale switcher row: deleteUserRows removes it
           if (error instanceof ForbiddenError) return undefined;
           throw error;

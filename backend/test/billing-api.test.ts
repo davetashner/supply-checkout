@@ -336,7 +336,7 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
   it("works out the trial's end", () => {
     expect(trialEnd({ trialEndsAt: "2026-10-01T00:00:00.000Z", createdAt: "2026-09-01T00:00:00.000Z" })).toBe(Date.parse("2026-10-01T00:00:00.000Z"));
     expect(trialEnd({ createdAt: "2026-09-01T00:00:00.000Z" })).toBe(Date.parse("2026-09-15T00:00:00.000Z"));
-    expect(trialEnd({ trialEndsAt: "soon", createdAt: "long ago" })).toBe(0);
+    expect(trialEnd({ trialEndsAt: "soon", createdAt: "long ago" })).toBeNaN();
   });
 
   it.each([
