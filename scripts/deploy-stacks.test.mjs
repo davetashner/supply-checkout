@@ -32,6 +32,17 @@ test("the stateless group holds only stateless stacks", () => {
   assert.deepEqual(GROUPS.stateless, ["api", "realtime", "observability"]);
 });
 
+test("the stateless and stateful groups between them hold every stack the app deploys but web", () => {
+  const layers = stackLayers();
+  // Separate CDK apps, never in the main app's deploys
+  const own = ["backup-vault", "github-deploy"];
+  const app = Object.keys(layers).filter((kind) => !own.includes(kind)).sort();
+  assert.deepEqual([...GROUPS.web, ...GROUPS.stateless, ...GROUPS.stateful].sort(), app);
+  for (const kind of Object.keys(layers).filter((k) => layers[k] === "stateful" && !own.includes(k))) {
+    assert.ok(GROUPS.stateful.includes(kind), `${kind} is a stateful stack`);
+  }
+});
+
 test("patterns pick each kind in every region of the environment", () => {
   assert.deepEqual(stackPatterns("stateless"), [
     "supply-checkout-prod-*-api",

@@ -7,6 +7,7 @@ import {
   DEFAULT_GITHUB_REPOSITORY,
   type DeploymentConfig,
   GITHUB_DEPLOY_ENVIRONMENT,
+  GITHUB_DEPLOY_ENVIRONMENTS,
   GLOBAL_SERVICES_REGION,
   type GithubRepository,
   githubRepositoryFromContext,
@@ -19,6 +20,7 @@ const [EAST, WEST] = APPROVED_REGIONS;
 const config: DeploymentConfig = { envName: "prod", domainName: "supplycheckout.com", regions: [EAST], primaryRegion: EAST };
 const REPO: GithubRepository = { name: "example-owner/example-repo", ownerId: 1234, repositoryId: 567890 };
 const SUBJECT = "repo:example-owner@1234/example-repo@567890:environment:production";
+const STATEFUL_SUBJECT = "repo:example-owner@1234/example-repo@567890:environment:production-stateful";
 
 function build(overrides: Partial<DeploymentConfig> = {}, repository = REPO) {
   const app = testApp();
@@ -52,6 +54,7 @@ describe("GitHub repository config", () => {
     // Public identifiers (gh api repos/davetashner/supply-checkout --jq '{owner_id: .owner.id, repo_id: .id}')
     expect(DEFAULT_GITHUB_REPOSITORY).toEqual({ name: "davetashner/supply-checkout", ownerId: 5702882, repositoryId: 1388338851 });
     expect(GITHUB_DEPLOY_ENVIRONMENT).toBe("production");
+    expect(GITHUB_DEPLOY_ENVIRONMENTS).toEqual(["production", "production-stateful"]);
     expect(githubRepositoryFromContext(context({}))).toEqual(DEFAULT_GITHUB_REPOSITORY);
     expect(githubRepositoryFromContext(context(full))).toEqual(REPO);
     // cdk.json or a test may give the IDs as numbers
@@ -97,11 +100,12 @@ describe("GitHub Actions deploy role (supply-checkout-5ik)", () => {
 
   it("builds GitHub's immutable subject: owner and repository names, each with its ID, then the environment", () => {
     expect(githubDeploySubject(REPO)).toBe(SUBJECT);
+    expect(githubDeploySubject(REPO, "production-stateful")).toBe(STATEFUL_SUBJECT);
     // What GitHub's sub_claim_prefix for this repository is, plus the environment
     expect(githubDeploySubject(DEFAULT_GITHUB_REPOSITORY)).toBe("repo:davetashner@5702882/supply-checkout@1388338851:environment:production");
   });
 
-  it("can be assumed only with a GitHub token for this repository's production environment, matched on immutable IDs", () => {
+  it("can be assumed only with a GitHub token for this repository's production or production-stateful environment, matched on immutable IDs", () => {
     const { template } = build();
     const r = role(template);
     expect(r.Properties.RoleName).toBe(githubDeployRoleName("prod"));
@@ -114,7 +118,7 @@ describe("GitHub Actions deploy role (supply-checkout-5ik)", () => {
       Condition: {
         StringEquals: {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": SUBJECT,
+          "token.actions.githubusercontent.com:sub": [SUBJECT, STATEFUL_SUBJECT],
         },
       },
     });
@@ -129,7 +133,7 @@ describe("GitHub Actions deploy role (supply-checkout-5ik)", () => {
   it("follows the configured repository", () => {
     const { template } = build({}, { name: "someone/fork", ownerId: 42, repositoryId: 4242 });
     expect(JSON.stringify(role(template).Properties.AssumeRolePolicyDocument)).toContain('"repo:someone@42/fork@4242:environment:production"');
-    expect(role(template).Properties.Description).toBe("GitHub Actions deploys from someone/fork (owner ID 42, repository ID 4242), environment production only");
+    expect(role(template).Properties.Description).toBe("GitHub Actions deploys from someone/fork (owner ID 42, repository ID 4242), environments production and production-stateful only");
     expect(githubDeployRoleName("staging")).toBe("supply-checkout-staging-github-deploy");
   });
 

@@ -59,7 +59,10 @@
               "Condition": {
                 "StringEquals": {
                   "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-                  "token.actions.githubusercontent.com:sub": "repo:davetashner@5702882/supply-checkout@1388338851:environment:production"
+                  "token.actions.githubusercontent.com:sub": [
+                    "repo:davetashner@5702882/supply-checkout@1388338851:environment:production",
+                    "repo:davetashner@5702882/supply-checkout@1388338851:environment:production-stateful"
+                  ]
                 }
               },
               "Effect": "Allow",
@@ -72,7 +75,7 @@
           ],
           "Version": "2012-10-17"
         },
-        "Description": "GitHub Actions deploys from davetashner/supply-checkout (owner ID 5702882, repository ID 1388338851), environment production only",
+        "Description": "GitHub Actions deploys from davetashner/supply-checkout (owner ID 5702882, repository ID 1388338851), environments production and production-stateful only",
         "MaxSessionDuration": 3600,
         "RoleName": "supply-checkout-prod-github-deploy",
         "Tags": [

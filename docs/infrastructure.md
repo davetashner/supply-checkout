@@ -28,7 +28,7 @@ Validations.of(bucket).acknowledge({ id: "AwsSolutions-S1", reason: "…why this
 
 ## Deploying
 
-A release deploys the stateless stacks to prod through the deploy workflow, after the owner approves it ([Deploying a release](releases.md#deploying-a-release)). The script below is the manual and break-glass path, and the way to deploy everything the workflow doesn't yet (the web stack, the web app, the stateful stacks). For those, from the main checkout on an up-to-date, clean `main`:
+A release deploys the stateless and stateful stacks to prod through the deploy workflow, after the owner approves its plan and then each change ([Deploying a release](releases.md#deploying-a-release)). The script below is the manual and break-glass path, and the way to deploy what the workflow doesn't yet (the web stack, the web app). For those, from the main checkout on an up-to-date, clean `main`:
 
 ```bash
 npm run deploy -- api      # the api, realtime and observability stacks (new routes, Lambda code, alarms)
@@ -58,7 +58,7 @@ npx cdk deploy --all --profile supply-prod -c backupCopy=false
 `infra/lib/stacks/github-deploy-stack.ts`, bead `supply-checkout-5ik` ([ADR 0003](adr/0003-aws-account-structure.md), [ADR 0012](adr/0012-cicd-releases-rollbacks.md)). It lets a GitHub Actions job deploy to the prod account with short-lived credentials and no stored AWS keys. The MVP has one account, so there is one provider and one role, in `supply-checkout-prod`. The stack, `supply-checkout-<env>-<primary region>-github-deploy`, holds:
 
 - An IAM OIDC provider for `https://token.actions.githubusercontent.com`, audience `sts.amazonaws.com` only. IAM fetches GitHub's certificate thumbprint itself.
-- The role `supply-checkout-<env>-github-deploy`. Its trust policy has one statement: `sts:AssumeRoleWithWebIdentity` from that provider, with `StringEquals` on `aud` = `sts.amazonaws.com` and `sub` = `repo:<owner>@<owner ID>/<name>@<repository ID>:environment:production`. Only a job in this repository that runs in the `production` GitHub environment gets that subject. A pull request, a push without the environment, a fork or another repository gets a different one and is refused. There are no wildcards.
+- The role `supply-checkout-<env>-github-deploy`. Its trust policy has one statement: `sts:AssumeRoleWithWebIdentity` from that provider, with `StringEquals` on `aud` = `sts.amazonaws.com` and `sub` = `repo:<owner>@<owner ID>/<name>@<repository ID>:environment:production` or the same with `:environment:production-stateful` (a `StringEquals` list: either one, exactly). Only a job in this repository that runs in the `production` or `production-stateful` GitHub environment gets one of those subjects. The deploy workflow's stateful stacks job runs in `production-stateful`, so changing them takes an approval of its own (bead `supply-checkout-pbp.27`); it was added to the trust then, and the stack must be deployed again (step 2) before that job can sign in. A pull request, a push without the environment, a fork or another repository gets a different one and is refused. There are no wildcards.
 - That subject is GitHub's immutable subject (bead `supply-checkout-pbp.23`): it carries GitHub's numeric owner and repository IDs next to the names. The older default, `repo:<owner>/<name>:environment:production`, would match whoever holds the name: if the account were renamed or deleted and the name registered again, a new repository with a `production` environment would get the trusted subject. An owner or repository ID is never reused, so it doesn't. GitHub turns immutable subjects on by default for repositories created after 2026-07-15, this one included, so no repository setting is needed (check it in step 1 below). A rename changes the subject: deploys from GitHub fail closed until the stack is deployed again with the new name (the IDs stay). A transfer to another owner changes the owner ID too.
 - Its one permission: `sts:AssumeRole` and `sts:TagSession` on this account's CDK bootstrap roles (`cdk-<qualifier>-{deploy,file-publishing,image-publishing,lookup}-role-<account>-<region>`), in each deployed region and `GLOBAL_SERVICES_REGION`. `cdk deploy` and `cdk diff` do everything else through those roles, exactly as a deploy from a laptop does. No managed policy, one-hour sessions, and cdk-nag passes with no suppressions.
 - The output `DeployRoleArn`, for `role-to-assume` in `aws-actions/configure-aws-credentials`.
@@ -87,16 +87,18 @@ It is a separate CDK app, `bin/github-deploy.ts`, like the backup account's vaul
    cd infra
    npm run synth:github-deploy                               # cdk-nag runs here too
    npx cdk diff --app "npx tsx bin/github-deploy.ts" -o cdk.out/github-deploy --profile supply-prod
-   npm run deploy:github-deploy -- --profile supply-prod     # CDK asks to confirm the IAM changes
+   npm run deploy:github-deploy -- --profile supply-prod     # checks the environments first; CDK asks to confirm the IAM changes
    ```
 
-3. **Check it with a dry run.** Set the `DeployRoleArn` output as the `production` environment's secret `AWS_DEPLOY_ROLE_ARN`, and as a repository secret of the same name (for the negative check, whose job has no environment). Secrets, so the account ID in the ARN is masked in the public run logs. Then run the deploy workflow with **dry run** checked (Actions, Deploy, Run workflow, from `main`, with the latest release tag) and approve it. Its `trust` job, outside the environment, must be refused with `Not authorized to perform sts:AssumeRoleWithWebIdentity`, and its deploy job, in the environment, must sign in as the deploy role (`Prove who this job is`), synthesize and show the diff, and deploy nothing. Every deploy repeats both checks ([Deploying a release](releases.md#deploying-a-release)).
+   `deploy:github-deploy` runs `scripts/check-environments.mjs` first and refuses to deploy unless `production` and `production-stateful` both exist with no admin bypass, `main` as their only deployment branch policy, and a required reviewer (it reads them with your `gh` login). GitHub creates an environment with no protection the first time a job names one that doesn't exist, so a trust naming an environment that isn't set up yet would let any branch's job in. The deploy workflow runs the same check before every deploy.
+
+3. **Check it with a dry run.** Set the `DeployRoleArn` output as the `production` environment's secret `AWS_DEPLOY_ROLE_ARN`, and as a repository secret of the same name (for the negative check, whose job has no environment). Secrets, so the account ID in the ARN is masked in the public run logs. Then run the deploy workflow with **dry run** checked (Actions, Deploy, Run workflow, from `main`, with the latest release tag) and approve it. Its `trust` job, outside the environment, must be refused with `Not authorized to perform sts:AssumeRoleWithWebIdentity`, and its `plan` job, in the environment, must sign in as the deploy role (`Prove who this job is`), drop to the lookup role, synthesize and show the diffs, and deploy nothing. Every deploy repeats both checks ([Deploying a release](releases.md#deploying-a-release)).
 
 **If the subject doesn't match, it fails closed.** If the repository's subject setting is changed (a custom template, or immutable subjects turned off) or the repository is renamed or transferred, tokens carry a different `sub` and the role refuses them until the stack is deployed again to match. Nothing is opened up in between, and nothing deploys from GitHub yet anyway.
 
 An account can have only one OIDC provider for GitHub's URL. If one already exists (made by hand or another tool), the deploy fails: delete it first if nothing else uses it, or bring it into the stack with `cdk import`. Deploy the stack again when a region is added to `DEFAULT_REGIONS` (phase 2), so the role may assume that region's bootstrap roles, and after the repository is renamed (the name in the subject changes; the IDs stay) or transferred to another owner (the owner name and ID change). Until then, deploys from GitHub fail closed.
 
-**Setting up the `production` environment on GitHub (the owner, once, before the first deploy of this stack).** The environment's rules decide which jobs get the trusted subject, so set them before the role exists. In the repository's Settings, Environments, create `production` with:
+**Setting up the `production` and `production-stateful` environments on GitHub (the owner, once, before the first deploy of this stack).** The environment's rules decide which jobs get the trusted subject, so set them before the role exists. In the repository's Settings, Environments, create `production`, and `production-stateful` with the same rules, with:
 
 - Deployment branches and tags: selected only, `main` only. Without this, a workflow on any branch could declare `environment: production`. Not the release tags: a run on a tag uses that tag's own copy of the deploy workflow, so a tag pointing at other code could leave out its checks. The deploy workflow runs from `main` and is given the tag as an input.
 - Required reviewers: the owner, so every prod deploy waits for an approval.
@@ -105,21 +107,23 @@ An account can have only one OIDC provider for GitHub's URL. If one already exis
 Check it before deploying the stack:
 
 ```bash
-gh api repos/davetashner/supply-checkout/environments/production \
-  --jq '{branch_policy: .deployment_branch_policy, rules: [.protection_rules[].type]}'
-gh api repos/davetashner/supply-checkout/environments/production/deployment-branch-policies \
-  --jq '[.branch_policies[] | {name, type}]'
+for env in production production-stateful; do
+  gh api "repos/davetashner/supply-checkout/environments/$env" \
+    --jq '{name, can_admins_bypass, branch_policy: .deployment_branch_policy, rules: [.protection_rules[].type]}'
+  gh api "repos/davetashner/supply-checkout/environments/$env/deployment-branch-policies" \
+    --jq '[.branch_policies[] | {name, type}]'
+done
 ```
 
-`deployment_branch_policy` must not be `null` (null means any branch may deploy), with `custom_branch_policies: true`; the second command must list only `main` (type `branch`); and `rules` must include `required_reviewers`. Don't deploy the stack until it does.
+For each environment, `deployment_branch_policy` must not be `null` (null means any branch may deploy), with `custom_branch_policies: true`; `can_admins_bypass` must be `false`; the second command must list only `main` (type `branch`); and `rules` must include `required_reviewers`. Don't deploy the stack until it does.
 
-**What it enables.** `.github/workflows/deploy.yml` ([Deploying a release](releases.md#deploying-a-release)). Its deploy job runs with `environment: production` and `permissions: id-token: write`, and uses `aws-actions/configure-aws-credentials` with `role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}`, the `production` environment's secret. Any change to it must keep these:
+**What it enables.** `.github/workflows/deploy.yml` ([Deploying a release](releases.md#deploying-a-release)). Its `plan` and `apply` jobs run with `environment: production`, its `apply-stateful` job with `environment: production-stateful`, all with `permissions: id-token: write`, and they use `aws-actions/configure-aws-credentials` with `role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}` (the environment's secret, or the repository's). Any change to it must keep these:
 
 - **Run only from `main`.** Every job in the deploy workflow has `if: github.ref == 'refs/heads/main'`, and the `production` environment allows `main` only. A run dispatched on a tag would use the tag's own copy of the workflow.
 - **Protect the release tags.** The deploy deploys the commit a `v*` tag points at (it must be a published release on `main` that passed CI), so whoever can move a `v*` tag could pick which of those commits goes out (still behind the required reviewers). Add a tag ruleset for `refs/tags/v*` that restricts creation, update and deletion to release-please and the owner.
-- **Never give `environment: production` to a `pull_request_target` or `workflow_run` job.** Both run with the base repository's context and secrets, yet can be triggered from a fork's pull request and may check out or act on its code. A job of either kind in the `production` environment would hand a fork's code the deploy role. The deploy workflow runs only on `workflow_dispatch` (the release workflow dispatches it, because a release made with `GITHUB_TOKEN` triggers no workflows).
+- **Never give `environment: production` or `production-stateful` to a `pull_request_target` or `workflow_run` job.** Both run with the base repository's context and secrets, yet can be triggered from a fork's pull request and may check out or act on its code. A job of either kind in the `production` environment would hand a fork's code the deploy role. The deploy workflow runs only on `workflow_dispatch` (the release workflow dispatches it, because a release made with `GITHUB_TOKEN` triggers no workflows).
 
-To check the trust after deploying: `aws iam get-role --role-name supply-checkout-prod-github-deploy --profile supply-prod` shows the one statement above, with the immutable `sub`, and a job that runs without the `production` environment fails in `configure-aws-credentials` with `Not authorized to perform sts:AssumeRoleWithWebIdentity`.
+To check the trust after deploying: `aws iam get-role --role-name supply-checkout-prod-github-deploy --profile supply-prod` shows the one statement above, with the two immutable subjects, and a job that runs without either environment fails in `configure-aws-credentials` with `Not authorized to perform sts:AssumeRoleWithWebIdentity`.
 
 ### What it doesn't limit
 

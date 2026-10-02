@@ -372,6 +372,17 @@ jobs:
       # second region stays one config change away (ADR 0010). npm test also
       # synths every stack, identity and web included, in each region with cdk-nag.
       - run: npm run synth
+      # The deploy workflow's apply jobs synthesize again and must reach the plan's hash
+      # (scripts/assembly-hash.sh), so two synths of one commit into the same folder must match.
+      # The same folder: the Lambda source maps hold paths relative to it.
+      - name: Two synths give the same deploy hash
+        run: |
+          first="$(bash ../scripts/assembly-hash.sh cdk.out)"
+          mv cdk.out "$RUNNER_TEMP/first-synth"
+          npx cdk synth --quiet
+          second="$(bash ../scripts/assembly-hash.sh cdk.out)"
+          echo "$first $second"
+          if [[ "$first" != "$second" ]]; then echo "::error::Two synths of this commit differ, so the deploy's plan/apply hash check would always fail"; exit 1; fi
       - run: npm run synth:all-regions
       # The backup account's vault stack is a separate CDK app (bin/backup-account.ts)
       - run: npm run synth:backup-account

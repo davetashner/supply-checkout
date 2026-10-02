@@ -220,9 +220,19 @@ export const DEFAULT_GITHUB_REPOSITORY: GithubRepository = {
 /**
  * The GitHub environment a deploy job must run in to assume the deploy role
  * (ADR 0012). Its protection rules on GitHub (who may approve, which branches
- * and tags may use it) are what stand between a workflow and prod.
+ * may use it) are what stand between a workflow and prod.
  */
 export const GITHUB_DEPLOY_ENVIRONMENT = "production";
+
+/**
+ * The second environment the deploy role trusts (supply-checkout-pbp.27): the
+ * deploy workflow's job for the stateful stacks runs in it, so changing them
+ * takes an approval of its own. Same rules on GitHub as production.
+ */
+export const GITHUB_STATEFUL_DEPLOY_ENVIRONMENT = "production-stateful";
+
+/** Every GitHub environment whose jobs may assume the deploy role. */
+export const GITHUB_DEPLOY_ENVIRONMENTS = [GITHUB_DEPLOY_ENVIRONMENT, GITHUB_STATEFUL_DEPLOY_ENVIRONMENT] as const;
 
 // GitHub's own rules: an owner is 1-39 letters, digits or single dashes, not
 // starting with a dash; a repository name is letters, digits, `.`, `_` and `-`.
