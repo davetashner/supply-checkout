@@ -69,6 +69,26 @@ The web stack deploys the data stack too, so keep `-c backupCopy=false` until [s
 
 Then check https://securityheaders.com/?q=supplycheckout.com/demo/ (it should grade A; `'unsafe-inline'` for style attributes stops it at A rather than A+) and that `https://www.supplycheckout.com/` redirects to the apex and `/demo` to `/demo/`. `https://app.supplycheckout.com/` answers 503 until the real app is published to the `app` channel.
 
+## The operator page
+
+The operator page (`ops/`, `npm run build:ops`, [ADR 0015](adr/0015-platform-operator-role.md) §9, `supply-checkout-gxlt`) is a separate small site at `ops.<env domain>`, with none of the customer app's code. What it does, and setting it up, are in [Operators](infrastructure.md#the-operator-page).
+
+- **Distribution.** A second CloudFront distribution in the `web` stack, for `ops.<env domain>` alone, with its own certificate (the `domain` stack's `OpsWebCertificate`), TLS 1.2+, HTTP/2 and HTTP/3. It reads the same releases bucket through its own origin access control, and uses the same WAF web ACL and logs bucket (`cloudfront/ops/`). `A` and `AAAA` aliases for `ops.` point at it. Its ID and router's name are published as `web/ops-distribution-id` and `web/ops-router-function-name`.
+- **Routing** (`lib/web/ops-router.js`, viewer request): only the host `ops.<env domain>` and only these paths are served, from the live release of the `ops` channel in the same KeyValueStore:
+
+  | Request | Response |
+  |---|---|
+  | `ops.<domain>/` | the release's `index.html` |
+  | `ops.<domain>/ops-config.json` | its config |
+  | `ops.<domain>/assets/<name>.js`, `.css`, `.svg` | its hashed files |
+  | anything else, or any other host | 404, made at the edge |
+
+  The live version must be named `ops-*`, or the router answers 503, so an app or demo release can never be served there; a missing `ops` key (before the first publish) is a 503 too. The key isn't in the store's import source (adding it there would replace the store and reset every channel).
+- **Headers** (`OpsSecurityHeaders`): the CSP in `lib/web/ops-content-security-policy.ts` (`default-src 'none'`; scripts, styles and images from the page's own origin only; `connect-src` only `'self'`, `api.` and `ops-auth.`; no frames, `<base>`, form targets, plugins, workers or manifest; Trusted Types required), `Cache-Control: no-store`, HSTS (two years, subdomains), `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `nosniff`, a Permissions-Policy with everything off, `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy` `same-origin`, and `X-Robots-Tag: noindex, nofollow`. The router's own 404s and 503s carry HSTS, `nosniff`, `no-store` and a CSP that allows nothing. `tests/ops.spec.js` runs the page under this CSP and fails on any violation; `infra/test/web.test.ts` checks the policy.
+- **Caching.** None: the managed CachingDisabled policy at the edge, and `no-store` in the browser. It's a few small files for a handful of operators.
+- **Publishing.** `npm run publish:ops` builds the page and publishes it as `ops-<time>-<commit>` on the `ops` channel. Before the upload, `publish-web.mjs` writes `ops-config.json` into the folder: `apiUrl`, `authUrl` (the operator pool's `https://ops-auth.<env domain>`) and `clientId` (the `ops` client), from `api/url`, `identity/ops-auth-url` and `identity/ops-client-id`, and refuses unless the hosts are exactly this environment's. `ops-config.json` marks an ops release, as `config.json` marks an app release: an ops release can't go live on `app` or `demo`, nor an app or demo release on `ops`, a folder with the other's config file is refused, and only the `ops` channel takes `ops-*` versions. `npm run publish:web -- config --channel ops` prints the config, and `activate --channel ops --version ops-…` rolls back. `check-router` also runs the operator page's router (`ops.<domain>/` must be served or 503, and `/config.json` a 404). The web publisher role may test both routers and read the two `identity/ops-*` parameters, so the deploy workflow can publish the page when it's added there (a follow-up).
+- **Tests.** `npm run test:ops` runs the page's logic (`ops/lib/`) in Node with a 100% coverage gate (in the lint job in CI). `tests/ops.spec.js` runs the built page in the browsers with the web build (`BUILD=web`), as CloudFront serves it, against stand-ins for Managed Login and the `/ops` routes: sign-in with PKCE and state, the token in memory only, a customer token refused, search, a team's detail, comps by months and by date, ending a comp, a 409, a retried write keeping its Idempotency-Key, the audit, expiry and sign-out, and API data shown as text. It's on its own origin, so `src/`'s coverage doesn't count it.
+
 ## The web app on AWS
 
 The web build (`npm run build:web`, served at `app.<env domain>`) is the same app as the artifact. `src/aws/main.js` runs first and provides `window.claude.use()` on the backend ([ADR 0004](adr/0004-runtime-adapter.md), `supply-checkout-a2b`); the artifact never includes it, and the tests and the demo bring their own runtime, which it leaves alone.

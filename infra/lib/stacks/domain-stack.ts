@@ -34,7 +34,9 @@ export function delegatedEnvsFromContext(node: { tryGetContext(key: string): unk
  *   read at deploy time (see importZone in domain.ts).
  * - Every region: an ACM certificate for `api.` (API Gateway custom domains
  *   need a certificate in their own region).
- * - GLOBAL_SERVICES_REGION: certificates for CloudFront (apex, www., app.),
+ * - GLOBAL_SERVICES_REGION: certificates for CloudFront (apex, www., app.; and
+ *   ops. on its own, for the operator page's distribution, so adding it didn't
+ *   replace the web certificate),
  *   Cognito's custom domains (auth., and ops-auth. for the operator pool,
  *   ADR 0015) and AppSync's (realtime.), all of which
  *   AWS requires there. The app adds a domain stack in that region even when
@@ -66,6 +68,7 @@ export class DomainStack extends SupplyCheckoutStack {
   readonly zone: IPublicHostedZone;
   readonly apiCertificate?: ICertificate;
   readonly webCertificate?: ICertificate;
+  readonly opsWebCertificate?: ICertificate;
   readonly authCertificate?: ICertificate;
   readonly opsAuthCertificate?: ICertificate;
   readonly realtimeCertificate?: ICertificate;
@@ -101,10 +104,12 @@ export class DomainStack extends SupplyCheckoutStack {
 
     if (region === GLOBAL_SERVICES_REGION) {
       this.webCertificate = certificate("WebCertificate", names.app, [names.apex, names.www]);
+      this.opsWebCertificate = certificate("OpsWebCertificate", names.ops);
       this.authCertificate = certificate("AuthCertificate", names.auth);
       this.opsAuthCertificate = certificate("OpsAuthCertificate", names.opsAuth);
       this.realtimeCertificate = certificate("RealtimeCertificate", names.realtime);
       publish("WebCertificateParam", outputs.webCertificateArn, this.webCertificate.certificateArn, "CloudFront certificate: app., apex and www.");
+      publish("OpsWebCertificateParam", outputs.opsWebCertificateArn, this.opsWebCertificate.certificateArn, "CloudFront certificate for the operator page: ops.");
       publish("AuthCertificateParam", outputs.authCertificateArn, this.authCertificate.certificateArn, "Cognito custom domain certificate: auth.");
       publish("OpsAuthCertificateParam", outputs.opsAuthCertificateArn, this.opsAuthCertificate.certificateArn, "Operator pool's Cognito custom domain certificate: ops-auth.");
       publish("RealtimeCertificateParam", outputs.realtimeCertificateArn, this.realtimeCertificate.certificateArn, "AppSync custom domain certificate: realtime.");

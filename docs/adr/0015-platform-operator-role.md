@@ -26,7 +26,7 @@ The owner accepted this design on 2026-09-26, including each choice that had bee
 2. **TOTP** is the operators' second factor.
 3. **Sessions:** 15-minute access and ID tokens, 8-hour refresh tokens.
 4. **Comps** last at most 12 months and can be renewed.
-5. **A CLI first, then an operator page on its own origin (`ops.<env domain>`)**, not a screen inside the customer app.
+5. **A CLI first, then an operator page on its own origin (`ops.<env domain>`)**, not a screen inside the customer app (built in `supply-checkout-gxlt`, §9).
 6. **Support access needs an owner's approval**, with no break-glass path.
 7. **Owners see operator actions on their team**, attributed to "Supply Checkout support".
 
@@ -100,7 +100,7 @@ When an owner asks for help with their data:
 ### 6. UI: a CLI first, then a separate operator page
 
 - **For the pilot (`supply-checkout-p0e`): a CLI**, `npm run ops -- <command>`, that signs in to the ops pool with PKCE on a localhost callback and calls the `/ops` routes. Commands: `teams`, `team <id>`, `comp <id> --plan --seats --until --reason`, `uncomp <id>`, `audit`. It is "the operator script" p0e asks for, and it goes through the same routes, MFA and audit as everything later, so there's no second path to maintain or review.
-- **For campaigns (`supply-checkout-8jc.8`): a minimal operator page at `ops.<env domain>`**, built from the same repo (`src/ops/`) but served as its own site. A separate origin means an XSS bug in the customer app can't reach operator tokens, and the customer bundle ships no operator code. The page lists teams, shows one team, and manages comps and campaigns.
+- **A minimal operator page at `ops.<env domain>`** (built in `supply-checkout-gxlt`, §9, for teams and comps; campaigns, `supply-checkout-8jc.8`, add to it), built from the same repo (`ops/`, outside `src/`) but served as its own site. A separate origin means an XSS bug in the customer app can't reach operator tokens, and the customer bundle ships no operator code. The page lists teams, shows one team, and manages comps and campaigns.
 - **No operator screen inside the customer app, shown when the token has the group.** With a separate pool the customer token never has the group, and even with one pool, hiding a screen protects nothing: the API is the control. The bead's "operator screen in the web app" becomes the separate page.
 
 ### 7. Threats and mitigations
@@ -129,6 +129,37 @@ What it widens, and nothing else:
 | The billing worker's Stripe key | Nothing: it's the secret key. If it's ever made a restricted key, it needs Coupons: Write (or the coupons made ahead by the catalog script) and Subscriptions: Write, which it already uses. |
 
 Alternatives: a second restricted key with Coupons: Write and Subscriptions: Write for the ops function (rejected: the ops function would then hold a key that can discount any customer's subscription, chosen by code that takes operator input, where the worker's path can only converge a subscription on its own team's comp; and a second key to store, rotate and review), and calling Stripe in the ops request (rejected for the same reason, and an operator's request would then wait on Stripe and half-fail). Promo campaigns (`supply-checkout-8jc.8`) still add Coupons and Promotion Codes: Write to the ops key when they ship, since there an operator does choose the discount; they can reuse the coupon checks here.
+
+### 9. The operator page: hosting and sign-in (amendment, 2026-10-02, `supply-checkout-gxlt`)
+
+The owner decided operators get a browser page as well as the CLI (§6). It does what the CLI does for teams and comps (list and search teams, read one with its billing and comp, comp for N months or until a date, end a comp, read the operator audit), through the same `/ops` routes, MFA, validation and audit. It adds no route, no data access and no IAM on the API's side.
+
+**Hosting: its own origin, `ops.<env domain>`, on a second CloudFront distribution in the web stack.** Not a path under `app.`: a path shares the customer app's origin, so an XSS in the customer app could read the operator page's memory or drive it, and the two would share storage and the response headers policy. A host on the same distribution can't have its own response headers (the policy is per cache behavior, not per host). So the operator page has its own distribution with:
+
+- **Its own router** (`infra/lib/web/ops-router.js`), which serves only `ops.<env domain>` and only `/`, `/ops-config.json` and `/assets/<name>.{js,css,svg}`, from the live release of the `ops` channel in the same KeyValueStore, and only a release named `ops-*`. Anything else is a 404 made at the edge. So none of the customer app's code is ever served there, even with the channel key set to an app release by mistake; `publish-web.mjs` also refuses to publish or activate across channels (`ops-config.json` marks an ops release).
+- **Its own response headers.** A strict CSP (`infra/lib/web/ops-content-security-policy.ts`): `default-src 'none'`; scripts, styles and images from its own origin only (no inline script or style, no `data:` or `blob:`); `connect-src` only `'self'` (its config), `https://api.<env domain>` and `https://ops-auth.<env domain>`; `frame-ancestors 'none'`, `base-uri 'none'`, `form-action 'none'`, `object-src 'none'`, `worker-src 'none'`, `manifest-src 'none'`; and Trusted Types required (`require-trusted-types-for 'script'; trusted-types 'none'`), so script can't write HTML into the page in browsers that support them. Also `Cache-Control: no-store` on every response, HSTS (two years, subdomains), `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `nosniff`, a Permissions-Policy that turns everything off, COOP and CORP `same-origin`, and `X-Robots-Tag: noindex`.
+- **Nothing cached**: the managed CachingDisabled policy at the edge, and `no-store` in the browser.
+- The same releases bucket (through its own origin access control), WAF web ACL and logs bucket (`cloudfront/ops/`) as the web app, and its own certificate for `ops.` (a new one in the domain stack, so the web certificate isn't replaced).
+
+**Built from its own entry** (`ops/`, `npm run build:ops`, `dist/ops/`): under 30 KB of plain JavaScript and CSS with no dependencies and nothing from `src/`. Published with the existing approach: `npm run publish:ops` uploads it as `releases/ops-<time>-<commit>/` with `ops-config.json` (the API, the operator pool's sign-in host and the ops client ID, from SSM, the hosts checked against the deployment config as for the app's `config.json`) and makes it live on the `ops` channel. The page checks the hosts again against its own host name.
+
+**Sign-in: authorization code with PKCE against the operator pool's Managed Login**, `ops-auth.<env domain>`, with the existing `ops` client, never the customer pool. The ops client gains one callback and sign-out URL, the page's root `https://ops.<env domain>/` (Cognito matches it exactly). The page:
+
+- keeps only the PKCE verifier, the state and the view to come back to in `sessionStorage` while the browser is at the sign-in host (they must survive the page leaving), and removes them the moment it comes back, whatever the answer; it refuses an answer whose state doesn't match, or that took over 10 minutes;
+- takes the code out of the address bar (`history.replaceState`) before redeeming it at the ops pool's token endpoint;
+- **keeps the access token in memory only**: never in storage or a cookie, and never logged. The token response's refresh and ID tokens are dropped unread, so there is no refresh: when the access token expires (15 minutes) the page asks the operator to sign in again, which within Managed Login's one-hour session doesn't ask for the password and code again. A 401 does the same.
+- uses a token only if its (unverified) claims say it's an access token for this page's ops client from a Cognito user pool. That isn't trust (the ops authorizer verifies it); it stops the page from ever sending another client's token, a customer's say, to the ops routes. The ops authorizer refuses a customer-pool token anyway (wrong issuer and audience, §2).
+- signs out by forgetting the token and everything it read, then sending the browser to the ops pool's `/logout`, which ends Managed Login's session. It doesn't call `GlobalSignOut`: that would need `cognito-idp.<region>.amazonaws.com` in the CSP, and the forgotten token expires within 15 minutes. To revoke every token at once (a lost laptop), `npm run ops -- sign-out` or an administrator's `admin-user-global-sign-out`.
+
+**API data is only ever text** (`textContent`), never HTML, and links are built only from IDs that match the team ID pattern. **Every write needs a reason** (3 to 500 characters, one line) and sends the team's `version` as `expectedVersion` and a new `Idempotency-Key`; a write that got no answer at all is sent again with the same key, and a 409 tells the operator the team changed and offers to read it again, keeping what they typed. Owners' emails are shown only where the API returns them.
+
+**The API.** The HTTP API's CORS allows the page's origin, next to `app.`. CORS is set per API, not per route, so API Gateway both answers `ops.`'s preflights and adds `Access-Control-Allow-Origin` and `Access-Control-Allow-Credentials` for it to the real responses of every route, the auth routes' included (credentials are allowed for the customer app's refresh cookie). That's safe because only the auth routes read a cookie (`backend/test/cookie-readers.test.ts`); the refresh cookie is host-only on `api.`, with `Path=/auth`, `Secure`, `HttpOnly` and `SameSite=Strict` (`ops.` is on the same site as `api.`, so SameSite alone wouldn't stop it); and the auth handler checks `Origin` against `ALLOWED_ORIGINS`, which stays `app.` only, before reading it. Every other route takes a bearer token only. The page itself never sends cookies (`credentials: "omit"`).
+
+**Who can publish it.** The `ops` channel is a key in the same KeyValueStore as the app's, and its releases go in the same bucket, so whoever can publish the web app (the web publisher role, which the GitHub deploy role assumes, and anyone with `PutKey` on the store and `PutObject` under `releases/`) can now also publish the operator page.
+
+**Alerts.** Adding the callback is an `UpdateUserPoolClient` on the ops pool, which `OperatorPoolChanges` alerts on unless CloudFormation made it. A deploy of the identity stack makes it, so it doesn't page; the same change made by hand does (P1), as it should.
+
+Alternatives: a path under `app.` (rejected: same origin as the customer app); a host on the existing distribution (rejected: one response headers policy for both, so the customer app's looser CSP); a separate stack and bucket for the page (more to deploy and watch for no gain: the router and the release naming keep the releases apart); keeping the refresh token in memory to revoke it at sign-out (rejected: the bead and the owner chose no refresh token, and revoking it would also end the access token it came with, so it couldn't be dropped at sign-in).
 
 ## Alternatives considered
 

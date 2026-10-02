@@ -2,10 +2,11 @@
 // Uploads a web build as a release and makes it live (supply-checkout-qk1).
 //
 //   node scripts/publish-web.mjs publish  --channel demo --dir dist/demo [--version V] [--no-activate] [--reuse]
+//   node scripts/publish-web.mjs publish  --channel ops --dir dist/ops   the operator page, at ops.<env domain>
 //   node scripts/publish-web.mjs activate --channel app --version V     switch (or roll back) the live release
 //   node scripts/publish-web.mjs live     --channel app                 print the channel's live version ("none" if nothing)
 //   node scripts/publish-web.mjs status                                  live versions and uploaded releases
-//   node scripts/publish-web.mjs config                                  print the app's config.json
+//   node scripts/publish-web.mjs config [--channel ops]                  print the app's config.json (or the ops page's)
 //   node scripts/publish-web.mjs check-router                            run the live router on test requests
 //
 // Common options: --env prod (default), --profile supply-prod (default: $AWS_PROFILE, else
@@ -16,7 +17,10 @@
 // make it live again instead of failing, so deploying a release twice, or an older one, works.
 // It never uploads over an existing release, and the channel check of `activate` still applies.
 //
-// Channels: "demo" is served at the apex's /demo/, "app" at app. (infra/lib/web/router.js).
+// Channels: "demo" is served at the apex's /demo/, "app" at app. (infra/lib/web/router.js), and
+// "ops", the operator page (supply-checkout-gxlt), at ops. by its own distribution and router
+// (infra/lib/web/ops-router.js), which serves only releases named ops-*. So ops releases must be
+// named ops-* (the default version is), and app and demo releases mustn't be.
 // A release is uploaded once to s3://<bucket>/releases/<version>/ and never changed;
 // publishing an existing version fails. Making it live is one write to the CloudFront
 // KeyValueStore the router function reads (infra/lib/web/router.js), which reaches every
@@ -32,6 +36,10 @@
 // refuses a release from the other channel, so the app build and its config.json are
 // never served at the apex's /demo/, nor the demo at app.
 //
+// The ops channel's release gets ops-config.json instead (the API, the operator pool's sign-in
+// host and the ops client ID, from the identity and api stacks' SSM outputs, hosts checked
+// against the deployment config), which also marks it as an ops release.
+//
 // check-router runs the router CloudFront Function's LIVE stage (`aws cloudfront
 // test-function`) on a request to each host, and fails if it throws or answers wrong. Run it
 // after every deploy of the web stack: a router that doesn't run answers 503 to every request
@@ -44,7 +52,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const CHANNELS = ["app", "demo"];
+export const CHANNELS = ["app", "demo", "ops"];
+/** The operator page's channel: its releases, and only its, are named ops-* (infra/lib/web/ops-router.js). */
+export const OPS_VERSION = /^ops-[A-Za-z0-9._-]{1,124}$/;
 // Same pattern as infra/lib/web/router.js, which refuses anything else
 export const VERSION = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 // The deployment config, in step with infra/lib/config.ts (publish-web.test.mjs checks):
@@ -102,12 +112,16 @@ export function parseArgs(argv, env = process.env) {
   }
   if (!["publish", "activate", "live", "status", "config", "check-router"].includes(command)) throw new Error("Usage: publish-web.mjs publish|activate|live|status|config|check-router [options]");
   if (!["status", "config", "check-router"].includes(command) && !CHANNELS.includes(opts.channel)) throw new Error(`--channel must be one of ${CHANNELS.join(", ")}`);
+  if (command === "config" && opts.channel !== undefined && !["app", "ops"].includes(opts.channel)) throw new Error("config --channel must be app or ops");
   if (command === "publish" && !opts.dir) throw new Error("--dir is required (the built folder, e.g. dist/demo)");
   if (command === "activate" && !opts.version) throw new Error("--version is required");
   if (opts.version !== undefined && !VERSION.test(opts.version)) {
     throw new Error(`--version must be letters, digits, dots, dashes or underscores (got "${opts.version}")`);
   }
   if (opts.version === "none") throw new Error('"none" is reserved: it means nothing is live');
+  if (opts.version !== undefined && opts.channel !== undefined && (opts.channel === "ops") !== OPS_VERSION.test(opts.version)) {
+    throw new Error(opts.channel === "ops" ? `Operator page releases are named ops-<something> (got "${opts.version}")` : `ops-* releases are the operator page's; pick another --version for ${opts.channel}`);
+  }
   return opts;
 }
 
@@ -192,11 +206,49 @@ export function appConfig(aws, envName) {
   return config;
 }
 
-/** Where check-router finds the router and the distribution's hosts: the web stack's outputs. */
+/** The operator page's ops-config.json values: the identity and api stacks' outputs. */
+export const opsConfigParameterNames = (envName) => ({
+  apiUrl: `/supply-checkout/${envName}/api/url`,
+  authUrl: `/supply-checkout/${envName}/identity/ops-auth-url`,
+  clientId: `/supply-checkout/${envName}/identity/ops-client-id`,
+});
+
+/**
+ * The operator page's ops-config.json for an environment (ops/lib/config.js reads it). The page
+ * sends an operator's token to apiUrl and signs in at authUrl, so both must be this
+ * environment's hosts, as the stacks build them, whatever SSM says (as for the app's).
+ */
+export function opsConfig(aws, envName) {
+  const domain = envDomain(envName);
+  const names = opsConfigParameterNames(envName);
+  const res = aws.read(["ssm", "get-parameters", "--names", ...Object.values(names)]);
+  const values = Object.fromEntries((res?.Parameters ?? []).map((p) => [p.Name, p.Value]));
+  const missing = Object.values(names).filter((n) => !values[n]);
+  if (missing.length) throw new Error(`Missing SSM parameters (deploy the api and identity stacks first): ${missing.join(", ")}`);
+  const config = Object.fromEntries(Object.entries(names).map(([key, name]) => [key, values[name]]));
+  const expected = { apiUrl: `https://api.${domain}`, authUrl: `https://ops-auth.${domain}` };
+  for (const [key, value] of Object.entries(expected)) {
+    if (config[key] !== value) throw new Error(`${names[key]} must be ${value} (got ${JSON.stringify(config[key])})`);
+  }
+  if (!/^[A-Za-z0-9]{1,128}$/.test(config.clientId)) throw new Error(`${names.clientId} must be a Cognito app client ID`);
+  return config;
+}
+
+/** Where check-router finds the routers and the distribution's hosts: the web stack's outputs. */
 export const routerParameterNames = (envName) => ({
   functionName: `/supply-checkout/${envName}/web/router-function-name`,
   distributionId: `/supply-checkout/${envName}/web/distribution-id`,
+  opsFunctionName: `/supply-checkout/${envName}/web/ops-router-function-name`,
 });
+
+/** What the operator page's router must answer on ops.<domain>: the page (or 503), and 404 for anything else. */
+export const opsRouterChecks = (envName) => {
+  const host = `ops.${envDomain(envName)}`;
+  return [
+    { host, uri: "/", expect: "serve" },
+    { host, uri: "/config.json", expect: 404 },
+  ];
+};
 
 /** A viewer-request event for `aws cloudfront test-function`. */
 export function routerTestEvent(host, uri) {
@@ -250,13 +302,17 @@ export function checkRouterResult(check, result) {
 
 function checkRouter(aws, envName) {
   const names = routerParameterNames(envName);
-  const res = aws.read(["ssm", "get-parameters", "--names", names.functionName, names.distributionId]);
+  const res = aws.read(["ssm", "get-parameters", "--names", names.functionName, names.distributionId, names.opsFunctionName]);
   const values = Object.fromEntries((res?.Parameters ?? []).map((p) => [p.Name, p.Value]));
   const missing = Object.values(names).filter((n) => !values[n]);
   if (missing.length) throw new Error(`Missing SSM parameters (deploy the web stack first): ${missing.join(", ")}`);
-  const name = values[names.functionName];
   const aliases = aws.read(["cloudfront", "get-distribution-config", "--id", values[names.distributionId]])?.DistributionConfig?.Aliases?.Items ?? [];
-  const checks = routerChecks(aliases);
+  testRouter(aws, values[names.functionName], routerChecks(aliases));
+  testRouter(aws, values[names.opsFunctionName], opsRouterChecks(envName));
+}
+
+/** Runs one router function's LIVE stage on each check's request. */
+function testRouter(aws, name, checks) {
   const etag = aws.read(["cloudfront", "describe-function", "--name", name, "--stage", "LIVE"])?.ETag;
   const dir = mkdtempSync(path.join(tmpdir(), "check-router-"));
   try {
@@ -274,6 +330,7 @@ function checkRouter(aws, envName) {
 
 export const releaseIndexKey = (version) => `releases/${version}/index.html`;
 export const releaseConfigKey = (version) => `releases/${version}/config.json`;
+export const releaseOpsConfigKey = (version) => `releases/${version}/ops-config.json`;
 
 class Aws {
   constructor({ profile, region, dryRun, log = console.log, run = execFileSync }) {
@@ -350,7 +407,7 @@ export function main(argv, deps = {}) {
   const opts = parseArgs(argv, deps.env);
   const aws = new Aws({ ...opts, ...deps });
   if (opts.command === "config") {
-    aws.log(JSON.stringify(appConfig(aws, opts.env), null, 2));
+    aws.log(JSON.stringify(opts.channel === "ops" ? opsConfig(aws, opts.env) : appConfig(aws, opts.env), null, 2));
     return;
   }
   if (opts.command === "check-router") {
@@ -376,7 +433,7 @@ export function main(argv, deps = {}) {
   if (opts.command === "publish") {
     const dir = path.resolve(opts.dir);
     if (!existsSync(path.join(dir, "index.html")) || !statSync(dir).isDirectory()) {
-      throw new Error(`${opts.dir} has no index.html. Build it first (npm run build:${opts.channel === "demo" ? "demo" : "web"}).`);
+      throw new Error(`${opts.dir} has no index.html. Build it first (npm run build:${{ demo: "demo", ops: "ops", app: "web" }[opts.channel]}).`);
     }
     const version = opts.version ?? defaultVersion(opts.channel);
     if (!VERSION.test(version)) throw new Error(`Bad version ${version}`);
@@ -390,10 +447,19 @@ export function main(argv, deps = {}) {
     if (opts.channel === "demo" && existsSync(path.join(dir, "config.json"))) {
       throw new Error(`${opts.dir} has a config.json, so it's an app build, not the demo (npm run build:demo builds dist/demo).`);
     }
-    if (opts.channel === "app") {
-      const config = JSON.stringify(appConfig(aws, opts.env), null, 2) + "\n";
-      if (aws.dryRun) aws.log(`Would write config.json:\n${config}`);
-      else writeFileSync(path.join(dir, "config.json"), config);
+    // A folder is one channel's build: the operator page never ships with the app's files, nor the app with the page's
+    if (opts.channel !== "ops" && existsSync(path.join(dir, "ops-config.json"))) {
+      throw new Error(`${opts.dir} has an ops-config.json, so it's the operator page's build (npm run build:ops), not the ${opts.channel}'s.`);
+    }
+    if (opts.channel === "ops" && existsSync(path.join(dir, "config.json"))) {
+      throw new Error(`${opts.dir} has a config.json, so it's an app build, not the operator page (npm run build:ops builds dist/ops).`);
+    }
+    const [file, config] =
+      opts.channel === "app" ? ["config.json", appConfig(aws, opts.env)] : opts.channel === "ops" ? ["ops-config.json", opsConfig(aws, opts.env)] : [];
+    if (file) {
+      const text = JSON.stringify(config, null, 2) + "\n";
+      if (aws.dryRun) aws.log(`Would write ${file}:\n${text}`);
+      else writeFileSync(path.join(dir, file), text);
     }
     for (const cmd of uploadCommands({ dir, version, bucket, bucketRegion, profile: opts.profile })) aws.write(cmd);
     aws.log(`Uploaded ${opts.dir} as release ${version}.`);
@@ -413,11 +479,19 @@ export function main(argv, deps = {}) {
   activate(aws, { store, channel: opts.channel, version: opts.version });
 }
 
-/** App releases have config.json and demo releases don't; neither goes live on the other's channel. */
+/**
+ * App releases have config.json, operator page releases ops-config.json, and demo releases
+ * neither; none goes live on another's channel.
+ */
 function checkReleaseChannel(aws, { bucket, bucketRegion, channel, version }) {
-  const releaseChannel = aws.exists(bucket, releaseConfigKey(version), bucketRegion) ? "app" : "demo";
+  const releaseChannel = aws.exists(bucket, releaseConfigKey(version), bucketRegion)
+    ? "app"
+    : aws.exists(bucket, releaseOpsConfigKey(version), bucketRegion)
+      ? "ops"
+      : "demo";
   if (releaseChannel !== channel) {
-    throw new Error(`Release ${version} is ${releaseChannel === "app" ? "an app" : "a demo"} release (it ${releaseChannel === "app" ? "has" : "has no"} config.json), so it can't go live on the ${channel} channel.`);
+    const what = { app: "an app release (it has config.json)", ops: "an operator page release (it has ops-config.json)", demo: "a demo release (it has no config.json)" }[releaseChannel];
+    throw new Error(`Release ${version} is ${what}, so it can't go live on the ${channel} channel.`);
   }
 }
 

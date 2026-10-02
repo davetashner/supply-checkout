@@ -3,6 +3,7 @@
 //   artifact   dist/artifact/index.html, the self-contained page published to claude.ai
 //   web        dist/web/, index.html plus hashed assets, for CloudFront
 //   demo       dist/demo/, the web build in demo mode, for supplycheckout.com
+//   ops        dist/ops/, the operator page (ops/), for ops.<env domain>
 //
 // Tests pick artifact or web with BUILD=artifact (the default) or BUILD=web. The
 // demo isn't a BUILD of its own: it's built and tested alongside the web build
@@ -29,6 +30,8 @@ export async function buildApp(build) {
 
 // Built with the web build, for tests/demo.spec.js
 export const DEMO = "demo";
+// Built with the web build too, for tests/ops.spec.js
+export const OPS = "ops";
 
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".map": "application/json", ".svg": "image/svg+xml", ".png": "image/png" };
 

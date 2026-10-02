@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { routerCode } from "../lib/stacks/web-stack.js";
+import { opsRouterCode, routerCode } from "../lib/stacks/web-stack.js";
 
 // Runs lib/web/router.js (the CloudFront Function), as WebStack fills it in,
 // with a stand-in for the `cloudfront` module's KeyValueStore.
@@ -195,5 +195,94 @@ describe("router (CloudFront Function)", () => {
       expect((await router({ app: bad })(APP, "/")).statusCode, bad).toBe(503);
       expect((await router({ demo: bad })(APEX, "/demo/")).statusCode, bad).toBe(503);
     }
+  });
+});
+
+// lib/web/ops-router.js, the operator page's router (supply-checkout-gxlt)
+const OPS = `ops.${APEX}`;
+const opsSource = opsRouterCode({ kvsId: "test-store", ops: OPS });
+
+function opsRouter(store: Store) {
+  const cf = {
+    kvs: (id: string) => {
+      expect(id).toBe("test-store");
+      return {
+        get: async (key: string) => {
+          expect(key).toBe("ops");
+          const value = store[key];
+          if (value instanceof Error) throw value;
+          if (value === undefined) throw new Error(`Key ${key} not found`);
+          return value;
+        },
+      };
+    },
+  };
+  const body = opsSource.replace(/^import cf from "cloudfront";$/m, "");
+  expect(body).not.toBe(opsSource);
+  const handler = new Function("cf", `${body}\nreturn handler;`)(cf) as (event: unknown) => Promise<Result>;
+  return (host: string | undefined, uri: string) => handler({ request: { uri, querystring: { code: { value: "c" } }, headers: host === undefined ? {} : { host: { value: host } } } });
+}
+
+const opsLive = opsRouter({ ops: "ops-20261002-120000-abc1234", app: "1.4.0" });
+
+const expectMade = (res: Result, status: number) => {
+  expect(res.statusCode).toBe(status);
+  expect(res.uri).toBeUndefined();
+  expect(res.headers?.["strict-transport-security"]?.value).toBe(HSTS);
+  expect(res.headers?.["x-content-type-options"]?.value).toBe("nosniff");
+  expect(res.headers?.["cache-control"]?.value).toBe("no-store");
+  expect(res.headers?.["content-security-policy"]?.value).toBe("default-src 'none'; frame-ancestors 'none'");
+};
+
+describe("ops router (CloudFront Function, supply-checkout-gxlt)", () => {
+  it("fills in every placeholder and refuses a bad host", () => {
+    expect(opsSource).not.toMatch(/__[A-Z_]+__/);
+    expect(opsSource).toContain(`const OPS = "${OPS}";`);
+    expect(opsSource).toContain(`const HSTS = "${HSTS}";`);
+    for (const bad of ["$&", "Ops.example.com", 'a"b', ""]) expect(() => opsRouterCode({ kvsId: "k", ops: bad }), bad).toThrow(/ops host/);
+  });
+
+  it("uses no syntax the CloudFront runtime rejects", () => {
+    expect(opsSource).not.toMatch(/\bfor\s*\([^)]*\bof\b/);
+    expect(opsSource).not.toMatch(/\.\.\./);
+    expect(opsSource).not.toMatch(/`/);
+    expect(opsSource).not.toMatch(/Object\.assign/);
+  });
+
+  it("serves the page, its config and its hashed assets from the ops channel's release", async () => {
+    expect((await opsLive(OPS, "/")).uri).toBe("/releases/ops-20261002-120000-abc1234/index.html");
+    expect((await opsLive("OPS.SupplyCheckout.com", "/")).uri).toBe("/releases/ops-20261002-120000-abc1234/index.html");
+    expect((await opsLive(OPS, "/ops-config.json")).uri).toBe("/releases/ops-20261002-120000-abc1234/ops-config.json");
+    expect((await opsLive(OPS, "/assets/index-Do94nO-H.js")).uri).toBe("/releases/ops-20261002-120000-abc1234/assets/index-Do94nO-H.js");
+    expect((await opsLive(OPS, "/assets/index-CMmWHuO0.css")).uri).toBe("/releases/ops-20261002-120000-abc1234/assets/index-CMmWHuO0.css");
+    expect((await opsLive(OPS, "/assets/icon-Dth9jtnq.svg")).uri).toBe("/releases/ops-20261002-120000-abc1234/assets/icon-Dth9jtnq.svg");
+  });
+
+  it("answers 404 for any other host or path, so nothing else in the bucket can be named", async () => {
+    for (const host of [APP, APEX, WWW, "d111111abcdef8.cloudfront.net", `${OPS}.`, `${OPS}:443`, undefined]) expectMade(await opsLive(host, "/"), 404);
+    for (const uri of [
+      "/index.html",
+      "/config.json",
+      "/favicon.ico",
+      "/assets/index.js.map",
+      "/assets/../config.json",
+      "/assets/..%2f..%2f1.4.0/index.html",
+      "/assets/a/b.js",
+      "/assets/x.html",
+      "/releases/1.4.0/index.html",
+      "//evil.example/",
+      "/team/t1",
+      "",
+    ]) {
+      expectMade(await opsLive(OPS, uri), 404);
+    }
+  });
+
+  it("serves only ops- releases: never the app's or the demo's, and 503 with nothing live", async () => {
+    for (const bad of ["1.4.0", "demo-20260926-abc1234", "app-v1.9.0", "none", "ops-", "ops-../x", "ops-a b", ""]) {
+      expectMade(await opsRouter({ ops: bad })(OPS, "/"), 503);
+    }
+    expectMade(await opsRouter({})(OPS, "/"), 503);
+    expectMade(await opsRouter({ ops: new Error("KVS unavailable") })(OPS, "/"), 503);
   });
 });

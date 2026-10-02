@@ -1015,7 +1015,8 @@
           "aws.cognito.signin.user.admin"
         ],
         "CallbackURLs": [
-          "http://localhost:8765/"
+          "http://localhost:8765/",
+          "https://ops.supplycheckout.com/"
         ],
         "ClientName": "ops",
         "EnableTokenRevocation": true,
@@ -1023,7 +1024,8 @@
         "GenerateSecret": false,
         "IdTokenValidity": 15,
         "LogoutURLs": [
-          "http://localhost:8765/"
+          "http://localhost:8765/",
+          "https://ops.supplycheckout.com/"
         ],
         "PreventUserExistenceErrors": "ENABLED",
         "ReadAttributes": [

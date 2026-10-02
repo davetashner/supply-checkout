@@ -29,6 +29,7 @@ import type { Construct } from "constructs";
 import type { DeploymentConfig } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import { contentSecurityPolicy } from "../web/content-security-policy.js";
+import { opsContentSecurityPolicy } from "../web/ops-content-security-policy.js";
 import { WebPublisher } from "../web/publisher.js";
 import { RealUserMonitoring } from "../web/rum.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
@@ -36,6 +37,13 @@ import { logsBucketName, webBucketName } from "./data-stack.js";
 
 /** Release channels: the live version of each is a key in the KeyValueStore (web/router.js). */
 export const RELEASE_CHANNELS = ["app", "demo"] as const;
+
+/**
+ * The operator page's channel (web/ops-router.js), a key in the same KeyValueStore. It isn't in
+ * the store's import source: changing that replaces the store and resets every channel, and a
+ * missing key is treated like "none" (503) until the first `publish-web.mjs publish --channel ops`.
+ */
+export const OPS_CHANNEL = "ops";
 
 /** Requests per IP per 5 minutes before WAF blocks it. A page load is about 10. */
 export const RATE_LIMIT_PER_5_MINUTES = 2000;
@@ -51,6 +59,10 @@ export const webOutputParameters = (envName: string) => {
   const prefix = `/supply-checkout/${envName}/web`;
   return {
     distributionId: `${prefix}/distribution-id`,
+    /** The operator page's distribution (supply-checkout-gxlt). */
+    opsDistributionId: `${prefix}/ops-distribution-id`,
+    /** The operator page's router function: check-router runs it too. */
+    opsRouterFunctionName: `${prefix}/ops-router-function-name`,
     /** The router CloudFront Function's name: its metrics' FunctionName (the web alarms, supply-checkout-3sv.2). */
     routerFunctionName: `${prefix}/router-function-name`,
     liveVersionStoreArn: `${prefix}/live-version-store-arn`,
@@ -65,11 +77,14 @@ export const webOutputParameters = (envName: string) => {
 /** HSTS on every response: two years, with subdomains. */
 export const HSTS_MAX_AGE = Duration.days(730);
 
-/** web/router.js without its comment lines (CloudFront Functions are limited to 10 KB). */
-const ROUTER_SOURCE = readFileSync(new URL("../web/router.js", import.meta.url), "utf8")
-  .split("\n")
-  .filter((line) => !/^\s*\/\//.test(line))
-  .join("\n");
+/** A CloudFront Function's source without its comment lines (CloudFront Functions are limited to 10 KB). */
+const functionSource = (file: string) =>
+  readFileSync(new URL(`../web/${file}`, import.meta.url), "utf8")
+    .split("\n")
+    .filter((line) => !/^\s*\/\//.test(line))
+    .join("\n");
+const ROUTER_SOURCE = functionSource("router.js");
+const OPS_ROUTER_SOURCE = functionSource("ops-router.js");
 
 /** Hostnames the router compares against: lowercase letters, digits, dots and dashes only. */
 const HOST = /^[a-z0-9.-]+$/;
@@ -79,18 +94,31 @@ export function routerCode(values: { kvsId: string; apex: string; www: string; a
   for (const key of ["apex", "www", "app"] as const) {
     if (!HOST.test(values[key])) throw new Error(`router.js ${key} host "${values[key]}" isn't a lowercase hostname`);
   }
-  const fill: Record<string, string> = {
+  return fillIn("router.js", ROUTER_SOURCE, {
     __KVS_ID__: values.kvsId,
     __APEX_HOST__: values.apex,
     __WWW_HOST__: values.www,
     __APP_HOST__: values.app,
     __HSTS__: `max-age=${HSTS_MAX_AGE.toSeconds()}; includeSubDomains`,
-  };
+  });
+}
+
+/** The operator page's router (web/ops-router.js) with its placeholders filled in. */
+export function opsRouterCode(values: { kvsId: string; ops: string }): string {
+  if (!HOST.test(values.ops)) throw new Error(`ops-router.js ops host "${values.ops}" isn't a lowercase hostname`);
+  return fillIn("ops-router.js", OPS_ROUTER_SOURCE, {
+    __KVS_ID__: values.kvsId,
+    __OPS_HOST__: values.ops,
+    __HSTS__: `max-age=${HSTS_MAX_AGE.toSeconds()}; includeSubDomains`,
+  });
+}
+
+function fillIn(file: string, source: string, fill: Record<string, string>): string {
   // A replacer function, so "$&" and the like in a value are copied as they are
-  let code = ROUTER_SOURCE;
+  let code = source;
   for (const [placeholder, value] of Object.entries(fill)) code = code.replace(placeholder, () => value);
   const left = code.match(/__[A-Z_]+__/);
-  if (left) throw new Error(`router.js placeholder ${left[0]} isn't filled in`);
+  if (left) throw new Error(`${file} placeholder ${left[0]} isn't filled in`);
   return code;
 }
 
@@ -118,10 +146,17 @@ export function routerCode(values: { kvsId: string; apex: string; www: string; a
  * - The web publisher role (web/publisher.ts): what the deploy workflow publishes
  *   releases and switches the live version with, assumed only by the GitHub
  *   deploy role (supply-checkout-pbp.28).
+ * - The operator page (supply-checkout-gxlt, ADR 0015 §6): a second distribution
+ *   for ops. alone, its own origin, with its own router (web/ops-router.js, the
+ *   "ops" channel, releases named ops-*), a strict CSP
+ *   (web/ops-content-security-policy.ts), no caching anywhere, and the same
+ *   bucket, WAF and logs. No customer app code is ever served there.
  * - The bucket's origin failover to a second region is phase 2 (supply-checkout-d79).
  */
 export class WebStack extends SupplyCheckoutStack {
   readonly distribution: Distribution;
+  readonly opsDistribution: Distribution;
+  readonly opsRouter: CloudFrontFunction;
   readonly liveVersions: KeyValueStore;
   readonly webAcl: CfnWebACL;
   readonly rum: RealUserMonitoring;
@@ -260,12 +295,75 @@ export class WebStack extends SupplyCheckoutStack {
       reason: "No geo restriction: customers can travel, and WAF rate-limits abuse.",
     });
 
+    // The operator page: its own distribution and origin, ops.<env domain>
+    this.opsRouter = new CloudFrontFunction(this, "OpsRouter", {
+      comment: "Serves the operator page's live release on ops. only",
+      runtime: FunctionRuntime.JS_2_0,
+      keyValueStore: this.liveVersions,
+      code: FunctionCode.fromInline(opsRouterCode({ kvsId: this.liveVersions.keyValueStoreId, ops: names.ops })),
+    });
+    const opsHeaders = new ResponseHeadersPolicy(this, "OpsSecurityHeaders", {
+      comment: "Operator page: strict CSP, no caching, HSTS and the other security headers",
+      securityHeadersBehavior: {
+        contentSecurityPolicy: {
+          contentSecurityPolicy: opsContentSecurityPolicy({ api: names.api, opsAuth: names.opsAuth }),
+          override: true,
+        },
+        strictTransportSecurity: { accessControlMaxAge: HSTS_MAX_AGE, includeSubdomains: true, override: true },
+        contentTypeOptions: { override: true },
+        frameOptions: { frameOption: HeadersFrameOption.DENY, override: true },
+        // The sign-in answer is in the page's URL for a moment: it's never sent on as a referrer
+        referrerPolicy: { referrerPolicy: HeadersReferrerPolicy.NO_REFERRER, override: true },
+      },
+      customHeadersBehavior: {
+        customHeaders: [
+          // Nothing the page serves is kept by the browser
+          { header: "Cache-Control", value: "no-store", override: true },
+          { header: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), usb=(), payment=()", override: true },
+          { header: "Cross-Origin-Opener-Policy", value: "same-origin", override: true },
+          { header: "Cross-Origin-Resource-Policy", value: "same-origin", override: true },
+          { header: "X-Robots-Tag", value: "noindex, nofollow", override: true },
+        ],
+      },
+    });
+    this.opsDistribution = new Distribution(this, "OpsDistribution", {
+      comment: `Supply Checkout ${config.envName}: operator page`,
+      domainNames: [names.ops],
+      certificate: Certificate.fromCertificateArn(
+        this,
+        "OpsCertificate",
+        StringParameter.valueForStringParameter(this, domainOutputParameters(config.envName).opsWebCertificateArn),
+      ),
+      minimumProtocolVersion: SecurityPolicyProtocol.TLS_V1_2_2021,
+      httpVersion: HttpVersion.HTTP2_AND_3,
+      priceClass: PriceClass.PRICE_CLASS_100,
+      enableIpv6: true,
+      webAclId: this.webAcl.attrArn,
+      enableLogging: true,
+      logBucket: logsBucket,
+      logFilePrefix: "cloudfront/ops/",
+      defaultBehavior: {
+        origin: S3BucketOrigin.withOriginAccessControl(bucket),
+        viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        allowedMethods: AllowedMethods.ALLOW_GET_HEAD,
+        // Nothing cached at the edge either: a few operators, a few small files
+        cachePolicy: CachePolicy.CACHING_DISABLED,
+        responseHeadersPolicy: opsHeaders,
+        compress: true,
+        functionAssociations: [{ function: this.opsRouter, eventType: FunctionEventType.VIEWER_REQUEST }],
+      },
+    });
+    Validations.of(this.opsDistribution).acknowledge({
+      id: "AwsSolutions-CFR1",
+      reason: "No geo restriction: operators can travel; sign-in needs password plus TOTP, and WAF rate-limits abuse.",
+    });
+
     this.publisher = new WebPublisher(this, "Publisher", {
       envName: config.envName,
       bucket,
       bucketRegion,
       liveVersions: this.liveVersions,
-      router,
+      routers: [router, this.opsRouter],
       distribution: this.distribution,
     });
 
@@ -274,12 +372,17 @@ export class WebStack extends SupplyCheckoutStack {
       new ARecord(this, `${id}A`, { zone, recordName: host, target });
       new AaaaRecord(this, `${id}Aaaa`, { zone, recordName: host, target });
     }
+    const opsTarget = RecordTarget.fromAlias(new CloudFrontTarget(this.opsDistribution));
+    new ARecord(this, "OpsA", { zone, recordName: names.ops, target: opsTarget });
+    new AaaaRecord(this, "OpsAaaa", { zone, recordName: names.ops, target: opsTarget });
 
     const out = webOutputParameters(config.envName);
     const publish = (id: string, name: string, value: string, description: string) =>
       new StringParameter(this, id, { parameterName: name, stringValue: value, description });
     publish("DistributionIdParam", out.distributionId, this.distribution.distributionId, "Web distribution ID");
     publish("RouterFunctionNameParam", out.routerFunctionName, router.functionName, "Router CloudFront Function name");
+    publish("OpsDistributionIdParam", out.opsDistributionId, this.opsDistribution.distributionId, "Operator page distribution ID");
+    publish("OpsRouterFunctionNameParam", out.opsRouterFunctionName, this.opsRouter.functionName, "Operator page router CloudFront Function name");
     publish("LiveVersionStoreParam", out.liveVersionStoreArn, this.liveVersions.keyValueStoreArn, "KeyValueStore holding the live release per channel");
     publish("BucketNameParam", out.bucketName, bucket.bucketName, "Bucket holding web releases");
     publish("BucketRegionParam", out.bucketRegion, bucketRegion, "Region of the web releases bucket");

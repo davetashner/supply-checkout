@@ -3400,7 +3400,8 @@
             "POST"
           ],
           "AllowOrigins": [
-            "https://app.supplycheckout.com"
+            "https://app.supplycheckout.com",
+            "https://ops.supplycheckout.com"
           ],
           "MaxAge": 3600
         },

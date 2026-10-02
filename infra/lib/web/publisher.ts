@@ -9,8 +9,8 @@ import { githubDeployRoleName } from "../stacks/github-deploy-stack.js";
 
 /**
  * The SSM parameters scripts/publish-web.mjs reads, under /supply-checkout/<env>/: the web
- * stack's outputs (bucket, store, router, distribution, RUM) and the app's config.json values
- * from the api, identity and realtime stacks (publish-web.mjs configParameterNames; web.test.ts
+ * stack's outputs (bucket, store, routers, distributions, RUM), the app's config.json values
+ * from the api, identity and realtime stacks, and the operator page's ops-config.json values (publish-web.mjs configParameterNames; web.test.ts
  * checks this covers them).
  */
 export const PUBLISHER_PARAMETERS = [
@@ -18,6 +18,9 @@ export const PUBLISHER_PARAMETERS = [
   "api/url",
   "identity/auth-url",
   "identity/web-client-id",
+  // The operator page's ops-config.json (supply-checkout-gxlt): the ops client and its sign-in host
+  "identity/ops-client-id",
+  "identity/ops-auth-url",
   "realtime/websocket-url",
   "realtime/host",
 ] as const;
@@ -28,7 +31,8 @@ export interface WebPublisherProps {
   readonly bucket: IBucket;
   readonly bucketRegion: string;
   readonly liveVersions: KeyValueStore;
-  readonly router: CloudFrontFunction;
+  /** The web distribution's router and the operator page's (check-router runs both). */
+  readonly routers: CloudFrontFunction[];
   readonly distribution: Distribution;
 }
 
@@ -44,8 +48,8 @@ export interface WebPublisherProps {
  *   uploaded once; versioning keeps any overwritten object for 30 days);
  * - describe, list, read and put keys in the live-version KeyValueStore (making a release live,
  *   or rolling back);
- * - read the distribution's config (its aliases) and describe and test the router function
- *   (check-router). Nothing else: no delete, no invalidation, no change to the distribution.
+ * - read the distribution's config (its aliases) and describe and test the router functions,
+ *   the web distribution's and the operator page's (check-router). Nothing else: no delete, no invalidation, no change to the distribution.
  *
  * Only the GitHub deploy role may assume it (the account as principal, with aws:PrincipalArn
  * naming that role, so the trust doesn't need the role to exist yet). The owner publishes with
@@ -102,7 +106,7 @@ export class WebPublisher extends Construct {
       sid: "CheckRouter",
       effect: Effect.ALLOW,
       actions: ["cloudfront:DescribeFunction", "cloudfront:TestFunction"],
-      resources: [props.router.functionArn],
+      resources: props.routers.map((r) => r.functionArn),
     }));
     this.role.addToPolicy(new PolicyStatement({
       sid: "ReadDistributionAliases",
