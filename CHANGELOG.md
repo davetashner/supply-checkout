@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.9.0](https://github.com/davetashner/supply-checkout/compare/v1.8.0...v1.9.0) (2026-10-02)
+
+
+### Features
+
+* add a prod restore drill script ([#428](https://github.com/davetashner/supply-checkout/issues/428)) ([6014e43](https://github.com/davetashner/supply-checkout/commit/6014e434d40361367a474c9d11a936422d97876a))
+* **billing:** make lapsed trials and overdue payments read-only ([#460](https://github.com/davetashner/supply-checkout/issues/460)) ([3d14596](https://github.com/davetashner/supply-checkout/commit/3d145966869ecdf6e5c946c33240e33a4d9a2402))
+* operators see each team's receipt reads and estimated cost ([#442](https://github.com/davetashner/supply-checkout/issues/442)) ([8e2240c](https://github.com/davetashner/supply-checkout/commit/8e2240c3f51166cf870485f5f7063cec49a8ac29))
+* per-user receipt rate limits and per-plan receipt allowances ([#433](https://github.com/davetashner/supply-checkout/issues/433)) ([0eab535](https://github.com/davetashner/supply-checkout/commit/0eab5354ed98d3faa3390d86a168cf0c3d221674))
+* read receipts in the web app with Claude on Bedrock ([#417](https://github.com/davetashner/supply-checkout/issues/417)) ([87066d6](https://github.com/davetashner/supply-checkout/commit/87066d6ad44f91fa55eb0708e75e7df42bc7c5c1))
+* read receipts with Claude on Bedrock (receipts endpoint) ([#411](https://github.com/davetashner/supply-checkout/issues/411)) ([b514a37](https://github.com/davetashner/supply-checkout/commit/b514a3712c62c978cd16c5134e09a8d10a924452))
+* route support@ mail to the owner's inbox ([#431](https://github.com/davetashner/supply-checkout/issues/431)) ([bd6f918](https://github.com/davetashner/supply-checkout/commit/bd6f918faa4153cbfb1df903c8cc7bc28fbd9211))
+* search returned sheets and group them by year and month ([#425](https://github.com/davetashner/supply-checkout/issues/425)) ([eb41977](https://github.com/davetashner/supply-checkout/commit/eb419778a09b2279dd6c232da5d6273466912267))
+* show receipt scans left and the limit messages in the web app ([#437](https://github.com/davetashner/supply-checkout/issues/437)) ([a70aca0](https://github.com/davetashner/supply-checkout/commit/a70aca098075cfcb5922a5b442e832feae04534b))
+
+
+### Bug Fixes
+
+* stack Finished Return's equipment steppers on narrow phones ([#422](https://github.com/davetashner/supply-checkout/issues/422)) ([e1dc8e7](https://github.com/davetashner/supply-checkout/commit/e1dc8e728409f3e1b3fa23aa0720f85f186be49d))
+
 ## [1.8.0](https://github.com/davetashner/supply-checkout/compare/v1.7.1...v1.8.0) (2026-10-01)
 
 
