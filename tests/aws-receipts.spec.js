@@ -2,7 +2,7 @@
 // POST /teams/{teamId}/receipts/read (ADR 0008), against the fake backend in
 // tests/fake-aws.js, and the app's review reads what comes back. The server's side is
 // backend/test/receipts-api.test.ts.
-import { test, expect } from "./helpers.js";
+import { test, expect, modal, modalViolations } from "./helpers.js";
 import { currentBuild } from "../scripts/builds.mjs";
 import { usedState } from "./fixtures.js";
 import { FakeBackend, TEAM, openAws, connected } from "./fake-aws.js";
@@ -27,6 +27,8 @@ const receipt = {
 };
 const line = (page, i) => page.locator(".rline").nth(i);
 const failure = (page) => page.locator("#rBody .reading");
+const left = (page) => page.locator("#receiptsLeft");
+const USAGE = "/teams/t1/receipts/usage";
 
 async function scan(page, backend, file = photo) {
   await openAws(page, backend);
@@ -87,6 +89,9 @@ test.describe("reading a receipt on the receipt endpoint", { tag: ["@J5", "@J5.1
     // Typing the items in still works
     await page.getByRole("button", { name: "Enter items by hand" }).click();
     await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+    // What's left was read again: none
+    await page.getByRole("button", { name: "← All sheets" }).click();
+    await expect(left(page)).toHaveText("No receipt scans left this month");
   });
 
   for (const [what, status, error, message] of [
@@ -182,5 +187,89 @@ test.describe("reading a receipt on the receipt endpoint", { tag: ["@J5", "@J5.1
     await connected(page);
     await expect(page.locator("#main")).toBeVisible();
     await expect(page.getByText("Scan receipt")).toHaveCount(0);
+    await expect(left(page)).toHaveCount(0);
+  });
+});
+
+// supply-checkout-wxx: each team's allowance (a month's while it pays, its trial's while it
+// doesn't) and each person's rate limit, as backend/src/data/usage.ts counts them
+test.describe("receipt scans left, and the limits", { tag: ["@J5", "@J5.1"] }, () => {
+  test("shows the scans left under the bar, and counts each read", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded(), receipt });
+    await openAws(page, backend);
+    await connected(page);
+    await expect(left(page)).toHaveText("200 of 200 receipt scans left this month");
+    // On a phone too, it fits the width
+    const box = await left(page).boundingBox();
+    expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize().width);
+    await page.setInputFiles("#receiptFile", photo);
+    await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+    await page.getByRole("button", { name: "← All sheets" }).click();
+    // From the read's own answer: no second request
+    await expect(left(page)).toHaveText("199 of 200 receipt scans left this month");
+    expect(backend.requests("GET", USAGE)).toHaveLength(1);
+  });
+
+  test("says when a trial's scans are used up, with how to get more", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded(), receipt, receiptLimit: 1, receiptPeriod: "trial" });
+    await openAws(page, backend);
+    await connected(page);
+    await expect(left(page)).toHaveText("1 of 1 free trial receipt scans left");
+    await page.setInputFiles("#receiptFile", photo);
+    await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+    await page.getByRole("button", { name: "← All sheets" }).click();
+    await expect(left(page)).toHaveText("No free trial receipt scans left. An owner can subscribe to scan more.");
+    await page.setInputFiles("#receiptFile", photo);
+    await expect(failure(page)).toContainText("Your team has used all the receipt scans included in its free trial. Enter the items by hand, or ask an owner to subscribe to keep scanning receipts.");
+  });
+
+  for (const [what, message] of [
+    ["the person has read a lot in a short time", "You've read a lot of receipts in a short time. Try again in 3 minutes, or enter the items by hand."],
+    ["today's free trial scans are used up", "You've used today's free trial receipt scans; more tomorrow. Enter the items by hand, or ask an owner to subscribe."],
+  ]) {
+    test(`says how long to wait when ${what}`, async ({ page }) => {
+      const backend = new FakeBackend({ docs: seeded(), receipt });
+      // The server's words say how long, from the Retry-After it also sends
+      backend.on("POST", READ, { status: 429, body: { error: { code: "quota_exceeded", reason: "rate_limited", message } } });
+      await scan(page, backend);
+      await expect(failure(page)).toContainText("Couldn't read that receipt");
+      await expect(failure(page)).toContainText(message);
+      // Not counted against the team
+      await page.getByRole("button", { name: "← All sheets" }).click();
+      await expect(left(page)).toHaveText("200 of 200 receipt scans left this month");
+    });
+  }
+
+  test("still scans when the scans left can't be read", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded(), receipt });
+    backend.on("GET", USAGE, { status: 503, body: { error: { code: "unavailable", message: "down" } } });
+    await scan(page, backend);
+    await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+    await page.getByRole("button", { name: "← All sheets" }).click();
+    // The read's answer had them
+    await expect(left(page)).toHaveText("199 of 200 receipt scans left this month");
+  });
+
+  test("shows owners the scans used in Team settings", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded(), receipt });
+    backend.receiptsRead.t1 = 12;
+    await openAws(page, backend);
+    await connected(page);
+    const settings = page.locator(".teambar").getByRole("button", { name: "Team settings" });
+    await settings.click();
+    await expect(modal(page).locator("#receiptUsage")).toHaveText("Receipt scans: 12 of 200 used this month (188 left). The count starts again on the 1st (UTC).");
+    expect(await modalViolations(page)).toEqual([]);
+    await modal(page).getByRole("button", { name: "Cancel" }).click();
+    // A trial's, in all
+    backend.receiptPeriod = "trial";
+    backend.receiptLimit = 25;
+    await settings.click();
+    await expect(modal(page).locator("#receiptUsage")).toHaveText("Receipt scans: 12 of the 25 in your free trial used (13 left). A subscription includes more each month.");
+    await modal(page).getByRole("button", { name: "Cancel" }).click();
+    // And when they can't be read, the markup still can
+    backend.on("GET", USAGE, { status: 503, body: { error: { code: "unavailable", message: "down" } } });
+    await settings.click();
+    await expect(modal(page).locator("#receiptUsage")).toHaveText("Receipt scans: couldn't load what's left. Open the settings again to retry.");
+    await expect(modal(page).getByLabel("Markup on company equipment bought for a client (%)")).toHaveValue("0");
   });
 });

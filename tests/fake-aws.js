@@ -89,9 +89,10 @@ export class FakeBackend {
   // supportActions: { "<teamId>": [{ eventId, ts, actor, action, reason, before, after }] }, newest first
   // settings: { "<teamId>": { equipmentMarkup, version } }, the team settings (ADR 0017)
   // receipt: what POST /teams/{teamId}/receipts/read answers (the lines, with `match` as
-  // product keys); receiptLimit: the team's receipts a month (RECEIPTS_PER_TEAM_PER_MONTH)
-  constructor({ teams = [TEAM], invites = [], members = {}, teamInvites = {}, supportActions = {}, settings = {}, user = USER, docs = {}, signedIn = true, claims = { given_name: "Pat", family_name: "Lee", email: USER.email }, config = CONFIG, expiresIn = 3600, receipt = { store: null, date: null, items: [], subtotal: null, tax: null, total: null }, receiptLimit = 200 } = {}) {
-    Object.assign(this, { teams: clone(teams), invites: clone(invites), members: clone(members), teamInvites: clone(teamInvites), supportActions: clone(supportActions), settings: clone(settings), user, signedIn, claims, config, expiresIn, receipt: clone(receipt), receiptLimit });
+  // product keys); receiptLimit: the team's receipts a month (RECEIPTS_PER_TEAM_PER_MONTH), or
+  // in all for a trial (receiptPeriod "trial", RECEIPTS_PER_TRIAL)
+  constructor({ teams = [TEAM], invites = [], members = {}, teamInvites = {}, supportActions = {}, settings = {}, user = USER, docs = {}, signedIn = true, claims = { given_name: "Pat", family_name: "Lee", email: USER.email }, config = CONFIG, expiresIn = 3600, receipt = { store: null, date: null, items: [], subtotal: null, tax: null, total: null }, receiptLimit = 200, receiptPeriod = "month" } = {}) {
+    Object.assign(this, { teams: clone(teams), invites: clone(invites), members: clone(members), teamInvites: clone(teamInvites), supportActions: clone(supportActions), settings: clone(settings), user, signedIn, claims, config, expiresIn, receipt: clone(receipt), receiptLimit, receiptPeriod });
     // Receipts read per team, as the API counts them (backend/src/data/usage.ts)
     this.receiptsRead = {};
     // Invites for the user's address that /me lists once they verify it (the email routes)
@@ -294,6 +295,9 @@ export class FakeBackend {
     m = path.match(/^\/teams\/([^/]+)\/receipts\/read$/);
     if (m && method === "POST") return this.readReceipt(decodeURIComponent(m[1]), call.body, err);
 
+    m = path.match(/^\/teams\/([^/]+)\/receipts\/usage$/);
+    if (m && method === "GET") return this.receiptUsage(decodeURIComponent(m[1]), err);
+
     m = path.match(/^\/teams\/([^/]+)\/members(?:\/([^/]+))?$/);
     if (m) return this.member(decodeURIComponent(m[1]), m[2] && decodeURIComponent(m[2]), method, call.body, err);
 
@@ -408,9 +412,26 @@ export class FakeBackend {
     const bytes = image && typeof image.data === "string" ? Buffer.from(image.data, "base64") : Buffer.alloc(0);
     const magic = { "image/jpeg": [0xff, 0xd8, 0xff], "image/png": [0x89, 0x50, 0x4e, 0x47] }[image && image.mediaType];
     if (Object.keys(body || {}).join() !== "image" || !magic || magic.some((b, i) => bytes[i] !== b)) return err(400, "bad_request", "image_rejected");
-    if ((this.receiptsRead[team] || 0) >= this.receiptLimit) return [429, { error: { code: "quota_exceeded", message: `This team has read all ${this.receiptLimit} receipts included this month.`, reason: "receipt_limit" } }];
+    if ((this.receiptsRead[team] || 0) >= this.receiptLimit) {
+      const message = this.receiptPeriod === "trial" ? `This team has read all ${this.receiptLimit} receipts included in its trial. An owner can subscribe to read more.` : `This team has read all ${this.receiptLimit} receipts included this month.`;
+      return [429, { error: { code: "quota_exceeded", message, reason: "receipt_limit" } }];
+    }
     this.receiptsRead[team] = (this.receiptsRead[team] || 0) + 1;
-    return [200, { ...clone(this.receipt), usage: { month: "2026-09", used: this.receiptsRead[team], limit: this.receiptLimit } }];
+    return [200, { ...clone(this.receipt), usage: this.usageOf(team) }];
+  }
+
+  // The team's receipts against its allowance, as GET /teams/{teamId}/receipts/usage answers
+  // (getReceiptQuota in backend/src/data/usage.ts): contributors and owners
+  usageOf(team) {
+    const used = this.receiptsRead[team] || 0;
+    return { period: this.receiptPeriod, month: "2026-09", used, limit: this.receiptLimit, remaining: Math.max(0, this.receiptLimit - used) };
+  }
+
+  receiptUsage(team, err) {
+    const mine = this.teams.find((t) => t.id === team);
+    if (!mine) return err(403, "permission_denied", "not_member");
+    if (mine.role === "viewer") return err(403, "permission_denied", "view_only");
+    return [200, { usage: this.usageOf(team) }];
   }
 
   // The team settings as the API runs them (backend/src/data/settings.ts): owners get the

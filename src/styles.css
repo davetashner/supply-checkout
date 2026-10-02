@@ -129,6 +129,7 @@ select{background:var(--ground);border:1px solid var(--line);border-radius:9px;p
 .who{display:inline-flex;align-items:center;gap:6px}
 .who img{width:18px;height:18px;border-radius:50%}
 .search-row{margin-block:-4px 14px}
+.receipts-left{margin:-6px 0 10px;font-size:13px;text-align:end}
 .year-filter{border-radius:999px;padding:3px 10px;font-size:13px;font-weight:600;color:var(--ink)}
 .year-group{margin-top:20px}
 .year-head{margin:0 0 10px;font-size:22px}
