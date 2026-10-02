@@ -26,14 +26,18 @@ export function installMockClaude(opts) {
   window.__mock = mock;
 
   const denied = () => ({ code: "invalid_argument", message: "write not allowed" });
+  // A path prefix matches whole segments: "sheets/s1" is that sheet (and anything under it),
+  // never "sheets/s1x9..." (a new sheet's random ID can start with "s1"). "sheets/" or ""
+  // matches everything under it.
+  const under = (path, prefix) => path.startsWith(prefix) && (!prefix || prefix.endsWith("/") || path.length === prefix.length || path[prefix.length] === "/");
   const guard = (path) => {
     if (!canWrite) throw denied();
     if (writeError) throw { code: writeError, message: "simulated " + writeError };
     // Set by a test while the page is open: writes fail with this code until it's cleared. Or
     // { prefix, code }: only writes to paths starting with prefix ("products/") fail.
     const fail = mock.failWrites && (typeof mock.failWrites === "string" ? { prefix: "", code: mock.failWrites } : mock.failWrites);
-    if (fail && path.startsWith(fail.prefix)) throw { code: fail.code, message: "simulated " + fail.code };
-    if (writeErrorFor && path.startsWith(writeErrorFor.prefix)) throw { code: writeErrorFor.code, message: "simulated " + writeErrorFor.code };
+    if (fail && under(path, fail.prefix)) throw { code: fail.code, message: "simulated " + fail.code };
+    if (writeErrorFor && under(path, writeErrorFor.prefix)) throw { code: writeErrorFor.code, message: "simulated " + writeErrorFor.code };
   };
   const fire = () => listeners.forEach((l) => l());
   const notify = () => (instantUpdates ? fire() : setTimeout(fire, 0));
@@ -46,10 +50,10 @@ export function installMockClaude(opts) {
   // hold(prefix): only writes to paths starting with prefix ("products/") wait.
   mock.hold = (prefix = "") => { let release; held = { wait: new Promise((r) => { release = r; }), release, prefix }; };
   mock.release = () => { const h = held; held = null; if (h) h.release(); };
-  const arrive = async (path) => { mock.writes++; if (held && path.startsWith(held.prefix)) await held.wait; };
+  const arrive = async (path) => { mock.writes++; if (held && under(path, held.prefix)) await held.wait; };
   // Set by a test to a path prefix ("sheets/"): writes there are saved, but then reject as if
   // the answer was lost on the way back
-  const lost = (path) => { if (mock.loseWrites !== null && path.startsWith(mock.loseWrites)) throw { code: "unavailable", message: "simulated lost answer" }; };
+  const lost = (path) => { if (mock.loseWrites !== null && under(path, mock.loseWrites)) throw { code: "unavailable", message: "simulated lost answer" }; };
   const merge = (target, src) => {
     for (const [k, v] of Object.entries(src)) {
       const both = v && typeof v === "object" && !Array.isArray(v) && target[k] && typeof target[k] === "object" && !Array.isArray(target[k]);
