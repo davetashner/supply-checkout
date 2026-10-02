@@ -18,7 +18,7 @@ import {
   type TieredPriceLike,
 } from "../scripts/stripe-catalog.js";
 import { type Catalog, CATALOG } from "../src/billing/catalog.js";
-import { PORTAL_METADATA, portalConfiguration, type PortalConfigurationParams } from "../src/billing/portal.js";
+import { COMPED_PORTAL_METADATA, PORTAL_METADATA, portalConfiguration, type PortalConfigurationParams } from "../src/billing/portal.js";
 
 // Made-up keys: the right shape, never real
 const TEST_KEY = `sk_test_${"a".repeat(24)}`;
@@ -34,7 +34,9 @@ function memoryStripe() {
     return {
       ...f,
       payment_method_update: { ...f.payment_method_update, payment_method_configuration: null },
-      subscription_update: { ...f.subscription_update, billing_cycle_anchor: null, products: f.subscription_update.products.map((x) => ({ ...x, adjustable_quantity: { enabled: false, maximum: null, minimum: 1 } })) },
+      subscription_update: f.subscription_update.enabled
+        ? { ...f.subscription_update, billing_cycle_anchor: null, products: f.subscription_update.products.map((x) => ({ ...x, adjustable_quantity: { enabled: false, maximum: null, minimum: 1 } })) }
+        : { ...f.subscription_update, billing_cycle_anchor: null, products: [] },
     };
   };
   const replays = new Map<string, unknown>();
@@ -300,7 +302,8 @@ describe("npm run stripe-catalog", () => {
     expect(r.out).toContain(CATALOG.status);
     expect(r.out).toContain("price supply_checkout_starter_monthly: would create");
     expect(r.out).toContain("portal owners: would create");
-    expect(r.out.at(-1)).toBe("Dry run: 4 to change. Run again with --apply to change them.");
+    expect(r.out).toContain("portal owners-comped: would create");
+    expect(r.out.at(-1)).toBe("Dry run: 5 to change. Run again with --apply to change them.");
     expect(r.stripe.configurations).toHaveLength(0);
     expect(r.stripe.prices).toHaveLength(0);
     expect([...r.out, ...r.err].join("\n")).not.toContain(TEST_KEY);
@@ -311,10 +314,12 @@ describe("npm run stripe-catalog", () => {
     expect(await r.done).toBe(0);
     expect(r.out).toContain("price supply_checkout_starter_monthly: create (price_1)");
     expect(r.out).toContain("portal owners: create (bpc_1)");
-    expect(r.out.at(-1)).toBe("Done: 4 changed.");
+    expect(r.out).toContain("portal owners-comped: create (bpc_2)");
+    expect(r.out.at(-1)).toBe("Done: 5 changed.");
     const again = await main([...BASE, "--apply"], (l) => r.out.push(l), (l) => r.err.push(l), { reader: () => async () => TEST_KEY, stripe: () => r.stripe.client });
     expect(again).toBe(0);
     expect(r.out).toContain("portal owners: unchanged (bpc_1)");
+    expect(r.out).toContain("portal owners-comped: unchanged (bpc_2)");
     expect(r.out.at(-1)).toBe("Done: Stripe already matched the catalog.");
     const dry = await main(BASE, (l) => r.out.push(l), (l) => r.err.push(l), { reader: () => async () => TEST_KEY, stripe: () => r.stripe.client });
     expect(dry).toBe(0);
@@ -372,6 +377,21 @@ describe("npm run stripe-catalog", () => {
 });
 
 describe("syncPortal", () => {
+  it("makes the comped teams' configuration beside ours, the same but with no switching of price (supply-checkout-6e4b)", async () => {
+    const stripe = memoryStripe();
+    const changes = await syncCatalog(stripe.client, CATALOG, true);
+    expect(await syncPortal(stripe.client, CATALOG, changes, true)).toMatchObject({ name: "owners", action: "create", configurationId: "bpc_1" });
+    expect(await syncPortal(stripe.client, CATALOG, changes, true, "comped")).toEqual({ kind: "portal", name: "owners-comped", action: "create", configurationId: "bpc_2" });
+    expect(stripe.configurations[1]).toMatchObject({
+      name: "Supply Checkout owners, comped",
+      metadata: COMPED_PORTAL_METADATA,
+      features: { subscription_update: { enabled: false }, subscription_cancel: { enabled: true, mode: "at_period_end" }, payment_method_update: { enabled: true } },
+    });
+    // Each finds its own: neither takes the other's for its own
+    expect(await syncPortal(stripe.client, CATALOG, changes, true)).toMatchObject({ action: "unchanged", configurationId: "bpc_1" });
+    expect(await syncPortal(stripe.client, CATALOG, changes, true, "comped")).toMatchObject({ action: "unchanged", configurationId: "bpc_2" });
+  });
+
   const IDS = new Map([
     ["supply_checkout_starter_monthly", "price_1"],
     ["supply_checkout_starter_annual", "price_2"],

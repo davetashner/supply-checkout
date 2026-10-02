@@ -215,8 +215,8 @@ export interface CompDiscountRecord {
  * comp's Stripe discount (`ops.comp.discount`, supply-checkout-6e4b), in the
  * team's `OPAUDIT#` partition, attributed to BILLING_WORKER_ACTOR: so an
  * operator's comp and what Stripe was asked to do about it are both in the
- * audit. Append-only (`attribute_not_exists`), with the 2-year TTL of every
- * audit item. `requestId` is the seat sync message's ID. Only the billing
+ * audit (its own partition only: not in GSI3's audit by month). Append-only
+ * (`attribute_not_exists`), with the 2-year TTL of every audit item. `requestId` is the seat sync message's ID. Only the billing
  * worker (a system context) may.
  */
 export async function recordCompDiscount(db: Db, ctx: TeamContext, requestId: string, record: CompDiscountRecord, now = new Date()): Promise<string> {
@@ -233,7 +233,11 @@ export async function recordCompDiscount(db: Db, ctx: TeamContext, requestId: st
     },
     now,
   );
-  await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: item, ConditionExpression: "attribute_not_exists(PK)" }));
+  // Not in the operators' index: the role can't name GSI3's keys (COMP_DISCOUNT_AUDIT_ATTRIBUTES)
+  const { GSI3PK: _pk, GSI3SK: _sk, ...unindexed } = item;
+  void _pk;
+  void _sk;
+  await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: unindexed, ConditionExpression: "attribute_not_exists(PK)" }));
   return item.eventId;
 }
 

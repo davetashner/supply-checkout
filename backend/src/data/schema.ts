@@ -238,10 +238,12 @@ export const COMP_MONTHS = "compMonths";
  * The only attributes the billing worker may name when it writes an
  * operator audit item in its team's `OPAUDIT#` partition: the outcome of a
  * comp's Stripe discount (`ops.comp.discount`, billing/comp-discount.ts).
- * The keys, the GSI3 keys (the audit by month), the audit fields but the
- * reason, and the TTL.
+ * The keys, the audit fields but the reason, and the TTL. Not the GSI3 keys:
+ * with them the worker could put items into the operators' index (a fake team
+ * or owner entry), and IAM can't limit their values. So these items are in
+ * the team's audit, not the audit by month.
  */
-export const COMP_DISCOUNT_AUDIT_ATTRIBUTES = [PK, SK, GSI3PK, GSI3SK, "type", "eventId", "ts", "teamId", "operatorSub", "action", "target", "before", "after", "idempotencyKey", TTL_ATTRIBUTE] as const;
+export const COMP_DISCOUNT_AUDIT_ATTRIBUTES = [PK, SK, "type", "eventId", "ts", "teamId", "operatorSub", "action", "target", "before", "after", "idempotencyKey", TTL_ATTRIBUTE] as const;
 
 /**
  * The only attributes the operator-access role may name when it takes a

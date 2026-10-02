@@ -266,11 +266,14 @@ test.describe("support activity", () => {
           action(3, "ops.team.read", { reason: "Ticket 1234" }),
           action(4, "ops.import.clear", { reason: "Stuck import" }),
           action(5, "ops.something.new"),
+          action(6, "ops.comp.discount", { before: { coupon: null }, after: { outcome: "applied", coupon: "supply-checkout-comp-2m", until: "2026-11-20T12:00:00.000Z", subscriptionId: "sub_1" } }),
+          action(7, "ops.comp.discount", { before: { coupon: "supply-checkout-comp-2m" }, after: { outcome: "removed", coupon: null, until: null, subscriptionId: "sub_1" } }),
+          action(8, "ops.comp.discount", { before: null, after: null }),
         ],
       },
     });
     await openMembers(page, backend);
-    await expect(items(page)).toHaveCount(6);
+    await expect(items(page)).toHaveCount(9);
     await expect(items(page).nth(0)).toContainText("Gave the team a free plan until Dec 31, 2026");
     await expect(items(page).nth(0)).toContainText("Reason: Goodwill after the outage");
     await expect(items(page).nth(1)).toContainText("Gave the team a free plan");
@@ -281,6 +284,9 @@ test.describe("support activity", () => {
     await expect(items(page).nth(3)).toContainText("Reason: Ticket 1234");
     await expect(items(page).nth(4)).toContainText("Cleared an import that didn't finish");
     await expect(items(page).nth(5)).toContainText("Changed the team's account");
+    await expect(items(page).nth(6)).toContainText("Made the team's bills free for its free plan's months");
+    await expect(items(page).nth(7)).toContainText("Took the free plan's discount off the team's bills");
+    await expect(items(page).nth(8)).toContainText("Checked the team's bills for its free plan");
     await expect(items(page).nth(0)).toContainText("2026");
     await expect(dialog(page).getByRole("button", { name: "Show more" })).toBeHidden();
     expect(backend.requests("GET", SUPPORT).map((c) => c.query)).toEqual([{ limit: "20" }]);

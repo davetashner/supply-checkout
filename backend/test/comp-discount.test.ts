@@ -241,8 +241,10 @@ describe("a comp message (reason comp)", () => {
       before: { coupon: null },
       after: { outcome: "applied", coupon: "supply-checkout-comp-2m", until: UNTIL, subscriptionId: SUB },
       idempotencyKey: "seats-comp-1",
-      GSI3PK: "OPS#AUDIT#2026-10",
     });
+    // Not in the operators' index: the worker's role can't name GSI3's keys
+    expect(audit).not.toHaveProperty("GSI3PK");
+    expect(audit).not.toHaveProperty("GSI3SK");
     // Exactly docs/api/openapi.yaml's CompDiscountBefore and CompDiscountRecord
     expect(Object.keys(audit?.before as object)).toEqual(["coupon"]);
     expect(Object.keys(audit?.after as object).sort()).toEqual(["coupon", "outcome", "subscriptionId", "until"]);
@@ -336,6 +338,14 @@ describe("a comp message (reason comp)", () => {
     subs.set(SUB, subscription({ discounts: [discount("supply-checkout-comp-2m")] }, "year"));
     expect(await worker(message("comp", "seats-comp-2"))).toBe("removed");
     expect(ours()).toEqual([]);
+  });
+
+  it("never discounts a price billed every few months: each invoice would cover several", async () => {
+    const base = subscription();
+    subs.set(SUB, { ...base, items: { data: base.items.data.map((i) => ({ ...i, price: { ...i.price, recurring: { interval: "month", interval_count: 3 } } })) } });
+    compMonths();
+    expect(await worker(message())).toBe("not_monthly");
+    expect(updates).toEqual([]);
   });
 
   it.each([["canceled"], ["incomplete_expired"], ["incomplete"]])("leaves a %s subscription alone", async (status) => {

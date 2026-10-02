@@ -42,6 +42,13 @@ const SUPPORT = {
   "ops.team.read": () => "Looked at the team's account",
   "ops.comp.set": (a) => "Gave the team a free plan" + (a.after && a.after.until ? ` until ${day(a.after.until)}` : ""),
   "ops.comp.end": () => "Ended the team's free plan",
+  // What billing did about a free plan's months on the team's Stripe bills (supply-checkout-6e4b)
+  "ops.comp.discount": (a) => {
+    const outcome = a.after && a.after.outcome;
+    return outcome === "applied" ? "Made the team's bills free for its free plan's months"
+      : outcome === "removed" ? "Took the free plan's discount off the team's bills"
+      : "Checked the team's bills for its free plan";
+  },
   "ops.import.clear": () => "Cleared an import that didn't finish",
 };
 const SUPPORT_PAGE = 20;

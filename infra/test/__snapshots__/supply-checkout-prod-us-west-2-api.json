@@ -3243,8 +3243,6 @@
                       "dynamodb:Attributes": [
                         "PK",
                         "SK",
-                        "GSI3PK",
-                        "GSI3SK",
                         "type",
                         "eventId",
                         "ts",

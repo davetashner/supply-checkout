@@ -28,10 +28,13 @@
 //
 // What "match" means:
 // - Wanted: a live comp with `compMonths`, on a subscription that's live (not
-//   ended, not incomplete) and billed monthly. A coupon applies to every
+//   ended, not incomplete) and billed every month. A coupon applies to every
 //   invoice in its months, so on a yearly price a renewal in that window
 //   would be a whole year free: a yearly subscription never gets one (and
-//   loses ours if it was switched to yearly), and the outcome says so.
+//   loses ours if it was switched to yearly), and the outcome says so. Owners
+//   can't make that switch while comped: their Customer Portal has no
+//   switching of price then (billing/portal.ts, portalVariantFor), since the
+//   switch's annual invoice would come inside the coupon's months.
 // - Then the subscription carries exactly one discount from our comp coupons,
 //   compCouponId(N), with the comp's end stamped in its metadata
 //   (COMP_UNTIL_METADATA): so a comp changed or extended later (a new end)
@@ -118,7 +121,7 @@ export interface CompSubscriptionLike {
   readonly status: string;
   readonly metadata?: Readonly<Record<string, string>> | null;
   readonly discounts?: readonly (string | DiscountLike)[] | null;
-  readonly items: { readonly data: readonly { readonly price: { readonly recurring: { readonly interval: string } | null } }[] };
+  readonly items: { readonly data: readonly { readonly price: { readonly recurring: { readonly interval: string; readonly interval_count?: number } | null } }[] };
 }
 
 /** What the reconcile needs from the Stripe client. */
@@ -171,8 +174,8 @@ export function wantedCompDiscount(team: Pick<BillingTeam, "compLive" | "compMon
   return { coupon: compCouponId(months), until: team.compUntil };
 }
 
-/** Whether every item on the subscription is billed monthly. */
-const monthly = (sub: CompSubscriptionLike) => sub.items.data.length > 0 && sub.items.data.every((item) => item.price.recurring?.interval === "month");
+/** Whether every item on the subscription is billed every month (not every 3 months, say: each invoice would cover several). */
+const monthly = (sub: CompSubscriptionLike) => sub.items.data.length > 0 && sub.items.data.every((item) => item.price.recurring?.interval === "month" && (item.price.recurring.interval_count ?? 1) === 1);
 
 /** The Stripe idempotency key for one subscription update. */
 export function compDiscountKey(teamId: string, subscriptionId: string, action: "apply" | "remove", until: string | null, found: readonly string[]): string {
