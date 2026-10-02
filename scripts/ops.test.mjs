@@ -443,6 +443,9 @@ test("ranks the month's receipt reads with estimated cost, shows a team's, and a
   const one = harness({ routes: { "GET /ops/teams/team-a": { status: 200, body: { team: TEAM, stripe: null, receipts } } } });
   await main(["team", "team-a"], one.deps);
   assert.match(one.logs[0], /receipts in its trial: 25\n {2}receipts 2026-09: 40\s+est\. \$0\.28\n {2}receipts 2026-08: 0\s+est\. \$0\.00/);
+  const unavailable = harness({ routes: { "GET /ops/teams/team-a": { status: 200, body: { team: TEAM, stripe: null, receipts: null } } } });
+  await main(["team", "team-a"], unavailable.deps);
+  assert.match(unavailable.logs[0], /receipts: unavailable/);
   // The audit names the month
   const audit = harness({ routes: { "GET /ops/audit": { status: 200, body: { events: [{ ts: "t", action: "ops.receipts.usage", teamId: "PLATFORM", operatorSub: "op-1", before: null, after: { month: "2026-09", teams: ["team-b", "team-a"] } }] } } } });
   await main(["audit"], audit.deps);

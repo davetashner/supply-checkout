@@ -130,6 +130,7 @@ When an owner asks for help with their data:
 - A second user pool (free at this size), a second JWT authorizer, a new function and two new roles (`OperatorAccessRole` now, `SupportReadRole` later), a sparse GSI3, and a `comp*` rule in the entitlement check. Each needs cdk-nag and template snapshots, and the security review CLAUDE.md requires.
 - ADR 0009's "only the billing Lambda changes a team's plan or status" stays true; its access rules gain "a live comp wins". ADR 0005's table gains `OPAUDIT#`, `CAMPAIGN#`, `SUPPORT#` and GSI3. ADR 0007 gains the ops pool.
 - Team data stays unreadable to operators until support access is built and an owner approves it.
+- Receipt usage (`supply-checkout-wxx`, 2026-10-01): `OperatorAccessRole` may `BatchGetItem` in any `TEAM#` partition naming only `PK`, `SK` and `receipts`, with `dynamodb:Select` `SPECIFIC_ATTRIBUTES`, so operators see each team's receipt counts (and rank a month's teams) and nothing else of its data. Residual risk, accepted: IAM can't limit sort keys, so the role could confirm that a guessed key exists in any `TEAM#` partition (it gets back `PK` and `SK` only, no other attributes). The code only names `USAGE#` keys.
 
 ## What this changes in other beads
 

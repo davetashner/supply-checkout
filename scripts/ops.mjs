@@ -291,6 +291,7 @@ function stripeLines(stripe) {
 const usd = (n) => (n > 0 && n < 0.005 ? "<$0.01" : `$${n.toFixed(2)}`);
 
 function receiptLines(receipts) {
+  if (receipts === null) return ["  receipts: unavailable (the record above is current; try again later)"];
   if (!receipts) return [];
   return [
     `  receipts in its trial: ${receipts.trialReceipts}`,

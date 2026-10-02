@@ -1186,6 +1186,26 @@ describe("receipt usage (supply-checkout-wxx)", () => {
     expect(JSON.stringify(res.body.receipts)).not.toContain("Secret client");
   });
 
+  it("still shows the record, with receipts: null, when the counters can't be read", async () => {
+    // The counters' read refused (a throttle, say): only the batch read fails
+    const failing = createOpsHandler({
+      dbFor: (_operatorSub, teamId) => table.guarded((command, input) => command !== "BatchGetCommand" && opsPolicy(teamId ?? ".", denied)(command, input)),
+      directory,
+      reopen: async () => { throw new Error("unused"); },
+      issuerUrl: OPS_ISSUER,
+      clientId: OPS_CLIENT,
+      obs: fakeObservability(),
+      now: () => now,
+    });
+    const res = await failing(event("GET", `/ops/teams/${teamA}`));
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body as string);
+    expect(body.receipts).toBeNull();
+    expect(body.team).toMatchObject({ id: teamA, name: "Acme Cleaning" });
+    expect(JSON.stringify(logs)).toContain('"Receipt usage unavailable",{"teamId":"' + teamA + '","code":"AccessDeniedException"}');
+    expect(auditItems(teamA).map((a) => a.action)).toEqual(["ops.team.read"]);
+  });
+
   it("goes across a year's start", async () => {
     now = Date.parse("2027-02-10T00:00:00Z");
     usage(teamA, "USAGE#2026-12", 5);

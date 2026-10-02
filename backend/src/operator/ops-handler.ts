@@ -244,8 +244,12 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
       const { team, owners } = await getOpsTeam(db, op, teamId, at);
       // The customer on the team's index entry, never one from the request; never throws
       const stripe = await opsStripeDetail(teamId, team.stripeCustomerId, { stripe: deps.stripe, obs, deadlineMs: deps.stripeDeadlineMs });
-      // Part of the record's read, which getOpsTeam audited
-      const receipts = await getOpsReceiptUsage(db, op, teamId, at);
+      // Part of the record's read, which getOpsTeam audited. If the counters can't be read, the
+      // record still comes back, with receipts: null, as Stripe's part does when it's unavailable
+      const receipts = await getOpsReceiptUsage(db, op, teamId, at).catch((error: unknown) => {
+        obs.logger.warn("Receipt usage unavailable", { teamId, code: String((error as { name?: unknown } | null)?.name ?? "Error").slice(0, 64) });
+        return null;
+      });
       return { teamId, response: json(200, { team: opsTeamBody(team, at, owners), stripe, receipts }) };
     },
     async setComp(event, op) {

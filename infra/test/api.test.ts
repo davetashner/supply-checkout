@@ -890,7 +890,8 @@ describe("operator-access role (ADR 0015)", () => {
       Condition: {
         "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
         "ForAllValues:StringEquals": { "dynamodb:Attributes": [...RECEIPT_USAGE_ATTRIBUTES] },
-        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        // Not IfExists: a batch read without a projection would return whole items
+        StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
       },
     });
     expect([...RECEIPT_USAGE_ATTRIBUTES]).toEqual(["PK", "SK", "receipts"]);
