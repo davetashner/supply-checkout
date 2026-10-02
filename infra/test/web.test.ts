@@ -8,8 +8,9 @@ import { domainOutputParameters, hostNames } from "../lib/domain.js";
 import { DELETION_RECORD_RETENTION_DAYS } from "../../backend/src/deletions/names.js";
 import { webBucketName } from "../lib/stacks/data-stack.js";
 import { DELETIONS_REPLICATION_RULE_ID, deletionsReplicationRoleName } from "../lib/deletions.js";
-import { MANAGED_RULE_GROUPS, RATE_LIMIT_PER_5_MINUTES, RELEASE_CHANNELS, webOutputParameters } from "../lib/stacks/web-stack.js";
+import { MANAGED_RULE_GROUPS, OPS_CHANNEL, RATE_LIMIT_PER_5_MINUTES, RELEASE_CHANNELS, webOutputParameters } from "../lib/stacks/web-stack.js";
 import { contentSecurityPolicy, cspDirectives } from "../lib/web/content-security-policy.js";
+import { opsContentSecurityPolicy, opsCspDirectives } from "../lib/web/ops-content-security-policy.js";
 import { RUM_SESSION_SAMPLE_RATE, RUM_TELEMETRIES, rumAppMonitorName } from "../lib/web/rum.js";
 import { PUBLISHER_PARAMETERS } from "../lib/web/publisher.js";
 import { addSupplyCheckout } from "../lib/supply-checkout.js";
@@ -249,7 +250,8 @@ describe("web stack", () => {
 
   it("reads the bucket through origin access control", () => {
     const { web } = build();
-    web.resourceCountIs("AWS::CloudFront::OriginAccessControl", 1);
+    // One for each distribution: the web app's and the operator page's
+    web.resourceCountIs("AWS::CloudFront::OriginAccessControl", 2);
     web.hasResourceProperties("AWS::CloudFront::OriginAccessControl", {
       OriginAccessControlConfig: Match.objectLike({ OriginAccessControlOriginType: "s3", SigningBehavior: "always" }),
     });
@@ -335,7 +337,8 @@ describe("web stack", () => {
         });
       }
     }
-    web.resourceCountIs("AWS::Route53::RecordSet", 6);
+    // And ops. (the operator page's distribution, below)
+    web.resourceCountIs("AWS::Route53::RecordSet", 8);
   });
 
   it("publishes what scripts/publish-web.mjs needs", () => {
@@ -344,6 +347,102 @@ describe("web stack", () => {
       web.hasResourceProperties("AWS::SSM::Parameter", { Name: name, Type: "String" });
     }
     web.hasResourceProperties("AWS::SSM::Parameter", { Name: webOutputParameters("prod").bucketRegion, Value: EAST });
+  });
+});
+
+describe("operator page (ops., supply-checkout-gxlt)", () => {
+  const opsDistribution = (web: Template) => {
+    const found = Object.entries(web.findResources("AWS::CloudFront::Distribution")).filter(([, d]) => JSON.stringify(d.Properties.DistributionConfig.Aliases) === JSON.stringify([names.ops]));
+    expect(found).toHaveLength(1);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- a CloudFormation resource's properties
+    return found[0] as [string, { Properties: { DistributionConfig: Record<string, any> } }];
+  };
+
+  it("is its own distribution for ops. alone, with its own certificate, and the web app's has no ops.", () => {
+    const { web } = build();
+    web.resourceCountIs("AWS::CloudFront::Distribution", 2);
+    const [, ops] = opsDistribution(web);
+    const config = ops.Properties.DistributionConfig;
+    expect(config.Aliases).toEqual(["ops.supplycheckout.com"]);
+    expect(JSON.stringify(config.ViewerCertificate.AcmCertificateArn).toLowerCase()).toContain("opswebcertificatearn");
+    expect(config.ViewerCertificate).toMatchObject({ MinimumProtocolVersion: "TLSv1.2_2021", SslSupportMethod: "sni-only" });
+    expect(config.WebACLId).toEqual({ "Fn::GetAtt": ["WebAcl", "Arn"] });
+    expect(config.Logging).toMatchObject({ Prefix: "cloudfront/ops/" });
+    expect(config.HttpVersion).toBe("http2and3");
+    web.hasParameter("*", { Type: "AWS::SSM::Parameter::Value<String>", Default: domainOutputParameters("prod").opsWebCertificateArn });
+    for (const [, d] of Object.entries(web.findResources("AWS::CloudFront::Distribution"))) {
+      const aliases = d.Properties.DistributionConfig.Aliases as string[];
+      if (!aliases.includes(names.ops)) expect(aliases).not.toContain(names.ops);
+    }
+  });
+
+  it("caches nothing, takes only GET and HEAD over HTTPS, and routes through its own router", () => {
+    const { web } = build();
+    const [, ops] = opsDistribution(web);
+    const behavior = ops.Properties.DistributionConfig.DefaultCacheBehavior;
+    // AWS's managed CachingDisabled policy
+    expect(behavior.CachePolicyId).toBe("4135ea2d-6df8-44a3-9df3-4b5a84be39ad");
+    expect(behavior.AllowedMethods).toEqual(["GET", "HEAD"]);
+    expect(behavior.ViewerProtocolPolicy).toBe("redirect-to-https");
+    expect(behavior.FunctionAssociations).toEqual([{ EventType: "viewer-request", FunctionARN: { "Fn::GetAtt": [expect.stringMatching(/^OpsRouter/), "FunctionARN"] } }]);
+    expect(behavior.ResponseHeadersPolicyId).toEqual({ Ref: expect.stringMatching(/^OpsSecurityHeaders/) });
+    // Its router reads the same store, and is filled in with ops. and HSTS
+    const [, fn] = Object.entries(web.findResources("AWS::CloudFront::Function")).find(([id]) => id.startsWith("OpsRouter")) ?? [];
+    const text = JSON.stringify(fn?.Properties.FunctionCode);
+    expect(text).not.toMatch(/__[A-Z_]+__/);
+    expect(text).toContain('const OPS = \\"ops.supplycheckout.com\\"');
+    expect(text).toContain("LiveVersions");
+    expect(OPS_CHANNEL).toBe("ops");
+    // The store's seed is unchanged: adding a key there would replace the store
+    expect(RELEASE_CHANNELS).toEqual(["app", "demo"]);
+  });
+
+  it("sends a strict CSP, no-store, HSTS, DENY framing and no referrer", () => {
+    const { web } = build();
+    const [, policy] = Object.entries(web.findResources("AWS::CloudFront::ResponseHeadersPolicy")).find(([id]) => id.startsWith("OpsSecurityHeaders")) ?? [];
+    const config = policy?.Properties.ResponseHeadersPolicyConfig;
+    expect(config.SecurityHeadersConfig).toEqual({
+      ContentSecurityPolicy: { ContentSecurityPolicy: opsContentSecurityPolicy({ api: names.api, opsAuth: names.opsAuth }), Override: true },
+      StrictTransportSecurity: { AccessControlMaxAgeSec: 63072000, IncludeSubdomains: true, Override: true },
+      ContentTypeOptions: { Override: true },
+      FrameOptions: { FrameOption: "DENY", Override: true },
+      ReferrerPolicy: { ReferrerPolicy: "no-referrer", Override: true },
+    });
+    const headers = Object.fromEntries(config.CustomHeadersConfig.Items.map((h: { Header: string; Value: string }) => [h.Header, h.Value]));
+    expect(headers).toEqual({
+      "Cache-Control": "no-store",
+      "Permissions-Policy": "camera=(), microphone=(), geolocation=(), usb=(), payment=()",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Resource-Policy": "same-origin",
+      "X-Robots-Tag": "noindex, nofollow",
+    });
+  });
+
+  it("the CSP allows only the page's own files, the API and the operator sign-in", () => {
+    const d = opsCspDirectives({ api: names.api, opsAuth: names.opsAuth });
+    expect(d["default-src"]).toEqual(["'none'"]);
+    expect(d["connect-src"]).toEqual(["'self'", "https://api.supplycheckout.com", "https://ops-auth.supplycheckout.com"]);
+    expect(d["frame-ancestors"]).toEqual(["'none'"]);
+    expect(d["require-trusted-types-for"]).toEqual(["'script'"]);
+    for (const [name, values] of Object.entries(d)) {
+      for (const value of values) {
+        expect(value, name).not.toMatch(/unsafe|\*|data:|blob:|\/\/auth\.|realtime\./);
+        if (value.startsWith("https://")) expect(name).toBe("connect-src");
+      }
+    }
+    expect(() => opsCspDirectives({ api: "api.example.com; script-src *", opsAuth: names.opsAuth })).toThrow(/host name/);
+    expect(() => opsCspDirectives({ api: names.api, opsAuth: "" })).toThrow(/host name/);
+  });
+
+  it("points A and AAAA records for ops. at its own distribution, and publishes its IDs", () => {
+    const { web } = build();
+    const [id] = opsDistribution(web);
+    for (const Type of ["A", "AAAA"]) {
+      web.hasResourceProperties("AWS::Route53::RecordSet", { Name: "ops.supplycheckout.com.", Type, AliasTarget: Match.objectLike({ DNSName: { "Fn::GetAtt": [id, "DomainName"] } }) });
+    }
+    const out = webOutputParameters("prod");
+    web.hasResourceProperties("AWS::SSM::Parameter", { Name: out.opsDistributionId, Value: { Ref: id } });
+    web.hasResourceProperties("AWS::SSM::Parameter", { Name: out.opsRouterFunctionName });
   });
 });
 
@@ -403,10 +502,14 @@ describe("web publisher role (supply-checkout-pbp.28)", () => {
     expect(JSON.stringify(bySid.UploadReleases?.Resource)).toContain(`${webBucketName("prod", EAST, "")}`.replace(/-$/, ""));
     expect(JSON.stringify(bySid.UploadReleases?.Resource)).toMatch(/\/releases\/\*"/);
     expect(bySid.ListReleases?.Condition).toEqual({ StringLike: { "s3:prefix": ["releases/*"] } });
-    // Exactly the store, the router and the distribution: each a reference, not a wildcard
+    // Exactly the store, the routers and the distribution: each a reference, not a wildcard
     for (const sid of ["SwitchLiveVersions", "CheckRouter", "ReadDistributionAliases"]) {
       expect(JSON.stringify(bySid[sid]?.Resource)).not.toContain("*");
     }
+    // Both routers, the web app's and the operator page's (check-router runs both)
+    const routers = JSON.stringify(bySid.CheckRouter?.Resource);
+    expect(routers).toMatch(/"Router[A-F0-9]+"/);
+    expect(routers).toMatch(/"OpsRouter[A-F0-9]+"/);
   });
 
   it("reads every parameter publish-web reads, and only under /supply-checkout/<env>/", () => {

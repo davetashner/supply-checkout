@@ -1,0 +1,112 @@
+/* The operator page. System fonts only: the CSP allows no font or style host. */
+:root {
+  color-scheme: light dark;
+  --bg: #f6f5f1;
+  --panel: #ffffff;
+  --ink: #1d1c1a;
+  --muted: #5d5a53;
+  --line: #d9d5cb;
+  --accent: #8a4b00;
+  --accent-ink: #ffffff;
+  --ok-bg: #e6f2e8;
+  --ok-line: #2f7a43;
+  --warn-bg: #fff1d6;
+  --warn-line: #a96800;
+  --bad-bg: #fbe5e3;
+  --bad-line: #b3261e;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141412;
+    --panel: #1d1c19;
+    --ink: #ece9e1;
+    --muted: #a7a297;
+    --line: #3a3832;
+    --accent: #f0a640;
+    --accent-ink: #1d1c19;
+    --ok-bg: #16301e;
+    --ok-line: #5cc27a;
+    --warn-bg: #3a2a0e;
+    --warn-line: #f0a640;
+    --bad-bg: #3b1715;
+    --bad-line: #ff8a80;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 3px solid var(--accent);
+  background: var(--panel);
+}
+.brand { margin: 0; font-weight: 700; letter-spacing: 0.01em; }
+.brand span { color: var(--accent); text-transform: uppercase; font-size: 0.8em; letter-spacing: 0.12em; margin-left: 4px; }
+.account { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.account nav { display: flex; gap: 12px; }
+.who, .clock { color: var(--muted); font-size: 0.9em; }
+main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.5rem; margin: 8px 0 16px; }
+h2 { font-size: 1.1rem; margin: 24px 0 8px; }
+a { color: var(--accent); }
+.mono { font-family: var(--mono); font-size: 0.85em; word-break: break-all; }
+button {
+  font: inherit;
+  padding: 7px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  cursor: pointer;
+}
+button.secondary { background: transparent; color: var(--accent); }
+button.danger { background: var(--bad-line); border-color: var(--bad-line); color: #fff; }
+button:disabled { opacity: 0.6; cursor: progress; }
+input, select {
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--ink);
+  max-width: 100%;
+}
+.search { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: end; margin-bottom: 16px; }
+.search label { display: block; font-weight: 600; }
+.search .field { margin: 0; }
+.field { margin: 10px 0; }
+.field label { display: block; font-weight: 600; margin-bottom: 2px; }
+.field input[type="text"] { width: min(100%, 520px); }
+.hint { margin: 2px 0 0; color: var(--muted); font-size: 0.85em; }
+fieldset { border: 0; padding: 0; margin: 8px 0; display: flex; flex-wrap: wrap; gap: 6px 18px; }
+legend { font-weight: 600; padding: 0; margin-bottom: 4px; }
+.write { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px 16px 16px; margin: 16px 0; }
+table { width: 100%; border-collapse: collapse; background: var(--panel); margin: 8px 0; font-size: 0.92em; }
+caption { text-align: left; font-weight: 600; padding: 4px 0; }
+th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 600; }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; word-break: break-word; }
+.notice { border-left: 4px solid var(--line); padding: 8px 12px; margin: 12px 0; border-radius: 4px; background: var(--panel); }
+.notice p { margin: 4px 0; }
+.notice.success { border-color: var(--ok-line); background: var(--ok-bg); }
+.notice.error { border-color: var(--bad-line); background: var(--bad-bg); }
+.notice.conflict { border-color: var(--warn-line); background: var(--warn-bg); }
+.signin { max-width: 520px; margin: 48px auto; }
+@media (max-width: 700px) {
+  table, thead, tbody, tr, td, th { display: block; }
+  thead { position: absolute; left: -9999px; }
+  tr { border-bottom: 1px solid var(--line); padding: 6px 0; }
+  td { border: 0; padding: 2px 8px; }
+}

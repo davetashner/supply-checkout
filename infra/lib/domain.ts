@@ -21,6 +21,8 @@ export interface HostNames {
   readonly www: string;
   /** The web app (CloudFront). */
   readonly app: string;
+  /** The operator page (ADR 0015 §6, supply-checkout-gxlt): its own CloudFront distribution and origin. */
+  readonly ops: string;
   /** The HTTP API, one custom domain in every region (ADR 0006, 0010). */
   readonly api: string;
   /** AppSync Events (ADR 0006). */
@@ -39,6 +41,7 @@ export function hostNames(config: Pick<DeploymentConfig, "envName" | "domainName
     apex,
     www: `www.${apex}`,
     app: `app.${apex}`,
+    ops: `ops.${apex}`,
     api: `api.${apex}`,
     realtime: `realtime.${apex}`,
     auth: `auth.${apex}`,
@@ -72,6 +75,8 @@ export const domainOutputParameters = (envName: string) => {
     envDomain: `${prefix}/env-domain`,
     /** GLOBAL_SERVICES_REGION only: apex, www. and app. for CloudFront. */
     webCertificateArn: `${prefix}/web-certificate-arn`,
+    /** GLOBAL_SERVICES_REGION only: ops. for the operator page's CloudFront distribution. */
+    opsWebCertificateArn: `${prefix}/ops-web-certificate-arn`,
     /** GLOBAL_SERVICES_REGION only: auth. for the Cognito custom domain. */
     authCertificateArn: `${prefix}/auth-certificate-arn`,
     /** GLOBAL_SERVICES_REGION only: ops-auth. for the operator pool's Cognito custom domain. */

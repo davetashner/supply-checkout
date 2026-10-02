@@ -560,15 +560,16 @@ describe("operator pool (ADR 0015)", () => {
     }
   });
 
-  it("has one public ops client: code with PKCE to the CLI's localhost callback, 15-minute tokens, 8-hour refresh with rotation, no API sign-in", () => {
+  it("has one public ops client: code with PKCE to the CLI's localhost callback and the operator page, 15-minute tokens, 8-hour refresh with rotation, no API sign-in", () => {
     const client = ops(build().template, "AWS::Cognito::UserPoolClient").Properties;
     expect(client).toMatchObject({
       ClientName: "ops",
       GenerateSecret: false,
       AllowedOAuthFlows: ["code"],
       AllowedOAuthScopes: ["openid", "aws.cognito.signin.user.admin"],
-      CallbackURLs: [OPS_CLI_CALLBACK],
-      LogoutURLs: [OPS_CLI_CALLBACK],
+      // The operator page's root exactly (supply-checkout-gxlt): no other host, path or wildcard
+      CallbackURLs: [OPS_CLI_CALLBACK, "https://ops.supplycheckout.com/"],
+      LogoutURLs: [OPS_CLI_CALLBACK, "https://ops.supplycheckout.com/"],
       SupportedIdentityProviders: ["COGNITO"],
       ExplicitAuthFlows: [],
       AccessTokenValidity: 15,

@@ -27,8 +27,9 @@ The source is a small [Vite](https://vite.dev) project with no UI framework. One
 | `src/barcode.js` | Reading barcodes from photos (the browser's detector, or ZXing, loaded the first time it's needed). |
 | `src/zxing.js` | The parts of ZXing (`@zxing/library`, from npm) the barcode reader uses. |
 | `src/receipt-prompt.js` | The receipt-reading prompt and its error messages. |
-| `vite.config.js` | The builds: `artifact`, `web` and `demo` (below). |
+| `vite.config.js` | The builds: `artifact`, `web`, `demo` and `ops` (below). |
 | `demo/` | The demo build's entry (`main.js`: the in-memory runtime and the banner's styles) and the demo data (`data.js`), which `npm run dev` also uses. |
+| `ops/` | The operator page for `ops.<env domain>` (`npm run build:ops`, ADR 0015 §9): sign-in through the operator pool, teams, comps and the operator audit, with no customer app code. Unit tests: `ops/test/` (`npm run test:ops`, 100% coverage of `ops/lib/`); browser tests: `tests/ops.spec.js`. See [The operator page](docs/infrastructure.md#the-operator-page) and the [runbook](docs/runbooks/operator-page.md). |
 | `dist/` | Build output (not committed). |
 | `scripts/builds.mjs` | Builds and serves the builds for the tests. |
 | `scripts/page.mjs` | Wraps the artifact in the same document skeleton claude.ai adds at publish time. |
@@ -130,7 +131,7 @@ Write PR titles in [Conventional Commits](https://www.conventionalcommits.org/) 
 | Job | Gate |
 | --- | --- |
 | PR title | Conventional Commits format (pull requests only) |
-| Lint and validate HTML | ESLint on `src/`, `demo/`, scripts and tests; builds all three and runs html-validate on each; then `npm run journeys:trace`, which fails if a built journey step has no test, a critical journey has no alarm, or `docs/journeys.md` doesn't match `journeys/registry.json` |
+| Lint and validate HTML | ESLint on `src/`, `demo/`, `ops/`, scripts and tests; builds all four and runs html-validate on each; the operator page's unit tests with their coverage gate (`npm run test:ops`); then `npm run journeys:trace`, which fails if a built journey step has no test, a critical journey has no alarm, or `docs/journeys.md` doesn't match `journeys/registry.json` |
 | Lint GitHub workflows | actionlint |
 | No region names outside the config module | `scripts/check-region-strings.mjs`: fails on any AWS region name in `infra/`, `backend/` or `src/` outside `infra/lib/config.ts` (ADR 0010) |
 | Shell scripts | shellcheck on `scripts/*.sh`, the `land-pr.sh` and `beads-pr.sh` tests against a fake `gh`, and the Node tests for `publish-web.mjs`, `ops.mjs`, `operators.mjs`, `restore-drill.mjs`, `check-stray-files.mjs`, `backlog-page.mjs`, `backlog-stop-hook.mjs` and `journeys.mjs` (`npm run test:scripts`) |

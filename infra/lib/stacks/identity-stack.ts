@@ -301,8 +301,8 @@ export class IdentityStack extends SupplyCheckoutStack {
    *   sends mail.
    * - Managed Login at `ops-auth.<env domain>`, its own sign-in host.
    * - One public client, `ops`: authorization code with PKCE, calling back
-   *   only to `npm run ops` on localhost (the ops page adds its origin,
-   *   supply-checkout-8jc.8). Access and ID tokens last 15 minutes and
+   *   only to `npm run ops` on localhost and the operator page at
+   *   `https://ops.<env domain>/` (supply-checkout-gxlt). Access and ID tokens last 15 minutes and
    *   refresh tokens 8 hours, with rotation and revocation. The
    *   aws.cognito.signin.user.admin scope is there for GetUser, which the ops
    *   function calls with the operator's token on every request.
@@ -370,8 +370,10 @@ export class IdentityStack extends SupplyCheckoutStack {
       oAuth: {
         flows: { authorizationCodeGrant: true },
         scopes: [OAuthScope.OPENID, OAuthScope.COGNITO_ADMIN],
-        callbackUrls: [OPS_CLI_CALLBACK],
-        logoutUrls: [OPS_CLI_CALLBACK],
+        // The CLI on localhost, and the operator page's root (supply-checkout-gxlt): Cognito
+        // matches them exactly, and the page takes the code and comes back from sign-out there
+        callbackUrls: [OPS_CLI_CALLBACK, `https://${names.ops}/`],
+        logoutUrls: [OPS_CLI_CALLBACK, `https://${names.ops}/`],
       },
       supportedIdentityProviders: [UserPoolClientIdentityProvider.COGNITO],
       // Nothing the ops API trusts: groups aren't attributes, and no attribute is read

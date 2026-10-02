@@ -4,7 +4,18 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { APPROVED_REGIONS, DEFAULT_REGION, DOMAIN, IMMUTABLE, REVALIDATE, VERSION, checkRouterResult, isMissing, configParameterNames, defaultVersion, envDomain, main, parseArgs, routerChecks, routerTestEvent, uploadCommands } from "./publish-web.mjs";
+import { APPROVED_REGIONS, DEFAULT_REGION, DOMAIN, IMMUTABLE, OPS_VERSION, REVALIDATE, VERSION, checkRouterResult, isMissing, configParameterNames, defaultVersion, envDomain, main, opsConfig, opsConfigParameterNames, parseArgs, routerChecks, routerTestEvent, uploadCommands } from "./publish-web.mjs";
+
+/** Answers `ssm get-parameters` from `params`, as the Aws class's read() would. */
+class FakeReader {
+  constructor(params) {
+    this.params = params;
+  }
+  read(args) {
+    const names = args.slice(args.indexOf("--names") + 1);
+    return { Parameters: names.filter((n) => n in this.params).map((Name) => ({ Name, Value: this.params[Name] })) };
+  }
+}
 
 const STORE = "arn:aws:cloudfront::000000000000:key-value-store/example"; // public-safety: allow
 const POOL_UUID = "11111111-2222-4333-8444-555555555555";
@@ -34,7 +45,7 @@ function build() {
 }
 
 /** A fake AWS CLI: records every call, answers reads from `existing` demo and `apps` app releases. */
-function fakeAws({ existing = [], apps = [], params = PARAMS, headError, listed = [], listError } = {}) {
+function fakeAws({ existing = [], apps = [], ops = [], params = PARAMS, headError, listed = [], listError } = {}) {
   const calls = [];
   const log = [];
   const run = (cmd, args) => {
@@ -49,6 +60,7 @@ function fakeAws({ existing = [], apps = [], params = PARAMS, headError, listed 
       const key = args[args.indexOf("--key") + 1];
       if ([...existing, ...apps].some((v) => key === `releases/${v}/index.html`)) return "{}";
       if (apps.some((v) => key === `releases/${v}/config.json`)) return "{}";
+      if (ops.some((v) => key === `releases/${v}/ops-config.json`)) return "{}";
       if (headError) throw headError;
       const e = new Error("Command failed: aws s3api head-object");
       e.stderr = "\nAn error occurred (404) when calling the HeadObject operation: Not Found\n";
@@ -113,6 +125,78 @@ test("publishing the app writes its config.json from the stacks' outputs first",
   main(["publish", "--channel", "app", "--dir", demo, "--version", "app-2", "--dry-run"], dry.deps);
   assert.ok(!existsSync(path.join(demo, "config.json")));
   assert.ok(dry.log.some((l) => l.startsWith("Would write config.json") && l.includes('"clientId": "client-1"')));
+});
+
+const OPS_CONFIG = { apiUrl: `https://api.${DOMAIN}`, authUrl: `https://ops-auth.${DOMAIN}`, clientId: "opsclient1" };
+const OPS_PARAMS = {
+  ...PARAMS,
+  ...Object.fromEntries(Object.entries(opsConfigParameterNames("prod")).map(([k, name]) => [name, OPS_CONFIG[k]])),
+};
+
+test("publishing the operator page writes ops-config.json, never config.json, and names it ops-*", () => {
+  const dir = build();
+  const aws = fakeAws({ params: OPS_PARAMS });
+  main(["publish", "--channel", "ops", "--dir", dir, "--version", "ops-1"], aws.deps);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(dir, "ops-config.json"), "utf8")), OPS_CONFIG);
+  assert.ok(!existsSync(path.join(dir, "config.json")));
+  const put = writes(aws.calls).at(-1);
+  assert.deepEqual(put.slice(4, 8), ["--key", "ops", "--value", "ops-1"]);
+  assert.match(defaultVersion("ops", new Date("2026-10-02T12:00:00Z"), "abc1234"), OPS_VERSION);
+
+  // The page's folder is never published as the app or the demo, nor an app build as the page
+  for (const channel of ["app", "demo"]) {
+    assert.throws(() => main(["publish", "--channel", channel, "--dir", dir, "--version", `${channel}-2`], fakeAws({ params: OPS_PARAMS }).deps), /operator page's build/);
+  }
+  const app = build();
+  writeFileSync(path.join(app, "config.json"), "{}");
+  assert.throws(() => main(["publish", "--channel", "ops", "--dir", app, "--version", "ops-2"], fakeAws({ params: OPS_PARAMS }).deps), /not the operator page/);
+  // A dry run writes nothing
+  const dry = build();
+  const dryAws = fakeAws({ params: OPS_PARAMS });
+  main(["publish", "--channel", "ops", "--dir", dry, "--version", "ops-3", "--dry-run"], dryAws.deps);
+  assert.ok(!existsSync(path.join(dry, "ops-config.json")));
+  assert.ok(dryAws.log.some((l) => l.startsWith("Would write ops-config.json") && l.includes('"clientId": "opsclient1"')));
+  // Missing build
+  assert.throws(() => main(["publish", "--channel", "ops", "--dir", path.join(dir, "nope"), "--version", "ops-4"], fakeAws({ params: OPS_PARAMS }).deps), /npm run build:ops/);
+});
+
+test("ops-config.json's hosts are this environment's, whatever SSM says", () => {
+  const names = opsConfigParameterNames("prod");
+  const bad = (override, pattern) => assert.throws(() => opsConfig(new FakeReader({ ...OPS_PARAMS, ...override }), "prod"), pattern);
+  // The customers' sign-in host, or anywhere else, is refused
+  bad({ [names.authUrl]: `https://auth.${DOMAIN}` }, /ops-auth-url must be https:\/\/ops-auth\.supplycheckout\.com/);
+  bad({ [names.apiUrl]: "https://evil.example" }, /api\/url must be/);
+  bad({ [names.clientId]: "a b" }, /app client ID/);
+  const { [names.clientId]: _c, ...noClient } = OPS_PARAMS;
+  void _c;
+  assert.throws(() => opsConfig(new FakeReader(noClient), "prod"), /deploy the api and identity stacks first\): \/supply-checkout\/prod\/identity\/ops-client-id/);
+  assert.deepEqual(opsConfig(new FakeReader(OPS_PARAMS), "prod"), OPS_CONFIG);
+  const aws = fakeAws({ params: OPS_PARAMS });
+  main(["config", "--channel", "ops"], aws.deps);
+  assert.deepEqual(JSON.parse(aws.log[0]), OPS_CONFIG);
+  assert.throws(() => parseArgs(["config", "--channel", "demo"], {}), /config --channel must be app or ops/);
+});
+
+test("ops-* versions are the operator page's alone", () => {
+  assert.throws(() => parseArgs(["activate", "--channel", "ops", "--version", "1.2.0"], {}), /named ops-/);
+  assert.throws(() => parseArgs(["activate", "--channel", "app", "--version", "ops-1"], {}), /ops-\* releases are the operator page's/);
+  assert.throws(() => parseArgs(["publish", "--channel", "demo", "--dir", "d", "--version", "ops-1"], {}), /operator page's/);
+  assert.equal(parseArgs(["activate", "--channel", "ops", "--version", "ops-1"], {}).version, "ops-1");
+  const router = readFileSync(new URL("../infra/lib/web/ops-router.js", import.meta.url), "utf8");
+  assert.ok(router.includes(`const VERSION = ${OPS_VERSION};`));
+});
+
+test("activate keeps each channel's releases on that channel, the operator page's included", () => {
+  const opsRelease = fakeAws({ existing: ["ops-1"], ops: ["ops-1"] });
+  main(["activate", "--channel", "ops", "--version", "ops-1"], opsRelease.deps);
+  assert.deepEqual(writes(opsRelease.calls).at(-1).slice(4, 8), ["--key", "ops", "--value", "ops-1"]);
+  // A release named ops-* that isn't the page's (no ops-config.json) never goes live there
+  const fake = fakeAws({ existing: ["ops-2"] });
+  assert.throws(() => main(["activate", "--channel", "ops", "--version", "ops-2"], fake.deps), /is a demo release.*can't go live on the ops channel/);
+  const app = fakeAws({ apps: ["ops-3"] });
+  assert.throws(() => main(["activate", "--channel", "ops", "--version", "ops-3"], app.deps), /is an app release/);
+  const page = fakeAws({ existing: ["demo-7"], ops: ["demo-7"] });
+  assert.throws(() => main(["activate", "--channel", "demo", "--version", "demo-7"], page.deps), /is an operator page release \(it has ops-config\.json\), so it can't go live on the demo channel/);
 });
 
 test("config prints the app's config.json, and needs the stacks deployed", () => {
@@ -301,13 +385,16 @@ const ROUTER_PARAMS = {
   ...PARAMS,
   "/supply-checkout/prod/web/router-function-name": "router-fn",
   "/supply-checkout/prod/web/distribution-id": "DIST1",
+  "/supply-checkout/prod/web/ops-router-function-name": "ops-router-fn",
 };
 
 /** What a working router answers (infra/lib/web/router.js), with `live` versions per channel. */
-function workingRouter({ app = "1.3.0", demo = "demo-1" } = {}) {
+function workingRouter({ app = "1.3.0", demo = "demo-1", ops = "ops-1" } = {}) {
   const serve = (version, uri) =>
     version ? { request: { uri: `/releases/${version}${uri}index.html` } } : { response: { statusCode: 503 } };
   return ({ host, uri }) => {
+    // infra/lib/web/ops-router.js
+    if (host.startsWith("ops.")) return uri === "/" ? serve(ops, uri) : { response: { statusCode: 404 } };
     if (host.startsWith("app.")) return serve(app, uri);
     if (host.startsWith("www.")) return { response: { statusCode: 301 } };
     if (uri.startsWith("/demo/")) return serve(demo, "/");
@@ -351,6 +438,8 @@ test("check-router runs the live router on a request to each host", () => {
     { host: "supplycheckout.com", uri: "/demo/" },
     { host: "supplycheckout.com", uri: "/" },
     { host: "www.supplycheckout.com", uri: "/" },
+    { host: "ops.supplycheckout.com", uri: "/" },
+    { host: "ops.supplycheckout.com", uri: "/config.json" },
   ]);
   assert.deepEqual(aws.log, [
     "ok  app.supplycheckout.com/ -> /releases/1.3.0/index.html",
@@ -358,9 +447,14 @@ test("check-router runs the live router on a request to each host", () => {
     "ok  supplycheckout.com/ -> 302",
     "ok  www.supplycheckout.com/ -> 301",
     "The live router (router-fn) works.",
+    "ok  ops.supplycheckout.com/ -> /releases/ops-1/index.html",
+    "ok  ops.supplycheckout.com/config.json -> 404",
+    "The live router (ops-router-fn) works.",
   ]);
-  const fn = aws.calls.find(([, op]) => op === "describe-function");
-  assert.equal(fn[fn.indexOf("--name") + 1], "router-fn");
+  const fns = aws.calls.filter(([, op]) => op === "describe-function").map((fn) => fn[fn.indexOf("--name") + 1]);
+  assert.deepEqual(fns, ["router-fn", "ops-router-fn"]);
+  const tested = aws.calls.filter(([, op]) => op === "test-function").map((fn) => fn[fn.indexOf("--name") + 1]);
+  assert.deepEqual(tested, ["router-fn", "router-fn", "router-fn", "router-fn", "ops-router-fn", "ops-router-fn"]);
   // Nothing live on a channel is a 503, which the router means
   const empty = fakeCloudFront({ router: workingRouter({ app: null }) });
   main(["check-router"], empty.deps);
@@ -379,6 +473,12 @@ test("check-router fails when the router throws or answers wrong", () => {
   const garbled = fakeCloudFront({ router: () => undefined });
   assert.throws(() => main(["check-router"], garbled.deps), /no readable output/);
   assert.throws(() => main(["check-router"], fakeCloudFront({ params: PARAMS }).deps), /deploy the web stack first\): \/supply-checkout\/prod\/web\/router-function-name/);
+  // The operator page's router: serving anything but its own paths, or nothing at all
+  const opsServesAll = fakeCloudFront({ router: ({ host, uri }) => (host.startsWith("ops.") ? { request: { uri: `/releases/ops-1${uri}` } } : workingRouter()({ host, uri })) });
+  assert.throws(() => main(["check-router"], opsServesAll.deps), /answered ops\.supplycheckout\.com\/config\.json with \/releases\/ops-1\/config\.json, not 404/);
+  const { "/supply-checkout/prod/web/ops-router-function-name": _ops, ...withoutOps } = ROUTER_PARAMS;
+  void _ops;
+  assert.throws(() => main(["check-router"], fakeCloudFront({ params: withoutOps }).deps), /deploy the web stack first\): \/supply-checkout\/prod\/web\/ops-router-function-name/);
 });
 
 test("check-router needs the app., www. and apex aliases", () => {

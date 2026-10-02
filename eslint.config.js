@@ -39,6 +39,11 @@ export default [
     languageOptions: { globals: { ...globals.browser } },
   },
   {
+    // The operator page runs in the browser; its unit tests (ops/test/) run in Node
+    files: ["ops/**/*.js"],
+    languageOptions: { globals: { ...globals.browser } },
+  },
+  {
     // The mock and page.evaluate callbacks run inside the browser
     files: ["tests/**/*.js", "scripts/journey-videos/**/*.mjs"],
     languageOptions: { globals: { ...globals.browser } },

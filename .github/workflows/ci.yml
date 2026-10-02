@@ -80,6 +80,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      # The operator page's logic (ops/lib/), with a 100% coverage gate; its UI runs in the
+      # Playwright suites (tests/ops.spec.js, with BUILD=web)
+      - run: npm run test:ops
       # Every built journey step has a test and every critical journey an alarm, and
       # docs/journeys.md matches journeys/registry.json. It lists the Playwright tests,
       # which load the build the lint step just made.

@@ -7,6 +7,8 @@
 //   vite build --mode demo       dist/demo/: the web build in demo mode, for supplycheckout.com
 //                                until sign-in exists (demo/main.js). Relative URLs, so it
 //                                works from any path.
+//   vite build --mode ops        dist/ops/: the operator page (ops/, ADR 0015), a separate
+//                                small site for ops.<env domain> with none of src/ in it.
 //
 // Each writes hidden source maps (no sourceMappingURL comment in the output), which
 // the coverage run uses to report by src/ file and line.
@@ -157,8 +159,26 @@ function compareVersions(a, b) {
   return 0;
 }
 
+// The operator page: its own root (ops/), no plugins, and nothing inlined as data: URIs,
+// because its CSP allows only its own files (infra/lib/web/ops-content-security-policy.ts).
+const opsConfig = () => ({
+  root: fileURLToPath(new URL("ops", import.meta.url)),
+  base: "/",
+  publicDir: false,
+  build: {
+    outDir: fileURLToPath(new URL("dist/ops", import.meta.url)),
+    emptyOutDir: true,
+    sourcemap: "hidden",
+    target: browserTargets(),
+    modulePreload: { polyfill: false },
+    assetsInlineLimit: 0,
+    rollupOptions: { input: fileURLToPath(new URL("ops/index.html", import.meta.url)) },
+  },
+});
+
 export default defineConfig(({ mode }) => {
-  if (!["artifact", "web", "demo"].includes(mode)) throw new Error("Build with --mode artifact, web or demo");
+  if (mode === "ops") return opsConfig();
+  if (!["artifact", "web", "demo"].includes(mode)) throw new Error("Build with --mode artifact, web, demo or ops");
   const artifact = mode === "artifact";
   return {
     root: fileURLToPath(new URL("src", import.meta.url)),

@@ -95,11 +95,29 @@ describe("HTTP API routes", () => {
     template.resourcePropertiesCountIs("AWS::Lambda::Alias", { Name: "live" }, 7);
   });
 
-  it("allows only the app's origin (and localhost outside prod), with credentials for the cookie", () => {
+  it("allows only the app's and the operator page's origins (and localhost outside prod), with credentials for the cookie", () => {
     const cors = (t: Template) => (resources(t, "AWS::ApiGatewayV2::Api")[0]?.[1].Properties.CorsConfiguration ?? {}) as Record<string, unknown>;
-    expect(cors(api().template)).toMatchObject({ AllowOrigins: ["https://app.supplycheckout.com"], AllowCredentials: true, AllowHeaders: ["authorization", "content-type", "idempotency-key"] });
+    expect(cors(api().template)).toMatchObject({
+      AllowOrigins: ["https://app.supplycheckout.com", "https://ops.supplycheckout.com"],
+      AllowCredentials: true,
+      AllowHeaders: ["authorization", "content-type", "idempotency-key"],
+    });
     const staging = api(WEST, {}, { envName: "staging", regions: [WEST], primaryRegion: WEST }).template;
-    expect(cors(staging).AllowOrigins).toEqual(["https://app.staging.supplycheckout.com", "http://localhost:5173"]);
+    expect(cors(staging).AllowOrigins).toEqual(["https://app.staging.supplycheckout.com", "http://localhost:5173", "https://ops.staging.supplycheckout.com"]);
+  });
+
+  it("never lets the operator page's origin use the auth routes' cookie (supply-checkout-gxlt)", () => {
+    // The auth handler checks Origin against ALLOWED_ORIGINS, so the ops origin, though in the
+    // preflight's list, can't refresh or end a customer's session with the cookie
+    const { template } = api();
+    const origins = resources(template, "AWS::Lambda::Function")
+      .map(([, f]) => (f.Properties.Environment as { Variables?: Record<string, unknown> } | undefined)?.Variables?.ALLOWED_ORIGINS)
+      .filter((v): v is string => typeof v === "string");
+    expect(origins.length).toBeGreaterThan(0);
+    for (const value of origins) {
+      expect(value).toBe("https://app.supplycheckout.com");
+      expect(value).not.toContain("ops.");
+    }
   });
 
   it("turns off the execute-api endpoint, logs access as JSON and throttles the stage", () => {

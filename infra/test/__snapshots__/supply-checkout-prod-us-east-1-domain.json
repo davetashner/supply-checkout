@@ -148,6 +148,47 @@
         "ValidationMethod": "DNS"
       }
     },
+    "OpsWebCertificate2D2DC746": {
+      "Type": "AWS::CertificateManager::Certificate",
+      "Properties": {
+        "DomainName": "ops.supplycheckout.com",
+        "DomainValidationOptions": [
+          {
+            "DomainName": "ops.supplycheckout.com",
+            "HostedZoneId": {
+              "Ref": "SsmParameterValuesupplycheckoutproddnshostedzoneidC96584B6F00A464EAD1953AFF4B05118Parameter"
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "domain"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          },
+          {
+            "Key": "Name",
+            "Value": "supply-checkout-prod-us-east-1-domain/OpsWebCertificate"
+          }
+        ],
+        "ValidationMethod": "DNS"
+      }
+    },
     "AuthCertificateC5D33BF2": {
       "Type": "AWS::CertificateManager::Certificate",
       "Properties": {
@@ -286,6 +327,24 @@
         "Type": "String",
         "Value": {
           "Ref": "WebCertificate760B17F3"
+        }
+      }
+    },
+    "OpsWebCertificateParamE8B75484": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Description": "CloudFront certificate for the operator page: ops.",
+        "Name": "/supply-checkout/prod/domain/ops-web-certificate-arn",
+        "Tags": {
+          "app": "supply-checkout",
+          "component": "domain",
+          "env": "prod",
+          "layer": "stateless",
+          "managed-by": "cdk"
+        },
+        "Type": "String",
+        "Value": {
+          "Ref": "OpsWebCertificate2D2DC746"
         }
       }
     },
