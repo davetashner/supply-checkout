@@ -34,7 +34,7 @@ function build() {
 }
 
 /** A fake AWS CLI: records every call, answers reads from `existing` demo and `apps` app releases. */
-function fakeAws({ existing = [], apps = [], params = PARAMS, headError } = {}) {
+function fakeAws({ existing = [], apps = [], params = PARAMS, headError, listed = [], listError } = {}) {
   const calls = [];
   const log = [];
   const run = (cmd, args) => {
@@ -56,6 +56,11 @@ function fakeAws({ existing = [], apps = [], params = PARAMS, headError } = {}) 
     }
     if (op === "describe-key-value-store") return JSON.stringify({ ETag: "etag-1" });
     if (op === "list-keys") return JSON.stringify({ Items: [{ Key: "demo", Value: "d1" }] });
+    if (op === "list-objects-v2" && args.includes("--max-keys")) {
+      if (listError) throw listError;
+      const prefix = args[args.indexOf("--prefix") + 1];
+      return JSON.stringify({ KeyCount: listed.includes(prefix) ? 1 : 0 });
+    }
     if (op === "list-objects-v2") return JSON.stringify({ CommonPrefixes: [{ Prefix: "releases/d1/" }] });
     return "";
   };
@@ -240,9 +245,21 @@ test("a release is missing only on S3's 404 or 403; any other error stops the pu
   assert.equal(isMissing(err("An error occurred (ExpiredToken) when calling the HeadObject operation: expired")), false);
   assert.equal(isMissing(err("Could not connect to the endpoint URL")), false);
   assert.equal(isMissing(undefined), false);
+  // A 403 is missing only if a listing with the key as prefix finds nothing
   const forbidden = fakeAws({ headError: err("An error occurred (403) when calling the HeadObject operation: Forbidden") });
   main(["publish", "--channel", "demo", "--dir", build(), "--version", "demo-5"], forbidden.deps);
   assert.deepEqual(writes(forbidden.calls).map(([, op]) => op), ["sync", "sync", "put-key"]);
+  assert.ok(forbidden.calls.some((c) => c[1] === "list-objects-v2" && c.includes("releases/demo-5/index.html") && c.includes("--max-keys")));
+  const hidden = fakeAws({ headError: err("An error occurred (403) when calling the HeadObject operation: Forbidden"), listed: ["releases/demo-7/index.html"] });
+  assert.throws(() => main(["publish", "--channel", "demo", "--dir", build(), "--version", "demo-7"], hidden.deps), /is there, but this role may not read it/);
+  assert.deepEqual(writes(hidden.calls), []);
+  const noList = fakeAws({ headError: err("An error occurred (403) when calling the HeadObject operation: Forbidden"), listError: err("An error occurred (AccessDenied) when calling the ListObjectsV2 operation") });
+  assert.throws(() => main(["publish", "--channel", "demo", "--dir", build(), "--version", "demo-8"], noList.deps), /Couldn't check .*AccessDenied/);
+  assert.deepEqual(writes(noList.calls), []);
+  // A 404 needs no listing
+  const gone = fakeAws();
+  main(["publish", "--channel", "demo", "--dir", build(), "--version", "demo-9"], gone.deps);
+  assert.ok(!gone.calls.some((c) => c[1] === "list-objects-v2"));
   const expired = fakeAws({ headError: err("An error occurred (ExpiredToken) when calling the HeadObject operation: The provided token has expired.") });
   assert.throws(() => main(["publish", "--channel", "demo", "--dir", build(), "--version", "demo-6"], expired.deps), /Couldn't check s3:\/\/releases-bucket\/releases\/demo-6\/index.html: An error occurred \(ExpiredToken\)/);
   assert.deepEqual(writes(expired.calls), []);

@@ -17,10 +17,11 @@ name: Deploy
 #                   (scripts/check-environments.mjs), and the tag is a published release whose
 #                   commit is on main and passed CI in a real run on main
 #   trust           no environment: the deploy role must REFUSE this job (docs/infrastructure.md)
+#   build           no environment, no id-token, no AWS: builds the web app and the demo once
+#                   from the release commit and keeps them as the run's artifact, with a hash
 #   plan            `production` (approval 1): deploys nothing, but runs the release commit's
 #                   code in a job that holds the deploy role until it drops to CDK's read-only
-#                   lookup role; then, with no credentials in its environment, builds the web
-#                   app and the demo once and keeps them as the run's artifact, with a hash;
+#                   lookup role (the job can still request the production OIDC token);
 #                   synthesizes, prints a hash of the assembly, posts each group's
 #                   diff to the job summary, and fails if the stateful stacks' diff replaces or
 #                   deletes what holds data (scripts/check-replacements.mjs) unless allowed
@@ -29,7 +30,7 @@ name: Deploy
 #                   diff again, deploys them
 #   apply           `production` (approval 3), after apply-stateful succeeded or was skipped:
 #                   same hash check, deploys the stateless stacks (web, api, realtime,
-#                   observability) if they differ, then publishes the plan's web app and
+#                   observability) if they differ, then publishes the build job's web app and
 #                   demo as app-<tag> and demo-<tag> with the web publisher role, checks the
 #                   live router and the live site (scripts/check-web.mjs), and rolls both
 #                   channels back to what was live before if any of that fails
@@ -210,16 +211,68 @@ jobs:
           echo "Refused, as it must be: Not authorized to perform sts:AssumeRoleWithWebIdentity"
           echo "Trust check: the deploy role refuses a job outside the production environment" >> "$GITHUB_STEP_SUMMARY"
 
+  build:
+    # The web app and the demo (supply-checkout-pbp.28), built once from the release commit in
+    # a job with no environment, no id-token permission and no AWS access, since the build runs
+    # the release commit's vite config, plugins and dependencies. The apply job publishes exactly
+    # these files, by this upload's ID and hash. They hold no configuration (publish-web writes
+    # config.json when it publishes) and are public once live anyway.
+    # CodeQL's untrusted-checkout and cache-poisoning queries flag a job like this. Here the
+    # checkout is needs.release.outputs.sha, which the release job proved is a published release
+    # on main that passed CI in a run on main (not pull request code), and the job restores and
+    # saves no cache (setup-node without `cache`, no actions/cache).
+    name: Build the web app and demo
+    needs: release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      hash: ${{ steps.hash.outputs.hash }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Build
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build:web
+          npm run build:demo
+      - name: Hash the build
+        id: hash
+        run: |
+          hash="$(cd dist && find web demo -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          echo "Web build hash: $hash"
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+      # Kept 30 days, longer than any approval wait (GitHub drops a waiting run after 30 days);
+      # the apply job downloads it by this upload's ID, so a re-run never picks up another
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web-build
+          path: |
+            dist/web
+            dist/demo
+          if-no-files-found: error
+          retention-days: 30
+
   plan:
     name: Plan (deploys nothing)
-    needs: [release, trust]
+    needs: [release, trust, build]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Waits for the owner's approval. Approving it runs the release commit's code (the synth
-    # and the web build) in a job that holds the deploy role's credentials for its first steps;
-    # both run only after the drop to the read-only lookup role, without the OIDC token request
-    # variables, and the build without any AWS credentials. Treat approving
+    # Waits for the owner's approval. Approving it runs the release commit's code (the CDK
+    # synth) in a job that can request the production OIDC token (id-token: write) and so the
+    # deploy role, even though the synth runs after the drop to the read-only lookup role:
+    # approving the plan can amount to approving deploy-role power. Treat it as trusting the
+    # release commit. Treat approving
     # it as trusting that code: the real control is that only a reviewed, released commit on
     # main gets here. The production environment's rules (main only, required
     # reviewer, no admin bypass) are what give a job the OIDC subject the deploy role trusts.
@@ -232,8 +285,6 @@ jobs:
       copy: ${{ steps.backup.outputs.copy }}
       stateless-changed: ${{ steps.stateless.outputs.changed }}
       stateful-changed: ${{ steps.stateful.outputs.changed }}
-      build-hash: ${{ steps.build-hash.outputs.hash }}
-      build-artifact-id: ${{ steps.upload-build.outputs.artifact-id }}
     env:
       ENV_NAME: prod
       TAG: ${{ needs.release.outputs.tag }}
@@ -315,41 +366,6 @@ jobs:
             exit 1
           fi
           echo "Now the read-only lookup role"
-      # The web app and the demo (supply-checkout-pbp.28), built once; the apply job publishes
-      # exactly these files. They hold no configuration (publish-web writes config.json when it
-      # publishes) and are public once live anyway. The build runs the release commit's vite
-      # config, plugins and dependencies, so it runs only after the drop to the read-only lookup
-      # role, and with no AWS credentials or OIDC token request variables at all.
-      - name: Build the web app and demo
-        env:
-          AWS_ACCESS_KEY_ID: ""
-          AWS_SECRET_ACCESS_KEY: ""
-          AWS_SESSION_TOKEN: ""
-          AWS_PROFILE: ""
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
-        run: |
-          unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
-          npm ci --ignore-scripts --no-audit --no-fund
-          npm run build:web
-          npm run build:demo
-      - name: Hash the web build
-        id: build-hash
-        run: |
-          hash="$(cd dist && find web demo -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
-          echo "Web build hash: $hash"
-          echo "hash=$hash" >> "$GITHUB_OUTPUT"
-      # Kept 30 days, longer than any approval wait (GitHub drops a waiting run after 30 days);
-      # the apply job downloads it by this upload's ID, so a re-run never picks up another
-      - id: upload-build
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: web-build
-          path: |
-            dist/web
-            dist/demo
-          if-no-files-found: error
-          retention-days: 30
       # Like scripts/deploy.sh: -c backupCopy=false until the backup copy vault's parameter
       # exists (docs/backups.md). Any error but "not found" stops the plan. The apply jobs use
       # this answer, so they synthesize what the plan did.
@@ -376,12 +392,7 @@ jobs:
         name: Synthesize
         id: synth
         working-directory: infra
-        # The CDK app is the release commit's code: no OIDC token request variables for it
-        env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
         run: |
-          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           context=(-c "envName=$ENV_NAME")
           if [[ "${BACKUP_COPY:?}" == false ]]; then context+=(-c backupCopy=false); fi
           ./node_modules/.bin/cdk synth --app "./node_modules/.bin/tsx bin/app.ts" --quiet --no-notices "${context[@]}"
@@ -420,7 +431,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry-run }}
           STATEFUL: ${{ steps.stateful.outputs.changed }}
           STATELESS: ${{ steps.stateless.outputs.changed }}
-          BUILD_HASH: ${{ steps.build-hash.outputs.hash }}
+          BUILD_HASH: ${{ needs.build.outputs.hash }}
         run: |
           {
             echo "## Next"
@@ -509,12 +520,12 @@ jobs:
 
   apply:
     name: Deploy the stateless stacks and publish the web app
-    needs: [release, plan, apply-stateful]
+    needs: [release, build, plan, apply-stateful]
     # After the stateful stacks (the API reads the table and user pool they change), or when
     # they had nothing to deploy. Every release, since the web app may change without the stacks.
     if: >-
       !cancelled() && github.ref == 'refs/heads/main' && !inputs.dry-run
-      && needs.plan.result == 'success'
+      && needs.build.result == 'success' && needs.plan.result == 'success'
       && (needs.apply-stateful.result == 'success' || needs.apply-stateful.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -546,25 +557,25 @@ jobs:
             exit 1
           fi
           echo "Same templates as the plan ($HASH)"
-      # The plan's web build, by its upload's ID, checked against the plan's hash before
+      # The build job's web build, by its upload's ID, checked against that job's hash before
       # anything deploys, so a missing or changed build stops the job with nothing changed
-      - name: Download the plan's web build
+      - name: Download the web build
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          artifact-ids: ${{ needs.plan.outputs.build-artifact-id }}
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
           path: ${{ runner.temp }}/web-build
           merge-multiple: true
-      - name: Check it's the build the plan showed
+      - name: Check it's the build the plan showed (the build job's)
         env:
-          BUILD_HASH: ${{ needs.plan.outputs.build-hash }}
+          BUILD_HASH: ${{ needs.build.outputs.hash }}
         run: |
           if [[ ! -d "$RUNNER_TEMP/web-build/web" || ! -d "$RUNNER_TEMP/web-build/demo" ]]; then
-            echo "::error::The plan's web build isn't there (artifacts are kept 30 days): run the deploy again"
+            echo "::error::The build job's web build isn't there (artifacts are kept 30 days): run the deploy again"
             exit 1
           fi
           hash="$(cd "$RUNNER_TEMP/web-build" && find web demo -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
           if [[ -z "$BUILD_HASH" || "$hash" != "$BUILD_HASH" ]]; then
-            echo "::error::The web build ($hash) isn't the one the plan made ($BUILD_HASH)"
+            echo "::error::The web build ($hash) isn't the one the build job made ($BUILD_HASH)"
             exit 1
           fi
           echo "Same web build ($hash)"

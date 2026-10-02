@@ -293,20 +293,31 @@ class Aws {
   }
 
   /**
-   * Whether an object exists. Only S3's "not there" answers mean no: a 404, or a 403, which S3
-   * gives for a missing key when the caller may not list that key's place in the bucket (the
-   * deploy workflow's web publisher role may list only with an s3:prefix, which a HEAD request
-   * doesn't carry). Anything else (expired credentials, the network, throttling) is an error, so
-   * it can never look like a missing release and lead to an upload over a real one.
+   * Whether an object exists. Only S3's "not there" answers mean no. A 404 is one. A 403 is
+   * what S3 gives for a missing key when the caller may not list that key's place in the bucket
+   * (the deploy workflow's web publisher role may list only with an s3:prefix, which a HEAD
+   * request doesn't carry), but also for a key the caller may not read; so after a 403 it lists
+   * with the key as the prefix, which that role may do, and only an empty answer means missing.
+   * Anything else (expired credentials, the network, throttling) is an error, so it can never
+   * look like a missing release and lead to an upload over a real one.
    */
   exists(bucket, key, region) {
+    const fail = (e) => new Error(`Couldn't check s3://${bucket}/${key}: ${String(e.stderr || e.message).trim()}`, { cause: e });
     try {
       this.read(["s3api", "head-object", "--bucket", bucket, "--key", key], region);
       return true;
     } catch (e) {
-      if (isMissing(e)) return false;
-      throw new Error(`Couldn't check s3://${bucket}/${key}: ${String(e.stderr || e.message).trim()}`, { cause: e });
+      if (!isMissing(e)) throw fail(e);
+      if (!/\(403\)/.test(`${e?.stderr ?? ""}\n${e?.message ?? ""}`)) return false;
     }
+    let listing;
+    try {
+      listing = this.read(["s3api", "list-objects-v2", "--bucket", bucket, "--prefix", key, "--max-keys", "1"], region);
+    } catch (e) {
+      throw fail(e);
+    }
+    if ((listing?.KeyCount ?? 0) > 0) throw new Error(`s3://${bucket}/${key} is there, but this role may not read it`);
+    return false;
   }
 }
 
