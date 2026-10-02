@@ -157,7 +157,7 @@ describe("email domain (SES)", () => {
     template.hasResourceProperties("AWS::Route53::RecordSet", {
       Type: "TXT",
       Name: "supplycheckout.com.",
-      ResourceRecords: ['"v=spf1 include:amazonses.com include:spf.improvmx.com -all"'],
+      ResourceRecords: ['"v=spf1 include:amazonses.com -all"'],
     });
     template.hasParameter("*", ssmParameter(dnsInputParameters("prod").dmarcReportUri));
     template.hasResourceProperties("AWS::Route53::RecordSet", {
@@ -177,7 +177,7 @@ describe("support mail (supply-checkout-6qd)", () => {
     Object.values(template.findResources("AWS::Route53::RecordSet")).filter((r) => r.Properties.Type === type && r.Properties.Name === "supplycheckout.com.");
   const supportPolicies = (template: Template) => Object.values(template.findResources("AWS::IAM::Policy"));
 
-  it("points the apex MX at ImprovMX in prod, from cdk.json, and keeps one SPF record that also covers SES", () => {
+  it("points the apex MX at ImprovMX in prod, from cdk.json, and keeps the one SPF record SES only", () => {
     expect(CDK_JSON_CONTEXT.supportMail).toBe("improvmx");
     const { domain } = build();
     const template = domain(EAST);
@@ -187,7 +187,8 @@ describe("support mail (supply-checkout-6qd)", () => {
       ResourceRecords: ["10 mx1.improvmx.com", "20 mx2.improvmx.com"],
     });
     const spf = apexRecords(template, "TXT").flatMap((r) => r.Properties.ResourceRecords).filter((v: string) => v.includes("v=spf1"));
-    expect(spf).toEqual(['"v=spf1 include:amazonses.com include:spf.improvmx.com -all"']);
+    // The forwarder uses SRS, so it gets no include: only SES passes SPF for the apex
+    expect(spf).toEqual(['"v=spf1 include:amazonses.com -all"']);
     // SES's MAIL FROM SPF on mail. is unchanged
     template.hasResourceProperties("AWS::Route53::RecordSet", {
       Type: "TXT",
@@ -197,29 +198,63 @@ describe("support mail (supply-checkout-6qd)", () => {
     domain(WEST).resourcePropertiesCountIs("AWS::Route53::RecordSet", { Type: "MX" }, 0);
   });
 
-  it("gives the support SMTP user SendRawEmail as support@ only, on the identity and configuration set, and no access key", () => {
-    const { domain } = build();
-    const template = domain(EAST);
-    template.resourceCountIs("AWS::IAM::User", 1);
-    template.hasResourceProperties("AWS::IAM::User", { UserName: "supply-checkout-prod-support-smtp" });
-    template.resourceCountIs("AWS::IAM::AccessKey", 0);
-    const user = template.findResources("AWS::IAM::User");
-    const policies = supportPolicies(template).filter((p) => JSON.stringify(p.Properties.Users ?? []).includes(Object.keys(user)[0] as string));
-    expect(policies).toHaveLength(1);
-    const statements = policies[0]?.Properties.PolicyDocument.Statement;
-    expect(statements).toHaveLength(1);
-    const [statement] = statements;
+  const expectSupportStatement = (statement: Record<string, unknown>) => {
     expect(statement).toMatchObject({
       Sid: "SendSupportReplies",
       Effect: "Allow",
       Action: "ses:SendRawEmail",
-      Condition: { StringEquals: { "ses:FromAddress": "support@supplycheckout.com" } },
+      Condition: { StringEquals: { "ses:FromAddress": "support@supplycheckout.com", "ses:FromDisplayName": "Supply Checkout Support" } },
     });
+    expect(Object.keys(statement).sort()).toEqual(["Action", "Condition", "Effect", "Resource", "Sid"]);
     const resources = (statement.Resource as unknown[]).map((r) => JSON.stringify(r)).sort();
     expect(resources).toHaveLength(2);
     expect(resources[0]).toMatch(new RegExp(`:ses:${EAST}:".*:configuration-set/supply-checkout-prod-transactional"`));
     expect(resources[1]).toMatch(new RegExp(`:ses:${EAST}:".*:identity/supplycheckout\\.com"`));
+  };
+
+  it("gives the support SMTP user SendRawEmail as support@ only, on the identity and configuration set, bounded by the same, and no access key", () => {
+    const { domain } = build();
+    const template = domain(EAST);
+    template.resourceCountIs("AWS::IAM::User", 1);
+    template.resourceCountIs("AWS::IAM::AccessKey", 0);
+    template.resourceCountIs("AWS::IAM::Group", 0);
+    const user = template.findResources("AWS::IAM::User");
+    const [userId, userResource] = Object.entries(user)[0] as [string, { Properties: Record<string, unknown> }];
+    expect(userResource.Properties).toMatchObject({ UserName: "supply-checkout-prod-support-smtp", Path: "/smtp/" });
+    expect(userResource.Properties.LoginProfile).toBeUndefined();
+    expect(userResource.Properties.ManagedPolicyArns).toBeUndefined();
+    expect(userResource.Properties.Groups).toBeUndefined();
+    // Its policy: the one statement
+    const policies = supportPolicies(template).filter((p) => JSON.stringify(p.Properties.Users ?? []).includes(userId));
+    expect(policies).toHaveLength(1);
+    const statements = policies[0]?.Properties.PolicyDocument.Statement;
+    expect(statements).toHaveLength(1);
+    expectSupportStatement(statements[0]);
+    // Its permissions boundary: the same statement, so nothing attached later can give it more
+    const boundaries = Object.entries(template.findResources("AWS::IAM::ManagedPolicy"));
+    expect(boundaries).toHaveLength(1);
+    type Statements = { Statement: Record<string, unknown>[] };
+    const [boundaryId, boundary] = boundaries[0] as [string, { Properties: Record<string, unknown> & { PolicyDocument: Statements } }];
+    expect(userResource.Properties.PermissionsBoundary).toEqual({ Ref: boundaryId });
+    expect(boundary.Properties).toMatchObject({ ManagedPolicyName: "supply-checkout-prod-support-smtp-boundary", Path: "/smtp/" });
+    expect(boundary.Properties.Users ?? boundary.Properties.Roles ?? boundary.Properties.Groups).toBeUndefined();
+    expect(boundary.Properties.PolicyDocument.Statement).toHaveLength(1);
+    expectSupportStatement(boundary.Properties.PolicyDocument.Statement[0] as Record<string, unknown>);
     domain(WEST).resourceCountIs("AWS::IAM::User", 0);
+  });
+
+  it("counts the transactional configuration set's sends by IAM identity in CloudWatch, for the support SMTP alarm", () => {
+    const { domain } = build();
+    domain(EAST).hasResourceProperties("AWS::SES::ConfigurationSetEventDestination", {
+      ConfigurationSetName: { Ref: Match.stringLikeRegexp("^ConfigurationSet") },
+      EventDestination: {
+        Enabled: true,
+        MatchingEventTypes: ["send"],
+        CloudWatchDestination: {
+          DimensionConfigurations: [{ DimensionName: "ses:caller-identity", DimensionValueSource: "messageTag", DefaultDimensionValue: "none" }],
+        },
+      },
+    });
   });
 
   it("adds nothing in other environments, or when switched off", () => {
@@ -227,6 +262,8 @@ describe("support mail (supply-checkout-6qd)", () => {
       const template = domain(EAST);
       template.resourcePropertiesCountIs("AWS::Route53::RecordSet", { Type: "MX", Name: Match.stringLikeRegexp("^(staging\\.)?supplycheckout\\.com\\.$") }, 0);
       template.resourceCountIs("AWS::IAM::User", 0);
+      template.resourceCountIs("AWS::IAM::ManagedPolicy", 0);
+      template.resourcePropertiesCountIs("AWS::SES::ConfigurationSetEventDestination", { EventDestination: { CloudWatchDestination: Match.anyValue() } }, 0);
       const spf = Object.values(template.findResources("AWS::Route53::RecordSet"))
         .flatMap((r) => r.Properties.ResourceRecords ?? [])
         .filter((v: unknown) => typeof v === "string" && v.includes("v=spf1") && v.includes("-all"));
@@ -240,7 +277,7 @@ describe("support mail (supply-checkout-6qd)", () => {
     expect(supportMailFromContext({ tryGetContext: () => undefined }, "prod")).toBeUndefined();
     expect(supportMailFromContext({ tryGetContext: () => false }, "prod")).toBeUndefined();
     expect(supportMailFromContext({ tryGetContext: () => "improvmx" }, "dev")).toBeUndefined();
-    expect(supportMailFromContext({ tryGetContext: () => "improvmx" }, "prod")?.spfInclude).toBe("spf.improvmx.com");
+    expect(supportMailFromContext({ tryGetContext: () => "improvmx" }, "prod")?.mx.map((m) => m.hostName)).toEqual(["mx1.improvmx.com", "mx2.improvmx.com"]);
   });
 });
 
