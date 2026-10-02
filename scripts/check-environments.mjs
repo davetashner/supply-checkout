@@ -61,7 +61,7 @@ export function ghApi(apiPath, run = execFileSync) {
     return JSON.parse(run("gh", ["api", apiPath], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
   } catch (e) {
     if (/HTTP 404|Not Found/.test(`${e.stderr ?? ""}${e.stdout ?? ""}`)) return null;
-    throw new Error(`gh api ${apiPath} failed: ${String(e.stderr ?? e.message).trim()}`);
+    throw new Error(`gh api ${apiPath} failed: ${String(e.stderr ?? e.message).trim()}`, { cause: e });
   }
 }
 
