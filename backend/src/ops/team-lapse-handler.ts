@@ -124,12 +124,6 @@ const DAY_MS = 86_400_000;
 const iso = (ms: number) => new Date(ms).toISOString();
 
 /**
- * When a team with deletion time `deleteAfter` (epoch ms, a deletionTime) is
- * closed if its warning went out at `warned`: then, if that's at least
- * LAPSE_WARNING_DAYS after the warning; otherwise LAPSE_WARNING_DAYS after it,
- * rounded up the same way (deletionTime).
- */
-/**
  * How long before `deleteAfter` the deletion warning goes out: a day more than
  * LAPSE_WARNING_DAYS, so the first run in the window (an hour or so after it
  * opens) still warns LAPSE_WARNING_DAYS ahead, and the warning states the
@@ -137,10 +131,17 @@ const iso = (ms: number) => new Date(ms).toISOString();
  */
 const WARN_AHEAD_MS = (LAPSE_WARNING_DAYS + 1) * DAY_MS;
 
+/**
+ * When a team with deletion time `deleteAfter` (epoch ms, a deletionTime) is
+ * closed if its warning went out at `warned`: then, if that's at least
+ * LAPSE_WARNING_DAYS after the warning; otherwise LAPSE_WARNING_DAYS after it,
+ * rounded up the same way (deletionTime).
+ */
 function closesAt(deleteAfter: number, warned: number): number {
   const floor = warned + LAPSE_WARNING_DAYS * DAY_MS;
   return floor <= deleteAfter ? deleteAfter : deletionTime(floor);
 }
+
 const errorName = (error: unknown) => (error as { name?: string } | null)?.name ?? "Unknown";
 const isMissing = (error: unknown) => (error as { code?: unknown } | null)?.code === "resource_missing";
 
@@ -228,6 +229,12 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
       const deleteAfter = Date.parse(access.deleteAfter);
       if (at >= deleteAfter - WARN_AHEAD_MS) warned = await warnedAt(db, teamId, access.deleteAfter);
       deletesAt = closesAt(deleteAfter, warned ? Date.parse(warned) : at);
+      // A warning time that doesn't parse (a record this job didn't write) never lets a team close, or reach an email: a person looks
+      if (!Number.isFinite(deletesAt)) {
+        obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "badDate" });
+        obs.logger.warn("Lapsed team's deletion time isn't a date, so it can't be closed safely", { teamId, deleteAfter: access.deleteAfter });
+        return "failed";
+      }
     }
     // 2 and 3: the read-only emails no Stripe event sends
     if (access.reason === "trial_ended" && access.readOnlyFrom) {
@@ -267,12 +274,6 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
       warned = await recordWarning(db, teamId, access.deleteAfter, now);
       obs.logger.info("Lapsed team warned of deletion", { teamId, reason: access.reason ?? "", deleteAfter: access.deleteAfter, deletesAt: iso(closesAt(deleteAfter, Date.parse(warned))) });
       return "waiting";
-    }
-    // A date that doesn't parse (a record this job didn't write) never lets a team close: a person looks
-    if (!Number.isFinite(deletesAt)) {
-      obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "badDate" });
-      obs.logger.warn("Lapsed team's deletion time isn't a date, so it can't be closed safely", { teamId, deleteAfter: access.deleteAfter });
-      return "failed";
     }
     if (at < deletesAt) return "waiting";
     // 5: no more than the cap a run (a bug or bad data can't delete teams en masse), then Stripe again, then the closure
