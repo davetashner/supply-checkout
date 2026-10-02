@@ -61,6 +61,7 @@ import {
   type Db,
   getBillingTeam,
   hasEnded,
+  hasStopped,
   isWebhookProcessed,
   listOwnerContacts,
   markWebhookProcessed,
@@ -178,16 +179,16 @@ export function noticeFor(message: BillingMessage, sub: SubscriptionLike | undef
 }
 
 /**
- * Whether `sub` is another subscription than the team's, both have ended, and `sub` ended no later than the
- * team's recorded `subscriptionEndedAt`: applying it would replace the team's subscription with an older one
- * and move its deletion date earlier, so it's ignored. One that ended later, or a team with no recorded end
- * (an `unpaid` one never applied with a date, which keeps its first date anyway), is applied as before.
+ * Whether `sub` is another subscription than the team's, both are over (STOPPED_STATUSES), and `sub` ended no
+ * later than the team's recorded `subscriptionEndedAt`: applying it would replace the team's subscription with
+ * an older one and move its deletion date earlier, so it's ignored. One that ended later, one without
+ * `ended_at`, or a team with no recorded end, is applied as before (the date is kept if it's there).
  */
 export function endedEarlier(sub: SubscriptionLike, team: Pick<BillingTeam, "stripeSubscriptionId" | "status" | "subscriptionEndedAt">): boolean {
-  if (!team.stripeSubscriptionId || sub.id === team.stripeSubscriptionId || !hasEnded(sub.status) || !hasEnded(team.status)) return false;
+  if (!team.stripeSubscriptionId || sub.id === team.stripeSubscriptionId || !hasStopped(sub.status) || !hasStopped(team.status)) return false;
   const recorded = Date.parse(team.subscriptionEndedAt ?? "");
   if (!Number.isFinite(recorded)) return false;
-  // Stripe's ended_at, or for one with none (unpaid), never earlier than now: so only a dated older one is ignored
+  // Without ended_at the date can only be when the worker first saw it: never earlier, so only a dated older one is ignored
   return typeof sub.ended_at === "number" && sub.ended_at * 1000 <= recorded;
 }
 
@@ -368,7 +369,7 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     if (notice?.kind !== "readOnly") return notice;
     const after = await getBillingTeam(db, ctx, now());
     if (!after?.readOnly) return undefined;
-    return { ...notice, ...(after.deleteAfter ? { deletesAt: after.deleteAfter } : {}) };
+    return { ...notice, ...(after.readOnlyReason ? { reason: after.readOnlyReason } : {}), ...(after.deleteAfter ? { deletesAt: after.deleteAfter } : {}) };
   }
 
   /** Applies one event. Throws to have it retried. */

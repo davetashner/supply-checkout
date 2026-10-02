@@ -26,6 +26,8 @@ export {
   type Comp,
   ENDED_STATUSES,
   hasEnded,
+  hasStopped,
+  STOPPED_STATUSES,
   isReadOnlyForBilling,
   liveComp,
   MAX_TEAMS_PER_USER,

@@ -77,7 +77,7 @@ We may change prices. We will email the owner at least 30 days before a new pric
 
 ### 5.6 Failed payments
 
-If a payment fails, we email the owner and show a banner in the app. The team keeps full access for a 7-day grace period while Stripe retries. If payment still fails, the team becomes read-only until the balance is paid. If it stays unpaid for [30] more days, we may cancel the subscription.
+If a payment fails, we email the owner and show a banner in the app. The team keeps full access for a 7-day grace period while Stripe retries. If payment still fails, the team becomes read-only until the balance is paid. If all of Stripe's retries fail, the subscription is canceled, and the 30-day read-only period in section 6 starts then: you can still export your data and resubscribe until the data is deleted.
 
 ## 6. Cancelling
 
@@ -184,7 +184,7 @@ support@supplycheckout.com
 4. ~~**Refunds on yearly plans.** Is a 14-day full refund window right? Should monthly plans get any refund window?~~
 5. **Viewer seats.** Free or paid? Depends on the subscription tiers decision (bead `supply-checkout-akz`).
 6. **Seat removals.** Credit now or lower price from the next period? Depends on the Stripe configuration.
-7. **Unpaid accounts.** How long after the grace period before we cancel and delete data? This draft says 30 days.
+7. ~~**Unpaid accounts.** How long after the grace period before we cancel and delete data?~~ Owner decision (supply-checkout-qdx): Stripe cancels the subscription once all its retries fail, then section 6's 30 days apply (5.6).
 8. **Liability cap.** Is "12 months of fees or $100, whichever is greater" acceptable? Should we carry errors-and-omissions or cyber insurance to back it?
 9. **AI results.** Is the receipt-reading disclaimer (section 9) strong enough, given that results may end up on a client's bill?
 10. ~~**Backup deletion window.** Section 8 matches the backup design as built (`docs/backups.md`): point-in-time recovery and daily backups keep 35 days, the copy in the separate backup account keeps 90, and a restore re-applies recorded account and team deletions. Is 90 days acceptable, and should the wording allow a few days' margin for AWS to remove an expired backup? The Privacy Policy, when written, must say the same.~~

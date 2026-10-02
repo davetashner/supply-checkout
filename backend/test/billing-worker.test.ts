@@ -1014,7 +1014,11 @@ describe("owner notices", () => {
   it("tells owners when retries run out and the subscription goes unpaid, and not for other changes", async () => {
     subs.set("sub_test_1", subscription({ status: "unpaid" }));
     await worker(message("customer.subscription.updated", { status: "unpaid", previousStatus: "past_due" }));
-    expect(mails.sent.map((m) => m.input.kind)).toEqual(["readOnly", "readOnly"]);
+    // An overdue payment's read-only notice: pay to edit again, and no deletion date (Terms 5.6)
+    expect(mails.sent.map((m) => m.input)).toEqual([
+      { kind: "readOnly", teamName: "Echo Plumbing", reason: "payment_overdue" },
+      { kind: "readOnly", teamName: "Echo Plumbing", reason: "payment_overdue" },
+    ]);
     subs.set("sub_test_1", subscription({ status: "active" }));
     await worker(message("customer.subscription.updated", { eventId: "evt_test_2", status: "active", previousStatus: "unpaid" }));
     expect(mails.sent).toHaveLength(2);
@@ -1074,8 +1078,8 @@ describe("the dates the access rules count from (billingAccess, supply-checkout-
     expect(meta().subscriptionEndedAt).toBe(at(ended));
     const deletesAt = at(ended + 30 * DAY_S * 1000);
     expect(mails.sent.map((m) => m.input)).toEqual([
-      { kind: "readOnly", teamName: "Echo Plumbing", deletesAt },
-      { kind: "readOnly", teamName: "Echo Plumbing", deletesAt },
+      { kind: "readOnly", teamName: "Echo Plumbing", reason: "subscription_ended", deletesAt },
+      { kind: "readOnly", teamName: "Echo Plumbing", reason: "subscription_ended", deletesAt },
     ]);
     expect(teamBody(meta() as never, "owner", new Date(NOW))).toMatchObject({ subscriptionEnded: true, readOnlyReason: "subscription_ended", readOnlyDeletesAt: deletesAt });
     // Subscribed again: a new subscription replaces the ended one
@@ -1116,12 +1120,23 @@ describe("the dates the access rules count from (billingAccess, supply-checkout-
     expect(endedEarlier(old, { ...team, stripeSubscriptionId: undefined })).toBe(false);
   });
 
-  it("counts an unpaid subscription, which has no ended_at, from when it first saw it", async () => {
+  it("never dates an unpaid subscription for deletion: it's an overdue payment, read-only until paid", async () => {
     subs.set("sub_test_1", subscription({ status: "unpaid", ended_at: null }));
     await worker(message("customer.subscription.updated", { status: "unpaid", previousStatus: "past_due" }));
+    expect(meta().subscriptionEndedAt).toBeUndefined();
+    expect(meta().pastDueSince).toBeUndefined();
+    expect(teamBody(meta() as never, "owner", new Date(NOW))).toMatchObject({ subscriptionEnded: true, readOnlyReason: "payment_overdue", readOnlyDeletesAt: null });
+    // Stripe cancels it once its retries all fail: then the 30 days start
+    subs.set("sub_test_1", subscription({ status: "canceled", ended_at: NOW / 1000 }));
+    await worker(message("customer.subscription.deleted", { eventId: "evt_test_2", status: "canceled" }));
     expect(meta().subscriptionEndedAt).toBe(at(NOW));
-    await worker(message("customer.subscription.updated", { eventId: "evt_test_2", status: "unpaid", previousStatus: "unpaid" }));
-    expect(meta().subscriptionEndedAt).toBe(at(NOW));
+    expect(teamBody(meta() as never, "owner", new Date(NOW))).toMatchObject({ readOnlyReason: "subscription_ended", readOnlyDeletesAt: at(NOW + 30 * DAY_S * 1000) });
+  });
+
+  it("never takes an unpaid subscription for an older ended one", () => {
+    const team = { stripeSubscriptionId: "sub_test_2", status: "canceled", subscriptionEndedAt: at(NOW) };
+    expect(endedEarlier(subscription({ status: "unpaid", ended_at: NOW / 1000 - DAY_S }), team)).toBe(false);
+    expect(endedEarlier(subscription({ status: "canceled", ended_at: NOW / 1000 - DAY_S }), { ...team, status: "unpaid" })).toBe(false);
   });
 
   it("sends no deletion date for a team with no date it ended (an ended team never applied with one)", async () => {

@@ -55,10 +55,11 @@ export interface Team {
    */
   readonly pastDueSince?: string;
   /**
-   * While the subscription has ended (ENDED_STATUSES): when it ended, from
-   * Stripe's `ended_at`, or when the billing worker first saw it ended (an
-   * `unpaid` subscription has no `ended_at`). The READ_ONLY_RETENTION_DAYS
-   * before deletion run from here (billingAccess). Removed when it's live again.
+   * While the subscription is over (STOPPED_STATUSES: `canceled`,
+   * `incomplete_expired`): when it ended, from Stripe's `ended_at`, or when
+   * the billing worker first saw it so. The READ_ONLY_RETENTION_DAYS before
+   * deletion run from here (billingAccess). Never set for `unpaid`. Removed
+   * with any other status.
    */
   readonly subscriptionEndedAt?: string;
   /**
@@ -200,6 +201,19 @@ export function hasEnded(status: unknown): boolean {
 }
 
 /**
+ * Subscription statuses after which the subscription is over for good and
+ * the team's READ_ONLY_RETENTION_DAYS before deletion run (billingAccess,
+ * `subscriptionEndedAt`): ENDED_STATUSES but `unpaid`, which is a payment
+ * still owed on a live subscription (Terms 5.6), read-only until it's paid.
+ */
+export const STOPPED_STATUSES: readonly string[] = ["canceled", "incomplete_expired"];
+
+/** True when a subscription status is one of STOPPED_STATUSES. */
+export function hasStopped(status: unknown): boolean {
+  return typeof status === "string" && STOPPED_STATUSES.includes(status);
+}
+
+/**
  * How long a `past_due` team keeps full access while Stripe retries the
  * payment (ADR 0009, Terms 5.6): then it's read-only until the balance is paid.
  */
@@ -268,12 +282,16 @@ export function trialEnd(team: { readonly trialEndsAt?: unknown; readonly create
  * - A live comp (ADR 0015): full access, whatever Stripe says, and never
  *   deleted. When it runs out, every clock below starts no earlier than its
  *   `compUntil`.
- * - `canceled`, `unpaid`, `incomplete_expired` (ENDED_STATUSES): read-only
+ * - `canceled`, `incomplete_expired` (STOPPED_STATUSES): read-only
  *   (`subscription_ended`) from `subscriptionEndedAt`, and deleted
  *   READ_ONLY_RETENTION_DAYS later.
  * - `past_due`: full access for PAYMENT_GRACE_DAYS from `pastDueSince`, then
- *   read-only (`payment_overdue`) until it's paid. Not deleted: if Stripe's
- *   retries give up, the subscription ends, and the rule above applies.
+ *   read-only (`payment_overdue`) until it's paid. Not deleted: Stripe is set
+ *   to cancel the subscription once its retries all fail (Terms 5.6), and the
+ *   rule above applies then.
+ * - `unpaid` (Stripe's other choice for when retries all fail, a fallback in
+ *   case it's ever set so): read-only (`payment_overdue`) until it's paid,
+ *   at once, and never deleted for it.
  * - `trialing` with no Stripe subscription (the app's own trial, no
  *   Checkout): read-only (`trial_ended`) from trialEnd, and deleted
  *   READ_ONLY_RETENTION_DAYS later. A trial with a subscription is Stripe's:
@@ -294,7 +312,8 @@ export function billingAccess(team: BillingAccessFields, now = new Date()): Bill
   const retention = (from: number) => iso(from + READ_ONLY_RETENTION_DAYS * ACCESS_DAY_MS);
   const dated = <T extends object>(fields: Record<string, string | undefined>, rest: T) => ({ ...rest, ...Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined)) });
   const at = now.getTime();
-  if (hasEnded(team.status)) {
+  if (team.status === "unpaid") return { readOnly: true, reason: "payment_overdue" };
+  if (hasStopped(team.status)) {
     const ended = dateMs(team.subscriptionEndedAt);
     if (!Number.isFinite(ended)) return { readOnly: true, reason: "subscription_ended" };
     const from = after(ended);

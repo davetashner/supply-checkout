@@ -8,7 +8,7 @@ import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateComma
 import { type Db, connection } from "./client.js";
 import { ConflictError, ForbiddenError, conflictOnConditionFailure } from "./errors.js";
 import { id, keys, prefixes, teamPartition } from "./keys.js";
-import { billingAccess, hasEnded } from "./model.js";
+import { billingAccess, hasStopped, type ReadOnlyReason } from "./model.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
 /** How long an event's records are kept: longer than Stripe retries an event (3 days) or a DLQ holds it. */
@@ -128,6 +128,8 @@ export interface BillingTeam {
   readonly stripeSubscriptionId?: string;
   /** Read-only for billing, and no comp keeps it going (billingAccess). */
   readonly readOnly: boolean;
+  /** Why it's read-only, when it is. */
+  readonly readOnlyReason?: ReadOnlyReason;
   /** When it's closed and deleted unless it subscribes (billingAccess), when it's read-only for that. */
   readonly deleteAfter?: string;
   /** When its subscription went `past_due`, while it is (applySubscription). */
@@ -172,6 +174,7 @@ export async function getBillingTeam(db: Db, ctx: TeamContext, now = new Date())
     ...(str(Item.stripeCustomerId) ? { stripeCustomerId: Item.stripeCustomerId as string } : {}),
     ...(str(Item.stripeSubscriptionId) ? { stripeSubscriptionId: Item.stripeSubscriptionId as string } : {}),
     readOnly: access.readOnly,
+    ...(access.reason ? { readOnlyReason: access.reason } : {}),
     ...(access.deleteAfter ? { deleteAfter: access.deleteAfter } : {}),
     ...(str(Item.pastDueSince) ? { pastDueSince: Item.pastDueSince as string } : {}),
     ...(str(Item.subscriptionEndedAt) ? { subscriptionEndedAt: Item.subscriptionEndedAt as string } : {}),
@@ -273,9 +276,10 @@ export interface SubscriptionState {
  *
  * It also keeps the dates the access rules count from (billingAccess):
  * `pastDueSince`, set the first time the status is `past_due` and kept while
- * it stays so, and `subscriptionEndedAt`, Stripe's `ended_at` (or, for an
- * `unpaid` subscription, which has none, when this first saw it ended) while
- * the status is one of ENDED_STATUSES. Each is removed with any other status.
+ * it stays so, and `subscriptionEndedAt`, Stripe's `ended_at` (or, without
+ * one, when this first saw it) while the status is one of STOPPED_STATUSES
+ * (`canceled`, `incomplete_expired`; never `unpaid`, which owes a payment and
+ * is never deleted for it). Each is removed with any other status.
  *
  * With `asRead` (the nightly entitlement check, billing/entitlements.ts),
  * also conditioned on the team's status, plan, seats, subscription and
@@ -324,7 +328,7 @@ export async function applySubscription(db: Db, ctx: TeamContext, state: Subscri
   if (state.status === "past_due") {
     sets.push("pastDueSince = if_not_exists(pastDueSince, :at)");
   } else removes.push("pastDueSince");
-  if (hasEnded(state.status)) {
+  if (hasStopped(state.status)) {
     // Stripe's own time when it has one (a late or replayed event still counts from then), else when this first saw it
     if (state.endedAt !== undefined) {
       sets.push("subscriptionEndedAt = :ended");

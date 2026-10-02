@@ -848,12 +848,19 @@ describe("billing access (ADR 0009, supply-checkout-qdx): reads stay open for ex
   });
 
   it("an ended subscription, with its date or without", async () => {
-    for (const status of ["canceled", "unpaid", "incomplete_expired"]) {
+    for (const status of ["canceled", "incomplete_expired"]) {
       patchMeta({ status, stripeSubscriptionId: "sub_1", subscriptionEndedAt: iso(NOW - DAY_MS) });
       await readOnly(ENDED);
     }
     patchMeta({ subscriptionEndedAt: undefined });
     await readOnly(ENDED);
+  });
+
+  it("an unpaid subscription: read-only as an overdue payment until it's paid", async () => {
+    patchMeta({ status: "unpaid", stripeSubscriptionId: "sub_1" });
+    await readOnly(OVERDUE);
+    patchMeta({ status: "active" });
+    await writable();
   });
 
   it("a past-due payment: full access through the 7-day grace, then read-only until it's paid", async () => {

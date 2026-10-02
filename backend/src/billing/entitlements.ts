@@ -52,7 +52,7 @@
 // Logged: team, subscription and message IDs, statuses, plans and numbers.
 // Never a name, an email or the Stripe key.
 
-import { type BillingAsRead, type BillingTeam, applySubscription, getBillingTeam, hasEnded, stripeCustomerTeam, type SubscriptionState, teamContextForStripeCustomer } from "../data/index.js";
+import { type BillingAsRead, type BillingTeam, applySubscription, getBillingTeam, hasEnded, hasStopped, stripeCustomerTeam, type SubscriptionState, teamContextForStripeCustomer } from "../data/index.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import { customerOf } from "./closing.js";
 import type { SeatSyncMessage } from "./seats.js";
@@ -87,7 +87,7 @@ export interface EntitlementCheckDeps {
 /** What one check found. */
 export type EntitlementOutcome = "in_sync" | "fixed" | "missing" | "unknown_customer" | "team_gone" | "team_closed" | "no_subscription" | "not_ours";
 
-/** The fields the check compares. `accessDates`: a `past_due` or ended team without the date its access rules count from (billingAccess). */
+/** The fields the check compares. `accessDates`: a `past_due`, `canceled` or `incomplete_expired` team without the date its access rules count from (billingAccess). */
 export type EntitlementField = "subscription" | "status" | "plan" | "seats" | "cancelAtPeriodEnd" | "accessDates";
 
 /**
@@ -105,7 +105,7 @@ export function entitlementDrift(
   if (state.plan !== undefined && team.plan !== state.plan) drift.push("plan");
   if (team.seats !== state.seats) drift.push("seats");
   if (team.cancelAtPeriodEnd !== state.cancelAtPeriodEnd) drift.push("cancelAtPeriodEnd");
-  if (team.status === state.status && ((state.status === "past_due" && !team.pastDueSince) || (hasEnded(state.status) && !team.subscriptionEndedAt))) drift.push("accessDates");
+  if (team.status === state.status && ((state.status === "past_due" && !team.pastDueSince) || (hasStopped(state.status) && !team.subscriptionEndedAt))) drift.push("accessDates");
   return drift;
 }
 

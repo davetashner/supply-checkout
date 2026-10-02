@@ -2,7 +2,7 @@
 // what applySubscription writes to the team (ADR 0009). Shared by the event
 // path (worker.ts) and the nightly entitlement check (entitlements.ts).
 
-import { hasEnded, type SubscriptionState } from "../data/index.js";
+import { hasStopped, type SubscriptionState } from "../data/index.js";
 import { planForLookupKey } from "./catalog.js";
 
 /** The fields of a Stripe subscription the worker reads. */
@@ -43,7 +43,7 @@ export function subscriptionState(sub: SubscriptionLike, customerId: string, rep
   const first = items[0];
   const known = planForLookupKey(first?.price.lookup_key);
   const end = first ? iso(first.current_period_end) : undefined;
-  const endedAt = hasEnded(sub.status) ? iso(sub.ended_at) : undefined;
+  const endedAt = hasStopped(sub.status) ? iso(sub.ended_at) : undefined;
   return {
     customerId,
     subscriptionId: sub.id,

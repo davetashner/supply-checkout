@@ -351,11 +351,17 @@ describe("billing access (billingAccess, ADR 0009, supply-checkout-qdx)", () => 
   });
 
   it("makes an ended subscription read-only, and deletes it 30 days after it ended only when that's recorded", () => {
-    for (const status of ["canceled", "unpaid", "incomplete_expired"]) {
+    for (const status of ["canceled", "incomplete_expired"]) {
       expect(billingAccess({ status, subscriptionEndedAt: at(-3) }, NOW)).toEqual({ readOnly: true, reason: "subscription_ended", readOnlyFrom: at(-3), deleteAfter: at(27) });
       expect(billingAccess({ status }, NOW)).toEqual({ readOnly: true, reason: "subscription_ended" });
       expect(billingAccess({ status, subscriptionEndedAt: "yesterday" }, NOW)).toEqual({ readOnly: true, reason: "subscription_ended" });
     }
+  });
+
+  it("makes an unpaid subscription read-only as an overdue payment at once, and never gives it a deletion date (Terms 5.6)", () => {
+    expect(billingAccess({ status: "unpaid" }, NOW)).toEqual({ readOnly: true, reason: "payment_overdue" });
+    expect(billingAccess({ status: "unpaid", subscriptionEndedAt: at(-60), pastDueSince: at(-1) }, NOW)).toEqual({ readOnly: true, reason: "payment_overdue" });
+    expect(billingAccess({ status: "unpaid", compPlan: "starter", compUntil: at(1) }, NOW)).toEqual({ readOnly: false });
   });
 
   it("gives a past-due team 7 days, then makes it read-only with no deletion date; with no date recorded, it stays in grace", () => {
