@@ -183,11 +183,14 @@ test.describe("reading a receipt on the receipt endpoint", { tag: ["@J5", "@J5.1
   });
 
   test("isn't offered to a viewer", { tag: ["@J9"] }, async ({ page }) => {
-    await openAws(page, new FakeBackend({ docs: seeded(), teams: [{ ...TEAM, role: "viewer" }] }));
+    const backend = new FakeBackend({ docs: seeded(), teams: [{ ...TEAM, role: "viewer" }] });
+    await openAws(page, backend);
     await connected(page);
     await expect(page.locator("#main")).toBeVisible();
     await expect(page.getByText("Scan receipt")).toHaveCount(0);
     await expect(left(page)).toHaveCount(0);
+    // A viewer's page never asks for the scans left, which the server would refuse
+    expect(backend.calls.filter((c) => c.path.endsWith("/receipts/usage"))).toEqual([]);
   });
 });
 
@@ -239,6 +242,19 @@ test.describe("receipt scans left, and the limits", { tag: ["@J5", "@J5.1"] }, (
       await expect(left(page)).toHaveText("200 of 200 receipt scans left this month");
     });
   }
+
+  test("hides the line when the usage isn't numbers", async ({ page }) => {
+    const backend = new FakeBackend({ docs: seeded(), receipt });
+    backend.on("GET", USAGE, { status: 200, body: { usage: { period: "month", month: "2026-09", used: 1, limit: "200", remaining: 199 } } });
+    // And a read whose usage has no remaining
+    backend.on("POST", READ, { status: 200, body: { ...receipt, usage: { period: "month", month: "2026-09", used: 1, limit: 200 } } });
+    await scan(page, backend);
+    await expect(page.getByRole("heading", { name: "Review receipt" })).toBeVisible();
+    await page.getByRole("button", { name: "← All sheets" }).click();
+    await expect(page.locator("#main .bar")).toBeVisible();
+    await expect(left(page)).toHaveCount(0);
+    expect(backend.requests("GET", USAGE)).toHaveLength(1);
+  });
 
   test("still scans when the scans left can't be read", async ({ page }) => {
     const backend = new FakeBackend({ docs: seeded(), receipt });

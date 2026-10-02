@@ -8,6 +8,7 @@
 //   npm run ops -- reopen <teamId> --reason "Owner disputes the closure"
 //   npm run ops -- audit [--team <teamId> | --month YYYY-MM]
 //   npm run ops -- stuck-imports
+//   npm run ops -- receipts [--month YYYY-MM] [--limit N]
 //   npm run ops -- clear-import <teamId> <importId> --reason "Owner re-imported it"
 //   npm run ops -- sign-out
 //
@@ -54,6 +55,7 @@ export const USAGE = `Usage: npm run ops -- <command> [options]
   reopen <teamId> --reason <text>               Reopen a closed team before it's deleted (until 5 minutes before)
   audit [--team <teamId> | --month YYYY-MM]     The operator audit (default: this month)
   stuck-imports                                 Imports stuck part-way for over an hour (the "Imports stuck" alarm)
+  receipts [--month YYYY-MM] [--limit N]        The teams that read the most receipts in a month (default: this one), with estimated cost (audited)
   clear-import <teamId> <importId> --reason <text>
                                                 Take a stuck import out of the check (the job itself stays)
   sign-out                                      Sign out everywhere and forget the cached token
@@ -285,7 +287,30 @@ function stripeLines(stripe) {
   return lines;
 }
 
-function teamDetail(team, stripe) {
+/** A dollar amount the API estimated: to the cent, or "<$0.01". */
+const usd = (n) => (n > 0 && n < 0.005 ? "<$0.01" : `$${n.toFixed(2)}`);
+
+function receiptLines(receipts) {
+  if (receipts === null) return ["  receipts: unavailable (the record above is current; try again later)"];
+  if (!receipts) return [];
+  return [
+    `  receipts in its trial: ${receipts.trialReceipts}`,
+    ...receipts.months.map((m) => `  receipts ${m.month}: ${pad(String(m.receipts), 5)} est. ${usd(m.estimatedCostUsd)}`),
+  ];
+}
+
+function receiptRanking(r) {
+  const lines = r.teams.length
+    ? r.teams.map((t) => `${pad(String(t.receipts), 6)} est. ${pad(usd(t.estimatedCostUsd), 8)} ${t.name} (${t.teamId})  ${t.compLive ? "comped" : `${t.plan}, ${t.status}`}, trial reads ${t.trialReceipts}`)
+    : [`No receipts read in ${r.month}.`];
+  return [
+    `Receipts read in ${r.month}, most first (est. $${r.estimatedCostPerReceiptUsd} a read):`,
+    ...lines,
+    ...(r.complete ? [] : [`(Only the first ${r.teamsRead} teams were read: there are more.)`]),
+  ].join("\n");
+}
+
+function teamDetail(team, stripe, receipts) {
   const lines = [
     `${team.name} (${team.id})`,
     `  plan ${team.plan}, status ${team.status}, seats ${team.seats}, owners ${team.ownerCount}${team.closedAt ? `, CLOSED ${team.closedAt} (read-only until it's deleted)` : ""}`,
@@ -297,6 +322,7 @@ function teamDetail(team, stripe) {
     `  version ${team.version}`,
     ...(team.owners ?? []).map((o) => `  owner ${o.email ?? "(no email)"} (${o.userId}), joined ${o.joinedAt ?? "?"}`),
     ...stripeLines(stripe),
+    ...receiptLines(receipts),
   ];
   return lines.join("\n");
 }
@@ -305,6 +331,8 @@ function auditLine(e) {
   const change =
     e.action === "ops.import.clear" && e.after
       ? ` import ${e.after.importId}`
+      : e.action === "ops.receipts.usage" && e.after
+        ? ` receipts ${e.after.month}, ${e.after.teams.length} teams`
       : e.action === "ops.team.reopen"
         ? ` closed ${e.before?.closedAt ?? "?"} -> open`
         : e.after
@@ -354,7 +382,7 @@ export async function main(argv, deps) {
     if (!id || !ID.test(id)) throw new UsageError(`${command} needs a team ID`);
     return id;
   };
-  const known = { teams: true, team: true, comp: true, uncomp: true, reopen: true, audit: true, "stuck-imports": true, "clear-import": true };
+  const known = { teams: true, team: true, comp: true, uncomp: true, reopen: true, audit: true, "stuck-imports": true, "clear-import": true, receipts: true };
   if (!known[command]) throw new UsageError(`Unknown command ${command}`);
 
   let token = readCachedToken(cacheFile, deps.now());
@@ -382,7 +410,7 @@ export async function main(argv, deps) {
     const none = page.cursor ? "No teams yet (the search isn't finished)." : "No teams.";
     print(page, (p) => [p.teams.length ? p.teams.map(teamLine).join("\n") : none, ...(p.cursor ? [`More: --cursor ${p.cursor}`] : [])].join("\n"));
   } else if (command === "team") {
-    print(await call("GET", `/ops/teams/${teamId()}`), (r) => teamDetail(r.team, r.stripe));
+    print(await call("GET", `/ops/teams/${teamId()}`), (r) => teamDetail(r.team, r.stripe, r.receipts));
   } else if (command === "comp" || command === "uncomp") {
     const id = teamId();
     if (!flags.reason) throw new UsageError(`${command} needs --reason`);
@@ -415,6 +443,9 @@ export async function main(argv, deps) {
         ? a.imports.map((j) => `team ${j.teamId}  import ${j.importId}  started ${j.startedAt}  ${j.committed} of ${j.total} rows`).join("\n")
         : `No imports stuck for more than ${a.stuckAfterMinutes} minutes.`,
     );
+  } else if (command === "receipts") {
+    if (flags.month !== undefined && !/^\d{4}-(0[1-9]|1[0-2])$/.test(flags.month)) throw new UsageError("--month is YYYY-MM");
+    print(await call("GET", "/ops/receipts", { query: { month: flags.month, limit: flags.limit } }), receiptRanking);
   } else if (command === "clear-import") {
     const id = teamId();
     const importId = args[1];

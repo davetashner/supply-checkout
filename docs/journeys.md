@@ -41,7 +41,7 @@ To run one journey's tests: `npx playwright test --grep "@J4\b" --project=deskto
 | [J2](#j2-set-up-the-inventory) | Set up the inventory | Owner | No | Tested |
 | [J3](#j3-invite-the-crew) | Invite the crew | Owner, crew member | No | Tested; still to come: opening the mobile app from the invite link (phase 2) |
 | [J4](#j4-check-supplies-out-and-back-in) | Check supplies out and back in | Crew member | Yes | Tested |
-| [J5](#j5-read-a-receipt) | Read a receipt | Crew member, owner | No | Tested; still to come: operators' view of each team's receipt usage, and a subscribe link in the trial's limit message once the in-app plan picker exists |
+| [J5](#j5-read-a-receipt) | Read a receipt | Crew member, owner | No | Tested; still to come: a subscribe link in the trial's receipt limit message, once the in-app plan picker exists |
 | [J6](#j6-export-a-sheet-to-bill-a-client) | Export a sheet to bill a client | Owner, bookkeeper | No | Tested |
 | [J7](#j7-subscribe-add-seats-and-see-invoices) | Subscribe, add seats and see invoices | Owner | Yes | Partly built |
 | [J8](#j8-a-payment-fails-and-is-fixed) | A payment fails and is fixed | Owner | Yes | Partly built |
