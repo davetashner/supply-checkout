@@ -35,6 +35,8 @@ export class MemoryTable {
   readonly requests: { readonly command: string; readonly input: Record<string, unknown> }[] = [];
   /** Runs after each GetCommand, before its result returns: a concurrent writer. */
   afterGet?: (item: Item | undefined) => void;
+  /** Keys the next BatchGetCommand leaves unprocessed (from its start), as DynamoDB may under load. */
+  unprocessed = 0;
   /** Runs before each TransactWriteCommand is applied: a concurrent writer. */
   beforeTransactWrite?: () => void;
   /** Runs before each PutCommand is applied, after its condition passes: DynamoDB refusing it, say. */
@@ -210,6 +212,21 @@ export class MemoryTable {
         if (input.ReturnValues === "ALL_NEW") return { Attributes: structuredClone(next) };
         if (input.ReturnValues === "UPDATED_NEW") return { Attributes: Object.fromEntries(Object.entries(structuredClone(next)).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(old?.[k]))) };
         return {};
+      }
+      case "BatchGetCommand": {
+        // One table; at most 100 keys, as DynamoDB allows. A projection keeps only the attributes it names.
+        // `unprocessed` (set by a test) holds back that many keys the first time, as DynamoDB may
+        const [[table, request]] = Object.entries(input.RequestItems as Record<string, { Keys: Item[]; ProjectionExpression?: string; ExpressionAttributeNames?: Record<string, string> }>) as [[string, { Keys: Item[]; ProjectionExpression?: string; ExpressionAttributeNames?: Record<string, string> }]];
+        if (request.Keys.length > 100) throw Object.assign(new Error("Too many items requested for the BatchGetItem call"), { name: "ValidationException" });
+        record(request.Keys.map((k) => String(k.PK)));
+        const names = request.ProjectionExpression?.split(",").map((n) => n.trim()).map((n) => request.ExpressionAttributeNames?.[n] ?? n);
+        const held = this.unprocessed > 0 ? request.Keys.slice(0, this.unprocessed) : [];
+        this.unprocessed = 0;
+        const items = request.Keys.slice(held.length)
+          .map((k) => this.items.get(MemoryTable.id(k)))
+          .filter((item): item is Item => item !== undefined)
+          .map((item) => structuredClone(names ? Object.fromEntries(Object.entries(item).filter(([k]) => names.includes(k))) : item));
+        return { Responses: { [table]: items }, ...(held.length ? { UnprocessedKeys: { [table]: { ...request, Keys: held } } } : {}) };
       }
       case "QueryCommand":
         return this.query(input, record);

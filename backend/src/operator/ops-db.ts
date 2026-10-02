@@ -6,7 +6,8 @@
 // - query GSI3's OPS#TEAMS, OPS#OWNERS#* and OPS#AUDIT#* partitions, for the
 //   projected attributes only (the team list, owners and the audit by month);
 // - update the comp attributes (COMP_ATTRIBUTES) of items in TEAM#<tag>;
-// - put and query items in OPAUDIT#* partitions (never update or delete).
+// - put and query items in OPAUDIT#* partitions (never update or delete);
+// - batch-get teams' receipt counters by key, the keys and `receipts` only.
 //
 // So an operator can't read a team's sheets or inventory through the ops
 // function, even with a bug in it. Sessions are cached like the data

@@ -412,3 +412,42 @@ test("reopens a closed team at the version it read, with a new Idempotency-Key, 
   await main(["audit"], audit.deps);
   assert.match(audit.logs[0], /ops.team.reopen team team-c {2}by op-1 closed 2026-09-01T10:00:00.000Z -> open {2}"Disputed"/);
 });
+
+test("ranks the month's receipt reads with estimated cost, shows a team's, and audits them (supply-checkout-wxx)", async () => {
+  const ranking = {
+    month: "2026-09",
+    teams: [
+      { teamId: "team-b", name: "Bravo", status: "active", plan: "starter", compLive: false, receipts: 150, trialReceipts: 20, estimatedCostUsd: 1.05 },
+      { teamId: "team-a", name: "Acme", status: "trialing", plan: "trial", compLive: true, receipts: 1, trialReceipts: 1, estimatedCostUsd: 0.007 },
+      { teamId: "team-c", name: "Cee", status: "trialing", plan: "trial", compLive: false, receipts: 0, trialReceipts: 0, estimatedCostUsd: 0.001 },
+    ],
+    teamsRead: 1000,
+    complete: false,
+    estimatedCostPerReceiptUsd: 0.007,
+  };
+  const list = harness({ routes: { "GET /ops/receipts": (r) => ({ status: 200, body: { ...ranking, month: r.query.month ?? "2026-09" } }) } });
+  await main(["receipts", "--month", "2026-08", "--limit", "5"], list.deps);
+  assert.deepEqual(list.requests[0].query, { month: "2026-08", limit: "5" });
+  assert.match(list.logs[0], /^Receipts read in 2026-08, most first \(est\. \$0\.007 a read\):/);
+  assert.match(list.logs[0], /150\s+est\. \$1\.05\s+Bravo \(team-b\) {2}starter, active, trial reads 20/);
+  assert.match(list.logs[0], /1\s+est\. \$0\.01\s+Acme \(team-a\) {2}comped, trial reads 1/);
+  assert.match(list.logs[0], /est\. <\$0\.01\s+Cee/);
+  assert.match(list.logs[0], /Only the first 1000 teams were read/);
+  const empty = harness({ routes: { "GET /ops/receipts": { status: 200, body: { ...ranking, teams: [], complete: true } } } });
+  await main(["receipts"], empty.deps);
+  assert.deepEqual(empty.requests[0].query, {});
+  assert.equal(empty.logs[0], "Receipts read in 2026-09, most first (est. $0.007 a read):\nNo receipts read in 2026-09.");
+  await assert.rejects(main(["receipts", "--month", "Sept"], harness().deps), UsageError);
+  // A team's record has its months and its trial
+  const receipts = { months: [{ month: "2026-09", receipts: 40, estimatedCostUsd: 0.28 }, { month: "2026-08", receipts: 0, estimatedCostUsd: 0 }], trialReceipts: 25 };
+  const one = harness({ routes: { "GET /ops/teams/team-a": { status: 200, body: { team: TEAM, stripe: null, receipts } } } });
+  await main(["team", "team-a"], one.deps);
+  assert.match(one.logs[0], /receipts in its trial: 25\n {2}receipts 2026-09: 40\s+est\. \$0\.28\n {2}receipts 2026-08: 0\s+est\. \$0\.00/);
+  const unavailable = harness({ routes: { "GET /ops/teams/team-a": { status: 200, body: { team: TEAM, stripe: null, receipts: null } } } });
+  await main(["team", "team-a"], unavailable.deps);
+  assert.match(unavailable.logs[0], /receipts: unavailable/);
+  // The audit names the month
+  const audit = harness({ routes: { "GET /ops/audit": { status: 200, body: { events: [{ ts: "t", action: "ops.receipts.usage", teamId: "PLATFORM", operatorSub: "op-1", before: null, after: { month: "2026-09", teams: ["team-b", "team-a"] } }] } } } });
+  await main(["audit"], audit.deps);
+  assert.match(audit.logs[0], /ops.receipts.usage team PLATFORM {2}by op-1 receipts 2026-09, 2 teams/);
+});

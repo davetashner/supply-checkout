@@ -170,10 +170,11 @@ An **organization trail** from the management account (`supply-mgmt`), deliverin
 | `realtime.` | AppSync Events | `realtime`, in `GLOBAL_SERVICES_REGION` |
 | `api.` | the HTTP API, in every region | `api`, in each region |
 | `mail.` | SES custom MAIL FROM (MX and SPF) | none |
+| apex MX (prod) | ImprovMX, forwarding `support@` to the owner's inbox ([Support email](#support-email)) | none |
 
 The certificates are validated by DNS in the zone; CloudFormation adds the validation records and waits a few minutes for issuance. Each ARN is published to SSM as `/supply-checkout/<env>/domain/<name>-certificate-arn`, in the stack's region. The names start to resolve when the stacks that use them add their alias records: `web` (`supply-checkout-qk1`), `identity` (`supply-checkout-zsm`), `api` and `realtime`. Those stacks import the zone with `importZone()` from `lib/domain.ts`.
 
-In the primary region, the stack also creates the SES domain identity with Easy DKIM (three CNAMEs), the `mail.` MAIL FROM domain, SPF on the apex (`v=spf1 include:amazonses.com -all`) and DMARC at `p=none`. SES in the second region is phase 2 (`supply-checkout-3x3.1`).
+In the primary region, the stack also creates the SES domain identity with Easy DKIM (three CNAMEs), the `mail.` MAIL FROM domain, SPF on the apex (`v=spf1 include:amazonses.com -all`) and DMARC at `p=none`. In prod it also adds the apex MX records, an IAM user and a CloudWatch event destination for support mail ([Support email](#support-email)). SES in the second region is phase 2 (`supply-checkout-3x3.1`).
 
 **The hosted zone is imported, never created.** Prod's zone was created by hand when the domain was delegated from Namecheap. The stack reads its ID from the SSM parameter `/supply-checkout/<env>/dns/hosted-zone-id` at deploy time (a CloudFormation SSM parameter), rather than `HostedZone.fromLookup`, so synth stays account-agnostic in CI and the zone ID never lands in `cdk.context.json`. DMARC aggregate reports go to the address in `/supply-checkout/<env>/dns/dmarc-rua`. Use a DMARC report service's `mailto:` address, not a personal mailbox at another domain: receivers drop reports to another domain unless that domain publishes an authorization record, which personal mail providers don't. Create both parameters before the first deploy, in each region with a `domain` stack (today, us-east-1):
 
@@ -185,7 +186,7 @@ aws ssm put-parameter --profile supply-prod --region us-east-1 --type String \
   --name /supply-checkout/prod/dns/hosted-zone-id --value "$ZONE_ID"
 aws ssm put-parameter --profile supply-prod --region us-east-1 --type String \
   --name /supply-checkout/prod/dns/dmarc-rua --value 'mailto:dmarc-reports@example.com'   # your DMARC report service's address
-# The stack adds TXT records at the apex and _dmarc, and MX and TXT at mail.
+# The stack adds TXT records at the apex and _dmarc, MX and TXT at mail., and (prod) MX at the apex.
 # If any of those already exist in the zone, the deploy fails: remove them, or
 # merge their values into lib/stacks/domain-stack.ts first.
 aws route53 list-resource-record-sets --profile supply-prod --hosted-zone-id "$ZONE_ID" \
@@ -258,6 +259,105 @@ A complaint means the person asked not to get our mail, so remove a `COMPLAINT` 
 2. In the prod account, put the new zone's four name servers in a `StringList` parameter: `aws ssm put-parameter --type StringList --name /supply-checkout/prod/dns/delegation/staging --value 'ns-1.awsdns-01.org,ns-2.awsdns-02.co.uk,…'`.
 3. Add `"delegatedEnvs": ["staging"]` to `cdk.json` (it holds names only) and redeploy prod's `domain` stack, which adds the NS record. Keep it in `cdk.json` rather than passing `-c`: a prod deploy without it removes the delegation.
 4. Deploy staging with `-c envName=staging` and that account's profile.
+
+### Support email
+
+`support@supplycheckout.com` forwards to the owner's Gmail through [ImprovMX](https://improvmx.com)'s free plan, and the owner replies from Gmail as `support@` (`supply-checkout-6qd`). Revisit a shared inbox (Google Workspace or a help desk) when two people answer support.
+
+**What the prod `domain` stack adds** (primary region, only when `supportMail` is set; `cdk.json` sets `"supportMail": "improvmx"`, and other environments ignore it). Keep it in `cdk.json`: a prod deploy without it removes the MX records and support@ stops receiving mail.
+
+- Apex MX: `10 mx1.improvmx.com` and `20 mx2.improvmx.com`, from ImprovMX's DNS setup guides, checked 2026-10-01 (`MAIL_FORWARDERS` in `lib/email.ts`).
+- **No SPF change.** The apex SPF record stays `v=spf1 include:amazonses.com -all`. ImprovMX forwards with SRS (its own envelope sender), so it never needs to pass SPF as supplycheckout.com, and including `spf.improvmx.com` would let its servers pass SPF for the domain. ImprovMX's dashboard warns that SPF isn't set up; ignore that warning. SES's own SPF on `mail.` is unchanged too.
+- The IAM user `/smtp/supply-checkout-prod-support-smtp`, with no access key. Its one permission, which is also its permissions boundary (`supply-checkout-prod-support-smtp-boundary`, so a policy attached later can't give it more): `ses:SendRawEmail` (what an SES SMTP send is authorized as) on the domain identity and the `transactional` configuration set, with `ses:FromAddress` = `support@supplycheckout.com` and `ses:FromDisplayName` = `Supply Checkout Support`. It can't call any other AWS API. Its SMTP password is made by hand (below) and kept only in Gmail's settings, never in the repo, SSM or a shared note.
+- A CloudWatch event destination on the transactional configuration set, `SendsByCaller`, counting sends by `ses:caller-identity`, for the Support SMTP sends alarm.
+
+**What the key can do.** Treat it like the domain's signing key. `ses:FromAddress` is most likely matched against the envelope sender of an SMTP send, not the message's From header, so whoever holds the key can probably send any mail the domain identity can: a header From of `noreply@supplycheckout.com` or any other address at the domain, DKIM-signed and passing DMARC, which makes convincing phishing. The display name condition only adds friction (an attacker can copy it). What limits the damage is detection and rotation: P2 alerts on any change to the user or its boundary policy and on more than 50 sends in an hour or 150 in a day ([Observability](observability.md), "Support SMTP user"), the key rotation below, and step 8's check of what the policy really refuses.
+
+**Why replies go through SES.** Gmail's "send as" through Gmail's own SMTP sends from Google's servers, signed by `gmail.com`: SPF fails for supplycheckout.com (`-all`), the DKIM signature isn't the domain's, and DMARC fails, which gets replies junked now and rejected once DMARC moves to `p=quarantine`. Through SES SMTP (`email-smtp.us-east-1.amazonaws.com`, port 587, TLS), replies are DKIM-signed by `supplycheckout.com` (Easy DKIM) and their envelope sender is `mail.supplycheckout.com`, so both DKIM and SPF align and DMARC passes. **Until SES production access is granted (`supply-checkout-3sv.18`), replies and auto-replies reach only addresses verified in SES**; anything else bounces back to the Gmail inbox.
+
+**Which configuration set.** Support replies go through the identity's default, the transactional set, so a recipient who marks a reply as spam is added to the account-level suppression list, which also stops their sign-up codes and invites ([Transactional email](#transactional-email)); a hard bounce does the same. A separate support set with suppression off would avoid that, but SMTP mail picks a configuration set only with the `X-SES-CONFIGURATION-SET` header, and Gmail's "send as" can't add headers. So replies stay on the transactional set, and the risk stands: if a customer says they no longer get codes after writing to support, check the suppression list ([Removing an address from the suppression list](#removing-an-address-from-the-suppression-list)).
+
+**Owner steps** (once; the auto-reply is a Gmail filter, since ImprovMX's free plan has no auto-responder):
+
+1. **ImprovMX.** Sign up at improvmx.com with your Gmail address (the free plan: one domain, 25 aliases, no SMTP). Add the domain `supplycheckout.com`. Replace the default catch-all alias with one alias: `support` → your Gmail address. ImprovMX sends a confirmation to that address; click it. Don't add ImprovMX's suggested records by hand: the stack adds the MX records, and the SPF record is deliberately left out.
+2. **Check for existing apex records**, then **deploy the domain stack, then the observability stack**, from the main checkout on an up-to-date `main` (CDK asks you to confirm the new IAM user and policies):
+   ```bash
+   aws sso login --profile supply-prod
+   ZONE_ID=$(aws ssm get-parameter --profile supply-prod --region us-east-1 --name /supply-checkout/prod/dns/hosted-zone-id --query Parameter.Value --output text)
+   aws route53 list-resource-record-sets --profile supply-prod --hosted-zone-id "$ZONE_ID" \
+     --query "ResourceRecordSets[?Name=='supplycheckout.com.' && Type=='MX']"   # must be empty
+   cd infra
+   npx cdk diff supply-checkout-prod-us-east-1-domain supply-checkout-prod-us-east-1-observability --profile supply-prod
+   npx cdk deploy supply-checkout-prod-us-east-1-domain --profile supply-prod
+   npx cdk deploy supply-checkout-prod-us-east-1-observability --profile supply-prod --exclusively
+   ```
+   The domain diff should show only the apex MX record, the IAM user, its policy and boundary, and the `SendsByCaller` event destination; the observability diff the `operator-support-smtp-user` rule, its topic and key policy statements, and the two `support-smtp` sends alarms. In this order the rule doesn't exist yet when the domain deploy calls `PutUserPolicy` and `PutUserPermissionsBoundary`, so no P2 email comes for them; a later domain deploy that changes the user's policy or boundary does send one, as expected.
+3. **Verify DNS:**
+   ```bash
+   dig +short MX supplycheckout.com        # 10 mx1.improvmx.com.  20 mx2.improvmx.com.
+   dig +short TXT supplycheckout.com       # "v=spf1 include:amazonses.com -all" (unchanged)
+   dig +short TXT mail.supplycheckout.com  # "v=spf1 include:amazonses.com ~all" (unchanged)
+   dig +short TXT _dmarc.supplycheckout.com
+   ```
+   In ImprovMX's dashboard, click "Check again" until the MX records show as found and it says email forwarding is active. **Ignore its SPF warning**: forwarding doesn't need it. Then send a message to support@supplycheckout.com from an address that isn't your Gmail (a phone's mail app, a friend's): it should arrive in Gmail within a minute, and ImprovMX's log shows it.
+4. **SMTP credentials for the IAM user.** Create an access key (this sends a P2 email, `CreateAccessKey` on the support SMTP user: expected), turn its secret into an SES SMTP password, and keep only the result, in Gmail:
+   ```bash
+   aws iam create-access-key --profile supply-prod --user-name supply-checkout-prod-support-smtp \
+     --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text
+   # Derive the SMTP password (AWS's documented algorithm). Paste the secret at the prompt; nothing is echoed or saved.
+   python3 -c 'import base64,getpass,hmac,hashlib
+   s=lambda k,m: hmac.new(k,m.encode(),hashlib.sha256).digest()
+   k=("AWS4"+getpass.getpass("Secret access key: ")).encode()
+   for m in ("11111111","us-east-1","ses","aws4_request","SendRawEmail"): k=s(k,m)
+   print(base64.b64encode(bytes([4])+k).decode())'
+   ```
+   The SMTP user name is the access key ID; the password is what the script prints. Close the terminal afterwards (or clear its scrollback).
+5. **Gmail "send as".** In Gmail, Settings, **Accounts and Import**, "Send mail as", **Add another email address**: name **exactly** `Supply Checkout Support` (the policy requires that display name), address `support@supplycheckout.com`, leave "Treat as an alias" checked. SMTP server `email-smtp.us-east-1.amazonaws.com`, port `587`, the user name and password from step 4, **Secured connection using TLS**. Gmail emails a confirmation code to support@, which ImprovMX forwards to you; enter it. Then set "When replying to a message" to **Reply from the same address the message was sent to**.
+6. **Signature.** In Settings, **General**, Signature, create one for support@ (choose it under "Signature defaults" for `support@supplycheckout.com`): your name, "Supply Checkout support", and a link to `https://supplycheckout.com` (the help center, once `supply-checkout-h9c` publishes it).
+7. **Auto-reply.** In Settings, **Advanced**, turn on **Templates**. Compose a message from support@ with the subject `We got your message` and a body like "Thanks for writing to Supply Checkout support. We reply within 2 business days (the terms say the same). If you can't sign in or think someone else has, say so in the subject and we'll answer first.", then **⋮ → Templates → Save draft as template**. Then create a filter: search **To** `support@supplycheckout.com`, **Create filter**, check **Send template** (choose it) and **Apply the label** `Support`. It answers every message to support@, follow-ups in a thread included; that's fine at this volume. Check in step 8 that the auto-reply comes from support@ through SES: if Gmail sends it from your Gmail address instead, it still arrives (it passes DMARC for gmail.com) but shows your personal address, so turn the filter off and use a plain manual reply until there's a help desk.
+8. **Test.** While SES is in the sandbox, use an address you've verified in SES ([Domain and email](#domain-and-email), step 3).
+   1. **A reply.** From that address, email support@. Check the auto-reply arrives, then reply to the message from Gmail (the From should be `Supply Checkout Support <support@supplycheckout.com>`). On the receiving side, "Show original" must show `SPF: PASS` (domain `mail.supplycheckout.com`), `DKIM: PASS` (domain `supplycheckout.com`) and `DMARC: PASS`. If Gmail can't send at all and the bounce says the user isn't authorized, check the display name is exactly `Supply Checkout Support`; if it is, SES doesn't apply `ses:FromDisplayName` to SMTP the way this assumes: record that on the bead and ask for the condition to be removed.
+   2. **What the policy refuses.** Send through SES SMTP with the same credentials, envelope sender support@ and header From noreply@, to the verified address (`swaks` or `curl` with `--mail-from support@supplycheckout.com` and a message whose `From:` header is `Supply Checkout Support <noreply@supplycheckout.com>`). It **must be refused** (`554 Access denied`). Then try envelope `noreply@` and header `support@`: also refused. Record both results on `supply-checkout-6qd`. If the first is accepted, the key can send as any address at the domain, as "What the key can do" says: keep the alerts and rotation, and note it on the bead.
+   3. A minute or so later, `aws cloudwatch list-metrics --profile supply-prod --region us-east-1 --namespace AWS/SES --metric-name Send` should list `ses:caller-identity` = `supply-checkout-prod-support-smtp`.
+
+**Rotating the key** (every 90 days, and at once if Gmail, the laptop or the Google account may have been compromised). The user should have exactly one key; each step sends an expected P2 email.
+
+```bash
+U=supply-checkout-prod-support-smtp
+aws iam list-access-keys --profile supply-prod --user-name $U \
+  --query 'AccessKeyMetadata[].[AccessKeyId,Status,CreateDate]' --output text   # exactly one, Active, under 90 days old
+aws iam get-access-key-last-used --profile supply-prod --access-key-id <key ID> \
+  --query 'AccessKeyLastUsed.[LastUsedDate,ServiceName,Region]' --output text  # ses, us-east-1, when you last replied
+```
+
+To rotate: create a new key and SMTP password (step 4), change the password and user name in Gmail's "send as" settings (Settings, Accounts and Import, "edit info"), send a test reply, then deactivate and delete the old key (`aws iam update-access-key --status Inactive …`, then `aws iam delete-access-key …`). Afterwards `list-access-keys` must show exactly one key again.
+
+#### When the support SMTP key may be leaked
+
+The P2 alerts: a change to the support SMTP user nobody made (a new key or other credential, a policy, a group, a password, its boundary, a rename, or a new version of its boundary policy), or **Support SMTP sends** (over 50 in an hour or 150 in a day).
+
+1. Deactivate every key at once: `aws iam list-access-keys --profile supply-prod --user-name supply-checkout-prod-support-smtp`, then `aws iam update-access-key --profile supply-prod --user-name supply-checkout-prod-support-smtp --access-key-id <id> --status Inactive` for each. Support replies stop until step 4.
+2. Undo whatever the CloudTrail event shows was changed (the alert names its event ID): delete an extra key, credential, certificate, SSH key, attached or inline policy, group membership or login profile, and rename the user back (`aws iam update-user --user-name <new name> --new-user-name supply-checkout-prod-support-smtp`). A redeploy **doesn't** restore a removed or changed boundary or policy (CloudFormation doesn't notice the drift), so put them back by hand and then check for drift:
+   ```bash
+   U=supply-checkout-prod-support-smtp
+   ACCOUNT=$(aws sts get-caller-identity --profile supply-prod --query Account --output text)
+   BOUNDARY="arn:aws:iam::$ACCOUNT:policy/smtp/$U-boundary"
+   # The boundary: back on the user, and its CloudFormation version the default again
+   aws iam put-user-permissions-boundary --profile supply-prod --user-name $U --permissions-boundary "$BOUNDARY"
+   aws iam list-policy-versions --profile supply-prod --policy-arn "$BOUNDARY"   # find the version CloudFormation wrote (created before the alert)
+   aws iam set-default-policy-version --profile supply-prod --policy-arn "$BOUNDARY" --version-id <that version>
+   aws iam delete-policy-version --profile supply-prod --policy-arn "$BOUNDARY" --version-id <the attacker's version>
+   # The inline policy: its name and document are in the domain stack's template (SupportSmtpUserDefaultPolicy)
+   aws iam list-user-policies --profile supply-prod --user-name $U
+   aws cloudformation detect-stack-drift --profile supply-prod --region us-east-1 --stack-name supply-checkout-prod-us-east-1-domain
+   aws cloudformation describe-stack-resource-drifts --profile supply-prod --region us-east-1 --stack-name supply-checkout-prod-us-east-1-domain \
+     --stack-resource-drift-status-filters MODIFIED DELETED --query 'StackResourceDrifts[].[LogicalResourceId,StackResourceDriftStatus]' --output text
+   ```
+   If the inline policy is missing or modified, `aws iam put-user-policy --user-name $U --policy-name <its name> --policy-document file://policy.json` with the document from `npx cdk synth supply-checkout-prod-us-east-1-domain`. Drift detection should then report nothing for the user, its policy or the boundary.
+3. Look at what was sent: SES's sending statistics and the `SendsByCaller` metric for the user, and bounces and complaints on the email events topic. If mail went out as the domain that you didn't send, treat it as a security incident: tell the people it reached that it wasn't from us.
+4. Make a new key and SMTP password (steps 4 and 5) once the cause is understood.
+
+**Where support@ is published.** Today: the Stripe invoice and receipt emails' support address (Stripe Dashboard, **Settings, Business, Public details**, see [Billing](#billing)) and the Google sign-in consent screen's support email ([Sign-in](#sign-in)) are owner settings to fill in with it. The legal drafts in `docs/legal/` give support@supplycheckout.com (their `[PRIVACY EMAIL]` and `[SECURITY CONTACT]` placeholders stay until the owner decides whether those contacts get their own mailboxes after launch; for the pilot they mean the support mailbox). Not yet: the app (an in-app help link, `supply-checkout-h9c`), the security notice emails, which say "contact Supply Checkout support" without an address (`supply-checkout-3sv.12`), the landing page (`supply-checkout-21q`), and app store listings (phase 2).
 
 ## Sign-in
 
@@ -472,7 +572,7 @@ or the whole API's from CloudWatch: `aws cloudwatch get-metric-statistics $P --n
 
 ## Operators
 
-Platform operators ([ADR 0015](adr/0015-platform-operator-role.md), `supply-checkout-6uw.1`) list and search teams, read one team's account record, comp a team (a free plan for a pilot, say) and read the operator audit. They never read a team's sheets, inventory, invites or receipts: support access with an owner's approval is a later bead.
+Platform operators ([ADR 0015](adr/0015-platform-operator-role.md), `supply-checkout-6uw.1`) list and search teams, read one team's account record, comp a team (a free plan for a pilot, say) and read the operator audit. They never read a team's sheets, inventory, invites or receipts (they see how many receipts it read, and nothing of them): support access with an owner's approval is a later bead.
 
 **The operator pool.** The `identity` stack has a second user pool, `supply-checkout-<env>-ops`, next to the customers' one:
 
@@ -484,13 +584,14 @@ Platform operators ([ADR 0015](adr/0015-platform-operator-role.md), `supply-chec
 - It publishes `ops-user-pool-id`, `ops-user-pool-arn`, `ops-client-id`, `ops-issuer-url`, `ops-auth-url` and `ops-branding-id` (the ops client's managed login branding, which `OperatorBrandingChanges` matches) under `/supply-checkout/<env>/identity/`.
 - **After an `identity` deploy that replaces the ops pool, the ops client or the ops branding, deploy `observability` straight after.** The operator rules read the pool's and the branding's IDs from those parameters only when `observability` deploys, so until it does they match the old IDs and miss every call on the new ones. The same goes for an `audit` deploy that replaces the trail key and a `data` deploy that replaces the table, its key or its stream. A deploy that only updates them in place keeps the IDs and needs nothing. The `OperatorInput*` rules alert when one of these parameters is changed other than by a deploy.
 
-**The ops routes.** The `/ops/*` routes (`OPS_ROUTES` in `backend/src/api/routes.ts`) are on the same HTTP API, in the primary region only, behind their own JWT authorizer for the operator pool (its issuer and the `ops` client). A customer's token fails it, and an operator's token fails the customer authorizer; the team routes never read `cognito:groups`. The `ops` function (`backend/src/operator/`) then checks, on every request: an unexpired access token from the operator pool for the `ops` client whose `cognito:groups` names `operators`; `GetUser` with the token, which Cognito refuses once the token is revoked or the user disabled; and `AdminListGroupsForUser`, which must still list `operators`. So removing someone from the group, disabling them or signing them out globally takes effect on their next request, not when their token expires. Each route has its own throttle (2 to 5 requests a second).
+**The ops routes.** The `/ops/*` routes (`OPS_ROUTES` in `backend/src/api/routes.ts`) are on the same HTTP API, in the primary region only, behind their own JWT authorizer for the operator pool (its issuer and the `ops` client). A customer's token fails it, and an operator's token fails the customer authorizer; the team routes never read `cognito:groups`. The `ops` function (`backend/src/operator/`) then checks, on every request: an unexpired access token from the operator pool for the `ops` client whose `cognito:groups` names `operators`; `GetUser` with the token, which Cognito refuses once the token is revoked or the user disabled; and `AdminListGroupsForUser`, which must still list `operators`. So removing someone from the group, disabling them or signing them out globally takes effect on their next request, not when their token expires. Each route has its own throttle (1 to 5 requests a second; the receipt ranking, which reads up to 1,000 teams' counters, 1).
 
 **The operator-access role.** The ops function's own role can reach no table: it may assume `OperatorAccessRole` (tagged with the team a comp changes, or `.`) and call `AdminListGroupsForUser` on the operator pool. The role may:
 
 - `Query` GSI3's `OPS#TEAMS`, `OPS#OWNERS#*` and `OPS#AUDIT#*` partitions, with `dynamodb:Select` limited to `ALL_PROJECTED_ATTRIBUTES` or `SPECIFIC_ATTRIBUTES`. GSI3 is sparse and projects only `OPS_INDEX_ATTRIBUTES` (`backend/src/data/schema.ts`): a team's account record (name, plan, seats, status, trial end, owner count, when it was closed, creation time, Stripe customer, version and comp), an owner's email and join date, and an audit event's action and operator. Team `META` items and owners' `MEMBER#` items carry `GSI3PK`; sheets, products, movements, invites and imports never do.
 - `UpdateItem` in the tagged team's partition, naming only `COMP_ATTRIBUTES` (`PK`, `SK`, `type`, `version` and the `comp*` fields; `dynamodb:Attributes`), returning at most those. So it can't change a team's `plan` or `status` (ADR 0009), and it has no `GetItem`, `Query`, `PutItem` or `DeleteItem` on any `TEAM#` partition.
 - `PutItem` and `Query` in `OPAUDIT#*` partitions, never `UpdateItem` or `DeleteItem`.
+- For receipt usage (`supply-checkout-wxx`): `BatchGetItem` in any `TEAM#*` partition naming only `RECEIPT_USAGE_ATTRIBUTES` (`PK`, `SK`, `receipts`), with a projection (`dynamodb:Select` must be `SPECIFIC_ATTRIBUTES`). Only `BatchGetItem`: no `GetItem` or `Query` there, so it reads exact keys the code names and can't list a team's sort keys (which would show product keys, member IDs and sheet IDs). Only the receipt counters (`USAGE#<month>`, `USAGE#TRIAL`) have a `receipts` attribute, so it reads nothing else of any team. A team's record (`GET /ops/teams/{teamId}`, audited as `ops.team.read`) has its reads for this month and the five before, and in its trial; `GET /ops/receipts?month=` (`npm run ops -- receipts`, audited as `ops.receipts.usage` in the platform audit with the teams it returned) ranks the month's teams by reads, reading at most 1,000 teams from the index (`complete: false` when there are more). Both show an **estimated cost**: reads times `ESTIMATED_COST_PER_RECEIPT_USD` ($0.007, the top of ADR 0008's Haiku estimate, provisional). That's the bead's "cost per team": an estimate from read counts, not billing; real spend is in Cost Explorer, and tokens per team in the receipts function's logs (`ReceiptTokens`, team ID in metadata). Residual risks, accepted: the statement reaches every team's partition (an operator ranks them all), limited to the `receipts` attribute by key; and IAM can't limit sort keys, so the role could confirm that a guessed key exists in any `TEAM#` partition (it gets back `PK` and `SK` only, no other attributes). If a team's counters can't be read, its record comes back with `receipts: null`.
 - For stuck imports (`supply-checkout-6uw.2`): `Query` GSI1's `IMPORTS#COMMITTING` partition naming only `STUCK_IMPORT_ATTRIBUTES` (what the scheduled check may read), and `UpdateItem` in the tagged team's partition naming only `IMPORT_INDEX_ATTRIBUTES` (`PK`, `SK`, `GSI1PK`, `GSI1SK`). `POST /ops/teams/{teamId}/imports/{importId}/clear` removes a job's GSI1 keys, on the condition that it's still in that partition and started over an hour ago, with its audit item in the same transaction ("Imports stuck" in [journeys.md](journeys.md)).
 
 Residual risks, accepted: IAM can't require a condition expression, so a `PutItem` in `OPAUDIT#` could overwrite an item with the same key (the code conditions every put on `attribute_not_exists(PK)`, and keys hold a random ID; the operator audit watch below alarms P1 on any overwrite, change or deletion); an `UpdateItem` could create an item in the tagged team's partition holding only comp attributes (the code's `#type = :team` condition prevents it); IAM can't tell `REMOVE` from `SET`, or limit the sort key, so the stuck-import statement would let code set or remove the GSI1 keys of any item in the tagged team's partition (the code's `GSI1PK = IMPORTS#COMMITTING` condition keeps it to a stuck import job, and the route only ever names an `IMPORT#<id>` sort key). The worst case is a closed team's `META` item: removing its GSI1 keys (`TEAMS#CLOSED`) would take it out of the purge queue, so the hourly purge would never find it and the team would never be deleted, silently breaking the promise to delete a closed team's data, with no alarm ("Deletion overdue" counts only teams still in that queue). A test (`backend/test/ops-api.test.ts`, "can't take a closed team out of the purge queue") checks the route can't; a code change could; and `dynamodb:ReturnValues` doesn't cover `ReturnValuesOnConditionCheckFailure`, so code that asked for `ALL_OLD` on a failed condition could read the item it tried to update (the ops code never sets it, and the backend lint config bans `ReturnValuesOnConditionCheckFailure`, `ALL_OLD` and `ALL_NEW` in `src/operator/` and `src/data/operator.ts`). Each would take a change to the ops function's code, which only a deploy can make.
@@ -518,12 +619,13 @@ For live mode, the same with a live key and `live-ops-restricted-key`. To rotate
 
 ```bash
 npm run ops -- teams --q acme                  # list or search teams, with owners' emails (follow --cursor)
-npm run ops -- team <teamId>                   # one team's record, Stripe subscription and invoices (audited)
+npm run ops -- team <teamId>                   # one team's record, Stripe subscription, invoices and receipt reads (audited)
 npm run ops -- comp <teamId> --plan free --until 2026-12-31 --reason "Pilot, 90 days"
 npm run ops -- uncomp <teamId> --reason "Pilot over"
 npm run ops -- reopen <teamId> --reason "Owner disputes the closure"
 npm run ops -- audit --team <teamId>           # or --month 2026-09 for everyone's
 npm run ops -- stuck-imports                   # imports stuck part-way for over an hour
+npm run ops -- receipts --month 2026-09        # the teams that read the most receipts, with estimated cost (audited)
 npm run ops -- clear-import <teamId> <importId> --reason "Owner re-imported it"
 npm run ops -- sign-out                        # revokes every token (GlobalSignOut)
 ```

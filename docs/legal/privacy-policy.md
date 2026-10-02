@@ -206,13 +206,13 @@ If we change this policy in a way that matters, we will email team owners and sh
 [COMPANY LEGAL NAME]
 [MAILING ADDRESS]
 Privacy questions and requests: [PRIVACY EMAIL]
-Support: [SUPPORT EMAIL]
+Support: support@supplycheckout.com
 
 ---
 
 ## Open questions for the owner / lawyer
 
-1. **Legal entity and contacts.** Name, type and state (bead `supply-checkout-ar0`), mailing address, and whether privacy requests go to [SUPPORT EMAIL] or a separate [PRIVACY EMAIL]. CCPA asks for at least two ways to submit requests (typically an email and a web form or toll-free number); an online-only business with a direct customer relationship may use an email address alone. Confirm.
+1. **Legal entity and contacts.** Name, type and state (bead `supply-checkout-ar0`), mailing address, and whether privacy requests go to support@supplycheckout.com or a separate [PRIVACY EMAIL]. CCPA asks for at least two ways to submit requests (typically an email and a web form or toll-free number); an online-only business with a direct customer relationship may use an email address alone. Confirm.
 2. **Does the CCPA apply to us at all?** It applies to for-profit businesses over $26.6M (inflation-adjusted) in revenue, or that buy, sell or share data of 100,000+ consumers, or that make half their revenue from selling or sharing. At launch we meet none of these. The draft includes the CCPA section anyway, as the bead asks, because it's easy to honor and customers expect it. Keep it, or say we honor the rights voluntarily? The same question for other states' laws, most of which exempt data about people acting in a business role.
 3. **Service provider role.** Should we sign a data processing addendum with customers so we are clearly their "service provider" for team data (bead `supply-checkout-q3g`, phase 2)? Until then, is section 1 enough?
 4. **What's built versus what this draft says.** Where the code and a bead or the Terms disagree, this draft follows the code, except where the Terms already promise something. Differences:

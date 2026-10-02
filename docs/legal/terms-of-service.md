@@ -22,7 +22,7 @@ These terms are an agreement between you and **[COMPANY LEGAL NAME]**, a [STATE]
 
 - The Service is for businesses in the United States. You must use it for a business, not for personal, family or household purposes, and your team's billing address must be in the United States. You must be at least 18.
 - You must give accurate sign-up and billing details and keep them current.
-- You are responsible for everything done under your team's accounts. Keep sign-in methods secure. Tell us at [SUPPORT EMAIL] if you think an account has been compromised.
+- You are responsible for everything done under your team's accounts. Keep sign-in methods secure. Tell us at support@supplycheckout.com if you think an account has been compromised.
 
 ## 3. Teams, owners and members
 
@@ -81,7 +81,7 @@ If a payment fails, we email the owner and show a banner in the app. The team ke
 
 ## 6. Cancelling
 
-- **You can cancel online at any time**, from **Settings → Billing → Manage plan → Cancel**. It takes a few clicks. You don't need to call, email or talk to anyone. You can also cancel by emailing [SUPPORT EMAIL].
+- **You can cancel online at any time**, from **Settings → Billing → Manage plan → Cancel**. It takes a few clicks. You don't need to call, email or talk to anyone. You can also cancel by emailing support@supplycheckout.com.
 - We may show one offer or survey when you cancel, but you can skip it and finish cancelling straight away.
 - Cancellation takes effect at the **end of the current billing period**. You keep full access until then. We don't charge you again.
 - We email the owner to confirm the cancellation and the date it takes effect.
@@ -93,7 +93,7 @@ If a payment fails, we email the owner and show a banner in the app. The team ke
 - **Monthly plans**: we don't refund partial months. Cancel at any time to stop future charges.
 - **Yearly plans**: if you cancel within 14 days of a yearly charge (including a renewal), we refund that charge in full. After that, we don't refund the rest of the year, but access continues until the year ends.
 - If we end your subscription without cause (section 12), or we can't provide the Service for a long time because of something within our control, we refund the unused part of any prepaid period.
-- If you think you were charged by mistake, email [SUPPORT EMAIL] within 60 days. We will look into it and refund charges made in error.
+- If you think you were charged by mistake, email support@supplycheckout.com within 60 days. We will look into it and refund charges made in error.
 - These rules don't limit any refund rights the law gives you.
 
 ## 8. Your data
@@ -117,7 +117,7 @@ If a payment fails, we email the owner and show a banner in the app. The team ke
 
 - At launch we provide the Service on a **best-effort** basis. We run it on Amazon Web Services, monitor it, and aim to fix problems quickly, but we don't promise a specific uptime percentage and don't give service credits.
 - We may pause the Service for maintenance. We try to do this outside US business hours and to give notice for planned work.
-- Support is by email at [SUPPORT EMAIL]. We aim to reply within [2] business days.
+- Support is by email at support@supplycheckout.com. We aim to reply within [2] business days.
 - We may change features. If we remove a major feature you pay for, we will tell you at least 30 days before. You can cancel and get a refund of any unused prepaid period.
 
 ## 11. Acceptable use
@@ -164,13 +164,13 @@ You will defend and indemnify us against third-party claims arising from your da
 - **Force majeure**: neither party is responsible for delays caused by events outside its reasonable control, such as outages at our cloud or payment providers, natural disasters or war.
 - **Severability**: if a court finds part of these terms unenforceable, the rest still applies.
 - **No waiver**: not enforcing a term right away doesn't mean we give up the right to enforce it later.
-- **Notices**: we send notices to the owner's email address. You send notices to [SUPPORT EMAIL] or [MAILING ADDRESS].
+- **Notices**: we send notices to the owner's email address. You send notices to support@supplycheckout.com or [MAILING ADDRESS].
 
 ## 18. Contact
 
 [COMPANY LEGAL NAME]
 [MAILING ADDRESS]
-[SUPPORT EMAIL]
+support@supplycheckout.com
 
 ---
 

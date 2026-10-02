@@ -6177,6 +6177,56 @@
         }
       }
     },
+    "HttpApiGETopsreceiptsOpsIntegrationPermissionFD0468C0": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Ref": "OpsFunctionLive79C895FB"
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:execute-api:us-east-1:",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "HttpApiF5A9A8A7"
+              },
+              "/*/*/ops/receipts"
+            ]
+          ]
+        }
+      }
+    },
+    "HttpApiGETopsreceipts99EC6342": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "HttpApiF5A9A8A7"
+        },
+        "AuthorizationType": "JWT",
+        "AuthorizerId": {
+          "Ref": "HttpApiOpsCognitoJwtEE918F68"
+        },
+        "RouteKey": "GET /ops/receipts",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "HttpApiGETopsteamsOpsIntegrationD9495125"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "HttpApiPOSTbillingwebhookWebhookIntegrationD22CECA0": {
       "Type": "AWS::ApiGatewayV2::Integration",
       "Properties": {
@@ -6574,6 +6624,10 @@
             "ThrottlingRateLimit": 2,
             "ThrottlingBurstLimit": 5
           },
+          "GET /ops/receipts": {
+            "ThrottlingRateLimit": 1,
+            "ThrottlingBurstLimit": 2
+          },
           "POST /billing/webhook": {
             "ThrottlingRateLimit": 20,
             "ThrottlingBurstLimit": 50
@@ -6604,6 +6658,8 @@
         "HttpApiGETopsauditC36D0EF3",
         "HttpApiGETopsimportsOpsIntegrationPermission65555EB0",
         "HttpApiGETopsimports3CEA7B94",
+        "HttpApiGETopsreceiptsOpsIntegrationPermissionFD0468C0",
+        "HttpApiGETopsreceipts99EC6342",
         "HttpApiGETopsteamsteamIdOpsIntegrationPermission824867CA",
         "HttpApiGETopsteamsteamIdB43A1596",
         "HttpApiGETopsteamsOpsIntegrationPermissionBE2F3BC1",
@@ -7044,7 +7100,7 @@
           ],
           "Version": "2012-10-17"
         },
-        "Description": "Assumed by the ops function per request (ADR 0015): the operators' index, one team's comp attributes, and append-only operator audit",
+        "Description": "Assumed by the ops function per request (ADR 0015): the operators' index, teams' receipt counts, one team's comp attributes, and append-only operator audit",
         "MaxSessionDuration": 3600,
         "Policies": [
           {
@@ -7192,6 +7248,40 @@
                     ]
                   },
                   "Sid": "StuckImportIndexKeysOnly"
+                },
+                {
+                  "Action": "dynamodb:BatchGetItem",
+                  "Condition": {
+                    "ForAllValues:StringLike": {
+                      "dynamodb:LeadingKeys": [
+                        "TEAM#*"
+                      ]
+                    },
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "receipts"
+                      ]
+                    },
+                    "StringEquals": {
+                      "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:dynamodb:us-east-1:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "TeamReceiptCountersReadOnly"
                 },
                 {
                   "Action": [

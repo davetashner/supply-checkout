@@ -266,7 +266,9 @@ export async function takeReceiptRate(db: Db, ctx: TeamContext, period: ReceiptA
       const full = windows.filter((_, i) => codes[i] === "ConditionalCheckFailed");
       if (full.length > 0) {
         const wait = Math.max(...full.map(({ ends }) => Math.max(1, Math.ceil((ends - at) / 1000))));
-        throw new RateLimitedError(rateLimited(wait), wait);
+        // Only the day's trial reads are used up: say so, rather than "a lot in a short time"
+        const message = full.every(({ window }) => window === "TRIALDAY") ? TRIAL_DAY_USED : rateLimited(wait);
+        throw new RateLimitedError(message, wait);
       }
       if (!codes.includes("TransactionConflict")) throw error;
       if (attempt >= RATE_ATTEMPTS) throw new RateLimitedError(rateLimited(1), 1);
@@ -274,6 +276,9 @@ export async function takeReceiptRate(db: Db, ctx: TeamContext, period: ReceiptA
     }
   }
 }
+
+/** The message when only the user's trial reads for the day (RECEIPT_TRIAL_READS_PER_USER_PER_DAY) are used up. */
+export const TRIAL_DAY_USED = "You've used today's free trial receipt scans; more tomorrow. Enter the items by hand, or ask an owner to subscribe.";
 
 function rateLimited(seconds: number): string {
   const hours = Math.ceil(seconds / 3600);

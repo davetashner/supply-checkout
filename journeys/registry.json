@@ -124,7 +124,7 @@
           "tests": ["backend/test/equipment-api.test.ts", "backend/test/equipment.test.ts"]
         }
       ],
-      "planned": [{ "what": "showing the receipts a team has left, and a clear limit message with an upgrade link, in the app", "beads": ["supply-checkout-wxx"] }]
+      "planned": [{ "what": "a subscribe link in the trial's receipt limit message, once the in-app plan picker exists", "beads": ["supply-checkout-8jc.5"] }]
     },
     {
       "id": "J6",

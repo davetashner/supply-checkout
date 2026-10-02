@@ -12,6 +12,7 @@ import {
   OPS_AUDIT_INDEX_PREFIX,
   OPS_OWNERS_PREFIX,
   OPS_TEAMS_PARTITION,
+  RECEIPT_USAGE_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
   STUCK_IMPORT_ATTRIBUTES,
 } from "../src/data/schema.js";
@@ -52,8 +53,17 @@ export function opsPolicy(team: string, denied: { command: string; input: Input 
           return (input.TransactItems as Record<string, Input>[]).every((op) =>
             op.Put ? auditPartition(partitionKey(op.Put)) : op.Update ? update(op.Update, team) : false,
           );
+        case "BatchGetCommand":
+          // Teams' receipt counters (supply-checkout-wxx): by key in any TEAM# partition, projecting
+          // only the keys and `receipts` (dynamodb:Attributes and Select SPECIFIC_ATTRIBUTES)
+          return Object.values(input.RequestItems as Record<string, Input>).every(
+            (request) =>
+              typeof request.ProjectionExpression === "string" &&
+              (request.Keys as Input[]).every((k) => typeof k.PK === "string" && k.PK.startsWith("TEAM#")) &&
+              [...namedAttributes(request)].every((a) => (RECEIPT_USAGE_ATTRIBUTES as readonly string[]).includes(a)),
+          );
         default:
-          // No GetItem, Scan, DeleteItem or batch calls anywhere
+          // No GetItem, Scan, DeleteItem, or batch calls but the receipt counters' reads
           return false;
       }
     })();

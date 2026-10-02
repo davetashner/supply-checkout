@@ -21,7 +21,7 @@
 // twice. Reading one team's record is audited too.
 
 import { createHash, randomUUID } from "node:crypto";
-import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { BatchGetCommand, type BatchGetCommandOutput, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
 import { ConflictError, InvalidInputError, NotFoundError, TeamDeletingError } from "./errors.js";
 import { gsi3, id, keys, month, operatorAuditPartition, operatorKeys, opsAuditIndexPartition, opsOwnersPartition, strip } from "./keys.js";
@@ -80,7 +80,7 @@ export interface OperatorAuditEvent {
   readonly expiresAt: number;
 }
 
-export type OperatorAction = "ops.teams.list" | "ops.team.read" | "ops.comp.set" | "ops.comp.end" | "ops.import.clear" | "ops.team.reopen";
+export type OperatorAction = "ops.teams.list" | "ops.team.read" | "ops.receipts.usage" | "ops.comp.set" | "ops.comp.end" | "ops.import.clear" | "ops.team.reopen";
 
 /** The operator audit partition for actions on no one team: listing and searching teams (and, later, campaigns). */
 export const PLATFORM_AUDIT = "PLATFORM";
@@ -861,4 +861,156 @@ export async function reopenOpsTeam(
     },
     now,
   );
+}
+
+/**
+ * What one receipt read costs us, roughly, in US dollars: the top of ADR
+ * 0008's estimate for Claude Haiku 4.5 (about $0.005 to $0.007 a receipt at
+ * list prices). PROVISIONAL: an estimate, not billing. It turns read counts
+ * into the "cost per team" operators see (supply-checkout-wxx); the real
+ * spend is in Cost Explorer, and tokens per team in the receipts function's
+ * logs (ReceiptTokens).
+ */
+export const ESTIMATED_COST_PER_RECEIPT_USD = 0.007;
+
+/** Months of a team's receipt reads its ops record shows: this one and the five before. */
+export const OPS_USAGE_MONTHS = 6;
+
+/** Keys one BatchGetItem may ask for (DynamoDB's limit). */
+const BATCH_GET_KEYS = 100;
+
+/** A team's receipt reads, for operators: per UTC month, and in its trial, with the estimated cost. */
+export interface OpsReceiptUsage {
+  readonly months: { readonly month: string; readonly receipts: number; readonly estimatedCostUsd: number }[];
+  /** Reads while the team wasn't paying, in all (USAGE#TRIAL; they count in their months too). */
+  readonly trialReceipts: number;
+}
+
+const cost = (receipts: number) => Math.round(receipts * ESTIMATED_COST_PER_RECEIPT_USD * 10_000) / 10_000;
+
+/** `m` and the months before it, newest first: YYYY-MM. */
+function monthsBack(m: string, count: number): string[] {
+  const [y, mo] = month(m).split("-").map(Number) as [number, number];
+  return Array.from({ length: count }, (_, i) => new Date(Date.UTC(y, mo - 1 - i, 1)).toISOString().slice(0, 7));
+}
+
+/**
+ * The `receipts` count of each key, read with BatchGetItem projecting only the
+ * keys and `receipts` (the operator-access role allows nothing else of a
+ * team's items, and no Query there: only these exact keys). Missing items
+ * count 0. Keys DynamoDB leaves unprocessed are asked for again.
+ */
+async function receiptCounts(db: Db, wanted: { PK: string; SK: string }[]): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  for (let i = 0; i < wanted.length; i += BATCH_GET_KEYS) {
+    let Keys: Record<string, unknown>[] | undefined = wanted.slice(i, i + BATCH_GET_KEYS);
+    for (let attempt = 1; Keys?.length; attempt++) {
+      if (attempt > 5) throw new Error("Receipt usage reads kept coming back unprocessed");
+      const out: BatchGetCommandOutput = await connection(db).doc.send(
+        new BatchGetCommand({ RequestItems: { [db.tableName]: { Keys, ProjectionExpression: "PK, SK, receipts", ConsistentRead: false } } }),
+      );
+      for (const item of out.Responses?.[db.tableName] ?? []) {
+        if (typeof item.receipts === "number") counts.set(`${String(item.PK)} ${String(item.SK)}`, item.receipts);
+      }
+      Keys = out.UnprocessedKeys?.[db.tableName]?.Keys;
+      if (Keys?.length) await new Promise((resolve) => setTimeout(resolve, 50 * attempt));
+    }
+  }
+  return counts;
+}
+
+const countOf = (counts: Map<string, number>, key: { PK: string; SK: string }) => counts.get(`${key.PK} ${key.SK}`) ?? 0;
+
+/**
+ * One team's receipt reads for its ops record: the OPS_USAGE_MONTHS months to
+ * `now`'s, and its trial's. Not audited on its own: it's part of reading the
+ * team's record (getOpsTeam, `ops.team.read`).
+ */
+export async function getOpsReceiptUsage(db: Db, operator: Operator, teamId: string, now = new Date()): Promise<OpsReceiptUsage> {
+  operatorSub(operator);
+  const months = monthsBack(now.toISOString().slice(0, 7), OPS_USAGE_MONTHS);
+  const monthKeys = months.map((m) => keys.usage(teamId, m));
+  const trialKey = keys.trialUsage(teamId);
+  const counts = await receiptCounts(db, [...monthKeys, trialKey]);
+  return {
+    months: months.map((m, i) => {
+      const receipts = countOf(counts, monthKeys[i] as { PK: string; SK: string });
+      return { month: m, receipts, estimatedCostUsd: cost(receipts) };
+    }),
+    trialReceipts: countOf(counts, trialKey),
+  };
+}
+
+/** One team in the month's receipt ranking. */
+export interface OpsReceiptRank {
+  readonly teamId: string;
+  readonly name: string;
+  readonly status: string;
+  readonly plan: string;
+  readonly compLive: boolean;
+  readonly receipts: number;
+  readonly trialReceipts: number;
+  readonly estimatedCostUsd: number;
+}
+
+/**
+ * The teams that read the most receipts in month `m` (YYYY-MM), most first,
+ * `limit` of them (20 by default, at most 100), with each one's trial reads
+ * and estimated cost. It walks the team list in the operators' index (at most
+ * MAX_OPS_TEAMS_READ teams; `complete` is false if there were more) and reads
+ * each team's month and trial counters by key. Audited (`ops.receipts.usage`,
+ * in the platform partition) before anything is returned, with the teams it
+ * returns.
+ */
+export async function listOpsReceiptUsage(
+  db: Db,
+  operator: Operator,
+  options: { readonly month: string; readonly limit?: number },
+  now = new Date(),
+): Promise<{ month: string; teams: OpsReceiptRank[]; teamsRead: number; complete: boolean; estimatedCostPerReceiptUsd: number }> {
+  operatorSub(operator);
+  const m = month(options.month);
+  const limit = options.limit ?? 20;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new InvalidInputError("limit is a number from 1 to 100");
+  const teams: OpsTeam[] = [];
+  let start: Record<string, unknown> | undefined;
+  let complete = true;
+  do {
+    const page = await connection(db).doc.send(
+      new QueryCommand({
+        TableName: db.tableName,
+        IndexName: GSI3,
+        KeyConditionExpression: "GSI3PK = :pk",
+        // The operator-access role requires it (dynamodb:Select): only what the index projects
+        Select: "ALL_PROJECTED_ATTRIBUTES",
+        ExpressionAttributeValues: { ":pk": OPS_TEAMS_PARTITION },
+        Limit: MAX_OPS_TEAMS_READ - teams.length,
+        ExclusiveStartKey: start,
+      }),
+    );
+    for (const item of page.Items ?? []) {
+      const team = toTeam(item);
+      if (team) teams.push(team);
+    }
+    start = page.LastEvaluatedKey;
+    if (start && teams.length >= MAX_OPS_TEAMS_READ) complete = false;
+  } while (start && complete);
+  const wanted = teams.flatMap((t) => [keys.usage(t.teamId, m), keys.trialUsage(t.teamId)]);
+  const counts = await receiptCounts(db, wanted);
+  const ranked = teams
+    .map((t) => {
+      const receipts = countOf(counts, keys.usage(t.teamId, m));
+      return { teamId: t.teamId, name: t.name, status: t.status, plan: t.plan, compLive: liveComp(t, now) !== undefined, receipts, trialReceipts: countOf(counts, keys.trialUsage(t.teamId)), estimatedCostUsd: cost(receipts) };
+    })
+    .filter((t) => t.receipts > 0)
+    .sort((a, b) => b.receipts - a.receipts || a.teamId.localeCompare(b.teamId))
+    .slice(0, limit);
+  await connection(db).doc.send(
+    new PutCommand({
+      TableName: db.tableName,
+      Item: auditItem(operator, PLATFORM_AUDIT, { action: "ops.receipts.usage", before: null, after: { month: m, teams: ranked.map((t) => t.teamId) } }, now),
+      ConditionExpression: "attribute_not_exists(PK)",
+    }),
+  );
+  return { month: m, teams: ranked, teamsRead: teams.length, complete, estimatedCostPerReceiptUsd: ESTIMATED_COST_PER_RECEIPT_USD };
 }

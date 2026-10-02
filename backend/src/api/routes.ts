@@ -265,15 +265,16 @@ export const BILLING_TAG_UNUSED = ".";
 export interface OpsRoute {
   readonly method: "GET" | "PUT" | "DELETE" | "POST";
   readonly path: string;
-  readonly action: "listTeams" | "getTeam" | "setComp" | "endComp" | "reopenTeam" | "listAudit" | "listStuckImports" | "clearStuckImport";
+  readonly action: "listTeams" | "getTeam" | "setComp" | "endComp" | "reopenTeam" | "listAudit" | "listStuckImports" | "clearStuckImport" | "listReceiptUsage";
   readonly throttle: { readonly rate: number; readonly burst: number };
 }
 
 /**
  * Platform operators (ADR 0015): list and search teams, read one team's
  * account record, comp a team or end its comp, reopen a closed team, read
- * the operator audit, and list stuck imports and take one out of the
- * stuck-import check.
+ * the operator audit, list stuck imports and take one out of the
+ * stuck-import check, and see the teams that read the most receipts in a
+ * month (a team's own reads are in its record).
  * Each needs an access token from the operator user pool (its own JWT
  * authorizer; a customer's token fails it), and the `ops` function checks
  * the `operators` group with Cognito on every request. Primary region only.
@@ -289,6 +290,8 @@ export const OPS_ROUTES: readonly OpsRoute[] = [
   // Imports stuck part-way (the "Imports stuck" alarm, docs/journeys.md J2), and taking one out of the check
   { method: "GET", path: "/ops/imports", action: "listStuckImports", throttle: { rate: 5, burst: 10 } },
   { method: "POST", path: "/ops/teams/{teamId}/imports/{importId}/clear", action: "clearStuckImport", throttle: { rate: 2, burst: 5 } },
+  // The teams that read the most receipts in a month (supply-checkout-wxx); each reads up to 1,000 teams' counters
+  { method: "GET", path: "/ops/receipts", action: "listReceiptUsage", throttle: { rate: 1, burst: 2 } },
 ];
 
 /**

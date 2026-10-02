@@ -1,7 +1,7 @@
 # Supply Checkout Pilot Agreement
 
 > **Pilot draft — not reviewed by a lawyer.**
-> For the supervised pilot only. Placeholders in `[BRACKETS]` are filled in for each pilot team before it's sent; `[SUPPORT EMAIL]` is the Supply Checkout support mailbox on the supplycheckout.com domain. See [Open questions](#open-questions-for-the-owner) at the end.
+> For the supervised pilot only. Placeholders in `[BRACKETS]` are filled in for each pilot team before it's sent; support@supplycheckout.com is the Supply Checkout support mailbox. See [Open questions](#open-questions-for-the-owner) at the end.
 
 - Version: pilot-2026-10-02
 - Pilot team: [TEAM BUSINESS NAME]
@@ -19,7 +19,7 @@ During the pilot, these documents apply, in this order if they disagree:
 3. the draft [Privacy Policy](privacy-policy.md), in full, except where section 4 below says otherwise;
 4. the draft [Terms of Service](terms-of-service.md), except the sections about trials, subscriptions, renewals, prices, cancelling and refunds (sections 4 to 7), service levels (section 10), and disclaimers, liability and governing law (sections 13, 14 and 16), which this agreement replaces.
 
-Together these are the **pilot terms**. They are drafts: we will have them reviewed by a lawyer before Supply Checkout launches publicly, and they may change then (section 8). Where they say `[COMPANY LEGAL NAME]` they mean us (as this agreement names us), `[DOMAIN]` means supplycheckout.com, and every support, privacy or security contact (`[SUPPORT EMAIL]`, `[PRIVACY EMAIL]`, `[SECURITY CONTACT]`) means our support mailbox, [SUPPORT EMAIL].
+Together these are the **pilot terms**. They are drafts: we will have them reviewed by a lawyer before Supply Checkout launches publicly, and they may change then (section 8). Where they say `[COMPANY LEGAL NAME]` they mean us (as this agreement names us), `[DOMAIN]` means supplycheckout.com, and every support, privacy or security contact (including `[PRIVACY EMAIL]` and `[SECURITY CONTACT]`) means our support mailbox, support@supplycheckout.com.
 
 ## 2. Free during the pilot
 
@@ -30,7 +30,7 @@ Together these are the **pilot terms**. They are drafts: we will have them revie
 
 - Supply Checkout is **pre-release software**. It may have bugs, and features may change, be added or be removed during the pilot without notice.
 - **There's no service level agreement.** We don't promise any uptime, response time or availability, and there are no service credits. The Service may be slow or down at times, including for maintenance or fixes, sometimes without warning.
-- We'll try to tell you before planned downtime, fix problems quickly, and answer emails to [SUPPORT EMAIL] within [2] business days.
+- We'll try to tell you before planned downtime, fix problems quickly, and answer emails to support@supplycheckout.com within [2] business days.
 - Please keep your own copy of anything you can't afford to lose (section 5 explains how to export).
 - Receipt reading uses AI and **can be wrong**. Check every line before you save it or use it to bill a client.
 
@@ -79,7 +79,7 @@ To the extent the law allows:
 ## 11. General
 
 - This agreement and the documents in section 1 are the whole agreement between us about the pilot.
-- Notices are by email: ours to the pilot contact's email address, yours to [SUPPORT EMAIL].
+- Notices are by email: ours to the pilot contact's email address, yours to support@supplycheckout.com.
 - Sections 4, 5, 9, 10 and 11 continue after the pilot ends, for as long as we hold your team's data.
 - Governing law: this agreement is governed by the laws of the Commonwealth of Virginia. Any dispute goes to the state or federal courts in Virginia, and both sides agree to those courts' jurisdiction. Neither side has to arbitrate.
 - This agreement passes to Main Street Logic LLC when it's formed (see the start of this agreement), and we may also transfer it as part of a sale of the business. You may not transfer it without our consent.
@@ -87,7 +87,7 @@ To the extent the law allows:
 ## 12. Contact
 
 [OWNER NAME], doing business as Supply Checkout
-[SUPPORT EMAIL]
+support@supplycheckout.com
 
 ## Accepting this agreement
 
@@ -126,4 +126,4 @@ Still open, each with a recommended default (the draft follows the default):
 2. **Testimonials.** Should the agreement itself ask permission to name the business? *Default: no.* Keep section 6's promise not to name them, and ask by email near the end of a pilot that went well.
 3. **Delivery.** Send the drafts as PDFs, or as links to the public repository at the version's commit? *Default: PDFs*, made from the version's commit, with that commit named in the email. They're fixed, easy to keep, and don't show these open questions.
 4. **Seats.** Should pilot comps cap seats (`--seats`)? *Default: no cap.* Pilot teams are small, and the member cap still applies.
-5. **Support mailbox.** The pilot needs a working support mailbox on supplycheckout.com before the first team is sent this. These drafts write it as `[SUPPORT EMAIL]` until the support-email change (bead `supply-checkout-6qd`) lets the repository's public-safety check allow it. Then replace the placeholder here and in the drafts.
+5. **Support mailbox.** The pilot needs a working support mailbox on supplycheckout.com before the first team is sent this. The drafts give it as support@supplycheckout.com, which the repository's public-safety check allows since the support-email change (bead `supply-checkout-6qd`).

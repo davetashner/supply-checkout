@@ -36,7 +36,7 @@ Supply Checkout is for tracking supplies, inventory and receipts for your busine
 
 ## Reporting problems
 
-- Abuse or misuse: [SUPPORT EMAIL].
+- Abuse or misuse: support@supplycheckout.com.
 - Security issues: [SECURITY CONTACT]. Please give us reasonable time to fix a problem before disclosing it. We won't take legal action against good-faith research that follows this policy and avoids harm to customers' data.
 
 ## Changes
