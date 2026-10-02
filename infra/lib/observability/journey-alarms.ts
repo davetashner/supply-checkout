@@ -68,6 +68,13 @@ export const INVITE_SURGE_PER_HOUR = 300;
 export const RECEIPT_READS_ALARM_PER_HOUR = 300;
 
 /**
+ * Trial teams reaching 80% of their trial's receipts in an hour that "Receipt
+ * trials near their limit" alarms at (supply-checkout-wxx). Provisional: one
+ * or two a day is a healthy trial; several in an hour is likely a farm.
+ */
+export const RECEIPT_TRIALS_NEAR_LIMIT_ALARM_PER_HOUR = 5;
+
+/**
  * Closed teams set aside at once that "Many closed-team subscriptions set
  * aside" treats as an incident (P1): more than a one-off, most likely a Stripe
  * key or mode mismatch setting every closed team aside (supply-checkout-8jc.37).
@@ -417,13 +424,14 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       threshold: RECEIPT_READS_ALARM_PER_HOUR,
     },
     {
-      id: "receipt-teams-near-limit",
-      title: "Receipt teams near their limit",
+      id: "receipt-trials-near-limit",
+      title: "Receipt trials near their limit",
       journeys: "J5",
       severity: "P2",
-      rule: "Any ReceiptTeamsNearLimit in an hour: a team's read reached 80% of its allowance (its month's, or its trial's). Once per team per allowance; many at once from new trial teams suggests a farm of sign-ups.",
-      metric: business(BusinessMetric.ReceiptTeamsNearLimit, region, Duration.hours(1)),
-      threshold: 0,
+      rule: `ReceiptTrialsNearLimit at ${RECEIPT_TRIALS_NEAR_LIMIT_ALARM_PER_HOUR} or more in an hour: that many trial teams' reads reached 80% of their trial's allowance at once, which suggests a farm of sign-ups using trials to reach the model. Paying teams near their month's limit (ReceiptPaidTeamsNearLimit) are on the dashboard only.`,
+      metric: business(BusinessMetric.ReceiptTrialsNearLimit, region, Duration.hours(1)),
+      // Above the threshold: at least RECEIPT_TRIALS_NEAR_LIMIT_ALARM_PER_HOUR
+      threshold: RECEIPT_TRIALS_NEAR_LIMIT_ALARM_PER_HOUR - 1,
     },
     // J7. Subscribe, add seats and see invoices
     {

@@ -3,7 +3,7 @@
 // the photo, roles and team isolation, the monthly limit, each way the model
 // call can fail, and that nothing read from the photo is logged.
 
-import { APIConnectionTimeoutError, APIUserAbortError, BadRequestError, InternalServerError, RateLimitError } from "@anthropic-ai/sdk";
+import { APIConnectionTimeoutError, APIError, APIUserAbortError, BadRequestError, InternalServerError, RateLimitError } from "@anthropic-ai/sdk";
 import type { Message, MessageCreateParamsNonStreaming } from "@anthropic-ai/sdk/resources/messages";
 import type { Context } from "aws-lambda";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -427,7 +427,8 @@ describe("the monthly limit", () => {
     expect(calls).toHaveLength(3);
     expect(counts.ReceiptReads).toBe(3);
     // The third of three is 80%: the team is near its limit, once; the fourth is refused
-    expect(counts.ReceiptTeamsNearLimit).toBe(1);
+    expect(counts.ReceiptPaidTeamsNearLimit).toBe(1);
+    expect(counts.ReceiptTrialsNearLimit).toBeUndefined();
     expect(counts.ReceiptLimitReached).toBe(1);
     // Another team's reads are its own
     expect((await call({ user: OUTSIDER, path: "/teams/team-b/receipts/read" })).status).toBe(200);
@@ -462,7 +463,8 @@ describe("each team's allowance, from its plan (supply-checkout-wxx)", () => {
     expect(over.status).toBe(429);
     expect(over.body.error).toEqual({ code: "quota_exceeded", message: "This team has read all 25 receipts included in its trial. An owner can subscribe to read more.", reason: "receipt_limit" });
     expect(calls).toHaveLength(25);
-    expect(counts.ReceiptTeamsNearLimit).toBe(1);
+    expect(counts.ReceiptTrialsNearLimit).toBe(1);
+    expect(counts.ReceiptPaidTeamsNearLimit).toBeUndefined();
     expect(usageCount("team-a", "2026-09")).toBe(24);
     expect(usageCount("team-a", "2026-10")).toBe(1);
   });
@@ -558,6 +560,34 @@ describe("the per-user rate limit (supply-checkout-wxx)", () => {
     expect((await read()).headers["retry-after"]).toBe("3600");
     expect((await read()).body.error.message).toContain("Try again in an hour,");
     expect(calls).toHaveLength(200);
+  });
+
+  it("allows a user RECEIPT_TRIAL_READS_PER_USER_PER_DAY reads for trial teams a UTC day, from all their trial teams, and still reads for a paying team", async () => {
+    // team-a and team-c are trials (no status); the handler reads each team's own allowance
+    h = createReceiptsHandler({ dbFor, obs: fakeObservability(), model: fakeModel, modelId: MODEL_ID, now: () => clock });
+    for (let i = 0; i < 30; i++) {
+      clock = NOW + i * 10_000;
+      const path = i % 2 === 0 ? PATH : "/teams/team-c/receipts/read";
+      // Each team's trial stops at 25, so spread the user's 30 over both
+      expect((await read(CONTRIBUTOR, path)).status, `read ${i}`).toBe(200);
+    }
+    clock = NOW + 30 * 10_000;
+    const over = await read(CONTRIBUTOR, "/teams/team-c/receipts/read");
+    expect(over.body.error.reason).toBe("rate_limited");
+    // 12:05 to midnight UTC
+    expect(over.headers["retry-after"]).toBe(String(Date.parse("2026-09-27T00:00:00Z") / 1000 - clock / 1000));
+    expect(table.get(`RECEIPTRATE#${CONTRIBUTOR}`, "RECEIPTS#TRIALDAY#2026-09-26")?.count).toBe(30);
+    // Refused in every window: the day's count didn't move
+    expect(table.get(`RECEIPTRATE#${CONTRIBUTOR}`, "RECEIPTS#DAY#2026-09-26")?.count).toBe(30);
+    // A paying team's read doesn't count as a trial read, and isn't refused
+    table.put({ ...(table.get("TEAM#team-a", "META") as Record<string, unknown>), status: "active" });
+    expect((await read()).status).toBe(200);
+    expect(table.get(`RECEIPTRATE#${CONTRIBUTOR}`, "RECEIPTS#TRIALDAY#2026-09-26")?.count).toBe(30);
+    // Another user's trial reads are their own
+    expect((await read(OUTSIDER, "/teams/team-c/receipts/read")).status).toBe(200);
+    // The next UTC day is a new window
+    clock = Date.parse("2026-09-27T00:00:00Z");
+    expect((await read(CONTRIBUTOR, "/teams/team-c/receipts/read")).status).toBe(200);
   });
 
   it("tries again when two of a user's reads collide, and refuses for a second if they keep colliding", async () => {
@@ -676,19 +706,40 @@ describe("when the model call fails", () => {
   });
 
   it("a server error is unavailable, logged by name and status only", async () => {
-    const res = await failing(async () => Promise.reject(new InternalServerError(500, { message: "secret detail" }, "secret detail", headers)), true);
+    const res = await failing(async () => Promise.reject(new InternalServerError(500, { message: "secret detail" }, "secret detail", headers)));
     expect(res).toEqual({ status: 503, body: { error: { code: "unavailable", message: "Receipt reading isn't available right now. Try again in a few minutes." } } });
     expect(JSON.stringify(logs)).toContain('"failureDetail":"APIError:500"');
     expect(JSON.stringify(logs)).not.toContain("secret detail");
   });
 
+  it("a 503 from the model service is unavailable, and gives the team's read back", async () => {
+    const res = await failing(async () => Promise.reject(new InternalServerError(503, { message: "unavailable" }, "unavailable", headers)), true);
+    expect(res.status).toBe(503);
+    expect(JSON.stringify(logs)).toContain('"failureDetail":"APIError:503"');
+  });
+
+  it("only a throttle or a 503 gives the read back: never a 424, a 408, a 500, a timeout or a non-API error", async () => {
+    for (const [status, fail] of [
+      [503, async () => Promise.reject(new APIError(424, { message: "dependency" }, "dependency", headers))],
+      [503, async () => Promise.reject(new APIError(408, { message: "timeout" }, "timeout", headers))],
+      [503, async () => Promise.reject(new InternalServerError(500, { message: "x" }, "x", headers))],
+      [504, async () => Promise.reject(new APIConnectionTimeoutError())],
+      [503, async () => Promise.reject(new TypeError("fetch failed"))],
+    ] as [number, () => Promise<Message>][]) {
+      table.delete("TEAM#team-a", "USAGE#2026-09");
+      counts = {};
+      logs.length = 0;
+      expect((await failing(fail)).status).toBe(status);
+    }
+  });
+
   it("a network error is unavailable, logged by its name", async () => {
-    expect((await failing(async () => Promise.reject(new TypeError("fetch failed")), true)).status).toBe(503);
+    expect((await failing(async () => Promise.reject(new TypeError("fetch failed")))).status).toBe(503);
     expect(JSON.stringify(logs)).toContain('"failureDetail":"TypeError"');
   });
 
   it("anything else thrown is unavailable", async () => {
-    expect((await failing(async () => Promise.reject("odd"), true)).status).toBe(503);
+    expect((await failing(async () => Promise.reject("odd"))).status).toBe(503);
     expect(JSON.stringify(logs)).toContain('"failureDetail":"Error"');
   });
 

@@ -44,11 +44,18 @@ export class ReceiptReadError extends Error {
   readonly kind: ReceiptFailure;
   /** The underlying error's name or the model's stop reason: safe to log, never its message. */
   readonly detail: string;
+  /**
+   * The model service refused the call before doing any work it bills for:
+   * a throttle (429) or 503 Service Unavailable. Only these give the team's
+   * read back (refundReceipt); every other failure may have been billed.
+   */
+  readonly refundable: boolean;
 
-  constructor(kind: ReceiptFailure, detail: string) {
+  constructor(kind: ReceiptFailure, detail: string, refundable = false) {
     super(`Receipt read failed: ${kind}`);
     this.kind = kind;
     this.detail = detail;
+    this.refundable = refundable;
   }
 }
 
@@ -152,10 +159,10 @@ function failureFor(error: unknown, signal: AbortSignal): ReceiptReadError {
   // Fixed names, not the classes' own: the bundle is minified, and an error's message is never logged
   if (signal.aborted || error instanceof APIUserAbortError) return new ReceiptReadError("timeout", "Aborted");
   if (error instanceof APIConnectionTimeoutError) return new ReceiptReadError("timeout", "ConnectionTimeout");
-  if (error instanceof RateLimitError) return new ReceiptReadError("model_busy", "RateLimit:429");
+  if (error instanceof RateLimitError) return new ReceiptReadError("model_busy", "RateLimit:429", true);
   // Bedrock answers 400 for an image it can't use (too large, not decodable, wrong type)
   if (error instanceof BadRequestError || error instanceof UnprocessableEntityError) return new ReceiptReadError("image_rejected", `BadRequest:${error.status}`);
-  if (error instanceof APIError) return new ReceiptReadError("unavailable", `APIError:${String(error.status ?? "none")}`);
+  if (error instanceof APIError) return new ReceiptReadError("unavailable", `APIError:${String(error.status ?? "none")}`, error.status === 503);
   const name = (error as { name?: unknown } | null)?.name;
   return new ReceiptReadError("unavailable", typeof name === "string" ? name.slice(0, 64) : "Error");
 }

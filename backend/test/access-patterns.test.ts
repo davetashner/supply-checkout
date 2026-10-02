@@ -1020,14 +1020,18 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
       const { contributor } = await team();
       const [minute] = RECEIPT_RATE_LIMITS;
       const at = new Date("2026-09-15T12:00:30Z");
-      const results = await Promise.all(Array.from({ length: minute.max + 2 }, () => takeReceiptRate(db, contributor, at).then(() => "ok", (e: unknown) => e)));
+      const results = await Promise.all(Array.from({ length: minute.max + 2 }, () => takeReceiptRate(db, contributor, "month", at).then(() => "ok", (e: unknown) => e)));
       expect(results.filter((r) => r === "ok")).toHaveLength(minute.max);
       const refused = results.filter((r) => r !== "ok") as RateLimitedError[];
       expect(refused).toHaveLength(2);
       expect(refused[0]).toBeInstanceOf(RateLimitedError);
       expect(refused[0]?.retryAfterSeconds).toBe(30);
       // The next minute is a new window
-      await takeReceiptRate(db, contributor, new Date("2026-09-15T12:01:00Z"));
+      await takeReceiptRate(db, contributor, "month", new Date("2026-09-15T12:01:00Z"));
+      // A trial team's read also counts in the user's trial reads for the day; a paying team's doesn't
+      expect(await rawItem(db, `RECEIPTRATE#${contributor.userId}`, "RECEIPTS#TRIALDAY#2026-09-15")).toBeUndefined();
+      await takeReceiptRate(db, contributor, "trial", new Date("2026-09-15T12:02:00Z"));
+      expect(await rawItem(db, `RECEIPTRATE#${contributor.userId}`, "RECEIPTS#TRIALDAY#2026-09-15")).toMatchObject({ count: 1, expiresAt: Date.parse("2026-09-16T00:00:00Z") / 1000 + 86_400 });
       const item = await rawItem(db, `RECEIPTRATE#${contributor.userId}`, "RECEIPTS#MINUTE#2026-09-15T12:00");
       expect(item).toEqual({ PK: `RECEIPTRATE#${contributor.userId}`, SK: "RECEIPTS#MINUTE#2026-09-15T12:00", count: minute.max, expiresAt: Date.parse("2026-09-15T12:01:00Z") / 1000 + 86_400 });
     });

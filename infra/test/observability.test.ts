@@ -126,7 +126,7 @@ const ALARM_IDS = [
   "live-updates-deferred",
   "receipt-reading-failing",
   "receipt-volume-high",
-  "receipt-teams-near-limit",
+  "receipt-trials-near-limit",
   "checkout-broken",
   "billing-portal-broken",
   "webhook-signature-failures",

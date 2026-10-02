@@ -38,7 +38,7 @@ export const RECEIPTS_PER_TEAM_PER_MONTH = 200;
  */
 export const RECEIPTS_PER_TRIAL = 25;
 
-/** The share of its allowance at which a team counts as near its limit (ReceiptTeamsNearLimit, a P2 alarm). */
+/** The share of its allowance at which a team counts as near its limit (ReceiptTrialsNearLimit, which alarms when several trials cross at once, or ReceiptPaidTeamsNearLimit). */
 export const RECEIPT_NEAR_LIMIT_SHARE = 0.8;
 
 /**
@@ -53,6 +53,15 @@ export const RECEIPT_RATE_LIMITS = [
   { window: "HOUR", max: 60, ms: 3_600_000 },
   { window: "DAY", max: 200, ms: 86_400_000 },
 ] as const;
+
+/**
+ * Receipts one user may read for trial teams (any period "trial" allowance)
+ * each UTC day, from all their trial teams together: a mitigation for trial
+ * farms, where one account makes many trial teams to reach 25 reads in each.
+ * PROVISIONAL. An account-wide trial circuit breaker and a Bedrock spend
+ * budget are still follow-ups; this doesn't stop a farm of many accounts.
+ */
+export const RECEIPT_TRIAL_READS_PER_USER_PER_DAY = 30;
 
 /** How long a rate counter outlives its window before DynamoDB's TTL may delete it. */
 const RATE_COUNTER_GRACE_SECONDS = 24 * 60 * 60;
@@ -209,7 +218,8 @@ const RATE_ATTEMPTS = 4;
 
 /**
  * Counts one receipt read against the caller's per-user rate limit, in every
- * window of RECEIPT_RATE_LIMITS at once, or in none: one transaction, so a
+ * window of RECEIPT_RATE_LIMITS at once (and, for a trial team's read, the
+ * day's RECEIPT_TRIAL_READS_PER_USER_PER_DAY), or in none: one transaction, so a
  * read refused by one window doesn't use up the others (a client retrying in
  * a loop is held to the minute's limit, not locked out for the day). Throws
  * RateLimitedError, with the seconds until the last full window ends. The
@@ -222,13 +232,18 @@ const RATE_ATTEMPTS = 4;
  * (RECEIPT_RATE_ATTRIBUTES) and returns nothing, which is all the receipts
  * role may do in the user's `RECEIPTRATE#` partition.
  */
-export async function takeReceiptRate(db: Db, ctx: TeamContext, now = new Date()): Promise<void> {
+export async function takeReceiptRate(db: Db, ctx: TeamContext, period: ReceiptAllowance["period"], now = new Date()): Promise<void> {
   writable(db, ctx);
   const { userId } = assertContext(ctx);
   const at = now.getTime();
   const iso = now.toISOString();
-  const stamps = { MINUTE: iso.slice(0, 16), HOUR: iso.slice(0, 13), DAY: iso.slice(0, 10) } as const;
-  const windows = RECEIPT_RATE_LIMITS.map(({ window, max, ms }) => ({ window, max, ends: Math.floor(at / ms) * ms + ms }));
+  const stamps = { MINUTE: iso.slice(0, 16), HOUR: iso.slice(0, 13), DAY: iso.slice(0, 10), TRIALDAY: iso.slice(0, 10) } as const;
+  const limits: readonly { window: keyof typeof stamps; max: number; ms: number }[] = [
+    ...RECEIPT_RATE_LIMITS,
+    // A read for a trial team also counts in the user's trial reads for the day
+    ...(period === "trial" ? [{ window: "TRIALDAY" as const, max: RECEIPT_TRIAL_READS_PER_USER_PER_DAY, ms: 86_400_000 }] : []),
+  ];
+  const windows = limits.map(({ window, max, ms }) => ({ window, max, ends: Math.floor(at / ms) * ms + ms }));
   const write = new TransactWriteCommand({
     TransactItems: windows.map(({ window, max, ends }) => ({
       Update: {

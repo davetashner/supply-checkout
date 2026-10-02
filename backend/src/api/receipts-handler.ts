@@ -13,7 +13,8 @@
 // 2. The photo is checked before anything is spent: a JPEG or PNG, by its
 //    bytes as well as its declared type, at most MAX_RECEIPT_IMAGE_BYTES.
 // 3. One read is counted against the caller's per-user rate limit
-//    (RECEIPT_RATE_LIMITS, from all their teams together; 429 `rate_limited`
+//    (RECEIPT_RATE_LIMITS, from all their teams together, and for a trial
+//    team's read RECEIPT_TRIAL_READS_PER_USER_PER_DAY; 429 `rate_limited`
 //    with Retry-After), then against the team's allowance: a month's while
 //    it pays, its trial's in all while it doesn't (429 `receipt_limit`).
 //    Each counter is atomic, so reads at once can't go past it
@@ -22,8 +23,9 @@
 // 4. The team's inventory is read for matching, and the model is called with
 //    a deadline (RECEIPT_DEADLINE_MS) under API Gateway's 30 seconds. If the
 //    model service refuses the call before billing any tokens (throttled, or
-//    unavailable), the team's read is given back (refundReceipt); a timeout
-//    or a bad reply still counts, since its tokens may have been billed.
+//    a 503), the team's read is given back (refundReceipt); anything else (a
+//    timeout, a bad reply, a 500, a network error) still counts, since its
+//    tokens may have been billed.
 //
 // Logs and metrics carry sizes, timings, token counts and error names only:
 // never the photo, the prompt, the inventory or anything the model read.
@@ -89,8 +91,6 @@ export interface ReceiptsHandlerDeps {
   readonly allowance?: ReceiptAllowance;
 }
 
-/** Failures the model service refuses before billing tokens: the team's read is given back. */
-const REFUNDED: ReadonlySet<string> = new Set(["model_busy", "unavailable"]);
 
 const ROUTES = new Map(RECEIPT_ROUTES.map((r) => [routeKey(r), r]));
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -145,19 +145,21 @@ export function createReceiptsHandler(deps: ReceiptsHandlerDeps) {
   async function take(db: Db, ctx: TeamContext, log: Record<string, string | number>): Promise<ReceiptQuota> {
     const at = new Date(now());
     const metadata = { teamId: ctx.teamId };
+    // The allowance first: a trial team's read also counts in the user's trial reads for the day
+    const allowance = deps.allowance ?? (await getReceiptAllowance(db, ctx, at));
+    log.allowance = allowance.period;
     try {
-      await takeReceiptRate(db, ctx, at);
+      await takeReceiptRate(db, ctx, allowance.period, at);
     } catch (error) {
       if (!(error instanceof RateLimitedError)) throw error;
       deps.obs.count(BusinessMetric.ReceiptRateLimited, 1, metadata);
       log.refused = "rate_limited";
       throw new ApiError(429, "quota_exceeded", error.message, "rate_limited", { "retry-after": String(error.retryAfterSeconds) });
     }
-    const allowance = deps.allowance ?? (await getReceiptAllowance(db, ctx, at));
-    log.allowance = allowance.period;
     try {
       const taken = await takeReceipt(db, ctx, allowance, at);
-      if (crossesNearLimit(taken)) deps.obs.count(BusinessMetric.ReceiptTeamsNearLimit, 1, { ...metadata, period: taken.period });
+      // Split by period: a trial's crossing alarms (a farm shows as many), a paying team's is for the dashboard
+      if (crossesNearLimit(taken)) deps.obs.count(taken.period === "trial" ? BusinessMetric.ReceiptTrialsNearLimit : BusinessMetric.ReceiptPaidTeamsNearLimit, 1, metadata);
       return taken;
     } catch (error) {
       if (!(error instanceof LimitReachedError)) throw error;
@@ -192,7 +194,8 @@ export function createReceiptsHandler(deps: ReceiptsHandlerDeps) {
       if (!(error instanceof ReceiptReadError)) throw error;
       deps.obs.count(BusinessMetric.ReceiptReadFailures, 1, metadata);
       Object.assign(log, { modelMs: now() - started, failure: error.kind, failureDetail: error.detail, ...tokenFields(usageOf(error)) });
-      if (REFUNDED.has(error.kind) && !usageOf(error)) {
+      // Only a throttle or a 503 from the model service, with no tokens: see ReceiptReadError.refundable
+      if (error.refundable && !usageOf(error)) {
         // Best effort: the answer is the failure either way
         log.refunded = await refundReceipt(db, ctx, taken).then(
           () => 1,

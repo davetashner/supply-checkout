@@ -2758,7 +2758,7 @@
         "TreatMissingData": "notBreaching"
       }
     },
-    "JourneyAlarmsreceiptteamsnearlimit5266C5BB": {
+    "JourneyAlarmsreceipttrialsnearlimit55BE5619": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
         "AlarmActions": [
@@ -2766,15 +2766,15 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Receipt teams near their limit (J5, us-east-1). Any ReceiptTeamsNearLimit in an hour: a team's read reached 80% of its allowance (its month's, or its trial's). Once per team per allowance; many at once from new trial teams suggests a farm of sign-ups. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
-        "AlarmName": "supply-checkout-prod-p2-receipt-teams-near-limit",
+        "AlarmDescription": "P2 Receipt trials near their limit (J5, us-east-1). ReceiptTrialsNearLimit at 5 or more in an hour: that many trial teams' reads reached 80% of their trial's allowance at once, which suggests a farm of sign-ups using trials to reach the model. Paying teams near their month's limit (ReceiptPaidTeamsNearLimit) are on the dashboard only. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-receipt-trials-near-limit",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
         "EvaluationPeriods": 1,
         "Metrics": [
           {
             "Id": "m1",
-            "Label": "ReceiptTeamsNearLimit (us-east-1)",
+            "Label": "ReceiptTrialsNearLimit (us-east-1)",
             "MetricStat": {
               "Metric": {
                 "Dimensions": [
@@ -2783,7 +2783,7 @@
                     "Value": "us-east-1"
                   }
                 ],
-                "MetricName": "ReceiptTeamsNearLimit",
+                "MetricName": "ReceiptTrialsNearLimit",
                 "Namespace": "SupplyCheckout"
               },
               "Period": 3600,
@@ -2819,7 +2819,7 @@
             "Value": "cdk"
           }
         ],
-        "Threshold": 0,
+        "Threshold": 4,
         "TreatMissingData": "notBreaching"
       }
     },
@@ -12193,7 +12193,7 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
-                  "JourneyAlarmsreceiptteamsnearlimit5266C5BB",
+                  "JourneyAlarmsreceipttrialsnearlimit55BE5619",
                   "Arn"
                 ]
               },
@@ -12530,7 +12530,7 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"ReceiptRateLimited\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptRateLimited (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptLimitReached\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptLimitReached (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptTeamsNearLimit\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptTeamsNearLimit (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptRateLimited\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptRateLimited (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptLimitReached\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptLimitReached (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptTeamsNearLimit\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptTeamsNearLimit (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":43,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J5: receipt model call p95 (ms)\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"ReceiptRateLimited\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptRateLimited (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptLimitReached\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptLimitReached (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptTrialsNearLimit\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptTrialsNearLimit (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptPaidTeamsNearLimit\",\"Region\",\"us-east-1\",{\"label\":\"ReceiptPaidTeamsNearLimit (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptRateLimited\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptRateLimited (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptLimitReached\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptLimitReached (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptTrialsNearLimit\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptTrialsNearLimit (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"ReceiptPaidTeamsNearLimit\",\"Region\",\"us-west-2\",{\"label\":\"ReceiptPaidTeamsNearLimit (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":43,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J5: receipt model call p95 (ms)\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },

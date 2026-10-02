@@ -260,7 +260,7 @@ describe("closing a team", () => {
     await expect(updateTeam(table.db("team-a"), owner, { name: "Renamed" }, 2)).rejects.toBeInstanceOf(TeamClosedError);
     const pat = await authorizeTeam(table.db("team-a"), PAT, "team-a");
     await expect(takeReceipt(table.db("team-a"), pat, { period: "month", limit: 200 }, new Date("2026-09-15T00:00:00Z"))).rejects.toBeInstanceOf(TeamClosedError);
-    await expect(takeReceiptRate(table.db("team-a"), pat, new Date("2026-09-15T00:00:00Z"))).rejects.toBeInstanceOf(TeamClosedError);
+    await expect(takeReceiptRate(table.db("team-a"), pat, "month", new Date("2026-09-15T00:00:00Z"))).rejects.toBeInstanceOf(TeamClosedError);
     expect(meta()).toMatchObject({ name: "Team team-a", version: 2 });
     expect(table.get("TEAM#team-a", "USAGE#2026-09")).toBeUndefined();
   });

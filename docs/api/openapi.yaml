@@ -581,7 +581,9 @@ paths:
 
         Each read counts first against the caller's own rate limit, from all
         their teams together: 10 a minute, 60 an hour and 200 a UTC day
-        (`RECEIPT_RATE_LIMITS`); past any, 429 `rate_limited` with
+        (`RECEIPT_RATE_LIMITS`), and for a trial team's read at most 30 trial
+        reads a UTC day from all their trial teams
+        (`RECEIPT_TRIAL_READS_PER_USER_PER_DAY`); past any, 429 `rate_limited` with
         Retry-After, the seconds until the window ends. Then against the
         team's allowance (provisional until pricing is decided): 200 a UTC
         month while it pays or has a live comp
@@ -589,8 +591,9 @@ paths:
         (`RECEIPTS_PER_TRIAL`), which doesn't reset each month; past it, 429
         `receipt_limit`. Both are counted before the model is called, so a
         read that then fails still counts, unless the model service refused
-        it before billing anything (`model_busy`, or a 503), which gives the
-        team's read back. Attempts always count against the rate limit.
+        it with a throttle (`model_busy`) or a 503, which gives the team's
+        read back. A trial team's reads also count in its month, so a team
+        that subscribes mid-month has them counted against that month's 200. Attempts always count against the rate limit.
         A closed team, or one whose subscription ended, can't read receipts.
         Contributors and owners only.
 

@@ -74,7 +74,7 @@ export function date(value: unknown): string {
 }
 
 /** A rate window's UTC stamp: the ISO time cut to the minute, hour or day. */
-const RATE_STAMP = { MINUTE: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, HOUR: /^\d{4}-\d{2}-\d{2}T\d{2}$/, DAY: /^\d{4}-\d{2}-\d{2}$/ } as const;
+const RATE_STAMP = { MINUTE: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, HOUR: /^\d{4}-\d{2}-\d{2}T\d{2}$/, DAY: /^\d{4}-\d{2}-\d{2}$/, TRIALDAY: /^\d{4}-\d{2}-\d{2}$/ } as const;
 
 /** A usage month, YYYY-MM. */
 export function month(value: unknown): string {
@@ -127,9 +127,10 @@ export const keys = {
   /**
    * Receipts one user read in one window (a UTC minute, hour or day), from
    * every team they're in: the per-user rate limit (supply-checkout-wxx).
+   * `TRIALDAY` counts only their reads for trial teams, per UTC day.
    * Expires (TTL) a day after its window ends.
    */
-  receiptRate: (userId: string, window: "MINUTE" | "HOUR" | "DAY", stamp: string) => {
+  receiptRate: (userId: string, window: "MINUTE" | "HOUR" | "DAY" | "TRIALDAY", stamp: string) => {
     if (!RATE_STAMP[window].test(stamp)) throw new InvalidInputError("Invalid rate window");
     return { PK: `${RECEIPT_RATE_PREFIX}${id(userId, "user ID")}`, SK: `RECEIPTS#${window}#${stamp}` };
   },

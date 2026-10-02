@@ -364,7 +364,7 @@
 
     { "name": "Receipt reading failing", "journeys": ["J5"], "infra": "receipt-reading-failing" },
     { "name": "Receipt volume high", "journeys": ["J5"], "infra": "receipt-volume-high" },
-    { "name": "Receipt teams near their limit", "journeys": ["J5"], "infra": "receipt-teams-near-limit" },
+    { "name": "Receipt trials near their limit", "journeys": ["J5"], "infra": "receipt-trials-near-limit" },
     { "name": "Bedrock throttled", "journeys": ["J5"] },
     { "name": "Bedrock errors", "journeys": ["J5"] },
     { "name": "Receipts slow", "journeys": ["J5"] },
