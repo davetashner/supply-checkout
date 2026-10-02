@@ -11,6 +11,7 @@ import {
   GLOBAL_SERVICES_REGION,
   type GithubRepository,
   githubRepositoryFromContext,
+  webPublisherRoleName,
 } from "../lib/config.js";
 import { GITHUB_OIDC_AUDIENCE, GITHUB_OIDC_URL, githubDeployRoleName, githubDeploySubject } from "../lib/stacks/github-deploy-stack.js";
 import { addGithubDeploy } from "../lib/supply-checkout.js";
@@ -152,7 +153,7 @@ describe("GitHub Actions deploy role (supply-checkout-5ik)", () => {
     }
   });
 
-  it("has no managed policy, a one-hour session, and may only assume the CDK bootstrap roles of the deployed regions", () => {
+  it("has no managed policy, a one-hour session, and may only assume the CDK bootstrap roles of the deployed regions and the web publisher role", () => {
     const { template } = build();
     const r = role(template);
     expect(r.Properties.ManagedPolicyArns).toBeUndefined();
@@ -166,7 +167,15 @@ describe("GitHub Actions deploy role (supply-checkout-5ik)", () => {
         Action: ["sts:AssumeRole", "sts:TagSession"],
         Resource: ["deploy", "file-publishing", "image-publishing", "lookup"].map((kind) => bootstrapRole(kind, EAST)),
       },
+      {
+        // supply-checkout-pbp.28: the web stack's publisher role, by its fixed name, and nothing else
+        Sid: "AssumeWebPublisher",
+        Effect: "Allow",
+        Action: "sts:AssumeRole",
+        Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":iam::", { Ref: "AWS::AccountId" }, ":role/supply-checkout-prod-web-publisher"]] },
+      },
     ]);
+    expect(webPublisherRoleName("prod")).toBe("supply-checkout-prod-web-publisher");
     for (const s of statements) for (const a of actions(s)) expect(a).not.toContain("*");
     // No wildcard in any resource either: each ARN names exactly one role
     for (const s of statements) expect(JSON.stringify(s.Resource)).not.toMatch(/[*?]/);

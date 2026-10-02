@@ -576,6 +576,322 @@
         ]
       }
     },
+    "PublisherRoleC8390E96": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Condition": {
+                "ArnEquals": {
+                  "aws:PrincipalArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:",
+                        {
+                          "Ref": "AWS::Partition"
+                        },
+                        ":iam::",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":role/supply-checkout-prod-github-deploy"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:iam::",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Publishes the web app and demo from the deploy workflow (assumed by supply-checkout-prod-github-deploy only)",
+        "MaxSessionDuration": 3600,
+        "RoleName": "supply-checkout-prod-web-publisher",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "web"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "PublisherRoleDefaultPolicyD104D15F": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "ssm:GetParameter",
+                "ssm:GetParameters"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":ssm:",
+                      {
+                        "Ref": "AWS::Region"
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":parameter/supply-checkout/prod/api/url"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":ssm:",
+                      {
+                        "Ref": "AWS::Region"
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":parameter/supply-checkout/prod/identity/auth-url"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":ssm:",
+                      {
+                        "Ref": "AWS::Region"
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":parameter/supply-checkout/prod/identity/web-client-id"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":ssm:",
+                      {
+                        "Ref": "AWS::Region"
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":parameter/supply-checkout/prod/realtime/host"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":ssm:",
+                      {
+                        "Ref": "AWS::Region"
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":parameter/supply-checkout/prod/realtime/websocket-url"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":ssm:",
+                      {
+                        "Ref": "AWS::Region"
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":parameter/supply-checkout/prod/web/*"
+                    ]
+                  ]
+                }
+              ],
+              "Sid": "ReadPublishParameters"
+            },
+            {
+              "Action": "s3:ListBucket",
+              "Condition": {
+                "StringLike": {
+                  "s3:prefix": [
+                    "releases/*"
+                  ]
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:s3:::supply-checkout-prod-web-us-east-1-",
+                    {
+                      "Ref": "AWS::AccountId"
+                    }
+                  ]
+                ]
+              },
+              "Sid": "ListReleases"
+            },
+            {
+              "Action": [
+                "s3:GetObject",
+                "s3:PutObject"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:s3:::supply-checkout-prod-web-us-east-1-",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    "/releases/*"
+                  ]
+                ]
+              },
+              "Sid": "UploadReleases"
+            },
+            {
+              "Action": [
+                "cloudfront-keyvaluestore:DescribeKeyValueStore",
+                "cloudfront-keyvaluestore:GetKey",
+                "cloudfront-keyvaluestore:ListKeys",
+                "cloudfront-keyvaluestore:PutKey"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "LiveVersionsFE59744A",
+                  "Arn"
+                ]
+              },
+              "Sid": "SwitchLiveVersions"
+            },
+            {
+              "Action": [
+                "cloudfront:DescribeFunction",
+                "cloudfront:TestFunction"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "Router16807C72",
+                  "FunctionARN"
+                ]
+              },
+              "Sid": "CheckRouter"
+            },
+            {
+              "Action": "cloudfront:GetDistributionConfig",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":cloudfront::",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":distribution/",
+                    {
+                      "Ref": "Distribution830FAC52"
+                    }
+                  ]
+                ]
+              },
+              "Sid": "ReadDistributionAliases"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "PublisherRoleDefaultPolicyD104D15F",
+        "Roles": [
+          {
+            "Ref": "PublisherRoleC8390E96"
+          }
+        ]
+      }
+    },
     "ApexACFD474A9": {
       "Type": "AWS::Route53::RecordSet",
       "Properties": {
