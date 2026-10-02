@@ -29,6 +29,7 @@ import type { Construct } from "constructs";
 import type { DeploymentConfig } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
 import { contentSecurityPolicy } from "../web/content-security-policy.js";
+import { WebPublisher } from "../web/publisher.js";
 import { RealUserMonitoring } from "../web/rum.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 import { logsBucketName, webBucketName } from "./data-stack.js";
@@ -114,6 +115,9 @@ export function routerCode(values: { kvsId: string; apex: string; www: string; a
  * - CloudWatch RUM (web/rum.ts): the app's JavaScript errors and page
  *   performance, sent by the browser with a guest identity that may only
  *   call rum:PutRumEvents on the app monitor.
+ * - The web publisher role (web/publisher.ts): what the deploy workflow publishes
+ *   releases and switches the live version with, assumed only by the GitHub
+ *   deploy role (supply-checkout-pbp.28).
  * - The bucket's origin failover to a second region is phase 2 (supply-checkout-d79).
  */
 export class WebStack extends SupplyCheckoutStack {
@@ -121,6 +125,7 @@ export class WebStack extends SupplyCheckoutStack {
   readonly liveVersions: KeyValueStore;
   readonly webAcl: CfnWebACL;
   readonly rum: RealUserMonitoring;
+  readonly publisher: WebPublisher;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "web", layer: "stateless" });
@@ -253,6 +258,15 @@ export class WebStack extends SupplyCheckoutStack {
     Validations.of(this.distribution).acknowledge({
       id: "AwsSolutions-CFR1",
       reason: "No geo restriction: customers can travel, and WAF rate-limits abuse.",
+    });
+
+    this.publisher = new WebPublisher(this, "Publisher", {
+      envName: config.envName,
+      bucket,
+      bucketRegion,
+      liveVersions: this.liveVersions,
+      router,
+      distribution: this.distribution,
     });
 
     const target = RecordTarget.fromAlias(new CloudFrontTarget(this.distribution));

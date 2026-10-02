@@ -129,7 +129,7 @@ for target in "${ordered[@]}"; do
       if $deployed; then check_router; fi
       ;;
     api)
-      group_stacks stateless
+      group_stacks api
       deploy_stacks "${stacks[@]}"
       ;;
     app)

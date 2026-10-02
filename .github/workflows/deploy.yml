@@ -1,6 +1,6 @@
 name: Deploy
 
-# Deploys a release to prod (ADR 0012; supply-checkout-pbp.26 and pbp.27). The release workflow
+# Deploys a release to prod (ADR 0012; supply-checkout-pbp.26, pbp.27 and pbp.28). The release workflow
 # starts it once the release's full check suite has passed; the owner can also start it by hand
 # for a tag (Actions, Deploy, Run workflow, from main), for example to deploy an older release
 # again. It runs only from main: a run dispatched on a tag would use that tag's own copy of this
@@ -17,16 +17,23 @@ name: Deploy
 #                   (scripts/check-environments.mjs), and the tag is a published release whose
 #                   commit is on main and passed CI in a real run on main
 #   trust           no environment: the deploy role must REFUSE this job (docs/infrastructure.md)
+#   build           no environment, no id-token, no AWS: builds the web app and the demo once
+#                   from the release commit and keeps them as the run's artifact, with a hash
 #   plan            `production` (approval 1): deploys nothing, but runs the release commit's
 #                   code in a job that holds the deploy role until it drops to CDK's read-only
-#                   lookup role; synthesizes, prints a hash of the assembly, posts each group's diff to the
-#                   job summary, and fails if the stateful stacks' diff replaces or deletes what
-#                   holds data (scripts/check-replacements.mjs) unless allowed
+#                   lookup role (the job can still request the production OIDC token);
+#                   synthesizes, prints a hash of the assembly, posts each group's
+#                   diff to the job summary, and fails if the stateful stacks' diff replaces or
+#                   deletes what holds data (scripts/check-replacements.mjs) unless allowed
 #   apply-stateful  `production-stateful` (approval 2), only if the stateful stacks differ:
 #                   synthesizes again, refuses a template hash that isn't the plan's, checks the
 #                   diff again, deploys them
-#   apply           `production` (approval 3), only if the stateless stacks differ, after
-#                   apply-stateful succeeded or was skipped: same hash check, deploys them
+#   apply           `production` (approval 3), after apply-stateful succeeded or was skipped:
+#                   same hash check, deploys the stateless stacks (web, api, realtime,
+#                   observability) if they differ, then publishes the build job's web app and
+#                   demo as app-<tag> and demo-<tag> with the web publisher role, checks the
+#                   live router and the live site (scripts/check-web.mjs), and rolls both
+#                   channels back to what was live before if any of that fails
 #
 # No AWS credentials exist before a job's sign-in step, and those jobs run only code from a
 # release commit on main; the deploy tooling (scripts/) comes from main's own commit, so an older
@@ -204,15 +211,68 @@ jobs:
           echo "Refused, as it must be: Not authorized to perform sts:AssumeRoleWithWebIdentity"
           echo "Trust check: the deploy role refuses a job outside the production environment" >> "$GITHUB_STEP_SUMMARY"
 
+  build:
+    # The web app and the demo (supply-checkout-pbp.28), built once from the release commit in
+    # a job with no environment, no id-token permission and no AWS access, since the build runs
+    # the release commit's vite config, plugins and dependencies. The apply job publishes exactly
+    # these files, by this upload's ID and hash. They hold no configuration (publish-web writes
+    # config.json when it publishes) and are public once live anyway.
+    # CodeQL's untrusted-checkout and cache-poisoning queries flag a job like this. Here the
+    # checkout is needs.release.outputs.sha, which the release job proved is a published release
+    # on main that passed CI in a run on main (not pull request code), and the job restores and
+    # saves no cache (setup-node without `cache`, no actions/cache).
+    name: Build the web app and demo
+    needs: release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      hash: ${{ steps.hash.outputs.hash }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Build
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build:web
+          npm run build:demo
+      - name: Hash the build
+        id: hash
+        run: |
+          hash="$(cd dist && find web demo -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          echo "Web build hash: $hash"
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+      # Kept 30 days, longer than any approval wait (GitHub drops a waiting run after 30 days);
+      # the apply job downloads it by this upload's ID, so a re-run never picks up another
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web-build
+          path: |
+            dist/web
+            dist/demo
+          if-no-files-found: error
+          retention-days: 30
+
   plan:
     name: Plan (deploys nothing)
-    needs: [release, trust]
+    needs: [release, trust, build]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Waits for the owner's approval. Approving it runs the release commit's code (its
-    # dependencies and the synth) in a job that holds the deploy role's credentials for its first
-    # steps; the synth itself runs after the drop to the read-only lookup role. Treat approving
+    # Waits for the owner's approval. Approving it runs the release commit's code (the CDK
+    # synth) in a job that can request the production OIDC token (id-token: write) and so the
+    # deploy role, even though the synth runs after the drop to the read-only lookup role:
+    # approving the plan can amount to approving deploy-role power. Treat it as trusting the
+    # release commit. Treat approving
     # it as trusting that code: the real control is that only a reviewed, released commit on
     # main gets here. The production environment's rules (main only, required
     # reviewer, no admin bypass) are what give a job the OIDC subject the deploy role trusts.
@@ -260,15 +320,15 @@ jobs:
         run: |
           (cd backend && npm ci --ignore-scripts --no-audit --no-fund)
           (cd infra && npm ci --ignore-scripts --no-audit --no-fund)
-      - &sign-in
-        name: Sign in to AWS with the deploy role
+      - name: Sign in to AWS with the deploy role
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           # A secret, so the ARN (and the account ID in it) is masked in the log
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          role-session-name: deploy-${{ github.run_id }}-${{ github.run_attempt }}
+          role-session-name: plan-deploy-${{ github.run_id }}-${{ github.run_attempt }}
           aws-region: ${{ needs.release.outputs.region }}
-          role-duration-seconds: 3600
+          # Only long enough to drop to the lookup role, which has its own session
+          role-duration-seconds: 900
           # The account ID is masked in every later log line
           mask-aws-account-id: true
       # The positive half of the trust check (docs/infrastructure.md step 3)
@@ -371,14 +431,23 @@ jobs:
           DRY_RUN: ${{ inputs.dry-run }}
           STATEFUL: ${{ steps.stateful.outputs.changed }}
           STATELESS: ${{ steps.stateless.outputs.changed }}
+          BUILD_HASH: ${{ needs.build.outputs.hash }}
+          BUILD_ARTIFACT_ID: ${{ needs.build.outputs.artifact-id }}
         run: |
+          # The build job ran release code: take only a real hash and ID from it, so it can't put
+          # its own text into the summary the approver reads
+          if [[ ! "$BUILD_HASH" =~ ^[0-9a-f]{64}$ || ! "$BUILD_ARTIFACT_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::The build job's hash or artifact ID isn't one (a 64-character hex hash and a number)"
+            exit 1
+          fi
           {
             echo "## Next"
             echo
             if [[ "$DRY_RUN" == true ]]; then echo "Dry run: nothing deploys."
             else
               if [[ "$STATEFUL" == true ]]; then echo "- Stateful stacks: approve **production-stateful** to deploy them."; else echo "- Stateful stacks: no differences, skipped."; fi
-              if [[ "$STATELESS" == true ]]; then echo "- Stateless stacks: approve **production** to deploy them."; else echo "- Stateless stacks: no differences, skipped."; fi
+              if [[ "$STATELESS" == true ]]; then echo "- Stateless stacks: approve **production** to deploy them, then publish the web app."; else echo "- Stateless stacks: no differences. Approve **production** to publish the web app."; fi
+              echo "- Web app and demo: publish \`app-$TAG\` and \`demo-$TAG\` (build \`$BUILD_HASH\`) and make them live."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -405,7 +474,18 @@ jobs:
       - *checkout-tools
       - *setup-node
       - *install
-      - *sign-in
+      - &sign-in
+        name: Sign in to AWS with the deploy role
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          # A secret, so the ARN (and the account ID in it) is masked in the log
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: deploy-${{ github.run_id }}-${{ github.run_attempt }}
+          aws-region: ${{ needs.release.outputs.region }}
+          # A deploy can take a while; CDK renews its bootstrap role sessions from this one
+          role-duration-seconds: 3600
+          # The account ID is masked in every later log line
+          mask-aws-account-id: true
       - *prove
       - *synth
       - name: Check it's what the plan showed
@@ -429,7 +509,11 @@ jobs:
           ALLOW: ${{ inputs.allow-replacement }}
         run: |
           allow=()
-          if [[ "$ALLOW" == true ]]; then allow=(--allow); fi
+          if [[ "$ALLOW" == true ]]; then
+            allow=(--allow)
+            echo "::warning::allow-replacement is on: the stateful stacks may replace or delete what holds data"
+            echo "> **allow-replacement is on**: approving this job may replace or delete what holds data in the stateful stacks (a planned migration)." >> "$GITHUB_STEP_SUMMARY"
+          fi
           node .deploy-tools/scripts/check-replacements.mjs "$RUNNER_TEMP/diff-stateful.txt" "${allow[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
       # Termination protection stays on (the stacks set it); CDK doesn't ask about IAM changes:
       # approving this job is the approval
@@ -442,13 +526,13 @@ jobs:
           echo "Deployed $TAG ($SHA): ${stacks[*]}" >> "$GITHUB_STEP_SUMMARY"
 
   apply:
-    name: Deploy the stateless stacks
-    needs: [release, plan, apply-stateful]
+    name: Deploy the stateless stacks and publish the web app
+    needs: [release, build, plan, apply-stateful]
     # After the stateful stacks (the API reads the table and user pool they change), or when
-    # they had nothing to deploy
+    # they had nothing to deploy. Every release, since the web app may change without the stacks.
     if: >-
       !cancelled() && github.ref == 'refs/heads/main' && !inputs.dry-run
-      && needs.plan.result == 'success' && needs.plan.outputs.stateless-changed == 'true'
+      && needs.build.result == 'success' && needs.plan.result == 'success'
       && (needs.apply-stateful.result == 'success' || needs.apply-stateful.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -480,12 +564,174 @@ jobs:
             exit 1
           fi
           echo "Same templates as the plan ($HASH)"
+      # The build job's web build, by its upload's ID, checked against that job's hash before
+      # anything deploys, so a missing or changed build stops the job with nothing changed. That
+      # job ran release code, so its outputs must look like a hash and an ID first.
+      - name: Check the build job's outputs
+        env:
+          BUILD_HASH: ${{ needs.build.outputs.hash }}
+          BUILD_ARTIFACT_ID: ${{ needs.build.outputs.artifact-id }}
+        run: |
+          if [[ ! "$BUILD_HASH" =~ ^[0-9a-f]{64}$ || ! "$BUILD_ARTIFACT_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::The build job's hash or artifact ID isn't one (a 64-character hex hash and a number)"
+            exit 1
+          fi
+      - name: Download the web build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: ${{ runner.temp }}/web-build
+          merge-multiple: true
+      - name: Check it's the build the plan showed (the build job's)
+        env:
+          BUILD_HASH: ${{ needs.build.outputs.hash }}
+        run: |
+          if [[ ! -d "$RUNNER_TEMP/web-build/web" || ! -d "$RUNNER_TEMP/web-build/demo" ]]; then
+            echo "::error::The build job's web build isn't there (artifacts are kept 30 days): run the deploy again"
+            exit 1
+          fi
+          hash="$(cd "$RUNNER_TEMP/web-build" && find web demo -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          if [[ -z "$BUILD_HASH" || "$hash" != "$BUILD_HASH" ]]; then
+            echo "::error::The web build ($hash) isn't the one the build job made ($BUILD_HASH)"
+            exit 1
+          fi
+          echo "Same web build ($hash)"
       # CDK doesn't ask about IAM changes: approving this job, after reading the plan's diff,
       # is the approval
       - name: Deploy
+        id: deploy
+        if: needs.plan.outputs.stateless-changed == 'true'
         working-directory: infra
         run: |
           patterns="$(node ../.deploy-tools/scripts/deploy-stacks.mjs stateless --env "$ENV_NAME")"
           read -r -a stacks <<< "$patterns"
           ./node_modules/.bin/cdk deploy --app cdk.out --exclusively --require-approval never --no-notices --progress events "${stacks[@]}"
           echo "Deployed $TAG ($SHA): ${stacks[*]}" >> "$GITHUB_STEP_SUMMARY"
+
+      # The web app and demo (supply-checkout-pbp.28), published with the web stack's publisher
+      # role (infra/lib/web/publisher.ts): CDK's bootstrap roles can't upload a release or switch
+      # the live version. The build was downloaded and checked before the deploy above.
+      - name: Switch to the web publisher role
+        run: |
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          config="$RUNNER_TEMP/aws-publisher-config"
+          printf '[profile web-publisher]\nrole_arn = arn:aws:iam::%s:role/supply-checkout-%s-web-publisher\ncredential_source = Environment\nregion = %s\n' \
+            "$account" "$ENV_NAME" "$AWS_REGION" > "$config"
+          echo "AWS_CONFIG_FILE=$config" >> "$GITHUB_ENV"
+          arn="$(AWS_CONFIG_FILE="$config" aws sts get-caller-identity --profile web-publisher --query Arn --output text)"
+          if [[ ! "$arn" =~ ^arn:aws:sts::[0-9]{12}:assumed-role/supply-checkout-${ENV_NAME}-web-publisher/ ]]; then
+            echo "::error::Couldn't sign in as the web publisher role"
+            exit 1
+          fi
+          echo "Signed in as supply-checkout-${ENV_NAME}-web-publisher"
+      - name: Note what's live now
+        id: before
+        run: |
+          for channel in app demo; do
+            live="$(node .deploy-tools/scripts/publish-web.mjs live --channel "$channel" --env "$ENV_NAME" --profile web-publisher)"
+            echo "Live before: $channel $live"
+            echo "$channel=$live" >> "$GITHUB_OUTPUT"
+          done
+      # --reuse: a release deployed again (or an older one) is made live again, never re-uploaded
+      - name: Publish the web app and demo
+        id: publish
+        run: |
+          echo "started=true" >> "$GITHUB_OUTPUT"
+          web="$RUNNER_TEMP/web-build"
+          node .deploy-tools/scripts/publish-web.mjs publish --channel app --dir "$web/web" --version "app-$TAG" --reuse --env "$ENV_NAME" --profile web-publisher
+          node .deploy-tools/scripts/publish-web.mjs publish --channel demo --dir "$web/demo" --version "demo-$TAG" --reuse --env "$ENV_NAME" --profile web-publisher
+      - name: Check the live router
+        id: router
+        run: node .deploy-tools/scripts/publish-web.mjs check-router --env "$ENV_NAME" --profile web-publisher
+      - name: Check the live site
+        id: site
+        run: |
+          web="$RUNNER_TEMP/web-build"
+          node .deploy-tools/scripts/check-web.mjs --env "$ENV_NAME" --app-index "$web/web/index.html" --demo-index "$web/demo/index.html"
+          echo "Published and live: app-$TAG, demo-$TAG" >> "$GITHUB_STEP_SUMMARY"
+      # Read-only checks of what the web checks don't cover (supply-checkout-pbp.30): the API
+      # refuses an anonymous caller, live updates and sign-in answer. It makes no AWS calls. A
+      # failure here is the stacks', not the web app's, so it doesn't roll the web publish back
+      # (the new app is what matches the new API); the stacks are rolled back by hand
+      # (docs/releases.md, "When a post-deploy check fails").
+      - name: Post-deploy checks
+        id: smoke
+        run: node .deploy-tools/scripts/smoke-checks.mjs --env "$ENV_NAME" --summary "$GITHUB_STEP_SUMMARY"
+      # Hook for the core journey canary (supply-checkout-pkt, after the pilot): run it once
+      # here, whatever the hour, after the checks above (ADR 0012), and fail the deploy if it
+      # fails. Starting a Synthetics canary needs synthetics:StartCanaryDryRun or StartCanary,
+      # which no role the deploy role may assume has today; pkt adds it (docs/releases.md).
+      # The publish, the router or the site check failed, or the run was cancelled or timed out,
+      # after publishing started: put back what was live before. Not for the post-deploy
+      # checks alone (above).
+      - name: Roll the web app and demo back
+        id: rollback
+        if: (failure() || cancelled()) && steps.publish.outputs.started == 'true' && steps.smoke.outcome != 'failure'
+        env:
+          APP: ${{ steps.before.outputs.app }}
+          DEMO: ${{ steps.before.outputs.demo }}
+        run: |
+          {
+            echo "## Web rollback"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          status=0
+          for pair in "app=$APP" "demo=$DEMO"; do
+            channel="${pair%%=*}" version="${pair#*=}"
+            if [[ -z "$version" || "$version" == none ]]; then
+              echo "::warning::Nothing was live on $channel before, so it isn't rolled back"
+              echo "- $channel: nothing was live before; left as it is" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if node .deploy-tools/scripts/publish-web.mjs activate --channel "$channel" --version "$version" --env "$ENV_NAME" --profile web-publisher; then
+              echo "- $channel: rolled back to \`$version\`" >> "$GITHUB_STEP_SUMMARY"
+            else
+              status=1
+              echo "::error::Couldn't roll $channel back to $version: do it by hand (docs/web-app.md)"
+              echo "- $channel: **rollback to \`$version\` failed**" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          node .deploy-tools/scripts/publish-web.mjs check-router --env "$ENV_NAME" --profile web-publisher || status=1
+          if ((status == 0)); then
+            echo "::error::The web publish failed and was rolled back; the deploy failed"
+          else
+            echo "::error::The web publish failed and the rollback didn't finish: check the live versions by hand (docs/web-app.md)"
+          fi
+          exit 1
+      # One place that says what happened, whatever happened
+      - name: Deploy summary
+        if: always()
+        env:
+          CHANGED: ${{ needs.plan.outputs.stateless-changed }}
+          DEPLOY: ${{ steps.deploy.outcome }}
+          PUBLISH: ${{ steps.publish.outcome }}
+          ROUTER: ${{ steps.router.outcome }}
+          SITE: ${{ steps.site.outcome }}
+          SMOKE: ${{ steps.smoke.outcome }}
+          ROLLBACK: ${{ steps.rollback.outcome }}
+        run: |
+          if [[ "$CHANGED" == true ]]; then stacks="${DEPLOY:-not run}"; else stacks="no changes"; fi
+          {
+            echo "## Deploy of $TAG"
+            echo
+            echo "| Step | Outcome |"
+            echo "| --- | --- |"
+            echo "| Stateless stacks | $stacks |"
+            echo "| Publish app-$TAG and demo-$TAG | ${PUBLISH:-not run} |"
+            echo "| Live router | ${ROUTER:-not run} |"
+            echo "| Live site | ${SITE:-not run} |"
+            echo "| Post-deploy checks | ${SMOKE:-not run} |"
+            echo "| Web rollback | ${ROLLBACK:-not run} |"
+            echo
+            if [[ "$SMOKE" == failure ]]; then
+              echo "**The post-deploy checks failed.** The web app stays on app-$TAG. See docs/releases.md, \"When a post-deploy check fails\": if users are affected, deploy the previous tag again; otherwise fix forward."
+            elif [[ "$ROLLBACK" == success ]]; then
+              echo "**The web publish failed or was cancelled, and was rolled back** to what was live before."
+            elif [[ "$ROLLBACK" == failure ]]; then
+              echo "**The web publish failed or was cancelled, and its rollback didn't finish.** Check the live versions by hand (docs/web-app.md)."
+            elif [[ "$SMOKE" == success ]]; then
+              echo "Deployed, published and checked."
+            else
+              echo "**The deploy failed before publishing:** nothing on the web changed; see the failed step."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
