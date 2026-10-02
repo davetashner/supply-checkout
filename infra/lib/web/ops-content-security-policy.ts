@@ -38,6 +38,9 @@ export function opsCspDirectives(hosts: OpsCspHosts): Record<string, string[]> {
     "form-action": ["'none'"],
     "frame-ancestors": ["'none'"],
     "object-src": ["'none'"],
+    // No workers of any kind (worker-src would otherwise fall back to script-src 'self')
+    "worker-src": ["'none'"],
+    "manifest-src": ["'none'"],
     "require-trusted-types-for": ["'script'"],
     "trusted-types": ["'none'"],
     "upgrade-insecure-requests": [],

@@ -410,10 +410,14 @@ export class ApiStack extends SupplyCheckoutStack {
       createDefaultStage: false,
       disableExecuteApiEndpoint: true,
       corsPreflight: {
-        // The operator page calls the /ops routes from its own origin (supply-checkout-gxlt). It's in
-        // the preflight's list only, never in ALLOWED_ORIGINS above: the auth routes check Origin
-        // against that list, so the page can't use the customers' refresh cookie even though the
-        // preflight allows credentials for the auth routes' sake. The page never sends cookies.
+        // The operator page calls the /ops routes from its own origin (supply-checkout-gxlt). CORS is
+        // per API, not per route, so API Gateway answers ops.'s preflights and adds
+        // Access-Control-Allow-Origin and -Allow-Credentials for it to every route's real responses,
+        // the auth routes' included. That's safe because only the auth routes read a cookie
+        // (backend/test/cookie-readers.test.ts), the refresh cookie is host-only on api. with
+        // Path=/auth, Secure, HttpOnly and SameSite=Strict, and the auth handler checks Origin against
+        // ALLOWED_ORIGINS above (app. only, never ops.) before reading it; every other route takes a
+        // bearer token only. The page itself never sends cookies (credentials: "omit").
         allowOrigins: [...origins, `https://${names.ops}`],
         allowMethods: [CorsHttpMethod.GET, CorsHttpMethod.PUT, CorsHttpMethod.PATCH, CorsHttpMethod.DELETE, CorsHttpMethod.POST],
         allowHeaders: ["authorization", "content-type", IDEMPOTENCY_HEADER],

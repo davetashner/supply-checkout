@@ -424,6 +424,9 @@ describe("operator page (ops., supply-checkout-gxlt)", () => {
     expect(d["connect-src"]).toEqual(["'self'", "https://api.supplycheckout.com", "https://ops-auth.supplycheckout.com"]);
     expect(d["frame-ancestors"]).toEqual(["'none'"]);
     expect(d["require-trusted-types-for"]).toEqual(["'script'"]);
+    // No workers or manifest: worker-src would otherwise fall back to script-src 'self'
+    expect(d["worker-src"]).toEqual(["'none'"]);
+    expect(d["manifest-src"]).toEqual(["'none'"]);
     for (const [name, values] of Object.entries(d)) {
       for (const value of values) {
         expect(value, name).not.toMatch(/unsafe|\*|data:|blob:|\/\/auth\.|realtime\./);
