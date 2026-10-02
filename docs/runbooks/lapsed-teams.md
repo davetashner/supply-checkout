@@ -13,7 +13,7 @@ When: **Lapsed-team job failing** or **Lapsed-team job not running** (both P2) f
 | `past_due` past its 7-day grace (`payment_overdue`) | Read-only, pay to edit again | Never |
 | `unpaid` | None here (the billing worker sent one) | Never |
 | `canceled` or `incomplete_expired` (`subscription_ended`), with `subscriptionEndedAt` | None here (the billing worker sent the read-only email) | Yes, see below |
-| `canceled` without `subscriptionEndedAt` | None | Not until the nightly entitlement check records the date |
+| `canceled` without `subscriptionEndedAt` | None | Not until the nightly entitlement check records the date (counted in `LapseFailures` meanwhile) |
 
 **Closing.** A team's deletion date (`readOnlyDeletesAt` on `/me`, `deleteAfter` in the logs) is 30 days after its trial or subscription ended, or after its comp ran out if that's later. From 7 days before it, the job emails each owner a deletion warning. It records the warning (`LAPSE#<teamId>` / `WARNED#<deleteAfter>`, with `sentAt`) only once at least one owner was sent it, and tries again each UTC day until then. The team is closed no earlier than the later of the deletion date and 7 days after the warning. So a team found already past its date (comped until recently, or from before the job existed) still gets 7 days.
 
@@ -52,6 +52,9 @@ fields @timestamp, message, teamId, why, step, error, subscriptionId, customerId
   - Replay the billing events ([billing DLQ replay](billing-dlq-replay.md)), or wait for the nightly entitlement check, which applies Stripe's state. The team then stops lapsing or gets the right status.
   - If it's an `unpaid` or `paused` subscription nobody will pay, cancel it in the Stripe Dashboard. The webhook then records `canceled`, and the 30 days start from Stripe's `ended_at`.
 - **`CustomerMismatch`, `SubscriptionNotFound` or `CustomerNotFound`.** Our IDs don't match Stripe. Check first that the job reads the right mode's key (`STRIPE_SECRET_ID` and `STRIPE_MODE` on the function), since a key or mode mismatch looks like this for every team. If the key is right, look the team's customer up in the Dashboard (both modes) and correct the record with the owner's agreement, or decide, and note on the bead, that the team may be deleted anyway. Nothing closes it until Stripe agrees.
+- **`TooManySubscriptions`.** The customer has more than 10 subscriptions, so a live one could be past the first page. List them all in the Dashboard and cancel or record what's live; the next run closes the team once nothing is.
+- **`Lapsed team has no date its subscription ended`** (`step: undated`). A `canceled` or `incomplete_expired` team without `subscriptionEndedAt`, applied before the date was kept. The nightly entitlement check records it (drift field `accessDates`); if it doesn't, check the team has a Stripe customer the reconciliation lists, or replay its last event. Until then it's never deleted.
+- **`Lapsed team has no version`** (`step: noVersion`). A META item this app didn't write as usual. Look at it by hand; nothing closes it.
 - **`Lapsed team's deletion warning not delivered`.** No owner could be emailed: SES refused (`Lapse emails not sent` has SES's error names), or no owner has an address. Check SES's account dashboard and suppression list. The job tries again each day. The team isn't closed until an owner gets the warning.
 - **`Lapsed team check failed`** (an error, with `error` and Stripe's `type` and `status`). The usual causes:
   - Stripe was unreachable or rate limiting. The next run retries.
