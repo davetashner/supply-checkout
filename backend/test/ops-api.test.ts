@@ -12,6 +12,7 @@ import { ApiError } from "../src/api/http.js";
 import { OPS_ROUTES, routeKey } from "../src/api/routes.js";
 import {
   billingAccess,
+  deletionTime,
   CLOSED_TEAM_RETENTION_DAYS,
   closeTeam,
   createTeam,
@@ -841,7 +842,7 @@ describe("comps", () => {
     await comp({ plan: "free", until, reason: "Pilot", expectedVersion: 1 });
     expect(billingAccess(teamOf(teamA), new Date(NOW))).toEqual({ readOnly: false });
     expect((await call("DELETE", `/ops/teams/${teamA}/comp`, { body: { reason: "Pilot over", expectedVersion: 2 }, key: "end-key-0003" })).status).toBe(200);
-    expect(billingAccess(teamOf(teamA), new Date(NOW))).toEqual({ readOnly: true, reason: "trial_ended", readOnlyFrom: iso(NOW), deleteAfter: iso(NOW + 30 * DAY) });
+    expect(billingAccess(teamOf(teamA), new Date(NOW))).toEqual({ readOnly: true, reason: "trial_ended", readOnlyFrom: iso(NOW), deleteAfter: iso(deletionTime(NOW + 30 * DAY)) });
     // A comp that had already run out keeps its own end: ending it later starts nothing anew
     table.put({ ...teamOf(teamA), compPlan: "free", compUntil: iso(NOW - 10 * DAY) });
     expect((await call("DELETE", `/ops/teams/${teamA}/comp`, { body: { reason: "Tidy", expectedVersion: 3 }, key: "end-key-0004" })).status).toBe(200);

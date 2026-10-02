@@ -17,7 +17,7 @@ import { createWorkerHandler } from "../src/billing/worker-handler.js";
 import { teamBody } from "../src/api/account-handler.js";
 import { errorFor } from "../src/api/data-handler.js";
 import { connection } from "../src/data/client.js";
-import { authorizeTeam, createInvite, createProduct, linkStripeCustomer, setOwnMemberEmail, SubscriptionEndedError } from "../src/data/index.js";
+import { authorizeTeam, createInvite, createProduct, deletionTime, linkStripeCustomer, setOwnMemberEmail, SubscriptionEndedError } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { workerPolicy } from "./billing-policy.js";
 import { fakeMailer, REGION, stripeSubscriptionUpdate } from "./helpers.js";
@@ -1086,12 +1086,17 @@ describe("the dates the access rules count from (billingAccess, supply-checkout-
     subs.set("sub_test_1", subscription({ status: "canceled", ended_at: ended / 1000 }));
     await worker(message("customer.subscription.deleted", { status: "canceled" }));
     expect(meta().subscriptionEndedAt).toBe(at(ended));
-    const deletesAt = at(ended + 30 * DAY_S * 1000);
+    // 30 days on, rounded up to the end of that date everywhere: noon UTC the next day
+    const deletesAt = at(deletionTime(ended + 30 * DAY_S * 1000));
+    expect(deletesAt.slice(11)).toBe("12:00:00.000Z");
+    expect(Date.parse(deletesAt)).toBeGreaterThan(ended + 30 * DAY_S * 1000);
     expect(mails.sent.map((m) => m.input)).toEqual([
       { kind: "readOnly", teamName: "Echo Plumbing", reason: "subscription_ended", deletesAt },
       { kind: "readOnly", teamName: "Echo Plumbing", reason: "subscription_ended", deletesAt },
     ]);
-    expect(teamBody(meta() as never, "owner", new Date(NOW))).toMatchObject({ subscriptionEnded: true, readOnlyReason: "subscription_ended", readOnlyDeletesAt: deletesAt });
+    expect(teamBody(meta() as never, "owner", new Date(NOW))).toMatchObject({ subscriptionEnded: true, readOnlyReason: "subscription_ended", readOnlyDeletesAt: deletesAt, readOnlyLastDay: at(ended + 30 * DAY_S * 1000).slice(0, 10) });
+    // Once that's passed (the job closes it once its warning's 7 days are up): no date in the past to show
+    expect(teamBody(meta() as never, "owner", new Date(Date.parse(deletesAt)))).toMatchObject({ readOnlyDeletesAt: deletesAt, readOnlyLastDay: null });
     // Subscribed again: a new subscription replaces the ended one
     subs.set("sub_test_2", subscription({ id: "sub_test_2", status: "active" }));
     await worker(message("customer.subscription.created", { eventId: "evt_test_2", subscription: "sub_test_2" }));
@@ -1140,7 +1145,7 @@ describe("the dates the access rules count from (billingAccess, supply-checkout-
     subs.set("sub_test_1", subscription({ status: "canceled", ended_at: NOW / 1000 }));
     await worker(message("customer.subscription.deleted", { eventId: "evt_test_2", status: "canceled" }));
     expect(meta().subscriptionEndedAt).toBe(at(NOW));
-    expect(teamBody(meta() as never, "owner", new Date(NOW))).toMatchObject({ readOnlyReason: "subscription_ended", readOnlyDeletesAt: at(NOW + 30 * DAY_S * 1000) });
+    expect(teamBody(meta() as never, "owner", new Date(NOW))).toMatchObject({ readOnlyReason: "subscription_ended", readOnlyDeletesAt: at(deletionTime(NOW + 30 * DAY_S * 1000)) });
   });
 
   it("never takes an unpaid subscription for an older ended one", () => {

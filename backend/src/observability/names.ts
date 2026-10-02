@@ -166,6 +166,22 @@ export const BusinessMetric = {
   OperatorGroupMembers: "OperatorGroupMembers",
   /** Deletion records written over, deleted or hidden behind a delete marker, or objects in the bucket that aren't records: from the deletion records watch (primary region). */
   DeletionRecordRewrites: "DeletionRecordRewrites",
+  /** Gauge, every lapsed-team job run that can list teams: the teams it checked (supply-checkout-qdx, J7, J8, J10). None for a while means it isn't running ("Lapsed-team job not running"). */
+  LapseTeamsChecked: "LapseTeamsChecked",
+  /** Gauge, every lapsed-team job run: teams read-only for billing (an ended trial or subscription, or an overdue payment) it saw. For the dashboard. */
+  LapseTeamsReadOnly: "LapseTeamsReadOnly",
+  /** Owners the lapsed-team job emailed: a trial ending, a trial ended, a payment overdue, or a deletion warning (kind in metadata). */
+  LapseNotices: "LapseNotices",
+  /** Owners the lapsed-team job couldn't email (SES refused, or no address); the claim stands, so it isn't retried. */
+  LapseNoticeFailures: "LapseNoticeFailures",
+  /** Lapsed teams the job closed for the hourly purge: their trial or subscription ended READ_ONLY_RETENTION_DAYS ago, owners were warned at least LAPSE_WARNING_DAYS before, and Stripe confirmed nothing live. */
+  LapsedTeamsClosed: "LapsedTeamsClosed",
+  /** Gauge, every lapsed-team job run: teams listed that it had no time left to start ("Lapsed-team job out of time" when every run for 3 hours leaves some). */
+  LapseTeamsUnstarted: "LapseTeamsUnstarted",
+  /** Lapsed teams due to close that a run held because it had already closed LAPSE_MAX_CLOSURES_PER_RUN: "Lapsed-team closures held". */
+  LapseClosuresHeld: "LapseClosuresHeld",
+  /** Teams the lapsed-team job couldn't handle this run (a read, write, email or Stripe call failed), or wouldn't close because Stripe disagrees with the team (a live subscription, or the team's subscription or customer missing), or that has no owner to warn or no readable deletion time: "Lapsed-team job failing". */
+  LapseFailures: "LapseFailures",
 } as const;
 
 export type BusinessMetricName = (typeof BusinessMetric)[keyof typeof BusinessMetric];

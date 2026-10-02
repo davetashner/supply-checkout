@@ -8,6 +8,12 @@ import {
   GSI1,
   GSI3,
   IMPORT_INDEX_ATTRIBUTES,
+  LAPSE_CLOSE_ATTRIBUTES,
+  LAPSE_LIST_ATTRIBUTES,
+  LAPSE_OWNER_ATTRIBUTES,
+  LAPSE_PREFIX,
+  LAPSE_READ_ATTRIBUTES,
+  LAPSE_RECORD_ATTRIBUTES,
   OPERATOR_AUDIT_PREFIX,
   OPS_AUDIT_INDEX_PREFIX,
   OPS_OWNERS_PREFIX,
@@ -97,6 +103,48 @@ export function reopenPolicy(team: string, denied: { command: string; input: Inp
           return update(input);
         case "TransactWriteCommand":
           return (input.TransactItems as Record<string, Input>[]).every((op) => (op.Put ? audit(partitionKey(op.Put)) : op.Update ? update(op.Update) : false));
+        default:
+          return false;
+      }
+    })();
+    if (!ok) denied.push({ command, input });
+    return ok;
+  };
+}
+
+/**
+ * The calls the lapsed-team job's role allows (infra/lib/observability/ops-checks.ts,
+ * supply-checkout-qdx): Query on GSI3's OPS#TEAMS partition naming only
+ * LAPSE_LIST_ATTRIBUTES and its OPS#OWNERS# partitions naming only
+ * LAPSE_OWNER_ATTRIBUTES (Select SPECIFIC_ATTRIBUTES); GetItem on a team's
+ * META item naming only LAPSE_READ_ATTRIBUTES; UpdateItem there naming only
+ * LAPSE_CLOSE_ATTRIBUTES, returning nothing; GetItem and PutItem in `LAPSE#`
+ * partitions naming only LAPSE_RECORD_ATTRIBUTES. Nothing else.
+ */
+export function lapsePolicy(denied: { command: string; input: Input }[] = []) {
+  const within = (names: Iterable<string>, allowed: readonly string[]) => [...names].every((a) => allowed.includes(a));
+  const teamMeta = (input: Input) => {
+    const key = input.Key as Record<string, unknown> | undefined;
+    return typeof key?.PK === "string" && key.PK.startsWith("TEAM#") && key.SK === "META";
+  };
+  const lapse = (pk: unknown) => typeof pk === "string" && pk.startsWith(LAPSE_PREFIX);
+  return (command: string, input: Input): boolean => {
+    const ok = (() => {
+      switch (command) {
+        case "QueryCommand": {
+          const pk = (input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":pk"];
+          if (input.IndexName !== GSI3 || input.Select !== "SPECIFIC_ATTRIBUTES") return false;
+          if (pk === OPS_TEAMS_PARTITION) return within(namedAttributes(input), LAPSE_LIST_ATTRIBUTES);
+          return typeof pk === "string" && pk.startsWith(OPS_OWNERS_PREFIX) && within(namedAttributes(input), LAPSE_OWNER_ATTRIBUTES);
+        }
+        case "GetCommand":
+          if (typeof input.ProjectionExpression !== "string") return false;
+          if (teamMeta(input)) return within(namedAttributes(input), LAPSE_READ_ATTRIBUTES);
+          return lapse(partitionKey(input)) && within(namedAttributes(input), LAPSE_RECORD_ATTRIBUTES);
+        case "PutCommand":
+          return lapse(partitionKey(input)) && within(Object.keys(input.Item as object), LAPSE_RECORD_ATTRIBUTES) && within(namedAttributes(input), LAPSE_RECORD_ATTRIBUTES);
+        case "UpdateCommand":
+          return teamMeta(input) && within(namedAttributes(input), LAPSE_CLOSE_ATTRIBUTES) && (input.ReturnValues === undefined || input.ReturnValues === "NONE");
         default:
           return false;
       }

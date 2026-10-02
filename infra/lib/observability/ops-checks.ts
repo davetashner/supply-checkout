@@ -15,6 +15,13 @@ import {
   COMMITTING_IMPORTS_PARTITION,
   GSI1,
   GSI3,
+  LAPSE_CLOSE_ATTRIBUTES,
+  LAPSE_LIST_ATTRIBUTES,
+  LAPSE_OWNER_ATTRIBUTES,
+  LAPSE_PREFIX,
+  LAPSE_READ_ATTRIBUTES,
+  LAPSE_RECORD_ATTRIBUTES,
+  OPS_OWNERS_PREFIX,
   OPS_TEAMS_PARTITION,
   SEAT_RECONCILE_ATTRIBUTES,
   STRIPE_DELETION_ATTRIBUTES,
@@ -26,6 +33,9 @@ import {
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import {
   CHECK_EVERY_MINUTES,
+  LAPSE_BUDGET_MS,
+  LAPSE_EVERY_HOURS,
+  LAPSE_SILENT_ALARM_HOURS,
   OPS_ENV,
   opsResourceNames,
   PURGE_BUDGET_MS,
@@ -34,8 +44,9 @@ import {
   SEAT_RECONCILE_HOUR_UTC,
   SEAT_RECONCILE_SILENT_ALARM_DAYS,
 } from "../../../backend/src/ops/names.js";
-import { stripeSecretArn } from "../config.js";
+import { type DeploymentConfig, stripeSecretArn } from "../config.js";
 import { grantPutDeletionRecords } from "../deletions.js";
+import { grantSendEmail } from "../email.js";
 import { bundling } from "../stacks/api-stack.js";
 import type { AlarmTopics } from "./alarm-topics.js";
 import { LOG_RETENTION } from "./defaults.js";
@@ -51,6 +62,8 @@ export interface OpsChecksProps {
   readonly topics: AlarmTopics;
   /** Which Stripe secret key the purge reads (stripeModeOf), to end closed teams' subscriptions and delete purged teams' customers. */
   readonly stripeMode: StripeMode;
+  /** The deployment, for the app's email settings (grantSendEmail): the lapsed-team job emails owners. */
+  readonly config: DeploymentConfig;
 }
 
 /**
@@ -114,6 +127,25 @@ export interface OpsChecksProps {
  *   No team partition, no Stripe key. `seatReconcileNotRunning` alarms when
  *   its SeatReconcileTeams gauge stops arriving.
  *
+ * - `teamLapse` (supply-checkout-qdx): every LAPSE_EVERY_HOURS it emails the
+ *   owners of teams whose billing lapsed or is about to (an app trial ending
+ *   or ended, a payment overdue past its grace, a deletion warning) and closes
+ *   lapsed teams for the purge once they were warned and Stripe confirms
+ *   nothing is live (backend/src/ops/team-lapse-handler.ts). Its role may:
+ *   Query GSI3's OPS#TEAMS partition naming only LAPSE_LIST_ATTRIBUTES and
+ *   its OPS#OWNERS#* partitions naming only LAPSE_OWNER_ATTRIBUTES (an owner's
+ *   email, for the notices); GetItem on `TEAM#` items naming only
+ *   LAPSE_READ_ATTRIBUTES (billing fields, the name, Stripe IDs, version);
+ *   UpdateItem there naming only LAPSE_CLOSE_ATTRIBUTES, returning nothing
+ *   (the closure: never status, plan, comps or Stripe IDs); GetItem and
+ *   PutItem in `LAPSE#` partitions (its own records) naming only
+ *   LAPSE_RECORD_ATTRIBUTES; send the app's email (grantSendEmail); and read
+ *   the Stripe secret key. No Scan, no DeleteItem, no Query of a team's
+ *   partition, so it never reads sheets, inventory or members' data.
+ *   `lapseNotRunning` alarms when its LapseTeamsChecked gauge stops arriving.
+ *   It has no async retries, and one run at a time holds its lease (a
+ *   `LAPSE#RUN` record), so a timeout or duplicate never doubles its closures.
+ *
  * The checks run every CHECK_EVERY_MINUTES from an EventBridge rule, each with its own
  * log group and a role that writes only to it. A failed run shows in the
  * Lambda errors alarm; the gauge alarms treat missing data as not breaching.
@@ -127,6 +159,9 @@ export class OpsChecks extends Construct {
   readonly seatReconcile: NodejsFunction;
   /** "Seat reconciliation not running": no SeatReconcileTeams sample for SEAT_RECONCILE_SILENT_ALARM_DAYS (J7). */
   readonly seatReconcileNotRunning: Alarm;
+  readonly teamLapse: NodejsFunction;
+  /** "Lapsed-team job not running": no LapseTeamsChecked sample for LAPSE_SILENT_ALARM_HOURS (J7, J8, J10). */
+  readonly lapseNotRunning: Alarm;
 
   constructor(scope: Construct, id: string, props: OpsChecksProps) {
     super(scope, id);
@@ -372,6 +407,121 @@ export class OpsChecks extends Construct {
       treatMissingData: TreatMissingData.BREACHING,
     });
     props.topics.notify(this.seatReconcileNotRunning, "P2");
+
+    // The lapsed-team job (supply-checkout-qdx): emails owners of lapsing teams and closes lapsed ones for the purge
+    this.teamLapse = this.check(
+      "TeamLapse",
+      "team-lapse",
+      {
+        functionName: names.teamLapseFunction,
+        description: "Emails owners of teams whose trial or subscription lapsed, and closes lapsed teams for deletion once warned",
+        environment: { [OPS_ENV.tableName]: props.tableName, [STRIPE_ENV.secretId]: stripeSecretName(props.envName, props.stripeMode), [STRIPE_ENV.mode]: props.stripeMode },
+      },
+      { every: Duration.hours(LAPSE_EVERY_HOURS), timeout: Duration.millis(LAPSE_BUDGET_MS + 60_000) },
+    );
+    // No async retries either (the schedule's target has none): a run that times out waits for the next hour, so its
+    // closure cap holds per hour. Duplicates and hand-started runs are kept out by its lease (claimLapseRun), not by
+    // reserved concurrency, which would take from the account's unreserved pool (it must keep 100) and can fail the deploy
+    this.teamLapse.configureAsyncInvoke({ retryAttempts: 0 });
+    this.teamLapse.addToRolePolicy(
+      new PolicyStatement({
+        sid: "LapsingTeamsIndexOnly",
+        actions: ["dynamodb:Query"],
+        resources: [`${tableArn}/index/${GSI3}`],
+        conditions: {
+          "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [OPS_TEAMS_PARTITION], "dynamodb:Attributes": [...LAPSE_LIST_ATTRIBUTES] },
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
+    this.teamLapse.addToRolePolicy(
+      new PolicyStatement({
+        sid: "OwnerEmailsIndexOnly",
+        actions: ["dynamodb:Query"],
+        resources: [`${tableArn}/index/${GSI3}`],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`${OPS_OWNERS_PREFIX}*`] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LAPSE_OWNER_ATTRIBUTES] },
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
+    this.teamLapse.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ReadTeamBilling",
+        actions: ["dynamodb:GetItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LAPSE_READ_ATTRIBUTES] },
+          // As the reopen role's: a projection (which sets Select SPECIFIC_ATTRIBUTES), never the whole item
+          StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
+    this.teamLapse.addToRolePolicy(
+      new PolicyStatement({
+        sid: "CloseLapsedTeam",
+        // The closure only, conditioned in code on the version read; never status, plan, comps or Stripe IDs
+        actions: ["dynamodb:UpdateItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LAPSE_CLOSE_ATTRIBUTES] },
+          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        },
+      }),
+    );
+    this.teamLapse.addToRolePolicy(
+      new PolicyStatement({
+        sid: "LapseRecords",
+        // Its own notice and warning records, in LAPSE# partitions only
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
+        resources: [tableArn],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`${LAPSE_PREFIX}*`] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LAPSE_RECORD_ATTRIBUTES] },
+          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        },
+      }),
+    );
+    this.teamLapse.addToRolePolicy(
+      new PolicyStatement({
+        sid: "TableKeyThroughDynamoDb",
+        // As the purge's: Decrypt only, checked after the first deploy (docs/runbooks/lapsed-teams.md)
+        actions: ["kms:Decrypt", "kms:DescribeKey"],
+        resources: [tableKey],
+        conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
+      }),
+    );
+    this.teamLapse.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ReadStripeSecretKey",
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: [stripeSecretArn({ partition: Aws.PARTITION, region: Stack.of(this).region, account: Aws.ACCOUNT_ID }, props.envName, props.stripeMode)],
+      }),
+    );
+    grantSendEmail(this.teamLapse, props.config);
+    Validations.of(this.teamLapse.role as Role).acknowledge({
+      id: "AwsSolutions-IAM5[Resource::*]",
+      reason: "The lapsed-team job reads and closes whichever teams the operators' index lists as lapsing: the TEAM#*, OPS#OWNERS#* and LAPSE#* partition wildcards are in dynamodb:LeadingKeys, with dynamodb:Attributes limiting each to the billing fields, the closure, owners' emails and its own records. LeadingKeys can't limit the sort key, so GetItem and UpdateItem could reach any item in a team's partition, but only those attributes (the code names only the META item, and the closure is conditioned on attribute_exists(PK) and the version)",
+    });
+
+    this.lapseNotRunning = new Alarm(this, "LapseNotRunning", {
+      alarmName: `supply-checkout-${props.envName}-p2-lapse-not-running`,
+      alarmDescription: [
+        `P2 Lapsed-team job not running (J7, J8, J10, ${Stack.of(this).region}).`,
+        `No LapseTeamsChecked sample from the hourly lapsed-team job for ${LAPSE_SILENT_ALARM_HOURS} hours: its schedule is disabled or deleted, or every run fails before it lists the teams. Owners of lapsing teams aren't being emailed, and lapsed teams aren't being closed for deletion as the Terms say.`,
+        "Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys, and docs/runbooks/lapsed-teams.md.",
+      ].join(" "),
+      metric: business(BusinessMetric.LapseTeamsChecked, Stack.of(this).region, Duration.hours(LAPSE_SILENT_ALARM_HOURS), "SampleCount"),
+      threshold: 1,
+      comparisonOperator: ComparisonOperator.LESS_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      datapointsToAlarm: 1,
+      treatMissingData: TreatMissingData.BREACHING,
+    });
+    props.topics.notify(this.lapseNotRunning, "P2");
   }
 
   /** A function from backend/src/ops/<name>.ts, run on the schedule (every CHECK_EVERY_MINUTES unless `every` says). */

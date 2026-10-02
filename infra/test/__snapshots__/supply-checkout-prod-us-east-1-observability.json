@@ -4260,6 +4260,266 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmslapsejobfailing143EEB1A": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Lapsed-team job failing (J7, J8, J10, us-east-1). Any LapseFailures over 2 hours: the hourly lapsed-team job (primary region) couldn't handle a team whose trial or subscription lapsed (a read, write or Stripe call failed), couldn't deliver a team's deletion warning to any owner (so it won't close it), or wouldn't close a lapsed team because Stripe disagrees with our record (a live subscription for the customer, or the team's subscription or customer missing, maybe a Stripe key or mode mismatch). The team stays read-only and isn't deleted until it's resolved, past the date its owners were told. The log lines \"Lapsed team not closed: Stripe disagrees\", \"Lapsed team's deletion warning not delivered\" and \"Lapsed team check failed\" have the team, subscription and customer IDs. See docs/runbooks/lapsed-teams.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-lapse-job-failing",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "LapseFailures (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "LapseFailures",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 7200,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmslapseclosuresheld9C0F0BCE": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Lapsed-team closures held (J10, us-east-1). Any LapseClosuresHeld over 2 hours: a run of the hourly lapsed-team job (primary region) found more than 10 lapsed teams due to close for deletion (LAPSE_MAX_CLOSURES_PER_RUN), closed that many and held the rest for the next run. Each run closes up to that many more, so if it's a bug or bad data rather than a real batch of lapsed teams, disable the TeamLapseSchedule rule now. Logs Insights on the job: \"Lapsed team closed for deletion\" lists the teams. See docs/runbooks/lapsed-teams.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-lapse-closures-held",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "LapseClosuresHeld (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "LapseClosuresHeld",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 7200,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmslapseclosureshigh505F7CD1": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Lapsed-team closures high (J10, us-east-1). More than 20 LapsedTeamsClosed in 6 hours: the hourly lapsed-team job (primary region) is closing more teams for deletion than expected, even if no single run reached its cap. Check they really lapsed (Logs Insights: \"Lapsed team closed for deletion\"), and disable the TeamLapseSchedule rule if not: each closed team is purged 24 hours after it closed, and can be reopened until then. See docs/runbooks/lapsed-teams.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-lapse-closures-high",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "LapsedTeamsClosed (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "LapsedTeamsClosed",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 21600,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 20,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmslapsejoboutoftime23531AE4": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Lapsed-team job out of time (J7, J8, J10, us-east-1). LapseTeamsUnstarted above 0 in every hour for 3 hours: each run of the hourly lapsed-team job (primary region) ran out of time before it started every lapsing team, so owners' emails and closures are late. Runs start at a random place in the list, so no team is always left, but the list has outgrown one run. See docs/runbooks/lapsed-teams.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-lapse-job-out-of-time",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 3,
+        "EvaluationPeriods": 3,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "LapseTeamsUnstarted (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "LapseTeamsUnstarted",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 3600,
+              "Stat": "Maximum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "WebAlarmssitedownF6F1E7CF": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -6674,6 +6934,626 @@
                 "Namespace": "SupplyCheckout"
               },
               "Period": 86400,
+              "Stat": "SampleCount"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 1,
+        "TreatMissingData": "breaching"
+      }
+    },
+    "OpsChecksTeamLapseLogsEF8C51E7": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "RetentionInDays": 365,
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "OpsChecksTeamLapseRoleFC9A4EAA": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for the team-lapse check",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ]
+      }
+    },
+    "OpsChecksTeamLapseRoleDefaultPolicy616541CD": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "OpsChecksTeamLapseLogsEF8C51E7",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "dynamodb:Query",
+              "Condition": {
+                "ForAllValues:StringEquals": {
+                  "dynamodb:LeadingKeys": [
+                    "OPS#TEAMS"
+                  ],
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "GSI3PK",
+                    "GSI3SK",
+                    "status",
+                    "trialEndsAt",
+                    "createdAt",
+                    "closedAt",
+                    "compPlan",
+                    "compUntil"
+                  ]
+                },
+                "StringEquals": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app/index/GSI3"
+                  ]
+                ]
+              },
+              "Sid": "LapsingTeamsIndexOnly"
+            },
+            {
+              "Action": "dynamodb:Query",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "OPS#OWNERS#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "GSI3PK",
+                    "GSI3SK",
+                    "email"
+                  ]
+                },
+                "StringEquals": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app/index/GSI3"
+                  ]
+                ]
+              },
+              "Sid": "OwnerEmailsIndexOnly"
+            },
+            {
+              "Action": "dynamodb:GetItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "TEAM#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "name",
+                    "status",
+                    "trialEndsAt",
+                    "createdAt",
+                    "closedAt",
+                    "purging",
+                    "stripeCustomerId",
+                    "stripeSubscriptionId",
+                    "pastDueSince",
+                    "subscriptionEndedAt",
+                    "compPlan",
+                    "compUntil",
+                    "version"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "dynamodb:Select": "SPECIFIC_ATTRIBUTES"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "ReadTeamBilling"
+            },
+            {
+              "Action": "dynamodb:UpdateItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "TEAM#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "GSI1PK",
+                    "GSI1SK",
+                    "closedAt",
+                    "closedBy",
+                    "purgeAfter",
+                    "purging",
+                    "version",
+                    "stripeCheckoutAt"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "dynamodb:ReturnValues": "NONE"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "CloseLapsedTeam"
+            },
+            {
+              "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:PutItem"
+              ],
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "LAPSE#*"
+                  ]
+                },
+                "ForAllValues:StringEquals": {
+                  "dynamodb:Attributes": [
+                    "PK",
+                    "SK",
+                    "type",
+                    "sentAt",
+                    "expiresAt"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "dynamodb:ReturnValues": "NONE"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:dynamodb:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":table/supply-checkout-prod-app"
+                  ]
+                ]
+              },
+              "Sid": "LapseRecords"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:DescribeKey"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "dynamodb.",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ".amazonaws.com"
+                      ]
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SsmParameterValuesupplycheckoutproddatatablekeyarnC96584B6F00A464EAD1953AFF4B05118Parameter"
+              },
+              "Sid": "TableKeyThroughDynamoDb"
+            },
+            {
+              "Action": "secretsmanager:GetSecretValue",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":secretsmanager:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":secret:supply-checkout/prod/stripe/test-secret-key-??????"
+                  ]
+                ]
+              },
+              "Sid": "ReadStripeSecretKey"
+            },
+            {
+              "Action": "ses:SendEmail",
+              "Condition": {
+                "StringEquals": {
+                  "ses:FromAddress": "noreply@supplycheckout.com"
+                }
+              },
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:ses:us-east-1:",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":configuration-set/supply-checkout-prod-transactional"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:ses:us-east-1:",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":identity/supplycheckout.com"
+                    ]
+                  ]
+                }
+              ],
+              "Sid": "SendAppEmail"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OpsChecksTeamLapseRoleDefaultPolicy616541CD",
+        "Roles": [
+          {
+            "Ref": "OpsChecksTeamLapseRoleFC9A4EAA"
+          }
+        ]
+      }
+    },
+    "OpsChecksTeamLapse8C86FEBE": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Architectures": [
+          "arm64"
+        ],
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-us-east-1"
+          },
+          "S3Key": "<asset hash>.zip"
+        },
+        "Description": "Emails owners of teams whose trial or subscription lapsed, and closes lapsed teams for deletion once warned",
+        "Environment": {
+          "Variables": {
+            "NODE_OPTIONS": "--enable-source-maps",
+            "TABLE_NAME": "supply-checkout-prod-app",
+            "STRIPE_SECRET_ID": "supply-checkout/prod/stripe/test-secret-key",
+            "STRIPE_MODE": "test",
+            "EMAIL_FROM_ADDRESS": "noreply@supplycheckout.com",
+            "EMAIL_CONFIGURATION_SET": "supply-checkout-prod-transactional",
+            "EMAIL_REGION": "us-east-1",
+            "EMAIL_APP_URL": "https://app.supplycheckout.com",
+            "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
+            "SUPPLY_CHECKOUT_ENV": "prod"
+          }
+        },
+        "FunctionName": "supply-checkout-prod-team-lapse",
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "OpsChecksTeamLapseLogsEF8C51E7"
+          }
+        },
+        "MemorySize": 256,
+        "Role": {
+          "Fn::GetAtt": [
+            "OpsChecksTeamLapseRoleFC9A4EAA",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Timeout": 300,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "OpsChecksTeamLapseRoleDefaultPolicy616541CD",
+        "OpsChecksTeamLapseRoleFC9A4EAA"
+      ]
+    },
+    "OpsChecksTeamLapseEventInvokeConfig44EF275E": {
+      "Type": "AWS::Lambda::EventInvokeConfig",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "OpsChecksTeamLapse8C86FEBE"
+        },
+        "MaximumRetryAttempts": 0,
+        "Qualifier": "$LATEST"
+      }
+    },
+    "OpsChecksTeamLapseXRayWrite73FE028B": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "xray:PutTelemetryRecords",
+                "xray:PutTraceSegments"
+              ],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "OpsChecksTeamLapseXRayWrite73FE028B",
+        "Roles": [
+          {
+            "Ref": "OpsChecksTeamLapseRoleFC9A4EAA"
+          }
+        ]
+      }
+    },
+    "OpsChecksTeamLapseSchedule78243A92": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Runs the team-lapse function every 1 hour",
+        "ScheduleExpression": "rate(1 hour)",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Fn::GetAtt": [
+                "OpsChecksTeamLapse8C86FEBE",
+                "Arn"
+              ]
+            },
+            "Id": "Target0",
+            "RetryPolicy": {
+              "MaximumRetryAttempts": 0
+            }
+          }
+        ]
+      }
+    },
+    "OpsChecksTeamLapseScheduleAllowEventRulesupplycheckoutproduseast1observabilityOpsChecksTeamLapseF71763CCD197C61A": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "OpsChecksTeamLapse8C86FEBE",
+            "Arn"
+          ]
+        },
+        "Principal": "events.amazonaws.com",
+        "SourceArn": {
+          "Fn::GetAtt": [
+            "OpsChecksTeamLapseSchedule78243A92",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "OpsChecksLapseNotRunning088F0F68": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Lapsed-team job not running (J7, J8, J10, us-east-1). No LapseTeamsChecked sample from the hourly lapsed-team job for 3 hours: its schedule is disabled or deleted, or every run fails before it lists the teams. Owners of lapsing teams aren't being emailed, and lapsed teams aren't being closed for deletion as the Terms say. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys, and docs/runbooks/lapsed-teams.md.",
+        "AlarmName": "supply-checkout-prod-p2-lapse-not-running",
+        "ComparisonOperator": "LessThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "LapseTeamsChecked (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "LapseTeamsChecked",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 10800,
               "Stat": "SampleCount"
             },
             "ReturnData": true
@@ -12636,6 +13516,34 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
+                  "JourneyAlarmslapsejobfailing143EEB1A",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmslapseclosuresheld9C0F0BCE",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmslapseclosureshigh505F7CD1",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmslapsejoboutoftime23531AE4",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
                   "WebAlarmssitedownF6F1E7CF",
                   "Arn"
                 ]
@@ -12918,7 +13826,15 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"SecurityNotices\",\"Region\",\"us-east-1\",{\"label\":\"SecurityNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"SecurityNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNotices\",\"Region\",\"us-west-2\",{\"label\":\"SecurityNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"SecurityNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
+              "\",\"metrics\":[[\"SupplyCheckout\",\"SecurityNotices\",\"Region\",\"us-east-1\",{\"label\":\"SecurityNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"SecurityNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNotices\",\"Region\",\"us-west-2\",{\"label\":\"SecurityNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"SecurityNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":97,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8, J10: lapsing teams' owners emailed (and not), lapsed teams closed for deletion (and held at the cap), failures\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"LapseNotices\",\"Region\",\"us-east-1\",{\"label\":\"LapseNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"LapseNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapsedTeamsClosed\",\"Region\",\"us-east-1\",{\"label\":\"LapsedTeamsClosed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseClosuresHeld\",\"Region\",\"us-east-1\",{\"label\":\"LapseClosuresHeld (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseFailures\",\"Region\",\"us-east-1\",{\"label\":\"LapseFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNotices\",\"Region\",\"us-west-2\",{\"label\":\"LapseNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"LapseNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapsedTeamsClosed\",\"Region\",\"us-west-2\",{\"label\":\"LapsedTeamsClosed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseClosuresHeld\",\"Region\",\"us-west-2\",{\"label\":\"LapseClosuresHeld (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseFailures\",\"Region\",\"us-west-2\",{\"label\":\"LapseFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":97,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8, J10: teams the lapsed-team job checked, read-only for billing, and left for lack of time\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"LapseTeamsChecked\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsChecked (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsReadOnly\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsReadOnly (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsUnstarted\",\"Region\",\"us-east-1\",{\"label\":\"LapseTeamsUnstarted (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsChecked\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsChecked (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsReadOnly\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsReadOnly (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}],[\"SupplyCheckout\",\"LapseTeamsUnstarted\",\"Region\",\"us-west-2\",{\"label\":\"LapseTeamsUnstarted (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Maximum\"}]],\"yAxis\":{}}}]}"
             ]
           ]
         },

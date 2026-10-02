@@ -118,6 +118,38 @@ export const SEAT_RECONCILE_BATCH = 10;
  */
 export const SEAT_RECONCILE_SILENT_ALARM_DAYS = 2;
 
+/**
+ * How often the lapsed-team job runs (supply-checkout-qdx,
+ * team-lapse-handler.ts): a lapsed team is closed for the purge within this
+ * long of its date, and an email goes within this long of its moment.
+ */
+export const LAPSE_EVERY_HOURS = 1;
+
+/** How long one lapsed-team run may start new teams for; the function's timeout is a minute more. */
+export const LAPSE_BUDGET_MS = 4 * 60_000;
+
+/** How long a lapsed-team run's lease lasts (claimLapseRun): past the function's timeout, so a run that dies frees it well before the next hour's. */
+export const LAPSE_LEASE_MS = LAPSE_BUDGET_MS + 2 * 60_000;
+
+/**
+ * The most lapsed teams one run closes for deletion: past it, teams due are
+ * held for the next run (LapseClosuresHeld, "Lapsed-team closures held"), so
+ * a bug or bad data can't delete teams en masse before a person looks. To
+ * raise it for a known backlog (a batch of trials that all ended the same
+ * week), change it here and deploy (docs/runbooks/lapsed-teams.md).
+ */
+export const LAPSE_MAX_CLOSURES_PER_RUN = 10;
+
+/** More LapsedTeamsClosed than LAPSE_CLOSURES_ALARM_COUNT in LAPSE_CLOSURES_ALARM_HOURS alarms ("Lapsed-team closures high"), even under the per-run cap: well within the day before the purge deletes them. */
+export const LAPSE_CLOSURES_ALARM_COUNT = 20;
+export const LAPSE_CLOSURES_ALARM_HOURS = 6;
+
+/** LapseTeamsUnstarted above 0 in every run for this long alarms ("Lapsed-team job out of time"): one short run is fine, three in a row aren't. */
+export const LAPSE_UNSTARTED_ALARM_HOURS = 3;
+
+/** No LapseTeamsChecked sample for this long alarms ("Lapsed-team job not running"): three hourly runs missed. */
+export const LAPSE_SILENT_ALARM_HOURS = 3;
+
 /** Functions the observability stack names. */
 export const opsResourceNames = (envName: string) => ({
   stuckImportsFunction: `supply-checkout-${envName}-stuck-imports`,
@@ -127,6 +159,7 @@ export const opsResourceNames = (envName: string) => ({
   deletionRecordsWatchFunction: `supply-checkout-${envName}-deletion-records-watch`,
   operatorGroupWatchFunction: `supply-checkout-${envName}-operator-group-watch`,
   seatReconcileFunction: `supply-checkout-${envName}-seat-reconcile`,
+  teamLapseFunction: `supply-checkout-${envName}-team-lapse`,
 });
 
 /** Environment variables the checks read. */

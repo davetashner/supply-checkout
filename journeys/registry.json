@@ -215,9 +215,16 @@
           "simulated": "The Stripe Customer Portal is a fake in the tests",
           "tests": ["backend/test/billing-worker.test.ts"]
         },
-        { "id": "J10.2", "text": "Export all sheets and inventory.", "status": "built", "beads": ["supply-checkout-zuv"] }
-      ],
-      "planned": [{ "what": "deleting a canceled team's data after 30 days", "beads": ["supply-checkout-qdx"] }]
+        { "id": "J10.2", "text": "Export all sheets and inventory.", "status": "built", "beads": ["supply-checkout-zuv"] },
+        {
+          "id": "J10.3",
+          "text": "After 30 days read-only, and at least 7 days after a warning email, the team is closed and its data deleted.",
+          "status": "built",
+          "beads": ["supply-checkout-qdx"],
+          "simulated": "Stripe and SES are fakes in the tests",
+          "tests": ["backend/test/team-lapse.test.ts", "backend/test/team-lapse-ddb.test.ts"]
+        }
+      ]
     },
     {
       "id": "J11",
@@ -378,6 +385,11 @@
     { "name": "Seat syncs stuck", "journeys": ["J7"], "infra": "seat-syncs-stuck" },
     { "name": "Seat counts drifting", "journeys": ["J7"], "infra": "seat-counts-drifting" },
     { "name": "Seat reconciliation not running", "journeys": ["J7"], "infra": "seat-reconcile-not-running" },
+    { "name": "Lapsed-team job failing", "journeys": ["J7", "J8", "J10"], "infra": "lapse-job-failing" },
+    { "name": "Lapsed-team job not running", "journeys": ["J7", "J8", "J10"], "infra": "lapse-not-running" },
+    { "name": "Lapsed-team job out of time", "journeys": ["J7", "J8", "J10"], "infra": "lapse-job-out-of-time" },
+    { "name": "Lapsed-team closures held", "journeys": ["J10"], "infra": "lapse-closures-held" },
+    { "name": "Lapsed-team closures high", "journeys": ["J10"], "infra": "lapse-closures-high" },
     { "name": "Entitlements drifting", "journeys": ["J7", "J8"], "infra": "entitlements-drifting" },
     { "name": "Reopened team's subscription ended", "journeys": ["J7", "J11"], "infra": "reopened-team-subscription-ended" },
     { "name": "Reopened team's billing not resynced", "journeys": ["J7", "J11"], "infra": "reopen-resync-late" },

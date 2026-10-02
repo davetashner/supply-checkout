@@ -39,6 +39,8 @@ export {
   PAYMENT_GRACE_DAYS,
   normalizeEmail,
   READ_ONLY_RETENTION_DAYS,
+  deletionLastDay,
+  deletionTime,
   type ReadOnlyReason,
   TEAMS_PER_USER_PER_DAY,
   teamIdForRequest,
@@ -60,6 +62,7 @@ export * from "./imports.js";
 export * from "./settings.js";
 export * from "./accounts.js";
 export { type ClosedTeamToEnd, closedTeamToEnd, countTeamsDueBefore, isTeamOpen, isTeamPurgedOrPurging, listClosedTeamsToEnd, listSetAsideTeams, listTeamsToPurge, markSubscriptionEnding, markSubscriptionSetAside, purgeTeam, type PurgedStripeIds, type PurgeResult, type SetAsideReason, type SetAsideTeam, type TeamDue } from "./team-purge.js";
+export { claimLapseNotice, claimLapseRun, closeLapsedTeam, LAPSE_CHECKOUT_GUARD_HOURS, LAPSE_PURGE_DELAY_HOURS, LAPSE_RECORD_DAYS, LAPSE_TRIAL_NOTICE_DAYS, LAPSE_WARNING_DAYS, LAPSED_CLOSER, type LapseTeam, listLapseCandidates, listOwnerEmails, readLapseTeam, recordWarning, releaseLapseRun, warnedAt } from "./team-lapse.js";
 export { listStripeCustomerDeletions, queueStripeCustomerDeletion, removeStripeCustomerDeletion, type StripeDeletion } from "./stripe-deletions.js";
 export * from "./email-codes.js";
 export * from "./verified-email.js";

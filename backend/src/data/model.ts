@@ -233,6 +233,31 @@ export const PAYMENT_GRACE_DAYS = 7;
  */
 export const READ_ONLY_RETENTION_DAYS = 30;
 
+/** How far behind UTC the last time zone on Earth is (UTC−12): a calendar date has ended everywhere this long after it ends in UTC. */
+const LAST_ZONE_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * When a lapsed team may be deleted, for a deletion due at `ms` (epoch ms):
+ * the end of `ms`'s UTC calendar date in the last time zone on Earth (UTC−12),
+ * which is 12:00 UTC the next day. Owners are told that date
+ * (deletionLastDay), so they never lose data while it's still that date where
+ * they are. Up to 36 hours later than `ms`, never earlier.
+ */
+export function deletionTime(ms: number): number {
+  const d = new Date(ms);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1) + LAST_ZONE_MS;
+}
+
+/**
+ * The last calendar date (YYYY-MM-DD) a team deleted at `deleteAfter` (ISO
+ * 8601, a deletionTime) is kept: the date in UTC−12 just before it, the date
+ * every email, and the app, state. For a deletionTime that's the UTC date it
+ * was rounded from.
+ */
+export function deletionLastDay(deleteAfter: string): string {
+  return new Date(Date.parse(deleteAfter) - LAST_ZONE_MS - 1).toISOString().slice(0, 10);
+}
+
 const ACCESS_DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Why a team is read-only for billing (billingAccess). */
@@ -249,7 +274,9 @@ export interface BillingAccess {
   readonly graceEndsAt?: string;
   /**
    * When the team is closed and deleted unless it subscribes (ISO 8601):
-   * READ_ONLY_RETENTION_DAYS after it became read-only, for a trial that
+   * READ_ONLY_RETENTION_DAYS after it became read-only, rounded up to the
+   * end of that date everywhere (deletionTime; owners are told
+   * deletionLastDay), for a trial that
    * ended without a subscription and for a subscription that ended. Never for
    * `payment_overdue` (Stripe's retries decide when that subscription ends,
    * and its 30 days start then), and never while the date it ended is unknown.
@@ -315,7 +342,8 @@ export function billingAccess(team: BillingAccessFields, now = new Date()): Bill
   const after = (ms: number) => (Number.isFinite(compEnd) ? Math.max(ms, compEnd) : ms);
   // A date past what Date can hold (corrupt data) is dropped rather than failing the caller
   const iso = (ms: number) => (Number.isFinite(new Date(ms).getTime()) ? new Date(ms).toISOString() : undefined);
-  const retention = (from: number) => iso(from + READ_ONLY_RETENTION_DAYS * ACCESS_DAY_MS);
+  // Rounded up to the end of that date everywhere (deletionTime), so nobody loses data on the date they were told
+  const retention = (from: number) => iso(deletionTime(from + READ_ONLY_RETENTION_DAYS * ACCESS_DAY_MS));
   const dated = <T extends object>(fields: Record<string, string | undefined>, rest: T) => ({ ...rest, ...Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined)) });
   const at = now.getTime();
   if (team.status === "unpaid") return { readOnly: true, reason: "payment_overdue" };

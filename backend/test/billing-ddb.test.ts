@@ -77,9 +77,9 @@ describe.skipIf(!endpoint)("billing on DynamoDB Local", () => {
     const { team, customer, ctx } = await linkedTeam();
     expect(await applySubscription(table.db, ctx, state(customer), now)).toBe("applied");
     const first = await rawItem(table.db, `TEAM#${team.teamId}`, "META");
-    expect(first).toMatchObject({ plan: "starter", seats: 3, status: "trialing", stripeSubscriptionId: "sub_test_1", billingInterval: "month", cancelAtPeriodEnd: false, version: 2 });
+    expect(first).toMatchObject({ plan: "starter", seats: 3, status: "trialing", stripeSubscriptionId: "sub_test_1", billingInterval: "month", cancelAtPeriodEnd: false, version: 3 });
     expect(await applySubscription(table.db, ctx, state(customer), now)).toBe("applied");
-    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toEqual({ ...first, version: 3 });
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toEqual({ ...first, version: 4 });
     expect(await getBillingTeam(table.db, ctx, now)).toMatchObject({ status: "trialing", stripeSubscriptionId: "sub_test_1", closed: false, purging: false, readOnly: false });
   });
 

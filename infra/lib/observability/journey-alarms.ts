@@ -12,7 +12,18 @@ import { billingResourceNames } from "../../../backend/src/billing/names.js";
 import { emailResourceNames } from "../../../backend/src/email/names.js";
 import { identityResourceNames } from "../../../backend/src/identity/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
-import { HELD_PURGE_GRACE_DAYS, PURGE_EVERY_HOURS, PURGE_OVERDUE_AFTER_HOURS, STRIPE_DELETION_RETRY_ALARM_HOURS, STRIPE_DELETION_STUCK_DAYS } from "../../../backend/src/ops/names.js";
+import {
+  HELD_PURGE_GRACE_DAYS,
+  LAPSE_CLOSURES_ALARM_COUNT,
+  LAPSE_CLOSURES_ALARM_HOURS,
+  LAPSE_EVERY_HOURS,
+  LAPSE_MAX_CLOSURES_PER_RUN,
+  LAPSE_UNSTARTED_ALARM_HOURS,
+  PURGE_EVERY_HOURS,
+  PURGE_OVERDUE_AFTER_HOURS,
+  STRIPE_DELETION_RETRY_ALARM_HOURS,
+  STRIPE_DELETION_STUCK_DAYS,
+} from "../../../backend/src/ops/names.js";
 import { realtimeResourceNames } from "../../../backend/src/realtime/channels.js";
 import type { AlarmTopics, Severity } from "./alarm-topics.js";
 import { apiGateway, business, dynamoDbSystemErrors, dynamoDbThrottles, FIVE_MINUTES, lambda } from "./metrics.js";
@@ -665,6 +676,47 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       rule: "Any TeamReopenedNoticeFailures over 15 minutes: an owner of a team that was just reopened wasn't told it will no longer be deleted (SES refused the message, no address on file, or the owners couldn't be listed). The team reopened anyway.",
       metric: business(BusinessMetric.TeamReopenedNoticeFailures, region, FIFTEEN_MINUTES),
       threshold: 0,
+    },
+    {
+      id: "lapse-job-failing",
+      title: "Lapsed-team job failing",
+      journeys: "J7, J8, J10",
+      severity: "P2",
+      rule: `Any LapseFailures over ${2 * LAPSE_EVERY_HOURS} hours: the hourly lapsed-team job (primary region) couldn't handle a team whose trial or subscription lapsed (a read, write or Stripe call failed), couldn't deliver a team's deletion warning to any owner (so it won't close it), or wouldn't close a lapsed team because Stripe disagrees with our record (a live subscription for the customer, or the team's subscription or customer missing, maybe a Stripe key or mode mismatch). The team stays read-only and isn't deleted until it's resolved, past the date its owners were told. The log lines "Lapsed team not closed: Stripe disagrees", "Lapsed team's deletion warning not delivered" and "Lapsed team check failed" have the team, subscription and customer IDs. See docs/runbooks/lapsed-teams.md.`,
+      metric: business(BusinessMetric.LapseFailures, region, Duration.hours(2 * LAPSE_EVERY_HOURS)),
+      threshold: 0,
+      primaryOnly: true,
+    },
+    {
+      id: "lapse-closures-held",
+      title: "Lapsed-team closures held",
+      journeys: "J10",
+      severity: "P2",
+      rule: `Any LapseClosuresHeld over ${2 * LAPSE_EVERY_HOURS} hours: a run of the hourly lapsed-team job (primary region) found more than ${LAPSE_MAX_CLOSURES_PER_RUN} lapsed teams due to close for deletion (LAPSE_MAX_CLOSURES_PER_RUN), closed that many and held the rest for the next run. Each run closes up to that many more, so if it's a bug or bad data rather than a real batch of lapsed teams, disable the TeamLapseSchedule rule now. Logs Insights on the job: "Lapsed team closed for deletion" lists the teams. See docs/runbooks/lapsed-teams.md.`,
+      metric: business(BusinessMetric.LapseClosuresHeld, region, Duration.hours(2 * LAPSE_EVERY_HOURS)),
+      threshold: 0,
+      primaryOnly: true,
+    },
+    {
+      id: "lapse-closures-high",
+      title: "Lapsed-team closures high",
+      journeys: "J10",
+      severity: "P2",
+      rule: `More than ${LAPSE_CLOSURES_ALARM_COUNT} LapsedTeamsClosed in ${LAPSE_CLOSURES_ALARM_HOURS} hours: the hourly lapsed-team job (primary region) is closing more teams for deletion than expected, even if no single run reached its cap. Check they really lapsed (Logs Insights: "Lapsed team closed for deletion"), and disable the TeamLapseSchedule rule if not: each closed team is purged 24 hours after it closed, and can be reopened until then. See docs/runbooks/lapsed-teams.md.`,
+      metric: business(BusinessMetric.LapsedTeamsClosed, region, Duration.hours(LAPSE_CLOSURES_ALARM_HOURS)),
+      threshold: LAPSE_CLOSURES_ALARM_COUNT,
+      primaryOnly: true,
+    },
+    {
+      id: "lapse-job-out-of-time",
+      title: "Lapsed-team job out of time",
+      journeys: "J7, J8, J10",
+      severity: "P2",
+      rule: `LapseTeamsUnstarted above 0 in every hour for ${LAPSE_UNSTARTED_ALARM_HOURS} hours: each run of the hourly lapsed-team job (primary region) ran out of time before it started every lapsing team, so owners' emails and closures are late. Runs start at a random place in the list, so no team is always left, but the list has outgrown one run. See docs/runbooks/lapsed-teams.md.`,
+      metric: business(BusinessMetric.LapseTeamsUnstarted, region, Duration.hours(LAPSE_EVERY_HOURS), "Maximum"),
+      threshold: 0,
+      periods: LAPSE_UNSTARTED_ALARM_HOURS / LAPSE_EVERY_HOURS,
+      primaryOnly: true,
     },
   ];
 }

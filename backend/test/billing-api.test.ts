@@ -62,6 +62,8 @@ function fakeStripe() {
     noUrl: false,
     /** Runs after a customer is made, before it's linked: another request's link. */
     afterCustomer: undefined as (() => void) | undefined,
+    /** Runs as a Checkout Session is made, before it's stored. */
+    beforeSession: undefined as (() => void) | undefined,
     portalSessions: [] as PortalSessionParams[],
     portalError: undefined as Error | undefined,
     configurations: [
@@ -124,6 +126,7 @@ function fakeStripe() {
       sessions: {
         async create(params, options) {
           if (state.sessionError) throw state.sessionError;
+          state.beforeSession?.();
           state.sessions.push({ params, key: options.idempotencyKey });
           // Stripe's default: a day
           return { id: `cs_test_${state.sessions.length}`, url: state.noUrl ? null : `https://checkout.stripe.test/c/pay/cs_test_${state.sessions.length}`, expires_at: Math.floor(now / 1000) + 86400 };
@@ -293,7 +296,35 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
     expect(status).toBe(201);
     expect(stripe.state.customers).toHaveLength(1);
     expect(stripe.state.sessions[1]?.params).toMatchObject({ customer: "cus_test_1", line_items: [{ price: "price_annual", quantity: 2 }] });
-    expect(scopes.filter((s) => s.stripeCustomer)).toHaveLength(1);
+    // Linked again (the same customer) by each checkout, which moves the team's version
+    expect(scopes.filter((s) => s.stripeCustomer)).toHaveLength(2);
+  });
+
+  it("moves the team's version on every checkout, before the session, so the lapsed-team job can't close a team under it (supply-checkout-qdx)", async () => {
+    patchTeam({ stripeCustomerId: "cus_test_9", stripeSubscriptionId: "sub_test_1", status: "canceled", trialEndsAt: new Date(now - 20 * DAY).toISOString() });
+    table.put({ PK: "STRIPE#cus_test_9", SK: "TEAM", type: "stripeLink", customerId: "cus_test_9", teamId: "team-a" });
+    const before = meta().version as number;
+    let atSession: unknown;
+    stripe.state.beforeSession = () => {
+      atSession = meta().version;
+    };
+    expect((await checkout()).status).toBe(201);
+    expect(atSession).toBe(before + 1);
+    expect(meta()).toMatchObject({ stripeCustomerId: "cus_test_9", stripeCheckoutAt: new Date(now).toISOString(), version: before + 1 });
+    expect(denied).toEqual([]);
+  });
+
+  it("refuses the checkout, with no session, when the lapsed-team job closed the team after it was read (an existing customer)", async () => {
+    patchTeam({ stripeCustomerId: "cus_test_9", stripeSubscriptionId: "sub_test_1", status: "canceled", trialEndsAt: new Date(now - 20 * DAY).toISOString() });
+    let gets = 0;
+    table.afterGet = () => {
+      // The team's read for the checkout: the job closes it right after
+      if (++gets === 1) patchTeam({ closedAt: new Date(now).toISOString(), closedBy: "system:lapsed" });
+    };
+    const { status, body } = await checkout();
+    expect(status).toBe(403);
+    expect(body.error.reason).toBe("team_closed");
+    expect(stripe.state.sessions).toHaveLength(0);
   });
 
   it("gives a retry with the same Idempotency-Key and choices the same Stripe idempotency key, and a new key or seats a new one", async () => {
@@ -447,8 +478,9 @@ describe("POST /teams/{teamId}/billing/checkout", () => {
       // The team's read for the checkout: close it right after
       if (++gets === 1) patchTeam({ closedAt: new Date(now).toISOString() });
     };
-    const { status } = await checkout();
-    expect(status).toBe(409);
+    const { status, body } = await checkout();
+    expect(status).toBe(403);
+    expect(body.error.reason).toBe("team_closed");
     expect(meta().stripeCustomerId).toBeUndefined();
     expect(table.get("STRIPE#cus_test_1", "TEAM")).toBeUndefined();
     expect(stripe.state.sessions).toHaveLength(0);

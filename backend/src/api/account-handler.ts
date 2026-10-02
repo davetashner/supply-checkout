@@ -197,6 +197,7 @@ import {
   recordTotpOn,
   hasEnded,
   billingAccess,
+  deletionLastDay,
   liveComp,
   mailAddress,
   memberCap,
@@ -294,7 +295,10 @@ export function errorFor(error: unknown): ApiError {
  * (billingAccess), and `readOnlyReason` why: `trial_ended`,
  * `subscription_ended` (an owner subscribes) or `payment_overdue` (an owner
  * pays in Billing). `readOnlyDeletesAt` is when such a team is closed and
- * deleted unless it subscribes, and `paymentGraceEndsAt` when a `past_due`
+ * deleted unless it subscribes (after its date has ended everywhere), and
+ * `readOnlyLastDay` the date to show for it (YYYY-MM-DD, the last day it's
+ * kept, as the emails say: not readOnlyDeletesAt's local date; null once
+ * readOnlyDeletesAt has passed), and `paymentGraceEndsAt` when a `past_due`
  * team still in its grace period becomes read-only. `billingAccount` says the team
  * has a Stripe customer, so its owners can open the Customer Portal, and
  * `cancelsAt` when a subscription that was canceled (in the portal) ends: its
@@ -323,6 +327,9 @@ export function teamBody(team: Team, role: Role, now = new Date()) {
     subscriptionEnded: access.readOnly,
     readOnlyReason: access.reason ?? null,
     readOnlyDeletesAt: access.deleteAfter ?? null,
+    // The date to show for it: the last day it's kept (the emails state the same). Not once that's passed: the team
+    // is closed as soon as its warning's 7 days are up, which the warning email states
+    readOnlyLastDay: access.deleteAfter && Date.parse(access.deleteAfter) > now.getTime() ? deletionLastDay(access.deleteAfter) : null,
     paymentGraceEndsAt: access.graceEndsAt ?? null,
     // The Customer Portal needs the team's Stripe customer (made by its first checkout)
     billingAccount: typeof team.stripeCustomerId === "string",

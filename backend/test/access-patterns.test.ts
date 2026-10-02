@@ -1067,7 +1067,8 @@ describe.skipIf(!endpoint)("access patterns (ADR 0005)", () => {
 
       const system = (await teamContextForStripeCustomer(db, customerId)) as TeamContext;
       expect(system).toMatchObject({ teamId: owner.teamId, role: "system", homeRegion: REGION });
-      const updated = await updateTeam(db, system, { plan: "starter", seats: 5, status: "active" }, 1);
+      // Each link moved the version (so the lapsed-team job's closure, conditioned on the version it read, sees it)
+      const updated = await updateTeam(db, system, { plan: "starter", seats: 5, status: "active" }, 3);
       expect(updated).toMatchObject({ plan: "starter", seats: 5, status: "active", stripeCustomerId: customerId });
       expect(await teamContextForStripeCustomer(db, "cus_unknown")).toBeUndefined();
 

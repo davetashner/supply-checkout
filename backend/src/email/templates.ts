@@ -20,7 +20,7 @@
 // name is defanged too (teamLabel), and an invite quotes the name, so a
 // name can't pose as an instruction from us.
 
-import { PAYMENT_GRACE_DAYS as GRACE_DAYS, READ_ONLY_RETENTION_DAYS as READ_ONLY_DAYS, type ReadOnlyReason } from "../data/index.js";
+import { deletionLastDay, PAYMENT_GRACE_DAYS as GRACE_DAYS, READ_ONLY_RETENTION_DAYS as READ_ONLY_DAYS, type ReadOnlyReason } from "../data/index.js";
 import type { EmailKind } from "./names.js";
 
 export type InviteRole = "owner" | "contributor" | "viewer";
@@ -43,7 +43,7 @@ export type EmailInput =
       readonly teamName: string;
       /** Why (billingAccess): the subscription ended (the default), the trial ended without one, or a payment is overdue past the grace period. */
       readonly reason?: ReadOnlyReason;
-      /** When the team is deleted unless an owner subscribes (ISO 8601), if it will be. */
+      /** When the team is deleted unless an owner subscribes (ISO 8601, a deletionTime), if it will be. The email states its deletionLastDay. */
       readonly deletesAt?: string;
     }
   | { readonly kind: "exportReady"; readonly teamName: string; readonly exportId: string; readonly expiresAt: string }
@@ -54,6 +54,13 @@ export type EmailInput =
       readonly purgeAfter: string;
     }
   | { readonly kind: "teamReopened"; readonly teamName: string }
+  /**
+   * A team read-only because its trial or subscription ended will be deleted
+   * at `deletesAt` (ISO 8601, a deletionTime) unless an owner subscribes (the
+   * lapsed-team job, supply-checkout-qdx): after the date it states
+   * (deletionLastDay) has ended everywhere. Sent at least 7 days before.
+   */
+  | { readonly kind: "deletionWarning"; readonly teamName: string; readonly deletesAt: string }
   /**
    * Security notices to the account's own verified address (supply-checkout-8jc.15): a
    * password was set or changed, or two-step sign-in (an authenticator app) was turned on;
@@ -272,7 +279,8 @@ function content(input: EmailInput, appUrl: string): Content {
       };
     }
     case "readOnly": {
-      const deletes = input.deletesAt ? formatDate(input.deletesAt) : undefined;
+      // The last day it's kept: deleted only once that date has ended everywhere
+      const deletes = input.deletesAt ? formatDate(deletionLastDay(input.deletesAt)) : undefined;
       if (input.reason === "payment_overdue") {
         return {
           subject: `${team} is now read-only on Supply Checkout`,
@@ -292,7 +300,7 @@ function content(input: EmailInput, appUrl: string): Content {
         heading: `${team} is read-only`,
         paragraphs: [
           `${why}, so its sheets and inventory are read-only. Nothing has been deleted yet: everyone on the team can still see it, and owners can still export it.`,
-          ...(deletes ? [`On ${deletes}, ${team} and everything in it will be deleted, unless an owner subscribes before then.`] : []),
+          ...(deletes ? [`After ${deletes}, ${team} and everything in it will be deleted, unless an owner subscribes by then.`] : []),
           "An owner can subscribe in the app to start editing again.",
         ],
         button: { label: "Open Supply Checkout", url: appLink(appUrl, "/") },
@@ -319,6 +327,20 @@ function content(input: EmailInput, appUrl: string): Content {
           `An owner of ${team} closed the team. It's read-only now: its members can still see its sheets and inventory, but nobody can change them or join it, and its invites were cancelled.`,
           `On ${purge}, the team, its sheets and its inventory will be deleted for good. Until then, owners can export its data, or reopen the team, in the app.`,
           "You're getting this because you're an owner of the team. If you didn't expect it to close, check with its other owners, and make sure nobody else can sign in to your account.",
+        ],
+        button: { label: "Open Supply Checkout", url: appLink(appUrl, "/") },
+      };
+    }
+    case "deletionWarning": {
+      const deletes = formatDate(deletionLastDay(input.deletesAt));
+      return {
+        subject: `${team} will be deleted after ${deletes}`,
+        preheader: `Subscribe or export your data by ${deletes}.`,
+        heading: `${team} will be deleted after ${deletes}`,
+        paragraphs: [
+          `${team} has been read-only since its free trial or subscription ended. After ${deletes}, the team, its sheets and its inventory will be deleted for good, and this can't be undone.`,
+          `To keep the team, an owner can subscribe in the app by ${deletes}. To keep a copy instead, an owner can use Export data.`,
+          "You're getting this because you're an owner of the team.",
         ],
         button: { label: "Open Supply Checkout", url: appLink(appUrl, "/") },
       };

@@ -33,9 +33,10 @@ const samples: EmailInput[] = [
   { kind: "twoStepOn", at: "2026-09-30T14:05:09.000Z" },
   { kind: "emailChanged", at: "2026-09-30T14:05:09.000Z" },
   // Variants of a kind: last, since tests pick the ones above by position
-  { kind: "readOnly", teamName: "Echo Cleaning", reason: "subscription_ended", deletesAt: "2026-11-01T00:00:00.000Z" },
-  { kind: "readOnly", teamName: "Echo Cleaning", reason: "trial_ended", deletesAt: "2026-11-01T00:00:00.000Z" },
+  { kind: "readOnly", teamName: "Echo Cleaning", reason: "subscription_ended", deletesAt: "2026-11-02T12:00:00.000Z" },
+  { kind: "readOnly", teamName: "Echo Cleaning", reason: "trial_ended", deletesAt: "2026-11-02T12:00:00.000Z" },
   { kind: "readOnly", teamName: "Echo Cleaning", reason: "payment_overdue" },
+  { kind: "deletionWarning", teamName: "Echo Cleaning", deletesAt: "2026-11-02T12:00:00.000Z" },
 ];
 
 describe("templates", () => {
@@ -116,21 +117,31 @@ describe("templates", () => {
 
   it("says why a team is read-only, and when it's deleted unless an owner subscribes (supply-checkout-qdx)", () => {
     const text = (input: EmailInput) => renderEmail(input, { appUrl: APP }).text;
-    const ended = text({ kind: "readOnly", teamName: "Echo", reason: "subscription_ended", deletesAt: "2026-11-01T00:00:00.000Z" });
+    const ended = text({ kind: "readOnly", teamName: "Echo", reason: "subscription_ended", deletesAt: "2026-11-02T12:00:00.000Z" });
     expect(ended).toContain("no longer has an active subscription");
-    expect(ended).toContain("On November 1, 2026, Echo and everything in it will be deleted, unless an owner subscribes before then.");
-    const trial = text({ kind: "readOnly", teamName: "Echo", reason: "trial_ended", deletesAt: "2026-11-01T00:00:00.000Z" });
+    // The last day it's kept: deleted at noon UTC the next day, once November 1 has ended everywhere
+    expect(ended).toContain("After November 1, 2026, Echo and everything in it will be deleted, unless an owner subscribes by then.");
+    const trial = text({ kind: "readOnly", teamName: "Echo", reason: "trial_ended", deletesAt: "2026-11-02T12:00:00.000Z" });
     expect(trial).toContain("The free trial for Echo has ended without a plan");
-    expect(trial).toContain("On November 1, 2026");
+    expect(trial).toContain("After November 1, 2026");
     // No date known: no deletion promised or threatened
     expect(text({ kind: "readOnly", teamName: "Echo" })).not.toContain("deleted,");
-    const overdue = text({ kind: "readOnly", teamName: "Echo", reason: "payment_overdue", deletesAt: "2026-11-01T00:00:00.000Z" });
+    const overdue = text({ kind: "readOnly", teamName: "Echo", reason: "payment_overdue", deletesAt: "2026-11-02T12:00:00.000Z" });
     expect(overdue).toContain("still overdue");
     expect(overdue).toContain("Update payment method:");
     expect(overdue).not.toContain("November 1");
     // The trial and payment notices state the periods the access rules use
     expect(text(samples[1] as EmailInput)).toContain("for 30 days. After that, the team and everything in it are deleted.");
     expect(text(samples[2] as EmailInput)).toContain("keeps working for 7 days while we try again");
+  });
+
+  it("warns owners of a lapsed team's deletion, with the date, what to do, and that it can't be undone (supply-checkout-qdx)", () => {
+    const email = renderEmail({ kind: "deletionWarning", teamName: "Echo", deletesAt: "2026-11-02T12:00:00.000Z" }, { appUrl: APP });
+    // deletesAt is the deletion time (noon UTC the next day); the email states the last day it's kept
+    expect(email.subject).toBe("Echo will be deleted after November 1, 2026");
+    expect(email.text).toContain("After November 1, 2026, the team, its sheets and its inventory will be deleted for good");
+    expect(email.text).toContain("subscribe in the app by November 1, 2026");
+    expect(email.text).toContain("Export data");
   });
 
   it("leaves out the retry date when Stripe gave none", () => {

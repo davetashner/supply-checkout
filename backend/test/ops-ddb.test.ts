@@ -82,9 +82,10 @@ describe.skipIf(!endpoint)("operators (ADR 0015) on DynamoDB Local", () => {
     const ownerId = newUser();
     const { team, context } = await createTeam(table.db, { userId: ownerId, email: "owner@example.com" }, { name: `Ops Months ${ownerId}` }, now);
     const customer = `cus_${team.teamId.slice(0, 20).replace(/[^A-Za-z0-9]/g, "")}m`;
+    // Linking the customer moves the version (supply-checkout-qdx): 1 to 2
     await linkStripeCustomer(table.db, context, customer);
-    const set = await setComp(table.db, op, team.teamId, { plan: "starter", months: 2, reason: "Two months on us", expectedVersion: 1, idempotencyKey: "ddb-months-0001" }, now);
-    expect(set).toMatchObject({ months: 2, version: 2 });
+    const set = await setComp(table.db, op, team.teamId, { plan: "starter", months: 2, reason: "Two months on us", expectedVersion: 2, idempotencyKey: "ddb-months-0001" }, now);
+    expect(set).toMatchObject({ months: 2, version: 3 });
     const meta = await rawItem(table.db, `TEAM#${team.teamId}`, "META");
     expect(meta).toMatchObject({ compMonths: 2, compPlan: "starter" });
     // Not in the operators' index: GSI3 projects no compMonths (it has no room), so the record shows the comp's end only
@@ -104,7 +105,7 @@ describe.skipIf(!endpoint)("operators (ADR 0015) on DynamoDB Local", () => {
     // Owners see it as support's, with no actor
     expect((await listSupportActions(table.db, context, {})).items.map((a) => a.action)).toContain("ops.comp.discount");
 
-    await endComp(table.db, op, team.teamId, { reason: "Over", expectedVersion: 2, idempotencyKey: "ddb-months-0002" }, now);
+    await endComp(table.db, op, team.teamId, { reason: "Over", expectedVersion: 3, idempotencyKey: "ddb-months-0002" }, now);
     expect((await rawItem(table.db, `TEAM#${team.teamId}`, "META"))?.compMonths).toBeUndefined();
   });
 

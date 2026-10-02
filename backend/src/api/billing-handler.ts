@@ -85,6 +85,7 @@ import {
   countBilledMembers,
   ForbiddenError,
   getTeam,
+  isClosed,
   hasEnded,
   linkStripeCustomer,
   recordTotpOn,
@@ -227,6 +228,7 @@ const FAILURES: Record<BillingRoute["action"], { readonly message: string; reado
 const ROUTES = new Map(BILLING_ROUTES.map((r) => [routeKey(r), r]));
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const REQUEST_KEY = /^[A-Za-z0-9_-]{8,128}$/;
+const CLOSED_CHECKOUT = "This team was closed. Reopen it before choosing a plan.";
 
 /**
  * Stripe wants a subscription's trial to end at least 48 hours after the
@@ -314,20 +316,33 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
   /**
    * The team's Stripe customer: the linked one, or a new one Stripe makes
    * (once per team: its idempotency key is the team's) and this links. If
-   * another request linked one meanwhile, that one.
+   * another request linked one meanwhile, that one. Either way it's linked
+   * (again) before the Checkout Session is made: every link moves the team's
+   * version, so the lapsed-team job's closure, conditioned on the version it
+   * read, can't close a team under a Checkout that's starting, and once the
+   * team is closed the link, and so the Checkout, is refused (TeamClosedError).
    */
   async function customerFor(stripe: CheckoutStripe, ctx: TeamContext, team: Team): Promise<string> {
-    if (team.stripeCustomerId) return team.stripeCustomerId;
+    const closedMeanwhile = async (error: unknown) => {
+      if (error instanceof ConflictError && isClosed(await getTeam(dbFor({ teamId: ctx.teamId }), ctx))) throw new TeamClosedError(CLOSED_CHECKOUT);
+      throw error;
+    };
+    const link = (customerId: string) => linkStripeCustomer(dbFor({ teamId: ctx.teamId, stripeCustomer: customerId }), ctx, customerId, new Date(now())).catch(closedMeanwhile);
+    if (team.stripeCustomerId) {
+      await link(team.stripeCustomerId);
+      return team.stripeCustomerId;
+    }
     const params = { name: team.name, metadata: { teamId: ctx.teamId } };
     // Once per team (and name: Stripe refuses a key reused with other parameters)
     const customer = await stripe.customers.create(params, { idempotencyKey: idempotencyKey("customer", ctx.teamId, params) });
     try {
-      await linkStripeCustomer(dbFor({ teamId: ctx.teamId, stripeCustomer: customer.id }), ctx, customer.id);
+      await link(customer.id);
       return customer.id;
     } catch (error) {
       if (!(error instanceof ConflictError)) throw error;
       const linked = (await getTeam(dbFor({ teamId: ctx.teamId }), ctx)).stripeCustomerId;
       if (!linked) throw error;
+      await link(linked);
       return linked;
     }
   }
@@ -338,7 +353,7 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
     const key = header(event, IDEMPOTENCY_HEADER);
     if (!key || !REQUEST_KEY.test(key)) throw new ApiError(400, "bad_request", "Send an Idempotency-Key header: 8 to 128 letters, digits, - or _, new for each checkout");
     const input = checkoutInput(event);
-    if (ctx.closed) throw new TeamClosedError("This team was closed. Reopen it before choosing a plan.");
+    if (ctx.closed) throw new TeamClosedError(CLOSED_CHECKOUT);
     const db = dbFor({ teamId: ctx.teamId });
     const team = await getTeam(db, ctx);
     if (team.stripeSubscriptionId && !hasEnded(team.status)) {

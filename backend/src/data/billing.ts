@@ -15,8 +15,13 @@ import { type TeamContext, readable, writable } from "./team-context.js";
 /** How long an event's records are kept: longer than Stripe retries an event (3 days) or a DLQ holds it. */
 const WEBHOOK_RECORD_DAYS = 30;
 
-/** Links a Stripe customer to the team, once. Owners do this at checkout. */
-export async function linkStripeCustomer(db: Db, ctx: TeamContext, customerId: string): Promise<void> {
+/**
+ * Links a Stripe customer to the team, once; owners do this at every checkout
+ * (again, for the same customer, after the first). It moves the team's
+ * version and records when (`stripeCheckoutAt`): the lapsed-team job doesn't
+ * close a team within a Checkout Session's lifetime of it (closeLapsedTeam).
+ */
+export async function linkStripeCustomer(db: Db, ctx: TeamContext, customerId: string, now = new Date()): Promise<void> {
   // Also while the subscription has ended: that's when an owner subscribes again
   writable(db, ctx, "owner", { whileEnded: true });
   await connection(db)
@@ -36,10 +41,12 @@ export async function linkStripeCustomer(db: Db, ctx: TeamContext, customerId: s
             Update: {
               TableName: db.tableName,
               Key: keys.team(ctx.teamId),
-              UpdateExpression: "SET stripeCustomerId = :customer",
+              // The version moves, so a writer conditioned on the version it read (the lapsed-team job's closure) sees the link
+              UpdateExpression: "SET stripeCustomerId = :customer, stripeCheckoutAt = :now, #version = if_not_exists(#version, :zero) + :one",
               // Not once the team is closed, even if it closed after the caller's context was issued
               ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(closedAt) AND (attribute_not_exists(stripeCustomerId) OR stripeCustomerId = :customer)",
-              ExpressionAttributeValues: { ":customer": customerId },
+              ExpressionAttributeNames: { "#version": "version" },
+              ExpressionAttributeValues: { ":customer": customerId, ":now": now.toISOString(), ":zero": 0, ":one": 1 },
             },
           },
         ],
