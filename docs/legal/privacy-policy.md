@@ -3,7 +3,7 @@
 > **DRAFT — not reviewed by a lawyer / owner; not in effect, except as pilot terms (below).**
 > Placeholders in `[BRACKETS]` must be filled in before publishing. See [Open questions](#open-questions-for-the-owner--lawyer) at the end.
 >
-> **Pilot terms.** During the supervised pilot, this draft applies as one of the pilot terms, as the [Pilot Agreement](pilot-agreement.md) (section 1) describes: in full, with Main Street Logic as "we" and the support mailbox as every contact. Where they disagree, the Pilot Agreement wins. A lawyer reviews this draft before public launch.
+> **Pilot terms.** During the supervised pilot, this draft applies as one of the pilot terms, as the [Pilot Agreement](pilot-agreement.md) (section 1) describes: in full, with "we" meaning whoever the Pilot Agreement names, and the support mailbox as every contact. Where they disagree, the Pilot Agreement wins. A lawyer reviews this draft before public launch.
 
 - Last updated: [DATE]
 - Effective: [DATE]
