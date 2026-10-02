@@ -22,7 +22,10 @@
 //    time (FIFO, grouped by customer).
 // 4. Email each owner, at most once per event (claimBillingNotice before
 //    sending), when the event is a trial ending without a card, a failed
-//    payment, or the subscription ending (the team turns read-only).
+//    payment, or the subscription ending (the team turns read-only, and the
+//    notice says when it's deleted unless an owner subscribes). A payment
+//    overdue past its grace period has no event, so no notice here
+//    (supply-checkout-qdx adds a scheduled one).
 // 5. Only then record the event as processed.
 //
 // A failure anywhere before 5 throws: the message goes back on the queue and
@@ -343,6 +346,17 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     }
   }
 
+  /**
+   * A read-only notice only if the team is read-only now, as it was just applied (no comp keeps it going),
+   * with the date it's deleted unless an owner subscribes (billingAccess). Any other notice as it is.
+   */
+  async function withAccess(db: Db, ctx: TeamContext, notice: TeamNoticeInput | undefined): Promise<TeamNoticeInput | undefined> {
+    if (notice?.kind !== "readOnly") return notice;
+    const after = await getBillingTeam(db, ctx, now());
+    if (!after?.readOnly) return undefined;
+    return { ...notice, ...(after.deleteAfter ? { deletesAt: after.deleteAfter } : {}) };
+  }
+
   /** Applies one event. Throws to have it retried. */
   async function process(message: BillingMessage): Promise<Outcome> {
     const { eventId, customer } = message;
@@ -391,9 +405,8 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
       return done("team_closed");
     }
     obs.count(BusinessMetric.BillingEventsApplied, 1, { teamId, type: message.type });
-    const notice = noticeFor(message, sub, team.name);
-    // Read-only only if no comp keeps the team going
-    if (notice && (notice.kind !== "readOnly" || (await getBillingTeam(db, ctx, now()))?.readOnly)) await notify(db, ctx, eventId, notice);
+    const notice = await withAccess(db, ctx, noticeFor(message, sub, team.name));
+    if (notice) await notify(db, ctx, eventId, notice);
     return done("applied");
   }
 

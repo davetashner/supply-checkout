@@ -2,7 +2,7 @@
 // what applySubscription writes to the team (ADR 0009). Shared by the event
 // path (worker.ts) and the nightly entitlement check (entitlements.ts).
 
-import type { SubscriptionState } from "../data/index.js";
+import { hasEnded, type SubscriptionState } from "../data/index.js";
 import { planForLookupKey } from "./catalog.js";
 
 /** The fields of a Stripe subscription the worker reads. */
@@ -20,6 +20,8 @@ export interface SubscriptionLike {
   /** Its metadata: a closure stamps CLOSED_AT_METADATA when it sets it to cancel (closing.ts). */
   readonly metadata?: Readonly<Record<string, string>> | null;
   readonly trial_end: number | null;
+  /** When it ended (epoch seconds): set once it's canceled or expired, never for `unpaid`. */
+  readonly ended_at?: number | null;
   readonly default_payment_method: string | { readonly id: string } | null;
   readonly items: {
     readonly data: readonly {
@@ -41,6 +43,7 @@ export function subscriptionState(sub: SubscriptionLike, customerId: string, rep
   const first = items[0];
   const known = planForLookupKey(first?.price.lookup_key);
   const end = first ? iso(first.current_period_end) : undefined;
+  const endedAt = hasEnded(sub.status) ? iso(sub.ended_at) : undefined;
   return {
     customerId,
     subscriptionId: sub.id,
@@ -51,5 +54,6 @@ export function subscriptionState(sub: SubscriptionLike, customerId: string, rep
     ...(end !== undefined ? { currentPeriodEnd: end } : {}),
     // Canceled in the Customer Portal (at the period's end), or set to cancel on a date: either way it won't renew
     cancelAtPeriodEnd: sub.cancel_at_period_end || typeof sub.cancel_at === "number",
+    ...(endedAt !== undefined ? { endedAt } : {}),
   };
 }

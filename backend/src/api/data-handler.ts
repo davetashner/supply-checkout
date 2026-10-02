@@ -379,7 +379,7 @@ export function createDataHandler(deps: DataHandlerDeps) {
       if (typeof teamId !== "string") throw new ApiError(400, "bad_request", "Missing team ID");
       let ctx: TeamContext;
       try {
-        ctx = await authorizeTeam(deps.dbForTeam(teamId), userId, teamId);
+        ctx = await authorizeTeam(deps.dbForTeam(teamId), userId, teamId, new Date(now()));
       } catch (error) {
         // Not a member, or no such team: the same answer for both, so the
         // response doesn't reveal which teams exist

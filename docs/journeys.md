@@ -197,7 +197,7 @@ The sheet list has a search box that matches a sheet's client ("Ad hoc" for the 
 
 **Expected:** after 7 days without payment the team becomes read-only. Nothing is deleted. As soon as payment succeeds, full access returns within a minute.
 
-**Status:** partly built. J8.1 and J8.3 are built: the payment-failed email and the webhooks (`supply-checkout-2kl`), and owners fix the card in the Customer Portal from **Billing** in the team bar (`supply-checkout-121`); a paid invoice reaches the team within a minute. J8.2, the banner and the 7-day grace period, is still to come: `supply-checkout-qdx` (access rules), `supply-checkout-5hx` (email).
+**Status:** partly built. J8.1 and J8.3 are built: the payment-failed email and the webhooks (`supply-checkout-2kl`), and owners fix the card in the Customer Portal from **Billing** in the team bar (`supply-checkout-121`); a paid invoice reaches the team within a minute. The 7-day grace period is built (`supply-checkout-qdx`, `billingAccess`): a `past_due` team keeps full access for 7 days from when the worker first applied `past_due`, then is read-only (403 `subscription_ended`, `readOnlyReason: payment_overdue` on `/me`) until it's paid; `/me` has the grace's end (`paymentGraceEndsAt`). Still to come in J8.2: the banner during the grace and the read-only email at its end (`supply-checkout-qdx`), and `supply-checkout-5hx` (email).
 
 ### J9. A viewer can see but not change
 

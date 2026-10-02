@@ -49,6 +49,19 @@ export interface Team {
   /** When the billing worker last applied the subscription from Stripe (ISO 8601). */
   readonly stripeSyncedAt?: string;
   /**
+   * While the subscription is `past_due`: when the billing worker first saw it
+   * so (ISO 8601). The PAYMENT_GRACE_DAYS grace runs from here (billingAccess).
+   * Removed when it's anything else.
+   */
+  readonly pastDueSince?: string;
+  /**
+   * While the subscription has ended (ENDED_STATUSES): when it ended, from
+   * Stripe's `ended_at`, or when the billing worker first saw it ended (an
+   * `unpaid` subscription has no `ended_at`). The READ_ONLY_RETENTION_DAYS
+   * before deletion run from here (billingAccess). Removed when it's live again.
+   */
+  readonly subscriptionEndedAt?: string;
+  /**
    * When an owner closed the team (ISO 8601; closeTeam). A closed team is
    * read-only: members can still read and export it, and leave, but nothing
    * else changes. Its live updates stop, its invites are gone, and the
@@ -187,13 +200,127 @@ export function hasEnded(status: unknown): boolean {
 }
 
 /**
- * True when the team is read-only because its subscription ended
- * (ENDED_STATUSES: after a trial ended without a card, Stripe cancels it) and
- * no live comp keeps it going (ADR 0009, ADR 0015). Its members can still read
- * and export it, and leave; an owner can subscribe again.
+ * How long a `past_due` team keeps full access while Stripe retries the
+ * payment (ADR 0009, Terms 5.6): then it's read-only until the balance is paid.
  */
-export function isReadOnlyForBilling(team: { readonly status?: unknown; readonly compPlan?: unknown; readonly compUntil?: unknown }, now = new Date()): boolean {
-  return hasEnded(team.status) && liveComp(team, now) === undefined;
+export const PAYMENT_GRACE_DAYS = 7;
+
+/**
+ * How long a team whose trial or subscription ended stays read-only, so its
+ * owners can export it or subscribe, before it's closed and deleted (ADR 0009,
+ * Terms sections 4 and 6, the privacy policy's retention table). The same 30
+ * days a closed team gets (CLOSED_TEAM_RETENTION_DAYS).
+ */
+export const READ_ONLY_RETENTION_DAYS = 30;
+
+const ACCESS_DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Why a team is read-only for billing (billingAccess). */
+export type ReadOnlyReason = "trial_ended" | "payment_overdue" | "subscription_ended";
+
+/** What the team's billing allows now (billingAccess). */
+export interface BillingAccess {
+  /** Read-only: members may read, export and leave; owners may subscribe or pay. */
+  readonly readOnly: boolean;
+  readonly reason?: ReadOnlyReason;
+  /** When it became read-only (ISO 8601), when that's known. */
+  readonly readOnlyFrom?: string;
+  /** A `past_due` team still in its grace period: when the grace ends (ISO 8601). */
+  readonly graceEndsAt?: string;
+  /**
+   * When the team is closed and deleted unless it subscribes (ISO 8601):
+   * READ_ONLY_RETENTION_DAYS after it became read-only, for a trial that
+   * ended without a subscription and for a subscription that ended. Never for
+   * `payment_overdue` (Stripe's retries decide when that subscription ends,
+   * and its 30 days start then), and never while the date it ended is unknown.
+   */
+  readonly deleteAfter?: string;
+}
+
+/** The fields of a team's META item that billingAccess reads. */
+export interface BillingAccessFields {
+  readonly status?: unknown;
+  readonly trialEndsAt?: unknown;
+  readonly createdAt?: unknown;
+  readonly stripeSubscriptionId?: unknown;
+  /** When the subscription went `past_due` (the billing worker, applySubscription). */
+  readonly pastDueSince?: unknown;
+  /** When the subscription ended (Stripe's `ended_at`, or when the worker first saw it ended). */
+  readonly subscriptionEndedAt?: unknown;
+  readonly compPlan?: unknown;
+  readonly compUntil?: unknown;
+}
+
+const dateMs = (value: unknown) => (typeof value === "string" ? Date.parse(value) : NaN);
+
+/** When the team's free trial ends (epoch ms): `trialEndsAt`, or TRIAL_DAYS after it was made for a team from before trials; NaN when neither is a date. */
+export function trialEnd(team: { readonly trialEndsAt?: unknown; readonly createdAt?: unknown }): number {
+  const at = dateMs(team.trialEndsAt);
+  if (Number.isFinite(at)) return at;
+  return dateMs(team.createdAt) + TRIAL_DAYS * ACCESS_DAY_MS;
+}
+
+/**
+ * What a team's billing allows now (ADR 0009, Terms 4, 5.6 and 6). The one
+ * place the access rules are decided; authorizeTeam (writable), /me, the
+ * billing worker and the lapsed-team job all use it.
+ *
+ * - A live comp (ADR 0015): full access, whatever Stripe says, and never
+ *   deleted. When it runs out, every clock below starts no earlier than its
+ *   `compUntil`.
+ * - `canceled`, `unpaid`, `incomplete_expired` (ENDED_STATUSES): read-only
+ *   (`subscription_ended`) from `subscriptionEndedAt`, and deleted
+ *   READ_ONLY_RETENTION_DAYS later.
+ * - `past_due`: full access for PAYMENT_GRACE_DAYS from `pastDueSince`, then
+ *   read-only (`payment_overdue`) until it's paid. Not deleted: if Stripe's
+ *   retries give up, the subscription ends, and the rule above applies.
+ * - `trialing` with no Stripe subscription (the app's own trial, no
+ *   Checkout): read-only (`trial_ended`) from trialEnd, and deleted
+ *   READ_ONLY_RETENTION_DAYS later. A trial with a subscription is Stripe's:
+ *   it cancels the subscription at the trial's end if no card was added.
+ * - Anything else (`active`, a Stripe trial, `incomplete`, `paused`): full.
+ *
+ * A date that's missing or not a date never makes a team read-only sooner,
+ * and never sets a deletion date: an ended team without `subscriptionEndedAt`
+ * is read-only but not deleted until the billing worker records it.
+ */
+export function billingAccess(team: BillingAccessFields, now = new Date()): BillingAccess {
+  if (liveComp(team, now)) return { readOnly: false };
+  const compEnd = dateMs(team.compUntil);
+  // A comp that ran out: no clock starts before it did
+  const after = (ms: number) => (Number.isFinite(compEnd) ? Math.max(ms, compEnd) : ms);
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const retention = (from: number) => iso(from + READ_ONLY_RETENTION_DAYS * ACCESS_DAY_MS);
+  const at = now.getTime();
+  if (hasEnded(team.status)) {
+    const ended = dateMs(team.subscriptionEndedAt);
+    if (!Number.isFinite(ended)) return { readOnly: true, reason: "subscription_ended" };
+    const from = after(ended);
+    return { readOnly: true, reason: "subscription_ended", readOnlyFrom: iso(from), deleteAfter: retention(from) };
+  }
+  if (team.status === "past_due") {
+    const since = dateMs(team.pastDueSince);
+    if (!Number.isFinite(since)) return { readOnly: false };
+    const graceEnd = after(since) + PAYMENT_GRACE_DAYS * ACCESS_DAY_MS;
+    return graceEnd <= at ? { readOnly: true, reason: "payment_overdue", readOnlyFrom: iso(graceEnd) } : { readOnly: false, graceEndsAt: iso(graceEnd) };
+  }
+  if (team.status === "trialing" && typeof team.stripeSubscriptionId !== "string") {
+    const end = trialEnd(team);
+    if (!Number.isFinite(end)) return { readOnly: false };
+    const from = after(end);
+    return from <= at ? { readOnly: true, reason: "trial_ended", readOnlyFrom: iso(from), deleteAfter: retention(from) } : { readOnly: false };
+  }
+  return { readOnly: false };
+}
+
+/**
+ * True when the team is read-only for billing (billingAccess): its trial or
+ * subscription ended, or a payment is overdue past the grace period, and no
+ * live comp keeps it going. Its members can still read and export it, and
+ * leave; an owner can subscribe again, or pay.
+ */
+export function isReadOnlyForBilling(team: BillingAccessFields, now = new Date()): boolean {
+  return billingAccess(team, now).readOnly;
 }
 
 /** True for a team an owner has closed (closeTeam), from its META item. */

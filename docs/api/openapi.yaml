@@ -2793,7 +2793,10 @@ components:
             - type: "null"
         members: { type: [integer, "null"], description: "How many members the team has, or `null` for a team from before the count (the members list has them)." }
         memberCap: { type: integer, description: "How many members the team may have. Pending invites count against it when inviting (429 `team_full`)." }
-        subscriptionEnded: { type: boolean, description: "The team's subscription ended (`canceled`, `unpaid` or `incomplete_expired`: for example its trial ended without a card) and no comp keeps it going, so it's read-only: a write is 403 `permission_denied` with `reason: \"subscription_ended\"`. Members can still read and export it, and leave; an owner can subscribe again (`createCheckout`)." }
+        subscriptionEnded: { type: boolean, description: "The team is read-only for billing, and no comp keeps it going (`readOnlyReason` says why): a write is 403 `permission_denied` with `reason: \"subscription_ended\"`. Members can still read and export it, and leave; owners can remove members, and subscribe (`createCheckout`) or pay (`createPortalSession`), but not invite or change roles." }
+        readOnlyReason: { type: [string, "null"], enum: [trial_ended, subscription_ended, payment_overdue, null], description: "Why the team is read-only (`subscriptionEnded`): `trial_ended`, the free trial ended without a subscription; `subscription_ended`, the subscription ended (`canceled`, `unpaid` or `incomplete_expired`); `payment_overdue`, the subscription is `past_due` and its 7-day grace period is over (an owner pays in the Customer Portal). `null` when it isn't." }
+        readOnlyDeletesAt: { type: [string, "null"], format: date-time, description: "For `trial_ended` and `subscription_ended`: when the team is closed and its data deleted unless an owner subscribes first, 30 days after it became read-only. `null` otherwise (a team with a comp is never deleted for this)." }
+        paymentGraceEndsAt: { type: [string, "null"], format: date-time, description: "A `past_due` team still in its 7-day grace period: when it becomes read-only unless the payment goes through. `null` otherwise." }
         billingAccount: { type: boolean, description: "The team has a Stripe customer (made by its first checkout), so its owners can open the Customer Portal (`createPortalSession`)." }
         cancelsAt: { type: [string, "null"], format: date-time, description: "When a subscription that was canceled (in the Customer Portal) ends: the end of its current period. It keeps working until then. `null` when it renews, or has already ended." }
     Invite:
@@ -2882,8 +2885,10 @@ components:
                 address changed while the code was checked).
                 `already_subscribed`: the team has a Stripe subscription that
                 hasn't ended, so it can't start another checkout.
-                `subscription_ended`: the team's subscription ended, so it's
-                read-only until an owner subscribes again.
+                `subscription_ended`: the team is read-only for billing (its
+                trial or subscription ended, or a payment is overdue past the
+                grace period; the team's `readOnlyReason` says which) until an
+                owner subscribes, or pays.
                 `no_billing_account`: the team has no Stripe customer yet, so
                 there's no Customer Portal to open.
                 `mfa_required`: a billing route for an owner without two-step

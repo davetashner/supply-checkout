@@ -113,7 +113,8 @@ beforeEach(() => {
   build();
 });
 
-function build() {
+/** The worker, with its clock at `nowMs`. */
+function build(nowMs = NOW) {
   const stripe: WorkerStripe & SeatStripe & EntitlementStripe = {
     subscriptions: {
       async list() {
@@ -165,7 +166,7 @@ function build() {
     stripe: async () => stripe,
     mailer: mails.mailer,
     obs: obs(),
-    now: () => NOW,
+    now: () => nowMs,
   });
 }
 
@@ -1044,6 +1045,58 @@ describe("owner notices", () => {
     expect(noticeFor(message("customer.subscription.updated", { status: "canceled", previousStatus: "unpaid" }), sub, "T")).toBeUndefined();
     expect(noticeFor(message("customer.subscription.updated", { status: "canceled" }), sub, "T")).toBeUndefined();
     expect(noticeFor(message("invoice.paid"), sub, "T")).toBeUndefined();
+  });
+});
+
+describe("the dates the access rules count from (billingAccess, supply-checkout-qdx)", () => {
+  const at = (ms: number) => new Date(ms).toISOString();
+
+  it("records when the subscription went past due, keeps it through retries, and removes it once it's paid", async () => {
+    subs.set("sub_test_1", subscription({ status: "past_due" }));
+    await worker(message("invoice.payment_failed"));
+    expect(meta().pastDueSince).toBe(at(NOW));
+    // A retry fails three days later: the grace still runs from the first
+    build(NOW + 3 * DAY_S * 1000);
+    await worker(message("invoice.payment_failed", { eventId: "evt_test_2" }));
+    expect(meta().pastDueSince).toBe(at(NOW));
+    expect(teamBody(meta() as never, "owner", new Date(NOW + 3 * DAY_S * 1000))).toMatchObject({ subscriptionEnded: false, paymentGraceEndsAt: at(NOW + 7 * DAY_S * 1000), readOnlyReason: null });
+    expect(teamBody(meta() as never, "owner", new Date(NOW + 7 * DAY_S * 1000))).toMatchObject({ subscriptionEnded: true, readOnlyReason: "payment_overdue", readOnlyDeletesAt: null, paymentGraceEndsAt: null });
+    subs.set("sub_test_1", subscription({ status: "active" }));
+    await worker(message("invoice.paid", { eventId: "evt_test_3" }));
+    expect(meta().pastDueSince).toBeUndefined();
+    expect(denied).toEqual([]);
+  });
+
+  it("records when the subscription ended, from Stripe's ended_at, says on /me and in the email when it's deleted, and clears it on a resubscription", async () => {
+    const ended = NOW - 2 * DAY_S * 1000;
+    subs.set("sub_test_1", subscription({ status: "canceled", ended_at: ended / 1000 }));
+    await worker(message("customer.subscription.deleted", { status: "canceled" }));
+    expect(meta().subscriptionEndedAt).toBe(at(ended));
+    const deletesAt = at(ended + 30 * DAY_S * 1000);
+    expect(mails.sent.map((m) => m.input)).toEqual([
+      { kind: "readOnly", teamName: "Echo Plumbing", deletesAt },
+      { kind: "readOnly", teamName: "Echo Plumbing", deletesAt },
+    ]);
+    expect(teamBody(meta() as never, "owner", new Date(NOW))).toMatchObject({ subscriptionEnded: true, readOnlyReason: "subscription_ended", readOnlyDeletesAt: deletesAt });
+    // Subscribed again: a new subscription replaces the ended one
+    subs.set("sub_test_2", subscription({ id: "sub_test_2", status: "active" }));
+    await worker(message("customer.subscription.created", { eventId: "evt_test_2", subscription: "sub_test_2" }));
+    expect(meta()).toMatchObject({ status: "active", stripeSubscriptionId: "sub_test_2" });
+    expect(meta().subscriptionEndedAt).toBeUndefined();
+    expect(denied).toEqual([]);
+  });
+
+  it("counts an unpaid subscription, which has no ended_at, from when it first saw it", async () => {
+    subs.set("sub_test_1", subscription({ status: "unpaid", ended_at: null }));
+    await worker(message("customer.subscription.updated", { status: "unpaid", previousStatus: "past_due" }));
+    expect(meta().subscriptionEndedAt).toBe(at(NOW));
+    await worker(message("customer.subscription.updated", { eventId: "evt_test_2", status: "unpaid", previousStatus: "unpaid" }));
+    expect(meta().subscriptionEndedAt).toBe(at(NOW));
+  });
+
+  it("sends no deletion date for a team with no date it ended (an ended team never applied with one)", async () => {
+    patchTeam({ status: "canceled", stripeSubscriptionId: "sub_test_1" });
+    expect(teamBody(meta() as never, "owner", new Date(NOW))).toMatchObject({ subscriptionEnded: true, readOnlyReason: "subscription_ended", readOnlyDeletesAt: null });
   });
 });
 

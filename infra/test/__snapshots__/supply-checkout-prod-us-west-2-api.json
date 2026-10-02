@@ -3204,6 +3204,10 @@
                         "stripeResyncFor",
                         "stripeReopenedAt",
                         "stripeCancelledFor",
+                        "trialEndsAt",
+                        "createdAt",
+                        "pastDueSince",
+                        "subscriptionEndedAt",
                         "role",
                         "email",
                         "userId"
@@ -3250,7 +3254,9 @@
                         "version",
                         "closedAt",
                         "purging",
-                        "stripeResyncFor"
+                        "stripeResyncFor",
+                        "pastDueSince",
+                        "subscriptionEndedAt"
                       ]
                     },
                     "StringEqualsIfExists": {

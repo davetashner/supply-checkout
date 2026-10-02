@@ -8,7 +8,7 @@ import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateComma
 import { type Db, connection } from "./client.js";
 import { ConflictError, ForbiddenError, conflictOnConditionFailure } from "./errors.js";
 import { id, keys, prefixes, teamPartition } from "./keys.js";
-import { isReadOnlyForBilling } from "./model.js";
+import { billingAccess, hasEnded } from "./model.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
 /** How long an event's records are kept: longer than Stripe retries an event (3 days) or a DLQ holds it. */
@@ -126,8 +126,14 @@ export interface BillingTeam {
   readonly purging: boolean;
   readonly stripeCustomerId?: string;
   readonly stripeSubscriptionId?: string;
-  /** Read-only because its subscription ended and no comp keeps it going (isReadOnlyForBilling). */
+  /** Read-only for billing, and no comp keeps it going (billingAccess). */
   readonly readOnly: boolean;
+  /** When it's closed and deleted unless it subscribes (billingAccess), when it's read-only for that. */
+  readonly deleteAfter?: string;
+  /** When its subscription went `past_due`, while it is (applySubscription). */
+  readonly pastDueSince?: string;
+  /** When its subscription ended, while it has (applySubscription). */
+  readonly subscriptionEndedAt?: string;
   /** Whether its subscription won't renew, as last applied (`cancelAtPeriodEnd`). */
   readonly cancelAtPeriodEnd: boolean;
   /** Reopened from this closure (its `closedAt`), and its subscription not yet resynced from Stripe (billing/reopening.ts). */
@@ -146,12 +152,14 @@ export async function getBillingTeam(db: Db, ctx: TeamContext, now = new Date())
       TableName: db.tableName,
       Key: keys.team(ctx.teamId),
       ConsistentRead: true,
-      ProjectionExpression: "#name, #status, #plan, seats, closedAt, purging, stripeCustomerId, stripeSubscriptionId, compPlan, compUntil, cancelAtPeriodEnd, stripeResyncFor, stripeReopenedAt, stripeCancelledFor",
+      ProjectionExpression:
+        "#name, #status, #plan, seats, closedAt, purging, stripeCustomerId, stripeSubscriptionId, compPlan, compUntil, cancelAtPeriodEnd, stripeResyncFor, stripeReopenedAt, stripeCancelledFor, trialEndsAt, createdAt, pastDueSince, subscriptionEndedAt",
       ExpressionAttributeNames: { "#name": "name", "#status": "status", "#plan": "plan" },
     }),
   );
   if (!Item) return undefined;
   const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+  const access = billingAccess(Item, now);
   return {
     teamId: ctx.teamId,
     name: str(Item.name) ?? "",
@@ -163,7 +171,10 @@ export async function getBillingTeam(db: Db, ctx: TeamContext, now = new Date())
     purging: Item.purging !== undefined,
     ...(str(Item.stripeCustomerId) ? { stripeCustomerId: Item.stripeCustomerId as string } : {}),
     ...(str(Item.stripeSubscriptionId) ? { stripeSubscriptionId: Item.stripeSubscriptionId as string } : {}),
-    readOnly: isReadOnlyForBilling(Item, now),
+    readOnly: access.readOnly,
+    ...(access.deleteAfter ? { deleteAfter: access.deleteAfter } : {}),
+    ...(str(Item.pastDueSince) ? { pastDueSince: Item.pastDueSince as string } : {}),
+    ...(str(Item.subscriptionEndedAt) ? { subscriptionEndedAt: Item.subscriptionEndedAt as string } : {}),
     cancelAtPeriodEnd: Item.cancelAtPeriodEnd === true,
     ...(str(Item.stripeResyncFor) ? { resyncFor: Item.stripeResyncFor as string } : {}),
     ...(str(Item.stripeReopenedAt) ? { reopenedAt: Item.stripeReopenedAt as string } : {}),
@@ -247,6 +258,8 @@ export interface SubscriptionState {
   readonly status: string;
   readonly currentPeriodEnd?: string;
   readonly cancelAtPeriodEnd: boolean;
+  /** When it ended (Stripe's `ended_at`), if it has and Stripe says. */
+  readonly endedAt?: string;
 }
 
 /**
@@ -257,6 +270,12 @@ export interface SubscriptionState {
  * changes no more; on the customer being the team's; and on the subscription
  * being the team's (or none yet, or the one it replaces). Applying the same
  * state twice changes nothing but `stripeSyncedAt` and the version.
+ *
+ * It also keeps the dates the access rules count from (billingAccess):
+ * `pastDueSince`, set the first time the status is `past_due` and kept while
+ * it stays so, and `subscriptionEndedAt`, Stripe's `ended_at` (or, for an
+ * `unpaid` subscription, which has none, when this first saw it ended) while
+ * the status is one of ENDED_STATUSES. Each is removed with any other status.
  *
  * With `asRead` (the nightly entitlement check, billing/entitlements.ts),
  * also conditioned on the team's status, plan, seats, subscription and
@@ -300,6 +319,18 @@ export async function applySubscription(db: Db, ctx: TeamContext, state: Subscri
     sets.push("currentPeriodEnd = :end");
     values[":end"] = state.currentPeriodEnd;
   }
+  // The dates the access rules count from (billingAccess): kept while the status lasts, removed after
+  const removes: string[] = [];
+  if (state.status === "past_due") {
+    sets.push("pastDueSince = if_not_exists(pastDueSince, :at)");
+  } else removes.push("pastDueSince");
+  if (hasEnded(state.status)) {
+    // Stripe's own time when it has one (a late or replayed event still counts from then), else when this first saw it
+    if (state.endedAt !== undefined) {
+      sets.push("subscriptionEndedAt = :ended");
+      values[":ended"] = state.endedAt;
+    } else sets.push("subscriptionEndedAt = if_not_exists(subscriptionEndedAt, :at)");
+  } else removes.push("subscriptionEndedAt");
   const unchanged: string[] = [];
   if (asRead) {
     // Every team is created with a status, plan and seats (createTeam); an absent one reads as "" or 0
@@ -325,7 +356,7 @@ export async function applySubscription(db: Db, ctx: TeamContext, state: Subscri
       new UpdateCommand({
         TableName: db.tableName,
         Key: keys.team(ctx.teamId),
-        UpdateExpression: `SET ${sets.join(", ")}`,
+        UpdateExpression: `SET ${sets.join(", ")}${removes.length ? ` REMOVE ${removes.join(", ")}` : ""}`,
         // Never recreates a purged team, never touches a closed or purging one
         ConditionExpression: [`attribute_exists(PK) AND stripeCustomerId = :customer AND attribute_not_exists(closedAt) AND attribute_not_exists(purging) AND ${subscription}`, ...unchanged].join(" AND "),
         ExpressionAttributeNames: { "#status": "status", "#version": "version", ...(state.plan !== undefined || asRead ? { "#plan": "plan" } : {}) },

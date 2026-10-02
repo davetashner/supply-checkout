@@ -32,11 +32,15 @@ const samples: EmailInput[] = [
   { kind: "passwordSet", at: "2026-09-30T14:05:09.000Z" },
   { kind: "twoStepOn", at: "2026-09-30T14:05:09.000Z" },
   { kind: "emailChanged", at: "2026-09-30T14:05:09.000Z" },
+  // Variants of a kind: last, since tests pick the ones above by position
+  { kind: "readOnly", teamName: "Echo Cleaning", reason: "subscription_ended", deletesAt: "2026-11-01T00:00:00.000Z" },
+  { kind: "readOnly", teamName: "Echo Cleaning", reason: "trial_ended", deletesAt: "2026-11-01T00:00:00.000Z" },
+  { kind: "readOnly", teamName: "Echo Cleaning", reason: "payment_overdue" },
 ];
 
 describe("templates", () => {
   it("has a sample for every kind", () => {
-    expect(samples.map((s) => s.kind).sort()).toEqual([...EMAIL_KINDS].sort());
+    expect([...new Set(samples.map((s) => s.kind))].sort()).toEqual([...EMAIL_KINDS].sort());
   });
 
   for (const input of samples) {
@@ -108,6 +112,25 @@ describe("templates", () => {
       const email = renderEmail({ ...(samples[0] as Extract<EmailInput, { kind: "invite" }>), role }, { appUrl: APP });
       expect(email.text).toContain(`as ${role === "owner" ? "an owner" : `a ${role}`}`);
     }
+  });
+
+  it("says why a team is read-only, and when it's deleted unless an owner subscribes (supply-checkout-qdx)", () => {
+    const text = (input: EmailInput) => renderEmail(input, { appUrl: APP }).text;
+    const ended = text({ kind: "readOnly", teamName: "Echo", reason: "subscription_ended", deletesAt: "2026-11-01T00:00:00.000Z" });
+    expect(ended).toContain("no longer has an active subscription");
+    expect(ended).toContain("On November 1, 2026, Echo and everything in it will be deleted, unless an owner subscribes before then.");
+    const trial = text({ kind: "readOnly", teamName: "Echo", reason: "trial_ended", deletesAt: "2026-11-01T00:00:00.000Z" });
+    expect(trial).toContain("The free trial for Echo has ended without a plan");
+    expect(trial).toContain("On November 1, 2026");
+    // No date known: no deletion promised or threatened
+    expect(text({ kind: "readOnly", teamName: "Echo" })).not.toContain("deleted,");
+    const overdue = text({ kind: "readOnly", teamName: "Echo", reason: "payment_overdue", deletesAt: "2026-11-01T00:00:00.000Z" });
+    expect(overdue).toContain("still overdue");
+    expect(overdue).toContain("Update payment method:");
+    expect(overdue).not.toContain("November 1");
+    // The trial and payment notices state the periods the access rules use
+    expect(text(samples[1] as EmailInput)).toContain("for 30 days. After that, the team and everything in it are deleted.");
+    expect(text(samples[2] as EmailInput)).toContain("keeps working for 7 days while we try again");
   });
 
   it("leaves out the retry date when Stripe gave none", () => {
@@ -528,7 +551,7 @@ describe("email events", () => {
 
   it("writes only names no other item in a team's partition has, so it can't change a team's billing status", () => {
     const team: Required<Team> = {
-      type: "team", teamId: "t", name: "n", plan: "p", seats: 1, status: "active", homeRegion: "r", trialEndsAt: "d", owners: 1, members: 1, stripeCustomerId: "c", stripeSubscriptionId: "s", billingInterval: "month", currentPeriodEnd: "d", cancelAtPeriodEnd: false, stripeSyncedAt: "d", closedAt: "d", closedBy: "u", purgeAfter: "d", purging: "d", createdAt: "d", version: 1,
+      type: "team", teamId: "t", name: "n", plan: "p", seats: 1, status: "active", homeRegion: "r", trialEndsAt: "d", owners: 1, members: 1, stripeCustomerId: "c", stripeSubscriptionId: "s", billingInterval: "month", currentPeriodEnd: "d", cancelAtPeriodEnd: false, stripeSyncedAt: "d", pastDueSince: "d", subscriptionEndedAt: "d", closedAt: "d", closedBy: "u", purgeAfter: "d", purging: "d", createdAt: "d", version: 1,
       compPlan: "p", compSeats: 1, compUntil: "d", compReason: "r", compBy: "o", compAt: "d",
     };
     const member: Required<Member> = { type: "member", teamId: "t", userId: "u", role: "owner", email: "e", joinedAt: "d" };

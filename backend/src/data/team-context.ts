@@ -18,16 +18,17 @@ import { gsi1, gsi3, id, keys, prefixes, strip } from "./keys.js";
 import {
   type Invite,
   type Member,
+  type ReadOnlyReason,
   type Role,
   type Team,
   type UserTeam,
   MAX_TEAMS_PER_USER,
   TEAMS_PER_USER_PER_DAY,
   TRIAL_DAYS,
+  billingAccess,
   hashInviteToken,
   isClosed,
   isMemberRole,
-  isReadOnlyForBilling,
   normalizeEmail,
   teamCounts,
   teamIdForRequest,
@@ -59,29 +60,33 @@ export class TeamContext {
    */
   readonly closed: boolean;
   /**
-   * The team's subscription had ended, with no live comp, when the context
-   * was issued (isReadOnlyForBilling): read-only like a closed team, except
-   * for what `whileEnded` also allows (writable). Always false for system
-   * contexts.
+   * The team was read-only for billing when the context was issued
+   * (billingAccess: its trial or subscription ended, or a payment is overdue
+   * past the grace period, with no live comp): read-only like a closed team,
+   * except for what `whileEnded` also allows (writable). Always false for
+   * system contexts.
    */
   readonly subscriptionEnded: boolean;
+  /** Why, when `subscriptionEnded`. */
+  readonly readOnlyReason?: ReadOnlyReason;
 
-  constructor(token: symbol, teamId: string, userId: string, role: Role, homeRegion: string, closed = false, subscriptionEnded = false) {
+  constructor(token: symbol, teamId: string, userId: string, role: Role, homeRegion: string, closed = false, readOnlyReason?: ReadOnlyReason) {
     if (token !== ISSUE) throw new ForbiddenError("TeamContext can only be issued by the data layer");
     this.teamId = teamId;
     this.userId = userId;
     this.role = role;
     this.homeRegion = homeRegion;
     this.closed = closed;
-    this.subscriptionEnded = subscriptionEnded;
+    this.subscriptionEnded = readOnlyReason !== undefined;
+    if (readOnlyReason !== undefined) this.readOnlyReason = readOnlyReason;
     Object.freeze(this);
     issued.add(this);
   }
 }
 
 // Not exported: only the issuers below can call it.
-function issue(teamId: string, userId: string, role: Role, homeRegion: string, closed = false, subscriptionEnded = false): TeamContext {
-  return new TeamContext(ISSUE, teamId, userId, role, homeRegion, closed, subscriptionEnded);
+function issue(teamId: string, userId: string, role: Role, homeRegion: string, closed = false, readOnlyReason?: ReadOnlyReason): TeamContext {
+  return new TeamContext(ISSUE, teamId, userId, role, homeRegion, closed, readOnlyReason);
 }
 
 /** Throws unless `ctx` was issued by this file. */
@@ -104,10 +109,13 @@ export function readable(ctx: TeamContext): TeamContext {
  *
  * A closed team is read-only (TeamClosedError), except for what `whileClosed`
  * allows: leaving or removing a member, revoking invites, closing it again and
- * reopening it (reopenTeam). A team whose subscription ended is read-only too
- * (SubscriptionEndedError), except for what `whileClosed` allows and what
- * `whileEnded` also does: a member keeping their own email current, and an
- * owner linking the Stripe customer to subscribe again.
+ * reopening it (reopenTeam). A team that's read-only for billing (its trial
+ * or subscription ended, or a payment is overdue past the grace period:
+ * billingAccess) is read-only too (SubscriptionEndedError), except for what
+ * `whileClosed` allows and what `whileEnded` also does: a member keeping their
+ * own email current, and an owner linking the Stripe customer to subscribe
+ * again. So members can still leave and owners remove members, but nobody can
+ * invite or change roles.
  * System processes (billing, email events) aren't held to either.
  */
 export function writable(db: Db, ctx: TeamContext, minimum: Role = "contributor", options: { readonly whileClosed?: boolean; readonly whileEnded?: boolean } = {}): TeamContext {
@@ -116,21 +124,27 @@ export function writable(db: Db, ctx: TeamContext, minimum: Role = "contributor"
   const rank = RANK[ctx.role] as number | undefined;
   if (rank === undefined || rank < RANK[minimum]) throw new ForbiddenError(`Needs the ${minimum} role`);
   if (ctx.closed && ctx.role !== "system" && !options.whileClosed) throw new TeamClosedError(TEAM_CLOSED);
-  if (ctx.subscriptionEnded && ctx.role !== "system" && !options.whileClosed && !options.whileEnded) throw new SubscriptionEndedError(SUBSCRIPTION_ENDED);
+  if (ctx.subscriptionEnded && ctx.role !== "system" && !options.whileClosed && !options.whileEnded) throw new SubscriptionEndedError(READ_ONLY[ctx.readOnlyReason ?? "subscription_ended"]);
   const target = writeRegionFor(ctx, db.region);
   if (target !== db.region) throw new Error(`Writes for this team go to ${target}; forwarding is phase 2`);
   return ctx;
 }
 
 const TEAM_CLOSED = "This team was closed. It's read-only until its data is deleted.";
-const SUBSCRIPTION_ENDED = "This team's subscription ended, so it's read-only. An owner can subscribe again to make changes.";
+/** What a write refused for billing says, by why the team is read-only (billingAccess). The API's reason is `subscription_ended` for all three. */
+const READ_ONLY: Record<ReadOnlyReason, string> = {
+  subscription_ended: "This team's subscription ended, so it's read-only. An owner can subscribe again to make changes.",
+  trial_ended: "This team's free trial ended, so it's read-only. An owner can subscribe to make changes.",
+  payment_overdue: "This team's payment is overdue, so it's read-only. An owner can update the payment method in Billing to make changes.",
+};
 
 /**
  * Builds the context for a verified user acting on a team. Call it from the
  * authorizer with the user ID from the validated JWT and the team the request
- * names. Throws ForbiddenError if the user isn't a member.
+ * names. Throws ForbiddenError if the user isn't a member. `now` decides
+ * whether the team is read-only for billing (billingAccess).
  */
-export async function authorizeTeam(db: Db, userId: string, teamId: string): Promise<TeamContext> {
+export async function authorizeTeam(db: Db, userId: string, teamId: string, now = new Date()): Promise<TeamContext> {
   id(userId, "user ID");
   id(teamId, "team ID");
   // One strongly consistent, all-or-nothing read of the team and the membership
@@ -141,7 +155,8 @@ export async function authorizeTeam(db: Db, userId: string, teamId: string): Pro
           Get: {
             TableName: db.tableName,
             Key: keys.team(teamId),
-            ProjectionExpression: "homeRegion, closedAt, #status, compPlan, compUntil",
+            // What billingAccess reads, and the home region and closure
+            ProjectionExpression: "homeRegion, closedAt, #status, trialEndsAt, createdAt, stripeSubscriptionId, pastDueSince, subscriptionEndedAt, compPlan, compUntil",
             ExpressionAttributeNames: { "#status": "status" },
           },
         },
@@ -160,7 +175,7 @@ export async function authorizeTeam(db: Db, userId: string, teamId: string): Pro
   if (!meta || !membership) throw new ForbiddenError("Not a member of this team");
   // A MEMBER item with a missing or unknown role is treated as no membership
   if (!isMemberRole(membership.role)) throw new ForbiddenError("Not a member of this team");
-  return issue(teamId, userId, membership.role, meta.homeRegion as string, isClosed(meta), isReadOnlyForBilling(meta));
+  return issue(teamId, userId, membership.role, meta.homeRegion as string, isClosed(meta), billingAccess(meta, now).reason);
 }
 
 /** The per-item reasons DynamoDB gave for cancelling a transaction, if it did. */
@@ -278,7 +293,7 @@ export async function createTeam(
   // The team exists. With a request key, that's this user's earlier create:
   // hand back what it made, as long as they're still a member.
   if (input.requestKey !== undefined) {
-    const context = await authorizeTeam(db, userId, teamId).catch((e: unknown) => {
+    const context = await authorizeTeam(db, userId, teamId, now).catch((e: unknown) => {
       if (e instanceof ForbiddenError) return undefined;
       throw e;
     });
@@ -424,7 +439,7 @@ export async function acceptInvite(
     }
     return conflictOnConditionFailure("Someone else changed this team; try again")(error);
   }
-  return authorizeTeam(db, userId, invite.teamId);
+  return authorizeTeam(db, userId, invite.teamId, now);
 }
 
 /**

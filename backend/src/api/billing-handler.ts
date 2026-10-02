@@ -92,7 +92,7 @@ import {
   TeamClosedError,
   type TeamContext,
   totpOnAt,
-  TRIAL_DAYS,
+  trialEnd,
 } from "../data/index.js";
 import { BusinessMetric, type BusinessMetricName, type Observability } from "../observability/index.js";
 import type { DbForBilling } from "./billing-db.js";
@@ -227,7 +227,6 @@ const FAILURES: Record<BillingRoute["action"], { readonly message: string; reado
 const ROUTES = new Map(BILLING_ROUTES.map((r) => [routeKey(r), r]));
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const REQUEST_KEY = /^[A-Za-z0-9_-]{8,128}$/;
-const DAY_MS = 24 * 60 * 60_000;
 
 /**
  * Stripe wants a subscription's trial to end at least 48 hours after the
@@ -242,13 +241,8 @@ export function errorFor(error: unknown): ApiError {
   return dataErrorFor(error);
 }
 
-/** When the team's free trial ends: `trialEndsAt`, or TRIAL_DAYS after it was made for a team from before trials. */
-export function trialEnd(team: Pick<Team, "trialEndsAt" | "createdAt">): number {
-  const at = Date.parse(team.trialEndsAt ?? "");
-  if (Number.isFinite(at)) return at;
-  const created = Date.parse(team.createdAt);
-  return Number.isFinite(created) ? created + TRIAL_DAYS * DAY_MS : 0;
-}
+/** When the team's free trial ends (data/model.ts): `trialEndsAt`, or TRIAL_DAYS after it was made for a team from before trials. */
+export { trialEnd };
 
 /** A request's idempotency key for one Stripe create: the same inputs give the same key, so a retry makes nothing new. */
 export function idempotencyKey(kind: string, teamId: string, parts: unknown): string {
@@ -263,7 +257,7 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
   async function ownerContext(event: DataEvent, userId: string, route: BillingRoute): Promise<TeamContext> {
     const teamId = event.pathParameters?.teamId;
     if (typeof teamId !== "string" || !ID.test(teamId)) throw new ApiError(400, "bad_request", "Invalid team ID");
-    const ctx = await authorizeTeam(dbFor({ teamId }), userId, teamId).catch((error: unknown) => {
+    const ctx = await authorizeTeam(dbFor({ teamId }), userId, teamId, new Date(now())).catch((error: unknown) => {
       if (error instanceof ForbiddenError) throw notMember();
       throw error;
     });

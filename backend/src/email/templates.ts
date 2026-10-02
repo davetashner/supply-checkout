@@ -20,6 +20,7 @@
 // name is defanged too (teamLabel), and an invite quotes the name, so a
 // name can't pose as an instruction from us.
 
+import { PAYMENT_GRACE_DAYS as GRACE_DAYS, READ_ONLY_RETENTION_DAYS as READ_ONLY_DAYS, type ReadOnlyReason } from "../data/index.js";
 import type { EmailKind } from "./names.js";
 
 export type InviteRole = "owner" | "contributor" | "viewer";
@@ -37,7 +38,14 @@ export type EmailInput =
     }
   | { readonly kind: "trialEnding"; readonly teamName: string; readonly trialEndsAt: string }
   | { readonly kind: "paymentFailed"; readonly teamName: string; readonly nextAttemptAt?: string }
-  | { readonly kind: "readOnly"; readonly teamName: string }
+  | {
+      readonly kind: "readOnly";
+      readonly teamName: string;
+      /** Why (billingAccess): the subscription ended (the default), the trial ended without one, or a payment is overdue past the grace period. */
+      readonly reason?: ReadOnlyReason;
+      /** When the team is deleted unless an owner subscribes (ISO 8601), if it will be. */
+      readonly deletesAt?: string;
+    }
   | { readonly kind: "exportReady"; readonly teamName: string; readonly exportId: string; readonly expiresAt: string }
   | {
       readonly kind: "teamClosed";
@@ -244,7 +252,8 @@ function content(input: EmailInput, appUrl: string): Content {
         heading: "Your free trial is ending",
         paragraphs: [
           `The free trial for ${team} ends on ${ends}.`,
-          "To keep checking supplies out and editing sheets, an owner can add a payment method in the app. After the trial, the team stays readable, and nothing is deleted.",
+          "To keep checking supplies out and editing sheets, an owner can choose a plan and add a payment method in the app.",
+          `If there's no plan when the trial ends, ${team} becomes read-only: everyone on the team can still see it, and owners can export it, for ${READ_ONLY_DAYS} days. After that, the team and everything in it are deleted.`,
         ],
         button: { label: "Open Supply Checkout", url: appLink(appUrl, "/") },
       };
@@ -257,22 +266,38 @@ function content(input: EmailInput, appUrl: string): Content {
         heading: "We couldn't take your payment",
         paragraphs: [
           `The latest payment for ${team}'s Supply Checkout subscription didn't go through.${retry}`,
-          "An owner can update the payment method in the app. If payments keep failing, the team becomes read-only until the subscription is paid.",
+          `An owner can update the payment method in the app, from Billing. The team keeps working for ${GRACE_DAYS} days while we try again. If the payment still hasn't gone through by then, the team becomes read-only until the subscription is paid.`,
         ],
         button: { label: "Update payment method", url: appLink(appUrl, "/") },
       };
     }
-    case "readOnly":
+    case "readOnly": {
+      const deletes = input.deletesAt ? formatDate(input.deletesAt) : undefined;
+      if (input.reason === "payment_overdue") {
+        return {
+          subject: `${team} is now read-only on Supply Checkout`,
+          preheader: "The payment is still overdue. Update the payment method to edit again.",
+          heading: `${team} is read-only`,
+          paragraphs: [
+            `The payment for ${team}'s Supply Checkout subscription is still overdue, so its sheets and inventory are read-only until it's paid. Nothing has been deleted: everyone on the team can still see it, and owners can still export it.`,
+            "An owner can update the payment method in the app, from Billing, to start editing again.",
+          ],
+          button: { label: "Update payment method", url: appLink(appUrl, "/") },
+        };
+      }
+      const why = input.reason === "trial_ended" ? `The free trial for ${team} has ended without a plan` : `${team} no longer has an active subscription`;
       return {
         subject: `${team} is now read-only on Supply Checkout`,
-        preheader: `Your team's data is safe. Subscribe to edit again.`,
+        preheader: deletes ? `Subscribe by ${deletes} to keep your team's data.` : "Your team's data is safe. Subscribe to edit again.",
         heading: `${team} is read-only`,
         paragraphs: [
-          `${team} no longer has an active subscription, so its sheets and inventory are read-only. Nothing has been deleted: everyone on the team can still see it, and owners can still export it.`,
+          `${why}, so its sheets and inventory are read-only. Nothing has been deleted yet: everyone on the team can still see it, and owners can still export it.`,
+          ...(deletes ? [`On ${deletes}, ${team} and everything in it will be deleted, unless an owner subscribes before then.`] : []),
           "An owner can subscribe in the app to start editing again.",
         ],
         button: { label: "Open Supply Checkout", url: appLink(appUrl, "/") },
       };
+    }
     case "exportReady": {
       const expires = formatDate(input.expiresAt);
       return {
