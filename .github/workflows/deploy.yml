@@ -599,6 +599,7 @@ jobs:
       # CDK doesn't ask about IAM changes: approving this job, after reading the plan's diff,
       # is the approval
       - name: Deploy
+        id: deploy
         if: needs.plan.outputs.stateless-changed == 'true'
         working-directory: infra
         run: |
@@ -640,16 +641,32 @@ jobs:
           node .deploy-tools/scripts/publish-web.mjs publish --channel app --dir "$web/web" --version "app-$TAG" --reuse --env "$ENV_NAME" --profile web-publisher
           node .deploy-tools/scripts/publish-web.mjs publish --channel demo --dir "$web/demo" --version "demo-$TAG" --reuse --env "$ENV_NAME" --profile web-publisher
       - name: Check the live router
+        id: router
         run: node .deploy-tools/scripts/publish-web.mjs check-router --env "$ENV_NAME" --profile web-publisher
       - name: Check the live site
+        id: site
         run: |
           web="$RUNNER_TEMP/web-build"
           node .deploy-tools/scripts/check-web.mjs --env "$ENV_NAME" --app-index "$web/web/index.html" --demo-index "$web/demo/index.html"
           echo "Published and live: app-$TAG, demo-$TAG" >> "$GITHUB_STEP_SUMMARY"
-      # Anything above failed, or the run was cancelled or timed out, after publishing started:
-      # put back what was live before
+      # Read-only checks of what the web checks don't cover (supply-checkout-pbp.30): the API
+      # refuses an anonymous caller, live updates and sign-in answer. It makes no AWS calls. A
+      # failure here is the stacks', not the web app's, so it doesn't roll the web publish back
+      # (the new app is what matches the new API); the stacks are rolled back by hand
+      # (docs/releases.md, "When a post-deploy check fails").
+      - name: Post-deploy checks
+        id: smoke
+        run: node .deploy-tools/scripts/smoke-checks.mjs --env "$ENV_NAME" --summary "$GITHUB_STEP_SUMMARY"
+      # Hook for the core journey canary (supply-checkout-pkt, after the pilot): run it once
+      # here, whatever the hour, after the checks above (ADR 0012), and fail the deploy if it
+      # fails. Starting a Synthetics canary needs synthetics:StartCanaryDryRun or StartCanary,
+      # which no role the deploy role may assume has today; pkt adds it (docs/releases.md).
+      # The publish, the router or the site check failed, or the run was cancelled or timed out,
+      # after publishing started: put back what was live before. Not for the post-deploy
+      # checks alone (above).
       - name: Roll the web app and demo back
-        if: (failure() || cancelled()) && steps.publish.outputs.started == 'true'
+        id: rollback
+        if: (failure() || cancelled()) && steps.publish.outputs.started == 'true' && steps.smoke.outcome != 'failure'
         env:
           APP: ${{ steps.before.outputs.app }}
           DEMO: ${{ steps.before.outputs.demo }}
@@ -681,3 +698,40 @@ jobs:
             echo "::error::The web publish failed and the rollback didn't finish: check the live versions by hand (docs/web-app.md)"
           fi
           exit 1
+      # One place that says what happened, whatever happened
+      - name: Deploy summary
+        if: always()
+        env:
+          CHANGED: ${{ needs.plan.outputs.stateless-changed }}
+          DEPLOY: ${{ steps.deploy.outcome }}
+          PUBLISH: ${{ steps.publish.outcome }}
+          ROUTER: ${{ steps.router.outcome }}
+          SITE: ${{ steps.site.outcome }}
+          SMOKE: ${{ steps.smoke.outcome }}
+          ROLLBACK: ${{ steps.rollback.outcome }}
+        run: |
+          if [[ "$CHANGED" == true ]]; then stacks="${DEPLOY:-not run}"; else stacks="no changes"; fi
+          {
+            echo "## Deploy of $TAG"
+            echo
+            echo "| Step | Outcome |"
+            echo "| --- | --- |"
+            echo "| Stateless stacks | $stacks |"
+            echo "| Publish app-$TAG and demo-$TAG | ${PUBLISH:-not run} |"
+            echo "| Live router | ${ROUTER:-not run} |"
+            echo "| Live site | ${SITE:-not run} |"
+            echo "| Post-deploy checks | ${SMOKE:-not run} |"
+            echo "| Web rollback | ${ROLLBACK:-not run} |"
+            echo
+            if [[ "$SMOKE" == failure ]]; then
+              echo "**The post-deploy checks failed.** The web app stays on app-$TAG. See docs/releases.md, \"When a post-deploy check fails\": if users are affected, deploy the previous tag again; otherwise fix forward."
+            elif [[ "$ROLLBACK" == success ]]; then
+              echo "**The web publish failed or was cancelled, and was rolled back** to what was live before."
+            elif [[ "$ROLLBACK" == failure ]]; then
+              echo "**The web publish failed or was cancelled, and its rollback didn't finish.** Check the live versions by hand (docs/web-app.md)."
+            elif [[ "$SMOKE" == success ]]; then
+              echo "Deployed, published and checked."
+            else
+              echo "**The deploy failed before publishing:** nothing on the web changed; see the failed step."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
