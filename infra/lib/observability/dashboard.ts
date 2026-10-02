@@ -115,6 +115,7 @@ export class OpsDashboard extends Construct {
       businessGraph("J5: receipt reads and lines", [BusinessMetric.ReceiptReads, BusinessMetric.ReceiptReadFailures, BusinessMetric.ReceiptLines]),
       businessGraph("J5: receipt tokens", [BusinessMetric.ReceiptTokens]),
     );
+    this.dashboard.addWidgets(businessGraph("J5: receipt limits", [BusinessMetric.ReceiptRateLimited, BusinessMetric.ReceiptLimitReached, BusinessMetric.ReceiptTrialsNearLimit, BusinessMetric.ReceiptPaidTeamsNearLimit]));
     this.dashboard.addWidgets(graph("J5: receipt model call p95 (ms)", each((r) => business(BusinessMetric.ReceiptReadLatency, r, FIVE_MINUTES, "p95")), WIDTH / 4));
     this.dashboard.addWidgets(
       businessGraph("J1: sign-ups", [BusinessMetric.SignUps]),

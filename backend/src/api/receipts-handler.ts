@@ -1,26 +1,53 @@
 // Reading a receipt photo (ADR 0008, docs/api/openapi.yaml):
 // POST /teams/{teamId}/receipts/read with the photo, answered with the lines
 // Claude read from it, for the app's review screen. Nothing is saved, here or
-// anywhere: the user checks every line and saves through the data API.
+// anywhere: the user checks every line and saves through the data API. And
+// GET /teams/{teamId}/receipts/usage: the team's reads against its allowance.
 //
 // In order, on every request:
 // 1. The caller is checked as on every team route (data-handler.ts): an
 //    access token, the user from `sub`, the team from the path only, the
-//    membership read on the team-scoped role session (team-db.ts), and at
-//    least contributor (routes.ts, minRole).
+//    membership read on a role session tagged with that team and that user
+//    (team-db.ts, receiptScopedDbs), and at least contributor (routes.ts,
+//    minRole).
 // 2. The photo is checked before anything is spent: a JPEG or PNG, by its
 //    bytes as well as its declared type, at most MAX_RECEIPT_IMAGE_BYTES.
-// 3. One receipt is counted against the team's monthly limit, atomically, so
-//    two reads at once can't both take the last one (data/usage.ts). The
-//    count also refuses a closed team and one whose subscription ended.
+// 3. One read is counted against the caller's per-user rate limit
+//    (RECEIPT_RATE_LIMITS, from all their teams together, and for a trial
+//    team's read RECEIPT_TRIAL_READS_PER_USER_PER_DAY; 429 `rate_limited`
+//    with Retry-After), then against the team's allowance: a month's while
+//    it pays, its trial's in all while it doesn't (429 `receipt_limit`).
+//    Each counter is atomic, so reads at once can't go past it
+//    (data/usage.ts). Both refuse a closed team and one whose subscription
+//    ended. Rate counts are attempts and are never given back.
 // 4. The team's inventory is read for matching, and the model is called with
-//    a deadline (RECEIPT_DEADLINE_MS) under API Gateway's 30 seconds.
+//    a deadline (RECEIPT_DEADLINE_MS) under API Gateway's 30 seconds. If the
+//    model service refuses the call before billing any tokens (throttled, or
+//    a 503), the team's read is given back (refundReceipt); anything else (a
+//    timeout, a bad reply, a 500, a network error) still counts, since its
+//    tokens may have been billed.
 //
 // Logs and metrics carry sizes, timings, token counts and error names only:
 // never the photo, the prompt, the inventory or anything the model read.
 
 import type { APIGatewayProxyStructuredResultV2, Context } from "aws-lambda";
-import { authorizeTeam, ForbiddenError, LimitReachedError, listDocuments, RECEIPTS_PER_TEAM_PER_MONTH, recordReceiptRead, type TeamContext, usageMonth } from "../data/index.js";
+import {
+  authorizeTeam,
+  crossesNearLimit,
+  type Db,
+  ForbiddenError,
+  getReceiptAllowance,
+  getReceiptQuota,
+  LimitReachedError,
+  listDocuments,
+  RateLimitedError,
+  type ReceiptAllowance,
+  type ReceiptQuota,
+  refundReceipt,
+  takeReceipt,
+  takeReceiptRate,
+  type TeamContext,
+} from "../data/index.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import { MAX_INVENTORY_LINES } from "../receipts/prompt.js";
 import { RECEIPT_MEDIA_TYPES, type ReceiptMediaType, type ReceiptModel, ReceiptReadError, readReceipt, usageOf } from "../receipts/reader.js";
@@ -28,7 +55,7 @@ import { callerId, type DataEvent, errorFor } from "./data-handler.js";
 import { ApiError, errorResponse, json, jsonBody, notMember } from "./http.js";
 import { requireRole } from "./roles.js";
 import { RECEIPT_ROUTES, routeKey } from "./routes.js";
-import type { DbForTeam } from "./team-db.js";
+import type { DbForTeamUser } from "./team-db.js";
 
 /**
  * The largest photo the endpoint takes, decoded. The app shrinks photos to at
@@ -51,7 +78,8 @@ export const RECEIPT_DEADLINE_MS = 25_000;
 const SAFETY_MS = 2_000;
 
 export interface ReceiptsHandlerDeps {
-  readonly dbForTeam: DbForTeam;
+  /** The team's and the caller's role session (receiptScopedDbs). */
+  readonly dbFor: DbForTeamUser;
   readonly obs: Observability;
   readonly model: ReceiptModel;
   /** RECEIPT_MODEL_ID. */
@@ -59,9 +87,10 @@ export interface ReceiptsHandlerDeps {
   readonly now?: () => number;
   /** Defaults to RECEIPT_DEADLINE_MS. */
   readonly deadlineMs?: number;
-  /** Defaults to RECEIPTS_PER_TEAM_PER_MONTH. */
-  readonly monthlyLimit?: number;
+  /** For tests: the team's allowance instead of the one its plan gives (receiptAllowance). */
+  readonly allowance?: ReceiptAllowance;
 }
+
 
 const ROUTES = new Map(RECEIPT_ROUTES.map((r) => [routeKey(r), r]));
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -110,22 +139,41 @@ function readFailure(error: ReceiptReadError): ApiError {
 
 export function createReceiptsHandler(deps: ReceiptsHandlerDeps) {
   const now = deps.now ?? Date.now;
-  const limit = deps.monthlyLimit ?? RECEIPTS_PER_TEAM_PER_MONTH;
   const deadlineMs = deps.deadlineMs ?? RECEIPT_DEADLINE_MS;
 
-  async function read(event: DataEvent, ctx: TeamContext, context: Context | undefined, log: Record<string, string | number>): Promise<APIGatewayProxyStructuredResultV2> {
+  /** Counts the read against the caller's rate and the team's allowance, or refuses it. */
+  async function take(db: Db, ctx: TeamContext, log: Record<string, string | number>): Promise<ReceiptQuota> {
+    const at = new Date(now());
+    const metadata = { teamId: ctx.teamId };
+    // The allowance first: a trial team's read also counts in the user's trial reads for the day
+    const allowance = deps.allowance ?? (await getReceiptAllowance(db, ctx, at));
+    log.allowance = allowance.period;
+    try {
+      await takeReceiptRate(db, ctx, allowance.period, at);
+    } catch (error) {
+      if (!(error instanceof RateLimitedError)) throw error;
+      deps.obs.count(BusinessMetric.ReceiptRateLimited, 1, metadata);
+      log.refused = "rate_limited";
+      throw new ApiError(429, "quota_exceeded", error.message, "rate_limited", { "retry-after": String(error.retryAfterSeconds) });
+    }
+    try {
+      const taken = await takeReceipt(db, ctx, allowance, at);
+      // Split by period: a trial's crossing alarms (a farm shows as many), a paying team's is for the dashboard
+      if (crossesNearLimit(taken)) deps.obs.count(taken.period === "trial" ? BusinessMetric.ReceiptTrialsNearLimit : BusinessMetric.ReceiptPaidTeamsNearLimit, 1, metadata);
+      return taken;
+    } catch (error) {
+      if (!(error instanceof LimitReachedError)) throw error;
+      deps.obs.count(BusinessMetric.ReceiptLimitReached, 1, { ...metadata, period: allowance.period });
+      log.refused = "receipt_limit";
+      throw new ApiError(429, "quota_exceeded", error.message, "receipt_limit");
+    }
+  }
+
+  async function read(event: DataEvent, ctx: TeamContext, db: Db, context: Context | undefined, log: Record<string, string | number>): Promise<APIGatewayProxyStructuredResultV2> {
     const body = jsonBody(event, ["image"], MAX_RECEIPT_BODY_BYTES);
     const image = receiptImage(body.image);
     log.imageBytes = image.bytes;
-    const db = deps.dbForTeam(ctx.teamId);
-    const month = usageMonth(new Date(now()));
-    let used: number;
-    try {
-      used = await recordReceiptRead(db, ctx, month, limit);
-    } catch (error) {
-      if (error instanceof LimitReachedError) throw new ApiError(429, "quota_exceeded", `This team has read all ${limit} receipts included this month.`, "receipt_limit");
-      throw error;
-    }
+    const taken = await take(db, ctx, log);
     const products = await listDocuments(db, ctx, "products", { limit: MAX_INVENTORY_LINES });
     const inventory = products.items.map((doc) => ({ key: doc.id, name: doc.data.name, price: doc.data.price }));
     log.inventoryItems = inventory.length;
@@ -141,11 +189,19 @@ export function createReceiptsHandler(deps: ReceiptsHandlerDeps) {
     try {
       const { result, usage } = await readReceipt(deps.model, { modelId: deps.modelId, image, inventory, signal: abort.signal, timeoutMs: budget });
       Object.assign(log, { modelMs: now() - started, items: result.items.length, ...tokenFields(usage) });
-      return json(200, { ...result, usage: { month, used, limit } });
+      return json(200, { ...result, usage: taken });
     } catch (error) {
       if (!(error instanceof ReceiptReadError)) throw error;
       deps.obs.count(BusinessMetric.ReceiptReadFailures, 1, metadata);
       Object.assign(log, { modelMs: now() - started, failure: error.kind, failureDetail: error.detail, ...tokenFields(usageOf(error)) });
+      // Only a throttle or a 503 from the model service, with no tokens: see ReceiptReadError.refundable
+      if (error.refundable && !usageOf(error)) {
+        // Best effort: the answer is the failure either way
+        log.refunded = await refundReceipt(db, ctx, taken).then(
+          () => 1,
+          () => 0,
+        );
+      }
       throw readFailure(error);
     } finally {
       clearTimeout(timer);
@@ -167,14 +223,15 @@ export function createReceiptsHandler(deps: ReceiptsHandlerDeps) {
       if (typeof teamId !== "string") throw new ApiError(400, "bad_request", "Missing team ID");
       let ctx: TeamContext;
       try {
-        ctx = await authorizeTeam(deps.dbForTeam(teamId), userId, teamId);
+        ctx = await authorizeTeam(deps.dbFor(teamId, userId), userId, teamId);
       } catch (error) {
         // Not a member, or no such team: one answer for both
         if (error instanceof ForbiddenError) throw notMember();
         throw error;
       }
       requireRole(ctx.role, route.minRole);
-      const response = await read(event, ctx, context, log);
+      const db = deps.dbFor(teamId, userId);
+      const response = route.action === "receiptUsage" ? json(200, { usage: await getReceiptQuota(db, ctx, new Date(now())) }) : await read(event, ctx, db, context, log);
       status = response.statusCode ?? 200;
       return response;
     } catch (error) {

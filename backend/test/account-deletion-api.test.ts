@@ -12,7 +12,7 @@ import type { CognitoUser } from "../src/api/cognito-user.js";
 import { createDataHandler, type DataEvent } from "../src/api/data-handler.js";
 import { ApiError } from "../src/api/http.js";
 import { ACCOUNT_ROUTES, DATA_ROUTES, routeKey } from "../src/api/routes.js";
-import { authorizeTeam, CLOSED_TEAM_RETENTION_DAYS, createInvite, REOPEN_CUTOFF_MINUTES, hashEmail, listTeamsToPurge, liveUpdateRecipients, purgeTeam, recordReceiptRead, startAccountDeletion, TeamClosedError, updateTeam } from "../src/data/index.js";
+import { authorizeTeam, CLOSED_TEAM_RETENTION_DAYS, createInvite, REOPEN_CUTOFF_MINUTES, hashEmail, listTeamsToPurge, liveUpdateRecipients, purgeTeam, startAccountDeletion, takeReceipt, takeReceiptRate, TeamClosedError, updateTeam } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { CLOSED_TEAMS_TO_END_PER_RUN, HELD_PURGE_GRACE_DAYS, MAX_LOGGED_SET_ASIDE, PURGE_BUDGET_MS, STRIPE_FAILURES_BEFORE_QUEUEING } from "../src/ops/names.js";
 import { createTeamPurgeHandler } from "../src/ops/team-purge-handler.js";
@@ -259,7 +259,8 @@ describe("closing a team", () => {
     const owner = await authorizeTeam(table.db("team-a"), OWNER, "team-a");
     await expect(updateTeam(table.db("team-a"), owner, { name: "Renamed" }, 2)).rejects.toBeInstanceOf(TeamClosedError);
     const pat = await authorizeTeam(table.db("team-a"), PAT, "team-a");
-    await expect(recordReceiptRead(table.db("team-a"), pat, "2026-09", 200)).rejects.toBeInstanceOf(TeamClosedError);
+    await expect(takeReceipt(table.db("team-a"), pat, { period: "month", limit: 200 }, new Date("2026-09-15T00:00:00Z"))).rejects.toBeInstanceOf(TeamClosedError);
+    await expect(takeReceiptRate(table.db("team-a"), pat, "month", new Date("2026-09-15T00:00:00Z"))).rejects.toBeInstanceOf(TeamClosedError);
     expect(meta()).toMatchObject({ name: "Team team-a", version: 2 });
     expect(table.get("TEAM#team-a", "USAGE#2026-09")).toBeUndefined();
   });

@@ -3,7 +3,7 @@
 // into another key (for example, a sheet ID containing "#").
 
 import { InvalidInputError } from "./errors.js";
-import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, EMAIL_CODE_SENT_SK, INVITE_LIMIT_PREFIX, NOTICE_ADDRESS_SK, NOTICE_SENT_PREFIX, OPERATOR_AUDIT_PREFIX, OPS_AUDIT_INDEX_PREFIX, OPS_OWNERS_PREFIX, OPS_TEAMS_PARTITION, TOTP_ON_SK, VERIFIED_EMAIL_SK } from "./schema.js";
+import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, EMAIL_CODE_SENT_SK, INVITE_LIMIT_PREFIX, NOTICE_ADDRESS_SK, RECEIPT_RATE_PREFIX, NOTICE_SENT_PREFIX, OPERATOR_AUDIT_PREFIX, OPS_AUDIT_INDEX_PREFIX, OPS_OWNERS_PREFIX, OPS_TEAMS_PARTITION, TOTP_ON_SK, VERIFIED_EMAIL_SK } from "./schema.js";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
@@ -73,6 +73,9 @@ export function date(value: unknown): string {
   return value;
 }
 
+/** A rate window's UTC stamp: the ISO time cut to the minute, hour or day. */
+const RATE_STAMP = { MINUTE: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, HOUR: /^\d{4}-\d{2}-\d{2}T\d{2}$/, DAY: /^\d{4}-\d{2}-\d{2}$/, TRIALDAY: /^\d{4}-\d{2}-\d{2}$/ } as const;
+
 /** A usage month, YYYY-MM. */
 export function month(value: unknown): string {
   if (typeof value !== "string" || !MONTH.test(value)) throw new InvalidInputError("Invalid month");
@@ -119,6 +122,18 @@ export const keys = {
     SK: `SHEET#${id(sheetId, "sheet ID")}`,
   }),
   usage: (teamId: string, m: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `USAGE#${month(m)}` }),
+  /** Receipts a team read while it wasn't paying: its trial's allowance, counted once for the whole trial (supply-checkout-wxx). */
+  trialUsage: (teamId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: "USAGE#TRIAL" }),
+  /**
+   * Receipts one user read in one window (a UTC minute, hour or day), from
+   * every team they're in: the per-user rate limit (supply-checkout-wxx).
+   * `TRIALDAY` counts only their reads for trial teams, per UTC day.
+   * Expires (TTL) a day after its window ends.
+   */
+  receiptRate: (userId: string, window: "MINUTE" | "HOUR" | "DAY" | "TRIALDAY", stamp: string) => {
+    if (!RATE_STAMP[window].test(stamp)) throw new InvalidInputError("Invalid rate window");
+    return { PK: `${RECEIPT_RATE_PREFIX}${id(userId, "user ID")}`, SK: `RECEIPTS#${window}#${stamp}` };
+  },
   audit: (teamId: string, ts: string, eventId: string) => ({
     PK: `TEAM#${id(teamId, "team ID")}`,
     SK: `AUDIT#${ts}#${id(eventId, "event ID")}`,

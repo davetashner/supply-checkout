@@ -7,7 +7,7 @@
 // The Db handle is opaque: it exposes no DynamoDB client.
 
 export { closeDb, createDb, type Db, type DbOptions } from "./client.js";
-export { AdhocOpenError, ConflictError, EquipmentOutError, ForbiddenError, InvalidInputError, LastOwnerError, LimitReachedError, NotFoundError, StockChangedError, SubscriptionEndedError, TeamClosedError, TeamDeletingError, TeamFullError, TooLargeError } from "./errors.js";
+export { AdhocOpenError, ConflictError, EquipmentOutError, ForbiddenError, InvalidInputError, LastOwnerError, LimitReachedError, NotFoundError, RateLimitedError, StockChangedError, SubscriptionEndedError, TeamClosedError, TeamDeletingError, TeamFullError, TooLargeError } from "./errors.js";
 export { localRegion, writeRegionFor, type HomedTeam } from "./region.js";
 export {
   acceptInvite,

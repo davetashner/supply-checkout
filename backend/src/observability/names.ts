@@ -42,6 +42,14 @@ export const BusinessMetric = {
   ReceiptLines: "ReceiptLines",
   /** Model tokens used reading receipts; the team ID goes in metadata (J5). */
   ReceiptTokens: "ReceiptTokens",
+  /** Receipt reads refused by the per-user rate limit (supply-checkout-wxx); the team ID goes in metadata (J5). */
+  ReceiptRateLimited: "ReceiptRateLimited",
+  /** Receipt reads refused because the team's allowance (its month's or its trial's) was used up; the team ID and period go in metadata (J5). */
+  ReceiptLimitReached: "ReceiptLimitReached",
+  /** Trial teams whose read just reached RECEIPT_NEAR_LIMIT_SHARE (80%) of their trial's allowance, once per trial; the team ID goes in metadata (J5). Many at once suggests a farm of sign-ups. */
+  ReceiptTrialsNearLimit: "ReceiptTrialsNearLimit",
+  /** Paying or comped teams whose read just reached 80% of their month's allowance, once a month; the team ID goes in metadata (J5). Dashboard only. */
+  ReceiptPaidTeamsNearLimit: "ReceiptPaidTeamsNearLimit",
   /** How long each receipt read's model call took, in milliseconds, success or not (J5). The dashboard reads its p95. */
   ReceiptReadLatency: "ReceiptReadLatency",
   /** New teams created by sign-up (J1). */

@@ -2,7 +2,7 @@
 
 import type { AssumeRoleCommand } from "@aws-sdk/client-sts";
 import { describe, expect, it, vi } from "vitest";
-import { CLOSE_EVICTED_AFTER_MS, teamScopedDbs } from "../src/api/team-db.js";
+import { CLOSE_EVICTED_AFTER_MS, receiptScopedDbs, teamScopedDbs } from "../src/api/team-db.js";
 import { connection } from "../src/data/client.js";
 import type { Db } from "../src/data/index.js";
 import { REGION } from "./helpers.js";
@@ -110,5 +110,29 @@ describe("teamScopedDbs", () => {
     await credentials(teamScopedDbs({ roleArn: ROLE, env, sts })("t".repeat(128)));
     expect(calls[0]?.RoleSessionName).toHaveLength(64);
     expect(calls[0]?.Tags).toEqual([{ Key: "teamId", Value: "t".repeat(128) }]);
+  });
+});
+
+describe("receiptScopedDbs", () => {
+  it("signs each team and user's calls with a session tagged with both, one handle per pair", async () => {
+    const { sts, calls } = fakeSts();
+    const dbFor = receiptScopedDbs({ roleArn: ROLE, env, sts });
+    const a = dbFor("team-a", "user-1");
+    expect(dbFor("team-a", "user-1")).toBe(a);
+    expect(dbFor("team-a", "user-2")).not.toBe(a);
+    expect(dbFor("team-b", "user-1")).not.toBe(a);
+    await credentials(a);
+    expect(calls).toEqual([
+      { RoleArn: ROLE, RoleSessionName: "receipts-team-a", DurationSeconds: 3600, Tags: [{ Key: "teamId", Value: "team-a" }, { Key: "userId", Value: "user-1" }] },
+    ]);
+  });
+
+  it("refuses an invalid team or user ID before assuming anything", () => {
+    const { sts } = fakeSts();
+    const dbFor = receiptScopedDbs({ roleArn: ROLE, env, sts });
+    expect(() => dbFor("team a", "user-1")).toThrow("Invalid team ID");
+    expect(() => dbFor("team-a", "user/1")).toThrow("Invalid user ID");
+    expect(() => dbFor("team-a", "")).toThrow("Invalid user ID");
+    expect(sts.send).not.toHaveBeenCalled();
   });
 });

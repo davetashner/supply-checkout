@@ -138,12 +138,29 @@ export const INVITE_LIMIT_PREFIX = "INVITELIMIT#";
 
 /**
  * The only attributes the receipts function may name when it counts a
- * receipt (recordReceiptRead, `TEAM#<teamId>` / `USAGE#<month>`): the keys
- * and the count. Not `type` or any other field, so its role can't rewrite
+ * receipt (takeReceipt, `TEAM#<teamId>` / `USAGE#<month>`, and a trial
+ * team's `USAGE#TRIAL`): the keys and the count. Not `type` or any other field, so its role can't rewrite
  * other items in the team's partition (META, invites); the month is in the
  * sort key.
  */
 export const RECEIPT_USAGE_ATTRIBUTES = [PK, SK, "receipts"] as const;
+
+/**
+ * The partition prefix of the per-user receipt rate counters (supply-checkout-wxx):
+ * `RECEIPTRATE#<userId>`, sort key `RECEIPTS#<window>#<stamp>` (keys.receiptRate).
+ * The receipts function's role session is tagged with the caller's `sub`, and
+ * that tag reaches only this partition, only with UpdateItem, only these
+ * attributes (RECEIPT_RATE_ATTRIBUTES) and nothing returned. It's per user,
+ * not per team, so being in many teams doesn't multiply anyone's rate.
+ */
+export const RECEIPT_RATE_PREFIX = "RECEIPTRATE#";
+
+/**
+ * The only attributes the receipts function may name in a `RECEIPTRATE#`
+ * partition: the keys, the window's count and its expiry (TTL). Its role may
+ * set `expiresAt` there and nowhere else, so it can't make anything else expire.
+ */
+export const RECEIPT_RATE_ATTRIBUTES = [PK, SK, "count", "expiresAt"] as const;
 
 /** The only attributes a request may name in an `INVITELIMIT#` partition: the keys, the count, its item type and its expiry. */
 export const INVITE_LIMIT_ATTRIBUTES = [PK, SK, "count", "type", "expiresAt"] as const;

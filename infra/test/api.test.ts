@@ -13,6 +13,7 @@ import {
   MEMBER_ROW_ATTRIBUTES,
   MEMBER_SEAT_ATTRIBUTES,
   OWNER_OPERATOR_AUDIT_ATTRIBUTES,
+  RECEIPT_RATE_ATTRIBUTES,
   RECEIPT_USAGE_ATTRIBUTES,
   REOPEN_ATTRIBUTES,
   STRIPE_LINK_ATTRIBUTES,
@@ -117,6 +118,7 @@ describe("HTTP API routes", () => {
     expect(stage.Properties.RouteSettings).toEqual({
       "POST /teams/{teamId}/imports": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /teams/{teamId}/receipts/read": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
+      "GET /teams/{teamId}/receipts/usage": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
       "GET /me": { ThrottlingRateLimit: 50, ThrottlingBurstLimit: 100 },
       "POST /teams": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
       "POST /invites/{inviteId}/accept": { ThrottlingRateLimit: 10, ThrottlingBurstLimit: 20 },
@@ -432,6 +434,10 @@ describe("receipts function and receipt-access role (ADR 0008)", () => {
     const { template } = api();
     const [, fn] = resources(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("ReceiptsFunction")) as [string, Resource];
     expect(fn.Properties).toMatchObject({ MemorySize: 512, Timeout: 29 });
+    // No reserved concurrency unless the context asks for it
+    expect(fn.Properties.ReservedConcurrentExecutions).toBeUndefined();
+    const reserved = resources(api(EAST, { receiptsReservedConcurrency: "20" }).template, "AWS::Lambda::Function").filter(([, f]) => f.Properties.ReservedConcurrentExecutions !== undefined);
+    expect(reserved.map(([id, f]) => [id.replace(/[0-9A-F]{8}$/, ""), f.Properties.ReservedConcurrentExecutions])).toEqual([["ReceiptsFunction", 20]]);
     expect((fn.Properties.Environment as { Variables: Record<string, unknown> }).Variables).toMatchObject({
       TABLE_NAME: "supply-checkout-prod-app",
       RECEIPT_MODEL_ID: RECEIPT_MODEL_ID,
@@ -440,7 +446,7 @@ describe("receipts function and receipt-access role (ADR 0008)", () => {
     expect(RECEIPT_MODEL_ID).toMatch(/^us\.anthropic\./);
   });
 
-  it("can be assumed only by the receipts function's role, with exactly one teamId session tag", () => {
+  it("can be assumed only by the receipts function's role, with exactly a teamId and a userId session tag", () => {
     const r = role();
     expect(r.MaxSessionDuration).toBe(3600);
     const [trust, ...rest] = r.AssumeRolePolicyDocument.Statement;
@@ -449,14 +455,14 @@ describe("receipts function and receipt-access role (ADR 0008)", () => {
       Effect: "Allow",
       Action: ["sts:AssumeRole", "sts:TagSession"],
       Principal: { AWS: { "Fn::GetAtt": [expect.stringMatching(/^ReceiptsFunctionRole/), "Arn"] } },
-      Condition: { StringLike: { "aws:RequestTag/teamId": "?*" }, "ForAllValues:StringEquals": { "aws:TagKeys": ["teamId"] } },
+      Condition: { StringLike: { "aws:RequestTag/teamId": "?*", "aws:RequestTag/userId": "?*" }, "ForAllValues:StringEquals": { "aws:TagKeys": ["teamId", "userId"] } },
     });
   });
 
-  it("reads only the session team's partition, and updates only its receipt counter's attributes: no puts, no deletes, no index, no scan", () => {
+  it("reads only the session team's partition, and updates only its receipt counters' attributes and the session user's rate counters: no puts, no deletes, no index, no scan", () => {
     const [policy, ...others] = role().Policies;
     expect(others).toEqual([]);
-    const [read, count, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    const [read, count, rate, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
     expect(rest).toEqual([]);
     expect(read).toEqual({
       Sid: "TeamItemsReadOnly",
@@ -476,7 +482,20 @@ describe("receipts function and receipt-access role (ADR 0008)", () => {
       },
     });
     expect(RECEIPT_USAGE_ATTRIBUTES).toEqual(["PK", "SK", "receipts"]);
-    for (const s of [read, count]) {
+    expect(rate).toEqual({
+      Sid: "CallerReceiptRateOnly",
+      Effect: "Allow",
+      Action: "dynamodb:UpdateItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["RECEIPTRATE#${aws:PrincipalTag/userId}"], "dynamodb:Attributes": [...RECEIPT_RATE_ATTRIBUTES] },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+      },
+    });
+    // The only place this role may set a TTL; never in the team's partition
+    expect(RECEIPT_RATE_ATTRIBUTES).toEqual(["PK", "SK", "count", "expiresAt"]);
+    expect(RECEIPT_USAGE_ATTRIBUTES).not.toContain("expiresAt");
+    for (const s of [read, count, rate]) {
       const json = JSON.stringify(s?.Resource);
       expect(json).toContain(":table/supply-checkout-prod-app");
       expect(json).not.toMatch(/index|\*/);

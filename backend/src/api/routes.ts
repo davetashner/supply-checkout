@@ -90,9 +90,9 @@ const commandRoutes: DataRoute[] = [
 export const DATA_ROUTES: readonly DataRoute[] = [...collectionRoutes("products", "key"), ...collectionRoutes("sheets", "sheetId"), ...commandRoutes];
 
 export interface ReceiptRoute {
-  readonly method: "POST";
+  readonly method: "POST" | "GET";
   readonly path: string;
-  readonly action: "readReceipt";
+  readonly action: "readReceipt" | "receiptUsage";
   /** The least role that may call it. */
   readonly minRole: TeamRole;
   /** API Gateway's throttle for this route across all callers. */
@@ -102,13 +102,17 @@ export interface ReceiptRoute {
 /**
  * Receipt reading (ADR 0008): the app sends a receipt photo and gets back the
  * lines the model read, for the review screen; nothing is saved. Contributors
- * and owners, within the team's monthly limit. Needs a Cognito access token
+ * and owners, within the team's allowance (a month's while it pays, its
+ * trial's while it doesn't) and their own per-user rate limit
+ * (data/usage.ts, supply-checkout-wxx). Needs a Cognito access token
  * (the JWT authorizer). Served by the `receipts` function, the only one that
  * may call Bedrock.
  */
 export const RECEIPT_ROUTES: readonly ReceiptRoute[] = [
-  // Each is a model call of up to 25 seconds; the team's monthly limit is the real cap
+  // Each is a model call of up to 25 seconds; the per-user rate limit and the team's allowance are the real caps
   { method: "POST", path: "/teams/{teamId}/receipts/read", action: "readReceipt", minRole: "contributor", throttle: { rate: 5, burst: 10 } },
+  // The team's receipts read against its allowance (this month's, or its trial's), for the app to show before a scan
+  { method: "GET", path: "/teams/{teamId}/receipts/usage", action: "receiptUsage", minRole: "contributor", throttle: { rate: 10, burst: 20 } },
 ];
 
 export interface AuthRoute {
@@ -310,6 +314,13 @@ export const routeKey = (route: { readonly method: string; readonly path: string
 export const TEAM_SESSION_TAG = "teamId";
 
 /**
+ * Session tags the receipts function puts on its role session: the path's
+ * team, and the caller (always the token's `sub`), whose per-user receipt
+ * rate counters are the only items outside the team that the session reaches.
+ */
+export const RECEIPT_SESSION_TAGS = { teamId: TEAM_SESSION_TAG, userId: "userId" } as const;
+
+/**
  * Session tags the account function puts on its role session. The
  * account-access role's policy allows only items whose partition key is
  * `USER#<userId>`, `TEAM#<teamId>` or (on GSI2) `INVITEE#<invitee>`; for
@@ -354,7 +365,7 @@ export const API_ENV = {
   opsReopenFunction: "OPS_REOPEN_FUNCTION",
   /** The role the operator reopen function assumes, tagged with the team it reopens. */
   opsReopenRoleArn: "OPS_REOPEN_ROLE_ARN",
-  /** The role the receipts function assumes, tagged with the team (ADR 0008). */
+  /** The role the receipts function assumes, tagged with the team and the caller (ADR 0008, RECEIPT_SESSION_TAGS). */
   receiptRoleArn: "RECEIPT_ROLE_ARN",
   /** The Bedrock model (a US cross-region inference profile) receipts are read with: RECEIPT_MODEL_ID in infra/lib/config.ts. */
   receiptModelId: "RECEIPT_MODEL_ID",

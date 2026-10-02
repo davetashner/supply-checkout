@@ -168,6 +168,30 @@ export function configFromContext(
   });
 }
 
+/** The most reserved concurrency the receipts function may be given (receiptsReservedConcurrencyFromContext). */
+export const MAX_RECEIPTS_RESERVED_CONCURRENCY = 100;
+
+/**
+ * Reserved concurrency for the receipts function (supply-checkout-wxx), from
+ * `-c receiptsReservedConcurrency=<n>`: off (undefined) unless set. It caps how
+ * many receipt reads run at once, a backstop under the per-user and per-team
+ * limits, but Lambda takes it from the account's unreserved concurrency, which
+ * must stay at least 100. A new account's quota can be as low as 10 (all of
+ * it unreserved), where any value fails the deploy; check the quota
+ * (`aws lambda get-account-settings`) before setting it. 1 to
+ * MAX_RECEIPTS_RESERVED_CONCURRENCY.
+ */
+export function receiptsReservedConcurrencyFromContext(node: ContextReader): number | undefined {
+  const value = node.tryGetContext("receiptsReservedConcurrency");
+  if (value === undefined || value === "") return undefined;
+  const text = String(value);
+  const n = Number(text);
+  if (!/^[1-9][0-9]*$/.test(text) || n > MAX_RECEIPTS_RESERVED_CONCURRENCY) {
+    throw new Error(`receiptsReservedConcurrency must be a whole number from 1 to ${MAX_RECEIPTS_RESERVED_CONCURRENCY} (got "${text}")`);
+  }
+  return n;
+}
+
 /**
  * A GitHub repository whose Actions workflows may deploy (supply-checkout-5ik):
  * its `owner/name`, and GitHub's numeric IDs for its owner and for the

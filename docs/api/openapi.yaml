@@ -579,9 +579,21 @@ paths:
         matching, then the photo. Nothing else from the request reaches the
         model, and the photo is never stored or logged.
 
-        Each read counts against the team's monthly limit (provisionally 200
-        a month for every plan, `RECEIPTS_PER_TEAM_PER_MONTH`), counted
-        before the model is called, so a read that then fails still counts.
+        Each read counts first against the caller's own rate limit, from all
+        their teams together: 10 a minute, 60 an hour and 200 a UTC day
+        (`RECEIPT_RATE_LIMITS`), and for a trial team's read at most 30 trial
+        reads a UTC day from all their trial teams
+        (`RECEIPT_TRIAL_READS_PER_USER_PER_DAY`); past any, 429 `rate_limited` with
+        Retry-After, the seconds until the window ends. Then against the
+        team's allowance (provisional until pricing is decided): 200 a UTC
+        month while it pays or has a live comp
+        (`RECEIPTS_PER_TEAM_PER_MONTH`), and 25 in all for a trial
+        (`RECEIPTS_PER_TRIAL`), which doesn't reset each month; past it, 429
+        `receipt_limit`. Both are counted before the model is called, so a
+        read that then fails still counts, unless the model service refused
+        it with a throttle (`model_busy`) or a 503, which gives the team's
+        read back. A trial team's reads also count in its month, so a team
+        that subscribes mid-month has them counted against that month's 200. Attempts always count against the rate limit.
         A closed team, or one whose subscription ended, can't read receipts.
         Contributors and owners only.
 
@@ -609,7 +621,7 @@ paths:
                     data: { type: string, contentEncoding: base64, description: The photo's bytes. }
       responses:
         "200":
-          description: The lines read, and the team's receipts read this month.
+          description: The lines read, and the team's receipts read against its allowance.
           content:
             application/json:
               schema:
@@ -633,13 +645,7 @@ paths:
                   subtotal: { type: [number, "null"] }
                   tax: { type: [number, "null"] }
                   total: { type: [number, "null"] }
-                  usage:
-                    type: object
-                    required: [month, used, limit]
-                    properties:
-                      month: { type: string, description: The UTC month counted, YYYY-MM. }
-                      used: { type: integer, description: Receipts read this month, this one included. }
-                      limit: { type: integer }
+                  usage: { $ref: "#/components/schemas/ReceiptUsage" }
         "400":
           description: "`bad_request`: with `reason: \"image_rejected\"`, the photo isn't a JPEG or PNG in base64 matching its type, or the model service couldn't use it; otherwise malformed JSON or an unexpected field."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
@@ -649,7 +655,11 @@ paths:
           description: "`quota_exceeded`: the photo is over 1,500,000 bytes (`reason: \"image_rejected\"`), or the body is too large."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429":
-          description: "`quota_exceeded`: with `reason: \"receipt_limit\"`, the team has read all its receipts this month; with `reason: \"model_busy\"`, the model service is throttling (try again in a minute)."
+          description: "`quota_exceeded`: with `reason: \"receipt_limit\"`, the team has read all its receipts (this month's, or its trial's); with `reason: \"rate_limited\"`, the caller has read too many receipts in a short time (Retry-After says how many seconds until they can again); with `reason: \"model_busy\"`, the model service is throttling (try again in a minute)."
+          headers:
+            Retry-After:
+              description: "With `rate_limited`: the seconds until the caller's full rate window ends."
+              schema: { type: integer, minimum: 1 }
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "500":
           description: "`internal`: something failed on our side before the model was called."
@@ -663,6 +673,28 @@ paths:
         "504":
           description: "`unavailable` with `reason: \"model_timeout\"`: the model didn't answer within 25 seconds."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /teams/{teamId}/receipts/usage:
+    parameters: [{ $ref: "#/components/parameters/teamId" }]
+    get:
+      tags: [receipts]
+      operationId: receiptUsage
+      summary: The team's receipt reads against its allowance, for the app to show before a scan.
+      description: |
+        A paying or comped team's reads this UTC month against its monthly
+        allowance, or a trial team's reads in all against its trial's. Counts
+        nothing. Contributors and owners only.
+      responses:
+        "200":
+          description: The team's usage.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [usage]
+                properties:
+                  usage: { $ref: "#/components/schemas/ReceiptUsage" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /teams/{teamId}/sheets/{sheetId}/lines:
     parameters:
       - $ref: "#/components/parameters/teamId"
@@ -2724,6 +2756,19 @@ components:
         email: { type: [string, "null"], description: The address they joined with. }
         role: { type: string, enum: [owner, contributor, viewer] }
         joinedAt: { type: [string, "null"], format: date-time }
+    ReceiptUsage:
+      type: object
+      description: The team's receipt reads against its allowance (provisional until pricing is decided).
+      required: [period, month, used, limit, remaining]
+      properties:
+        period:
+          type: string
+          enum: [month, trial]
+          description: "`month`: a paying or comped team's allowance for each UTC month. `trial`: a trial team's allowance for its whole trial."
+        month: { type: string, description: The UTC month counted, YYYY-MM. }
+        used: { type: integer, minimum: 0, description: "Receipts read in the period (this month, or the whole trial), a read's own included." }
+        limit: { type: integer, minimum: 0 }
+        remaining: { type: integer, minimum: 0 }
     Error:
       type: object
       required: [error]
@@ -2738,7 +2783,7 @@ components:
             message: { type: string }
             reason:
               type: string
-              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, adhoc_open, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_invalid, password_mismatch, federated_sign_in, signout_failed, image_rejected, receipt_limit, model_busy, model_timeout, invalid_output]
+              enum: [view_only, owners_only, not_member, last_owner, team_full, team_closed, team_deleting, stock_changed, equipment_out, adhoc_open, code_mismatch, code_expired, already_verified, email_in_use, email_changed, already_subscribed, subscription_ended, no_billing_account, mfa_required, mfa_sign_in_again, password_invalid, password_mismatch, federated_sign_in, signout_failed, image_rejected, receipt_limit, rate_limited, model_busy, model_timeout, invalid_output]
               description: |
                 Why, where the code alone doesn't say. `view_only`: a viewer
                 tried to write. `owners_only`: the route is for owners.
@@ -2775,8 +2820,9 @@ components:
                 who has nothing to set up), and `signout_failed` (it's on, but
                 the other sessions haven't ended: `signOutEverywhere`).
                 Reading a receipt: `image_rejected` (the photo can't be used),
-                `receipt_limit` (the team's monthly receipts are used up),
-                `model_busy` (the model service is throttling),
+                `receipt_limit` (the team's receipts are used up: this month's,
+                or its trial's), `rate_limited` (the caller read too many in a
+                short time; see Retry-After), `model_busy` (the model service is throttling),
                 `model_timeout` (no answer in time) and `invalid_output` (the
                 model's reply couldn't be used).
   responses:
