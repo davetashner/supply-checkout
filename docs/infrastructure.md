@@ -87,8 +87,10 @@ It is a separate CDK app, `bin/github-deploy.ts`, like the backup account's vaul
    cd infra
    npm run synth:github-deploy                               # cdk-nag runs here too
    npx cdk diff --app "npx tsx bin/github-deploy.ts" -o cdk.out/github-deploy --profile supply-prod
-   npm run deploy:github-deploy -- --profile supply-prod     # CDK asks to confirm the IAM changes
+   npm run deploy:github-deploy -- --profile supply-prod     # checks the environments first; CDK asks to confirm the IAM changes
    ```
+
+   `deploy:github-deploy` runs `scripts/check-environments.mjs` first and refuses to deploy unless `production` and `production-stateful` both exist with no admin bypass, `main` as their only deployment branch policy, and a required reviewer (it reads them with your `gh` login). GitHub creates an environment with no protection the first time a job names one that doesn't exist, so a trust naming an environment that isn't set up yet would let any branch's job in. The deploy workflow runs the same check before every deploy.
 
 3. **Check it with a dry run.** Set the `DeployRoleArn` output as the `production` environment's secret `AWS_DEPLOY_ROLE_ARN`, and as a repository secret of the same name (for the negative check, whose job has no environment). Secrets, so the account ID in the ARN is masked in the public run logs. Then run the deploy workflow with **dry run** checked (Actions, Deploy, Run workflow, from `main`, with the latest release tag) and approve it. Its `trust` job, outside the environment, must be refused with `Not authorized to perform sts:AssumeRoleWithWebIdentity`, and its `plan` job, in the environment, must sign in as the deploy role (`Prove who this job is`), drop to the lookup role, synthesize and show the diffs, and deploy nothing. Every deploy repeats both checks ([Deploying a release](releases.md#deploying-a-release)).
 

@@ -13,13 +13,15 @@ name: Deploy
 # with this repository's context, and a production job would hand it the deploy role.
 #
 # Jobs, plan first and apply after, so the approver reads the diff before approving a change:
-#   release         no credentials: the tag is a published release whose commit is on main and
-#                   passed CI in a real run on main
+#   release         no credentials: both deploy environments are locked down
+#                   (scripts/check-environments.mjs), and the tag is a published release whose
+#                   commit is on main and passed CI in a real run on main
 #   trust           no environment: the deploy role must REFUSE this job (docs/infrastructure.md)
-#   plan            `production` (approval 1, changes nothing): signs in, drops to CDK's read-only
-#                   lookup role, synthesizes, prints a hash of the templates, posts each group's
-#                   diff to the job summary, and fails if the stateful stacks' diff replaces or
-#                   deletes what holds data (scripts/check-replacements.mjs) unless allowed
+#   plan            `production` (approval 1): deploys nothing, but runs the release commit's
+#                   code in a job that holds the deploy role until it drops to CDK's read-only
+#                   lookup role; synthesizes, prints a hash of the assembly, posts each group's diff to the
+#                   job summary, and fails if the stateful stacks' diff replaces or deletes what
+#                   holds data (scripts/check-replacements.mjs) unless allowed
 #   apply-stateful  `production-stateful` (approval 2), only if the stateful stacks differ:
 #                   synthesizes again, refuses a template hash that isn't the plan's, checks the
 #                   diff again, deploys them
@@ -85,6 +87,14 @@ jobs:
           # Every branch and tag, to find the tag and check it's on main
           fetch-depth: 0
           persist-credentials: false
+      # GitHub creates an environment with no protection the first time a job names one that
+      # doesn't exist, and the deploy role trusts both of these. So before any job here names
+      # one (dry runs too): both must exist, main only, with required reviewers and no admin
+      # bypass. This job has no AWS credentials.
+      - name: Check the deploy environments are locked down
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-environments.mjs --repo "$GITHUB_REPOSITORY"
       - name: Check the tag
         id: check
         env:
@@ -195,13 +205,16 @@ jobs:
           echo "Trust check: the deploy role refuses a job outside the production environment" >> "$GITHUB_STEP_SUMMARY"
 
   plan:
-    name: Plan (changes nothing)
+    name: Plan (deploys nothing)
     needs: [release, trust]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Waits for the owner's approval: its first minute holds the deploy role, before it drops to
-    # the read-only lookup role. The production environment's rules (main only, required
+    # Waits for the owner's approval. Approving it runs the release commit's code (its
+    # dependencies and the synth) in a job that holds the deploy role's credentials for its first
+    # steps; the synth itself runs after the drop to the read-only lookup role. Treat approving
+    # it as trusting that code: the real control is that only a reviewed, released commit on
+    # main gets here. The production environment's rules (main only, required
     # reviewer, no admin bypass) are what give a job the OIDC subject the deploy role trusts.
     environment: production
     permissions:
@@ -313,8 +326,8 @@ jobs:
           fi
           echo "copy=$copy" >> "$GITHUB_OUTPUT"
           echo "BACKUP_COPY=$copy" >> "$GITHUB_ENV"
-      # One synth per job; the apply jobs must reach the plan's hash of the templates and asset
-      # manifests (the Lambda code's hashes are in them)
+      # One synth per job; the apply jobs must reach the plan's hash of the templates, asset
+      # manifests (the Lambda code's hashes are in them) and manifest.json (assembly-hash.sh)
       - &synth
         name: Synthesize
         id: synth
@@ -323,8 +336,7 @@ jobs:
           context=(-c "envName=$ENV_NAME")
           if [[ "${BACKUP_COPY:?}" == false ]]; then context+=(-c backupCopy=false); fi
           ./node_modules/.bin/cdk synth --app "./node_modules/.bin/tsx bin/app.ts" --quiet --no-notices "${context[@]}"
-          hash="$(find cdk.out -maxdepth 1 -type f \( -name '*.template.json' -o -name '*.assets.json' \) -print0 \
-            | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          hash="$(bash ../.deploy-tools/scripts/assembly-hash.sh cdk.out)"
           echo "Template hash: $hash"
           echo "hash=$hash" >> "$GITHUB_OUTPUT"
       - name: Diff the stateful stacks
@@ -342,7 +354,11 @@ jobs:
           ALLOW: ${{ inputs.allow-replacement }}
         run: |
           allow=()
-          if [[ "$ALLOW" == true ]]; then allow=(--allow); fi
+          if [[ "$ALLOW" == true ]]; then
+            allow=(--allow)
+            echo "::warning::allow-replacement is on: the stateful stacks may replace or delete what holds data"
+            echo "> **allow-replacement is on**: this run may replace or delete what holds data in the stateful stacks (a planned migration)." >> "$GITHUB_STEP_SUMMARY"
+          fi
           set +e
           node .deploy-tools/scripts/check-replacements.mjs "$RUNNER_TEMP/diff-stateful.txt" "${allow[@]}" > "$RUNNER_TEMP/replacements.md"
           code=$?

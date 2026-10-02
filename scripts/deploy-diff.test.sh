@@ -48,5 +48,24 @@ check failed "fails when cdk diff fails, still scrubbed, with no output" '[[ $rc
 run garbled $'something else'
 check garbled "fails on output without the count" '[[ $rc == 1 ]] && [[ "$out" == *"didn'"'"'t say how many"* ]]'
 
-if ((failures)); then echo "$failures deploy-diff.sh check(s) failed"; exit 1; fi
-echo "deploy-diff.sh: all checks passed"
+# --- assembly-hash.sh -------------------------------------------------------------
+asm() { mkdir -p "$1"; printf '{"version":"1"}' > "$1/manifest.json"; printf '{"Resources":{}}' > "$1/a.template.json"; printf '{"files":{}}' > "$1/a.assets.json"; printf '{"tree":1}' > "$1/tree.json"; }
+hash_of() { bash "$here/assembly-hash.sh" "$1"; }
+asm "$tmp/asm1"; asm "$tmp/asm2"
+out="$(hash_of "$tmp/asm1")"
+check hash "the same assembly in another folder has the same hash" '[[ "$out" =~ ^[0-9a-f]{64}$ && "$out" == "$(hash_of "$tmp/asm2")" ]]'
+printf '{"tree":2}' > "$tmp/asm2/tree.json"; printf '{}' > "$tmp/asm2/x.metadata.json"
+check hash "tree.json and metadata don't count" '[[ "$out" == "$(hash_of "$tmp/asm2")" ]]'
+printf '{"version":"2"}' > "$tmp/asm2/manifest.json"
+check hash "manifest.json counts" '[[ "$out" != "$(hash_of "$tmp/asm2")" ]]'
+asm "$tmp/asm3"; printf '{"files":{"x":1}}' > "$tmp/asm3/a.assets.json"
+check hash "an asset manifest counts" '[[ "$out" != "$(hash_of "$tmp/asm3")" ]]'
+asm "$tmp/asm4"; printf '{"Resources":{"B":{}}}' > "$tmp/asm4/a.template.json"
+check hash "a template counts" '[[ "$out" != "$(hash_of "$tmp/asm4")" ]]'
+asm "$tmp/asm5"; mv "$tmp/asm5/a.template.json" "$tmp/asm5/b.template.json"
+check hash "a renamed template counts" '[[ "$out" != "$(hash_of "$tmp/asm5")" ]]'
+mkdir -p "$tmp/empty"
+check hash "a folder without manifest.json fails" '! hash_of "$tmp/empty" 2>/dev/null'
+
+if ((failures)); then echo "$failures deploy-diff.sh and assembly-hash.sh check(s) failed"; exit 1; fi
+echo "deploy-diff.sh and assembly-hash.sh: all checks passed"
