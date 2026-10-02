@@ -61,6 +61,13 @@ test("an unexpected reading error gives a general message", { tag: ["@J5.1"] }, 
   await expect(page.getByText("Reading the receipt failed. Check your connection and try again.")).toBeVisible();
 });
 
+test("a team out of receipts is told so, with no scans-left line where the runtime has none", { tag: ["@J5.1"] }, async ({ page }) => {
+  await openApp(page, { ...usedState, sampleError: "receipt_limit" });
+  await page.setInputFiles("#receiptFile", fakeImage);
+  await expect(page.getByText("Your team has read all the receipts included this month.")).toBeVisible();
+  await expect(page.locator("#receiptsLeft")).toHaveCount(0);
+});
+
 test("reading can be stopped", { tag: ["@J5.1"] }, async ({ page }) => {
   await openApp(page, { ...usedState, sampleHang: true });
   await page.setInputFiles("#receiptFile", fakeImage);

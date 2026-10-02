@@ -573,7 +573,7 @@ describe("the per-user rate limit (supply-checkout-wxx)", () => {
     }
     clock = NOW + 30 * 10_000;
     const over = await read(CONTRIBUTOR, "/teams/team-c/receipts/read");
-    expect(over.body.error.reason).toBe("rate_limited");
+    expect(over.body.error).toEqual({ code: "quota_exceeded", reason: "rate_limited", message: "You've used today's free trial receipt scans; more tomorrow. Enter the items by hand, or ask an owner to subscribe." });
     // 12:05 to midnight UTC
     expect(over.headers["retry-after"]).toBe(String(Date.parse("2026-09-27T00:00:00Z") / 1000 - clock / 1000));
     expect(table.get(`RECEIPTRATE#${CONTRIBUTOR}`, "RECEIPTS#TRIALDAY#2026-09-26")?.count).toBe(30);

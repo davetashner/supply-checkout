@@ -1,3 +1,5 @@
+import { WEB } from "./build.js";
+
 export const RECEIPT_PROMPT = `The image is a photo of a store receipt for supplies. Extract the purchased line items.
 Reply with only JSON in this shape:
 {"store": "Home Depot", "date": "2026-09-24", "items": [{"raw": "GLAD KTCH 13G 45CT", "name": "Glad kitchen trash bags, 13 gal, 45 ct", "qty": 2, "price": 11.97, "match": "i3"}], "subtotal": 23.94, "tax": 1.68, "total": 25.62}
@@ -11,7 +13,9 @@ Rules:
 - "match": the id of the inventory item below that is the same product, even if it's described differently. Use null if none is clearly the same. Don't match items that differ in size, count, color or type.
 - If the image is not a readable receipt, reply {"items": []}.`;
 
-export const sampleErr = code => ({
+// `message`: the server's own words, used for `receipt_rate` (the web build's per-user rate
+// limit, src/aws/receipts.js), which says how long to wait
+export const sampleErr = (code, message) => WEB && code === "receipt_rate" ? message : ({
   not_granted: "Receipt reading needs permission to use Claude. Reload the page and allow it to try again.",
   sampling_disabled: "Receipt reading isn't available for this account.",
   rate_limited: "Too many requests right now. Wait a minute and try again.",
@@ -20,5 +24,6 @@ export const sampleErr = code => ({
   invalid_json: "The receipt couldn't be read cleanly. Try again, or take a sharper photo.",
   session_expired: "Your sign-in expired. Reload the page and sign in again.",
   receipt_limit: "Your team has read all the receipts included this month. Enter the items by hand, or ask an owner about your plan.",
+  trial_receipt_limit: "Your team has used all the receipt scans included in its free trial. Enter the items by hand, or ask an owner to subscribe to keep scanning receipts.",
   timeout: "Reading the receipt took too long. Try again, or take a sharper photo.",
 }[code] || "Reading the receipt failed. Check your connection and try again.");

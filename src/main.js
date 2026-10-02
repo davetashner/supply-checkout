@@ -359,6 +359,7 @@ function drawList() {
         ${canWrite ? `<button type="button" class="btn" id="returnAny">Return</button><button type="button" class="btn" id="quickTake">Quick take</button><button type="button" class="btn primary" id="newSheet">+ New sheet</button>` : ""}
       </div>
     </div>
+    ${WEB && canWrite && receiptOK && receiptUsage ? `<p class="muted receipts-left" id="receiptsLeft">${esc(receiptUsage.label)}</p>` : ""}
     <div class="search-row"><input type="search" id="sheetSearch" aria-label="Search sheets" placeholder="Search by client, who prepared it, or item" autocomplete="off"></div>
     ${draft && canWrite ? `<div class="notice resume"><span>You have a receipt that hasn't been saved yet.</span><button type="button" class="btn" id="resume">Continue review</button></div>` : ""}
     <div class="list">
@@ -1085,6 +1086,10 @@ const DKEY = "supplyCheckout.receiptDraft";
 let draftKeyNow = () => DKEY;
 // rSaving: a receipt is being saved (saveReceipt)
 let sampleFn = null, receiptOK = false, draft = null, rSaving = false;
+// The web build's receipt scans left (src/aws/receipts.js, usage()): shown under the bar to
+// those who can scan; null until read, and in the artifact build, which has no limits
+let receiptUsage = null;
+const loadReceiptUsage = async () => { receiptUsage = await sampleFn.usage(); draw(); };
 // The web build's team settings, for owners only (src/aws/settings.js; null for anyone else and in
 // the artifact build), and the equipment markup read from them: an owner sees the price it gives
 // equipment bought for a client. Nobody else's page ever has the percentage (ADR 0017, 2a).
@@ -1171,12 +1176,16 @@ async function startReceipt(file) {
     // byKey); claude.ai's model by the prompt's ids
     const matchOf = m => res.byKey ? (typeof m === "string" && own(products, m) ? m : "") : own(ids, m) || "";
     const items = res && Array.isArray(res.items) ? res.items.filter(i => i && i.name).map(i => ({ ...i, match: matchOf(i.match) })) : [];
+    // The AWS runtime's answer has the team's scans left, this one counted
+    if (WEB && res.usage) { receiptUsage = res.usage; }
     if (!items.length) { receiptError("No line items were found in that photo. Lay the receipt flat, fill the frame, and make sure the text is in focus."); return; }
     draft = newDraft({ ...res, items }); saveDraft();
     await refreshMarkup(); renderReceipt();
   } catch (e) {
     if (e && e.code === "cancelled") { ui.receipt = false; draw(); return; }
-    receiptError(sampleErr(e && e.code));
+    receiptError(sampleErr(e && e.code, e && e.message));
+    // Refused for the team's allowance: what's left now (none)
+    if (WEB && /receipt_limit$/.test(e && e.code) && sampleFn.usage) loadReceiptUsage();
   }
 }
 
@@ -1513,6 +1522,8 @@ draw();
     if (fr) firstRun = createFirstRun(fr, { addItem: () => { ui.tab = "prices"; draw(); productModal(null); }, newSheet: () => { ui.tab = "sheets"; draw(); newSheetModal(); }, redraw: draw });
   }
   if (sampleFn) { try { const lim = await sampleFn.limits(); receiptOK = !!(lim && lim.images); } catch {} }
+  // Only the AWS runtime has usage(); the tests' mock runtime, in the web build too, hasn't
+  if (WEB && receiptOK && sampleFn.usage) loadReceiptUsage();
   if (userNs) {
     try { myId = await userNs.id(); } catch {}
     try { const w = await userNs.can("data.write"); if (w === false) canWrite = false; } catch {}
