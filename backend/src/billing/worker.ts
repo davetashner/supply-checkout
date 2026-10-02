@@ -179,13 +179,20 @@ export function noticeFor(message: BillingMessage, sub: SubscriptionLike | undef
 }
 
 /**
- * Whether `sub` is another subscription than the team's, both are over (STOPPED_STATUSES), and `sub` ended no
- * later than the team's recorded `subscriptionEndedAt`: applying it would replace the team's subscription with
- * an older one and move its deletion date earlier, so it's ignored. One that ended later, one without
- * `ended_at`, or a team with no recorded end, is applied as before (the date is kept if it's there).
+ * Whether `sub` is another subscription than the team's, it's over (STOPPED_STATUSES), and it must not replace
+ * the team's, so it's ignored:
+ * - the team's is `unpaid`: a payment still owed on a live subscription, never deleted for (billingAccess). An
+ *   over one replacing it would give the team a deletion date (often past) that nothing puts back. Only a live
+ *   subscription (a resubscription) replaces an unpaid one.
+ * - the team's is over too, and `sub` ended no later than its recorded `subscriptionEndedAt`: applying it would
+ *   replace the team's subscription with an older one and move its deletion date earlier. One that ended
+ *   later, one without `ended_at`, or a team with no recorded end, is applied as before (the date is kept if
+ *   it's there).
  */
 export function endedEarlier(sub: SubscriptionLike, team: Pick<BillingTeam, "stripeSubscriptionId" | "status" | "subscriptionEndedAt">): boolean {
-  if (!team.stripeSubscriptionId || sub.id === team.stripeSubscriptionId || !hasStopped(sub.status) || !hasStopped(team.status)) return false;
+  if (!team.stripeSubscriptionId || sub.id === team.stripeSubscriptionId || !hasStopped(sub.status)) return false;
+  if (team.status === "unpaid") return true;
+  if (!hasStopped(team.status)) return false;
   const recorded = Date.parse(team.subscriptionEndedAt ?? "");
   if (!Number.isFinite(recorded)) return false;
   // Without ended_at the date can only be when the worker first saw it: never earlier, so only a dated older one is ignored
@@ -399,8 +406,8 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
     const stripe = await deps.stripe();
     const sub = await stripe.subscriptions.retrieve(message.subscription);
     if (customerOf(sub) !== customer) return done("ignored");
-    // An older ended subscription (a replayed or late event) never replaces the ended one the team records:
-    // its earlier ended_at would pull the team's deletion date in (billingAccess)
+    // An older ended subscription (a replayed or late event) never replaces the team's unpaid one, or an ended
+    // one that ended later: it would give the team a deletion date, or pull it in (billingAccess)
     if (endedEarlier(sub, team)) return done("ignored");
     const chosen = await choose(stripe, sub, team.stripeSubscriptionId, team.status);
     if (!chosen) {

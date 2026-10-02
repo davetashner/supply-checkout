@@ -397,13 +397,13 @@ export async function opsTeamStripeCustomer(db: Db, operator: Operator, teamId: 
   return (await findTeam(db, id(teamId, "team ID")))?.stripeCustomerId;
 }
 
-/** The comp as the audit records it: never who granted it (owners read the audit). */
 /** When a comp ended now stopped: now, or its `compUntil` if that was already past (or now, if it isn't a date). */
 function compStopped(compUntil: string | undefined, now: Date): string {
   const until = Date.parse(compUntil ?? "");
   return Number.isFinite(until) && until < now.getTime() ? new Date(until).toISOString() : now.toISOString();
 }
 
+/** The comp as the audit records it: never who granted it (owners read the audit). */
 function compRecord(team: Pick<OpsTeam, "compPlan" | "compSeats" | "compUntil" | "compReason">): Record<string, unknown> | null {
   if (team.compPlan === undefined) return null;
   return { plan: team.compPlan, seats: team.compSeats ?? null, until: team.compUntil ?? null, reason: team.compReason ?? null };
