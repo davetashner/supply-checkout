@@ -494,6 +494,7 @@ test.describe("J13.4 Finished Return asks about each piece of equipment still ou
     // In landscape, the dialog is wide enough for them side by side, as before
     await page.setViewportSize({ width: 844, height: 390 });
     const wide = await measure();
+    console.log("DIAG", JSON.stringify(wide), JSON.stringify(await box.evaluate((el) => { const i = el.querySelector(".stepper input"), cs = getComputedStyle(i); const st = el.querySelector(".stepper"), m = document.getElementById("modal"); const probe = document.createElement("span"); probe.style.cssText = "display:inline-block;width:3ch;font-family:" + cs.fontFamily + ";font-size:24px"; st.appendChild(probe); const ch3 = probe.getBoundingClientRect().width; probe.remove(); return { ch3, minW: cs.minWidth, width: cs.width, w: i.getBoundingClientRect().width, cw: i.clientWidth, pad: cs.paddingLeft + " " + cs.paddingRight, border: cs.borderLeftWidth, appearance: cs.appearance, stepper: st.getBoundingClientRect().width, cols: getComputedStyle(st).gridTemplateColumns, modalCW: m.clientWidth, modalOW: m.offsetWidth, row: getComputedStyle(el.querySelector(".row2")).gridTemplateColumns, font: cs.fontFamily, weight: cs.fontWeight, plex: document.fonts.check("24px \"IBM Plex Mono\""), fontsStatus: document.fonts.status, ua: navigator.userAgent }; })));
     expect(wide.inputs[1].top).toBeLessThan(wide.inputs[0].bottom);
     for (const i of wide.inputs) expect(i.room).toBeGreaterThanOrEqual(i.text);
     for (const b of wide.buttons) expect(b).toBeGreaterThanOrEqual(44);
