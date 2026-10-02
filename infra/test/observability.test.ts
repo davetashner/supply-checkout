@@ -1237,7 +1237,7 @@ describe("scheduled checks", () => {
     expect(by("OwnerEmailsIndexOnly")).toMatchObject({ Action: "dynamodb:Query", Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["OPS#OWNERS#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "GSI3PK", "GSI3SK", "email"] } } });
     expect(by("ReadTeamBilling")).toMatchObject({ Action: "dynamodb:GetItem", Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LAPSE_READ_ATTRIBUTES] } } });
     // The closure, never status, plan, comps or Stripe IDs
-    expect(by("CloseLapsedTeam")).toMatchObject({ Action: "dynamodb:UpdateItem", Condition: { "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "closedBy", "purgeAfter", "purging", "version"] }, StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" } } });
+    expect(by("CloseLapsedTeam")).toMatchObject({ Action: "dynamodb:UpdateItem", Condition: { "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "closedBy", "purgeAfter", "purging", "version", "stripeCustomerId", "stripeSubscriptionId"] }, StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" } } });
     expect(by("LapseRecords")).toMatchObject({ Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["LAPSE#*"] } } });
     expect(JSON.stringify(found)).not.toMatch(/dynamodb:(Scan|DeleteItem|BatchWriteItem|TransactWriteItems)/);
     const [fn] = functions(t).filter((f) => f.FunctionName === "supply-checkout-prod-team-lapse");

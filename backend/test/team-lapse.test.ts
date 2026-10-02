@@ -220,9 +220,12 @@ describe("an ended subscription", () => {
     expect(line?.[2]).toMatchObject({ teamId: "gone", recordedSubscriptionId: "sub_1", customerId: "cus_1" });
   });
 
-  it("leaves a team that changed between the read and the closure (a Stripe event, a comp) for the next run", async () => {
+  it("leaves a team that changed between the read and the closure (a Stripe event, a comp, a customer linked) for the next run", async () => {
     await run();
     onStripe = () => table.put({ ...meta("gone"), version: 9 });
+    expect(await run(NOW + 7 * DAY)).toEqual({ checked: 1, closed: 0, failed: 0 });
+    expect(meta("gone").closedAt).toBeUndefined();
+    onStripe = () => table.put({ ...meta("gone"), stripeCustomerId: "cus_new" });
     expect(await run(NOW + 7 * DAY)).toEqual({ checked: 1, closed: 0, failed: 0 });
     expect(meta("gone").closedAt).toBeUndefined();
     expect(logs.some(([, message]) => message === "Lapsed team changed before it was closed: left for the next run")).toBe(true);

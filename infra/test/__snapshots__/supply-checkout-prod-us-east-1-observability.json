@@ -7002,7 +7002,9 @@
                     "closedBy",
                     "purgeAfter",
                     "purging",
-                    "version"
+                    "version",
+                    "stripeCustomerId",
+                    "stripeSubscriptionId"
                   ]
                 },
                 "StringEqualsIfExists": {

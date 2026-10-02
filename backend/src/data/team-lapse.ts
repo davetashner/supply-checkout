@@ -197,25 +197,34 @@ export async function recordWarning(db: Db, teamId: string, deleteAfter: string,
  * Closes a lapsed team so the hourly purge deletes it (team-purge.ts): sets
  * `closedAt` and `purgeAfter` to now, `closedBy` to LAPSED_CLOSER, and puts
  * it in the closed-teams index, as closeTeam does, with the version moved.
- * Conditioned on the team being there, not closed or being purged, and its
- * version being the one read (`team.version`): a Stripe event, a comp, an
- * owner's change or a closure since then moves it, and then nothing is
- * closed (false), and the next run decides again. Its invites go with the
+ * Conditioned on the team being there, not closed or being purged, its
+ * version being the one read (`team.version`: a Stripe event, a comp, an
+ * owner's change or a closure since then moves it), and its Stripe customer
+ * and subscription being the ones read (an owner starting Checkout links a
+ * customer without moving the version); otherwise nothing is closed (false),
+ * and the next run decides again. Its invites go with the
  * purge, within the hour; nobody can accept them meanwhile (a closed team
  * takes nobody).
  */
-export async function closeLapsedTeam(db: Db, team: Pick<LapseTeam, "teamId" | "version">, now: Date): Promise<boolean> {
+export async function closeLapsedTeam(db: Db, team: Pick<LapseTeam, "teamId" | "version" | "stripeCustomerId" | "stripeSubscriptionId">, now: Date): Promise<boolean> {
   const at = now.toISOString();
   const index = gsi1.closedTeam(at, team.teamId);
+  // The Stripe IDs as read too: an owner starting Checkout links a customer without moving the version
+  const asRead = (name: string, value: string | undefined, key: string) => (value === undefined ? `attribute_not_exists(${name})` : `${name} = ${key}`);
+  const stripeValues = { ...(team.stripeCustomerId !== undefined ? { ":customer": team.stripeCustomerId } : {}), ...(team.stripeSubscriptionId !== undefined ? { ":subscription": team.stripeSubscriptionId } : {}) };
   try {
     await connection(db).doc.send(
       new UpdateCommand({
         TableName: db.tableName,
         Key: keys.team(id(team.teamId, "team ID")),
         UpdateExpression: "SET closedAt = :at, closedBy = :by, purgeAfter = :at, GSI1PK = :gpk, GSI1SK = :gsk, #version = #version + :one",
-        ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(closedAt) AND attribute_not_exists(purging) AND #version = :version",
+        ConditionExpression: [
+          "attribute_exists(PK) AND attribute_not_exists(closedAt) AND attribute_not_exists(purging) AND #version = :version",
+          asRead("stripeCustomerId", team.stripeCustomerId, ":customer"),
+          asRead("stripeSubscriptionId", team.stripeSubscriptionId, ":subscription"),
+        ].join(" AND "),
         ExpressionAttributeNames: { "#version": "version" },
-        ExpressionAttributeValues: { ":at": at, ":by": LAPSED_CLOSER, ":gpk": index.GSI1PK, ":gsk": index.GSI1SK, ":one": 1, ":version": team.version },
+        ExpressionAttributeValues: { ":at": at, ":by": LAPSED_CLOSER, ":gpk": index.GSI1PK, ":gsk": index.GSI1SK, ":one": 1, ":version": team.version, ...stripeValues },
       }),
     );
     return true;

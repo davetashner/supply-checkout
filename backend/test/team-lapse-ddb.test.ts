@@ -46,8 +46,10 @@ describe.skipIf(!endpoint)("the lapsed-team job's data (DynamoDB Local)", () => 
     expect(await recordWarning(table.db, team.teamId, deleteAfter, now)).toBe(now.toISOString());
     expect(await recordWarning(table.db, team.teamId, deleteAfter, new Date(now.getTime() + DAY))).toBe(now.toISOString());
 
-    // A change since the read: not closed
+    // A change since the read: not closed. Nor once an owner has linked a Stripe customer (Checkout), which moves no version
     expect(await closeLapsedTeam(table.db, { teamId: team.teamId, version: 0 }, now)).toBe(false);
+    expect(await closeLapsedTeam(table.db, { teamId: team.teamId, version: 1, stripeCustomerId: "cus_x" }, now)).toBe(false);
+    expect(await closeLapsedTeam(table.db, { teamId: team.teamId, version: 1, stripeSubscriptionId: "sub_x" }, now)).toBe(false);
     expect(await closeLapsedTeam(table.db, { teamId: "no-such-team", version: 1 }, now)).toBe(false);
     expect(await closeLapsedTeam(table.db, read as { teamId: string; version: number }, now)).toBe(true);
     expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ closedAt: now.toISOString(), closedBy: LAPSED_CLOSER, purgeAfter: now.toISOString(), version: 2 });

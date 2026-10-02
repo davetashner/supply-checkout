@@ -331,10 +331,13 @@ export const LAPSE_READ_ATTRIBUTES = [
  * (UpdateItem, nothing returned): the closure it sets (`closedAt`,
  * `closedBy`, `purgeAfter` and the closed-teams index keys, so the hourly
  * purge deletes it) and the version it moves, and what its condition checks
- * (no closure or purge mark yet, and the version as read). Not status, plan,
- * comps or Stripe IDs.
+ * (no closure or purge mark yet, the version, and the Stripe customer and
+ * subscription as read: linking a customer at Checkout doesn't move the
+ * version). IAM can't tell a condition's name from one the update sets, but
+ * the job already holds the Stripe key, so naming the Stripe IDs gives it
+ * nothing more. Not status, plan or comps.
  */
-export const LAPSE_CLOSE_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "closedAt", "closedBy", "purgeAfter", "purging", "version"] as const;
+export const LAPSE_CLOSE_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "closedAt", "closedBy", "purgeAfter", "purging", "version", "stripeCustomerId", "stripeSubscriptionId"] as const;
 
 /** What the lapsed-team job may read of a team's owners in the operators' index (GSI3's `OPS#OWNERS#<teamId>` partitions): the keys and the owner's email, for the notices. */
 export const LAPSE_OWNER_ATTRIBUTES = [PK, SK, GSI3PK, GSI3SK, "email"] as const;
