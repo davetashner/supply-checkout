@@ -103,6 +103,7 @@ describe("OpenAPI description", () => {
       { $ref: "#/components/schemas/ImportClearRecord" },
       { $ref: "#/components/schemas/ReopenRecord" },
       { $ref: "#/components/schemas/TeamsListRecord" },
+      { $ref: "#/components/schemas/ReceiptUsageRecord" },
       { type: "null" },
     ]);
     // Each shape is closed and fully required, so exactly one matches any recorded value (backend/test/ops-api.test.ts checks real ones)
@@ -121,4 +122,5 @@ const AUDIT_RECORD_SHAPES: Record<string, string[]> = {
   ImportClearRecord: ["importId", "committing"],
   ReopenRecord: ["closedAt", "purgeAfter"],
   TeamsListRecord: ["q", "cursor", "teams"],
+  ReceiptUsageRecord: ["month", "teams"],
 };

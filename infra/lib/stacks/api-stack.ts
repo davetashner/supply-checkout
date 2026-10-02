@@ -900,7 +900,7 @@ export class ApiStack extends SupplyCheckoutStack {
     if (!fnRole) throw new Error("The ops function has no role");
     const tag = `\${aws:PrincipalTag/${OPS_SESSION_TAG}}`;
     const role = new Role(this, "OperatorAccessRole", {
-      description: "Assumed by the ops function per request (ADR 0015): the operators' index, one team's comp attributes, and append-only operator audit",
+      description: "Assumed by the ops function per request (ADR 0015): the operators' index, teams' receipt counts, one team's comp attributes, and append-only operator audit",
       maxSessionDuration: Duration.hours(1),
       assumedBy: new ArnPrincipal(fnRole.roleArn)
         .withConditions({
@@ -967,6 +967,22 @@ export class ApiStack extends SupplyCheckoutStack {
                   "dynamodb:Attributes": [...IMPORT_INDEX_ATTRIBUTES],
                 },
                 StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+              },
+            }),
+            // Teams' receipt counters (supply-checkout-wxx): a team's record shows its reads by
+            // month and in its trial, and GET /ops/receipts ranks every team's month. Only
+            // BatchGetItem (exact keys: no Query, so no listing of a team's sort keys), only
+            // the keys and `receipts`, which only the USAGE# counters have, and only with a
+            // projection (a read without one would return whole items)
+            new PolicyStatement({
+              sid: "TeamReceiptCountersReadOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:BatchGetItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+                "ForAllValues:StringEquals": { "dynamodb:Attributes": [...RECEIPT_USAGE_ATTRIBUTES] },
+                StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
               },
             }),
             new PolicyStatement({

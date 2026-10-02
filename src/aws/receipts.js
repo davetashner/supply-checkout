@@ -50,7 +50,8 @@ export function usageLabel(usage) {
 }
 
 // The server's usage, with its label; null for anything that isn't one
-const labeled = (usage) => usage && typeof usage === "object" && typeof usage.remaining === "number" ? { ...usage, label: usageLabel(usage) } : null;
+// (numbers only: anything else hides the line rather than showing "undefined of NaN")
+const labeled = (usage) => usage && typeof usage === "object" && [usage.limit, usage.used, usage.remaining].every(Number.isFinite) ? { ...usage, label: usageLabel(usage) } : null;
 
 /** The team's receipt usage from GET /teams/{teamId}/receipts/usage, labeled, or null if it can't be read. */
 export async function readUsage(api, team) {
@@ -68,7 +69,8 @@ export function receiptsFor(api, team) {
   let period = null;
   const seen = (usage) => { if (usage) period = usage.period; return usage; };
   return {
-    usage: async () => seen(await readUsage(api, team)),
+    // Viewers can't scan, and the server refuses them the usage: they never ask
+    ...(team.role === "viewer" ? {} : { usage: async () => seen(await readUsage(api, team)) }),
     async json(_prompt, { images, signal }) {
       // src/main.js passes the one photo src/photo.js made
       if (!MEDIA_TYPES.includes(images.type) || images.size > MAX_IMAGE_BYTES) throw { code: "image_rejected", message: "Not a JPEG or PNG photo the endpoint takes" };

@@ -150,6 +150,7 @@ describe("HTTP API routes", () => {
       "GET /ops/audit": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "GET /ops/imports": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
       "POST /ops/teams/{teamId}/imports/{importId}/clear": { ThrottlingRateLimit: 2, ThrottlingBurstLimit: 5 },
+      "GET /ops/receipts": { ThrottlingRateLimit: 1, ThrottlingBurstLimit: 2 },
     });
     // Created after the routes it names
     expect((stage.DependsOn as string[]).filter((d) => d.startsWith("HttpApi")).length).toBeGreaterThanOrEqual(ACCOUNT_ROUTES.length + 1);
@@ -876,10 +877,24 @@ describe("operator-access role (ADR 0015)", () => {
     });
   });
 
-  it("queries only the operators' index partitions, for projected attributes only; updates only comp attributes of the tagged team; and only appends operator audit", () => {
+  it("queries only the operators' index partitions, for projected attributes only; updates only comp attributes of the tagged team; reads only teams' receipt counts; and only appends operator audit", () => {
     const [policy, ...others] = role().Policies;
     expect(others).toEqual([]);
-    const [index, comp, stuckList, stuckClear, audit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    const [index, comp, stuckList, stuckClear, receipts, audit, kms, ...rest] = policy?.PolicyDocument.Statement ?? [];
+    // Receipt usage (supply-checkout-wxx): BatchGetItem by key only, the keys and `receipts` only, projected
+    expect(receipts).toEqual({
+      Sid: "TeamReceiptCountersReadOnly",
+      Effect: "Allow",
+      Action: "dynamodb:BatchGetItem",
+      Resource: expect.anything(),
+      Condition: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] },
+        "ForAllValues:StringEquals": { "dynamodb:Attributes": [...RECEIPT_USAGE_ATTRIBUTES] },
+        StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+      },
+    });
+    expect([...RECEIPT_USAGE_ATTRIBUTES]).toEqual(["PK", "SK", "receipts"]);
+    expect(JSON.stringify(receipts?.Resource)).not.toMatch(/index|\*/);
     // Stuck imports (supply-checkout-6uw.2): the check's partition, keys and progress only; and only a job's GSI1 keys
     expect(stuckList).toEqual({
       Sid: "StuckImportsListOnly",
@@ -942,8 +957,9 @@ describe("operator-access role (ADR 0015)", () => {
     });
     expect(JSON.stringify(audit?.Resource)).not.toContain("index");
     expect(kms).toMatchObject({ Sid: "TableKeyThroughDynamoDb", Condition: { StringEquals: { "kms:ViaService": expect.anything() } } });
-    // Nothing reads a team's partition from the table: no GetItem, no Query there, no Scan anywhere
-    expect(JSON.stringify(policy)).not.toMatch(/GetItem|Scan|Batch|DeleteItem|ConditionCheck/);
+    // Nothing else reads a team's partition from the table: no GetItem, no Query there, no Scan anywhere,
+    // and the one batch read is the receipt counters' above
+    expect(JSON.stringify({ ...policy, PolicyDocument: { Statement: (policy?.PolicyDocument.Statement ?? []).filter((x) => x !== receipts) } })).not.toMatch(/GetItem|Scan|Batch|DeleteItem|ConditionCheck/);
     // And no closure field: with closedAt and purgeAfter it could close a team and have the purge delete it (supply-checkout-6uw.6)
     expect(JSON.stringify(policy)).not.toMatch(/closedAt|closedBy|purgeAfter|owners/);
   });

@@ -1827,7 +1827,10 @@ paths:
         `{ "error": "unavailable" }` when the key isn't stored yet, Stripe
         errors or takes more than 4 seconds; the team still comes back. It
         never includes the customer's email, name or address, card details,
-        or links to Stripe's hosted invoice pages.
+        or links to Stripe's hosted invoice pages. `receipts` is the team's
+        receipt reads in this UTC month and the five before, and in its trial,
+        with an estimated cost (reads times `estimatedCostPerReceiptUsd` from
+        `GET /ops/receipts`; an estimate, not billing).
       security: [{ opsCognito: [] }]
       responses:
         "200":
@@ -1836,10 +1839,25 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [team, stripe]
+                required: [team, stripe, receipts]
                 properties:
                   team: { $ref: "#/components/schemas/OpsTeam" }
                   stripe: { $ref: "#/components/schemas/OpsStripeDetail" }
+                  receipts:
+                    type: object
+                    required: [months, trialReceipts]
+                    properties:
+                      months:
+                        type: array
+                        description: This UTC month and the five before, newest first.
+                        items:
+                          type: object
+                          required: [month, receipts, estimatedCostUsd]
+                          properties:
+                            month: { type: string, description: YYYY-MM }
+                            receipts: { type: integer, minimum: 0 }
+                            estimatedCostUsd: { type: number, minimum: 0 }
+                      trialReceipts: { type: integer, minimum: 0, description: "Reads while the team wasn't paying, in all; they also count in their months." }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/OperatorsOnly" }
@@ -1989,13 +2007,59 @@ paths:
                         ts: { type: string, format: date-time }
                         teamId: { type: string }
                         operatorSub: { type: string, description: The operator's `sub` in the operator pool. }
-                        action: { type: string, enum: [ops.teams.list, ops.team.read, ops.comp.set, ops.comp.end, ops.import.clear, ops.team.reopen] }
+                        action: { type: string, enum: [ops.teams.list, ops.team.read, ops.receipts.usage, ops.comp.set, ops.comp.end, ops.import.clear, ops.team.reopen] }
                         target: { type: string }
                         reason: { type: string }
                         before: { $ref: "#/components/schemas/AuditRecord" }
                         after: { $ref: "#/components/schemas/AuditRecord" }
                         idempotencyKey: { type: string }
                   cursor: { type: string, description: Absent on the last page. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/OperatorsOnly" }
+  /ops/receipts:
+    get:
+      tags: [ops]
+      operationId: opsListReceiptUsage
+      summary: The teams that read the most receipts in a month, most first, with their estimated cost. Audited as `ops.receipts.usage`.
+      description: |
+        Reads up to 1,000 teams from the operators' index and each one's
+        receipt counters for the month and its trial, by key; `complete` is
+        false when there were more teams than that. Teams with no reads that
+        month aren't listed. The cost is an estimate: reads times
+        `estimatedCostPerReceiptUsd` (the top of ADR 0008's per-receipt
+        estimate), not what Bedrock billed.
+      security: [{ opsCognito: [] }]
+      parameters:
+        - { name: month, in: query, schema: { type: string, pattern: "^\\d{4}-(0[1-9]|1[0-2])$" }, description: "YYYY-MM, UTC. Defaults to this month." }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        "200":
+          description: The month's ranking.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [month, teams, teamsRead, complete, estimatedCostPerReceiptUsd]
+                properties:
+                  month: { type: string }
+                  teams:
+                    type: array
+                    items:
+                      type: object
+                      required: [teamId, name, status, plan, compLive, receipts, trialReceipts, estimatedCostUsd]
+                      properties:
+                        teamId: { type: string }
+                        name: { type: string }
+                        status: { type: string }
+                        plan: { type: string }
+                        compLive: { type: boolean }
+                        receipts: { type: integer, minimum: 0, description: Reads in the month. }
+                        trialReceipts: { type: integer, minimum: 0, description: "Reads while it wasn't paying, in all." }
+                        estimatedCostUsd: { type: number, minimum: 0, description: The month's reads times the estimated cost per read. }
+                  teamsRead: { type: integer }
+                  complete: { type: boolean, description: False when there were more teams than one request reads (1,000). }
+                  estimatedCostPerReceiptUsd: { type: number }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/OperatorsOnly" }
@@ -2401,13 +2465,16 @@ components:
         `ops.comp.set` and `ops.comp.end` record a `CompRecord` (or null for
         no comp), `ops.import.clear` an `ImportClearRecord`, `ops.team.reopen`
         a `ReopenRecord` before (null after), and `ops.teams.list` (in the
-        operators' audit only) a `TeamsListRecord` after (null before).
+        operators' audit only) a `TeamsListRecord` after (null before), and
+        `ops.receipts.usage` (in the operators' audit only) a
+        `ReceiptUsageRecord` after (null before).
         `ops.team.read` records neither.
       oneOf:
         - { $ref: "#/components/schemas/CompRecord" }
         - { $ref: "#/components/schemas/ImportClearRecord" }
         - { $ref: "#/components/schemas/ReopenRecord" }
         - { $ref: "#/components/schemas/TeamsListRecord" }
+        - { $ref: "#/components/schemas/ReceiptUsageRecord" }
         - type: "null"
     CompRecord:
       type: object
@@ -2443,6 +2510,14 @@ components:
       properties:
         q: { type: [string, "null"] }
         cursor: { type: [string, "null"] }
+        teams: { type: array, items: { type: string } }
+    ReceiptUsageRecord:
+      type: object
+      description: A month's receipt ranking, and the teams it returned.
+      required: [month, teams]
+      additionalProperties: false
+      properties:
+        month: { type: string }
         teams: { type: array, items: { type: string } }
     OpsStripeDetail:
       oneOf:

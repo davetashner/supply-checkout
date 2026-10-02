@@ -21,6 +21,7 @@ import {
   memberCap,
   MEMBERS_PER_TEAM,
   MEMBERS_PER_TRIAL_TEAM,
+  ESTIMATED_COST_PER_RECEIPT_USD,
   MAX_OPS_TEAMS_READ,
   OPS_REOPEN_CUTOFF_MINUTES,
   OWNER_LOOKUPS_AT_ONCE,
@@ -781,6 +782,7 @@ describe("the operator audit", () => {
     const shapes = (spec.components.schemas.AuditRecord?.oneOf ?? []).flatMap((o) => (o.$ref ? [spec.components.schemas[o.$ref.split("/").pop() as string]?.required ?? []] : []));
     const matches = (value: unknown) => (value === null ? 1 : shapes.filter((keys) => JSON.stringify(Object.keys(value as object).sort()) === JSON.stringify([...keys].sort())).length);
     await call("GET", "/ops/teams", { query: { q: "acme" } });
+    await call("GET", "/ops/receipts");
     await call("PUT", `/ops/teams/${teamA}/comp`, { body: { plan: "free", until: "2026-12-31", reason: "Pilot", expectedVersion: 1 }, key: "comp-key-0001" });
     await call("DELETE", `/ops/teams/${teamA}/comp`, { body: { reason: "Over", expectedVersion: 2 }, key: "comp-key-0002" });
     table.put({ PK: `TEAM#${teamB}`, SK: "IMPORT#imp-old", GSI1PK: "IMPORTS#COMMITTING", GSI1SK: "2026-09-26T09:00:00.000Z#imp-old", type: "import", status: "committing", committed: 1, total: 2 });
@@ -789,7 +791,7 @@ describe("the operator audit", () => {
     await closeTeam(table.db(), made.context, { confirmName: "Echo Clean" }, new Date(NOW - DAY));
     await call("POST", `/ops/teams/${made.team.teamId}/reopen`, { body: { reason: "Closed by mistake", expectedVersion: teamOf(made.team.teamId).version }, key: "reopen-key-0001" });
     const items = [...table.items.values()].filter((i) => String(i.PK).startsWith("OPAUDIT#") && String(i.SK).startsWith("AUDIT#"));
-    expect(new Set(items.map((i) => i.action))).toEqual(new Set(["ops.teams.list", "ops.comp.set", "ops.comp.end", "ops.import.clear", "ops.team.reopen"]));
+    expect(new Set(items.map((i) => i.action))).toEqual(new Set(["ops.teams.list", "ops.receipts.usage", "ops.comp.set", "ops.comp.end", "ops.import.clear", "ops.team.reopen"]));
     for (const item of items) {
       expect(matches(item.before), `${String(item.action)} before`).toBe(1);
       expect(matches(item.after), `${String(item.action)} after`).toBe(1);
@@ -1146,5 +1148,99 @@ describe("reopening a closed team (supply-checkout-6uw.6)", () => {
     expect(reopenCalls).toEqual([]);
     expect((await call("POST", `/ops/teams/${teamC}/reopen`, { body: { reason: "Disputed closure", expectedVersion: 2 }, key: "reopen-key-0007", claims: { iss: CUSTOMER_ISSUER, client_id: WEB_CLIENT } })).status).toBe(401);
     expect(teamOf(teamC).closedAt).toBeDefined();
+  });
+});
+
+describe("receipt usage (supply-checkout-wxx)", () => {
+  const usage = (teamId: string, sk: string, receipts: number) => table.put({ PK: `TEAM#${teamId}`, SK: sk, receipts });
+
+  it("shows a team's reads for the last six months and its trial, with the estimated cost, as part of its audited record", async () => {
+    usage(teamA, "USAGE#2026-09", 40);
+    usage(teamA, "USAGE#2026-07", 3);
+    usage(teamA, "USAGE#2026-03", 99);
+    usage(teamA, "USAGE#TRIAL", 25);
+    usage(teamB, "USAGE#2026-09", 7);
+    const res = await call("GET", `/ops/teams/${teamA}`);
+    expect(res.status).toBe(200);
+    expect(res.body.receipts).toEqual({
+      months: [
+        { month: "2026-09", receipts: 40, estimatedCostUsd: 0.28 },
+        { month: "2026-08", receipts: 0, estimatedCostUsd: 0 },
+        { month: "2026-07", receipts: 3, estimatedCostUsd: 0.021 },
+        { month: "2026-06", receipts: 0, estimatedCostUsd: 0 },
+        { month: "2026-05", receipts: 0, estimatedCostUsd: 0 },
+        { month: "2026-04", receipts: 0, estimatedCostUsd: 0 },
+      ],
+      trialReceipts: 25,
+    });
+    expect(ESTIMATED_COST_PER_RECEIPT_USD).toBe(0.007);
+    // Only the counters, by key, projected: nothing else of the team's partition
+    const reads = table.requests.filter((r) => r.command === "BatchGetCommand");
+    expect(reads).toHaveLength(1);
+    const request = Object.values(reads[0]?.input.RequestItems as Record<string, { Keys: { PK: string; SK: string }[]; ProjectionExpression: string }>)[0];
+    expect(request?.ProjectionExpression).toBe("PK, SK, receipts");
+    expect(request?.Keys.every((k) => k.PK === `TEAM#${teamA}` && /^USAGE#(\d{4}-\d{2}|TRIAL)$/.test(k.SK))).toBe(true);
+    // The read is the record's, audited once
+    expect(auditItems(teamA).map((a) => a.action)).toEqual(["ops.team.read"]);
+    expect(denied).toEqual([]);
+    expect(JSON.stringify(res.body.receipts)).not.toContain("Secret client");
+  });
+
+  it("goes across a year's start", async () => {
+    now = Date.parse("2027-02-10T00:00:00Z");
+    usage(teamA, "USAGE#2026-12", 5);
+    const res = await call("GET", `/ops/teams/${teamA}`, { claims: { exp: Math.floor(now / 1000) + 900 } });
+    expect(res.body.receipts.months.map((m: { month: string }) => m.month)).toEqual(["2027-02", "2027-01", "2026-12", "2026-11", "2026-10", "2026-09"]);
+    expect(res.body.receipts.months[2].receipts).toBe(5);
+  });
+
+  it("lists the teams that read the most in a month, most first, with their trial reads and plan, and audits it", async () => {
+    usage(teamA, "USAGE#2026-09", 12);
+    usage(teamA, "USAGE#TRIAL", 12);
+    usage(teamB, "USAGE#2026-09", 150);
+    usage(teamB, "USAGE#2026-08", 400);
+    const res = await call("GET", "/ops/receipts", { query: { month: "2026-09" } });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      month: "2026-09",
+      teams: [
+        { teamId: teamB, name: "Bravo Janitorial", status: "trialing", plan: "trial", compLive: false, receipts: 150, trialReceipts: 0, estimatedCostUsd: 1.05 },
+        { teamId: teamA, name: "Acme Cleaning", status: "trialing", plan: "trial", compLive: false, receipts: 12, trialReceipts: 12, estimatedCostUsd: 0.084 },
+      ],
+      teamsRead: 2,
+      complete: true,
+      estimatedCostPerReceiptUsd: 0.007,
+    });
+    expect((await call("GET", "/ops/receipts", { query: { month: "2026-09", limit: "1" } })).body.teams.map((t: { teamId: string }) => t.teamId)).toEqual([teamB]);
+    // This month by default; a team with no reads isn't listed
+    expect((await call("GET", "/ops/receipts", { query: { month: "2026-08" } })).body.teams.map((t: { teamId: string }) => t.teamId)).toEqual([teamB]);
+    expect((await call("GET", "/ops/receipts")).body.month).toBe("2026-09");
+    const audits = auditItems("PLATFORM").filter((a) => a.action === "ops.receipts.usage");
+    expect(audits[0]).toMatchObject({ operatorSub: OPERATOR, target: "teams", after: { month: "2026-09", teams: [teamB, teamA] } });
+    expect(audits).toHaveLength(4);
+    expect(denied).toEqual([]);
+    // Logged by IDs and status only
+    expect(JSON.stringify(logs)).not.toContain("Bravo Janitorial");
+  });
+
+  it("asks again for keys DynamoDB leaves unprocessed, reads at most MAX_OPS_TEAMS_READ teams, and refuses bad input", async () => {
+    usage(teamB, "USAGE#2026-09", 2);
+    table.unprocessed = 2;
+    expect((await call("GET", "/ops/receipts", { query: { month: "2026-09" } })).body.teams).toMatchObject([{ teamId: teamB, receipts: 2 }]);
+    expect(table.requests.filter((r) => r.command === "BatchGetCommand")).toHaveLength(2);
+    for (const [query, status] of [[{ month: "2026-13" }, 400], [{ month: "Sept" }, 400], [{ month: "2026-09", limit: "0" }, 400], [{ month: "2026-09", limit: "101" }, 400]] as const) {
+      expect((await call("GET", "/ops/receipts", { query })).status).toBe(status);
+    }
+    // More teams than one request reads: ranked from those it read, and says so
+    for (let i = 0; i < MAX_OPS_TEAMS_READ; i++) table.put({ PK: `TEAM#bulk-${String(i).padStart(4, "0")}`, SK: "META", GSI3PK: "OPS#TEAMS", GSI3SK: `bulk-${String(i).padStart(4, "0")}`, name: `Bulk ${i}`, plan: "trial", status: "trialing", seats: 1, owners: 1, createdAt: "2026-09-01T00:00:00.000Z", version: 1 });
+    const big = await call("GET", "/ops/receipts", { query: { month: "2026-09" } });
+    expect(big.body).toMatchObject({ teamsRead: MAX_OPS_TEAMS_READ, complete: false });
+  });
+
+  it("keeps it to operators", async () => {
+    groups.set("member-only", []);
+    expect((await call("GET", "/ops/receipts", { claims: { sub: "member-only" } })).status).toBe(403);
+    expect((await call("GET", "/ops/receipts", { claims: { iss: CUSTOMER_ISSUER, client_id: WEB_CLIENT } })).status).toBe(401);
+    expect(table.requests.filter((r) => r.command === "BatchGetCommand")).toEqual([]);
   });
 });

@@ -5,7 +5,10 @@
 //                                       each request reads a bounded number of them
 //   GET    /ops/teams/{teamId}          One team's account record and owners (audited),
 //                                       with its Stripe subscription and latest invoices
-//                                       on the ops restricted key (stripe-detail.ts)
+//                                       on the ops restricted key (stripe-detail.ts), and
+//                                       its receipt reads by month and in its trial
+//   GET    /ops/receipts?month=&limit=  The teams that read the most receipts in a month,
+//                                       with their estimated cost (audited)
 //   PUT    /ops/teams/{teamId}/comp     Comp a team or change or extend its comp
 //   DELETE /ops/teams/{teamId}/comp     End a comp early
 //   POST   /ops/teams/{teamId}/reopen   Reopen a closed team, through the
@@ -30,8 +33,9 @@
 // What an operator reaches: the team routes never honor this pool or group,
 // and this code has no TeamContext (the lint config keeps team-context
 // functions out of it). Every DynamoDB call runs on the operator-access role
-// (ops-db.ts), which can read only GSI3's projection, change only comp
-// attributes, and only append audit items. Every change is audited in its own
+// (ops-db.ts), which can read only GSI3's projection and teams' receipt
+// counters (by key, `receipts` only), change only comp attributes, and only
+// append audit items. Every change is audited in its own
 // transaction (data/operator.ts). Log lines carry the action, the team ID,
 // the operator's `sub` and the status: never emails, names or tokens.
 //
@@ -48,11 +52,13 @@ import {
   clearStuckImport,
   ConflictError,
   endComp,
+  getOpsReceiptUsage,
   getOpsTeam,
   InvalidInputError,
   liveComp,
   listOperatorAudit,
   listOpsOwnersOf,
+  listOpsReceiptUsage,
   listOpsTeams,
   listStuckImportsForOps,
   NotFoundError,
@@ -234,10 +240,13 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
     async getTeam(event, op) {
       const teamId = teamIdFrom(event);
       const at = new Date(now());
-      const { team, owners } = await getOpsTeam(deps.dbFor(op.sub), op, teamId, at);
+      const db = deps.dbFor(op.sub);
+      const { team, owners } = await getOpsTeam(db, op, teamId, at);
       // The customer on the team's index entry, never one from the request; never throws
       const stripe = await opsStripeDetail(teamId, team.stripeCustomerId, { stripe: deps.stripe, obs, deadlineMs: deps.stripeDeadlineMs });
-      return { teamId, response: json(200, { team: opsTeamBody(team, at, owners), stripe }) };
+      // Part of the record's read, which getOpsTeam audited
+      const receipts = await getOpsReceiptUsage(db, op, teamId, at);
+      return { teamId, response: json(200, { team: opsTeamBody(team, at, owners), stripe, receipts }) };
     },
     async setComp(event, op) {
       const teamId = teamIdFrom(event);
@@ -276,6 +285,14 @@ export function createOpsHandler(deps: OpsHandlerDeps) {
       // A replay too: harmless, since the quantity is recomputed, and it covers a first try whose sync wasn't queued
       await queueSeatSync(op, teamId);
       return { teamId, response: json(200, answer.outcome) };
+    },
+    async listReceiptUsage(event, op) {
+      const q = event.queryStringParameters ?? {};
+      const at = new Date(now());
+      const month = q.month ?? at.toISOString().slice(0, 7);
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new ApiError(400, "bad_request", "month is YYYY-MM");
+      const usage = await listOpsReceiptUsage(deps.dbFor(op.sub), op, { month, limit: limitFrom(q.limit) }, at);
+      return { response: json(200, usage) };
     },
     async listAudit(event, op) {
       const q = event.queryStringParameters ?? {};
