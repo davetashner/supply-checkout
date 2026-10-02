@@ -251,7 +251,7 @@ describe("a comp message (reason comp)", () => {
     expect(await worker(message())).toBe("applied");
     expect(retrieves).toEqual([{ id: SUB, expand: ["discounts"] }]);
     expect(updates).toEqual([
-      { id: SUB, params: { discounts: [{ coupon: "supply-checkout-comp-2m" }], metadata: { [COMP_UNTIL_METADATA]: UNTIL } }, key: compDiscountKey(TEAM, SUB, "apply", UNTIL, []) },
+      { id: SUB, params: { discounts: [{ coupon: "supply-checkout-comp-2m" }], metadata: { [COMP_UNTIL_METADATA]: UNTIL } }, key: compDiscountKey(TEAM, SUB, "apply", UNTIL, [], "supply-checkout-comp-2m") },
     ]);
     expect(ours()).toEqual(["supply-checkout-comp-2m"]);
     expect(coupons.get("supply-checkout-comp-2m")).toMatchObject({ percent_off: 100, duration: "repeating", duration_in_months: 2 });
@@ -295,6 +295,8 @@ describe("a comp message (reason comp)", () => {
     expect(compDiscountKey(TEAM, SUB, "apply", UNTIL, ["di_b", "di_a"])).toBe(compDiscountKey(TEAM, SUB, "apply", UNTIL, ["di_a", "di_b"]));
     expect(compDiscountKey(TEAM, SUB, "apply", UNTIL, [])).not.toBe(compDiscountKey(TEAM, SUB, "apply", "2027-01-01T00:00:00.000Z", []));
     expect(compDiscountKey(TEAM, SUB, "apply", UNTIL, [])).not.toBe(compDiscountKey("team-b", SUB, "apply", UNTIL, []));
+    // The coupon too: sized to the time left, it changes as a comp runs, and a later request must never replay an earlier one
+    expect(compDiscountKey(TEAM, SUB, "apply", UNTIL, [], "supply-checkout-comp-2m")).not.toBe(compDiscountKey(TEAM, SUB, "apply", UNTIL, [], "supply-checkout-comp-1m"));
     expect(compDiscountKey(TEAM, SUB, "remove", UNTIL, [])).toMatch(/^comp-remove-[0-9a-f]{64}$/);
   });
 
@@ -373,6 +375,15 @@ describe("a comp message (reason comp)", () => {
     subs.set(SUB, subscription({ discounts: [discountUntil("supply-checkout-comp-1m", Date.parse(UNTIL) / 1000 - 86400 * 30)], metadata: { [COMP_UNTIL_METADATA]: UNTIL } }));
     expect(await worker(message("comp", "seats-comp-3"))).toBe("in_sync");
     expect(updates).toHaveLength(2);
+  });
+
+  it("takes a discount ending exactly the slack after the comp as in time, and one a second later as not", async () => {
+    compMonths();
+    const edge = (Date.parse(UNTIL) + COMP_DISCOUNT_SLACK_MS) / 1000;
+    subs.set(SUB, subscription({ discounts: [discountUntil("supply-checkout-comp-2m", edge)], metadata: { [COMP_UNTIL_METADATA]: UNTIL } }));
+    expect(await worker(message())).toBe("in_sync");
+    subs.set(SUB, subscription({ discounts: [discountUntil("supply-checkout-comp-2m", edge + 1)], metadata: { [COMP_UNTIL_METADATA]: UNTIL } }));
+    expect(await worker(message("comp", "seats-comp-2"))).toBe("applied");
   });
 
   it("puts nothing on with under a month left, keeps one of ours that ends in time, and takes off one that doesn't", async () => {
@@ -516,6 +527,25 @@ describe("the nightly reconciliation", () => {
     retrieves.length = 0;
     await worker(message("membership", "seats-2"));
     expect(retrieves.filter((r) => r.expand)).toEqual([]);
+  });
+
+  it("puts a live comp's discount on as soon as its team is reopened", async () => {
+    compMonths();
+    patchTeam({ stripeResyncFor: "2026-09-01T00:00:00.000Z" });
+    await worker(message("membership", "seats-reopen-1"));
+    expect(ours()).toEqual(["supply-checkout-comp-2m"]);
+  });
+
+  it("doesn't look at the discount after a reopen of a team never comped, or one whose subscription Stripe doesn't have", async () => {
+    patchTeam({ stripeResyncFor: "2026-09-01T00:00:00.000Z" });
+    await worker(message("membership", "seats-reopen-1"));
+    expect(retrieves.filter((r) => r.expand)).toEqual([]);
+    compMonths();
+    patchTeam({ stripeResyncFor: "2026-09-01T00:00:00.000Z", stripeSubscriptionId: "sub_gone" });
+    retrieves.length = 0;
+    await expect(worker(message("membership", "seats-reopen-2"))).rejects.toMatchObject({ code: "resource_missing" });
+    expect(retrieves.filter((r) => r.expand)).toEqual([]);
+    expect(audits()).toEqual([]);
   });
 
   it("audits nothing when it's in step, and doesn't look at a team never comped", async () => {

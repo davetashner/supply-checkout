@@ -502,8 +502,10 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
       }
       // A reopened team's subscription first (reopening.ts): the reopen's own sync, or the night's for one still waiting.
       // Whatever it did, the seat sync sees the team as it left it
-      const resynced = (await reopened(sync, found)) !== "none";
-      if (resynced) found = await readSeatTeamAgain(found, now());
+      const resync = await reopened(sync, found);
+      if (resync !== "none") found = await readSeatTeamAgain(found, now());
+      // Only a resync that reached the subscription: not a subscription Stripe doesn't have, another customer's, or a closed team
+      const resynced = !["none", "missing", "not_ours", "team_closed"].includes(resync);
       // The nightly reconciliation: the team's status, plan and seats against Stripe's first (entitlements.ts), then the quantity.
       // A recorded subscription or customer Stripe no longer has is counted there; the seat sync would only fail on it
       if (sync.reason === "reconcile") {

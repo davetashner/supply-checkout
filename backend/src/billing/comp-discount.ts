@@ -59,8 +59,9 @@
 // deleting the team's customer, leaves only the 12 coupons.
 //
 // Idempotency. Each subscription update carries a Stripe idempotency key
-// hashed from the team, the subscription, what it does, the comp's end and
-// the discounts it found, so a retry of the same message (or a second
+// hashed from the team, the subscription, what it does, the comp's end, the
+// discounts it found and the coupon it applies (sized to the time left, so it
+// changes as the comp runs), so a retry of the same message (or a second
 // message for the same comp) sends Stripe the same request; and once Stripe
 // has it, the reconcile finds the subscription in step and sends nothing. So
 // a retried comp request applies one coupon.
@@ -221,8 +222,8 @@ const endsInTime = (discount: DiscountLike, until: string) => typeof discount.en
 const monthly = (sub: CompSubscriptionLike) => sub.items.data.length > 0 && sub.items.data.every((item) => item.price.recurring?.interval === "month" && (item.price.recurring.interval_count ?? 1) === 1);
 
 /** The Stripe idempotency key for one subscription update. */
-export function compDiscountKey(teamId: string, subscriptionId: string, action: "apply" | "remove", until: string | null, found: readonly string[]): string {
-  return `comp-${action}-${createHash("sha256").update(JSON.stringify([teamId, subscriptionId, until, [...found].sort()])).digest("hex")}`;
+export function compDiscountKey(teamId: string, subscriptionId: string, action: "apply" | "remove", until: string | null, found: readonly string[], coupon: string | null = null): string {
+  return `comp-${action}-${createHash("sha256").update(JSON.stringify([teamId, subscriptionId, until, [...found].sort(), coupon])).digest("hex")}`;
 }
 
 /**
@@ -291,7 +292,7 @@ export async function reconcileCompDiscount(stripe: CompDiscountStripe, team: Bi
     await stripe.subscriptions.update(
       sub.id,
       { discounts: [...others.map((d) => ({ discount: d.id })), { coupon }], metadata: { [COMP_UNTIL_METADATA]: wanted.until } },
-      { idempotencyKey: compDiscountKey(team.teamId, sub.id, "apply", wanted.until, found) },
+      { idempotencyKey: compDiscountKey(team.teamId, sub.id, "apply", wanted.until, found, coupon) },
     );
     return { ...base, outcome: "applied", coupon, until: wanted.until };
   }
