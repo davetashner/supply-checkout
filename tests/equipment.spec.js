@@ -467,9 +467,10 @@ test.describe("J13.4 Finished Return asks about each piece of equipment still ou
     const measure = () => box.evaluate((el) => {
       const ctx = document.createElement("canvas").getContext("2d");
       const inputs = [...el.querySelectorAll(".stepper input")].map((i) => {
+        // Room inside the box from its border box: Firefox reports an input's clientWidth without its padding
         const cs = getComputedStyle(i), r = i.getBoundingClientRect();
         ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
-        return { width: r.width, top: r.top, bottom: r.bottom, room: i.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), text: ctx.measureText(i.value).width };
+        return { width: r.width, top: r.top, bottom: r.bottom, room: r.width - ["borderLeftWidth", "borderRightWidth", "paddingLeft", "paddingRight"].reduce((n, p) => n + parseFloat(cs[p]), 0), text: ctx.measureText(i.value).width };
       });
       const buttons = [...el.querySelectorAll(".stepper button")].map((b) => { const r = b.getBoundingClientRect(); return Math.min(r.width, r.height); });
       const modalEl = document.getElementById("modal"), m = modalEl.getBoundingClientRect();
