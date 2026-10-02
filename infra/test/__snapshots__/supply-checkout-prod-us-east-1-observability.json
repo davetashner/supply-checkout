@@ -4398,7 +4398,7 @@
             "Ref": "AlarmTopicsP213C63151"
           }
         ],
-        "AlarmDescription": "P2 Lapsed-team closures high (J10, us-east-1). More than 20 LapsedTeamsClosed in a day: the hourly lapsed-team job (primary region) is closing more teams for deletion than expected, even if no single run reached its cap. Check they really lapsed (Logs Insights: \"Lapsed team closed for deletion\"), and disable the TeamLapseSchedule rule if not. See docs/runbooks/lapsed-teams.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmDescription": "P2 Lapsed-team closures high (J10, us-east-1). More than 20 LapsedTeamsClosed in 6 hours: the hourly lapsed-team job (primary region) is closing more teams for deletion than expected, even if no single run reached its cap. Check they really lapsed (Logs Insights: \"Lapsed team closed for deletion\"), and disable the TeamLapseSchedule rule if not: each closed team is purged 24 hours after it closed, and can be reopened until then. See docs/runbooks/lapsed-teams.md. Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
         "AlarmName": "supply-checkout-prod-p2-lapse-closures-high",
         "ComparisonOperator": "GreaterThanThreshold",
         "DatapointsToAlarm": 1,
@@ -4418,7 +4418,7 @@
                 "MetricName": "LapsedTeamsClosed",
                 "Namespace": "SupplyCheckout"
               },
-              "Period": 86400,
+              "Period": 21600,
               "Stat": "Sum"
             },
             "ReturnData": true

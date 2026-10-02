@@ -137,8 +137,9 @@ export const LAPSE_BUDGET_MS = 4 * 60_000;
  */
 export const LAPSE_MAX_CLOSURES_PER_RUN = 10;
 
-/** More LapsedTeamsClosed than this in a day alarms ("Lapsed-team closures high"), even under the per-run cap. */
-export const LAPSE_CLOSURES_ALARM_PER_DAY = 20;
+/** More LapsedTeamsClosed than LAPSE_CLOSURES_ALARM_COUNT in LAPSE_CLOSURES_ALARM_HOURS alarms ("Lapsed-team closures high"), even under the per-run cap: well within the day before the purge deletes them. */
+export const LAPSE_CLOSURES_ALARM_COUNT = 20;
+export const LAPSE_CLOSURES_ALARM_HOURS = 6;
 
 /** LapseTeamsUnstarted above 0 in every run for this long alarms ("Lapsed-team job out of time"): one short run is fine, three in a row aren't. */
 export const LAPSE_UNSTARTED_ALARM_HOURS = 3;

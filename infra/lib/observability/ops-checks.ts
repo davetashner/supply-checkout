@@ -498,7 +498,7 @@ export class OpsChecks extends Construct {
     grantSendEmail(this.teamLapse, props.config);
     Validations.of(this.teamLapse.role as Role).acknowledge({
       id: "AwsSolutions-IAM5[Resource::*]",
-      reason: "The lapsed-team job reads and closes whichever teams the operators' index lists as lapsing: the TEAM#*, OPS#OWNERS#* and LAPSE#* partition wildcards are in dynamodb:LeadingKeys, with dynamodb:Attributes limiting each to the billing fields, the closure, owners' emails and its own records",
+      reason: "The lapsed-team job reads and closes whichever teams the operators' index lists as lapsing: the TEAM#*, OPS#OWNERS#* and LAPSE#* partition wildcards are in dynamodb:LeadingKeys, with dynamodb:Attributes limiting each to the billing fields, the closure, owners' emails and its own records. LeadingKeys can't limit the sort key, so GetItem and UpdateItem could reach any item in a team's partition, but only those attributes (the code names only the META item, and the closure is conditioned on attribute_exists(PK) and the version)",
     });
 
     this.lapseNotRunning = new Alarm(this, "LapseNotRunning", {

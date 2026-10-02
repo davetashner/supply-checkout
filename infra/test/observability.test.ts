@@ -26,7 +26,8 @@ import {
   HEARTBEAT_EVERY_MINUTES,
   HEARTBEAT_SILENT_ALARM_MINUTES,
   HELD_PURGE_GRACE_DAYS,
-  LAPSE_CLOSURES_ALARM_PER_DAY,
+  LAPSE_CLOSURES_ALARM_COUNT,
+  LAPSE_CLOSURES_ALARM_HOURS,
   LAPSE_EVERY_HOURS,
   LAPSE_MAX_CLOSURES_PER_RUN,
   LAPSE_SILENT_ALARM_HOURS,
@@ -1253,7 +1254,7 @@ describe("scheduled checks", () => {
     expect(fn?.Timeout).toBe(300);
   });
 
-  it("alarm when the lapsed-team job holds closures at its cap, closes many in a day, or runs out of time run after run, in the primary region only", () => {
+  it("alarm when the lapsed-team job holds closures at its cap, closes many in a few hours, or runs out of time run after run, in the primary region only", () => {
     const { region } = build();
     const east = Template.fromStack(region(EAST).observability);
     const alarm = (name: string, metric: string, stat: string, period: number, threshold: number, periods = 1) =>
@@ -1267,10 +1268,11 @@ describe("scheduled checks", () => {
         AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
       });
     alarm("supply-checkout-prod-p2-lapse-closures-held", BusinessMetric.LapseClosuresHeld, "Sum", 2 * LAPSE_EVERY_HOURS * 3600, 0);
-    alarm("supply-checkout-prod-p2-lapse-closures-high", BusinessMetric.LapsedTeamsClosed, "Sum", 86400, LAPSE_CLOSURES_ALARM_PER_DAY);
+    alarm("supply-checkout-prod-p2-lapse-closures-high", BusinessMetric.LapsedTeamsClosed, "Sum", LAPSE_CLOSURES_ALARM_HOURS * 3600, LAPSE_CLOSURES_ALARM_COUNT);
     alarm("supply-checkout-prod-p2-lapse-job-out-of-time", BusinessMetric.LapseTeamsUnstarted, "Maximum", LAPSE_EVERY_HOURS * 3600, 0, LAPSE_UNSTARTED_ALARM_HOURS / LAPSE_EVERY_HOURS);
-    // The daily alarm sees a runaway well before the cap would let it through a day's runs
-    expect(LAPSE_CLOSURES_ALARM_PER_DAY).toBeLessThan((24 / LAPSE_EVERY_HOURS) * LAPSE_MAX_CLOSURES_PER_RUN);
+    // It sees a runaway well before the cap would let one through its period's runs, and well within the purge's day
+    expect(LAPSE_CLOSURES_ALARM_COUNT).toBeLessThan((LAPSE_CLOSURES_ALARM_HOURS / LAPSE_EVERY_HOURS) * LAPSE_MAX_CLOSURES_PER_RUN);
+    expect(LAPSE_CLOSURES_ALARM_HOURS).toBeLessThanOrEqual(6);
     const west = Object.values(Template.fromStack(region(WEST).observability).findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties.AlarmName);
     expect(west.filter((n: string) => /lapse/.test(n))).toEqual([]);
   });

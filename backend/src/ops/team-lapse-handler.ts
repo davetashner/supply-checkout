@@ -14,7 +14,8 @@
 //    ended subscription get theirs from the worker, on Stripe's event.)
 // 4. A team with a deletion date (`deleteAfter`: a trial or subscription that
 //    ended READ_ONLY_RETENTION_DAYS before, rounded up by deletionTime to the
-//    end of that date everywhere) within LAPSE_WARNING_DAYS: the deletion
+//    end of that date everywhere) within LAPSE_WARNING_DAYS + 1 (WARN_AHEAD_MS,
+//    so the first run in the window still gives the full notice): the deletion
 //    warning. It's recorded (recordWarning) only once at least one owner was
 //    sent it; until then each UTC day tries again, and a run that sends none,
 //    or finds no owner to send it to, counts the team in LapseFailures. The
@@ -31,9 +32,10 @@
 //    or `incomplete_expired` and the customer's, none of the customer's
 //    subscriptions may be anything else (a resubscription, an unpaid or
 //    paused one, one being paid), and the customer may have no open Checkout
-//    Session (an owner subscribing right now). Then closeLapsedTeam closes it,
-//    on the condition its version is the one read, with `purgeAfter`
-//    LAPSE_PURGE_DELAY_HOURS on (reopenable until then), and the hourly
+//    Session (an owner subscribing now: left, uncounted, for the next run).
+//    Then closeLapsedTeam closes it, on the condition its version is the one
+//    read, with `purgeAfter` LAPSE_PURGE_DELAY_HOURS on (reopenable until
+//    then), and the hourly
 //    purge (team-purge-handler.ts) deletes it as it deletes a team an owner
 //    closed: its deletion record first, then its Stripe customer (or that
 //    deletion queued), then its data. Stripe disagreeing, or failing,
@@ -127,6 +129,14 @@ const iso = (ms: number) => new Date(ms).toISOString();
  * LAPSE_WARNING_DAYS after the warning; otherwise LAPSE_WARNING_DAYS after it,
  * rounded up the same way (deletionTime).
  */
+/**
+ * How long before `deleteAfter` the deletion warning goes out: a day more than
+ * LAPSE_WARNING_DAYS, so the first run in the window (an hour or so after it
+ * opens) still warns LAPSE_WARNING_DAYS ahead, and the warning states the
+ * same date as the read-only email and /me (closesAt keeps `deleteAfter`).
+ */
+const WARN_AHEAD_MS = (LAPSE_WARNING_DAYS + 1) * DAY_MS;
+
 function closesAt(deleteAfter: number, warned: number): number {
   const floor = warned + LAPSE_WARNING_DAYS * DAY_MS;
   return floor <= deleteAfter ? deleteAfter : deletionTime(floor);
@@ -216,7 +226,7 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
     let warned: string | undefined;
     if (access.deleteAfter) {
       const deleteAfter = Date.parse(access.deleteAfter);
-      if (at >= deleteAfter - LAPSE_WARNING_DAYS * DAY_MS) warned = await warnedAt(db, teamId, access.deleteAfter);
+      if (at >= deleteAfter - WARN_AHEAD_MS) warned = await warnedAt(db, teamId, access.deleteAfter);
       deletesAt = closesAt(deleteAfter, warned ? Date.parse(warned) : at);
     }
     // 2 and 3: the read-only emails no Stripe event sends
@@ -237,7 +247,7 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
       return "nothing";
     }
     const deleteAfter = Date.parse(access.deleteAfter);
-    if (at < deleteAfter - LAPSE_WARNING_DAYS * DAY_MS) return "nothing";
+    if (at < deleteAfter - WARN_AHEAD_MS) return "nothing";
     if (!warned) {
       // 4: retried each UTC day until an owner gets it; recorded only then
       const { owners, claimed, sent } = await notify(team, `deletionWarning-${now.toISOString().slice(0, 10).replaceAll("-", "")}`, access.deleteAfter, { kind: "deletionWarning", teamName: team.name, deletesAt: iso(deletesAt) }, now);
@@ -258,6 +268,12 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
       obs.logger.info("Lapsed team warned of deletion", { teamId, reason: access.reason ?? "", deleteAfter: access.deleteAfter, deletesAt: iso(closesAt(deleteAfter, Date.parse(warned))) });
       return "waiting";
     }
+    // A date that doesn't parse (a record this job didn't write) never lets a team close: a person looks
+    if (!Number.isFinite(deletesAt)) {
+      obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "badDate" });
+      obs.logger.warn("Lapsed team's deletion time isn't a date, so it can't be closed safely", { teamId, deleteAfter: access.deleteAfter });
+      return "failed";
+    }
     if (at < deletesAt) return "waiting";
     // 5: no more than the cap a run (a bug or bad data can't delete teams en masse), then Stripe again, then the closure
     if (tally.closed >= LAPSE_MAX_CLOSURES_PER_RUN) {
@@ -265,6 +281,11 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
       return "held";
     }
     const agrees = await stripeAgrees(team);
+    if (agrees !== true && agrees.why === "CheckoutOpen") {
+      // An owner paying now isn't a fault: the session completes (the team becomes active) or expires within a day
+      obs.logger.info("Lapsed team not closed: an owner has Checkout open", { teamId, customerId: team.stripeCustomerId ?? "" });
+      return "waiting";
+    }
     if (agrees !== true) {
       obs.count(BusinessMetric.LapseFailures, 1, { teamId, step: "stripe", why: agrees.why });
       obs.logger.warn("Lapsed team not closed: Stripe disagrees", {

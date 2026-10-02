@@ -136,11 +136,12 @@ describe("the app's own trial", () => {
       { kind: "readOnly", teamName: "Name of ended", reason: "trial_ended", deletesAt: deletes },
     ]);
     expect(gauges[BusinessMetric.LapseTeamsReadOnly]).toBe(1);
-    // Nothing more until 7 days before the date
+    // Nothing more until 8 days before the date (a day early, so the first hourly run in the window still warns 7 days ahead)
     mails.sent.length = 0;
-    await run(Date.parse(deletes) - 7 * DAY - 1);
+    await run(Date.parse(deletes) - 8 * DAY - 1);
     expect(mails.sent).toEqual([]);
-    const warnAt = Date.parse(deletes) - 7 * DAY;
+    // That run comes some minutes after the window opens: the warning states the same date as the read-only email
+    const warnAt = Date.parse(deletes) - 8 * DAY + 37 * 60_000;
     await run(warnAt);
     expect(mails.sent.map((m) => m.input)).toEqual([
       { kind: "deletionWarning", teamName: "Name of ended", deletesAt: deletes },
@@ -231,7 +232,6 @@ describe("an ended subscription", () => {
       // More subscriptions than one page: a live one could be further down
       [() => (hasMore = true), "TooManySubscriptions"],
       // An owner in Checkout right now: paying would subscribe a team about to be deleted
-      [() => openCheckouts.add("cus_1"), "CheckoutOpen"],
     ] as const) {
       hasMore = false;
       openCheckouts.clear();
@@ -244,6 +244,19 @@ describe("an ended subscription", () => {
       expect(counts.find(([m]) => m === BusinessMetric.LapseFailures)?.[2]).toMatchObject({ teamId: "gone", step: "stripe", why });
       expect(meta("gone").closedAt).toBeUndefined();
     }
+    // An owner in Checkout right now: not closed, and not a fault (not counted), until the session completes or expires
+    hasMore = false;
+    subs.clear();
+    customers.add("cus_1");
+    subs.set("sub_1", sub("sub_1", "cus_1", "canceled"));
+    openCheckouts.add("cus_1");
+    counts = [];
+    expect(await run(later)).toMatchObject({ closed: 0, failed: 0 });
+    expect(counted(BusinessMetric.LapseFailures)).toBe(0);
+    expect(meta("gone").closedAt).toBeUndefined();
+    expect(logs.some(([, message, data]) => message === "Lapsed team not closed: an owner has Checkout open" && data.teamId === "gone")).toBe(true);
+    openCheckouts.clear();
+    expect(await run(later)).toMatchObject({ closed: 1 });
     const line = logs.find(([, message]) => message === "Lapsed team not closed: Stripe disagrees");
     expect(line?.[2]).toMatchObject({ teamId: "gone", recordedSubscriptionId: "sub_1", customerId: "cus_1" });
   });
@@ -274,6 +287,15 @@ describe("an ended subscription", () => {
     expect(await run(NOW + 400 * DAY)).toMatchObject({ closed: 0, failed: 1 });
     expect(counts.find(([m]) => m === BusinessMetric.LapseFailures)?.[2]).toMatchObject({ teamId: "gone", step: "undated" });
     expect(mails.sent).toEqual([]);
+    expect(meta("gone").closedAt).toBeUndefined();
+  });
+
+  it("never closes a team whose warning record has no readable time (none this job writes), and counts it", async () => {
+    await run();
+    const [key] = [...table.items.values()].filter((i) => String(i.PK) === "LAPSE#gone" && String(i.SK).startsWith("WARNED#"));
+    table.put({ ...(key as Record<string, unknown>), sentAt: "not a date" });
+    expect(await run(NOW + 400 * DAY)).toMatchObject({ closed: 0, failed: 1 });
+    expect(counts.find(([m]) => m === BusinessMetric.LapseFailures)?.[2]).toMatchObject({ teamId: "gone", step: "badDate" });
     expect(meta("gone").closedAt).toBeUndefined();
   });
 
@@ -339,7 +361,7 @@ describe("the closure cap", () => {
     expect(ids.every((id) => meta(id).closedBy === LAPSED_CLOSER)).toBe(true);
   });
 
-  it("holds before asking Stripe, and a team Stripe won't let close doesn't count toward it", async () => {
+  it("holds before asking Stripe, and a team left open (an owner in Checkout) doesn't count toward it", async () => {
     const ids = Array.from({ length: LAPSE_MAX_CLOSURES_PER_RUN + 1 }, (_, i) => `t${String(i).padStart(2, "0")}`);
     for (const id of ids) team(id, { status: "trialing", trialEndsAt: iso(NOW - 200 * DAY) });
     // The first one listed has a Stripe customer in Checkout
@@ -347,7 +369,7 @@ describe("the closure cap", () => {
     customers.add("cus_t00");
     openCheckouts.add("cus_t00");
     await run();
-    expect(await run(deletionTime(NOW + 7 * DAY))).toMatchObject({ closed: LAPSE_MAX_CLOSURES_PER_RUN, held: 0, failed: 1 });
+    expect(await run(deletionTime(NOW + 7 * DAY))).toMatchObject({ closed: LAPSE_MAX_CLOSURES_PER_RUN, held: 0, failed: 0 });
     expect(meta("t00").closedAt).toBeUndefined();
   });
 });

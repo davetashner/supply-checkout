@@ -14,11 +14,13 @@ import { identityResourceNames } from "../../../backend/src/identity/names.js";
 import { BusinessMetric } from "../../../backend/src/observability/names.js";
 import {
   HELD_PURGE_GRACE_DAYS,
-  LAPSE_CLOSURES_ALARM_PER_DAY,
+  LAPSE_CLOSURES_ALARM_COUNT,
+  LAPSE_CLOSURES_ALARM_HOURS,
   LAPSE_EVERY_HOURS,
   LAPSE_MAX_CLOSURES_PER_RUN,
   LAPSE_UNSTARTED_ALARM_HOURS,
-  PURGE_EVERY_HOURS,   PURGE_OVERDUE_AFTER_HOURS,
+  PURGE_EVERY_HOURS,
+  PURGE_OVERDUE_AFTER_HOURS,
   STRIPE_DELETION_RETRY_ALARM_HOURS,
   STRIPE_DELETION_STUCK_DAYS,
 } from "../../../backend/src/ops/names.js";
@@ -700,9 +702,9 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       title: "Lapsed-team closures high",
       journeys: "J10",
       severity: "P2",
-      rule: `More than ${LAPSE_CLOSURES_ALARM_PER_DAY} LapsedTeamsClosed in a day: the hourly lapsed-team job (primary region) is closing more teams for deletion than expected, even if no single run reached its cap. Check they really lapsed (Logs Insights: "Lapsed team closed for deletion"), and disable the TeamLapseSchedule rule if not. See docs/runbooks/lapsed-teams.md.`,
-      metric: business(BusinessMetric.LapsedTeamsClosed, region, Duration.days(1)),
-      threshold: LAPSE_CLOSURES_ALARM_PER_DAY,
+      rule: `More than ${LAPSE_CLOSURES_ALARM_COUNT} LapsedTeamsClosed in ${LAPSE_CLOSURES_ALARM_HOURS} hours: the hourly lapsed-team job (primary region) is closing more teams for deletion than expected, even if no single run reached its cap. Check they really lapsed (Logs Insights: "Lapsed team closed for deletion"), and disable the TeamLapseSchedule rule if not: each closed team is purged 24 hours after it closed, and can be reopened until then. See docs/runbooks/lapsed-teams.md.`,
+      metric: business(BusinessMetric.LapsedTeamsClosed, region, Duration.hours(LAPSE_CLOSURES_ALARM_HOURS)),
+      threshold: LAPSE_CLOSURES_ALARM_COUNT,
       primaryOnly: true,
     },
     {

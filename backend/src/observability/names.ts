@@ -180,7 +180,7 @@ export const BusinessMetric = {
   LapseTeamsUnstarted: "LapseTeamsUnstarted",
   /** Lapsed teams due to close that a run held because it had already closed LAPSE_MAX_CLOSURES_PER_RUN: "Lapsed-team closures held". */
   LapseClosuresHeld: "LapseClosuresHeld",
-  /** Teams the lapsed-team job couldn't handle this run (a read, write, email or Stripe call failed), or wouldn't close because Stripe disagrees with the team (a live subscription, an open Checkout Session, or the team's subscription or customer missing), or that has no owner to warn: "Lapsed-team job failing". */
+  /** Teams the lapsed-team job couldn't handle this run (a read, write, email or Stripe call failed), or wouldn't close because Stripe disagrees with the team (a live subscription, or the team's subscription or customer missing), or that has no owner to warn or no readable deletion time: "Lapsed-team job failing". */
   LapseFailures: "LapseFailures",
 } as const;
 
