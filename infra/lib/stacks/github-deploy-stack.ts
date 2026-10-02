@@ -1,7 +1,7 @@
 import { Aws, CfnOutput, DefaultStackSynthesizer, Duration, RemovalPolicy } from "aws-cdk-lib";
 import { Effect, OidcProviderNative, PolicyStatement, Role, WebIdentityPrincipal } from "aws-cdk-lib/aws-iam";
 import type { Construct } from "constructs";
-import { type DeploymentConfig, GITHUB_DEPLOY_ENVIRONMENT, type GithubRepository, GLOBAL_SERVICES_REGION } from "../config.js";
+import { type DeploymentConfig, GITHUB_DEPLOY_ENVIRONMENT, GITHUB_DEPLOY_ENVIRONMENTS, type GithubRepository, GLOBAL_SERVICES_REGION } from "../config.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
 /** GitHub Actions' OIDC issuer. */
@@ -15,16 +15,16 @@ const ISSUER = GITHUB_OIDC_URL.replace(/^https:\/\//, "");
 export const githubDeployRoleName = (envName: string) => `supply-checkout-${envName}-github-deploy`;
 
 /**
- * The `sub` claim of a GitHub OIDC token for a job in `repository`'s
- * production environment, with GitHub's immutable subjects (the default for
- * repositories created after 2026-07-15, this one included):
- * `repo:<owner>@<owner ID>/<name>@<repository ID>:environment:production`.
- * The name and IDs are validated in lib/config.ts, so no `:`, `@`, `/` or
- * wildcard can come from them.
+ * The `sub` claim of a GitHub OIDC token for a job in one of `repository`'s
+ * environments (production by default), with GitHub's immutable subjects (the
+ * default for repositories created after 2026-07-15, this one included):
+ * `repo:<owner>@<owner ID>/<name>@<repository ID>:environment:<environment>`.
+ * The name and IDs are validated in lib/config.ts, and the environments are
+ * the constants there, so no `:`, `@`, `/` or wildcard can come from them.
  */
-export const githubDeploySubject = (repository: GithubRepository) => {
+export const githubDeploySubject = (repository: GithubRepository, environment: string = GITHUB_DEPLOY_ENVIRONMENT) => {
   const [owner, name] = repository.name.split("/");
-  return `repo:${owner}@${repository.ownerId}/${name}@${repository.repositoryId}:environment:${GITHUB_DEPLOY_ENVIRONMENT}`;
+  return `repo:${owner}@${repository.ownerId}/${name}@${repository.repositoryId}:environment:${environment}`;
 };
 
 /** The CDK bootstrap roles a `cdk deploy` (and `cdk diff`) assumes, by their bootstrap template names. */
@@ -40,9 +40,11 @@ const BOOTSTRAP_ROLES = ["deploy", "file-publishing", "image-publishing", "looku
  * the role's short-lived credentials.
  *
  * - The role trusts only tokens with audience `sts.amazonaws.com` and subject
- *   `repo:<owner>@<owner ID>/<name>@<repository ID>:environment:production`,
- *   exactly (StringEquals): a job in this repository that runs in the
- *   `production` GitHub environment. That's GitHub's immutable subject
+ *   `repo:<owner>@<owner ID>/<name>@<repository ID>:environment:production`
+ *   or `...:environment:production-stateful`, exactly (StringEquals): a job
+ *   in this repository that runs in the `production` GitHub environment, or
+ *   in `production-stateful`, where the deploy workflow's stateful stacks job
+ *   runs behind an approval of its own (supply-checkout-pbp.27). That's GitHub's immutable subject
  *   (supply-checkout-pbp.23): with the IDs in it, a new account or
  *   repository that takes over a freed name doesn't match. A rename changes
  *   the subject and fails closed until the stack is deployed with the new
@@ -88,11 +90,12 @@ export class GithubDeployStack extends SupplyCheckoutStack {
 
     this.role = new Role(this, "DeployRole", {
       roleName: githubDeployRoleName(config.envName),
-      description: `GitHub Actions deploys from ${repository.name} (owner ID ${repository.ownerId}, repository ID ${repository.repositoryId}), environment ${GITHUB_DEPLOY_ENVIRONMENT} only`,
+      description: `GitHub Actions deploys from ${repository.name} (owner ID ${repository.ownerId}, repository ID ${repository.repositoryId}), environments ${GITHUB_DEPLOY_ENVIRONMENTS.join(" and ")} only`,
       assumedBy: new WebIdentityPrincipal(this.provider.oidcProviderArn, {
         StringEquals: {
           [`${ISSUER}:aud`]: GITHUB_OIDC_AUDIENCE,
-          [`${ISSUER}:sub`]: githubDeploySubject(repository),
+          // StringEquals with a list matches any one of them, exactly
+          [`${ISSUER}:sub`]: GITHUB_DEPLOY_ENVIRONMENTS.map((environment) => githubDeploySubject(repository, environment)),
         },
       }),
       maxSessionDuration: Duration.hours(1),

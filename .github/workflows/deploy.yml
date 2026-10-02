@@ -1,10 +1,10 @@
 name: Deploy
 
-# Deploys a release to prod (ADR 0012, supply-checkout-pbp.26). The release workflow starts it
-# once the release's full check suite has passed; the owner can also start it by hand for a tag
-# (Actions, Deploy, Run workflow, from main), for example to deploy an older release again.
-# It runs only from main: a run dispatched on a tag would use that tag's own copy of this file,
-# which could leave out the checks below, so every job refuses any other ref.
+# Deploys a release to prod (ADR 0012; supply-checkout-pbp.26 and pbp.27). The release workflow
+# starts it once the release's full check suite has passed; the owner can also start it by hand
+# for a tag (Actions, Deploy, Run workflow, from main), for example to deploy an older release
+# again. It runs only from main: a run dispatched on a tag would use that tag's own copy of this
+# file, which could leave out the checks below, so every job refuses any other ref.
 # docs/releases.md ("Deploying a release") has the whole flow.
 #
 # Only workflow_dispatch starts it. A release that release-please creates with GITHUB_TOKEN
@@ -12,17 +12,28 @@ name: Deploy
 # Never add pull_request_target or workflow_run here: they can run for a fork's pull request
 # with this repository's context, and a production job would hand it the deploy role.
 #
-# Jobs:
-#   release  no credentials: the tag is a published release whose commit is on main and passed CI
-#   trust    no environment: the deploy role must REFUSE this job (docs/infrastructure.md step 3)
-#   deploy   in the `production` environment, which waits for the owner's approval: signs in
-#            with the OIDC deploy role, proves who it is, synthesizes once, posts the diff to the
-#            job summary and deploys the stateless stacks (scripts/deploy-stacks.mjs)
+# Jobs, plan first and apply after, so the approver reads the diff before approving a change:
+#   release         no credentials: the tag is a published release whose commit is on main and
+#                   passed CI in a real run on main
+#   trust           no environment: the deploy role must REFUSE this job (docs/infrastructure.md)
+#   plan            `production` (approval 1, changes nothing): signs in, drops to CDK's read-only
+#                   lookup role, synthesizes, prints a hash of the templates, posts each group's
+#                   diff to the job summary, and fails if the stateful stacks' diff replaces or
+#                   deletes what holds data (scripts/check-replacements.mjs) unless allowed
+#   apply-stateful  `production-stateful` (approval 2), only if the stateful stacks differ:
+#                   synthesizes again, refuses a template hash that isn't the plan's, checks the
+#                   diff again, deploys them
+#   apply           `production` (approval 3), only if the stateless stacks differ, after
+#                   apply-stateful succeeded or was skipped: same hash check, deploys them
 #
-# No AWS credentials exist before the deploy job's sign-in step, and that job runs only code
-# from a release commit on main. Every third-party action is pinned by commit SHA. The deploy
-# role's ARN is a secret (AWS_DEPLOY_ROLE_ARN: the production environment's for the deploy job,
-# the repository's for the trust job), so neither it nor the account ID reaches the public log.
+# No AWS credentials exist before a job's sign-in step, and those jobs run only code from a
+# release commit on main; the deploy tooling (scripts/) comes from main's own commit, so an older
+# release deploys with today's checks. Every third-party action is pinned by commit SHA. The
+# deploy role's ARN is a secret (AWS_DEPLOY_ROLE_ARN: an environment secret, or the repository's,
+# which the trust job uses), so neither it nor the account ID reaches the public log, and every
+# diff has its account IDs scrubbed (scripts/scrub-account-ids.sed). The cloud assembly isn't
+# uploaded (its asset manifests name the account): each apply job synthesizes again from the
+# same commit and must reach the plan's hash.
 on:
   workflow_dispatch:
     inputs:
@@ -31,7 +42,11 @@ on:
         required: true
         type: string
       dry-run:
-        description: Sign in, synthesize and show the diff, but deploy nothing
+        description: Plan only (sign in, synthesize, show the diffs), deploy nothing
+        type: boolean
+        default: false
+      allow-replacement:
+        description: A planned migration - deploy the stateful stacks even if they replace or delete what holds data
         type: boolean
         default: false
 
@@ -40,7 +55,8 @@ permissions: {}
 # One deploy at a time, and never cancel one that has started: a deploy cut off halfway leaves
 # CloudFormation to roll back. A run that's waiting here replaces an older waiting one. Dry runs
 # change nothing, so they have their own group: one can't replace a release deploy that's
-# waiting for approval, and it can run while a deploy waits.
+# waiting for approval. So a dry run can also run while a deploy is waiting or running; its diff
+# may then fail or show changes that are mid-deploy, which is harmless (run it again after).
 concurrency:
   group: ${{ inputs.dry-run && 'deploy-production-dry-run' || 'deploy-production' }}
   cancel-in-progress: false
@@ -58,7 +74,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      checks: read
+      actions: read
     outputs:
       tag: ${{ steps.check.outputs.tag }}
       sha: ${{ steps.check.outputs.sha }}
@@ -97,14 +113,29 @@ jobs:
             echo "::error::$TAG has no published GitHub Release"
             exit 1
           fi
-          # "CI passed" from the push to main, or "checks / CI passed" from the release workflow,
-          # reported by GitHub Actions (not some other app posting a check run with that name)
-          passed="$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha/check-runs?per_page=100" \
-            --jq '.check_runs[] | select(.app.slug == "github-actions") | select(.name | test("(^|/ )CI passed$")) | select(.conclusion == "success") | .name')"
+          # CI passed on this commit in a real run on main, not just a check run with the right
+          # name (any workflow with checks: write could post one): a ci.yml run for the push to
+          # main that succeeded, or a release.yml run for that push whose "checks / CI passed"
+          # job succeeded (the release workflow starts this deploy while it's still running).
+          runs="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha&per_page=100" \
+            --jq '.workflow_runs[] | [.id, .path, .event, .head_branch, .head_repository.full_name, (.conclusion // "none")] | @tsv')"
+          passed=""
+          while IFS=$'\t' read -r id workflow event branch repository conclusion; do
+            [[ "$event" == push && "$branch" == main && "$repository" == "$GITHUB_REPOSITORY" ]] || continue
+            if [[ "$workflow" == .github/workflows/ci.yml && "$conclusion" == success ]]; then
+              passed="CI run $id"; break
+            fi
+            if [[ "$workflow" == .github/workflows/release.yml ]] && [[ -n "$(gh api --paginate \
+                "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?per_page=100" \
+                --jq '.jobs[] | select(.name == "checks / CI passed" and .conclusion == "success") | .id')" ]]; then
+              passed="release run $id"; break
+            fi
+          done <<< "$runs"
           if [[ -z "$passed" ]]; then
-            echo "::error::$TAG ($sha) has no successful \"CI passed\" check: deploy only what CI passed"
+            echo "::error::$TAG ($sha) has no successful CI run on main: deploy only what CI passed"
             exit 1
           fi
+          echo "CI passed: $passed"
           region="$(node scripts/deploy-stacks.mjs region)"
           echo "Deploying $TAG ($sha) to $region"
           {
@@ -163,48 +194,61 @@ jobs:
           echo "Refused, as it must be: Not authorized to perform sts:AssumeRoleWithWebIdentity"
           echo "Trust check: the deploy role refuses a job outside the production environment" >> "$GITHUB_STEP_SUMMARY"
 
-  deploy:
-    name: Deploy the stateless stacks
+  plan:
+    name: Plan (changes nothing)
     needs: [release, trust]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    # Waits for the owner's approval. Its rules (main only, required reviewer, no admin bypass)
-    # are what give this job the OIDC subject the deploy role trusts.
+    timeout-minutes: 30
+    # Waits for the owner's approval: its first minute holds the deploy role, before it drops to
+    # the read-only lookup role. The production environment's rules (main only, required
+    # reviewer, no admin bypass) are what give a job the OIDC subject the deploy role trusts.
     environment: production
     permissions:
       contents: read
       id-token: write
+    outputs:
+      hash: ${{ steps.synth.outputs.hash }}
+      copy: ${{ steps.backup.outputs.copy }}
+      stateless-changed: ${{ steps.stateless.outputs.changed }}
+      stateful-changed: ${{ steps.stateful.outputs.changed }}
     env:
       ENV_NAME: prod
       TAG: ${{ needs.release.outputs.tag }}
       SHA: ${{ needs.release.outputs.sha }}
       AWS_REGION: ${{ needs.release.outputs.region }}
-      DRY_RUN: ${{ inputs.dry-run }}
     steps:
-      # The commit the release job checked, not the tag name, so a tag moved since can't swap it
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The release's commit (not the tag name, so a tag moved since can't swap it)
+      - &checkout-release
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.release.outputs.sha }}
           persist-credentials: false
+      # The deploy tooling from main's commit, this workflow's own
+      - &checkout-tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .deploy-tools
+          sparse-checkout: scripts
+          persist-credentials: false
       # No dependency cache in a job that holds prod credentials
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - &setup-node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
       # Before any credentials exist, and without install scripts (esbuild finds its binary in
-      # its platform package without its postinstall). This is defence in depth: the real
-      # control is that only a reviewed, released commit on main gets here. The synth bundles
-      # the Lambda code from backend/. Every cdk and tsx below is the locked local copy, never
-      # something npx could fetch.
-      - name: Install dependencies
+      # its platform package without its postinstall). Defence in depth: the real control is
+      # that only a reviewed, released commit on main gets here. The synth bundles the Lambda
+      # code from backend/. Every cdk and tsx below is the locked local copy, never something
+      # npx could fetch.
+      - &install
+        name: Install dependencies
         run: |
           (cd backend && npm ci --ignore-scripts --no-audit --no-fund)
           (cd infra && npm ci --ignore-scripts --no-audit --no-fund)
-      - name: Choose the stacks
-        id: stacks
-        run: echo "stateless=$(node scripts/deploy-stacks.mjs stateless --env "$ENV_NAME")" >> "$GITHUB_OUTPUT"
-
-      - name: Sign in to AWS with the deploy role
+      - &sign-in
+        name: Sign in to AWS with the deploy role
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           # A secret, so the ARN (and the account ID in it) is masked in the log
@@ -214,83 +258,218 @@ jobs:
           role-duration-seconds: 3600
           # The account ID is masked in every later log line
           mask-aws-account-id: true
-      # The positive half of the dry check (docs/infrastructure.md step 3)
-      - name: Prove who this job is
+      # The positive half of the trust check (docs/infrastructure.md step 3)
+      - &prove
+        name: Prove who this job is
         run: |
           arn="$(aws sts get-caller-identity --query Arn --output text)"
           if [[ ! "$arn" =~ ^arn:aws:sts::[0-9]{12}:assumed-role/supply-checkout-${ENV_NAME}-github-deploy/ ]]; then
             echo "::error::Signed in as something other than the deploy role"
             exit 1
           fi
-          echo "Signed in as the deploy role supply-checkout-${ENV_NAME}-github-deploy, because this job runs in the production environment"
-          echo "Signed in as \`supply-checkout-${ENV_NAME}-github-deploy\` (production environment)" >> "$GITHUB_STEP_SUMMARY"
-
-      # Like scripts/deploy.sh: -c backupCopy=false until the backup copy vault's parameter exists
-      # (docs/backups.md). The deploy role can only assume CDK's bootstrap roles, so it reads the
-      # parameter through the read-only lookup role. Any error but "not found" stops the deploy.
-      - name: Check for the backup copy vault
-        id: backup
+          echo "Signed in as the deploy role supply-checkout-${ENV_NAME}-github-deploy, in the $GITHUB_JOB job's environment"
+      # From here on the job can only read: CDK's lookup role has ReadOnlyAccess (and no
+      # kms:Decrypt). cdk diff --method template reads the deployed templates with it.
+      - name: Find the lookup role
+        id: lookup
         run: |
           account="$(aws sts get-caller-identity --query Account --output text)"
           qualifier="$(jq -r '.context["@aws-cdk/core:bootstrapQualifier"] // "hnb659fds"' infra/cdk.json)"
-          config="$RUNNER_TEMP/aws-lookup-config"
-          printf '[profile lookup]\nrole_arn = arn:aws:iam::%s:role/cdk-%s-lookup-role-%s-%s\ncredential_source = Environment\nregion = %s\n' \
-            "$account" "$qualifier" "$account" "$AWS_REGION" "$AWS_REGION" > "$config"
-          if err="$(AWS_CONFIG_FILE="$config" aws ssm get-parameter --profile lookup \
-              --name "/supply-checkout/$ENV_NAME/backup/copy-vault-arn" --query Parameter.Name --output text 2>&1 >/dev/null)"; then
+          echo "arn=arn:aws:iam::$account:role/cdk-$qualifier-lookup-role-$account-$AWS_REGION" >> "$GITHUB_OUTPUT"
+      - name: Drop to the read-only lookup role
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ steps.lookup.outputs.arn }}
+          role-chaining: true
+          role-skip-session-tagging: true
+          role-session-name: plan-${{ github.run_id }}-${{ github.run_attempt }}
+          aws-region: ${{ needs.release.outputs.region }}
+          mask-aws-account-id: true
+      - name: Prove it's the lookup role
+        run: |
+          arn="$(aws sts get-caller-identity --query Arn --output text)"
+          if [[ ! "$arn" =~ ^arn:aws:sts::[0-9]{12}:assumed-role/cdk-[A-Za-z0-9_-]+-lookup-role-[0-9]{12}-[a-z0-9-]+/ ]]; then
+            echo "::error::Still signed in as something other than the lookup role"
+            exit 1
+          fi
+          echo "Now the read-only lookup role"
+      # Like scripts/deploy.sh: -c backupCopy=false until the backup copy vault's parameter
+      # exists (docs/backups.md). Any error but "not found" stops the plan. The apply jobs use
+      # this answer, so they synthesize what the plan did.
+      - name: Check for the backup copy vault
+        id: backup
+        run: |
+          if err="$(aws ssm get-parameter --name "/supply-checkout/$ENV_NAME/backup/copy-vault-arn" \
+              --query Parameter.Name --output text 2>&1 >/dev/null)"; then
             echo "The backup copy vault exists: copies on"
-            echo "copy=true" >> "$GITHUB_OUTPUT"
+            copy=true
           elif grep -q ParameterNotFound <<< "$err"; then
             echo "No backup copy vault yet: -c backupCopy=false"
-            echo "copy=false" >> "$GITHUB_OUTPUT"
+            copy=false
           else
             echo "::error::Couldn't read the backup copy vault's parameter"
             echo "$err"
             exit 1
           fi
-
-      - name: Synthesize once
+          echo "copy=$copy" >> "$GITHUB_OUTPUT"
+          echo "BACKUP_COPY=$copy" >> "$GITHUB_ENV"
+      # One synth per job; the apply jobs must reach the plan's hash of the templates and asset
+      # manifests (the Lambda code's hashes are in them)
+      - &synth
+        name: Synthesize
+        id: synth
         working-directory: infra
-        env:
-          BACKUP_COPY: ${{ steps.backup.outputs.copy }}
         run: |
           context=(-c "envName=$ENV_NAME")
-          if [[ "$BACKUP_COPY" == false ]]; then context+=(-c backupCopy=false); fi
+          if [[ "${BACKUP_COPY:?}" == false ]]; then context+=(-c backupCopy=false); fi
           ./node_modules/.bin/cdk synth --app "./node_modules/.bin/tsx bin/app.ts" --quiet --no-notices "${context[@]}"
-
-      - name: Show the diff
+          hash="$(find cdk.out -maxdepth 1 -type f \( -name '*.template.json' -o -name '*.assets.json' \) -print0 \
+            | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          echo "Template hash: $hash"
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+      - name: Diff the stateful stacks
+        id: stateful
         working-directory: infra
+        run: >-
+          bash ../.deploy-tools/scripts/deploy-diff.sh stateful "Stateful stacks: diff for $TAG (approval 2, production-stateful)"
+      - name: Diff the stateless stacks
+        id: stateless
+        working-directory: infra
+        run: >-
+          bash ../.deploy-tools/scripts/deploy-diff.sh stateless "Stateless stacks: diff for $TAG (approval 3, production)"
+      - name: Check the stateful stacks replace or delete nothing that holds data
         env:
-          STACKS: ${{ steps.stacks.outputs.stateless }}
+          ALLOW: ${{ inputs.allow-replacement }}
         run: |
-          read -r -a stacks <<< "$STACKS"
-          # The repository is public, so the diff is too (resource names, policy documents;
-          # docs/releases.md). Account IDs aren't: this account's is masked in the log, and the
-          # filter takes out any account ID in an ARN or a quoted principal, this one included,
-          # before the diff reaches the log or the job summary (which isn't masked).
-          account="$(aws sts get-caller-identity --query Account --output text)"
-          ./node_modules/.bin/cdk diff --app cdk.out --exclusively --no-color --no-notices "${stacks[@]}" 2>&1 \
-            | sed -E -e "s/$account/<account>/g" -e 's/(arn:[^:" ]+:[^:" ]*:[^:" ]*:)[0-9]{12}/\1<account>/g' -e 's/"[0-9]{12}"/"<account>"/g' \
-            | tee "$RUNNER_TEMP/diff.txt"
+          allow=()
+          if [[ "$ALLOW" == true ]]; then allow=(--allow); fi
+          set +e
+          node .deploy-tools/scripts/check-replacements.mjs "$RUNNER_TEMP/diff-stateful.txt" "${allow[@]}" > "$RUNNER_TEMP/replacements.md"
+          code=$?
+          set -e
+          tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/replacements.md"
+          if ((code != 0)); then echo "::error::The stateful stacks' diff replaces or deletes what holds data (see the summary)"; fi
+          exit "$code"
+      - name: What's next
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+          STATEFUL: ${{ steps.stateful.outputs.changed }}
+          STATELESS: ${{ steps.stateless.outputs.changed }}
+        run: |
           {
-            echo "## Stateless stacks: diff for $TAG"
+            echo "## Next"
             echo
-            echo '```diff'
-            head -c 900000 "$RUNNER_TEMP/diff.txt"
-            echo '```'
+            if [[ "$DRY_RUN" == true ]]; then echo "Dry run: nothing deploys."
+            else
+              if [[ "$STATEFUL" == true ]]; then echo "- Stateful stacks: approve **production-stateful** to deploy them."; else echo "- Stateful stacks: no differences, skipped."; fi
+              if [[ "$STATELESS" == true ]]; then echo "- Stateless stacks: approve **production** to deploy them."; else echo "- Stateless stacks: no differences, skipped."; fi
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # IAM and security group changes are approved by approving this job in the production
-      # environment (after a dry run, to read the diff first), not by an interactive CDK prompt.
-      - name: Deploy
-        if: ${{ !inputs.dry-run }}
-        working-directory: infra
+  apply-stateful:
+    name: Deploy the stateful stacks
+    needs: [release, plan]
+    if: github.ref == 'refs/heads/main' && !inputs.dry-run && needs.plan.outputs.stateful-changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # The second approval (supply-checkout-pbp.27): an environment of its own, which the deploy
+    # role also trusts, with the same rules as production
+    environment: production-stateful
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENV_NAME: prod
+      TAG: ${{ needs.release.outputs.tag }}
+      SHA: ${{ needs.release.outputs.sha }}
+      AWS_REGION: ${{ needs.release.outputs.region }}
+      BACKUP_COPY: ${{ needs.plan.outputs.copy }}
+    steps:
+      - *checkout-release
+      - *checkout-tools
+      - *setup-node
+      - *install
+      - *sign-in
+      - *prove
+      - *synth
+      - name: Check it's what the plan showed
         env:
-          STACKS: ${{ steps.stacks.outputs.stateless }}
+          PLAN_HASH: ${{ needs.plan.outputs.hash }}
+          HASH: ${{ steps.synth.outputs.hash }}
         run: |
-          read -r -a stacks <<< "$STACKS"
+          if [[ -z "$PLAN_HASH" || "$HASH" != "$PLAN_HASH" ]]; then
+            echo "::error::This synth's template hash ($HASH) isn't the plan's ($PLAN_HASH): what would deploy isn't what was approved. Run the deploy again."
+            exit 1
+          fi
+          echo "Same templates as the plan ($HASH)"
+      # Again just before deploying, in case prod changed since the plan
+      - name: Diff the stateful stacks again
+        id: stateful
+        working-directory: infra
+        run: >-
+          bash ../.deploy-tools/scripts/deploy-diff.sh stateful "Stateful stacks: diff before deploying $TAG"
+      - name: Check again that they replace or delete nothing that holds data
+        env:
+          ALLOW: ${{ inputs.allow-replacement }}
+        run: |
+          allow=()
+          if [[ "$ALLOW" == true ]]; then allow=(--allow); fi
+          node .deploy-tools/scripts/check-replacements.mjs "$RUNNER_TEMP/diff-stateful.txt" "${allow[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+      # Termination protection stays on (the stacks set it); CDK doesn't ask about IAM changes:
+      # approving this job is the approval
+      - name: Deploy
+        working-directory: infra
+        run: |
+          patterns="$(node ../.deploy-tools/scripts/deploy-stacks.mjs stateful --env "$ENV_NAME")"
+          read -r -a stacks <<< "$patterns"
           ./node_modules/.bin/cdk deploy --app cdk.out --exclusively --require-approval never --no-notices --progress events "${stacks[@]}"
           echo "Deployed $TAG ($SHA): ${stacks[*]}" >> "$GITHUB_STEP_SUMMARY"
-      - name: Dry run
-        if: ${{ inputs.dry-run }}
-        run: echo "Dry run, so nothing was deployed" >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    name: Deploy the stateless stacks
+    needs: [release, plan, apply-stateful]
+    # After the stateful stacks (the API reads the table and user pool they change), or when
+    # they had nothing to deploy
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && !inputs.dry-run
+      && needs.plan.result == 'success' && needs.plan.outputs.stateless-changed == 'true'
+      && (needs.apply-stateful.result == 'success' || needs.apply-stateful.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENV_NAME: prod
+      TAG: ${{ needs.release.outputs.tag }}
+      SHA: ${{ needs.release.outputs.sha }}
+      AWS_REGION: ${{ needs.release.outputs.region }}
+      BACKUP_COPY: ${{ needs.plan.outputs.copy }}
+    steps:
+      - *checkout-release
+      - *checkout-tools
+      - *setup-node
+      - *install
+      - *sign-in
+      - *prove
+      - *synth
+      - name: Check it's what the plan showed
+        env:
+          PLAN_HASH: ${{ needs.plan.outputs.hash }}
+          HASH: ${{ steps.synth.outputs.hash }}
+        run: |
+          if [[ -z "$PLAN_HASH" || "$HASH" != "$PLAN_HASH" ]]; then
+            echo "::error::This synth's template hash ($HASH) isn't the plan's ($PLAN_HASH): what would deploy isn't what was approved. Run the deploy again."
+            exit 1
+          fi
+          echo "Same templates as the plan ($HASH)"
+      # CDK doesn't ask about IAM changes: approving this job, after reading the plan's diff,
+      # is the approval
+      - name: Deploy
+        working-directory: infra
+        run: |
+          patterns="$(node ../.deploy-tools/scripts/deploy-stacks.mjs stateless --env "$ENV_NAME")"
+          read -r -a stacks <<< "$patterns"
+          ./node_modules/.bin/cdk deploy --app cdk.out --exclusively --require-approval never --no-notices --progress events "${stacks[@]}"
+          echo "Deployed $TAG ($SHA): ${stacks[*]}" >> "$GITHUB_STEP_SUMMARY"
