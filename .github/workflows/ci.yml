@@ -36,8 +36,15 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels that pull request's older run. Every other
+# run (each push to main, merge queue group, nightly, manual and called run) gets a
+# group of its own, so none of them is ever cancelled or replaced. GitHub keeps only
+# one pending run per group: when main's group was the branch, a beads export
+# pushed right after a feature commit replaced the feature commit's waiting run,
+# and that commit never got its full browser matrix (or the "CI passed" check the
+# deploy workflow looks for on a release commit).
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.event_name == 'pull_request' && format('ci-{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('ci-{0}-run-{1}', github.workflow, github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
