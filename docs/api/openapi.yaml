@@ -2536,7 +2536,7 @@ components:
       required: [outcome, coupon, until, subscriptionId]
       additionalProperties: false
       properties:
-        outcome: { type: string, enum: [applied, removed, in_sync, none, not_monthly, no_subscription, not_ours, team_closed] }
+        outcome: { type: string, enum: [applied, removed, in_sync, none, not_monthly, under_a_month, no_subscription, not_ours, team_closed] }
         coupon: { type: [string, "null"] }
         until: { type: [string, "null"], format: date-time }
         subscriptionId: { type: [string, "null"] }

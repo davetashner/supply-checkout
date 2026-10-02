@@ -55,7 +55,9 @@
 // discount match the team's comp (comp-discount.ts, supply-checkout-6e4b),
 // recording the outcome in the operator audit. The nightly reconciliation
 // does the same, after the seat sync, for a team that has ever been comped,
-// and audits what it changes.
+// and audits what it changes, and so does the seat sync after a reopen (a
+// comp may have ended while the team was closed). It runs even when the seat
+// sync failed; the message then still fails for the seat sync.
 //
 // Logged: event, team and subscription IDs, statuses, counts and SES error
 // names. Never an owner's email or a name.
@@ -402,7 +404,7 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
       obs.logger.warn("Comp discount skipped: the team has another Stripe customer", { teamId: ctx.teamId, messageId: message.id });
       return skip("not_ours");
     }
-    const result = await reconcileCompDiscount(await deps.stripe(), team, message.customer);
+    const result = await reconcileCompDiscount(await deps.stripe(), team, message.customer, now());
     await record(result);
     obs.logger.info("Comp discount", { teamId: ctx.teamId, messageId: message.id, reason: message.reason, subscriptionId: result.subscriptionId ?? "", outcome: result.outcome, coupon: result.coupon ?? "", before: result.before ?? "" });
     return result.outcome;
@@ -500,20 +502,36 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
       }
       // A reopened team's subscription first (reopening.ts): the reopen's own sync, or the night's for one still waiting.
       // Whatever it did, the seat sync sees the team as it left it
-      if ((await reopened(sync, found)) !== "none") found = await readSeatTeamAgain(found, now());
+      const resynced = (await reopened(sync, found)) !== "none";
+      if (resynced) found = await readSeatTeamAgain(found, now());
       // The nightly reconciliation: the team's status, plan and seats against Stripe's first (entitlements.ts), then the quantity.
       // A recorded subscription or customer Stripe no longer has is counted there; the seat sync would only fail on it
       if (sync.reason === "reconcile") {
         if ((await entitlements(sync)) === "missing") return "missing";
         // It may have fixed the team
         found = await readSeatTeamAgain(found, now());
-        const outcome = await seats(sync, delivery, found);
-        // Then a comp's discount, for a team ever comped (compUntil stays after a comp ends): a `comp` message that was never
-        // queued, or failed for good, is put right here (comp-discount.ts)
-        if (typeof found !== "string" && found.team.compUntil !== undefined) await compDiscount(sync, found, "changes");
-        return outcome;
       }
-      return seats(sync, delivery, found);
+      // Then, every night and right after a reopen, a comp's discount, for a team ever comped (compUntil stays after a comp
+      // ends): a `comp` message that was never queued, failed for good, or came while the team was closed, is put right here
+      // (comp-discount.ts). Whether or not the seat sync failed: one team's seat trouble mustn't keep its discount on
+      const compToo = (sync.reason === "reconcile" || resynced) && typeof found !== "string" && found.team.compUntil !== undefined;
+      if (!compToo) return seats(sync, delivery, found);
+      let outcome: SeatOutcome | undefined;
+      let failure: unknown;
+      try {
+        outcome = await seats(sync, delivery, found);
+      } catch (error) {
+        failure = error;
+      }
+      try {
+        await compDiscount(sync, found, "changes");
+      } catch (error) {
+        if (failure === undefined) throw error;
+        // Both failed: the seat sync's error fails the message (retried, then the dead-letter queue); this one is logged too
+        obs.logger.error("Comp discount failed", { messageId: sync.id, reason: sync.reason, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      }
+      if (failure !== undefined) throw failure;
+      return outcome as SeatOutcome;
     }
     const outcome = await process(message);
     obs.logger.info("Billing event", { eventId: message.eventId, type: message.type, outcome });

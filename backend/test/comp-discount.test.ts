@@ -14,6 +14,8 @@ import {
   type CompSubscriptionLike,
   type CouponLike,
   type DiscountLike,
+  COMP_DISCOUNT_SLACK_MS,
+  discountMonthsLeft,
   ensureCompCoupon,
   wantedCompDiscount,
 } from "../src/billing/comp-discount.js";
@@ -21,7 +23,7 @@ import type { EntitlementStripe } from "../src/billing/entitlements.js";
 import type { SeatStripe, SeatSyncMessage } from "../src/billing/seats.js";
 import { createBillingWorker, type WorkerStripe } from "../src/billing/worker.js";
 import type { WorkerScope } from "../src/billing/worker-db.js";
-import { BILLING_WORKER_ACTOR } from "../src/data/index.js";
+import { BILLING_WORKER_ACTOR, compEndAfter } from "../src/data/index.js";
 import type { Observability } from "../src/observability/index.js";
 import { workerPolicy } from "./billing-policy.js";
 import { fakeMailer, REGION } from "./helpers.js";
@@ -84,6 +86,8 @@ function subscription(fields: Partial<Sub> = {}, interval = "month"): Sub {
 }
 
 const discount = (coupon: string, id = `di_${++discountSeq}`): DiscountLike => ({ id, source: { coupon } });
+/** A discount as Stripe puts one on: ending (epoch seconds) when its months are up. */
+const discountUntil = (coupon: string, end: number, id = `di_${++discountSeq}`): DiscountLike => ({ id, source: { coupon }, end });
 
 function patchTeam(fields: Record<string, unknown>) {
   const meta = table.get(`TEAM#${TEAM}`, "META") as Record<string, unknown>;
@@ -137,7 +141,7 @@ beforeEach(() => {
         const sub = subs.get(id) as Sub;
         let discounts = sub.discounts;
         if (params.discounts === "") discounts = [];
-        else if (params.discounts?.length) discounts = params.discounts.map((d) => (d.discount ? (sub.discounts.find((x) => x.id === d.discount) as DiscountLike) : discount(d.coupon as string)));
+        else if (params.discounts?.length) discounts = params.discounts.map((d) => (d.discount ? (sub.discounts.find((x) => x.id === d.discount) as DiscountLike) : discountUntil(d.coupon as string, Date.parse(compEndAfter(coupons.get(d.coupon as string)?.duration_in_months ?? 0, new Date(NOW))) / 1000)));
         const metadata = Object.fromEntries(Object.entries({ ...sub.metadata, ...(params.metadata ?? {}) }).filter(([, v]) => v !== ""));
         subs.set(id, { ...sub, discounts, metadata });
       },
@@ -182,12 +186,32 @@ describe("the comp coupons", () => {
     for (const bad of [0, 13, 1.5]) expect(() => compCouponId(bad)).toThrow(/1 to 12/);
   });
 
-  it("are wanted only for a live comp made with months", () => {
-    expect(wantedCompDiscount({ compLive: true, compMonths: 2, compUntil: UNTIL })).toEqual({ coupon: "supply-checkout-comp-2m", until: UNTIL });
-    expect(wantedCompDiscount({ compLive: false, compMonths: 2, compUntil: UNTIL })).toBeUndefined();
-    expect(wantedCompDiscount({ compLive: true, compUntil: UNTIL })).toBeUndefined();
-    expect(wantedCompDiscount({ compLive: true, compMonths: 2 })).toBeUndefined();
-    expect(wantedCompDiscount({ compLive: true, compMonths: 13, compUntil: UNTIL })).toBeUndefined();
+  it("are wanted only for a live comp made with months, sized to the months left of it", () => {
+    const at = new Date(NOW);
+    expect(wantedCompDiscount({ compLive: true, compMonths: 2, compUntil: UNTIL }, at)).toEqual({ coupon: "supply-checkout-comp-2m", months: 2, until: UNTIL });
+    // A 12-month comp with 2 and a half months left: 2, never 12
+    expect(wantedCompDiscount({ compLive: true, compMonths: 12, compUntil: "2026-12-17T12:00:00.000Z" }, at)).toEqual({ coupon: "supply-checkout-comp-2m", months: 2, until: "2026-12-17T12:00:00.000Z" });
+    // Under a month left: none to put on
+    expect(wantedCompDiscount({ compLive: true, compMonths: 2, compUntil: "2026-10-20T12:00:00.000Z" }, at)).toEqual({ coupon: null, months: 0, until: "2026-10-20T12:00:00.000Z" });
+    expect(wantedCompDiscount({ compLive: false, compMonths: 2, compUntil: UNTIL }, at)).toBeUndefined();
+    expect(wantedCompDiscount({ compLive: true, compUntil: UNTIL }, at)).toBeUndefined();
+    expect(wantedCompDiscount({ compLive: true, compMonths: 2 }, at)).toBeUndefined();
+    expect(wantedCompDiscount({ compLive: true, compMonths: 13, compUntil: UNTIL }, at)).toBeUndefined();
+  });
+
+  it("never run past the comp's end and its day of slack: the most whole months that fit", () => {
+    const at = new Date(NOW);
+    // Applied a moment after the comp was made: its own months
+    expect(discountMonthsLeft(UNTIL, at)).toBe(2);
+    expect(discountMonthsLeft(new Date(Date.parse(UNTIL) - 60_000).toISOString(), at)).toBe(2);
+    expect(discountMonthsLeft(new Date(Date.parse(UNTIL) - COMP_DISCOUNT_SLACK_MS).toISOString(), at)).toBe(2);
+    // Two months would end more than the slack after it: one
+    expect(discountMonthsLeft(new Date(Date.parse(UNTIL) - COMP_DISCOUNT_SLACK_MS - 1000).toISOString(), at)).toBe(1);
+    expect(discountMonthsLeft("2026-10-31T12:00:00.000Z", at)).toBe(0);
+    expect(discountMonthsLeft("2028-01-01T00:00:00.000Z", at)).toBe(12);
+    expect(discountMonthsLeft("soon", at)).toBe(0);
+    // Counted as a comp counts months: 31 January + 1 month is 28 February
+    expect(discountMonthsLeft("2027-02-28T10:00:00.000Z", new Date("2027-01-31T10:00:00Z"))).toBe(1);
   });
 
   it("are created once, with an idempotency key, and an existing one is used as it is", async () => {
@@ -328,6 +352,43 @@ describe("a comp message (reason comp)", () => {
     expect(ours()).toEqual([]);
   });
 
+  it("puts a coupon for the months left on a comp that has run a while (a new subscription), never its full length", async () => {
+    compMonths(12, "2026-12-17T12:00:00.000Z");
+    expect(await worker(message())).toBe("applied");
+    expect(ours()).toEqual(["supply-checkout-comp-2m"]);
+    expect(created.map((c) => c.id)).toEqual(["supply-checkout-comp-2m"]);
+  });
+
+  it("replaces one of ours that would outlast the comp with one that doesn't, and keeps one that ends in time", async () => {
+    compMonths();
+    const late = Date.parse(UNTIL) / 1000 + 86400 * 300;
+    subs.set(SUB, subscription({ discounts: [discountUntil("supply-checkout-comp-12m", late, "di_late")], metadata: { [COMP_UNTIL_METADATA]: UNTIL } }));
+    expect(await worker(message())).toBe("applied");
+    expect(updates[0]?.params.discounts).toEqual([{ coupon: "supply-checkout-comp-2m" }]);
+    expect(audits()[0]).toMatchObject({ before: { coupon: "supply-checkout-comp-12m" }, after: { outcome: "applied", coupon: "supply-checkout-comp-2m" } });
+    // One with no end at all can't be trusted to stop either
+    subs.set(SUB, subscription({ discounts: [discount("supply-checkout-comp-2m")], metadata: { [COMP_UNTIL_METADATA]: UNTIL } }));
+    expect(await worker(message("comp", "seats-comp-2"))).toBe("applied");
+    // A shorter one of ours, for this comp, ending before it: in step, though its coupon isn't the one we'd pick now
+    subs.set(SUB, subscription({ discounts: [discountUntil("supply-checkout-comp-1m", Date.parse(UNTIL) / 1000 - 86400 * 30)], metadata: { [COMP_UNTIL_METADATA]: UNTIL } }));
+    expect(await worker(message("comp", "seats-comp-3"))).toBe("in_sync");
+    expect(updates).toHaveLength(2);
+  });
+
+  it("puts nothing on with under a month left, keeps one of ours that ends in time, and takes off one that doesn't", async () => {
+    const until = "2026-10-20T12:00:00.000Z";
+    compMonths(2, until);
+    expect(await worker(message())).toBe("under_a_month");
+    expect(updates).toEqual([]);
+    expect(created).toEqual([]);
+    expect(audits()[0]).toMatchObject({ after: { outcome: "under_a_month", coupon: null } });
+    subs.set(SUB, subscription({ discounts: [discountUntil("supply-checkout-comp-2m", Date.parse(until) / 1000 + 60)], metadata: { [COMP_UNTIL_METADATA]: until } }));
+    expect(await worker(message("comp", "seats-comp-2"))).toBe("in_sync");
+    subs.set(SUB, subscription({ discounts: [discountUntil("supply-checkout-comp-2m", Date.parse(until) / 1000 + 86400 * 40)], metadata: { [COMP_UNTIL_METADATA]: until } }));
+    expect(await worker(message("comp", "seats-comp-3"))).toBe("removed");
+    expect(ours()).toEqual([]);
+  });
+
   it("never discounts a yearly subscription (a renewal in the window would be a year free), and takes ours off one", async () => {
     subs.set(SUB, subscription({}, "year"));
     compMonths();
@@ -423,6 +484,38 @@ describe("the nightly reconciliation", () => {
     await worker(message("reconcile", "reconcile-1"));
     expect(ours()).toEqual([]);
     expect(audits()).toHaveLength(1);
+  });
+
+  it("still puts the discount right when the seat sync fails, and the message still fails for the seat sync", async () => {
+    compMonths();
+    // A second billed member: the seat sync updates the quantity, which this Stripe refuses
+    table.put({ PK: `TEAM#${TEAM}`, SK: "MEMBER#user-crew", type: "member", teamId: TEAM, userId: "user-crew", role: "contributor" });
+    await expect(worker(message("reconcile", "reconcile-1"))).rejects.toThrow("not used");
+    expect(ours()).toEqual(["supply-checkout-comp-2m"]);
+    expect(audits()).toHaveLength(1);
+  });
+
+  it("fails the message when the discount can't be put right, and logs it too when the seat sync also failed", async () => {
+    compMonths();
+    coupons.set("supply-checkout-comp-2m", { id: "supply-checkout-comp-2m", percent_off: 50, amount_off: null, duration: "repeating", duration_in_months: 2, valid: true });
+    await expect(worker(message("reconcile", "reconcile-1"))).rejects.toMatchObject({ name: "CompCouponMismatch" });
+    table.put({ PK: `TEAM#${TEAM}`, SK: "MEMBER#user-crew", type: "member", teamId: TEAM, userId: "user-crew", role: "contributor" });
+    await expect(worker(message("reconcile", "reconcile-2"))).rejects.toThrow("not used");
+    expect(logs).toContainEqual(["error", "Comp discount failed", { messageId: "reconcile-2", reason: "reconcile", code: "CompCouponMismatch" }]);
+    expect(updates).toEqual([]);
+  });
+
+  it("puts a comped team's discount right as soon as it's reopened, not the next night", async () => {
+    // Its comp ran out while it was closed: the discount came off nowhere
+    subs.set(SUB, subscription({ discounts: [discount("supply-checkout-comp-2m")] }));
+    patchTeam({ compUntil: new Date(NOW - 1000).toISOString(), stripeResyncFor: "2026-09-01T00:00:00.000Z" });
+    await worker(message("membership", "seats-reopen-1"));
+    expect(ours()).toEqual([]);
+    expect(audits()).toEqual([expect.objectContaining({ after: expect.objectContaining({ outcome: "removed" }) })]);
+    // A membership change with no reopen pending doesn't look
+    retrieves.length = 0;
+    await worker(message("membership", "seats-2"));
+    expect(retrieves.filter((r) => r.expand)).toEqual([]);
   });
 
   it("audits nothing when it's in step, and doesn't look at a team never comped", async () => {
