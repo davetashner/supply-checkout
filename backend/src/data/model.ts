@@ -289,26 +289,28 @@ export function billingAccess(team: BillingAccessFields, now = new Date()): Bill
   const compEnd = dateMs(team.compUntil);
   // A comp that ran out: no clock starts before it did
   const after = (ms: number) => (Number.isFinite(compEnd) ? Math.max(ms, compEnd) : ms);
-  const iso = (ms: number) => new Date(ms).toISOString();
+  // A date past what Date can hold (corrupt data) is dropped rather than failing the caller
+  const iso = (ms: number) => (Number.isFinite(new Date(ms).getTime()) ? new Date(ms).toISOString() : undefined);
   const retention = (from: number) => iso(from + READ_ONLY_RETENTION_DAYS * ACCESS_DAY_MS);
+  const dated = <T extends object>(fields: Record<string, string | undefined>, rest: T) => ({ ...rest, ...Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined)) });
   const at = now.getTime();
   if (hasEnded(team.status)) {
     const ended = dateMs(team.subscriptionEndedAt);
     if (!Number.isFinite(ended)) return { readOnly: true, reason: "subscription_ended" };
     const from = after(ended);
-    return { readOnly: true, reason: "subscription_ended", readOnlyFrom: iso(from), deleteAfter: retention(from) };
+    return dated({ readOnlyFrom: iso(from), deleteAfter: retention(from) }, { readOnly: true, reason: "subscription_ended" as const });
   }
   if (team.status === "past_due") {
     const since = dateMs(team.pastDueSince);
     if (!Number.isFinite(since)) return { readOnly: false };
     const graceEnd = after(since) + PAYMENT_GRACE_DAYS * ACCESS_DAY_MS;
-    return graceEnd <= at ? { readOnly: true, reason: "payment_overdue", readOnlyFrom: iso(graceEnd) } : { readOnly: false, graceEndsAt: iso(graceEnd) };
+    return graceEnd <= at ? dated({ readOnlyFrom: iso(graceEnd) }, { readOnly: true, reason: "payment_overdue" as const }) : dated({ graceEndsAt: iso(graceEnd) }, { readOnly: false });
   }
   if (team.status === "trialing" && typeof team.stripeSubscriptionId !== "string") {
     const end = trialEnd(team);
     if (!Number.isFinite(end)) return { readOnly: false };
     const from = after(end);
-    return from <= at ? { readOnly: true, reason: "trial_ended", readOnlyFrom: iso(from), deleteAfter: retention(from) } : { readOnly: false };
+    return from <= at ? dated({ readOnlyFrom: iso(from), deleteAfter: retention(from) }, { readOnly: true, reason: "trial_ended" as const }) : { readOnly: false };
   }
   return { readOnly: false };
 }

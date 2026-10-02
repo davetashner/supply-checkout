@@ -364,6 +364,12 @@ describe("billing access (billingAccess, ADR 0009, supply-checkout-qdx)", () => 
     expect(billingAccess({ status: "past_due" }, NOW)).toEqual({ readOnly: false });
   });
 
+  it("drops a date past what Date can hold rather than throwing (corrupt data)", () => {
+    const far = "+275760-09-13T00:00:00.000Z";
+    expect(billingAccess({ status: "canceled", subscriptionEndedAt: far }, NOW)).toEqual({ readOnly: true, reason: "subscription_ended", readOnlyFrom: far });
+    expect(billingAccess({ status: "past_due", pastDueSince: far }, new Date(far))).toEqual({ readOnly: false });
+  });
+
   it("gives full access, and no deletion date, while a comp is live; once it runs out, no clock starts before it did", () => {
     const comp = { compPlan: "starter", compUntil: at(10) };
     for (const team of [{ status: "trialing", trialEndsAt: at(-90) }, { status: "canceled", subscriptionEndedAt: at(-90) }, { status: "past_due", pastDueSince: at(-90) }]) {
