@@ -1,0 +1,296 @@
+name: Deploy
+
+# Deploys a release to prod (ADR 0012, supply-checkout-pbp.26). The release workflow starts it
+# once the release's full check suite has passed; the owner can also start it by hand for a tag
+# (Actions, Deploy, Run workflow, from main), for example to deploy an older release again.
+# It runs only from main: a run dispatched on a tag would use that tag's own copy of this file,
+# which could leave out the checks below, so every job refuses any other ref.
+# docs/releases.md ("Deploying a release") has the whole flow.
+#
+# Only workflow_dispatch starts it. A release that release-please creates with GITHUB_TOKEN
+# triggers no `release` or tag `push` workflow, so the release workflow dispatches this one.
+# Never add pull_request_target or workflow_run here: they can run for a fork's pull request
+# with this repository's context, and a production job would hand it the deploy role.
+#
+# Jobs:
+#   release  no credentials: the tag is a published release whose commit is on main and passed CI
+#   trust    no environment: the deploy role must REFUSE this job (docs/infrastructure.md step 3)
+#   deploy   in the `production` environment, which waits for the owner's approval: signs in
+#            with the OIDC deploy role, proves who it is, synthesizes once, posts the diff to the
+#            job summary and deploys the stateless stacks (scripts/deploy-stacks.mjs)
+#
+# No AWS credentials exist before the deploy job's sign-in step, and that job runs only code
+# from a release commit on main. Every third-party action is pinned by commit SHA. The deploy
+# role's ARN is a secret (AWS_DEPLOY_ROLE_ARN: the production environment's for the deploy job,
+# the repository's for the trust job), so neither it nor the account ID reaches the public log.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to deploy (vX.Y.Z); its commit must be on main and have passed CI
+        required: true
+        type: string
+      dry-run:
+        description: Sign in, synthesize and show the diff, but deploy nothing
+        type: boolean
+        default: false
+
+permissions: {}
+
+# One deploy at a time, and never cancel one that has started: a deploy cut off halfway leaves
+# CloudFormation to roll back. A run that's waiting here replaces an older waiting one. Dry runs
+# change nothing, so they have their own group: one can't replace a release deploy that's
+# waiting for approval, and it can run while a deploy waits.
+concurrency:
+  group: ${{ inputs.dry-run && 'deploy-production-dry-run' || 'deploy-production' }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    # -eo pipefail
+    shell: bash
+
+jobs:
+  release:
+    name: Check the release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      sha: ${{ steps.check.outputs.sha }}
+      region: ${{ steps.check.outputs.region }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Every branch and tag, to find the tag and check it's on main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the tag
+        id: check
+        env:
+          TAG: ${{ inputs.tag }}
+          REF: ${{ github.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The jobs' `if` already skip any other ref; the production environment allows only main
+          if [[ "$REF" != refs/heads/main ]]; then
+            echo "::error::Run the deploy from main, not $REF"
+            exit 1
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::The tag must look like v1.2.3"
+            exit 1
+          fi
+          if ! sha="$(git rev-parse --verify --quiet "refs/tags/$TAG^{commit}")"; then
+            echo "::error::No tag $TAG"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$sha" refs/remotes/origin/main; then
+            echo "::error::$TAG ($sha) isn't on main: only releases from main deploy"
+            exit 1
+          fi
+          if [[ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != false ]]; then
+            echo "::error::$TAG has no published GitHub Release"
+            exit 1
+          fi
+          # "CI passed" from the push to main, or "checks / CI passed" from the release workflow,
+          # reported by GitHub Actions (not some other app posting a check run with that name)
+          passed="$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha/check-runs?per_page=100" \
+            --jq '.check_runs[] | select(.app.slug == "github-actions") | select(.name | test("(^|/ )CI passed$")) | select(.conclusion == "success") | .name')"
+          if [[ -z "$passed" ]]; then
+            echo "::error::$TAG ($sha) has no successful \"CI passed\" check: deploy only what CI passed"
+            exit 1
+          fi
+          region="$(node scripts/deploy-stacks.mjs region)"
+          echo "Deploying $TAG ($sha) to $region"
+          {
+            echo "tag=$TAG"
+            echo "sha=$sha"
+            echo "region=$region"
+          } >> "$GITHUB_OUTPUT"
+
+  trust:
+    # The negative half of the dry check in docs/infrastructure.md (step 3): a job outside the
+    # production environment gets a different OIDC subject, and the role must refuse it. It
+    # needs the role's ARN as a repository secret (AWS_DEPLOY_ROLE_ARN, the same value as the
+    # production environment's), since environment secrets reach only that environment's jobs.
+    name: The deploy role refuses jobs outside production
+    needs: release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+    steps:
+      - name: Try to assume the deploy role without the production environment
+        env:
+          ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          AWS_REGION: ${{ needs.release.outputs.region }}
+        run: |
+          if [[ -z "$ROLE_ARN" ]]; then
+            message="Set the repository secret AWS_DEPLOY_ROLE_ARN (the deploy role's ARN) to check the role refuses jobs outside production"
+            # A dry run is the trust check, so it can't skip it
+            if [[ "$DRY_RUN" == true ]]; then echo "::error::$message"; exit 1; fi
+            echo "::warning::$message"
+            echo "Trust check skipped: no repository secret AWS_DEPLOY_ROLE_ARN" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [[ ! "$ROLE_ARN" =~ ^arn:aws:iam::([0-9]{12}):role/supply-checkout-prod-github-deploy$ ]]; then
+            echo "::error::AWS_DEPLOY_ROLE_ARN isn't the prod deploy role's ARN"
+            exit 1
+          fi
+          echo "::add-mask::${BASH_REMATCH[1]}"
+          token="$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)"
+          echo "::add-mask::$token"
+          # Never printed: if the call succeeded, its output would hold credentials
+          if out="$(aws sts assume-role-with-web-identity --no-cli-pager --role-arn "$ROLE_ARN" \
+              --role-session-name "trust-check-$GITHUB_RUN_ID" --web-identity-token "$token" \
+              --duration-seconds 900 --query AssumedRoleUser.Arn --output text 2>&1)"; then
+            echo "::error::The deploy role accepted a job outside the production environment. Its trust is too wide: stop deploying and fix it (docs/infrastructure.md, GitHub Actions deploy role)."
+            exit 1
+          fi
+          if ! grep -q "Not authorized to perform sts:AssumeRoleWithWebIdentity" <<< "$out"; then
+            echo "::error::Expected 'Not authorized to perform sts:AssumeRoleWithWebIdentity', got something else:"
+            echo "$out"
+            exit 1
+          fi
+          echo "Refused, as it must be: Not authorized to perform sts:AssumeRoleWithWebIdentity"
+          echo "Trust check: the deploy role refuses a job outside the production environment" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy the stateless stacks
+    needs: [release, trust]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Waits for the owner's approval. Its rules (main only, required reviewer, no admin bypass)
+    # are what give this job the OIDC subject the deploy role trusts.
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENV_NAME: prod
+      TAG: ${{ needs.release.outputs.tag }}
+      SHA: ${{ needs.release.outputs.sha }}
+      AWS_REGION: ${{ needs.release.outputs.region }}
+      DRY_RUN: ${{ inputs.dry-run }}
+    steps:
+      # The commit the release job checked, not the tag name, so a tag moved since can't swap it
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release.outputs.sha }}
+          persist-credentials: false
+      # No dependency cache in a job that holds prod credentials
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      # Before any credentials exist, and without install scripts (esbuild finds its binary in
+      # its platform package without its postinstall). This is defence in depth: the real
+      # control is that only a reviewed, released commit on main gets here. The synth bundles
+      # the Lambda code from backend/. Every cdk and tsx below is the locked local copy, never
+      # something npx could fetch.
+      - name: Install dependencies
+        run: |
+          (cd backend && npm ci --ignore-scripts --no-audit --no-fund)
+          (cd infra && npm ci --ignore-scripts --no-audit --no-fund)
+      - name: Choose the stacks
+        id: stacks
+        run: echo "stateless=$(node scripts/deploy-stacks.mjs stateless --env "$ENV_NAME")" >> "$GITHUB_OUTPUT"
+
+      - name: Sign in to AWS with the deploy role
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          # A secret, so the ARN (and the account ID in it) is masked in the log
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: deploy-${{ github.run_id }}-${{ github.run_attempt }}
+          aws-region: ${{ needs.release.outputs.region }}
+          role-duration-seconds: 3600
+          # The account ID is masked in every later log line
+          mask-aws-account-id: true
+      # The positive half of the dry check (docs/infrastructure.md step 3)
+      - name: Prove who this job is
+        run: |
+          arn="$(aws sts get-caller-identity --query Arn --output text)"
+          if [[ ! "$arn" =~ ^arn:aws:sts::[0-9]{12}:assumed-role/supply-checkout-${ENV_NAME}-github-deploy/ ]]; then
+            echo "::error::Signed in as something other than the deploy role"
+            exit 1
+          fi
+          echo "Signed in as the deploy role supply-checkout-${ENV_NAME}-github-deploy, because this job runs in the production environment"
+          echo "Signed in as \`supply-checkout-${ENV_NAME}-github-deploy\` (production environment)" >> "$GITHUB_STEP_SUMMARY"
+
+      # Like scripts/deploy.sh: -c backupCopy=false until the backup copy vault's parameter exists
+      # (docs/backups.md). The deploy role can only assume CDK's bootstrap roles, so it reads the
+      # parameter through the read-only lookup role. Any error but "not found" stops the deploy.
+      - name: Check for the backup copy vault
+        id: backup
+        run: |
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          qualifier="$(jq -r '.context["@aws-cdk/core:bootstrapQualifier"] // "hnb659fds"' infra/cdk.json)"
+          config="$RUNNER_TEMP/aws-lookup-config"
+          printf '[profile lookup]\nrole_arn = arn:aws:iam::%s:role/cdk-%s-lookup-role-%s-%s\ncredential_source = Environment\nregion = %s\n' \
+            "$account" "$qualifier" "$account" "$AWS_REGION" "$AWS_REGION" > "$config"
+          if err="$(AWS_CONFIG_FILE="$config" aws ssm get-parameter --profile lookup \
+              --name "/supply-checkout/$ENV_NAME/backup/copy-vault-arn" --query Parameter.Name --output text 2>&1 >/dev/null)"; then
+            echo "The backup copy vault exists: copies on"
+            echo "copy=true" >> "$GITHUB_OUTPUT"
+          elif grep -q ParameterNotFound <<< "$err"; then
+            echo "No backup copy vault yet: -c backupCopy=false"
+            echo "copy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Couldn't read the backup copy vault's parameter"
+            echo "$err"
+            exit 1
+          fi
+
+      - name: Synthesize once
+        working-directory: infra
+        env:
+          BACKUP_COPY: ${{ steps.backup.outputs.copy }}
+        run: |
+          context=(-c "envName=$ENV_NAME")
+          if [[ "$BACKUP_COPY" == false ]]; then context+=(-c backupCopy=false); fi
+          ./node_modules/.bin/cdk synth --app "./node_modules/.bin/tsx bin/app.ts" --quiet --no-notices "${context[@]}"
+
+      - name: Show the diff
+        working-directory: infra
+        env:
+          STACKS: ${{ steps.stacks.outputs.stateless }}
+        run: |
+          read -r -a stacks <<< "$STACKS"
+          # The repository is public, so the diff is too (resource names, policy documents;
+          # docs/releases.md). Account IDs aren't: this account's is masked in the log, and the
+          # filter takes out any account ID in an ARN or a quoted principal, this one included,
+          # before the diff reaches the log or the job summary (which isn't masked).
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          ./node_modules/.bin/cdk diff --app cdk.out --exclusively --no-color --no-notices "${stacks[@]}" 2>&1 \
+            | sed -E -e "s/$account/<account>/g" -e 's/(arn:[^:" ]+:[^:" ]*:[^:" ]*:)[0-9]{12}/\1<account>/g' -e 's/"[0-9]{12}"/"<account>"/g' \
+            | tee "$RUNNER_TEMP/diff.txt"
+          {
+            echo "## Stateless stacks: diff for $TAG"
+            echo
+            echo '```diff'
+            head -c 900000 "$RUNNER_TEMP/diff.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # IAM and security group changes are approved by approving this job in the production
+      # environment (after a dry run, to read the diff first), not by an interactive CDK prompt.
+      - name: Deploy
+        if: ${{ !inputs.dry-run }}
+        working-directory: infra
+        env:
+          STACKS: ${{ steps.stacks.outputs.stateless }}
+        run: |
+          read -r -a stacks <<< "$STACKS"
+          ./node_modules/.bin/cdk deploy --app cdk.out --exclusively --require-approval never --no-notices --progress events "${stacks[@]}"
+          echo "Deployed $TAG ($SHA): ${stacks[*]}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Dry run
+        if: ${{ inputs.dry-run }}
+        run: echo "Dry run, so nothing was deployed" >> "$GITHUB_STEP_SUMMARY"

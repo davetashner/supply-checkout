@@ -3,7 +3,7 @@
 # (supply-checkout-7ew7). The commands in docs/infrastructure.md and docs/web-app.md, in one
 # place and in the right order.
 #
-#   npm run deploy -- api            the api and observability stacks
+#   npm run deploy -- api            the api, realtime and observability stacks
 #   npm run deploy -- web            the web stack, then check the live router
 #   npm run deploy -- app            build the web app, publish it to app., check the router
 #   npm run deploy -- all            web, then api, then app (the order they depend on)
@@ -14,9 +14,11 @@
 # It deploys only from main, with nothing uncommitted and nothing unpushed or unpulled, so
 # what goes out is what's on origin/main. It signs in to AWS SSO if the session has expired,
 # installs dependencies, shows each stack's diff and asks before deploying it. Stacks are
-# chosen by kind (`supply-checkout-<env>-*-api`), so no region is named here. Until the
-# backup setup has made /supply-checkout/<env>/backup/copy-vault-arn, it passes
-# `-c backupCopy=false` (docs/backups.md). Only the owner deploys to prod (CLAUDE.md).
+# chosen by kind (`supply-checkout-<env>-*-api`), so no region is named here; the kinds come
+# from scripts/deploy-stacks.mjs, which the release pipeline (.github/workflows/deploy.yml)
+# uses too. Until the backup setup has made /supply-checkout/<env>/backup/copy-vault-arn, it
+# passes `-c backupCopy=false` (docs/backups.md). Only the owner deploys to prod (CLAUDE.md);
+# this is the break-glass path once the pipeline deploys releases.
 set -euo pipefail
 
 usage() {
@@ -111,16 +113,24 @@ check_router() {
   npm run -s publish:web -- check-router --env "$env_name" --profile "$profile"
 }
 
-stack() { echo "supply-checkout-$env_name-*-$1"; }
+# A group's stack patterns, from the module the deploy workflow uses too, into `stacks`
+stacks=()
+group_stacks() {
+  local out
+  out="$(node "$root/scripts/deploy-stacks.mjs" "$1" --env "$env_name")"
+  read -r -a stacks <<< "$out"
+}
 
 for target in "${ordered[@]}"; do
   case "$target" in
     web)
-      deploy_stacks "$(stack web)"
+      group_stacks web
+      deploy_stacks "${stacks[@]}"
       if $deployed; then check_router; fi
       ;;
     api)
-      deploy_stacks "$(stack api)" "$(stack observability)"
+      group_stacks stateless
+      deploy_stacks "${stacks[@]}"
       ;;
     app)
       install .
