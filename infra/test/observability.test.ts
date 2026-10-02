@@ -8,7 +8,7 @@ import { AwsSolutionsChecks } from "cdk-nag";
 import type { Construct } from "constructs";
 import { describe, expect, it } from "vitest";
 import { BusinessMetric } from "../../backend/src/observability/names.js";
-import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
+import { APPROVED_REGIONS, configFromContext, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { alarmContactParameter, alarmContactsFromContext, alarmRecipientParameterPrefix } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
 import { costAlertsFromContext, DEFAULT_COST_ANOMALY_USD, DEFAULT_MONTHLY_BUDGET_USD } from "../lib/observability/cost-alerts.js";
@@ -36,7 +36,7 @@ import {
   STUCK_IMPORT_AFTER_MINUTES,
 } from "../../backend/src/ops/names.js";
 import { DELETIONS_BUCKET_CHANGE_EVENTS } from "../lib/observability/deletion-records-watch.js";
-import { SUPPORT_SMTP_USER_EVENTS, supportSmtpRuleName } from "../lib/observability/support-smtp-watch.js";
+import { SUPPORT_SMTP_BOUNDARY_EVENTS, SUPPORT_SMTP_USER_EVENTS } from "../lib/observability/support-smtp-watch.js";
 import { addBackupAccount, addSupplyCheckout } from "../lib/supply-checkout.js";
 import {
   ALARM_KEY_ALIAS_EVENTS,
@@ -68,6 +68,7 @@ import {
   EVENT_PATTERN_LIMIT,
   OPERATOR_RULE_SUFFIXES,
   OPERATOR_GROUP_WATCH_RULE_SUFFIX,
+  SUPPORT_SMTP_RULE_SUFFIX,
   OPERATOR_POOL_RULE_STATE,
   GROUP_SNAPSHOT_EVENTS,
   GROUP_WATCH_ROLE_FUNCTION_EVENTS,
@@ -2626,21 +2627,38 @@ describe("support SMTP user watch (supply-checkout-6qd)", () => {
   const supportRules = (t: Template) => Object.entries(t.findResources("AWS::Events::Rule")).filter(([id]) => id.startsWith("SupportSmtpWatch"));
   const supportAlarms = (t: Template) => Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties).filter((a) => String(a.AlarmName).includes("support-smtp"));
 
-  it("tells P2 when the user gets or loses a key, a policy, a group, a password or a boundary, whoever does it", () => {
+  it("tells P2 when the user gets or loses a key, credential, policy, group, password or boundary, or is renamed, or its boundary policy is rewritten, whoever does it", () => {
     expect([...SUPPORT_SMTP_USER_EVENTS].sort()).toEqual(
-      ["CreateAccessKey", "UpdateAccessKey", "DeleteAccessKey", "PutUserPolicy", "AttachUserPolicy", "AddUserToGroup", "CreateLoginProfile", "UpdateLoginProfile", "PutUserPermissionsBoundary"].sort(),
+      [
+        "CreateAccessKey", "UpdateAccessKey", "DeleteAccessKey", "PutUserPolicy", "AttachUserPolicy", "AddUserToGroup", "CreateLoginProfile", "UpdateLoginProfile",
+        "PutUserPermissionsBoundary", "DeleteUserPermissionsBoundary", "UpdateUser", "CreateServiceSpecificCredential", "UploadSigningCertificate", "UploadSSHPublicKey",
+      ].sort(),
     );
+    expect([...SUPPORT_SMTP_BOUNDARY_EVENTS].sort()).toEqual(["CreatePolicyVersion", "SetDefaultPolicyVersion"]);
     const t = observability(GLOBAL_SERVICES_REGION);
     const rules = supportRules(t);
     expect(rules).toHaveLength(1);
     const [id, rule] = rules[0] as [string, { Properties: Record<string, unknown> }];
-    expect(rule.Properties.Name).toBe(supportSmtpRuleName("prod"));
-    // IAM's events: no userIdentity filter, so CloudFormation's calls alert too
+    expect(rule.Properties.Name).toBe(operatorRuleName("prod", SUPPORT_SMTP_RULE_SUFFIX));
+    // IAM's events, matched without regard to case (IAM names aren't case-sensitive); no
+    // userIdentity filter, so CloudFormation's calls alert too
     expect(rule.Properties.EventPattern).toEqual({
       source: ["aws.iam"],
       "detail-type": ["AWS API Call via CloudTrail"],
-      detail: { eventSource: ["iam.amazonaws.com"], eventName: [...SUPPORT_SMTP_USER_EVENTS], requestParameters: { userName: ["supply-checkout-prod-support-smtp"] } },
+      detail: {
+        eventSource: ["iam.amazonaws.com"],
+        $or: [
+          { eventName: [...SUPPORT_SMTP_USER_EVENTS], requestParameters: { userName: [{ "equals-ignore-case": "supply-checkout-prod-support-smtp" }] } },
+          {
+            eventName: [...SUPPORT_SMTP_BOUNDARY_EVENTS],
+            requestParameters: {
+              policyArn: [{ "equals-ignore-case": { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":iam::", { Ref: "AWS::AccountId" }, ":policy/smtp/supply-checkout-prod-support-smtp-boundary"]] } }],
+            },
+          },
+        ],
+      },
     });
+    expect(JSON.stringify(rule.Properties.EventPattern)).not.toContain("userIdentity");
     expect(rule.Properties.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP2/) } })]);
     const target = JSON.stringify(rule.Properties.Targets);
     expect(target).toContain("$.detail.eventID");
@@ -2664,31 +2682,56 @@ describe("support SMTP user watch (supply-checkout-6qd)", () => {
     });
   });
 
-  it("tells P2 when the user sends more than 50 messages in an hour, from SES's sends by caller identity", () => {
+  it("is watched by the operator rule-tampering rules, which are in the same region for prod", () => {
+    // Prod's primary region (the first default region) is GLOBAL_SERVICES_REGION, where IAM's events and this rule are
+    const prod = configFromContext({ tryGetContext: (key: string) => (key === "envName" ? "prod" : undefined) }, {});
+    expect(prod.primaryRegion).toBe(GLOBAL_SERVICES_REGION);
+    expect(config.primaryRegion).toBe(GLOBAL_SERVICES_REGION);
+    const t = observability(GLOBAL_SERVICES_REGION);
+    const name = operatorRuleName("prod", SUPPORT_SMTP_RULE_SUFFIX);
+    expect(name.startsWith(operatorRulePrefix("prod"))).toBe(true);
+    expect(name.length).toBeLessThanOrEqual(64);
+    const tampering = Object.values(t.findResources("AWS::Events::Rule"))
+      .map((r) => r.Properties)
+      .filter((r) => [operatorRuleName("prod", OPERATOR_RULE_SUFFIXES.OperatorRuleTampering), tamperingWatchRuleName("prod")].includes(r.Name));
+    expect(tampering).toHaveLength(2);
+    for (const rule of tampering) {
+      const or = (rule.EventPattern as { detail: { $or: { requestParameters: Record<string, unknown[]> }[] } }).detail.$or;
+      for (const branch of or) {
+        const watched = Object.values(branch.requestParameters)[0] as unknown[];
+        expect(watched).toContainEqual({ prefix: operatorRulePrefix("prod") });
+      }
+    }
+  });
+
+  it("tells P2 when the user sends more than 50 messages in an hour, or 150 in a day, from SES's sends by caller identity", () => {
     const alarms = supportAlarms(observability(EAST));
-    expect(alarms).toHaveLength(1);
-    expect(alarms[0]).toMatchObject({
-      AlarmName: "supply-checkout-prod-p2-support-smtp-sends",
-      Metrics: [
-        {
-          Id: "m1",
-          ReturnData: true,
-          Label: "Support SMTP sends",
-          MetricStat: {
-            Metric: { Namespace: "AWS/SES", MetricName: "Send", Dimensions: [{ Name: "ses:caller-identity", Value: "supply-checkout-prod-support-smtp" }] },
-            Period: 3600,
-            Stat: "Sum",
-          },
+    expect(alarms.map((a) => a.AlarmName).sort()).toEqual(["supply-checkout-prod-p2-support-smtp-daily-sends", "supply-checkout-prod-p2-support-smtp-sends"]);
+    const metric = (period: number) => [
+      {
+        Id: "m1",
+        ReturnData: true,
+        Label: expect.stringMatching(/^Support SMTP sends in /),
+        MetricStat: {
+          Metric: { Namespace: "AWS/SES", MetricName: "Send", Dimensions: [{ Name: "ses:caller-identity", Value: "supply-checkout-prod-support-smtp" }] },
+          Period: period,
+          Stat: "Sum",
         },
-      ],
-      Threshold: 50,
-      ComparisonOperator: "GreaterThanThreshold",
-      EvaluationPeriods: 1,
-      TreatMissingData: "notBreaching",
-    });
-    expect(alarms[0]?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
-    expect(alarms[0]?.OKActions).toEqual(alarms[0]?.AlarmActions);
-    expect(String(alarms[0]?.AlarmDescription)).toContain("When the support SMTP key may be leaked");
+      },
+    ];
+    for (const [name, period, threshold] of [["supply-checkout-prod-p2-support-smtp-sends", 3600, 50], ["supply-checkout-prod-p2-support-smtp-daily-sends", 86400, 150]] as const) {
+      const alarm = alarms.find((a) => a.AlarmName === name);
+      expect(alarm).toMatchObject({
+        Metrics: metric(period),
+        Threshold: threshold,
+        ComparisonOperator: "GreaterThanThreshold",
+        EvaluationPeriods: 1,
+        TreatMissingData: "notBreaching",
+      });
+      expect(alarm?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
+      expect(alarm?.OKActions).toEqual(alarm?.AlarmActions);
+      expect(String(alarm?.AlarmDescription)).toContain("When the support SMTP key may be leaked");
+    }
   });
 
   it("is only in prod with supportMail, and only where IAM's and SES's events are", () => {

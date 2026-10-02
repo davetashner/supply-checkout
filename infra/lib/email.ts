@@ -75,7 +75,10 @@ export const SUPPORT_DISPLAY_NAME = "Supply Checkout Support";
 /** The IAM user whose SES SMTP credentials Gmail uses to send support replies. */
 export const supportSmtpUserName = (envName: string): string => `supply-checkout-${envName}-support-smtp`;
 
-/** Its IAM path, which sets it apart from any other user. */
+/** Its permissions boundary policy's name. */
+export const supportSmtpBoundaryName = (envName: string): string => `${supportSmtpUserName(envName)}-boundary`;
+
+/** Its IAM path (and its boundary's), which sets it apart from any other user. */
 export const SUPPORT_SMTP_USER_PATH = "/smtp/";
 
 /**

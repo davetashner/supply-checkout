@@ -266,7 +266,7 @@ A complaint means the person asked not to get our mail, so remove a `COMPLAINT` 
 - The IAM user `/smtp/supply-checkout-prod-support-smtp`, with no access key. Its one permission, which is also its permissions boundary (`supply-checkout-prod-support-smtp-boundary`, so a policy attached later can't give it more): `ses:SendRawEmail` (what an SES SMTP send is authorized as) on the domain identity and the `transactional` configuration set, with `ses:FromAddress` = `support@supplycheckout.com` and `ses:FromDisplayName` = `Supply Checkout Support`. It can't call any other AWS API. Its SMTP password is made by hand (below) and kept only in Gmail's settings, never in the repo, SSM or a shared note.
 - A CloudWatch event destination on the transactional configuration set, `SendsByCaller`, counting sends by `ses:caller-identity`, for the Support SMTP sends alarm.
 
-**What the key can do.** Treat it like the domain's signing key. `ses:FromAddress` is most likely matched against the envelope sender of an SMTP send, not the message's From header, so whoever holds the key can probably send any mail the domain identity can: a header From of `noreply@supplycheckout.com` or any other address at the domain, DKIM-signed and passing DMARC, which makes convincing phishing. The display name condition only adds friction (an attacker can copy it). What limits the damage is detection and rotation: P2 alerts on any change to the user and on more than 50 sends in an hour ([Observability](observability.md), "Support SMTP user"), the key rotation below, and step 8's check of what the policy really refuses.
+**What the key can do.** Treat it like the domain's signing key. `ses:FromAddress` is most likely matched against the envelope sender of an SMTP send, not the message's From header, so whoever holds the key can probably send any mail the domain identity can: a header From of `noreply@supplycheckout.com` or any other address at the domain, DKIM-signed and passing DMARC, which makes convincing phishing. The display name condition only adds friction (an attacker can copy it). What limits the damage is detection and rotation: P2 alerts on any change to the user or its boundary policy and on more than 50 sends in an hour or 150 in a day ([Observability](observability.md), "Support SMTP user"), the key rotation below, and step 8's check of what the policy really refuses.
 
 **Why replies go through SES.** Gmail's "send as" through Gmail's own SMTP sends from Google's servers, signed by `gmail.com`: SPF fails for supplycheckout.com (`-all`), the DKIM signature isn't the domain's, and DMARC fails, which gets replies junked now and rejected once DMARC moves to `p=quarantine`. Through SES SMTP (`email-smtp.us-east-1.amazonaws.com`, port 587, TLS), replies are DKIM-signed by `supplycheckout.com` (Easy DKIM) and their envelope sender is `mail.supplycheckout.com`, so both DKIM and SPF align and DMARC passes. **Until SES production access is granted (`supply-checkout-3sv.18`), replies and auto-replies reach only addresses verified in SES**; anything else bounces back to the Gmail inbox.
 
@@ -286,7 +286,7 @@ A complaint means the person asked not to get our mail, so remove a `COMPLAINT` 
    npx cdk deploy supply-checkout-prod-us-east-1-domain --profile supply-prod
    npx cdk deploy supply-checkout-prod-us-east-1-observability --profile supply-prod --exclusively
    ```
-   The domain diff should show only the apex MX record, the IAM user, its policy and boundary, and the `SendsByCaller` event destination; the observability diff the `support-smtp-user` rule, its topic and key policy statements, and the `p2-support-smtp-sends` alarm. In this order the rule doesn't exist yet when the domain deploy calls `PutUserPolicy` and `PutUserPermissionsBoundary`, so no P2 email comes for them; a later domain deploy that changes the user's policy or boundary does send one, as expected.
+   The domain diff should show only the apex MX record, the IAM user, its policy and boundary, and the `SendsByCaller` event destination; the observability diff the `operator-support-smtp-user` rule, its topic and key policy statements, and the two `support-smtp` sends alarms. In this order the rule doesn't exist yet when the domain deploy calls `PutUserPolicy` and `PutUserPermissionsBoundary`, so no P2 email comes for them; a later domain deploy that changes the user's policy or boundary does send one, as expected.
 3. **Verify DNS:**
    ```bash
    dig +short MX supplycheckout.com        # 10 mx1.improvmx.com.  20 mx2.improvmx.com.
@@ -329,10 +329,26 @@ To rotate: create a new key and SMTP password (step 4), change the password and 
 
 #### When the support SMTP key may be leaked
 
-The P2 alerts: a change to the support SMTP user nobody made (a new key, a policy, a group, a password or a boundary), or **Support SMTP sends** (over 50 in an hour).
+The P2 alerts: a change to the support SMTP user nobody made (a new key or other credential, a policy, a group, a password, its boundary, a rename, or a new version of its boundary policy), or **Support SMTP sends** (over 50 in an hour or 150 in a day).
 
 1. Deactivate every key at once: `aws iam list-access-keys --profile supply-prod --user-name supply-checkout-prod-support-smtp`, then `aws iam update-access-key --profile supply-prod --user-name supply-checkout-prod-support-smtp --access-key-id <id> --status Inactive` for each. Support replies stop until step 4.
-2. Undo whatever the CloudTrail event shows was added (the alert names its event ID): delete an extra key, policy, group membership or login profile; the boundary and policy come back with a redeploy of the domain stack.
+2. Undo whatever the CloudTrail event shows was changed (the alert names its event ID): delete an extra key, credential, certificate, SSH key, attached or inline policy, group membership or login profile, and rename the user back (`aws iam update-user --user-name <new name> --new-user-name supply-checkout-prod-support-smtp`). A redeploy **doesn't** restore a removed or changed boundary or policy (CloudFormation doesn't notice the drift), so put them back by hand and then check for drift:
+   ```bash
+   U=supply-checkout-prod-support-smtp
+   ACCOUNT=$(aws sts get-caller-identity --profile supply-prod --query Account --output text)
+   BOUNDARY="arn:aws:iam::$ACCOUNT:policy/smtp/$U-boundary"
+   # The boundary: back on the user, and its CloudFormation version the default again
+   aws iam put-user-permissions-boundary --profile supply-prod --user-name $U --permissions-boundary "$BOUNDARY"
+   aws iam list-policy-versions --profile supply-prod --policy-arn "$BOUNDARY"   # find the version CloudFormation wrote (created before the alert)
+   aws iam set-default-policy-version --profile supply-prod --policy-arn "$BOUNDARY" --version-id <that version>
+   aws iam delete-policy-version --profile supply-prod --policy-arn "$BOUNDARY" --version-id <the attacker's version>
+   # The inline policy: its name and document are in the domain stack's template (SupportSmtpUserDefaultPolicy)
+   aws iam list-user-policies --profile supply-prod --user-name $U
+   aws cloudformation detect-stack-drift --profile supply-prod --region us-east-1 --stack-name supply-checkout-prod-us-east-1-domain
+   aws cloudformation describe-stack-resource-drifts --profile supply-prod --region us-east-1 --stack-name supply-checkout-prod-us-east-1-domain \
+     --stack-resource-drift-status-filters MODIFIED DELETED --query 'StackResourceDrifts[].[LogicalResourceId,StackResourceDriftStatus]' --output text
+   ```
+   If the inline policy is missing or modified, `aws iam put-user-policy --user-name $U --policy-name <its name> --policy-document file://policy.json` with the document from `npx cdk synth supply-checkout-prod-us-east-1-domain`. Drift detection should then report nothing for the user, its policy or the boundary.
 3. Look at what was sent: SES's sending statistics and the `SendsByCaller` metric for the user, and bounces and complaints on the email events topic. If mail went out as the domain that you didn't send, treat it as a security incident: tell the people it reached that it wasn't from us.
 4. Make a new key and SMTP password (steps 4 and 5) once the cause is understood.
 

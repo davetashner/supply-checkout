@@ -10,7 +10,7 @@ import type { Construct } from "constructs";
 import { type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../config.js";
 import { dnsInputParameters, domainOutputParameters, envDomain, hostNames, importZone } from "../domain.js";
 import { emailResourceNames } from "../../../backend/src/email/names.js";
-import { CALLER_IDENTITY_DIMENSION, emailSettings, grantSendSupportMail, SUPPORT_SMTP_USER_PATH, supportMailFromContext, supportSendStatement, supportSmtpUserName } from "../email.js";
+import { CALLER_IDENTITY_DIMENSION, emailSettings, grantSendSupportMail, SUPPORT_SMTP_USER_PATH, supportMailFromContext, supportSendStatement, supportSmtpBoundaryName, supportSmtpUserName } from "../email.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
 /** Environments whose zones the prod zone delegates to, from `-c delegatedEnvs=staging,dev`. */
@@ -169,7 +169,7 @@ export class DomainStack extends SupplyCheckoutStack {
         // Its permissions boundary is its one statement, so nothing attached
         // to it later can give it more. No access key: the owner makes one.
         const boundary = new ManagedPolicy(this, "SupportSmtpBoundary", {
-          managedPolicyName: `${supportSmtpUserName(config.envName)}-boundary`,
+          managedPolicyName: supportSmtpBoundaryName(config.envName),
           path: SUPPORT_SMTP_USER_PATH,
           description: "Permissions boundary for the support SMTP user: send support replies through SES only",
           statements: [supportSendStatement(this, config)],

@@ -181,6 +181,14 @@ export const OPERATOR_RULE_SUFFIXES = {
 export const OPERATOR_GROUP_WATCH_RULE_SUFFIX = "group-watch";
 
 /**
+ * The support SMTP user watch's rule (supply-checkout-6qd): under the
+ * operator prefix, so the rule-tampering rules alert when it's disabled,
+ * deleted or retargeted. It's in GLOBAL_SERVICES_REGION (IAM's events) and
+ * they're in the primary region, which for prod is the same region.
+ */
+export const SUPPORT_SMTP_RULE_SUFFIX = "support-smtp-user";
+
+/**
  * SSM calls that change or remove the operator group watch's snapshot
  * parameter (supply-checkout-3sv.5): P1 unless the watch's own role or
  * CloudFormation made them. DeleteParameters names it in a list.
@@ -473,6 +481,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     if (supportMailFromContext(this.node, config.envName) && (supportUserChanges || this.isPrimaryRegion)) {
       this.supportSmtp = new SupportSmtpWatch(this, "SupportSmtpWatch", {
         envName: config.envName,
+        ruleName: operatorRuleName(config.envName, SUPPORT_SMTP_RULE_SUFFIX),
         region,
         topics: this.topics,
         userChanges: supportUserChanges,
@@ -518,7 +527,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         regions: config.regions,
         tableName: table,
         web: webIds,
-        alarms: [...this.alarms.alarms, ...(this.web?.alarms ?? []), this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing, this.operatorAudit.dropped, this.operatorAudit.silent, this.operatorGroup.changed, this.operatorGroup.silent, this.deletionRecords.rewritten, this.deletionRecords.failing, ...(this.supportSmtp?.sends ? [this.supportSmtp.sends] : [])],
+        alarms: [...this.alarms.alarms, ...(this.web?.alarms ?? []), this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing, this.operatorAudit.dropped, this.operatorAudit.silent, this.operatorGroup.changed, this.operatorGroup.silent, this.deletionRecords.rewritten, this.deletionRecords.failing, ...(this.supportSmtp?.sends ? [this.supportSmtp.sends] : []), ...(this.supportSmtp?.dailySends ? [this.supportSmtp.dailySends] : [])],
       });
     }
   }
