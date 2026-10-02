@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { APPROVED_REGIONS, DEFAULT_REGION, DOMAIN, IMMUTABLE, REVALIDATE, VERSION, checkRouterResult, configParameterNames, defaultVersion, envDomain, main, parseArgs, routerChecks, routerTestEvent, uploadCommands } from "./publish-web.mjs";
+import { APPROVED_REGIONS, DEFAULT_REGION, DOMAIN, IMMUTABLE, REVALIDATE, VERSION, checkRouterResult, isMissing, configParameterNames, defaultVersion, envDomain, main, parseArgs, routerChecks, routerTestEvent, uploadCommands } from "./publish-web.mjs";
 
 const STORE = "arn:aws:cloudfront::000000000000:key-value-store/example"; // public-safety: allow
 const POOL_UUID = "11111111-2222-4333-8444-555555555555";
@@ -34,7 +34,7 @@ function build() {
 }
 
 /** A fake AWS CLI: records every call, answers reads from `existing` demo and `apps` app releases. */
-function fakeAws({ existing = [], apps = [], params = PARAMS } = {}) {
+function fakeAws({ existing = [], apps = [], params = PARAMS, headError } = {}) {
   const calls = [];
   const log = [];
   const run = (cmd, args) => {
@@ -49,7 +49,10 @@ function fakeAws({ existing = [], apps = [], params = PARAMS } = {}) {
       const key = args[args.indexOf("--key") + 1];
       if ([...existing, ...apps].some((v) => key === `releases/${v}/index.html`)) return "{}";
       if (apps.some((v) => key === `releases/${v}/config.json`)) return "{}";
-      throw new Error("404");
+      if (headError) throw headError;
+      const e = new Error("Command failed: aws s3api head-object");
+      e.stderr = "\nAn error occurred (404) when calling the HeadObject operation: Not Found\n";
+      throw e;
     }
     if (op === "describe-key-value-store") return JSON.stringify({ ETag: "etag-1" });
     if (op === "list-keys") return JSON.stringify({ Items: [{ Key: "demo", Value: "d1" }] });
@@ -228,6 +231,21 @@ test("publish --reuse makes an existing release live again, without uploading, o
   const fresh = fakeAws();
   main(["publish", "--channel", "demo", "--dir", build(), "--version", "demo-v2.0.0", "--reuse"], fresh.deps);
   assert.deepEqual(writes(fresh.calls).map(([, op]) => op), ["sync", "sync", "put-key"]);
+});
+
+test("a release is missing only on S3's 404 or 403; any other error stops the publish", () => {
+  const err = (stderr) => Object.assign(new Error("Command failed"), { stderr });
+  assert.equal(isMissing(err("An error occurred (404) when calling the HeadObject operation: Not Found")), true);
+  assert.equal(isMissing(err("An error occurred (403) when calling the HeadObject operation: Forbidden")), true);
+  assert.equal(isMissing(err("An error occurred (ExpiredToken) when calling the HeadObject operation: expired")), false);
+  assert.equal(isMissing(err("Could not connect to the endpoint URL")), false);
+  assert.equal(isMissing(undefined), false);
+  const forbidden = fakeAws({ headError: err("An error occurred (403) when calling the HeadObject operation: Forbidden") });
+  main(["publish", "--channel", "demo", "--dir", build(), "--version", "demo-5"], forbidden.deps);
+  assert.deepEqual(writes(forbidden.calls).map(([, op]) => op), ["sync", "sync", "put-key"]);
+  const expired = fakeAws({ headError: err("An error occurred (ExpiredToken) when calling the HeadObject operation: The provided token has expired.") });
+  assert.throws(() => main(["publish", "--channel", "demo", "--dir", build(), "--version", "demo-6"], expired.deps), /Couldn't check s3:\/\/releases-bucket\/releases\/demo-6\/index.html: An error occurred \(ExpiredToken\)/);
+  assert.deepEqual(writes(expired.calls), []);
 });
 
 test("live prints a channel's live version, or none", () => {

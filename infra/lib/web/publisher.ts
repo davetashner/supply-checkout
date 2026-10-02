@@ -63,6 +63,9 @@ export class WebPublisher extends Construct {
       assumedBy: new AccountRootPrincipal().withConditions({ ArnEquals: { "aws:PrincipalArn": deployRole } }),
       maxSessionDuration: Duration.hours(1),
     });
+    // In this stack's region (GLOBAL_SERVICES_REGION), where publish-web reads them. Phase 2
+    // (ADR 0010): if the primary region isn't this one, the api, identity and realtime stacks
+    // publish these in theirs, so either publish them here too or point these ARNs there.
     const parameter = (name: string) =>
       `arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter/supply-checkout/${props.envName}/${name}`;
     this.role.addToPolicy(new PolicyStatement({

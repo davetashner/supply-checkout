@@ -292,14 +292,27 @@ class Aws {
     if (!this.dryRun) this.run("aws", args, { stdio: "inherit" });
   }
 
+  /**
+   * Whether an object exists. Only S3's "not there" answers mean no: a 404, or a 403, which S3
+   * gives for a missing key when the caller may not list that key's place in the bucket (the
+   * deploy workflow's web publisher role may list only with an s3:prefix, which a HEAD request
+   * doesn't carry). Anything else (expired credentials, the network, throttling) is an error, so
+   * it can never look like a missing release and lead to an upload over a real one.
+   */
   exists(bucket, key, region) {
     try {
       this.read(["s3api", "head-object", "--bucket", bucket, "--key", key], region);
       return true;
-    } catch {
-      return false;
+    } catch (e) {
+      if (isMissing(e)) return false;
+      throw new Error(`Couldn't check s3://${bucket}/${key}: ${String(e.stderr || e.message).trim()}`, { cause: e });
     }
   }
+}
+
+/** The AWS CLI's error for a HEAD of a key that isn't there (or that the caller may not see). */
+export function isMissing(error) {
+  return /An error occurred \((404|403)\) when calling the HeadObject operation/.test(`${error?.stderr ?? ""}\n${error?.message ?? ""}`);
 }
 
 function lookup(aws, envName) {

@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { checkWeb, main, parseArgs, problemsWith, webChecks } from "./check-web.mjs";
+import { FETCH_TIMEOUT_MS, checkWeb, main, parseArgs, problemsWith, webChecks } from "./check-web.mjs";
 import { DOMAIN, configParameterNames } from "./publish-web.mjs";
 
 const APP = "<!doctype html><title>app</title>";
@@ -46,7 +46,8 @@ test("passes when everything is live", async () => {
   const { fetch, calls } = fakeFetch(good());
   assert.deepEqual(await checkWeb(webChecks("prod", APP, DEMO), { fetch, ...quiet }), []);
   assert.equal(calls.length, 3);
-  assert.ok(calls.every((c) => c.init.redirect === "manual" && c.init.cache === "no-store"));
+  assert.ok(calls.every((c) => c.init.redirect === "manual" && c.init.cache === "no-store" && c.init.signal instanceof AbortSignal));
+  assert.equal(FETCH_TIMEOUT_MS, 15_000);
 });
 
 test("tries again until the new release is live", async () => {

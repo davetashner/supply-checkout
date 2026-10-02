@@ -20,6 +20,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { configParameterNames, envDomain } from "./publish-web.mjs";
 
+/** How long one request may take. */
+export const FETCH_TIMEOUT_MS = 15_000;
+
 /** The URLs, and what each must be. */
 export function webChecks(envName, appIndex, demoIndex) {
   const domain = envDomain(envName);
@@ -61,7 +64,9 @@ export async function checkWeb(checks, { fetch = globalThis.fetch, wait = sleep,
     problems = [];
     for (const check of checks) {
       try {
-        problems.push(...(await problemsWith(check, await fetch(check.url, { redirect: "manual", cache: "no-store" }))));
+        // A hung connection counts as a failed try, not a stuck deploy
+        const init = { redirect: "manual", cache: "no-store", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) };
+        problems.push(...(await problemsWith(check, await fetch(check.url, init))));
       } catch (e) {
         problems.push(`${check.url} failed: ${e.message}`);
       }
