@@ -4,6 +4,7 @@
 //   npm run ops -- teams [--q <name or team ID>] [--limit N] [--cursor C]
 //   npm run ops -- team <teamId>
 //   npm run ops -- comp <teamId> --plan free --until 2026-12-31 --reason "Pilot, 90 days" [--seats N]
+//   npm run ops -- comp <teamId> --months 2 --reason "Two months on us" [--plan P] [--seats N]
 //   npm run ops -- uncomp <teamId> --reason "Pilot over"
 //   npm run ops -- reopen <teamId> --reason "Owner disputes the closure"
 //   npm run ops -- audit [--team <teamId> | --month YYYY-MM]
@@ -51,7 +52,10 @@ export const USAGE = `Usage: npm run ops -- <command> [options]
   team <teamId>                                 One team's account record, owners, Stripe subscription and invoices (audited)
   comp <teamId> --plan <plan> --until <date> --reason <text> [--seats N]
                                                 Comp a team or change or extend its comp (at most 12 months)
-  uncomp <teamId> --reason <text>               End a team's comp now
+  comp <teamId> --months <1-12> --reason <text> [--plan <plan>] [--seats N]
+                                                Comp a team for N months from now (plan: its own unless given). A team paying
+                                                through Stripe also gets N months of $0 invoices, then billing resumes by itself
+  uncomp <teamId> --reason <text>               End a team's comp now (and any Stripe discount it gave)
   reopen <teamId> --reason <text>               Reopen a closed team before it's deleted (until 5 minutes before)
   audit [--team <teamId> | --month YYYY-MM]     The operator audit (default: this month)
   stuck-imports                                 Imports stuck part-way for over an hour (the "Imports stuck" alarm)
@@ -64,7 +68,7 @@ Options: --env <env> (default prod), --json, --client-id <id>, --profile <aws pr
 
 /** The most requests one `teams --q` makes while its pages come back empty: 20,000 teams read. */
 const SEARCH_REQUESTS = 20;
-const VALUE_FLAGS = new Set(["env", "q", "limit", "cursor", "plan", "until", "reason", "seats", "team", "month", "client-id", "profile"]);
+const VALUE_FLAGS = new Set(["env", "q", "limit", "cursor", "plan", "until", "months", "reason", "seats", "team", "month", "client-id", "profile"]);
 const BOOLEAN_FLAGS = new Set(["json", "help"]);
 
 /** `[command, ...positionals]` and the flags. Refuses unknown flags and flags without a value. */
@@ -280,6 +284,7 @@ function stripeLines(stripe) {
     s
       ? `  subscription ${s.id} ${s.status}, ${s.plan ? `${s.plan}/${s.interval} (${s.lookupKey})` : "unknown price"}, ${s.seats} seats${s.currentPeriodEnd ? `, period ends ${date(s.currentPeriodEnd)}` : ""}${s.cancelAtPeriodEnd || s.cancelAt ? `, cancels ${s.cancelAtPeriodEnd ? "at period end" : `on ${date(s.cancelAt)}`}` : ""}${s.trialEnd ? `, trial ends ${date(s.trialEnd)}` : ""}`
       : "  no subscription",
+    ...(s?.compDiscountUntil ? [`  comp discount: invoices $0 until about ${date(s.compDiscountUntil)}, then billing resumes`] : s?.discountCount ? [`  ${s.discountCount} discount${s.discountCount === 1 ? "" : "s"} on the subscription (not a comp's)`] : []),
     ...(stripe.subscriptionCount > 1 ? [`  (${stripe.subscriptionCount} subscriptions for this customer: check for a duplicate)`] : []),
     ...(stripe.invoices.length ? stripe.invoices.map((i) => `  invoice ${pad(i.number ?? i.id, 14)} ${pad(i.status, 14)} ${pad(money(i.total, i.currency), 12)} ${date(i.createdAt)}`) : ["  no invoices"]),
     ...(stripe.hasMoreInvoices ? ["  (older invoices in Stripe)"] : []),
@@ -310,14 +315,26 @@ function receiptRanking(r) {
   ].join("\n");
 }
 
-function teamDetail(team, stripe, receipts) {
+/** ", N months left" (whole months, rounded down; "less than a month left" under one) for a comp ending at `until`. */
+export function monthsLeft(until, now) {
+  const end = Date.parse(until);
+  if (!Number.isFinite(end)) return "";
+  const at = new Date(now);
+  let months = (new Date(end).getUTCFullYear() - at.getUTCFullYear()) * 12 + (new Date(end).getUTCMonth() - at.getUTCMonth());
+  const shifted = new Date(at);
+  shifted.setUTCMonth(at.getUTCMonth() + months);
+  if (shifted.getTime() > end) months--;
+  return months < 1 ? ", less than a month left" : `, ${months} month${months === 1 ? "" : "s"} left`;
+}
+
+function teamDetail(team, stripe, receipts, now = Date.now()) {
   const lines = [
     `${team.name} (${team.id})`,
     `  plan ${team.plan}, status ${team.status}, seats ${team.seats}, owners ${team.ownerCount}${team.closedAt ? `, CLOSED ${team.closedAt} (read-only until it's deleted)` : ""}`,
     `  created ${team.createdAt}${team.trialEndsAt ? `, trial ends ${team.trialEndsAt}` : ""}`,
     `  Stripe customer ${team.stripeCustomerId ?? "none"}`,
     team.comp
-      ? `  comp ${team.comp.plan}${team.comp.seats ? ` (${team.comp.seats} seats)` : ""} until ${team.comp.until}${team.comp.live ? "" : " (ended)"}: ${team.comp.reason}`
+      ? `  comp ${team.comp.plan}${team.comp.seats ? ` (${team.comp.seats} seats)` : ""} until ${team.comp.until}${team.comp.live ? monthsLeft(team.comp.until, now) : " (ended)"}: ${team.comp.reason}`
       : "  no comp",
     `  version ${team.version}`,
     ...(team.owners ?? []).map((o) => `  owner ${o.email ?? "(no email)"} (${o.userId}), joined ${o.joinedAt ?? "?"}`),
@@ -329,14 +346,16 @@ function teamDetail(team, stripe, receipts) {
 
 function auditLine(e) {
   const change =
-    e.action === "ops.import.clear" && e.after
+    e.action === "ops.comp.discount" && e.after
+      ? ` Stripe discount: ${e.after.outcome}${e.after.coupon ? ` (${e.after.coupon} until ${date(e.after.until)})` : ""}`
+      : e.action === "ops.import.clear" && e.after
       ? ` import ${e.after.importId}`
       : e.action === "ops.receipts.usage" && e.after
         ? ` receipts ${e.after.month}, ${e.after.teams.length} teams`
       : e.action === "ops.team.reopen"
         ? ` closed ${e.before?.closedAt ?? "?"} -> open`
         : e.after
-          ? ` -> ${e.after.plan} until ${date(e.after.until)}`
+          ? ` -> ${e.after.plan} until ${date(e.after.until)}${e.after.months ? ` (${e.after.months} months)` : ""}`
           : e.action === "ops.comp.end"
             ? " -> none"
             : "";
@@ -410,22 +429,41 @@ export async function main(argv, deps) {
     const none = page.cursor ? "No teams yet (the search isn't finished)." : "No teams.";
     print(page, (p) => [p.teams.length ? p.teams.map(teamLine).join("\n") : none, ...(p.cursor ? [`More: --cursor ${p.cursor}`] : [])].join("\n"));
   } else if (command === "team") {
-    print(await call("GET", `/ops/teams/${teamId()}`), (r) => teamDetail(r.team, r.stripe, r.receipts));
+    print(await call("GET", `/ops/teams/${teamId()}`), (r) => teamDetail(r.team, r.stripe, r.receipts, deps.now()));
   } else if (command === "comp" || command === "uncomp") {
     const id = teamId();
     if (!flags.reason) throw new UsageError(`${command} needs --reason`);
     let body;
+    let months;
     if (command === "comp") {
-      if (!flags.plan || !flags.until) throw new UsageError("comp needs --plan and --until");
+      if (flags.months !== undefined) {
+        if (flags.until !== undefined) throw new UsageError("Give --until or --months, not both");
+        months = Number(flags.months);
+        if (!Number.isInteger(months) || months < 1 || months > 12) throw new UsageError("--months must be a whole number from 1 to 12");
+      } else if (!flags.plan || !flags.until) {
+        throw new UsageError("comp needs --plan and --until, or --months");
+      }
       const seats = flags.seats === undefined ? undefined : Number(flags.seats);
       if (seats !== undefined && !Number.isInteger(seats)) throw new UsageError("--seats must be a whole number");
-      body = { plan: flags.plan, until: flags.until, reason: flags.reason, ...(seats === undefined ? {} : { seats }) };
+      body = { ...(months === undefined ? { until: flags.until } : { months }), reason: flags.reason, ...(seats === undefined ? {} : { seats }) };
     } else {
       body = { reason: flags.reason };
     }
     const { team } = await call("GET", `/ops/teams/${id}`);
+    // With --months the plan is the team's own unless given: a paying team stays on what it pays for
+    if (command === "comp") body = { plan: flags.plan ?? team.plan, ...body };
     const outcome = await call(command === "comp" ? "PUT" : "DELETE", `/ops/teams/${id}/comp`, { body: { ...body, expectedVersion: team.version }, idempotent: true });
-    print(outcome, (o) => (o.comp ? `Comped ${team.name} (${id}): ${o.comp.plan} until ${o.comp.until}. Audit event ${o.eventId}.` : `Ended the comp of ${team.name} (${id}). Audit event ${o.eventId}.`));
+    const discount = {
+      queued: "Stripe: the billing worker is making the subscription's discount match (see `team` and `audit` in a minute).",
+      no_stripe_customer: "Stripe: no customer, so nothing to discount.",
+      not_queued: "Stripe: the discount couldn't be queued now; the nightly reconciliation will make it match.",
+    }[outcome.stripeDiscount];
+    print(outcome, (o) =>
+      [
+        o.comp ? `Comped ${team.name} (${id}): ${o.comp.plan} until ${o.comp.until}${o.months ? ` (${o.months} months)` : ""}. Audit event ${o.eventId}.` : `Ended the comp of ${team.name} (${id}). Audit event ${o.eventId}.`,
+        ...(discount ? [discount] : []),
+      ].join("\n"),
+    );
   } else if (command === "reopen") {
     const id = teamId();
     if (!flags.reason) throw new UsageError("reopen needs --reason");

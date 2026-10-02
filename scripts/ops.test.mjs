@@ -4,7 +4,7 @@ import { closeSync, fstatSync, mkdtempSync, openSync, readFileSync, writeFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { CALLBACK_URL, endpoints, jwtClaims, main, parseArgs, pkce, readCachedToken, signIn, UsageError, waitForCode, writeCachedToken } from "./ops.mjs";
+import { CALLBACK_URL, endpoints, jwtClaims, main, monthsLeft, parseArgs, pkce, readCachedToken, signIn, UsageError, waitForCode, writeCachedToken } from "./ops.mjs";
 
 const NOW = Date.parse("2026-09-26T12:00:00Z");
 const ISS = "https://cognito-idp.test-local-1.amazonaws.com/test-local-1_ops";
@@ -183,6 +183,67 @@ test("comps a team: reads it for its version, then PUTs with a new Idempotency-K
   assert.match(logs[0], /Comped Acme \(team-a\): free until 2026-12-31T00:00:00.000Z. Audit event ev-1./);
 });
 
+test("comps a team for months: the team's own plan unless given, and says what happens in Stripe (supply-checkout-6e4b)", async () => {
+  const outcome = (stripeDiscount) => ({ status: 200, body: { eventId: "ev-3", replayed: false, comp: { plan: "starter", until: "2026-11-26T12:00:00.000Z" }, months: 2, version: 5, stripeDiscount } });
+  const run = async (argv, stripeDiscount) => {
+    const h = harness({ routes: { "GET /ops/teams/team-a": { status: 200, body: { team: { ...TEAM, plan: "starter" } } }, "PUT /ops/teams/team-a/comp": outcome(stripeDiscount) } });
+    await main(argv, h.deps);
+    return h;
+  };
+  const queued = await run(["comp", "team-a", "--months", "2", "--reason", "Two months on us"], "queued");
+  assert.deepEqual(queued.requests[1].body, { plan: "starter", months: 2, reason: "Two months on us", expectedVersion: 4 });
+  assert.match(queued.requests[1].headers["idempotency-key"], /^[0-9a-f-]{36}$/);
+  assert.match(queued.logs[0], /Comped Acme \(team-a\): starter until 2026-11-26T12:00:00.000Z \(2 months\)/);
+  assert.match(queued.logs[0], /billing worker is making the subscription's discount match/);
+  const given = await run(["comp", "team-a", "--months=1", "--plan", "free", "--seats", "3", "--reason", "Pilot"], "no_stripe_customer");
+  assert.deepEqual(given.requests[1].body, { plan: "free", months: 1, reason: "Pilot", seats: 3, expectedVersion: 4 });
+  assert.match(given.logs[0], /no customer, so nothing to discount/);
+  assert.match((await run(["comp", "team-a", "--months", "2", "--reason", "x y z"], "not_queued")).logs[0], /nightly reconciliation/);
+  // An older API that doesn't say
+  assert.doesNotMatch((await run(["comp", "team-a", "--months", "2", "--reason", "x y z"], undefined)).logs[0], /Stripe/);
+  for (const argv of [["--months", "0"], ["--months", "13"], ["--months", "1.5"], ["--months", "two"], ["--months", "2", "--until", "2026-12-31"]]) {
+    const { deps, requests } = harness();
+    await assert.rejects(main(["comp", "team-a", ...argv, "--reason", "Pilot"], deps), UsageError, argv.join(" "));
+    assert.deepEqual(requests, [], argv.join(" "));
+  }
+});
+
+test("shows a comp's months left, its Stripe discount, and the worker's audit (supply-checkout-6e4b)", async () => {
+  const comp = (until) => ({ plan: "starter", until, live: true, reason: "Two months on us" });
+  const sub = { id: "sub_1", status: "active", lookupKey: "supply_checkout_starter_monthly", plan: "starter", interval: "month", seats: 3, currentPeriodEnd: null, cancelAtPeriodEnd: false, cancelAt: null, trialEnd: null, createdAt: null };
+  const show = async (team, subscription) => {
+    const h = harness({ routes: { "GET /ops/teams/team-a": { status: 200, body: { team: { ...TEAM, stripeCustomerId: "cus_A1", ...team }, stripe: { customerId: "cus_A1", subscription, subscriptionCount: 1, invoices: [], hasMoreInvoices: false } } } } });
+    await main(["team", "team-a"], h.deps);
+    return h.logs[0];
+  };
+  const discounted = await show({ comp: comp(new Date(NOW + 61 * 86400_000).toISOString()) }, { ...sub, discountCount: 1, compDiscountUntil: new Date(NOW + 61 * 86400_000).toISOString() });
+  assert.match(discounted, /: Two months on us/);
+  assert.match(discounted, /, 2 months left: /);
+  assert.match(discounted, /comp discount: invoices \$0 until about \d{4}-\d{2}-\d{2}, then billing resumes/);
+  assert.match(await show({ comp: comp(new Date(NOW + 40 * 86400_000).toISOString()) }, { ...sub, discountCount: 2, compDiscountUntil: null }), /1 month left[\s\S]*2 discounts on the subscription \(not a comp's\)/);
+  assert.match(await show({ comp: comp(new Date(NOW + 5 * 86400_000).toISOString()) }, { ...sub, discountCount: 1 }), /less than a month left[\s\S]*1 discount on the subscription/);
+  assert.doesNotMatch(await show({}, sub), /discount/);
+  assert.equal(monthsLeft("soon", NOW), "");
+  const audit = harness({
+    routes: {
+      "GET /ops/audit": {
+        status: 200,
+        body: {
+          events: [
+            { ts: "2026-09-26T12:00:01.000Z", action: "ops.comp.discount", teamId: "team-a", operatorSub: "system-billing-worker", after: { outcome: "applied", coupon: "supply-checkout-comp-2m", until: "2026-11-26T12:00:00.000Z", subscriptionId: "sub_1" } },
+            { ts: "2026-09-26T12:00:02.000Z", action: "ops.comp.discount", teamId: "team-a", operatorSub: "system-billing-worker", after: { outcome: "no_subscription", coupon: null, until: null, subscriptionId: null } },
+            { ts: "2026-09-26T12:00:00.000Z", action: "ops.comp.set", teamId: "team-a", operatorSub: "op-1", reason: "Two months on us", after: { plan: "starter", until: "2026-11-26T12:00:00.000Z", months: 2 } },
+          ],
+        },
+      },
+    },
+  });
+  await main(["audit", "--team", "team-a"], audit.deps);
+  assert.match(audit.logs[0], /ops.comp.discount team team-a {2}by system-billing-worker Stripe discount: applied \(supply-checkout-comp-2m until 2026-11-26\)/);
+  assert.match(audit.logs[0], /Stripe discount: no_subscription$/m);
+  assert.match(audit.logs[0], /-> starter until 2026-11-26 \(2 months\)/);
+});
+
 test("ends a comp", async () => {
   const { deps, requests, logs } = harness({
     routes: {
@@ -202,7 +263,7 @@ test("shows one team, and the audit, and prints JSON when asked", async () => {
   };
   const one = harness({ routes });
   await main(["team", "team-a"], one.deps);
-  assert.match(one.logs[0], /comp free \(3 seats\) until 2026-12-31T00:00:00.000Z: Pilot/);
+  assert.match(one.logs[0], /comp free \(3 seats\) until 2026-12-31T00:00:00.000Z, 3 months left: Pilot/);
   assert.match(one.logs[0], /owner owner@example.com \(u1\)/);
   const closed = harness({ routes: { "GET /ops/teams/team-a": { status: 200, body: { team: { ...TEAM, closedAt: "2026-09-20T00:00:00.000Z" } } }, "GET /ops/teams": { status: 200, body: { teams: [{ ...TEAM, closedAt: "2026-09-20T00:00:00.000Z" }] } } } });
   await main(["team", "team-a"], closed.deps);

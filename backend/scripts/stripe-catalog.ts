@@ -28,7 +28,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { type Catalog, CATALOG, type CatalogPlan, type CatalogPrice } from "../src/billing/catalog.js";
-import { isOurPortal, PORTAL_METADATA, portalConfiguration, type PortalConfigurationParams } from "../src/billing/portal.js";
+import { isOurPortal, PORTAL_VARIANTS, portalConfiguration, type PortalConfigurationParams, portalMetadata, type PortalVariant } from "../src/billing/portal.js";
 import { createStripe, keyFromSecret, requireMode, type SecretReader, secretsManagerReader, stripeErrorFields, type StripeMode, stripeSecretName } from "../src/billing/stripe.js";
 
 export const USAGE = `Usage: npm run stripe-catalog -- --profile <profile> --region <region> [--env prod] [--live] [--apply]
@@ -244,16 +244,16 @@ export function portalMatches(existing: PortalConfigLike, wanted: PortalConfigur
  * catalog's prices by the IDs `changes` found or made. In a dry run where a
  * price isn't in Stripe yet, it can only say the configuration will change.
  */
-export async function syncPortal(stripe: CatalogStripe, catalog: Catalog, changes: readonly Change[], apply: boolean): Promise<Change> {
-  const base = { kind: "portal" as const, name: PORTAL_METADATA.portal };
+export async function syncPortal(stripe: CatalogStripe, catalog: Catalog, changes: readonly Change[], apply: boolean, variant: PortalVariant = "owners"): Promise<Change> {
+  const base = { kind: "portal" as const, name: portalMetadata(variant).portal as string };
   const priceIds = new Map(changes.filter((c) => c.kind === "price" && c.priceId).map((c) => [c.name, c.priceId as string]));
   const { data } = await stripe.billingPortal.configurations.list({ limit: 100 });
-  const ours = data.filter(isOurPortal);
+  const ours = data.filter((c) => isOurPortal(c, variant));
   // An active one first: an archived one is only brought back when it's all there is
   const existing = ours.find((c) => c.active) ?? ours[0];
   let wanted: PortalConfigurationParams;
   try {
-    wanted = portalConfiguration(catalog, priceIds);
+    wanted = portalConfiguration(catalog, priceIds, variant);
   } catch (error) {
     // Only a dry run gets here: an applied sync always has every price's ID
     if (apply) throw error;
@@ -345,7 +345,8 @@ export async function main(argv: string[], out: (line: string) => void = console
   out(catalog.status);
   try {
     const changes = await syncCatalog(stripe, catalog, values.apply);
-    changes.push(await syncPortal(stripe, catalog, changes, values.apply));
+    // Both: the usual one, and the comped teams' one, with no switching of price (portal.ts)
+    for (const variant of PORTAL_VARIANTS) changes.push(await syncPortal(stripe, catalog, changes, values.apply, variant));
     for (const c of changes) out(`${c.kind} ${c.name}: ${values.apply || c.action === "unchanged" ? c.action : `would ${c.action}`}${c.priceId ? ` (${c.priceId})` : ""}${c.configurationId ? ` (${c.configurationId})` : ""}`);
     const pending = changes.filter((c) => c.action !== "unchanged").length;
     if (!values.apply) out(pending ? `Dry run: ${pending} to change. Run again with --apply to change them.` : "Dry run: Stripe matches the catalog.");

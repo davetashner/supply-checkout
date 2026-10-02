@@ -76,7 +76,7 @@
 import { createHash } from "node:crypto";
 import type { APIGatewayProxyStructuredResultV2, Context } from "aws-lambda";
 import { type CatalogPlan, type CatalogPrice, catalogPrice } from "../billing/catalog.js";
-import { PortalConfigurationNotFoundError } from "../billing/portal.js";
+import { PortalConfigurationNotFoundError, type PortalVariant, portalVariantFor } from "../billing/portal.js";
 import { type PriceLister, PriceNotFoundError } from "../billing/prices.js";
 import { stripeErrorFields } from "../billing/stripe.js";
 import {
@@ -197,8 +197,8 @@ export interface BillingHandlerDeps {
   readonly stripe: () => Promise<BillingStripe>;
   /** The price ID for a catalog price, by its lookup key (billing/prices.ts). */
   readonly priceFor: (plan: CatalogPlan, price: CatalogPrice) => Promise<string>;
-  /** Our Customer Portal configuration's ID, by its metadata (billing/portal.ts). */
-  readonly portalConfiguration: () => Promise<string>;
+  /** Our Customer Portal configuration's ID, by its metadata (billing/portal.ts): the usual one, or the comped teams' one. */
+  readonly portalConfiguration: (variant?: PortalVariant) => Promise<string>;
   /** The user pool's issuer URL; tokens from anywhere else are refused. */
   readonly issuerUrl: string;
   /** Cognito's GetUser with the caller's own token (cognito-user.ts): whether two-step sign-in is on. */
@@ -400,9 +400,12 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
     const ctx = await ownerContext(event, userId, route);
     // Nothing to send: a body, if any, must be an empty object
     if (event.body) jsonBody(event, []);
-    const customer = await linkedCustomer(ctx);
+    const team = await linkedTeam(ctx);
+    const customer = team.stripeCustomerId;
     const stripe = await deps.stripe();
-    const configuration = await deps.portalConfiguration();
+    // A comped team (or one comped until the last day) can't switch price: monthly to annual would invoice a year inside its
+    // comp discount's months, at $0 (portal.ts, supply-checkout-6e4b). No fallback: without that configuration, no portal
+    const configuration = await deps.portalConfiguration(portalVariantFor(team, new Date(now())));
     const session = await stripe.billingPortal.sessions.create({ customer, configuration, return_url: `${deps.appUrl}/?billing=portal&team=${encodeURIComponent(ctx.teamId)}` });
     obs.logger.info("Billing portal opened", { teamId: ctx.teamId });
     return json(201, { portal: { url: session.url } });
@@ -438,12 +441,16 @@ export function createBillingHandler(deps: BillingHandlerDeps) {
   }
 
   /** The Stripe customer linked to the caller's team: 403 `team_closed` for a closed team, 409 `no_billing_account` for none. */
-  async function linkedCustomer(ctx: TeamContext): Promise<string> {
+  async function linkedTeam(ctx: TeamContext): Promise<Awaited<ReturnType<typeof getTeam>> & { readonly stripeCustomerId: string }> {
     if (ctx.closed) throw new TeamClosedError("This team was closed. Reopen it before managing billing.");
     const team = await getTeam(dbFor({ teamId: ctx.teamId }), ctx);
     const customer = team.stripeCustomerId;
     if (!customer || !ID.test(customer)) throw new ApiError(409, "aborted", "This team has no billing account yet. Subscribe first.", "no_billing_account");
-    return customer;
+    return { ...team, stripeCustomerId: customer };
+  }
+
+  async function linkedCustomer(ctx: TeamContext): Promise<string> {
+    return (await linkedTeam(ctx)).stripeCustomerId;
   }
 
   const actions: Record<BillingRoute["action"], (event: DataEvent, userId: string, route: BillingRoute) => Promise<APIGatewayProxyStructuredResultV2>> = {

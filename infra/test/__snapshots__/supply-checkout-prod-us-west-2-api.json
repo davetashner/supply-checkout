@@ -3200,6 +3200,7 @@
                         "stripeSubscriptionId",
                         "compPlan",
                         "compUntil",
+                        "compMonths",
                         "cancelAtPeriodEnd",
                         "stripeResyncFor",
                         "stripeReopenedAt",
@@ -3231,6 +3232,48 @@
                     ]
                   },
                   "Sid": "TeamBillingReadOnly"
+                },
+                {
+                  "Action": "dynamodb:PutItem",
+                  "Condition": {
+                    "ForAllValues:StringEquals": {
+                      "dynamodb:LeadingKeys": [
+                        "OPAUDIT#${aws:PrincipalTag/teamId}"
+                      ],
+                      "dynamodb:Attributes": [
+                        "PK",
+                        "SK",
+                        "type",
+                        "eventId",
+                        "ts",
+                        "teamId",
+                        "operatorSub",
+                        "action",
+                        "target",
+                        "before",
+                        "after",
+                        "idempotencyKey",
+                        "expiresAt"
+                      ]
+                    },
+                    "StringEqualsIfExists": {
+                      "dynamodb:ReturnValues": "NONE"
+                    }
+                  },
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:dynamodb:us-west-2:",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":table/supply-checkout-prod-app"
+                      ]
+                    ]
+                  },
+                  "Sid": "CompDiscountAuditPutOnly"
                 },
                 {
                   "Action": "dynamodb:UpdateItem",

@@ -1551,7 +1551,7 @@ paths:
                         eventId: { type: string }
                         ts: { type: string, format: date-time }
                         actor: { type: string, const: Supply Checkout support }
-                        action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end, ops.import.clear, ops.team.reopen] }
+                        action: { type: string, enum: [ops.team.read, ops.comp.set, ops.comp.end, ops.comp.discount, ops.import.clear, ops.team.reopen] }
                         reason: { type: string }
                         before: { $ref: "#/components/schemas/AuditRecord" }
                         after: { $ref: "#/components/schemas/AuditRecord" }
@@ -1878,6 +1878,15 @@ paths:
         at most 12 months ahead; extend by sending a later one. Send the
         team's `version` from `GET /ops/teams/{teamId}` as `expectedVersion`.
         Audited as `ops.comp.set` in the same transaction.
+
+        Instead of `until`, `months` (1 to 12) comps the team until that many
+        calendar months from now (the same day, or the last day of a shorter
+        month). A team with a live, monthly Stripe subscription then also
+        gets a 100%-off coupon for those months, so its invoices in them are
+        $0 and billing resumes by itself after: the billing worker applies it
+        (`stripeDiscount` in the answer), and audits what it did as
+        `ops.comp.discount`. A yearly subscription gets no discount. A comp
+        with `until`, or ending the comp, removes the discount.
       security: [{ opsCognito: [] }]
       parameters: [{ $ref: "#/components/parameters/opsIdempotencyKey" }]
       requestBody:
@@ -1887,9 +1896,13 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [plan, until, reason, expectedVersion]
+              required: [plan, reason, expectedVersion]
+              oneOf:
+                - required: [until]
+                - required: [months]
               properties:
                 plan: { type: string, pattern: "^[a-z][a-z0-9_-]{0,31}$", examples: [free] }
+                months: { type: integer, minimum: 1, maximum: 12, description: "Instead of `until`: comp for this many months from now, with a Stripe discount for a paying team." }
                 seats: { type: integer, minimum: 1, maximum: 100 }
                 until: { type: string, description: "A date (YYYY-MM-DD, midnight UTC) or an ISO 8601 time with a zone, in the future and at most 12 months ahead." }
                 reason: { type: string, minLength: 3, maxLength: 500, description: Why, on one line. The team's owners see it. }
@@ -2014,7 +2027,7 @@ paths:
                         ts: { type: string, format: date-time }
                         teamId: { type: string }
                         operatorSub: { type: string, description: The operator's `sub` in the operator pool. }
-                        action: { type: string, enum: [ops.teams.list, ops.team.read, ops.receipts.usage, ops.comp.set, ops.comp.end, ops.import.clear, ops.team.reopen] }
+                        action: { type: string, enum: [ops.teams.list, ops.team.read, ops.receipts.usage, ops.comp.set, ops.comp.end, ops.comp.discount, ops.import.clear, ops.team.reopen] }
                         target: { type: string }
                         reason: { type: string }
                         before: { $ref: "#/components/schemas/AuditRecord" }
@@ -2469,15 +2482,21 @@ components:
     AuditRecord:
       description: |
         What an operator action changed, before and after, by action:
-        `ops.comp.set` and `ops.comp.end` record a `CompRecord` (or null for
-        no comp), `ops.import.clear` an `ImportClearRecord`, `ops.team.reopen`
+        `ops.comp.set` and `ops.comp.end` record a `CompRecord`, or a
+        `CompMonthsRecord` after a comp made with `months` (or null for no
+        comp), `ops.import.clear` an `ImportClearRecord`, `ops.team.reopen`
         a `ReopenRecord` before (null after), and `ops.teams.list` (in the
         operators' audit only) a `TeamsListRecord` after (null before), and
         `ops.receipts.usage` (in the operators' audit only) a
-        `ReceiptUsageRecord` after (null before).
+        `ReceiptUsageRecord` after (null before), and `ops.comp.discount`
+        (what the billing worker did about a comp's Stripe discount) a
+        `CompDiscountBefore` before and a `CompDiscountRecord` after.
         `ops.team.read` records neither.
       oneOf:
         - { $ref: "#/components/schemas/CompRecord" }
+        - { $ref: "#/components/schemas/CompMonthsRecord" }
+        - { $ref: "#/components/schemas/CompDiscountBefore" }
+        - { $ref: "#/components/schemas/CompDiscountRecord" }
         - { $ref: "#/components/schemas/ImportClearRecord" }
         - { $ref: "#/components/schemas/ReopenRecord" }
         - { $ref: "#/components/schemas/TeamsListRecord" }
@@ -2493,6 +2512,34 @@ components:
         seats: { type: [integer, "null"] }
         until: { type: [string, "null"], format: date-time }
         reason: { type: [string, "null"] }
+    CompMonthsRecord:
+      type: object
+      description: A comp made with `months`, as the audit records it.
+      required: [plan, seats, until, reason, months]
+      additionalProperties: false
+      properties:
+        plan: { type: string }
+        seats: { type: [integer, "null"] }
+        until: { type: string, format: date-time }
+        reason: { type: string }
+        months: { type: integer, minimum: 1, maximum: 12 }
+    CompDiscountBefore:
+      type: object
+      description: Our comp coupon on the team's Stripe subscription before the billing worker acted, if any.
+      required: [coupon]
+      additionalProperties: false
+      properties:
+        coupon: { type: [string, "null"] }
+    CompDiscountRecord:
+      type: object
+      description: What the billing worker did about a comp's Stripe discount, and the coupon and comp end it applied, if any.
+      required: [outcome, coupon, until, subscriptionId]
+      additionalProperties: false
+      properties:
+        outcome: { type: string, enum: [applied, removed, in_sync, none, not_monthly, under_a_month, no_subscription, not_ours, team_closed] }
+        coupon: { type: [string, "null"] }
+        until: { type: [string, "null"], format: date-time }
+        subscriptionId: { type: [string, "null"] }
     ImportClearRecord:
       type: object
       description: A stuck import, before (`committing` true) and after (false) an operator took it out of the "Imports stuck" check.
@@ -2546,7 +2593,7 @@ components:
                 - type: "null"
                 - type: object
                   additionalProperties: false
-                  required: [id, status, lookupKey, plan, interval, seats, currentPeriodEnd, cancelAtPeriodEnd, cancelAt, trialEnd, createdAt]
+                  required: [id, status, lookupKey, plan, interval, seats, currentPeriodEnd, cancelAtPeriodEnd, cancelAt, trialEnd, createdAt, discountCount, compDiscountUntil]
                   properties:
                     id: { type: string }
                     status: { type: string, description: "Stripe's subscription status." }
@@ -2559,6 +2606,8 @@ components:
                     cancelAt: { type: [string, "null"], format: date-time }
                     trialEnd: { type: [string, "null"], format: date-time }
                     createdAt: { type: [string, "null"], format: date-time }
+                    discountCount: { type: integer, minimum: 0, description: How many discounts the subscription has. }
+                    compDiscountUntil: { type: [string, "null"], format: date-time, description: "The end of the comp whose 100%-off discount is on it (its metadata stamp), while that's to come and it has a discount; otherwise null." }
             subscriptionCount: { type: integer, description: "Subscriptions among the customer's latest 10: more than one is worth a look." }
             invoices:
               type: array
@@ -2936,6 +2985,15 @@ components:
                       until: { type: string, format: date-time }
                   - type: "null"
               version: { type: integer, description: The team's version after the change. }
+              months: { type: integer, description: "For a comp made with `months`: how many." }
+              stripeDiscount:
+                type: string
+                enum: [queued, no_stripe_customer, not_queued]
+                description: >-
+                  Whether the billing worker was asked to make the team's Stripe
+                  subscription's comp discount match the comp: `queued`, or the
+                  team has no Stripe customer, or it couldn't be queued now (the
+                  nightly reconciliation will).
     CompConflict:
       description: "`aborted`, nothing changed: the team isn't at `expectedVersion` (read it again), it's closed, it has no comp to end, or the Idempotency-Key was used for a different request."
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }

@@ -44,6 +44,7 @@ import {
 import {
   COMMITTING_IMPORTS_PARTITION,
   BILLING_READ_ATTRIBUTES,
+  COMP_DISCOUNT_AUDIT_ATTRIBUTES,
   BILLING_UPDATE_ATTRIBUTES,
   COMP_ATTRIBUTES,
   CUSTOMER_LINK_TEAM_ATTRIBUTES,
@@ -706,6 +707,10 @@ export class ApiStack extends SupplyCheckoutStack {
    *     BILLING_READ_ATTRIBUTES (projected reads only).
    *   - UpdateItem in `TEAM#<teamId>` naming only BILLING_UPDATE_ATTRIBUTES,
    *     returning nothing.
+   *   - PutItem in `OPAUDIT#<teamId>` naming only COMP_DISCOUNT_AUDIT_ATTRIBUTES,
+   *     returning nothing: the operator audit of what it did about a comp's
+   *     Stripe discount (`ops.comp.discount`, supply-checkout-6e4b). No read,
+   *     update or delete there.
    */
   private addBillingEvents(config: DeploymentConfig, table: string, tableArn: string, region: string, tableKeyStatement: () => PolicyStatement) {
     const mode = stripeModeOf(config);
@@ -838,6 +843,19 @@ export class ApiStack extends SupplyCheckoutStack {
               conditions: {
                 "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [team], "dynamodb:Attributes": [...BILLING_READ_ATTRIBUTES] },
                 StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+              },
+            }),
+            // A comp's Stripe discount (billing/comp-discount.ts): its outcome goes in the team's operator
+            // audit. Put only (append-only; the operator audit watch alarms on any overwrite), only the
+            // tagged team's partition, only an audit item's attributes, returning nothing
+            new PolicyStatement({
+              sid: "CompDiscountAuditPutOnly",
+              effect: Effect.ALLOW,
+              actions: ["dynamodb:PutItem"],
+              resources: [tableArn],
+              conditions: {
+                "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [`${OPERATOR_AUDIT_PREFIX}${tag(BILLING_WORKER_TAGS.teamId)}`], "dynamodb:Attributes": [...COMP_DISCOUNT_AUDIT_ATTRIBUTES] },
+                StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
               },
             }),
             new PolicyStatement({

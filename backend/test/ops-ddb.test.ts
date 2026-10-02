@@ -12,6 +12,7 @@ import {
   countBilledMembers,
   createTeam,
   endComp,
+  getBillingTeam,
   getOpsTeam,
   listOperatorAudit,
   listOpsTeams,
@@ -21,8 +22,10 @@ import {
   listTeamsToReconcile,
   linkStripeCustomer,
   reopenOpsTeam,
+  recordCompDiscount,
   reopenTeam,
   setComp,
+  teamContextForStripeCustomer,
   TeamDeletingError,
 } from "../src/data/index.js";
 import { endpoint, newUser, rawItem, useTable } from "./helpers.js";
@@ -73,6 +76,36 @@ describe.skipIf(!endpoint)("operators (ADR 0015) on DynamoDB Local", () => {
     expect(audit.items.map((e) => e.action)).toEqual(["ops.comp.end", "ops.comp.set", "ops.team.read"]);
     const month = await listOperatorAudit(table.db, op, { month: now.toISOString().slice(0, 7), limit: 100 });
     expect(month.items.filter((e) => e.teamId === team.teamId)).toHaveLength(3);
+  });
+
+  it("comps for a number of months, which the billing worker reads and audits the discount of, and the end removes (supply-checkout-6e4b)", async () => {
+    const ownerId = newUser();
+    const { team, context } = await createTeam(table.db, { userId: ownerId, email: "owner@example.com" }, { name: `Ops Months ${ownerId}` }, now);
+    const customer = `cus_${team.teamId.slice(0, 20).replace(/[^A-Za-z0-9]/g, "")}m`;
+    await linkStripeCustomer(table.db, context, customer);
+    const set = await setComp(table.db, op, team.teamId, { plan: "starter", months: 2, reason: "Two months on us", expectedVersion: 1, idempotencyKey: "ddb-months-0001" }, now);
+    expect(set).toMatchObject({ months: 2, version: 2 });
+    const meta = await rawItem(table.db, `TEAM#${team.teamId}`, "META");
+    expect(meta).toMatchObject({ compMonths: 2, compPlan: "starter" });
+    // Not in the operators' index: GSI3 projects no compMonths (it has no room), so the record shows the comp's end only
+    const { team: record } = await getOpsTeam(table.db, op, team.teamId, now);
+    expect((record as unknown as Record<string, unknown>).compMonths).toBeUndefined();
+    expect(record.compUntil).toBe(meta?.compUntil);
+
+    // The billing worker's view (a system context from the customer's link): the comp's months and end, live
+    const ctx = await teamContextForStripeCustomer(table.db, customer);
+    if (!ctx) throw new Error("no context");
+    expect(await getBillingTeam(table.db, ctx, now)).toMatchObject({ compMonths: 2, compUntil: meta?.compUntil, compLive: true });
+    const eventId = await recordCompDiscount(table.db, ctx, "seats-ddb-1", { outcome: "applied", subscriptionId: "sub_1", before: null, coupon: "supply-checkout-comp-2m", until: String(meta?.compUntil) }, now);
+    const audit = await listOperatorAudit(table.db, op, { teamId: team.teamId });
+    expect(audit.items.find((e) => e.eventId === eventId)).toMatchObject({ action: "ops.comp.discount", operatorSub: "system-billing-worker", after: { outcome: "applied", coupon: "supply-checkout-comp-2m" } });
+    // Only billing's own context may write one
+    await expect(recordCompDiscount(table.db, context, "seats-ddb-2", { outcome: "applied", subscriptionId: null, before: null, coupon: null, until: null }, now)).rejects.toThrow(/Only billing/);
+    // Owners see it as support's, with no actor
+    expect((await listSupportActions(table.db, context, {})).items.map((a) => a.action)).toContain("ops.comp.discount");
+
+    await endComp(table.db, op, team.teamId, { reason: "Over", expectedVersion: 2, idempotencyKey: "ddb-months-0002" }, now);
+    expect((await rawItem(table.db, `TEAM#${team.teamId}`, "META"))?.compMonths).toBeUndefined();
   });
 
   it("pages the team list and a search with cursors made from the index's own keys (supply-checkout-6uw.8)", async () => {

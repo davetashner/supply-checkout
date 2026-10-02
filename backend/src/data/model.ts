@@ -94,6 +94,12 @@ export interface Team {
   /** The operator's `sub`. Never shown to the team. */
   readonly compBy?: string;
   readonly compAt?: string;
+  /**
+   * A comp for a number of months (1 to 12, supply-checkout-6e4b): while it's
+   * live, the team's Stripe subscription also gets a 100%-off discount for
+   * those months (billing/comp-discount.ts).
+   */
+  readonly compMonths?: number;
 }
 
 /** A comp that's live now: one whose `compUntil` is in the future. */
