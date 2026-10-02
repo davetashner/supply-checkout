@@ -68,6 +68,7 @@ export * from "./email-codes.js";
 export * from "./verified-email.js";
 export * from "./security-notices.js";
 export * from "./two-step.js";
+export * from "./welcome.js";
 export { MAX_MONEY, MAX_QUANTITY, roundCents } from "./money.js";
 export { audienceChangeFromStream, documentChangeFromStream, type DocumentChange } from "./changes.js";
 export { liveUpdateRecipients } from "./live-audience.js";

@@ -119,6 +119,8 @@ const ALARM_IDS = [
   "security-notices-dropped",
   "sign-in-trigger-failing",
   "sign-up-trigger-failing",
+  "welcome-emails-failing",
+  "welcome-emails-dropped",
   "imports-stuck",
   "email-verification-not-saved",
   "email-codes-failing",
@@ -167,6 +169,8 @@ const ALARM_IDS = [
 const PRIMARY_ONLY_ALARM_IDS = [
   "sign-in-trigger-failing",
   "sign-up-trigger-failing",
+  "welcome-emails-failing",
+  "welcome-emails-dropped",
   "imports-stuck",
   "near-sending-limit",
   "seat-counts-drifting",
@@ -873,6 +877,30 @@ describe("alarms added with the email code routes, the live update budget, team 
       TreatMissingData: "notBreaching",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP1") }],
       AlarmDescription: Match.stringLikeRegexp("^P1 Sign-up trigger failing \\(J1"),
+    });
+  });
+
+  it("alarms on any welcome email not sent, and any welcome request dropped, P2, where the user pool is (J1, supply-checkout-6uw.25)", () => {
+    const t = observability();
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-welcome-emails-failing",
+      Metrics: [Match.objectLike({ MetricStat: Match.objectLike({ Metric: Match.objectLike({ MetricName: BusinessMetric.WelcomeEmailFailures, Dimensions: [{ Name: "Region", Value: EAST }] }), Stat: "Sum", Period: 3600 }) })],
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      TreatMissingData: "notBreaching",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      AlarmDescription: Match.stringLikeRegexp("^P2 Welcome emails failing \\(J1"),
+    });
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "supply-checkout-prod-p2-welcome-emails-dropped",
+      Namespace: "AWS/SQS",
+      MetricName: "ApproximateNumberOfMessagesVisible",
+      Dimensions: [{ Name: "QueueName", Value: "supply-checkout-prod-welcome-email-dlq" }],
+      Statistic: "Maximum",
+      Threshold: 0,
+      ComparisonOperator: "GreaterThanThreshold",
+      AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlarmTopicsP2") }],
+      AlarmDescription: Match.stringLikeRegexp("^P2 Welcome emails dropped \\(J1"),
     });
   });
 

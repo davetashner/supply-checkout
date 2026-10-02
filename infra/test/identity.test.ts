@@ -369,7 +369,7 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
     }
   });
 
-  it("give the guard no AWS permissions, the email_verified trigger only AdminUpdateUserAttributes and the proven email's hash, and the linking trigger only ListUsers, AdminUpdateUserAttributes and AdminLinkProviderForUser, on this pool", () => {
+  it("give the guard no AWS permissions, the email_verified trigger only AdminUpdateUserAttributes, the proven email's hash and the welcome email's invoke, and the linking trigger only ListUsers, AdminUpdateUserAttributes and AdminLinkProviderForUser, on this pool", () => {
     const { template } = withProviders();
     const poolId = Object.keys(template.findResources("AWS::Cognito::UserPool"))[0];
     const xray = { Effect: "Allow", Action: ["xray:PutTelemetryRecords", "xray:PutTraceSegments"], Resource: "*" };
@@ -422,8 +422,15 @@ describe("Google and Apple triggers (supply-checkout-6v9)", () => {
       // One statement for the key, which also covers the proven email's read
       { ...tableKey, Action: ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"] },
     ];
-    sameStatements(statementsOf(template, roleOf(template, "EmailVerified")), [logs("EmailVerified"), xray, setVerified, provenEmail, ...noticeAddress]);
-    sameStatements(statementsOf(template, roleOf(template, "PostConfirmation")), [logs("PostConfirmation"), xray, ...noticeAddress]);
+    // The welcome email (supply-checkout-6uw.25): an invoke of that one function, by its name, in this region and account
+    const welcome = {
+      Sid: "QueueWelcomeEmail",
+      Effect: "Allow",
+      Action: "lambda:InvokeFunction",
+      Resource: { "Fn::Join": ["", [`arn:aws:lambda:${EAST}:`, { Ref: "AWS::AccountId" }, ":function:supply-checkout-staging-welcome-email"]] },
+    };
+    sameStatements(statementsOf(template, roleOf(template, "EmailVerified")), [logs("EmailVerified"), xray, setVerified, provenEmail, ...noticeAddress, welcome]);
+    sameStatements(statementsOf(template, roleOf(template, "PostConfirmation")), [logs("PostConfirmation"), xray, ...noticeAddress, welcome]);
     const link = { Sid: "LinkToExistingAccount", Effect: "Allow", Action: ["cognito-idp:AdminLinkProviderForUser", "cognito-idp:AdminUpdateUserAttributes", "cognito-idp:ListUsers"], Resource: { "Fn::GetAtt": [poolId, "Arn"] } };
     sameStatements(statementsOf(template, roleOf(template, "AccountLink")), [logs("AccountLink"), xray, link]);
     for (const role of Object.values(template.findResources("AWS::IAM::Role"))) expect(role.Properties.ManagedPolicyArns).toBeUndefined();

@@ -130,6 +130,19 @@
 // two calls within WRITE_BUDGET_MS, and it never fails the token: a failure is
 // logged with the error's name only and counted (SecurityNoticeFailures).
 //
+// The welcome email (supply-checkout-6uw.25): a Google or Apple user's account
+// is made at their first sign-in, and its email is first trusted here, when
+// the trigger marks it verified (outcome "verified": Cognito had it
+// unverified and the provider says it's verified). Then the trigger hands the
+// welcome email to its function (welcome-invoke.ts, an asynchronous invoke),
+// which claims a once-only record before it sends, so a retried trigger, or a
+// later "verified" (a provider that stopped and then went back to vouching for
+// the address), sends nothing more. Later sign-ins are "unchanged" and hand
+// nothing over, and an account that had its address verified before this
+// existed is never sent one. Only with time left for the call within
+// WRITE_BUDGET_MS, and it never fails the token: a failure (or no time left)
+// is logged with the error's name only and counted (WelcomeEmailFailures).
+//
 // Logs carry the provider and the outcome, never the email or the username
 // (which contains the provider's user ID). A linked user's failed downgrade
 // also carries a correlation handle, an HMAC of the user's sub with a key
@@ -149,6 +162,7 @@ import { verifiedEmailHash } from "../data/index.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
 import type { UpdateUserAttributes } from "./cognito-admin.js";
 import type { NoticeAddressOutcome, RememberNoticeAddress } from "./notice-address.js";
+import type { SendWelcome } from "./welcome-invoke.js";
 import {
   DOWNGRADE_PENDING_ATTRIBUTE,
   FEDERATED_PROVIDERS,
@@ -175,6 +189,11 @@ export interface EmailVerifiedDeps {
    * supply-checkout-8jc.31). Without it, nothing is recorded.
    */
   readonly rememberNoticeAddress?: RememberNoticeAddress;
+  /**
+   * Hands a new Google or Apple account's welcome email to its function
+   * (welcome-invoke.ts, supply-checkout-6uw.25). Without it, none is sent.
+   */
+  readonly sendWelcome?: SendWelcome;
 }
 
 /** Each Cognito call's timeout (email-verified.ts passes it to the client). */
@@ -195,6 +214,12 @@ export const WRITE_BUDGET_MS = 4_000;
  * start in Cognito's 5.
  */
 export const NOTICE_CALL_TIMEOUT_MS = 500;
+/**
+ * The welcome email's invoke timeout (email-verified.ts passes it to the
+ * invoker). It starts only while it still fits in WRITE_BUDGET_MS, after the
+ * promotion's one write and the notice address's two calls: 3 seconds at worst.
+ */
+export const WELCOME_CALL_TIMEOUT_MS = 800;
 
 /**
  * A user's log correlation handle: the first 16 hex digits of
@@ -505,11 +530,40 @@ export function createEmailVerifiedHandler(deps: EmailVerifiedDeps) {
     }
   };
 
+  /**
+   * Hands the welcome email over for a Google or Apple user whose email this
+   * token has just verified (see "The welcome email" at the top). Never throws.
+   */
+  const welcome = async (send: SendWelcome, event: PreTokenGenerationTriggerEvent, outcome: Outcome, provider: FederatedProvider | undefined, started: number) => {
+    const userId = event.request?.userAttributes?.sub;
+    if (outcome !== "verified" || !provider || !userId) return undefined;
+    if (now() - started + WELCOME_CALL_TIMEOUT_MS > WRITE_BUDGET_MS) {
+      deps.obs.logger.error("Welcome email not queued", { provider, code: "NoTimeLeft" });
+      deps.obs.count(BusinessMetric.WelcomeEmailFailures, 1, { reason: "deferred", via: provider });
+      return "failed";
+    }
+    try {
+      await send({ userId, via: provider });
+      return "queued";
+    } catch (error) {
+      deps.obs.logger.error("Welcome email not queued", { provider, code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      deps.obs.count(BusinessMetric.WelcomeEmailFailures, 1, { reason: "invoke", via: provider });
+      return "failed";
+    }
+  };
+
   return async (event: PreTokenGenerationTriggerEvent): Promise<PreTokenGenerationTriggerEvent> => {
     const started = now();
     const { outcome, provider } = await handle(event);
     const noticeAddress = deps.rememberNoticeAddress ? await rememberAddress(deps.rememberNoticeAddress, event, outcome, started) : undefined;
-    deps.obs.logger.info("Federated email", { triggerSource: String(event.triggerSource), outcome, ...(provider ? { provider } : {}), ...(noticeAddress ? { noticeAddress } : {}) });
+    const welcomed = deps.sendWelcome ? await welcome(deps.sendWelcome, event, outcome, provider, started) : undefined;
+    deps.obs.logger.info("Federated email", {
+      triggerSource: String(event.triggerSource),
+      outcome,
+      ...(provider ? { provider } : {}),
+      ...(noticeAddress ? { noticeAddress } : {}),
+      ...(welcomed ? { welcome: welcomed } : {}),
+    });
     // The tokens are unchanged: the API reads email_verified from Cognito (GetUser), not from a token
     return event;
   };

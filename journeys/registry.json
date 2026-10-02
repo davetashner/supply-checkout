@@ -349,6 +349,8 @@
     { "name": "Sign-up canary failing", "journeys": ["J1"] },
     { "name": "No sign-ups", "journeys": ["J1"] },
     { "name": "Sign-up trigger failing", "journeys": ["J1"], "infra": "sign-up-trigger-failing" },
+    { "name": "Welcome emails failing", "journeys": ["J1"], "infra": "welcome-emails-failing" },
+    { "name": "Welcome emails dropped", "journeys": ["J1"], "infra": "welcome-emails-dropped" },
 
     { "name": "Imports stuck", "journeys": ["J2"], "infra": "imports-stuck" },
 

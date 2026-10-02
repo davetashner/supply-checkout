@@ -391,11 +391,12 @@
           },
           "S3Key": "<asset hash>.zip"
         },
-        "Description": "Records a new account's verified address for email change notices",
+        "Description": "Records a new account's verified address for email change notices, and hands over its welcome email",
         "Environment": {
           "Variables": {
             "NODE_OPTIONS": "--enable-source-maps",
             "TABLE_NAME": "supply-checkout-prod-app",
+            "WELCOME_FUNCTION": "supply-checkout-prod-welcome-email",
             "POWERTOOLS_METRICS_NAMESPACE": "SupplyCheckout",
             "SUPPLY_CHECKOUT_ENV": "prod"
           }
@@ -582,6 +583,39 @@
           "Version": "2012-10-17"
         },
         "PolicyName": "PostConfirmationNoticeAddress390C9F8D",
+        "Roles": [
+          {
+            "Ref": "PostConfirmationRoleBD0B0389"
+          }
+        ]
+      }
+    },
+    "PostConfirmationWelcome34244705": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "lambda:InvokeFunction",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:aws:lambda:us-east-1:",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":function:supply-checkout-prod-welcome-email"
+                  ]
+                ]
+              },
+              "Sid": "QueueWelcomeEmail"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "PostConfirmationWelcome34244705",
         "Roles": [
           {
             "Ref": "PostConfirmationRoleBD0B0389"

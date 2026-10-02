@@ -10,7 +10,7 @@ import { type Invite, type Member, type Team, hashEmail, markInviteFailed, teamC
 import { createEmailEventsHandler } from "../src/email/events-handler.js";
 import { EmailNotSentError, createMailer, mailerFromEnv, sesClientConfig, sendInviteEmail, sendTeamNotice, type SesSender } from "../src/email/mailer.js";
 import { EMAIL_ENV, EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, EMAIL_KINDS, EMAIL_TAGS, configurationSetName } from "../src/email/names.js";
-import { type EmailInput, type TeamNoticeInput, escapeHtml, formatDate, formatDateTime, plainName, renderEmail, teamLabel } from "../src/email/templates.js";
+import { type EmailInput, type TeamNoticeInput, escapeHtml, formatDate, formatDateTime, greetingName, plainName, renderEmail, teamLabel } from "../src/email/templates.js";
 import type { Observability } from "../src/observability/index.js";
 import { contextFor, fakeDb } from "./helpers.js";
 import { MemoryTable } from "./memory-table.js";
@@ -32,11 +32,13 @@ const samples: EmailInput[] = [
   { kind: "passwordSet", at: "2026-09-30T14:05:09.000Z" },
   { kind: "twoStepOn", at: "2026-09-30T14:05:09.000Z" },
   { kind: "emailChanged", at: "2026-09-30T14:05:09.000Z" },
+  { kind: "welcome", givenName: "Sam", invited: false, supportAddress: "support@supplycheckout.com" },
   // Variants of a kind: last, since tests pick the ones above by position
   { kind: "readOnly", teamName: "Echo Cleaning", reason: "subscription_ended", deletesAt: "2026-11-02T12:00:00.000Z" },
   { kind: "readOnly", teamName: "Echo Cleaning", reason: "trial_ended", deletesAt: "2026-11-02T12:00:00.000Z" },
   { kind: "readOnly", teamName: "Echo Cleaning", reason: "payment_overdue" },
   { kind: "deletionWarning", teamName: "Echo Cleaning", deletesAt: "2026-11-02T12:00:00.000Z" },
+  { kind: "welcome", invited: true, supportAddress: "support@supplycheckout.com" },
 ];
 
 describe("templates", () => {
@@ -92,7 +94,7 @@ describe("templates", () => {
       });
 
       it("has a readable text part", () => {
-        expect(email.text).toContain("teamName" in input ? "Echo Cleaning" : "September 30, 2026 at 14:05 UTC");
+        expect(email.text).toContain("teamName" in input ? "Echo Cleaning" : input.kind === "welcome" ? "Your Supply Checkout account is ready." : "September 30, 2026 at 14:05 UTC");
         expect(email.text).not.toMatch(/<[a-z/]/i);
         expect(email.text.split("\n").every((line) => line.length < 400)).toBe(true);
       });
@@ -234,6 +236,52 @@ describe("templates", () => {
     expect(changed.text).toContain("Contact Supply Checkout support");
     expect(changed.html).toContain("If it wasn&#39;t you");
     expect(() => renderEmail({ kind: "emailChanged", at: "soon" }, { appUrl: APP })).toThrow("Invalid date");
+  });
+
+  // supply-checkout-6uw.25
+  it("welcomes a new account by its given name, with the next step, the trial, and the support address", () => {
+    const owner = renderEmail(samples[10] as EmailInput, { appUrl: APP });
+    expect(owner.subject).toBe("Welcome to Supply Checkout");
+    expect(owner.text).toContain("Hi Sam,");
+    expect(owner.text).toContain("Sign in any time with this email address.");
+    expect(owner.text).toContain("Next, create your team");
+    expect(owner.text).toContain("A new team comes with a 14-day free trial, and you don't need a card to start it.");
+    expect(owner.text).toContain("If someone invites you to their team, you'll find the invite in the app too.");
+    expect(owner.text).toContain("Questions? Write to us at support@supplycheckout.com.");
+    expect(owner.text).toContain(`Create your team: ${APP}/`);
+    expect(owner.html).toContain("Hi Sam,");
+    // Transactional: nothing to track or unsubscribe from
+    expect(owner.html).not.toMatch(/<img|unsubscribe|utm_/i);
+    expect(owner.text).not.toMatch(/unsubscribe|utm_/i);
+  });
+
+  it("points someone who was invited at their team, without a name to greet them by", () => {
+    const invited = renderEmail(samples[samples.length - 1] as EmailInput, { appUrl: APP });
+    expect(invited.subject).toBe("Welcome to Supply Checkout");
+    expect(invited.text).toContain("Hi there,");
+    expect(invited.text).toContain("You've been invited to a team. Open Supply Checkout and accept the invite, if you haven't already");
+    expect(invited.text).toContain("Want a team of your own too?");
+    expect(invited.text).toContain("14-day free trial");
+    expect(invited.text).not.toContain("Next, create your team");
+    expect(invited.text).toContain(`Open Supply Checkout: ${APP}/`);
+  });
+
+  it("greets by a given name made safe, and not at all by a blank one", () => {
+    expect(greetingName(undefined)).toBeUndefined();
+    expect(greetingName("  \u0000 \n ")).toBeUndefined();
+    expect(greetingName("  Sam\nRiley ")).toBe("Sam Riley");
+    expect(greetingName("x".repeat(60))).toHaveLength(40);
+    expect(greetingName("Sam at evil.example or https://x.example")).toBe("Sam at evil[.]example or https[:]//x[.]example");
+    const hostile = renderEmail({ kind: "welcome", givenName: '<a href="https://evil.example">Sam</a>', invited: false, supportAddress: "support@supplycheckout.com" }, { appUrl: APP });
+    expect(hostile.html).not.toContain("<a href=\"https://evil");
+    expect([...hostile.html.matchAll(/href="([^"]+)"/g)].every((m) => new URL((m[1] as string).replaceAll("&amp;", "&")).origin === APP)).toBe(true);
+    expect(renderEmail({ kind: "welcome", givenName: " ", invited: false, supportAddress: "support@supplycheckout.com" }, { appUrl: APP }).text).toContain("Hi there,");
+  });
+
+  it("refuses a support address that isn't a plain address", () => {
+    for (const supportAddress of ["", "Support <support@supplycheckout.com>", "support@supplycheckout.com, x@example.com", "support"]) {
+      expect(() => renderEmail({ kind: "welcome", invited: false, supportAddress }, { appUrl: APP })).toThrow("Invalid support address");
+    }
   });
 
   it("shortens long names and names a blank one", () => {

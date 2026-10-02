@@ -122,6 +122,10 @@ export const BusinessMetric = {
   SecurityNotices: "SecurityNotices",
   /** Security notices not sent (SES refused, or no verified address); the change stands. */
   SecurityNoticeFailures: "SecurityNoticeFailures",
+  /** Welcome emails sent to a new account's verified address, once per account (supply-checkout-6uw.25); `via` (email, Google, SignInWithApple) in metadata (J1). */
+  WelcomeEmails: "WelcomeEmails",
+  /** Welcome emails not sent, or not handed to the welcome email function, each try; the reason in metadata. Sign-up goes ahead either way (J1). */
+  WelcomeEmailFailures: "WelcomeEmailFailures",
   /** Accounts their users deleted: the Cognito user and every row that named them. */
   AccountsDeleted: "AccountsDeleted",
   /** Closed teams deleted by the scheduled purge once their read-only period ended. */

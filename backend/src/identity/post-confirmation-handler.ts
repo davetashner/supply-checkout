@@ -16,17 +16,54 @@
 // error's name only and counted (SecurityNoticeFailures, reason
 // `record_address`), and the account's first GET /me or token records it.
 // Logs carry the outcome only, never the email, username or sub.
+//
+// The welcome email (supply-checkout-6uw.25): when a native user confirms
+// their sign-up (PostConfirmation_ConfirmSignUp, never a forgotten password's
+// PostConfirmation_ConfirmForgotPassword), the trigger hands the welcome email
+// to its own function
+// (welcome-invoke.ts: an asynchronous invoke, so no send happens inside
+// Cognito's 5 seconds), with the user's sub only. That function looks the
+// user up and sends only to an address the account API trusts (so it doesn't
+// matter whether this event already says the email is verified), and claims a
+// once-only record before it sends, so a retried trigger sends nothing more. A Google or Apple user's
+// email isn't verified here, so theirs is handed over by the pre token
+// generation trigger, at the sign-in that verifies it. A failed hand-over is
+// logged with the error's name only and counted (WelcomeEmailFailures, reason
+// `invoke`); the confirmation never fails for it.
 
 import type { PostConfirmationTriggerEvent } from "aws-lambda";
 import { BusinessMetric, type Observability } from "../observability/index.js";
+import { isFederatedOnly } from "./email-verified-handler.js";
+import { SUB } from "./cognito-accounts.js";
 import type { NoticeAddressOutcome, RememberNoticeAddress } from "./notice-address.js";
+import type { SendWelcome } from "./welcome-invoke.js";
 
 export interface PostConfirmationDeps {
   readonly rememberNoticeAddress: RememberNoticeAddress;
   readonly obs: Observability;
+  /** Hands a new account's welcome email to its function (welcome-invoke.ts). Without it, no welcome is sent. */
+  readonly sendWelcome?: SendWelcome;
 }
 
+/** What handing over the welcome email came to: `not-new` (not a sign-up, or a Google or Apple user), `no-sub` (no valid sub in the event), `queued` or `failed`. */
+export type WelcomeOutcome = "not-new" | "no-sub" | "queued" | "failed";
+
 export function createPostConfirmationHandler(deps: PostConfirmationDeps) {
+  const welcome = async (send: SendWelcome, event: PostConfirmationTriggerEvent): Promise<WelcomeOutcome> => {
+    const attributes = event.request?.userAttributes ?? {};
+    if (event.triggerSource !== "PostConfirmation_ConfirmSignUp" || isFederatedOnly(event.userName, attributes)) return "not-new";
+    const userId = attributes.sub;
+    if (typeof userId !== "string" || !SUB.test(userId)) return "no-sub";
+    try {
+      await send({ userId, via: "email" });
+      return "queued";
+    } catch (error) {
+      deps.obs.logger.error("Welcome email not queued", { code: (error as { name?: string } | null)?.name ?? "Unknown" });
+      deps.obs.count(BusinessMetric.WelcomeEmailFailures, 1, { reason: "invoke", via: "email" });
+      return "failed";
+    }
+  };
+
   return async (event: PostConfirmationTriggerEvent): Promise<PostConfirmationTriggerEvent> => {
     let outcome: NoticeAddressOutcome | "failed";
     try {
@@ -36,7 +73,8 @@ export function createPostConfirmationHandler(deps: PostConfirmationDeps) {
       deps.obs.logger.error("Notice address not recorded", { code: (error as { name?: string } | null)?.name ?? "Unknown" });
       deps.obs.count(BusinessMetric.SecurityNoticeFailures, 1, { kind: "emailChanged", reason: "record_address", via: "sign-up" });
     }
-    deps.obs.logger.info("Notice address", { triggerSource: String(event.triggerSource), outcome });
+    const welcomed = deps.sendWelcome ? await welcome(deps.sendWelcome, event) : undefined;
+    deps.obs.logger.info("Notice address", { triggerSource: String(event.triggerSource), outcome, ...(welcomed ? { welcome: welcomed } : {}) });
     return event;
   };
 }

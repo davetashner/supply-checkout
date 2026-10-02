@@ -1765,6 +1765,125 @@
         "TreatMissingData": "notBreaching"
       }
     },
+    "JourneyAlarmswelcomeemailsfailingAF5FB8E3": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Welcome emails failing (J1, us-east-1). Any WelcomeEmailFailures over an hour: a new account's welcome email wasn't handed to the welcome email function (the invoke failed, or the pre token generation trigger had no time left), or the function couldn't send it (SES refused it, no verified address, a failed Cognito or DynamoDB call, or a request that isn't the triggers'). Sign-up went ahead either way (supply-checkout-6uw.25). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-welcome-emails-failing",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "WelcomeEmailFailures (us-east-1)",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "Region",
+                    "Value": "us-east-1"
+                  }
+                ],
+                "MetricName": "WelcomeEmailFailures",
+                "Namespace": "SupplyCheckout"
+              },
+              "Period": 3600,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "JourneyAlarmswelcomeemailsdropped1B2DD374": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2 Welcome emails dropped (J1, us-east-1). Any message in the welcome email dead-letter queue: a welcome request (a new account's sub and how it signed up) the function failed on after Lambda's retries, so that account may get no welcome until it's replayed (supply-checkout-6uw.25). Thresholds and runbooks: docs/journeys.md, Alarms for blocked journeys.",
+        "AlarmName": "supply-checkout-prod-p2-welcome-emails-dropped",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "DatapointsToAlarm": 1,
+        "Dimensions": [
+          {
+            "Name": "QueueName",
+            "Value": "supply-checkout-prod-welcome-email-dlq"
+          }
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Namespace": "AWS/SQS",
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Period": 300,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 0,
+        "TreatMissingData": "notBreaching"
+      }
+    },
     "JourneyAlarmsimportsstuck68033DBE": {
       "Type": "AWS::CloudWatch::Alarm",
       "Properties": {
@@ -13250,6 +13369,20 @@
               "\",\"",
               {
                 "Fn::GetAtt": [
+                  "JourneyAlarmswelcomeemailsfailingAF5FB8E3",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "JourneyAlarmswelcomeemailsdropped1B2DD374",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
                   "JourneyAlarmsimportsstuck68033DBE",
                   "Arn"
                 ]
@@ -13826,11 +13959,15 @@
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"SecurityNotices\",\"Region\",\"us-east-1\",{\"label\":\"SecurityNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"SecurityNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNotices\",\"Region\",\"us-west-2\",{\"label\":\"SecurityNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"SecurityNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":97,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8, J10: lapsing teams' owners emailed (and not), lapsed teams closed for deletion (and held at the cap), failures\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"SecurityNotices\",\"Region\",\"us-east-1\",{\"label\":\"SecurityNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"SecurityNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNotices\",\"Region\",\"us-west-2\",{\"label\":\"SecurityNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"SecurityNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"SecurityNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":97,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J1: welcome emails sent, and not\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },
-              "\",\"metrics\":[[\"SupplyCheckout\",\"LapseNotices\",\"Region\",\"us-east-1\",{\"label\":\"LapseNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"LapseNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapsedTeamsClosed\",\"Region\",\"us-east-1\",{\"label\":\"LapsedTeamsClosed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseClosuresHeld\",\"Region\",\"us-east-1\",{\"label\":\"LapseClosuresHeld (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseFailures\",\"Region\",\"us-east-1\",{\"label\":\"LapseFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNotices\",\"Region\",\"us-west-2\",{\"label\":\"LapseNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"LapseNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapsedTeamsClosed\",\"Region\",\"us-west-2\",{\"label\":\"LapsedTeamsClosed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseClosuresHeld\",\"Region\",\"us-west-2\",{\"label\":\"LapseClosuresHeld (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseFailures\",\"Region\",\"us-west-2\",{\"label\":\"LapseFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":97,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8, J10: teams the lapsed-team job checked, read-only for billing, and left for lack of time\",\"region\":\"",
+              "\",\"metrics\":[[\"SupplyCheckout\",\"WelcomeEmails\",\"Region\",\"us-east-1\",{\"label\":\"WelcomeEmails (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmailFailures\",\"Region\",\"us-east-1\",{\"label\":\"WelcomeEmailFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmails\",\"Region\",\"us-west-2\",{\"label\":\"WelcomeEmails (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"WelcomeEmailFailures\",\"Region\",\"us-west-2\",{\"label\":\"WelcomeEmailFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":97,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8, J10: lapsing teams' owners emailed (and not), lapsed teams closed for deletion (and held at the cap), failures\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"SupplyCheckout\",\"LapseNotices\",\"Region\",\"us-east-1\",{\"label\":\"LapseNotices (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNoticeFailures\",\"Region\",\"us-east-1\",{\"label\":\"LapseNoticeFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapsedTeamsClosed\",\"Region\",\"us-east-1\",{\"label\":\"LapsedTeamsClosed (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseClosuresHeld\",\"Region\",\"us-east-1\",{\"label\":\"LapseClosuresHeld (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseFailures\",\"Region\",\"us-east-1\",{\"label\":\"LapseFailures (us-east-1)\",\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNotices\",\"Region\",\"us-west-2\",{\"label\":\"LapseNotices (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseNoticeFailures\",\"Region\",\"us-west-2\",{\"label\":\"LapseNoticeFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapsedTeamsClosed\",\"Region\",\"us-west-2\",{\"label\":\"LapsedTeamsClosed (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseClosuresHeld\",\"Region\",\"us-west-2\",{\"label\":\"LapseClosuresHeld (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}],[\"SupplyCheckout\",\"LapseFailures\",\"Region\",\"us-west-2\",{\"label\":\"LapseFailures (us-west-2)\",\"region\":\"us-west-2\",\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":97,\"properties\":{\"view\":\"timeSeries\",\"title\":\"J7, J8, J10: teams the lapsed-team job checked, read-only for billing, and left for lack of time\",\"region\":\"",
               {
                 "Ref": "AWS::Region"
               },

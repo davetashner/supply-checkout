@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { Aws, Duration, RemovalPolicy, SecretValue, Stack, Validations } from "aws-cdk-lib";
+import { ArnFormat, Aws, Duration, RemovalPolicy, SecretValue, Stack, Validations } from "aws-cdk-lib";
 import { Certificate } from "aws-cdk-lib/aws-certificatemanager";
 import {
   AccountRecovery,
@@ -43,6 +43,7 @@ import {
   PROVIDER_HOSTED_DOMAIN_ATTRIBUTE,
   identityResourceNames,
 } from "../../../backend/src/identity/names.js";
+import { emailResourceNames, WELCOME_FUNCTION_ENV } from "../../../backend/src/email/names.js";
 import { NOTICE_ADDRESS_CHECK_ATTRIBUTES, NOTICE_ADDRESS_RECORD_ATTRIBUTES, tableName, VERIFIED_EMAIL_ATTRIBUTES } from "../../../backend/src/data/schema.js";
 import type { DeploymentConfig } from "../config.js";
 import { domainOutputParameters, hostNames, importZone } from "../domain.js";
@@ -113,7 +114,7 @@ export class IdentityStack extends SupplyCheckoutStack {
   readonly operatorsGroup: UserPoolGroup;
   /** The pre authentication, pre token generation and pre sign-up triggers, when Google or Apple sign-in is on. */
   readonly federatedTriggers?: { readonly signInGuard: NodejsFunction; readonly emailVerified: NodejsFunction; readonly accountLink: NodejsFunction };
-  /** The post confirmation trigger that records a new account's notice address (supply-checkout-8jc.31), on every app pool. */
+  /** The post confirmation trigger that records a new account's notice address (supply-checkout-8jc.31) and hands over its welcome email (supply-checkout-6uw.25), on every app pool. */
   readonly postConfirmation: NodejsFunction;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
@@ -501,7 +502,7 @@ export class IdentityStack extends SupplyCheckoutStack {
       "EmailVerified",
       "email-verified",
       "Sets email_verified for Google and Apple users from the provider's own claim",
-      { [LOG_CORRELATION_KEY_ENV]: correlationKey.secretValue.unsafeUnwrap(), TABLE_NAME: table },
+      { [LOG_CORRELATION_KEY_ENV]: correlationKey.secretValue.unsafeUnwrap(), TABLE_NAME: table, [WELCOME_FUNCTION_ENV]: this.welcomeFunctionName },
       identityResourceNames(this.config.envName).emailVerifiedFunction,
     );
     this.userPool.addTrigger(UserPoolOperation.PRE_TOKEN_GENERATION, emailVerified);
@@ -541,6 +542,8 @@ export class IdentityStack extends SupplyCheckoutStack {
     });
     // A user's notice address, once the trigger has settled whether their email is verified (supply-checkout-8jc.31)
     this.grantNoticeAddress(emailVerified, "EmailVerifiedNoticeAddress");
+    // A new Google or Apple account's welcome email, at the sign-in that verifies it (supply-checkout-6uw.25)
+    this.grantWelcome(emailVerified, "EmailVerifiedWelcome");
 
     const accountLink = this.trigger("AccountLink", "account-link", "Links a first Google or Apple sign-in to the existing account with the same verified email");
     this.userPool.addTrigger(UserPoolOperation.PRE_SIGN_UP, accountLink);
@@ -562,21 +565,51 @@ export class IdentityStack extends SupplyCheckoutStack {
    * supply-checkout-8jc.31): when a native user confirms their sign-up with
    * Cognito's email code, it records the address an email change is told to
    * (NOTICE_ADDRESS), so the account has one before it has a token anyone
-   * could change the email with. On every app pool, providers or not. It
-   * never fails the confirmation.
+   * could change the email with; and, for a sign-up (not a forgotten
+   * password), hands the welcome email to its function (grantWelcome). On
+   * every app pool, providers or not. It never fails the confirmation.
    */
   private addPostConfirmationTrigger(): NodejsFunction {
     // A fixed name, for the "Sign-up trigger failing" alarm (journey-alarms.ts)
     const fn = this.trigger(
       "PostConfirmation",
       "post-confirmation",
-      "Records a new account's verified address for email change notices",
-      { TABLE_NAME: tableName(this.config.envName) },
+      "Records a new account's verified address for email change notices, and hands over its welcome email",
+      { TABLE_NAME: tableName(this.config.envName), [WELCOME_FUNCTION_ENV]: this.welcomeFunctionName },
       identityResourceNames(this.config.envName).postConfirmationFunction,
     );
     this.userPool.addTrigger(UserPoolOperation.POST_CONFIRMATION, fn);
     this.grantNoticeAddress(fn, "PostConfirmationNoticeAddress");
+    this.grantWelcome(fn, "PostConfirmationWelcome");
     return fn;
+  }
+
+  /** The welcome email function's fixed name (the email stack's; emailResourceNames). */
+  private get welcomeFunctionName(): string {
+    return emailResourceNames(this.config.envName).welcomeFunction;
+  }
+
+  /**
+   * Lets a trigger hand a new account's welcome email over (supply-checkout-6uw.25,
+   * backend/src/identity/welcome-invoke.ts): lambda:InvokeFunction on the
+   * welcome email function only, by its fixed name in this region and account
+   * (the email stack makes it, and deploys after this one, so it's named, not
+   * referenced). The trigger invokes it asynchronously, with only a sub and how
+   * the account signed up; until the email stack has deployed it, the invoke
+   * fails, which is counted (WelcomeEmailFailures) and never fails sign-up. A
+   * separate policy, attached after the pool exists (see addFederatedTriggers).
+   */
+  private grantWelcome(fn: NodejsFunction, id: string): void {
+    new Policy(this, id, {
+      roles: [fn.role as Role],
+      statements: [
+        new PolicyStatement({
+          sid: "QueueWelcomeEmail",
+          actions: ["lambda:InvokeFunction"],
+          resources: [Stack.of(this).formatArn({ service: "lambda", resource: "function", resourceName: this.welcomeFunctionName, arnFormat: ArnFormat.COLON_RESOURCE_NAME })],
+        }),
+      ],
+    });
   }
 
   /**

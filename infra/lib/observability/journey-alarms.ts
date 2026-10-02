@@ -240,6 +240,33 @@ export function journeyAlarmSpecs(region: string, tableName: string, apiId: stri
       threshold: 0,
       primaryOnly: true,
     },
+    {
+      id: "welcome-emails-failing",
+      title: "Welcome emails failing",
+      journeys: "J1",
+      severity: "P2",
+      rule: "Any WelcomeEmailFailures over an hour: a new account's welcome email wasn't handed to the welcome email function (the invoke failed, or the pre token generation trigger had no time left), or the function couldn't send it (SES refused it, no verified address, a failed Cognito or DynamoDB call, or a request that isn't the triggers'). Sign-up went ahead either way (supply-checkout-6uw.25).",
+      metric: business(BusinessMetric.WelcomeEmailFailures, region, Duration.hours(1)),
+      threshold: 0,
+      primaryOnly: true,
+    },
+    {
+      id: "welcome-emails-dropped",
+      title: "Welcome emails dropped",
+      journeys: "J1",
+      severity: "P2",
+      rule: "Any message in the welcome email dead-letter queue: a welcome request (a new account's sub and how it signed up) the function failed on after Lambda's retries, so that account may get no welcome until it's replayed (supply-checkout-6uw.25).",
+      metric: new Metric({
+        namespace: "AWS/SQS",
+        metricName: "ApproximateNumberOfMessagesVisible",
+        dimensionsMap: { QueueName: email.welcomeDeadLetterQueue },
+        statistic: "Maximum",
+        period: FIVE_MINUTES,
+        region,
+      }),
+      threshold: 0,
+      primaryOnly: true,
+    },
     // J2. Set up the inventory
     {
       id: "imports-stuck",
