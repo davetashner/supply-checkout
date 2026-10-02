@@ -432,7 +432,14 @@ jobs:
           STATEFUL: ${{ steps.stateful.outputs.changed }}
           STATELESS: ${{ steps.stateless.outputs.changed }}
           BUILD_HASH: ${{ needs.build.outputs.hash }}
+          BUILD_ARTIFACT_ID: ${{ needs.build.outputs.artifact-id }}
         run: |
+          # The build job ran release code: take only a real hash and ID from it, so it can't put
+          # its own text into the summary the approver reads
+          if [[ ! "$BUILD_HASH" =~ ^[0-9a-f]{64}$ || ! "$BUILD_ARTIFACT_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::The build job's hash or artifact ID isn't one (a 64-character hex hash and a number)"
+            exit 1
+          fi
           {
             echo "## Next"
             echo
@@ -558,7 +565,17 @@ jobs:
           fi
           echo "Same templates as the plan ($HASH)"
       # The build job's web build, by its upload's ID, checked against that job's hash before
-      # anything deploys, so a missing or changed build stops the job with nothing changed
+      # anything deploys, so a missing or changed build stops the job with nothing changed. That
+      # job ran release code, so its outputs must look like a hash and an ID first.
+      - name: Check the build job's outputs
+        env:
+          BUILD_HASH: ${{ needs.build.outputs.hash }}
+          BUILD_ARTIFACT_ID: ${{ needs.build.outputs.artifact-id }}
+        run: |
+          if [[ ! "$BUILD_HASH" =~ ^[0-9a-f]{64}$ || ! "$BUILD_ARTIFACT_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::The build job's hash or artifact ID isn't one (a 64-character hex hash and a number)"
+            exit 1
+          fi
       - name: Download the web build
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
