@@ -136,6 +136,25 @@
               },
               "Resource": "*",
               "Sid": "AllowCostAnomaliesToPublish"
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:GenerateDataKey*"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "events.amazonaws.com"
+              },
+              "Resource": "*",
+              "Sid": "AllowSupportSmtpUserAlertToEncrypt"
             }
           ],
           "Version": "2012-10-17"
@@ -698,6 +717,27 @@
                 "Ref": "AlarmTopicsP213C63151"
               },
               "Sid": "AllowCostAnomaliesToPublish"
+            },
+            {
+              "Action": "sns:Publish",
+              "Condition": {
+                "ArnEquals": {
+                  "aws:SourceArn": {
+                    "Fn::GetAtt": [
+                      "SupportSmtpWatchUserChanges23FABB0B",
+                      "Arn"
+                    ]
+                  }
+                }
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "events.amazonaws.com"
+              },
+              "Resource": {
+                "Ref": "AlarmTopicsP213C63151"
+              },
+              "Sid": "AllowSupportSmtpUserAlertToPublish"
             },
             {
               "Action": "sns:Publish",
@@ -4741,6 +4781,248 @@
         "AlarmTopicsP2Policy8BE19EA4",
         "AlarmTopicsP213C63151"
       ]
+    },
+    "SupportSmtpWatchUserChanges23FABB0B": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "The support SMTP user got or lost a key, credential, permissions, a password or its boundary, or was renamed, or its boundary policy was rewritten (supply-checkout-6qd)",
+        "EventPattern": {
+          "source": [
+            "aws.iam"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "iam.amazonaws.com"
+            ],
+            "$or": [
+              {
+                "eventName": [
+                  "CreateAccessKey",
+                  "UpdateAccessKey",
+                  "DeleteAccessKey",
+                  "PutUserPolicy",
+                  "AttachUserPolicy",
+                  "AddUserToGroup",
+                  "CreateLoginProfile",
+                  "UpdateLoginProfile",
+                  "PutUserPermissionsBoundary",
+                  "DeleteUserPermissionsBoundary",
+                  "UpdateUser",
+                  "CreateServiceSpecificCredential",
+                  "UploadSigningCertificate",
+                  "UploadSSHPublicKey"
+                ],
+                "requestParameters": {
+                  "userName": [
+                    {
+                      "equals-ignore-case": "supply-checkout-prod-support-smtp"
+                    }
+                  ]
+                }
+              },
+              {
+                "eventName": [
+                  "CreatePolicyVersion",
+                  "SetDefaultPolicyVersion"
+                ],
+                "requestParameters": {
+                  "policyArn": [
+                    {
+                      "equals-ignore-case": {
+                        "Fn::Join": [
+                          "",
+                          [
+                            "arn:",
+                            {
+                              "Ref": "AWS::Partition"
+                            },
+                            ":iam::",
+                            {
+                              "Ref": "AWS::AccountId"
+                            },
+                            ":policy/smtp/supply-checkout-prod-support-smtp-boundary"
+                          ]
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "Name": "supply-checkout-prod-operator-support-smtp-user",
+        "State": "ENABLED",
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AlarmTopicsP213C63151"
+            },
+            "Id": "Target0",
+            "InputTransformer": {
+              "InputPathsMap": {
+                "detail-eventName": "$.detail.eventName",
+                "detail-eventTime": "$.detail.eventTime",
+                "detail-eventID": "$.detail.eventID"
+              },
+              "InputTemplate": "\"Supply Checkout prod: <detail-eventName> on the support SMTP user at <detail-eventTime> (CloudTrail event <detail-eventID> says who). Expected only when the owner rotates its key, and PutUserPolicy or PutUserPermissionsBoundary in a deploy of the domain stack. Otherwise follow \\\"When the support SMTP key may be leaked\\\" in docs/infrastructure.md.\""
+            }
+          }
+        ]
+      }
+    },
+    "SupportSmtpWatchSends8DFF472E": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2. Support SMTP sends: the support SMTP user sent more than 50 messages in an hour, far more than one person answering support. Its key may be leaked. Runbook: docs/infrastructure.md, \"When the support SMTP key may be leaked\".",
+        "AlarmName": "supply-checkout-prod-p2-support-smtp-sends",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "Support SMTP sends in an hour",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "ses:caller-identity",
+                    "Value": "supply-checkout-prod-support-smtp"
+                  }
+                ],
+                "MetricName": "Send",
+                "Namespace": "AWS/SES"
+              },
+              "Period": 3600,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 50,
+        "TreatMissingData": "notBreaching"
+      }
+    },
+    "SupportSmtpWatchDailySends8A6EA858": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "AlarmDescription": "P2. Support SMTP sends: the support SMTP user sent more than 150 messages in a day, far more than one person answering support. Its key may be leaked. Runbook: docs/infrastructure.md, \"When the support SMTP key may be leaked\".",
+        "AlarmName": "supply-checkout-prod-p2-support-smtp-daily-sends",
+        "ComparisonOperator": "GreaterThanThreshold",
+        "EvaluationPeriods": 1,
+        "Metrics": [
+          {
+            "Id": "m1",
+            "Label": "Support SMTP sends in a day",
+            "MetricStat": {
+              "Metric": {
+                "Dimensions": [
+                  {
+                    "Name": "ses:caller-identity",
+                    "Value": "supply-checkout-prod-support-smtp"
+                  }
+                ],
+                "MetricName": "Send",
+                "Namespace": "AWS/SES"
+              },
+              "Period": 86400,
+              "Stat": "Sum"
+            },
+            "ReturnData": true
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlarmTopicsP213C63151"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "app",
+            "Value": "supply-checkout"
+          },
+          {
+            "Key": "component",
+            "Value": "observability"
+          },
+          {
+            "Key": "env",
+            "Value": "prod"
+          },
+          {
+            "Key": "layer",
+            "Value": "stateless"
+          },
+          {
+            "Key": "managed-by",
+            "Value": "cdk"
+          }
+        ],
+        "Threshold": 150,
+        "TreatMissingData": "notBreaching"
+      }
     },
     "AlarmTopicP1ParamCE612988": {
       "Type": "AWS::SSM::Parameter",
@@ -12439,6 +12721,20 @@
               {
                 "Fn::GetAtt": [
                   "DeletionRecordsWatchFailingD53CC301",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "SupportSmtpWatchSends8DFF472E",
+                  "Arn"
+                ]
+              },
+              "\",\"",
+              {
+                "Fn::GetAtt": [
+                  "SupportSmtpWatchDailySends8A6EA858",
                   "Arn"
                 ]
               },

@@ -20,6 +20,8 @@ import { OperatorGroupWatch } from "../observability/operator-group-watch.js";
 import { OpsChecks } from "../observability/ops-checks.js";
 import { CostAlerts, costAlertsFromContext } from "../observability/cost-alerts.js";
 import { WebAlarms } from "../observability/web-alarms.js";
+import { SupportSmtpWatch } from "../observability/support-smtp-watch.js";
+import { supportMailFromContext } from "../email.js";
 import { SupplyCheckoutStack } from "./base-stack.js";
 
 /**
@@ -177,6 +179,14 @@ export const OPERATOR_RULE_SUFFIXES = {
  * OPERATOR_RULE_SUFFIXES.
  */
 export const OPERATOR_GROUP_WATCH_RULE_SUFFIX = "group-watch";
+
+/**
+ * The support SMTP user watch's rule (supply-checkout-6qd): under the
+ * operator prefix, so the rule-tampering rules alert when it's disabled,
+ * deleted or retargeted. It's in GLOBAL_SERVICES_REGION (IAM's events) and
+ * they're in the primary region, which for prod is the same region.
+ */
+export const SUPPORT_SMTP_RULE_SUFFIX = "support-smtp-user";
 
 /**
  * SSM calls that change or remove the operator group watch's snapshot
@@ -417,6 +427,10 @@ export const OPERATOR_SELF_SERVICE_EVENTS = ["AssociateSoftwareToken", "VerifySo
  * - `operatorGroup`: primary region only, the scheduled check on who is in
  *   the operators group, P1 on any change, which doesn't depend on CloudTrail
  *   reaching EventBridge (operator-group-watch.ts, supply-checkout-3sv.5).
+ * - `supportSmtp`: prod with `supportMail` only (supply-checkout-6qd): P2
+ *   on IAM changes to the support SMTP user (GLOBAL_SERVICES_REGION, where
+ *   IAM's events arrive) and on its sends above the hourly limit (primary
+ *   region) (support-smtp-watch.ts).
  * - `deletionRecords`: primary region only, the P2 alarm on a deletion
  *   record written over or deleted, from the bucket's S3 events, and the P1
  *   rule on changes to the bucket (deletion-records-watch.ts).
@@ -435,6 +449,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
   readonly deletionRecords?: DeletionRecordsWatch;
   readonly web?: WebAlarms;
   readonly costs?: CostAlerts;
+  readonly supportSmtp?: SupportSmtpWatch;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "observability", layer: "stateless" });
@@ -459,6 +474,19 @@ export class ObservabilityStack extends SupplyCheckoutStack {
     // Budgets and Cost Anomaly Detection are account-wide: one stack, in the region of Cost Explorer's API
     if (region === GLOBAL_SERVICES_REGION) {
       this.costs = new CostAlerts(this, "CostAlerts", { envName: config.envName, topics: this.topics, ...costAlertsFromContext(this.node) });
+    }
+
+    // The support SMTP user's alerts: IAM's events arrive in GLOBAL_SERVICES_REGION, SES's sends in the primary region
+    const supportUserChanges = region === GLOBAL_SERVICES_REGION;
+    if (supportMailFromContext(this.node, config.envName) && (supportUserChanges || this.isPrimaryRegion)) {
+      this.supportSmtp = new SupportSmtpWatch(this, "SupportSmtpWatch", {
+        envName: config.envName,
+        ruleName: operatorRuleName(config.envName, SUPPORT_SMTP_RULE_SUFFIX),
+        region,
+        topics: this.topics,
+        userChanges: supportUserChanges,
+        sends: this.isPrimaryRegion,
+      });
     }
 
     for (const [severity, topic] of Object.entries(this.topics.topics)) {
@@ -499,7 +527,7 @@ export class ObservabilityStack extends SupplyCheckoutStack {
         regions: config.regions,
         tableName: table,
         web: webIds,
-        alarms: [...this.alarms.alarms, ...(this.web?.alarms ?? []), this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing, this.operatorAudit.dropped, this.operatorAudit.silent, this.operatorGroup.changed, this.operatorGroup.silent, this.deletionRecords.rewritten, this.deletionRecords.failing],
+        alarms: [...this.alarms.alarms, ...(this.web?.alarms ?? []), this.checks.purgeNotRunning, this.operatorAudit.changed, this.operatorAudit.failing, this.operatorAudit.dropped, this.operatorAudit.silent, this.operatorGroup.changed, this.operatorGroup.silent, this.deletionRecords.rewritten, this.deletionRecords.failing, ...(this.supportSmtp?.sends ? [this.supportSmtp.sends] : []), ...(this.supportSmtp?.dailySends ? [this.supportSmtp.dailySends] : [])],
       });
     }
   }

@@ -166,10 +166,11 @@ An **organization trail** from the management account (`supply-mgmt`), deliverin
 | `realtime.` | AppSync Events | `realtime`, in `GLOBAL_SERVICES_REGION` |
 | `api.` | the HTTP API, in every region | `api`, in each region |
 | `mail.` | SES custom MAIL FROM (MX and SPF) | none |
+| apex MX (prod) | ImprovMX, forwarding `support@` to the owner's inbox ([Support email](#support-email)) | none |
 
 The certificates are validated by DNS in the zone; CloudFormation adds the validation records and waits a few minutes for issuance. Each ARN is published to SSM as `/supply-checkout/<env>/domain/<name>-certificate-arn`, in the stack's region. The names start to resolve when the stacks that use them add their alias records: `web` (`supply-checkout-qk1`), `identity` (`supply-checkout-zsm`), `api` and `realtime`. Those stacks import the zone with `importZone()` from `lib/domain.ts`.
 
-In the primary region, the stack also creates the SES domain identity with Easy DKIM (three CNAMEs), the `mail.` MAIL FROM domain, SPF on the apex (`v=spf1 include:amazonses.com -all`) and DMARC at `p=none`. SES in the second region is phase 2 (`supply-checkout-3x3.1`).
+In the primary region, the stack also creates the SES domain identity with Easy DKIM (three CNAMEs), the `mail.` MAIL FROM domain, SPF on the apex (`v=spf1 include:amazonses.com -all`) and DMARC at `p=none`. In prod it also adds the apex MX records, an IAM user and a CloudWatch event destination for support mail ([Support email](#support-email)). SES in the second region is phase 2 (`supply-checkout-3x3.1`).
 
 **The hosted zone is imported, never created.** Prod's zone was created by hand when the domain was delegated from Namecheap. The stack reads its ID from the SSM parameter `/supply-checkout/<env>/dns/hosted-zone-id` at deploy time (a CloudFormation SSM parameter), rather than `HostedZone.fromLookup`, so synth stays account-agnostic in CI and the zone ID never lands in `cdk.context.json`. DMARC aggregate reports go to the address in `/supply-checkout/<env>/dns/dmarc-rua`. Use a DMARC report service's `mailto:` address, not a personal mailbox at another domain: receivers drop reports to another domain unless that domain publishes an authorization record, which personal mail providers don't. Create both parameters before the first deploy, in each region with a `domain` stack (today, us-east-1):
 
@@ -181,7 +182,7 @@ aws ssm put-parameter --profile supply-prod --region us-east-1 --type String \
   --name /supply-checkout/prod/dns/hosted-zone-id --value "$ZONE_ID"
 aws ssm put-parameter --profile supply-prod --region us-east-1 --type String \
   --name /supply-checkout/prod/dns/dmarc-rua --value 'mailto:dmarc-reports@example.com'   # your DMARC report service's address
-# The stack adds TXT records at the apex and _dmarc, and MX and TXT at mail.
+# The stack adds TXT records at the apex and _dmarc, MX and TXT at mail., and (prod) MX at the apex.
 # If any of those already exist in the zone, the deploy fails: remove them, or
 # merge their values into lib/stacks/domain-stack.ts first.
 aws route53 list-resource-record-sets --profile supply-prod --hosted-zone-id "$ZONE_ID" \
@@ -254,6 +255,105 @@ A complaint means the person asked not to get our mail, so remove a `COMPLAINT` 
 2. In the prod account, put the new zone's four name servers in a `StringList` parameter: `aws ssm put-parameter --type StringList --name /supply-checkout/prod/dns/delegation/staging --value 'ns-1.awsdns-01.org,ns-2.awsdns-02.co.uk,…'`.
 3. Add `"delegatedEnvs": ["staging"]` to `cdk.json` (it holds names only) and redeploy prod's `domain` stack, which adds the NS record. Keep it in `cdk.json` rather than passing `-c`: a prod deploy without it removes the delegation.
 4. Deploy staging with `-c envName=staging` and that account's profile.
+
+### Support email
+
+`support@supplycheckout.com` forwards to the owner's Gmail through [ImprovMX](https://improvmx.com)'s free plan, and the owner replies from Gmail as `support@` (`supply-checkout-6qd`). Revisit a shared inbox (Google Workspace or a help desk) when two people answer support.
+
+**What the prod `domain` stack adds** (primary region, only when `supportMail` is set; `cdk.json` sets `"supportMail": "improvmx"`, and other environments ignore it). Keep it in `cdk.json`: a prod deploy without it removes the MX records and support@ stops receiving mail.
+
+- Apex MX: `10 mx1.improvmx.com` and `20 mx2.improvmx.com`, from ImprovMX's DNS setup guides, checked 2026-10-01 (`MAIL_FORWARDERS` in `lib/email.ts`).
+- **No SPF change.** The apex SPF record stays `v=spf1 include:amazonses.com -all`. ImprovMX forwards with SRS (its own envelope sender), so it never needs to pass SPF as supplycheckout.com, and including `spf.improvmx.com` would let its servers pass SPF for the domain. ImprovMX's dashboard warns that SPF isn't set up; ignore that warning. SES's own SPF on `mail.` is unchanged too.
+- The IAM user `/smtp/supply-checkout-prod-support-smtp`, with no access key. Its one permission, which is also its permissions boundary (`supply-checkout-prod-support-smtp-boundary`, so a policy attached later can't give it more): `ses:SendRawEmail` (what an SES SMTP send is authorized as) on the domain identity and the `transactional` configuration set, with `ses:FromAddress` = `support@supplycheckout.com` and `ses:FromDisplayName` = `Supply Checkout Support`. It can't call any other AWS API. Its SMTP password is made by hand (below) and kept only in Gmail's settings, never in the repo, SSM or a shared note.
+- A CloudWatch event destination on the transactional configuration set, `SendsByCaller`, counting sends by `ses:caller-identity`, for the Support SMTP sends alarm.
+
+**What the key can do.** Treat it like the domain's signing key. `ses:FromAddress` is most likely matched against the envelope sender of an SMTP send, not the message's From header, so whoever holds the key can probably send any mail the domain identity can: a header From of `noreply@supplycheckout.com` or any other address at the domain, DKIM-signed and passing DMARC, which makes convincing phishing. The display name condition only adds friction (an attacker can copy it). What limits the damage is detection and rotation: P2 alerts on any change to the user or its boundary policy and on more than 50 sends in an hour or 150 in a day ([Observability](observability.md), "Support SMTP user"), the key rotation below, and step 8's check of what the policy really refuses.
+
+**Why replies go through SES.** Gmail's "send as" through Gmail's own SMTP sends from Google's servers, signed by `gmail.com`: SPF fails for supplycheckout.com (`-all`), the DKIM signature isn't the domain's, and DMARC fails, which gets replies junked now and rejected once DMARC moves to `p=quarantine`. Through SES SMTP (`email-smtp.us-east-1.amazonaws.com`, port 587, TLS), replies are DKIM-signed by `supplycheckout.com` (Easy DKIM) and their envelope sender is `mail.supplycheckout.com`, so both DKIM and SPF align and DMARC passes. **Until SES production access is granted (`supply-checkout-3sv.18`), replies and auto-replies reach only addresses verified in SES**; anything else bounces back to the Gmail inbox.
+
+**Which configuration set.** Support replies go through the identity's default, the transactional set, so a recipient who marks a reply as spam is added to the account-level suppression list, which also stops their sign-up codes and invites ([Transactional email](#transactional-email)); a hard bounce does the same. A separate support set with suppression off would avoid that, but SMTP mail picks a configuration set only with the `X-SES-CONFIGURATION-SET` header, and Gmail's "send as" can't add headers. So replies stay on the transactional set, and the risk stands: if a customer says they no longer get codes after writing to support, check the suppression list ([Removing an address from the suppression list](#removing-an-address-from-the-suppression-list)).
+
+**Owner steps** (once; the auto-reply is a Gmail filter, since ImprovMX's free plan has no auto-responder):
+
+1. **ImprovMX.** Sign up at improvmx.com with your Gmail address (the free plan: one domain, 25 aliases, no SMTP). Add the domain `supplycheckout.com`. Replace the default catch-all alias with one alias: `support` → your Gmail address. ImprovMX sends a confirmation to that address; click it. Don't add ImprovMX's suggested records by hand: the stack adds the MX records, and the SPF record is deliberately left out.
+2. **Check for existing apex records**, then **deploy the domain stack, then the observability stack**, from the main checkout on an up-to-date `main` (CDK asks you to confirm the new IAM user and policies):
+   ```bash
+   aws sso login --profile supply-prod
+   ZONE_ID=$(aws ssm get-parameter --profile supply-prod --region us-east-1 --name /supply-checkout/prod/dns/hosted-zone-id --query Parameter.Value --output text)
+   aws route53 list-resource-record-sets --profile supply-prod --hosted-zone-id "$ZONE_ID" \
+     --query "ResourceRecordSets[?Name=='supplycheckout.com.' && Type=='MX']"   # must be empty
+   cd infra
+   npx cdk diff supply-checkout-prod-us-east-1-domain supply-checkout-prod-us-east-1-observability --profile supply-prod
+   npx cdk deploy supply-checkout-prod-us-east-1-domain --profile supply-prod
+   npx cdk deploy supply-checkout-prod-us-east-1-observability --profile supply-prod --exclusively
+   ```
+   The domain diff should show only the apex MX record, the IAM user, its policy and boundary, and the `SendsByCaller` event destination; the observability diff the `operator-support-smtp-user` rule, its topic and key policy statements, and the two `support-smtp` sends alarms. In this order the rule doesn't exist yet when the domain deploy calls `PutUserPolicy` and `PutUserPermissionsBoundary`, so no P2 email comes for them; a later domain deploy that changes the user's policy or boundary does send one, as expected.
+3. **Verify DNS:**
+   ```bash
+   dig +short MX supplycheckout.com        # 10 mx1.improvmx.com.  20 mx2.improvmx.com.
+   dig +short TXT supplycheckout.com       # "v=spf1 include:amazonses.com -all" (unchanged)
+   dig +short TXT mail.supplycheckout.com  # "v=spf1 include:amazonses.com ~all" (unchanged)
+   dig +short TXT _dmarc.supplycheckout.com
+   ```
+   In ImprovMX's dashboard, click "Check again" until the MX records show as found and it says email forwarding is active. **Ignore its SPF warning**: forwarding doesn't need it. Then send a message to support@supplycheckout.com from an address that isn't your Gmail (a phone's mail app, a friend's): it should arrive in Gmail within a minute, and ImprovMX's log shows it.
+4. **SMTP credentials for the IAM user.** Create an access key (this sends a P2 email, `CreateAccessKey` on the support SMTP user: expected), turn its secret into an SES SMTP password, and keep only the result, in Gmail:
+   ```bash
+   aws iam create-access-key --profile supply-prod --user-name supply-checkout-prod-support-smtp \
+     --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text
+   # Derive the SMTP password (AWS's documented algorithm). Paste the secret at the prompt; nothing is echoed or saved.
+   python3 -c 'import base64,getpass,hmac,hashlib
+   s=lambda k,m: hmac.new(k,m.encode(),hashlib.sha256).digest()
+   k=("AWS4"+getpass.getpass("Secret access key: ")).encode()
+   for m in ("11111111","us-east-1","ses","aws4_request","SendRawEmail"): k=s(k,m)
+   print(base64.b64encode(bytes([4])+k).decode())'
+   ```
+   The SMTP user name is the access key ID; the password is what the script prints. Close the terminal afterwards (or clear its scrollback).
+5. **Gmail "send as".** In Gmail, Settings, **Accounts and Import**, "Send mail as", **Add another email address**: name **exactly** `Supply Checkout Support` (the policy requires that display name), address `support@supplycheckout.com`, leave "Treat as an alias" checked. SMTP server `email-smtp.us-east-1.amazonaws.com`, port `587`, the user name and password from step 4, **Secured connection using TLS**. Gmail emails a confirmation code to support@, which ImprovMX forwards to you; enter it. Then set "When replying to a message" to **Reply from the same address the message was sent to**.
+6. **Signature.** In Settings, **General**, Signature, create one for support@ (choose it under "Signature defaults" for `support@supplycheckout.com`): your name, "Supply Checkout support", and a link to `https://supplycheckout.com` (the help center, once `supply-checkout-h9c` publishes it).
+7. **Auto-reply.** In Settings, **Advanced**, turn on **Templates**. Compose a message from support@ with the subject `We got your message` and a body like "Thanks for writing to Supply Checkout support. We reply within 2 business days (the terms say the same). If you can't sign in or think someone else has, say so in the subject and we'll answer first.", then **⋮ → Templates → Save draft as template**. Then create a filter: search **To** `support@supplycheckout.com`, **Create filter**, check **Send template** (choose it) and **Apply the label** `Support`. It answers every message to support@, follow-ups in a thread included; that's fine at this volume. Check in step 8 that the auto-reply comes from support@ through SES: if Gmail sends it from your Gmail address instead, it still arrives (it passes DMARC for gmail.com) but shows your personal address, so turn the filter off and use a plain manual reply until there's a help desk.
+8. **Test.** While SES is in the sandbox, use an address you've verified in SES ([Domain and email](#domain-and-email), step 3).
+   1. **A reply.** From that address, email support@. Check the auto-reply arrives, then reply to the message from Gmail (the From should be `Supply Checkout Support <support@supplycheckout.com>`). On the receiving side, "Show original" must show `SPF: PASS` (domain `mail.supplycheckout.com`), `DKIM: PASS` (domain `supplycheckout.com`) and `DMARC: PASS`. If Gmail can't send at all and the bounce says the user isn't authorized, check the display name is exactly `Supply Checkout Support`; if it is, SES doesn't apply `ses:FromDisplayName` to SMTP the way this assumes: record that on the bead and ask for the condition to be removed.
+   2. **What the policy refuses.** Send through SES SMTP with the same credentials, envelope sender support@ and header From noreply@, to the verified address (`swaks` or `curl` with `--mail-from support@supplycheckout.com` and a message whose `From:` header is `Supply Checkout Support <noreply@supplycheckout.com>`). It **must be refused** (`554 Access denied`). Then try envelope `noreply@` and header `support@`: also refused. Record both results on `supply-checkout-6qd`. If the first is accepted, the key can send as any address at the domain, as "What the key can do" says: keep the alerts and rotation, and note it on the bead.
+   3. A minute or so later, `aws cloudwatch list-metrics --profile supply-prod --region us-east-1 --namespace AWS/SES --metric-name Send` should list `ses:caller-identity` = `supply-checkout-prod-support-smtp`.
+
+**Rotating the key** (every 90 days, and at once if Gmail, the laptop or the Google account may have been compromised). The user should have exactly one key; each step sends an expected P2 email.
+
+```bash
+U=supply-checkout-prod-support-smtp
+aws iam list-access-keys --profile supply-prod --user-name $U \
+  --query 'AccessKeyMetadata[].[AccessKeyId,Status,CreateDate]' --output text   # exactly one, Active, under 90 days old
+aws iam get-access-key-last-used --profile supply-prod --access-key-id <key ID> \
+  --query 'AccessKeyLastUsed.[LastUsedDate,ServiceName,Region]' --output text  # ses, us-east-1, when you last replied
+```
+
+To rotate: create a new key and SMTP password (step 4), change the password and user name in Gmail's "send as" settings (Settings, Accounts and Import, "edit info"), send a test reply, then deactivate and delete the old key (`aws iam update-access-key --status Inactive …`, then `aws iam delete-access-key …`). Afterwards `list-access-keys` must show exactly one key again.
+
+#### When the support SMTP key may be leaked
+
+The P2 alerts: a change to the support SMTP user nobody made (a new key or other credential, a policy, a group, a password, its boundary, a rename, or a new version of its boundary policy), or **Support SMTP sends** (over 50 in an hour or 150 in a day).
+
+1. Deactivate every key at once: `aws iam list-access-keys --profile supply-prod --user-name supply-checkout-prod-support-smtp`, then `aws iam update-access-key --profile supply-prod --user-name supply-checkout-prod-support-smtp --access-key-id <id> --status Inactive` for each. Support replies stop until step 4.
+2. Undo whatever the CloudTrail event shows was changed (the alert names its event ID): delete an extra key, credential, certificate, SSH key, attached or inline policy, group membership or login profile, and rename the user back (`aws iam update-user --user-name <new name> --new-user-name supply-checkout-prod-support-smtp`). A redeploy **doesn't** restore a removed or changed boundary or policy (CloudFormation doesn't notice the drift), so put them back by hand and then check for drift:
+   ```bash
+   U=supply-checkout-prod-support-smtp
+   ACCOUNT=$(aws sts get-caller-identity --profile supply-prod --query Account --output text)
+   BOUNDARY="arn:aws:iam::$ACCOUNT:policy/smtp/$U-boundary"
+   # The boundary: back on the user, and its CloudFormation version the default again
+   aws iam put-user-permissions-boundary --profile supply-prod --user-name $U --permissions-boundary "$BOUNDARY"
+   aws iam list-policy-versions --profile supply-prod --policy-arn "$BOUNDARY"   # find the version CloudFormation wrote (created before the alert)
+   aws iam set-default-policy-version --profile supply-prod --policy-arn "$BOUNDARY" --version-id <that version>
+   aws iam delete-policy-version --profile supply-prod --policy-arn "$BOUNDARY" --version-id <the attacker's version>
+   # The inline policy: its name and document are in the domain stack's template (SupportSmtpUserDefaultPolicy)
+   aws iam list-user-policies --profile supply-prod --user-name $U
+   aws cloudformation detect-stack-drift --profile supply-prod --region us-east-1 --stack-name supply-checkout-prod-us-east-1-domain
+   aws cloudformation describe-stack-resource-drifts --profile supply-prod --region us-east-1 --stack-name supply-checkout-prod-us-east-1-domain \
+     --stack-resource-drift-status-filters MODIFIED DELETED --query 'StackResourceDrifts[].[LogicalResourceId,StackResourceDriftStatus]' --output text
+   ```
+   If the inline policy is missing or modified, `aws iam put-user-policy --user-name $U --policy-name <its name> --policy-document file://policy.json` with the document from `npx cdk synth supply-checkout-prod-us-east-1-domain`. Drift detection should then report nothing for the user, its policy or the boundary.
+3. Look at what was sent: SES's sending statistics and the `SendsByCaller` metric for the user, and bounces and complaints on the email events topic. If mail went out as the domain that you didn't send, treat it as a security incident: tell the people it reached that it wasn't from us.
+4. Make a new key and SMTP password (steps 4 and 5) once the cause is understood.
+
+**Where support@ is published.** Today: the Stripe invoice and receipt emails' support address (Stripe Dashboard, **Settings, Business, Public details**, see [Billing](#billing)) and the Google sign-in consent screen's support email ([Sign-in](#sign-in)) are owner settings to fill in with it; the legal drafts in `docs/legal/` still say `[SUPPORT EMAIL]`. Not yet: the app (an in-app help link, `supply-checkout-h9c`), the security notice emails, which say "contact Supply Checkout support" without an address (`supply-checkout-3sv.12`), the landing page (`supply-checkout-21q`), and app store listings (phase 2).
 
 ## Sign-in
 

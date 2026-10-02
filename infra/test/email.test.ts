@@ -328,8 +328,13 @@ describe("grantSendEmail", () => {
           ? [expect.stringMatching(/^SecurityNoticesRole/)]
           : [];
       expect(senders, stack.stackName).toEqual(expected);
-      // No other SES action anywhere (no raw or templated sends)
-      expect(JSON.stringify(policies)).not.toMatch(/ses:Send(Raw|Templated|Bulk)/);
+      // No other SES send anywhere: no templated or bulk sends, and raw sends
+      // only for the support SMTP user (supply-checkout-6qd), as support@
+      expect(JSON.stringify(policies)).not.toMatch(/ses:Send(Templated|Bulk)/);
+      const rawSenders = Object.entries(policies)
+        .filter(([, p]) => JSON.stringify(p).includes("ses:SendRawEmail"))
+        .map(([id]) => id);
+      expect(rawSenders, stack.stackName).toEqual(stack.stackName === `supply-checkout-prod-${EAST}-domain` ? [expect.stringMatching(/^SupportSmtpUserDefaultPolicy/)] : []);
     }
   });
 });

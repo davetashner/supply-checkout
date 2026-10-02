@@ -8,7 +8,7 @@ import { AwsSolutionsChecks } from "cdk-nag";
 import type { Construct } from "constructs";
 import { describe, expect, it } from "vitest";
 import { BusinessMetric } from "../../backend/src/observability/names.js";
-import { APPROVED_REGIONS, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
+import { APPROVED_REGIONS, configFromContext, type DeploymentConfig, GLOBAL_SERVICES_REGION } from "../lib/config.js";
 import { alarmContactParameter, alarmContactsFromContext, alarmRecipientParameterPrefix } from "../lib/observability/alarm-topics.js";
 import { LOG_RETENTION } from "../lib/observability/defaults.js";
 import { costAlertsFromContext, DEFAULT_COST_ANOMALY_USD, DEFAULT_MONTHLY_BUDGET_USD } from "../lib/observability/cost-alerts.js";
@@ -36,6 +36,7 @@ import {
   STUCK_IMPORT_AFTER_MINUTES,
 } from "../../backend/src/ops/names.js";
 import { DELETIONS_BUCKET_CHANGE_EVENTS } from "../lib/observability/deletion-records-watch.js";
+import { SUPPORT_SMTP_BOUNDARY_EVENTS, SUPPORT_SMTP_USER_EVENTS } from "../lib/observability/support-smtp-watch.js";
 import { addBackupAccount, addSupplyCheckout } from "../lib/supply-checkout.js";
 import {
   ALARM_KEY_ALIAS_EVENTS,
@@ -67,6 +68,7 @@ import {
   EVENT_PATTERN_LIMIT,
   OPERATOR_RULE_SUFFIXES,
   OPERATOR_GROUP_WATCH_RULE_SUFFIX,
+  SUPPORT_SMTP_RULE_SUFFIX,
   OPERATOR_POOL_RULE_STATE,
   GROUP_SNAPSHOT_EVENTS,
   GROUP_WATCH_ROLE_FUNCTION_EVENTS,
@@ -222,7 +224,7 @@ describe("alarm topics", () => {
         // (and the P2 topic takes the alert-route rule's, tested below)
         // (and the deletion records bucket's change rule, tested with the watch)
         // (and the global services region's P2 topic takes the budget's and Cost Anomaly Detection's, tested with the cost alerts)
-        const allow = all.filter((a) => !["AllowOperatorPoolAlertToPublish", "AllowBackupChangeAlertsToPublish", "AllowAlertRouteChangesToPublish", "AllowDeletionsBucketAlertToPublish", "AllowBudgetsToPublish", "AllowCostAnomaliesToPublish"].includes(String(a.Sid)));
+        const allow = all.filter((a) => !["AllowOperatorPoolAlertToPublish", "AllowBackupChangeAlertsToPublish", "AllowAlertRouteChangesToPublish", "AllowDeletionsBucketAlertToPublish", "AllowSupportSmtpUserAlertToPublish", "AllowBudgetsToPublish", "AllowCostAnomaliesToPublish"].includes(String(a.Sid)));
         if (all.length !== allow.length) expect([r, topics[0]]).toEqual([EAST, expect.stringMatching(/^AlarmTopicsP[12]/)]);
         expect(allow).toEqual([
           {
@@ -467,7 +469,7 @@ describe("journey alarms (docs/journeys.md)", () => {
       // The purge's own alarm is with the purge, and the operator audit and group watches' are with the watches, in the primary region only (tested below)
       const alarms = Object.values(t.findResources("AWS::CloudWatch::Alarm"))
         .map((a) => a.Properties)
-        .filter((a) => !["supply-checkout-prod-p2-deletion-not-running", "supply-checkout-prod-p2-seat-reconcile-not-running"].includes(a.AlarmName) && !/operator-audit|operator-group|deletion-record|site-down|web-router|rum-events/.test(String(a.AlarmName)));
+        .filter((a) => !["supply-checkout-prod-p2-deletion-not-running", "supply-checkout-prod-p2-seat-reconcile-not-running"].includes(a.AlarmName) && !/operator-audit|operator-group|deletion-record|support-smtp|site-down|web-router|rum-events/.test(String(a.AlarmName)));
       const specs = journeyAlarmSpecs(r, "t", "api", "prod").filter((s) => r === config.primaryRegion || !s.primaryOnly);
       expect(alarms.map((a) => a.AlarmName).sort()).toEqual(
         specs.map((s) => `supply-checkout-prod-${s.severity.toLowerCase()}-${s.id}`).sort(),
@@ -1632,7 +1634,7 @@ describe("operator pool alerts (ADR 0015)", () => {
   function operatorRules() {
     const t = observability();
     // The deletion records watch's rules are tested with the watch
-    const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch"));
+    const rules = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch") && !id.startsWith("SupportSmtpWatch"));
     expect(rules).toHaveLength(30);
     const byId = (prefix: string) => {
       // Logical IDs end in an 8-character hash
@@ -1742,8 +1744,10 @@ describe("operator pool alerts (ADR 0015)", () => {
     // Only these rules may publish
     const statements = Object.values(t.findResources("AWS::SNS::TopicPolicy")).flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
     const fromEvents = statements.filter((st) => (st.Principal as { Service?: unknown } | undefined)?.Service === "events.amazonaws.com");
-    expect(fromEvents).toHaveLength(4);
+    expect(fromEvents).toHaveLength(5);
     expect(fromEvents).toEqual(expect.arrayContaining([
+      // The support SMTP user's rule, on the P2 topic (tested with the watch)
+      expect.objectContaining({ Sid: "AllowSupportSmtpUserAlertToPublish" }),
       expect.objectContaining({
         Sid: "AllowOperatorPoolAlertToPublish",
         Condition: { ArnEquals: { "aws:SourceArn": [admin, protection, branding, self, watchChanges, roleChanges, logChanges, tableChanges, alarmChanges, groupAlarmChanges, snapshotChanges, ...inputs, ...authorizers, routeChanges, keyAndTrailChanges, trailBucketChanges, tampering, tamperingWatch, deletionsTampering].map((r) => ({ "Fn::GetAtt": [r.id, "Arn"] })) } },
@@ -1874,7 +1878,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     const someSsm = Object.keys(parameters).find(isSsm) ?? "";
     expect(someSsm).not.toBe("");
     expect(ssmRefs({ "Fn::Sub": `x-\${${someSsm}}-\${AWS::Region}` })).toEqual([parameters[someSsm].Default]);
-    const operatorRuleResources = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch"));
+    const operatorRuleResources = Object.entries(t.findResources("AWS::Events::Rule")).filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch") && !id.startsWith("SupportSmtpWatch"));
     const watchResources = [
       ...Object.entries(t.findResources("AWS::Lambda::EventSourceMapping")),
       ...Object.entries(t.findResources("AWS::Lambda::Function")).filter(([id]) => id.startsWith("OperatorAuditWatch") || id.startsWith("OperatorGroupWatch")),
@@ -1978,7 +1982,7 @@ describe("operator pool alerts (ADR 0015)", () => {
     for (const rule of [tampering, tamperingWatch]) expect(JSON.stringify(rule.props.Targets)).toContain("an operator alert rule");
     // So every rule the prefix is meant to cover must have a fixed name under it: every rule in the stack but the deletion records watch's three
     const names = Object.entries(t.findResources("AWS::Events::Rule"))
-      .filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch") && !id.startsWith("DeletionsRuleTampering"))
+      .filter(([id, r]) => r.Properties.EventPattern && !id.startsWith("DeletionRecordsWatch") && !id.startsWith("SupportSmtpWatch") && !id.startsWith("DeletionsRuleTampering"))
       .map(([, r]) => r.Properties.Name as unknown);
     expect(names).toHaveLength(Object.keys(OPERATOR_RULE_SUFFIXES).length);
     expect(names.sort()).toEqual(Object.values(OPERATOR_RULE_SUFFIXES).map((suffix) => `supply-checkout-prod-operator-${suffix}`).sort());
@@ -2618,6 +2622,130 @@ describe("deletion records watch (supply-checkout-72d.16)", () => {
       Resource: { Ref: expect.stringMatching(/^AlarmTopicsP1/) },
       Condition: { ArnEquals: { "aws:SourceArn": { "Fn::GetAtt": [id, "Arn"] } } },
     });
+  });
+});
+
+describe("support SMTP user watch (supply-checkout-6qd)", () => {
+  const supportRules = (t: Template) => Object.entries(t.findResources("AWS::Events::Rule")).filter(([id]) => id.startsWith("SupportSmtpWatch"));
+  const supportAlarms = (t: Template) => Object.values(t.findResources("AWS::CloudWatch::Alarm")).map((a) => a.Properties).filter((a) => String(a.AlarmName).includes("support-smtp"));
+
+  it("tells P2 when the user gets or loses a key, credential, policy, group, password or boundary, or is renamed, or its boundary policy is rewritten, whoever does it", () => {
+    expect([...SUPPORT_SMTP_USER_EVENTS].sort()).toEqual(
+      [
+        "CreateAccessKey", "UpdateAccessKey", "DeleteAccessKey", "PutUserPolicy", "AttachUserPolicy", "AddUserToGroup", "CreateLoginProfile", "UpdateLoginProfile",
+        "PutUserPermissionsBoundary", "DeleteUserPermissionsBoundary", "UpdateUser", "CreateServiceSpecificCredential", "UploadSigningCertificate", "UploadSSHPublicKey",
+      ].sort(),
+    );
+    expect([...SUPPORT_SMTP_BOUNDARY_EVENTS].sort()).toEqual(["CreatePolicyVersion", "SetDefaultPolicyVersion"]);
+    const t = observability(GLOBAL_SERVICES_REGION);
+    const rules = supportRules(t);
+    expect(rules).toHaveLength(1);
+    const [id, rule] = rules[0] as [string, { Properties: Record<string, unknown> }];
+    expect(rule.Properties.Name).toBe(operatorRuleName("prod", SUPPORT_SMTP_RULE_SUFFIX));
+    // IAM's events, matched without regard to case (IAM names aren't case-sensitive); no
+    // userIdentity filter, so CloudFormation's calls alert too
+    expect(rule.Properties.EventPattern).toEqual({
+      source: ["aws.iam"],
+      "detail-type": ["AWS API Call via CloudTrail"],
+      detail: {
+        eventSource: ["iam.amazonaws.com"],
+        $or: [
+          { eventName: [...SUPPORT_SMTP_USER_EVENTS], requestParameters: { userName: [{ "equals-ignore-case": "supply-checkout-prod-support-smtp" }] } },
+          {
+            eventName: [...SUPPORT_SMTP_BOUNDARY_EVENTS],
+            requestParameters: {
+              policyArn: [{ "equals-ignore-case": { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":iam::", { Ref: "AWS::AccountId" }, ":policy/smtp/supply-checkout-prod-support-smtp-boundary"]] } }],
+            },
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(rule.Properties.EventPattern)).not.toContain("userIdentity");
+    expect(rule.Properties.Targets).toEqual([expect.objectContaining({ Arn: { Ref: expect.stringMatching(/^AlarmTopicsP2/) } })]);
+    const target = JSON.stringify(rule.Properties.Targets);
+    expect(target).toContain("$.detail.eventID");
+    expect(target).toContain("When the support SMTP key may be leaked");
+    // Only this rule, by ARN, may publish to P2 for it
+    const statements = Object.values(t.findResources("AWS::SNS::TopicPolicy")).flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
+    expect(statements.find((st) => st.Sid === "AllowSupportSmtpUserAlertToPublish")).toEqual({
+      Sid: "AllowSupportSmtpUserAlertToPublish",
+      Effect: "Allow",
+      Principal: { Service: "events.amazonaws.com" },
+      Action: "sns:Publish",
+      Resource: { Ref: expect.stringMatching(/^AlarmTopicsP2/) },
+      Condition: { ArnEquals: { "aws:SourceArn": { "Fn::GetAtt": [id, "Arn"] } } },
+    });
+    // EventBridge may use the topics' key, for this account only
+    const keyStatements = Object.values(t.findResources("AWS::KMS::Key")).flatMap((k) => (k.Properties.KeyPolicy as { Statement: Record<string, unknown>[] }).Statement);
+    expect(keyStatements.find((st) => st.Sid === "AllowSupportSmtpUserAlertToEncrypt")).toMatchObject({
+      Principal: { Service: "events.amazonaws.com" },
+      Action: ["kms:Decrypt", "kms:GenerateDataKey*"],
+      Condition: { StringEquals: { "aws:SourceAccount": { Ref: "AWS::AccountId" } } },
+    });
+  });
+
+  it("is watched by the operator rule-tampering rules, which are in the same region for prod", () => {
+    // Prod's primary region (the first default region) is GLOBAL_SERVICES_REGION, where IAM's events and this rule are
+    const prod = configFromContext({ tryGetContext: (key: string) => (key === "envName" ? "prod" : undefined) }, {});
+    expect(prod.primaryRegion).toBe(GLOBAL_SERVICES_REGION);
+    expect(config.primaryRegion).toBe(GLOBAL_SERVICES_REGION);
+    const t = observability(GLOBAL_SERVICES_REGION);
+    const name = operatorRuleName("prod", SUPPORT_SMTP_RULE_SUFFIX);
+    expect(name.startsWith(operatorRulePrefix("prod"))).toBe(true);
+    expect(name.length).toBeLessThanOrEqual(64);
+    const tampering = Object.values(t.findResources("AWS::Events::Rule"))
+      .map((r) => r.Properties)
+      .filter((r) => [operatorRuleName("prod", OPERATOR_RULE_SUFFIXES.OperatorRuleTampering), tamperingWatchRuleName("prod")].includes(r.Name));
+    expect(tampering).toHaveLength(2);
+    for (const rule of tampering) {
+      const or = (rule.EventPattern as { detail: { $or: { requestParameters: Record<string, unknown[]> }[] } }).detail.$or;
+      for (const branch of or) {
+        const watched = Object.values(branch.requestParameters)[0] as unknown[];
+        expect(watched).toContainEqual({ prefix: operatorRulePrefix("prod") });
+      }
+    }
+  });
+
+  it("tells P2 when the user sends more than 50 messages in an hour, or 150 in a day, from SES's sends by caller identity", () => {
+    const alarms = supportAlarms(observability(EAST));
+    expect(alarms.map((a) => a.AlarmName).sort()).toEqual(["supply-checkout-prod-p2-support-smtp-daily-sends", "supply-checkout-prod-p2-support-smtp-sends"]);
+    const metric = (period: number) => [
+      {
+        Id: "m1",
+        ReturnData: true,
+        Label: expect.stringMatching(/^Support SMTP sends in /),
+        MetricStat: {
+          Metric: { Namespace: "AWS/SES", MetricName: "Send", Dimensions: [{ Name: "ses:caller-identity", Value: "supply-checkout-prod-support-smtp" }] },
+          Period: period,
+          Stat: "Sum",
+        },
+      },
+    ];
+    for (const [name, period, threshold] of [["supply-checkout-prod-p2-support-smtp-sends", 3600, 50], ["supply-checkout-prod-p2-support-smtp-daily-sends", 86400, 150]] as const) {
+      const alarm = alarms.find((a) => a.AlarmName === name);
+      expect(alarm).toMatchObject({
+        Metrics: metric(period),
+        Threshold: threshold,
+        ComparisonOperator: "GreaterThanThreshold",
+        EvaluationPeriods: 1,
+        TreatMissingData: "notBreaching",
+      });
+      expect(alarm?.AlarmActions[0].Ref).toMatch(/^AlarmTopicsP2/);
+      expect(alarm?.OKActions).toEqual(alarm?.AlarmActions);
+      expect(String(alarm?.AlarmDescription)).toContain("When the support SMTP key may be leaked");
+    }
+  });
+
+  it("is only in prod with supportMail, and only where IAM's and SES's events are", () => {
+    const west = observability(WEST);
+    expect(supportRules(west)).toEqual([]);
+    expect(supportAlarms(west)).toEqual([]);
+    for (const t of [observability(EAST, { supportMail: "" }), Template.fromStack(build({}, { envName: "staging" }).region(EAST).observability)]) {
+      expect(supportRules(t)).toEqual([]);
+      expect(supportAlarms(t)).toEqual([]);
+      const statements = Object.values(t.findResources("AWS::SNS::TopicPolicy")).flatMap((p) => (p.Properties.PolicyDocument as { Statement: Record<string, unknown>[] }).Statement);
+      expect(statements.find((st) => st.Sid === "AllowSupportSmtpUserAlertToPublish")).toBeUndefined();
+    }
   });
 });
 
