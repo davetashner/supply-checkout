@@ -15,6 +15,7 @@
 // - recordWarning / warnedAt: when the deletion warning went out.
 // - closeLapsedTeam: closes the team for the purge, on the condition that
 //   nothing about it changed since it was read.
+// - claimLapseRun / releaseLapseRun: the lease that lets one run go at a time.
 
 import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type Db, connection } from "./client.js";
@@ -37,6 +38,14 @@ export const LAPSE_RECORD_DAYS = 120;
  * team closed by mistake, after "Lapsed-team closures held" or "high" fires.
  */
 export const LAPSE_PURGE_DELAY_HOURS = 24;
+
+/**
+ * The lapsed-team job doesn't close a team within this long of an owner
+ * starting Checkout (`stripeCheckoutAt`, linkStripeCustomer): longer than a
+ * Checkout Session lasts (24 hours), so no owner pays for a team closed under
+ * them.
+ */
+export const LAPSE_CHECKOUT_GUARD_HOURS = 25;
 
 /** `system:` closer of a lapsed team (`closedBy`): never a user ID. */
 export const LAPSED_CLOSER = "system:lapsed";
@@ -173,6 +182,45 @@ export async function claimLapseNotice(db: Db, teamId: string, kind: string, anc
   }
 }
 
+/**
+ * Claims the job's lease (`LAPSE#RUN` / `LEASE`) for `leaseMs` from `now`:
+ * true unless another run holds one that hasn't run out. So a retried, a
+ * duplicate or a hand-started invocation never runs alongside another (its
+ * closure cap is per run). A run that dies keeps it until it runs out.
+ */
+export async function claimLapseRun(db: Db, now: Date, leaseMs: number): Promise<boolean> {
+  try {
+    await connection(db).doc.send(
+      new PutCommand({
+        TableName: db.tableName,
+        Item: { ...keys.lapseRun(), type: "lapseLease", sentAt: now.toISOString(), expiresAt: Math.ceil((now.getTime() + leaseMs) / 1000) },
+        ConditionExpression: "attribute_not_exists(PK) OR expiresAt < :now",
+        ExpressionAttributeValues: { ":now": Math.floor(now.getTime() / 1000) },
+      }),
+    );
+    return true;
+  } catch (error) {
+    if (conditionFailed(error)) return false;
+    throw error;
+  }
+}
+
+/** Gives up the lease the run claimed at `now` (claimLapseRun), if it still holds it. */
+export async function releaseLapseRun(db: Db, now: Date): Promise<void> {
+  try {
+    await connection(db).doc.send(
+      new PutCommand({
+        TableName: db.tableName,
+        Item: { ...keys.lapseRun(), type: "lapseLease", sentAt: now.toISOString(), expiresAt: 0 },
+        ConditionExpression: "sentAt = :mine",
+        ExpressionAttributeValues: { ":mine": now.toISOString() },
+      }),
+    );
+  } catch (error) {
+    if (!conditionFailed(error)) throw error;
+  }
+}
+
 /** When the deletion warning for `deleteAfter` went out (ISO 8601), if it has. */
 export async function warnedAt(db: Db, teamId: string, deleteAfter: string): Promise<string | undefined> {
   const { Item } = await connection(db).doc.send(new GetCommand({ TableName: db.tableName, Key: keys.lapseWarned(teamId, deleteAfter), ConsistentRead: true, ProjectionExpression: "sentAt" }));
@@ -207,10 +255,11 @@ export async function recordWarning(db: Db, teamId: string, deleteAfter: string,
  * to LAPSED_CLOSER, and puts it in the closed-teams index, as closeTeam does,
  * with the version moved. Until the purge starts, it can be reopened as an
  * owner's closure can.
- * Conditioned on the team being there, not closed or being purged, and its
+ * Conditioned on the team being there, not closed or being purged, its
  * version being the one read (`team.version`: a Stripe event, a customer
  * linked at Checkout, a comp, an owner's change or a closure since then
- * moves it); otherwise nothing is closed (false), and the next run decides
+ * moves it), and no owner having started Checkout within
+ * LAPSE_CHECKOUT_GUARD_HOURS (`stripeCheckoutAt`); otherwise nothing is closed (false), and the next run decides
  * again. Its invites go with the purge; nobody can accept
  * them meanwhile (a closed team takes nobody).
  */
@@ -224,9 +273,10 @@ export async function closeLapsedTeam(db: Db, team: Pick<LapseTeam, "teamId" | "
         TableName: db.tableName,
         Key: keys.team(id(team.teamId, "team ID")),
         UpdateExpression: "SET closedAt = :at, closedBy = :by, purgeAfter = :purge, GSI1PK = :gpk, GSI1SK = :gsk, #version = #version + :one",
-        ConditionExpression: "attribute_exists(PK) AND attribute_not_exists(closedAt) AND attribute_not_exists(purging) AND #version = :version",
+        ConditionExpression:
+          "attribute_exists(PK) AND attribute_not_exists(closedAt) AND attribute_not_exists(purging) AND #version = :version AND (attribute_not_exists(stripeCheckoutAt) OR stripeCheckoutAt < :checkout)",
         ExpressionAttributeNames: { "#version": "version" },
-        ExpressionAttributeValues: { ":at": at, ":purge": purgeAfter, ":by": LAPSED_CLOSER, ":gpk": index.GSI1PK, ":gsk": index.GSI1SK, ":one": 1, ":version": team.version },
+        ExpressionAttributeValues: { ":checkout": new Date(now.getTime() - LAPSE_CHECKOUT_GUARD_HOURS * 3_600_000).toISOString(), ":at": at, ":purge": purgeAfter, ":by": LAPSED_CLOSER, ":gpk": index.GSI1PK, ":gsk": index.GSI1SK, ":one": 1, ":version": team.version },
       }),
     );
     return true;

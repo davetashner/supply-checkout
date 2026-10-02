@@ -7,9 +7,11 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   claimLapseNotice,
+  claimLapseRun,
   closeLapsedTeam,
   authorizeTeam,
   createTeam,
+  LAPSE_CHECKOUT_GUARD_HOURS,
   LAPSE_PURGE_DELAY_HOURS,
   LAPSED_CLOSER,
   linkStripeCustomer,
@@ -19,6 +21,7 @@ import {
   purgeTeam,
   readLapseTeam,
   recordWarning,
+  releaseLapseRun,
   reopenTeam,
   warnedAt,
 } from "../src/data/index.js";
@@ -54,24 +57,31 @@ describe.skipIf(!endpoint)("the lapsed-team job's data (DynamoDB Local)", () => 
     // A change since the read: not closed
     expect(await closeLapsedTeam(table.db, { teamId: team.teamId, version: 0 }, now)).toBe(false);
     expect(await closeLapsedTeam(table.db, { teamId: "no-such-team", version: 1 }, now)).toBe(false);
-    // Nor once an owner has linked a Stripe customer (starting Checkout), which moves the version
+    // Nor once an owner has linked a Stripe customer (starting Checkout, a day and more ago), which moves the version
     const customer = `cus_${randomUUID().replaceAll("-", "")}`;
-    await linkStripeCustomer(table.db, context, customer);
+    const dayAgo = new Date(now.getTime() - (LAPSE_CHECKOUT_GUARD_HOURS + 1) * 3_600_000);
+    await linkStripeCustomer(table.db, context, customer, dayAgo);
     expect(await closeLapsedTeam(table.db, read as { teamId: string; version: number }, now)).toBe(false);
     const linked = await readLapseTeam(table.db, team.teamId);
     expect(linked).toMatchObject({ stripeCustomerId: customer, version: 2 });
-    // Linking the same customer again (a retried Checkout) moves it again, and that's all
-    await linkStripeCustomer(table.db, context, customer);
+    // Every checkout links it again, moving the version, and nothing closes the team within a Checkout Session's life of it
+    await linkStripeCustomer(table.db, context, customer, now);
     expect(await closeLapsedTeam(table.db, linked as { teamId: string; version: number }, now)).toBe(false);
+    const recent = await readLapseTeam(table.db, team.teamId);
+    expect(recent).toMatchObject({ version: 3 });
+    expect(await closeLapsedTeam(table.db, recent as { teamId: string; version: number }, now)).toBe(false);
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ stripeCheckoutAt: now.toISOString() });
+    // Once that's past: closed
+    await linkStripeCustomer(table.db, context, customer, dayAgo);
     const again = await readLapseTeam(table.db, team.teamId);
-    expect(again).toMatchObject({ stripeCustomerId: customer, version: 3 });
+    expect(again).toMatchObject({ stripeCustomerId: customer, version: 4 });
     expect(await closeLapsedTeam(table.db, again as { teamId: string; version: number }, now)).toBe(true);
     // Deleted a day later, not at once, so a closure made by mistake can still be reopened
     const purgeAfter = new Date(now.getTime() + LAPSE_PURGE_DELAY_HOURS * 3_600_000).toISOString();
-    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ closedAt: now.toISOString(), closedBy: LAPSED_CLOSER, purgeAfter, GSI1SK: `${purgeAfter}#${team.teamId}`, version: 4 });
+    expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toMatchObject({ closedAt: now.toISOString(), closedBy: LAPSED_CLOSER, purgeAfter, GSI1SK: `${purgeAfter}#${team.teamId}`, version: 5 });
     // Closed: not listed again, and closing twice does nothing
     expect(await listLapseCandidates(table.db, now)).not.toContain(team.teamId);
-    expect(await closeLapsedTeam(table.db, { teamId: team.teamId, version: 4 }, now)).toBe(false);
+    expect(await closeLapsedTeam(table.db, { teamId: team.teamId, version: 5 }, now)).toBe(false);
     expect((await listTeamsToPurge(table.db, new Date(now.getTime() + 1000))).map((t) => t.teamId)).not.toContain(team.teamId);
 
     // Reopened within the day (by an owner here; an operator can too): open again, and listed as lapsing again
@@ -85,5 +95,22 @@ describe.skipIf(!endpoint)("the lapsed-team job's data (DynamoDB Local)", () => 
     expect((await listTeamsToPurge(table.db, later)).map((t) => t.teamId)).toContain(team.teamId);
     expect(await purgeTeam(table.db, team.teamId, later)).toMatchObject({ skipped: false });
     expect(await rawItem(table.db, `TEAM#${team.teamId}`, "META")).toBeUndefined();
+  });
+
+  it("lets one run hold the lease at a time, until it gives it up or it runs out", async () => {
+    // The lease is one item for the whole table: start from a time after any other test's lease
+    const t0 = new Date(Date.now() + 365 * DAY);
+    const lease = 6 * 60_000;
+    expect(await claimLapseRun(table.db, t0, lease)).toBe(true);
+    expect(await claimLapseRun(table.db, new Date(t0.getTime() + 60_000), lease)).toBe(false);
+    // Only the holder gives it up
+    await releaseLapseRun(table.db, new Date(t0.getTime() + 60_000));
+    expect(await claimLapseRun(table.db, new Date(t0.getTime() + 120_000), lease)).toBe(false);
+    await releaseLapseRun(table.db, t0);
+    const t1 = new Date(t0.getTime() + 180_000);
+    expect(await claimLapseRun(table.db, t1, lease)).toBe(true);
+    // Not given up (the run died): free once it runs out
+    expect(await claimLapseRun(table.db, new Date(t1.getTime() + lease - 1000), lease)).toBe(false);
+    expect(await claimLapseRun(table.db, new Date(t1.getTime() + lease + 2000), lease)).toBe(true);
   });
 });

@@ -128,6 +128,9 @@ export const LAPSE_EVERY_HOURS = 1;
 /** How long one lapsed-team run may start new teams for; the function's timeout is a minute more. */
 export const LAPSE_BUDGET_MS = 4 * 60_000;
 
+/** How long a lapsed-team run's lease lasts (claimLapseRun): past the function's timeout, so a run that dies frees it well before the next hour's. */
+export const LAPSE_LEASE_MS = LAPSE_BUDGET_MS + 2 * 60_000;
+
 /**
  * The most lapsed teams one run closes for deletion: past it, teams due are
  * held for the next run (LapseClosuresHeld, "Lapsed-team closures held"), so

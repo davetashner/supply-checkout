@@ -7197,7 +7197,8 @@
                     "closedBy",
                     "purgeAfter",
                     "purging",
-                    "version"
+                    "version",
+                    "stripeCheckoutAt"
                   ]
                 },
                 "StringEqualsIfExists": {
@@ -7426,6 +7427,16 @@
         "OpsChecksTeamLapseRoleDefaultPolicy616541CD",
         "OpsChecksTeamLapseRoleFC9A4EAA"
       ]
+    },
+    "OpsChecksTeamLapseEventInvokeConfig44EF275E": {
+      "Type": "AWS::Lambda::EventInvokeConfig",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "OpsChecksTeamLapse8C86FEBE"
+        },
+        "MaximumRetryAttempts": 0,
+        "Qualifier": "$LATEST"
+      }
     },
     "OpsChecksTeamLapseXRayWrite73FE028B": {
       "Type": "AWS::IAM::Policy",

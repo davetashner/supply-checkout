@@ -200,6 +200,8 @@ export const keys = {
     SK: `NOTICE#${id(kind, "notice kind")}#${isoInstant(anchor)}#${id(userId, "user ID")}`,
   }),
   /** The lapsed-team job's record of when it warned a team's owners of its deletion on `deleteAfter`. */
+  /** The lapsed-team job's lease: one run at a time (claimLapseRun). `RUN` is no team ID (those are UUIDs), and its sort key no record of a team's. */
+  lapseRun: () => ({ PK: `${LAPSE_PREFIX}RUN`, SK: "LEASE" }),
   lapseWarned: (teamId: string, deleteAfter: string) => ({ PK: `${LAPSE_PREFIX}${id(teamId, "team ID")}`, SK: `WARNED#${isoInstant(deleteAfter)}` }),
   /** The team's settings (ADR 0017, section 2a): owners write it; only owners read its markup. */
   settings: (teamId: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: "SETTINGS" }),

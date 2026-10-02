@@ -143,6 +143,8 @@ export interface OpsChecksProps {
  *   the Stripe secret key. No Scan, no DeleteItem, no Query of a team's
  *   partition, so it never reads sheets, inventory or members' data.
  *   `lapseNotRunning` alarms when its LapseTeamsChecked gauge stops arriving.
+ *   It has no async retries, and one run at a time holds its lease (a
+ *   `LAPSE#RUN` record), so a timeout or duplicate never doubles its closures.
  *
  * The checks run every CHECK_EVERY_MINUTES from an EventBridge rule, each with its own
  * log group and a role that writes only to it. A failed run shows in the
@@ -417,6 +419,10 @@ export class OpsChecks extends Construct {
       },
       { every: Duration.hours(LAPSE_EVERY_HOURS), timeout: Duration.millis(LAPSE_BUDGET_MS + 60_000) },
     );
+    // No async retries either (the schedule's target has none): a run that times out waits for the next hour, so its
+    // closure cap holds per hour. Duplicates and hand-started runs are kept out by its lease (claimLapseRun), not by
+    // reserved concurrency, which would take from the account's unreserved pool (it must keep 100) and can fail the deploy
+    this.teamLapse.configureAsyncInvoke({ retryAttempts: 0 });
     this.teamLapse.addToRolePolicy(
       new PolicyStatement({
         sid: "LapsingTeamsIndexOnly",

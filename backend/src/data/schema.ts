@@ -331,13 +331,15 @@ export const LAPSE_READ_ATTRIBUTES = [
  * (UpdateItem, nothing returned): the closure it sets (`closedAt`,
  * `closedBy`, `purgeAfter` and the closed-teams index keys, so the hourly
  * purge deletes it) and the version it moves, and what its condition checks
- * (no closure or purge mark yet, and the version as read: every change to the
- * team's billing, the Stripe customer linked at Checkout included, moves it).
- * IAM can't tell a condition's name from one the update sets, so a buggy
- * update could set `purging` (which only stops the team being reopened), but
+ * (no closure or purge mark yet, the version as read: every change to the
+ * team's billing, the Stripe customer linked at Checkout included, moves it;
+ * and no Checkout started within LAPSE_CHECKOUT_GUARD_HOURS,
+ * `stripeCheckoutAt`). IAM can't tell a condition's name from one the update
+ * sets, so a buggy update could set `purging` (which only stops the team
+ * being reopened) or `stripeCheckoutAt` (which only delays its closure), but
  * never status, plan, comps or the Stripe IDs.
  */
-export const LAPSE_CLOSE_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "closedAt", "closedBy", "purgeAfter", "purging", "version"] as const;
+export const LAPSE_CLOSE_ATTRIBUTES = [PK, SK, GSI1PK, GSI1SK, "closedAt", "closedBy", "purgeAfter", "purging", "version", "stripeCheckoutAt"] as const;
 
 /** What the lapsed-team job may read of a team's owners in the operators' index (GSI3's `OPS#OWNERS#<teamId>` partitions): the keys and the owner's email, for the notices. */
 export const LAPSE_OWNER_ATTRIBUTES = [PK, SK, GSI3PK, GSI3SK, "email"] as const;
@@ -526,14 +528,15 @@ export const BILLING_UPDATE_ATTRIBUTES = [
  * The only attributes the billing function may name when it updates an item
  * in its team's partition (dynamodb:Attributes): the META item's keys, the
  * team's Stripe customer (linkStripeCustomer), `closedAt`, which its
- * condition checks is absent, and the `version` it moves (so the lapsed-team
- * job's closure, conditioned on the version it read, sees the link). So a
+ * condition checks is absent, and the `version` it moves and
+ * `stripeCheckoutAt` it sets (so the lapsed-team job's closure, conditioned
+ * on both, never closes a team under a Checkout). So a
  * checkout can't change the team's plan, status or anything else. IAM can't tell a condition's name from one the
  * update sets, so a buggy update could set `closedAt`, but never `purgeAfter`
  * or the purge index's keys: a team it marked closed would be read-only, not
  * deleted.
  */
-export const CUSTOMER_LINK_TEAM_ATTRIBUTES = [PK, SK, "stripeCustomerId", "closedAt", "version"] as const;
+export const CUSTOMER_LINK_TEAM_ATTRIBUTES = [PK, SK, "stripeCustomerId", "closedAt", "version", "stripeCheckoutAt"] as const;
 
 /**
  * The only attributes the billing function may name when it counts a team's

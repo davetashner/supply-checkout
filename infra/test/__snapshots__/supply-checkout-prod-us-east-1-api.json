@@ -1977,7 +1977,8 @@
                         "SK",
                         "stripeCustomerId",
                         "closedAt",
-                        "version"
+                        "version",
+                        "stripeCheckoutAt"
                       ]
                     },
                     "StringEqualsIfExists": {

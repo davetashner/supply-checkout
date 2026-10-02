@@ -1085,6 +1085,8 @@ describe("the dates the access rules count from (billingAccess, supply-checkout-
       { kind: "readOnly", teamName: "Echo Plumbing", reason: "subscription_ended", deletesAt },
     ]);
     expect(teamBody(meta() as never, "owner", new Date(NOW))).toMatchObject({ subscriptionEnded: true, readOnlyReason: "subscription_ended", readOnlyDeletesAt: deletesAt, readOnlyLastDay: at(ended + 30 * DAY_S * 1000).slice(0, 10) });
+    // Once that's passed (the job closes it once its warning's 7 days are up): no date in the past to show
+    expect(teamBody(meta() as never, "owner", new Date(Date.parse(deletesAt)))).toMatchObject({ readOnlyDeletesAt: deletesAt, readOnlyLastDay: null });
     // Subscribed again: a new subscription replaces the ended one
     subs.set("sub_test_2", subscription({ id: "sub_test_2", status: "active" }));
     await worker(message("customer.subscription.created", { eventId: "evt_test_2", subscription: "sub_test_2" }));

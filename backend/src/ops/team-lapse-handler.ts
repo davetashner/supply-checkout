@@ -68,6 +68,7 @@ import type { SubscriptionLike } from "../billing/subscription.js";
 import {
   billingAccess,
   claimLapseNotice,
+  claimLapseRun,
   closeLapsedTeam,
   type Db,
   deletionTime,
@@ -79,13 +80,14 @@ import {
   listOwnerEmails,
   readLapseTeam,
   recordWarning,
+  releaseLapseRun,
   trialEnd,
   warnedAt,
 } from "../data/index.js";
 import { EmailNotSentError, type Mailer, sendTeamNotice } from "../email/mailer.js";
 import type { TeamNoticeInput } from "../email/templates.js";
 import { BusinessMetric, type Observability } from "../observability/index.js";
-import { LAPSE_BUDGET_MS, LAPSE_MAX_CLOSURES_PER_RUN } from "./names.js";
+import { LAPSE_BUDGET_MS, LAPSE_LEASE_MS, LAPSE_MAX_CLOSURES_PER_RUN } from "./names.js";
 
 /** What the job needs from the Stripe client. */
 export interface LapseStripe {
@@ -315,9 +317,8 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
     return "closed";
   }
 
-  return async (): Promise<{ checked: number; closed: number; failed: number; held: number }> => {
-    const started = clock();
-    const now = new Date(started);
+  /** One run, holding the lease (see the run below). */
+  async function runOnce(started: number, now: Date): Promise<{ checked: number; closed: number; failed: number; held: number }> {
     const listed = await listLapseCandidates(db, now);
     // From a random place, so a run out of time doesn't leave the same teams every time
     const from = Math.floor((deps.random ?? Math.random)() * listed.length) % Math.max(1, listed.length);
@@ -348,5 +349,21 @@ export function createTeamLapseHandler(deps: TeamLapseDeps) {
     if (held) obs.logger.warn("Lapsed-team job held teams at its closure cap: the rest wait for the next run", { held, cap: LAPSE_MAX_CLOSURES_PER_RUN });
     obs.logger.info("Lapsed-team job ran", { listed: teams.length, closed: tally.closed, failed, held, readOnly: tally.readOnly, unstarted });
     return { checked: teams.length - unstarted, closed: tally.closed, failed, held };
+  }
+
+  // One run at a time (claimLapseRun): a retried, duplicate or hand-started invocation while another runs does
+  // nothing, so the closure cap holds per hour, not per invocation. The function has no async retries either.
+  return async (): Promise<{ checked: number; closed: number; failed: number; held: number; skipped?: true }> => {
+    const started = clock();
+    const now = new Date(started);
+    if (!(await claimLapseRun(db, now, LAPSE_LEASE_MS))) {
+      obs.logger.warn("Lapsed-team job skipped: another run holds the lease");
+      return { checked: 0, closed: 0, failed: 0, held: 0, skipped: true };
+    }
+    try {
+      return await runOnce(started, now);
+    } finally {
+      await releaseLapseRun(db, now);
+    }
   };
 }

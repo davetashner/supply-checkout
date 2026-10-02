@@ -1247,11 +1247,17 @@ describe("scheduled checks", () => {
     expect(by("OwnerEmailsIndexOnly")).toMatchObject({ Action: "dynamodb:Query", Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["OPS#OWNERS#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "GSI3PK", "GSI3SK", "email"] } } });
     expect(by("ReadTeamBilling")).toMatchObject({ Action: "dynamodb:GetItem", Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["TEAM#*"] }, "ForAllValues:StringEquals": { "dynamodb:Attributes": [...LAPSE_READ_ATTRIBUTES] } } });
     // The closure, never status, plan, comps or Stripe IDs
-    expect(by("CloseLapsedTeam")).toMatchObject({ Action: "dynamodb:UpdateItem", Condition: { "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "closedBy", "purgeAfter", "purging", "version"] }, StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" } } });
+    expect(by("CloseLapsedTeam")).toMatchObject({ Action: "dynamodb:UpdateItem", Condition: { "ForAllValues:StringEquals": { "dynamodb:Attributes": ["PK", "SK", "GSI1PK", "GSI1SK", "closedAt", "closedBy", "purgeAfter", "purging", "version", "stripeCheckoutAt"] }, StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" } } });
     expect(by("LapseRecords")).toMatchObject({ Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["LAPSE#*"] } } });
     expect(JSON.stringify(found)).not.toMatch(/dynamodb:(Scan|DeleteItem|BatchWriteItem|TransactWriteItems)/);
     const [fn] = functions(t).filter((f) => f.FunctionName === "supply-checkout-prod-team-lapse");
     expect(fn?.Timeout).toBe(300);
+    // No retries, from the schedule or Lambda's own async ones: a timed-out run never runs again within the hour
+    const configs = Object.values(t.findResources("AWS::Lambda::EventInvokeConfig")).map((r) => r.Properties);
+    const lapseLogical = Object.entries(t.findResources("AWS::Lambda::Function")).find(([, r]) => r.Properties.FunctionName === "supply-checkout-prod-team-lapse")?.[0];
+    expect(configs.filter((c) => JSON.stringify(c.FunctionName) === JSON.stringify({ Ref: lapseLogical }))).toEqual([expect.objectContaining({ MaximumRetryAttempts: 0, Qualifier: "$LATEST" })]);
+    // No reserved concurrency: the lease keeps it to one run, without taking from the account's unreserved pool
+    expect(fn?.ReservedConcurrentExecutions).toBeUndefined();
   });
 
   it("alarm when the lapsed-team job holds closures at its cap, closes many in a few hours, or runs out of time run after run, in the primary region only", () => {

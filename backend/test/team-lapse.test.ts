@@ -7,7 +7,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import type { SubscriptionLike } from "../src/billing/subscription.js";
-import { deletionLastDay, deletionTime, LAPSE_PURGE_DELAY_HOURS, LAPSE_WARNING_DAYS, LAPSED_CLOSER } from "../src/data/index.js";
+import { deletionLastDay, deletionTime, LAPSE_CHECKOUT_GUARD_HOURS, LAPSE_PURGE_DELAY_HOURS, LAPSE_WARNING_DAYS, LAPSED_CLOSER } from "../src/data/index.js";
 import { BusinessMetric, type Observability } from "../src/observability/index.js";
 import { LAPSE_BUDGET_MS, LAPSE_MAX_CLOSURES_PER_RUN } from "../src/ops/names.js";
 import { createTeamLapseHandler, type LapseStripe } from "../src/ops/team-lapse-handler.js";
@@ -273,6 +273,18 @@ describe("an ended subscription", () => {
     expect(logs.some(([, message]) => message === "Lapsed team changed before it was closed: left for the next run")).toBe(true);
   });
 
+  it("doesn't close a team within a day of an owner starting Checkout, even when Stripe shows no session (supply-checkout-qdx)", async () => {
+    await run();
+    const later = NOW + 8 * DAY;
+    // Checkout started an hour ago: linkStripeCustomer recorded it (and moved the version, read here as it is)
+    table.put({ ...meta("gone"), stripeCheckoutAt: iso(later - 3_600_000), version: 7 });
+    expect(await run(later)).toMatchObject({ closed: 0, failed: 0 });
+    expect(meta("gone").closedAt).toBeUndefined();
+    expect(await run(later - 3_600_000 + LAPSE_CHECKOUT_GUARD_HOURS * 3_600_000 - 1)).toMatchObject({ closed: 0 });
+    expect(await run(later - 3_600_000 + LAPSE_CHECKOUT_GUARD_HOURS * 3_600_000 + 1)).toMatchObject({ closed: 1 });
+    expect(denied).toEqual([]);
+  });
+
   it("counts a Stripe failure and still handles the other teams", async () => {
     team("trial", { status: "trialing", trialEndsAt: iso(NOW - 200 * DAY) });
     await run();
@@ -424,6 +436,36 @@ describe("the run", () => {
     expect(await started(0.99)).toMatchObject({ checked: 1 });
     expect(sentTo("b")).toHaveLength(2);
     expect(gauges[BusinessMetric.LapseTeamsUnstarted]).toBe(1);
+  });
+
+  it("runs one at a time: an invocation while another holds the lease does nothing, and a lease that ran out is taken over", async () => {
+    team("old", { status: "trialing", trialEndsAt: iso(NOW - 200 * DAY) });
+    // Another run holds it (a retry, a duplicate delivery, or one started by hand)
+    table.put({ PK: "LAPSE#RUN", SK: "LEASE", type: "lapseLease", sentAt: iso(NOW - 60_000), expiresAt: Math.ceil((NOW + 60_000) / 1000) });
+    expect(await run()).toEqual({ checked: 0, closed: 0, failed: 0, held: 0, skipped: true });
+    expect(mails.sent).toEqual([]);
+    expect(gauges).toEqual({});
+    expect(logs.some(([level, message]) => level === "warn" && message.startsWith("Lapsed-team job skipped"))).toBe(true);
+    // Run out (a run that died): taken over, and given up at the end
+    expect(await run(NOW + 120_000)).toMatchObject({ checked: 1 });
+    expect(table.get("LAPSE#RUN", "LEASE")).toMatchObject({ sentAt: iso(NOW + 120_000), expiresAt: 0 });
+    expect(denied).toEqual([]);
+  });
+
+  it("skips a second invocation that starts while the first is still running", async () => {
+    team("gone", { status: "canceled", subscriptionEndedAt: iso(NOW - 40 * DAY), stripeSubscriptionId: "sub_1", stripeCustomerId: "cus_1" });
+    customers.add("cus_1");
+    subs.set("sub_1", sub("sub_1", "cus_1", "canceled"));
+    await run();
+    let second: Promise<unknown> | undefined;
+    onStripe = () => {
+      onStripe = undefined;
+      second = run(NOW + 8 * DAY + 1000);
+    };
+    expect(await run(NOW + 8 * DAY)).toMatchObject({ closed: 1 });
+    expect(await second).toMatchObject({ skipped: true });
+    // Its lease given up: the next hour's run goes
+    expect(await run(NOW + 8 * DAY + 3_600_000)).not.toHaveProperty("skipped");
   });
 
   it("fails the run when it can't list the teams, so no gauge goes out", async () => {
