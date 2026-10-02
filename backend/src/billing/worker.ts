@@ -50,9 +50,17 @@
 // team's subscription to cancel at the period's end within seconds instead of
 // at the hourly purge's next run (endAtClose, supply-checkout-8jc.30).
 //
+// Nor is one with reason `comp`: the ops function sends one after an operator
+// changes a team's comp, and the worker makes the subscription's comp
+// discount match the team's comp (comp-discount.ts, supply-checkout-6e4b),
+// recording the outcome in the operator audit. The nightly reconciliation
+// does the same, after the seat sync, for a team that has ever been comped,
+// and audits what it changes.
+//
 // Logged: event, team and subscription IDs, statuses, counts and SES error
 // names. Never an owner's email or a name.
 
+import { type CompDiscountOutcome, type CompDiscountStripe, reconcileCompDiscount } from "./comp-discount.js";
 import { type ClosingStripe, closingAction, customerOf, endSubscriptionForClosedTeam, removeStamp, resumeSubscription, staleStamp } from "./closing.js";
 import {
   applySubscription,
@@ -65,6 +73,7 @@ import {
   isWebhookProcessed,
   listOwnerContacts,
   markWebhookProcessed,
+  recordCompDiscount,
   stripeCustomerTeam,
   type TeamContext,
   teamContextForStripeCustomer,
@@ -76,7 +85,7 @@ import { BILLING_EVENTS, type BillingEventType } from "./names.js";
 import type { BillingMessage } from "./webhook-handler.js";
 import { createEntitlementCheck, type EntitlementOutcome, type EntitlementStripe } from "./entitlements.js";
 import { createReopenResync } from "./reopening.js";
-import { createSeatSync, findSeatTeam, parseSeatSync, readSeatTeamAgain, type SeatOutcome, type SeatStripe, type SeatSyncMessage } from "./seats.js";
+import { createSeatSync, findSeatTeam, parseSeatSync, readSeatTeamAgain, type SeatOutcome, type SeatStripe, type SeatSyncMessage, type SeatTeam, type SeatTeamMissing } from "./seats.js";
 import { iso, type SubscriptionLike, subscriptionState } from "./subscription.js";
 import type { DbForWorker } from "./worker-db.js";
 
@@ -87,7 +96,7 @@ export type WorkerStripe = ClosingStripe;
 
 export interface BillingWorkerDeps {
   readonly dbFor: DbForWorker;
-  readonly stripe: () => Promise<WorkerStripe & SeatStripe & EntitlementStripe>;
+  readonly stripe: () => Promise<WorkerStripe & SeatStripe & EntitlementStripe & CompDiscountStripe>;
   readonly mailer: Mailer;
   readonly obs: Observability;
   readonly now?: () => number;
@@ -120,6 +129,9 @@ export type ClosedSyncOutcome =
   | "unknown_customer"
   | "not_ours"
   | "no_subscription";
+
+/** What a message with reason `comp` did (compDiscount): the reconcile's outcome, or why it didn't run. */
+export type CompSyncOutcome = CompDiscountOutcome | SeatTeamMissing | "team_closed";
 
 const optional = (value: unknown, type: "string" | "number") => value === undefined || typeof value === type;
 
@@ -369,6 +381,34 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
   }
 
   /**
+   * A comp's Stripe discount (comp-discount.ts): makes the team's subscription match its comp. For a
+   * `comp` message every outcome on a found team is audited (`all`); for the nightly reconciliation,
+   * only a change (`changes`). The team comes from our own link, never from the message. Throws on a
+   * Stripe or DynamoDB failure, so the message is retried.
+   */
+  async function compDiscount(message: SeatSyncMessage, found: SeatTeam | SeatTeamMissing, audit: "all" | "changes"): Promise<CompSyncOutcome> {
+    if (typeof found === "string") return found;
+    const { db, ctx, team } = found;
+    const record = async (result: { outcome: string; subscriptionId: string | null; before: string | null; coupon: string | null; until: string | null }) => {
+      if (audit === "all" || result.outcome === "applied" || result.outcome === "removed") await recordCompDiscount(db, ctx, message.id, result, now());
+    };
+    const skip = async (outcome: "team_closed" | "not_ours"): Promise<CompSyncOutcome> => {
+      await record({ outcome, subscriptionId: null, before: null, coupon: null, until: null });
+      return outcome;
+    };
+    // A closed team keeps what it had: its subscription is ending, and the purge deletes its customer
+    if (team.closed || team.purging) return skip("team_closed");
+    if (team.stripeCustomerId !== message.customer) {
+      obs.logger.warn("Comp discount skipped: the team has another Stripe customer", { teamId: ctx.teamId, messageId: message.id });
+      return skip("not_ours");
+    }
+    const result = await reconcileCompDiscount(await deps.stripe(), team, message.customer);
+    await record(result);
+    obs.logger.info("Comp discount", { teamId: ctx.teamId, messageId: message.id, reason: message.reason, subscriptionId: result.subscriptionId ?? "", outcome: result.outcome, coupon: result.coupon ?? "", before: result.before ?? "" });
+    return result.outcome;
+  }
+
+  /**
    * A read-only notice only if the team is read-only now, as it was just applied (no comp keeps it going),
    * with the date it's deleted unless an owner subscribes (billingAccess). Any other notice as it is.
    */
@@ -440,7 +480,7 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
   const entitlements = createEntitlementCheck({ dbFor: deps.dbFor, stripe: deps.stripe, obs, now: deps.now });
 
   /** `delivery` is the SQS message ID that delivered it, when a queue did: part of a seat update's idempotency key (seats.ts). */
-  return async (message: QueueMessage, delivery?: string): Promise<Outcome | SeatOutcome | EntitlementOutcome | ClosedSyncOutcome> => {
+  return async (message: QueueMessage, delivery?: string): Promise<Outcome | SeatOutcome | EntitlementOutcome | ClosedSyncOutcome | CompSyncOutcome> => {
     // Checked again here, whatever handed it over: only a well-formed seat sync goes to the seat sync
     if ("kind" in message) {
       const sync = parseSeatSync(JSON.stringify(message));
@@ -452,6 +492,12 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
       }
       // The link, the team context and the team, read once for the resync and the seat sync (supply-checkout-8jc.39)
       let found = await findSeatTeam(deps.dbFor, sync, now());
+      // An operator changed the team's comp: its Stripe discount, and nothing else (comp-discount.ts)
+      if (sync.reason === "comp") {
+        const outcome = await compDiscount(sync, found, "all");
+        obs.logger.info("Seat sync", { messageId: sync.id, reason: sync.reason, outcome });
+        return outcome;
+      }
       // A reopened team's subscription first (reopening.ts): the reopen's own sync, or the night's for one still waiting.
       // Whatever it did, the seat sync sees the team as it left it
       if ((await reopened(sync, found)) !== "none") found = await readSeatTeamAgain(found, now());
@@ -461,6 +507,11 @@ export function createBillingWorker(deps: BillingWorkerDeps) {
         if ((await entitlements(sync)) === "missing") return "missing";
         // It may have fixed the team
         found = await readSeatTeamAgain(found, now());
+        const outcome = await seats(sync, delivery, found);
+        // Then a comp's discount, for a team ever comped (compUntil stays after a comp ends): a `comp` message that was never
+        // queued, or failed for good, is put right here (comp-discount.ts)
+        if (typeof found !== "string" && found.team.compUntil !== undefined) await compDiscount(sync, found, "changes");
+        return outcome;
       }
       return seats(sync, delivery, found);
     }

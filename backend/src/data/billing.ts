@@ -8,7 +8,8 @@ import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateComma
 import { type Db, connection } from "./client.js";
 import { ConflictError, ForbiddenError, conflictOnConditionFailure } from "./errors.js";
 import { id, keys, prefixes, teamPartition } from "./keys.js";
-import { billingAccess, hasStopped, type ReadOnlyReason } from "./model.js";
+import { billingAccess, hasStopped, liveComp, type ReadOnlyReason } from "./model.js";
+import { auditItem, BILLING_WORKER_ACTOR } from "./operator.js";
 import { type TeamContext, readable, writable } from "./team-context.js";
 
 /** How long an event's records are kept: longer than Stripe retries an event (3 days) or a DLQ holds it. */
@@ -144,6 +145,15 @@ export interface BillingTeam {
   readonly reopenedAt?: string;
   /** The closure the purge recorded ending its subscription for (`stripeCancelledFor`). */
   readonly cancelledFor?: string;
+  /**
+   * Its comp, if it has one: when it ends (`compUntil`, also set after an
+   * operator ended it early) and, for a comp made with `months`, how many
+   * (`compMonths`), which asks for a Stripe discount (billing/comp-discount.ts).
+   * `compLive` while it hasn't run out (liveComp).
+   */
+  readonly compUntil?: string;
+  readonly compMonths?: number;
+  readonly compLive: boolean;
 }
 
 /** The team's billing state, or undefined if its META item is gone (purged). */
@@ -155,7 +165,7 @@ export async function getBillingTeam(db: Db, ctx: TeamContext, now = new Date())
       Key: keys.team(ctx.teamId),
       ConsistentRead: true,
       ProjectionExpression:
-        "#name, #status, #plan, seats, closedAt, purging, stripeCustomerId, stripeSubscriptionId, compPlan, compUntil, cancelAtPeriodEnd, stripeResyncFor, stripeReopenedAt, stripeCancelledFor, trialEndsAt, createdAt, pastDueSince, subscriptionEndedAt",
+        "#name, #status, #plan, seats, closedAt, purging, stripeCustomerId, stripeSubscriptionId, compPlan, compUntil, compMonths, cancelAtPeriodEnd, stripeResyncFor, stripeReopenedAt, stripeCancelledFor, trialEndsAt, createdAt, pastDueSince, subscriptionEndedAt",
       ExpressionAttributeNames: { "#name": "name", "#status": "status", "#plan": "plan" },
     }),
   );
@@ -182,7 +192,49 @@ export async function getBillingTeam(db: Db, ctx: TeamContext, now = new Date())
     ...(str(Item.stripeResyncFor) ? { resyncFor: Item.stripeResyncFor as string } : {}),
     ...(str(Item.stripeReopenedAt) ? { reopenedAt: Item.stripeReopenedAt as string } : {}),
     ...(str(Item.stripeCancelledFor) ? { cancelledFor: Item.stripeCancelledFor as string } : {}),
+    ...(str(Item.compUntil) ? { compUntil: Item.compUntil as string } : {}),
+    ...(typeof Item.compMonths === "number" ? { compMonths: Item.compMonths } : {}),
+    compLive: liveComp(Item, now) !== undefined,
   };
+}
+
+/** What the billing worker did about a comp's Stripe discount (billing/comp-discount.ts), as the operator audit records it. */
+export interface CompDiscountRecord {
+  /** The Stripe subscription it looked at, if any. */
+  readonly subscriptionId: string | null;
+  /** Our comp coupon on it before, if any. */
+  readonly before: string | null;
+  /** What it did (an outcome of billing/comp-discount.ts) and the coupon and comp end it applied, if any. */
+  readonly outcome: string;
+  readonly coupon: string | null;
+  readonly until: string | null;
+}
+
+/**
+ * Writes the operator audit item for what the billing worker did about a
+ * comp's Stripe discount (`ops.comp.discount`, supply-checkout-6e4b), in the
+ * team's `OPAUDIT#` partition, attributed to BILLING_WORKER_ACTOR: so an
+ * operator's comp and what Stripe was asked to do about it are both in the
+ * audit. Append-only (`attribute_not_exists`), with the 2-year TTL of every
+ * audit item. `requestId` is the seat sync message's ID. Only the billing
+ * worker (a system context) may.
+ */
+export async function recordCompDiscount(db: Db, ctx: TeamContext, requestId: string, record: CompDiscountRecord, now = new Date()): Promise<string> {
+  readable(ctx);
+  if (ctx.role !== "system") throw new ForbiddenError("Only billing records a comp discount");
+  const item = auditItem(
+    { sub: BILLING_WORKER_ACTOR },
+    ctx.teamId,
+    {
+      action: "ops.comp.discount",
+      before: { coupon: record.before },
+      after: { outcome: record.outcome, coupon: record.coupon, until: record.until, subscriptionId: record.subscriptionId },
+      idempotencyKey: id(requestId, "request ID"),
+    },
+    now,
+  );
+  await connection(db).doc.send(new PutCommand({ TableName: db.tableName, Item: item, ConditionExpression: "attribute_not_exists(PK)" }));
+  return item.eventId;
 }
 
 /**

@@ -10,6 +10,7 @@ import type { BillingMessage } from "../src/billing/webhook-handler.js";
 import { CLOSED_AT_METADATA, closingAction, closingKey, resumeKey } from "../src/billing/closing.js";
 import type { EntitlementStripe } from "../src/billing/entitlements.js";
 import type { SeatStripe, SeatSubscription, SeatSyncMessage } from "../src/billing/seats.js";
+import type { CompDiscountStripe } from "../src/billing/comp-discount.js";
 import { createBillingWorker, endedEarlier, noticeFor, parseMessage, type SubscriptionLike, subscriptionState, type WorkerStripe } from "../src/billing/worker.js";
 import { workerScopedDbs, type WorkerScope } from "../src/billing/worker-db.js";
 import { createWorkerHandler } from "../src/billing/worker-handler.js";
@@ -115,7 +116,16 @@ beforeEach(() => {
 
 /** The worker, with its clock at `nowMs`. */
 function build(nowMs = NOW) {
-  const stripe: WorkerStripe & SeatStripe & EntitlementStripe = {
+  const stripe: WorkerStripe & SeatStripe & EntitlementStripe & CompDiscountStripe = {
+    // Comp discounts have their own tests (comp-discount.test.ts)
+    coupons: {
+      async retrieve() {
+        throw new Error("not used");
+      },
+      async create() {
+        throw new Error("not used");
+      },
+    },
     subscriptions: {
       async list() {
         throw new Error("not used");
@@ -128,7 +138,7 @@ function build(nowMs = NOW) {
         if (!found) throw Object.assign(new Error(`No such subscription ${id}`), { code: "resource_missing" });
         return found as SubscriptionLike & SeatSubscription;
       },
-      async update(id, params, options) {
+      async update(id: string, params: { cancel_at_period_end?: boolean; metadata: Record<string, string> }, options: { idempotencyKey: string }) {
         if (stripeDown) throw Object.assign(new Error("Stripe is down"), { name: "StripeConnectionError" });
         if (refuseResume && params.cancel_at_period_end === false) throw Object.assign(new Error("Stripe is busy"), { name: "StripeRateLimitError" });
         // A key Stripe has seen in the last 24 hours gets the cached answer, and changes nothing

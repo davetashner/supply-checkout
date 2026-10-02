@@ -71,7 +71,7 @@ The sections below give the details.
 | --- | --- |
 | `GET /ops/teams?q=` | List and search teams: name, owners (emails), plan, seats, status, comp, created |
 | `GET /ops/teams/{teamId}` | One team's account record from GSI3, plus its Stripe subscription and recent invoices |
-| `PUT /ops/teams/{teamId}/comp` | Comp or extend a plan (plan, seats, `until`, reason), including free for pilot teams |
+| `PUT /ops/teams/{teamId}/comp` | Comp or extend a plan (plan, seats, `until` or `months`, reason), including free for pilot teams; with `months`, a paying team's Stripe invoices are $0 for those months (§8) |
 | `DELETE /ops/teams/{teamId}/comp` | End a comp early |
 | `POST /ops/teams/{teamId}/reopen` | Reopen a closed team until 5 minutes before its purge (`supply-checkout-6uw.6`). Through a separate reopen function and role, since `OperatorAccessRole` must never write closure fields (it could then close a team and have it purged) |
 | `POST /ops/campaigns`, `GET /ops/campaigns`, `POST /ops/campaigns/{id}/pause`, `.../end` | Promo campaigns (`supply-checkout-8jc.8`) |
@@ -112,6 +112,23 @@ When an owner asks for help with their data:
 | **Phishing** | Password plus TOTP on a separate sign-in host. TOTP can still be phished in real time, so the operator keeps the TOTP secret on a device, not in the same password manager, and the ops pool is small enough to watch. Passkeys are phishing-resistant. The ops pool can let them count as MFA on their own (`MULTI_FACTOR_WITH_USER_VERIFICATION`), but password plus TOTP always stays available, so offering passkeys doesn't remove the phishable path. That's why the MVP uses TOTP alone. Revisit if Cognito can turn password sign-in off. |
 | **Confused deputy** | The ops function acts only with its own session-tagged role, never the data or account roles. Team IDs in `/ops` paths pick a GSI3 partition or tag the comp session; they can't reach sheets or products. Stripe calls use the ops restricted key, and campaign IDs are looked up in `CAMPAIGN#` items, not taken from Stripe input. The team routes never read the group. |
 | **Log tampering** | The role can put audit items but never update or delete them, and the audit write is in the same transaction as the change. Audit items are in the table's PITR and AWS Backup copies in a separate account (`supply-checkout-8x1`). CloudTrail records every Cognito admin call. Only the `supply-prod` administrator can delete items, and that is itself in CloudTrail. Any change or deletion of an `OPAUDIT#` item other than its TTL expiry alarms P1, from the table's stream (`supply-checkout-6uw.5`). |
+
+### 8. Comping for months, and who writes to Stripe (amendment, 2026-10-02, `supply-checkout-6e4b`)
+
+The owner decided that a comp must also stop a paying team's charges: `npm run ops -- comp <teamId> --months N` (N from 1 to 12, the cap in §4 of the decision list) comps the team until N calendar months from now and, for a team with a live monthly Stripe subscription, puts a 100%-off coupon on it (`duration: repeating`, `duration_in_months: N`), so its invoices in those months are $0 and billing resumes by itself, on the same subscription and card. Ending the comp, or replacing it with one made with `until`, removes the discount.
+
+**Decision: the ops function records the request; the billing worker writes to Stripe.** The ops function's role may only write comp attributes, and its restricted key only reads subscriptions and invoices. Rather than widen either, the comp records `compMonths` on the team's `META` item (one more name in `COMP_ATTRIBUTES`), and the ops function queues a message with reason `comp` on the seat sync queue, which it could already send to, for the team's Stripe customer from the operators' index. The billing worker, which already holds the Stripe secret key and already updates subscriptions, finds the team from our own `STRIPE#` link, reads its comp from the team's own item, and makes the subscription carry exactly the discount that comp wants and nothing else of ours (`backend/src/billing/comp-discount.ts`). The message carries no discount, coupon, team or months, so neither an operator nor anything that can send to the queue chooses what a subscription gets: the worker only converges a customer's subscription on its own team's comp. The coupons are 12 shared ones with fixed IDs, created by the worker when first needed and checked before each use; every subscription update has a Stripe idempotency key; the worker audits each outcome in the team's operator audit (`ops.comp.discount`); failures retry into the seat sync dead-letter queue, and the nightly reconciliation runs the same reconcile for every team ever comped. A yearly subscription never gets a discount: a coupon covers every invoice in its months, so a renewal in the window would be a whole year free.
+
+What it widens, and nothing else:
+
+| Who | Gains |
+| --- | --- |
+| `OperatorAccessRole` | `compMonths` in `COMP_ATTRIBUTES` (an `UpdateItem` attribute on the tagged team's `META`). Not projected into GSI3, which has no room. |
+| `BillingWorkerRole` | `compMonths` in `BILLING_READ_ATTRIBUTES`, and `PutItem` (append-only) in `OPAUDIT#<its team tag>` naming only `COMP_DISCOUNT_AUDIT_ATTRIBUTES`, returning nothing. |
+| The ops Stripe key | Nothing: still Subscriptions: Read and Invoices: Read. The detail reads the discount from the subscription's metadata stamp and discount IDs. |
+| The billing worker's Stripe key | Nothing: it's the secret key. If it's ever made a restricted key, it needs Coupons: Write (or the coupons made ahead by the catalog script) and Subscriptions: Write, which it already uses. |
+
+Alternatives: a second restricted key with Coupons: Write and Subscriptions: Write for the ops function (rejected: the ops function would then hold a key that can discount any customer's subscription, chosen by code that takes operator input, where the worker's path can only converge a subscription on its own team's comp; and a second key to store, rotate and review), and calling Stripe in the ops request (rejected for the same reason, and an operator's request would then wait on Stripe and half-fail). Promo campaigns (`supply-checkout-8jc.8`) still add Coupons and Promotion Codes: Write to the ops key when they ship, since there an operator does choose the discount; they can reuse the coupon checks here.
 
 ## Alternatives considered
 

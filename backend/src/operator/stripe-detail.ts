@@ -26,6 +26,7 @@
 
 import type { Observability } from "../observability/index.js";
 import { planForLookupKey } from "../billing/catalog.js";
+import { COMP_UNTIL_METADATA } from "../billing/comp-discount.js";
 import { cachedStripe, type CachedStripeOptions, requireRestricted, stripeErrorFields } from "../billing/stripe.js";
 import { iso } from "../billing/subscription.js";
 
@@ -38,6 +39,9 @@ export interface OpsSubscriptionLike {
   readonly cancel_at_period_end: boolean;
   readonly cancel_at?: number | null;
   readonly trial_end?: number | null;
+  readonly metadata?: Readonly<Record<string, string>> | null;
+  /** The discounts' IDs (not expanded: the ops key reads subscriptions only). */
+  readonly discounts?: readonly (string | { readonly id: string })[] | null;
   readonly items: {
     readonly data: readonly {
       readonly quantity?: number;
@@ -109,6 +113,15 @@ export interface OpsSubscription {
   readonly cancelAt: string | null;
   readonly trialEnd: string | null;
   readonly createdAt: string | null;
+  /** How many discounts it has (a comp's, a promotion's). */
+  readonly discountCount: number;
+  /**
+   * The end of the comp whose 100%-off discount the billing worker put on it
+   * (billing/comp-discount.ts, its metadata stamp), while that's in the future
+   * and it has a discount; otherwise null. The discount runs for the comp's
+   * months from when it was applied, a few seconds after the comp.
+   */
+  readonly compDiscountUntil: string | null;
 }
 
 export interface OpsInvoice {
@@ -136,7 +149,7 @@ export type OpsStripeDetail =
       readonly hasMoreInvoices: boolean;
     };
 
-export function opsSubscription(sub: OpsSubscriptionLike): OpsSubscription {
+export function opsSubscription(sub: OpsSubscriptionLike, now = new Date()): OpsSubscription {
   const first = sub.items.data[0];
   const lookupKey = first?.price.lookup_key ?? null;
   const known = planForLookupKey(lookupKey);
@@ -152,7 +165,16 @@ export function opsSubscription(sub: OpsSubscriptionLike): OpsSubscription {
     cancelAt: iso(sub.cancel_at) ?? null,
     trialEnd: iso(sub.trial_end) ?? null,
     createdAt: iso(sub.created) ?? null,
+    discountCount: sub.discounts?.length ?? 0,
+    compDiscountUntil: compDiscountUntil(sub, now),
   };
+}
+
+/** The comp discount's end from the subscription's stamp: only a real time in the future, on a subscription with a discount. */
+function compDiscountUntil(sub: OpsSubscriptionLike, now: Date): string | null {
+  const stamp = sub.metadata?.[COMP_UNTIL_METADATA];
+  const at = Date.parse(stamp ?? "");
+  return (sub.discounts?.length ?? 0) > 0 && Number.isFinite(at) && at > now.getTime() ? new Date(at).toISOString() : null;
 }
 
 /** The current subscription among a customer's, newest first: the first not over, else the newest. */
@@ -174,6 +196,8 @@ export interface OpsStripeDetailOptions {
   readonly stripe?: () => Promise<OpsStripe>;
   readonly obs: Observability;
   readonly deadlineMs?: number;
+  /** The time the comp discount's end is compared with. */
+  readonly now?: Date;
 }
 
 /**
@@ -198,7 +222,7 @@ export async function opsStripeDetail(teamId: string, customerId: string | undef
     const current = currentSubscription(own);
     return {
       customerId,
-      subscription: current ? opsSubscription(current) : null,
+      subscription: current ? opsSubscription(current, options.now) : null,
       subscriptionCount: own.length,
       invoices: invoices.data
         .filter((i) => customerOf(i.customer) === customerId && i.status && i.status !== "draft")

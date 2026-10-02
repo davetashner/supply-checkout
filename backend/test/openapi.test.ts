@@ -100,6 +100,9 @@ describe("OpenAPI description", () => {
     }
     expect(schemas.AuditRecord?.oneOf).toEqual([
       { $ref: "#/components/schemas/CompRecord" },
+      { $ref: "#/components/schemas/CompMonthsRecord" },
+      { $ref: "#/components/schemas/CompDiscountBefore" },
+      { $ref: "#/components/schemas/CompDiscountRecord" },
       { $ref: "#/components/schemas/ImportClearRecord" },
       { $ref: "#/components/schemas/ReopenRecord" },
       { $ref: "#/components/schemas/TeamsListRecord" },
@@ -119,6 +122,9 @@ describe("OpenAPI description", () => {
 /** The operator audit's before and after shapes (data/operator.ts), by their docs/api/openapi.yaml schema name. */
 const AUDIT_RECORD_SHAPES: Record<string, string[]> = {
   CompRecord: ["plan", "seats", "until", "reason"],
+  CompMonthsRecord: ["plan", "seats", "until", "reason", "months"],
+  CompDiscountBefore: ["coupon"],
+  CompDiscountRecord: ["outcome", "coupon", "until", "subscriptionId"],
   ImportClearRecord: ["importId", "committing"],
   ReopenRecord: ["closedAt", "purgeAfter"],
   TeamsListRecord: ["q", "cursor", "teams"],
