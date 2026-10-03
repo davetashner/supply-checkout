@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.10.0](https://github.com/davetashner/supply-checkout/compare/v1.9.0...v1.10.0) (2026-10-03)
+
+
+### Features
+
+* **billing:** warn and close lapsed teams for deletion ([#465](https://github.com/davetashner/supply-checkout/issues/465)) ([8b5683a](https://github.com/davetashner/supply-checkout/commit/8b5683a42b573925d41d7c95dc19ec596e4795f6))
+* comp a team for N months, with a Stripe discount for paying teams ([#471](https://github.com/davetashner/supply-checkout/issues/471)) ([8d63bd1](https://github.com/davetashner/supply-checkout/commit/8d63bd13d04185475d280a38aaee24735d7bcf14))
+* operator web admin page on its own origin (ops.) ([#477](https://github.com/davetashner/supply-checkout/issues/477)) ([2ef6299](https://github.com/davetashner/supply-checkout/commit/2ef62990b60c24e53a7fb6d9c703b0c07ee79aed))
+* send a welcome email once to every new account ([#480](https://github.com/davetashner/supply-checkout/issues/480)) ([61d9e2b](https://github.com/davetashner/supply-checkout/commit/61d9e2ba63473738c3f3562fddbb7e99f45405a4))
+
 ## [1.9.0](https://github.com/davetashner/supply-checkout/compare/v1.8.0...v1.9.0) (2026-10-02)
 
 
