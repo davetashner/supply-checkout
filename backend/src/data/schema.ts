@@ -443,6 +443,39 @@ export const NOTICE_ADDRESS_CHECK_ATTRIBUTES = [PK, SK, "noticeAddressAt"] as co
 export const NOTICE_ADDRESS_RECORD_ATTRIBUTES = [PK, SK, "noticeAddress", "noticeAddressAt", "noticeSeenHash"] as const;
 
 /**
+ * The sort key of the once-only welcome record in a user's own `USER#<sub>`
+ * partition (supply-checkout-6uw.25, welcome.ts): the welcome email function
+ * claims it before it sends, so an account gets one welcome email. Not a
+ * `LIMIT#` key, so deleting an account removes it.
+ */
+export const WELCOME_SK = "WELCOME";
+
+/**
+ * The only attributes the welcome email function may name in `USER#`
+ * partitions with UpdateItem (claimWelcome, releaseWelcome: returning nothing),
+ * and the keys its ConditionCheckItem on the DELETING mark names. No other item
+ * has `welcomeSentAt`, so it can't change a user's teams, proofs or notices,
+ * and with no `expiresAt` it can't set a TTL that would delete one of their rows.
+ */
+export const WELCOME_RECORD_ATTRIBUTES = [PK, SK, "welcomeSentAt"] as const;
+
+/**
+ * What the welcome email function may read of a user's own partition (Query,
+ * `TEAM#` rows, Select SPECIFIC_ATTRIBUTES): the keys only, to tell whether
+ * they're in a team already (hasTeam), never their role, a team's name or anything else.
+ */
+export const WELCOME_TEAM_ATTRIBUTES = [PK, SK] as const;
+
+/**
+ * What the welcome email function may read of GSI2's `INVITEE#` partitions
+ * (Query, Select SPECIFIC_ATTRIBUTES): the keys, the item's type, the address
+ * it's for (to match the verified address the function already has) and when
+ * it expires, to tell whether a live invite is waiting (hasLiveInvite). Never
+ * the team's name, the role or the inviter.
+ */
+export const WELCOME_INVITE_ATTRIBUTES = [PK, SK, GSI2PK, GSI2SK, "type", "email", "expiresAt"] as const;
+
+/**
  * The sort key of the item in a user's own `USER#<sub>` partition that holds
  * when two-step sign-in (an authenticator app, TOTP) was last turned on
  * (supply-checkout-8jc.14, two-step.ts): the billing routes refuse a session

@@ -3,7 +3,7 @@
 // into another key (for example, a sheet ID containing "#").
 
 import { InvalidInputError } from "./errors.js";
-import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, EMAIL_CODE_SENT_SK, INVITE_LIMIT_PREFIX, LAPSE_PREFIX, NOTICE_ADDRESS_SK, RECEIPT_RATE_PREFIX, NOTICE_SENT_PREFIX, OPERATOR_AUDIT_PREFIX, OPS_AUDIT_INDEX_PREFIX, OPS_OWNERS_PREFIX, OPS_TEAMS_PARTITION, TOTP_ON_SK, VERIFIED_EMAIL_SK } from "./schema.js";
+import { CLOSED_TEAMS_PARTITION, COMMITTING_IMPORTS_PARTITION, EMAIL_CODE_SENT_SK, INVITE_LIMIT_PREFIX, LAPSE_PREFIX, NOTICE_ADDRESS_SK, RECEIPT_RATE_PREFIX, NOTICE_SENT_PREFIX, OPERATOR_AUDIT_PREFIX, OPS_AUDIT_INDEX_PREFIX, OPS_OWNERS_PREFIX, OPS_TEAMS_PARTITION, TOTP_ON_SK, VERIFIED_EMAIL_SK, WELCOME_SK } from "./schema.js";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
@@ -168,6 +168,8 @@ export const keys = {
   noticeAddress: (userId: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: NOTICE_ADDRESS_SK }),
   /** When two-step sign-in was last turned on for the user (two-step.ts). */
   totpOn: (userId: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: TOTP_ON_SK }),
+  /** That the account was sent its welcome email, or is being sent it (welcome.ts, supply-checkout-6uw.25). */
+  welcome: (userId: string) => ({ PK: `USER#${id(userId, "user ID")}`, SK: WELCOME_SK }),
   /** How many times a team was reopened on a UTC day: the per-team reopen limit (reopenTeam). */
   reopens: (teamId: string, day: string) => ({ PK: `TEAM#${id(teamId, "team ID")}`, SK: `LIMIT#REOPENS#${date(day)}` }),
   /** How many invites a team sent (created or re-sent) on a UTC day: the per-team invite limit. */

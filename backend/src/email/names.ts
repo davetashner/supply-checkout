@@ -24,7 +24,40 @@ export const emailResourceNames = (envName: string) => ({
   deadLetterQueue: `supply-checkout-${envName}-email-events-dlq`,
   /** Security notice events (CloudTrail records) the function or EventBridge gave up on, to replay ("Security notices dropped"). */
   securityNoticesDeadLetterQueue: `supply-checkout-${envName}-security-notices-dlq`,
+  /**
+   * The welcome email function (supply-checkout-6uw.25). A fixed name: the user
+   * pool's triggers, in the identity stack (which deploys first), invoke it by
+   * name, and the "Welcome emails failing" alarm reads its metrics.
+   */
+  welcomeFunction: `supply-checkout-${envName}-welcome-email`,
+  /** Welcome requests (a user's sub and how they signed up) the function failed on after Lambda's retries, to replay ("Welcome emails dropped"). */
+  welcomeDeadLetterQueue: `supply-checkout-${envName}-welcome-email-dlq`,
 });
+
+/** How a new account was made: an email code (Cognito's own sign-up), or a first Google or Apple sign-in. */
+export const WELCOME_VIA = ["email", "Google", "SignInWithApple"] as const;
+export type WelcomeVia = (typeof WELCOME_VIA)[number];
+
+/**
+ * What the user pool's triggers send the welcome email function (an
+ * asynchronous invoke): the new account's sub and how it signed up. Never an
+ * address or a name: the function looks the user up in the pool itself.
+ */
+export interface WelcomeRequest {
+  readonly userId: string;
+  readonly via: WelcomeVia;
+}
+
+/** The welcome email function's environment, besides what grantSendEmail sets. */
+export const WELCOME_ENV = {
+  /** The app pool it looks the new user up in. */
+  userPoolId: "USER_POOL_ID",
+  /** `support@<env domain>`, which the email names for questions. */
+  supportAddress: "SUPPORT_ADDRESS",
+} as const;
+
+/** The triggers' environment: the welcome email function's name, to invoke. Without it, they send no welcome. */
+export const WELCOME_FUNCTION_ENV = "WELCOME_FUNCTION";
 
 /** Environment variables a sending Lambda needs (set by grantSendEmail in infra/lib/email.ts). */
 export const EMAIL_ENV = {
@@ -46,7 +79,7 @@ export const EMAIL_ENV = {
 export const EMAIL_TAGS = { kind: "kind", teamId: "teamId", inviteId: "inviteId" } as const;
 
 /** The kinds of message the app sends (templates.ts). */
-export const EMAIL_KINDS = ["invite", "trialEnding", "paymentFailed", "readOnly", "exportReady", "teamClosed", "teamReopened", "deletionWarning", "passwordSet", "twoStepOn", "emailChanged"] as const;
+export const EMAIL_KINDS = ["invite", "trialEnding", "paymentFailed", "readOnly", "exportReady", "teamClosed", "teamReopened", "deletionWarning", "passwordSet", "twoStepOn", "emailChanged", "welcome"] as const;
 export type EmailKind = (typeof EMAIL_KINDS)[number];
 
 /**

@@ -2,7 +2,9 @@
 // notices (including a team's closure and reopening, to every owner, and the
 // security notices to the account's own verified address when a password is
 // set or two-step sign-in is turned on, and to its previous address when its
-// email changes). Each renders to a subject, an HTML body and a plain-text body.
+// email changes), and the welcome email a new account gets once
+// (supply-checkout-6uw.25). Each renders to a subject, an HTML body and a
+// plain-text body.
 //
 // Built for the mail clients people actually use (Gmail, Outlook including
 // Word-rendered desktop Outlook, iOS Mail):
@@ -14,13 +16,13 @@
 // - A plain-text part with every link written out, for clients and people
 //   that don't show HTML.
 //
-// Everything that comes from a user (a team name) is escaped for HTML and has
+// Everything that comes from a user (a team name, a given name) is escaped for HTML and has
 // control characters removed, and links must be on the app's own origin, so a
 // team name can't add markup or a link of its own. Link-like text in a team
 // name is defanged too (teamLabel), and an invite quotes the name, so a
 // name can't pose as an instruction from us.
 
-import { deletionLastDay, PAYMENT_GRACE_DAYS as GRACE_DAYS, READ_ONLY_RETENTION_DAYS as READ_ONLY_DAYS, type ReadOnlyReason } from "../data/index.js";
+import { deletionLastDay, PAYMENT_GRACE_DAYS as GRACE_DAYS, READ_ONLY_RETENTION_DAYS as READ_ONLY_DAYS, type ReadOnlyReason, TRIAL_DAYS } from "../data/index.js";
 import type { EmailKind } from "./names.js";
 
 export type InviteRole = "owner" | "contributor" | "viewer";
@@ -69,13 +71,25 @@ export type EmailInput =
    */
   | { readonly kind: "passwordSet"; readonly at: string }
   | { readonly kind: "twoStepOn"; readonly at: string }
-  | { readonly kind: "emailChanged"; readonly at: string };
+  | { readonly kind: "emailChanged"; readonly at: string }
+  /**
+   * The welcome email, once per new account, to its verified address
+   * (supply-checkout-6uw.25). `givenName` is the account's own (Cognito's
+   * given_name, from sign-up or Google or Apple), if it has one. `invited`: a
+   * live invite is waiting for the address, or the account is in a team
+   * already, so the next step is that team rather than a new one.
+   * `supportAddress` is `support@<env domain>`.
+   */
+  | { readonly kind: "welcome"; readonly givenName?: string; readonly invited: boolean; readonly supportAddress: string };
 
 /** The security notices, to an account's own address rather than a team's owners. */
 export type SecurityNotice = Extract<EmailInput, { kind: "passwordSet" | "twoStepOn" | "emailChanged" }>;
 
-/** A notice about a team, to its owners: every kind but an invite and the security notices. */
-export type TeamNoticeInput = Exclude<EmailInput, { kind: "invite" } | SecurityNotice>;
+/** The welcome email (welcomeContent). */
+export type WelcomeEmail = Extract<EmailInput, { kind: "welcome" }>;
+
+/** A notice about a team, to its owners: every kind but an invite, the security notices and the welcome email. */
+export type TeamNoticeInput = Exclude<EmailInput, { kind: "invite" } | SecurityNotice | WelcomeEmail>;
 
 export interface RenderedEmail {
   readonly kind: EmailKind;
@@ -233,6 +247,7 @@ function text(c: Content): string {
 
 function content(input: EmailInput, appUrl: string): Content {
   if (input.kind === "passwordSet" || input.kind === "twoStepOn" || input.kind === "emailChanged") return securityContent(input, appUrl);
+  if (input.kind === "welcome") return welcomeContent(input, appUrl);
   const team = teamLabel(input.teamName);
   switch (input.kind) {
     case "invite": {
@@ -399,6 +414,65 @@ function securityContent(input: SecurityNotice, appUrl: string): Content {
       NOT_YOU,
     ],
     button,
+  };
+}
+
+/** A bare address with no spaces, quotes or angle brackets: the support address as the welcome email shows it. */
+const PLAIN_ADDRESS = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+
+/**
+ * Someone's given name as a greeting shows it: one line, at most 40
+ * characters, with anything link-like defanged (as teamLabel does), so a name
+ * can't add a link of its own. Undefined when there's nothing left.
+ */
+export function greetingName(value: string | undefined): string | undefined {
+  if (value === undefined || !value.replace(CONTROL, "").trim()) return undefined;
+  return plainName(value, 40).replace(LINKISH, (token) => token.replaceAll(".", "[.]").replaceAll(":", "[:]").replaceAll("@", "[at]"));
+}
+
+/** What a new team comes with (docs/journeys.md, J1). */
+const TRIAL = `A new team comes with a ${TRIAL_DAYS}-day free trial, and you don't need a card to start it.`;
+
+/**
+ * The welcome email: who it's for, the app, the next step (a new team and its
+ * trial; or, for someone invited, that team) and the support address. It asks
+ * for nothing and links only to the app. Transactional: no tracking, nothing
+ * to unsubscribe from.
+ */
+function welcomeContent(input: WelcomeEmail, appUrl: string): Content {
+  if (!PLAIN_ADDRESS.test(input.supportAddress)) throw new Error("Invalid support address");
+  const name = greetingName(input.givenName);
+  const greeting = name ? `Hi ${name},` : "Hi there,";
+  const ready = "Your Supply Checkout account is ready. Sign in any time with this email address.";
+  const questions = `Questions? Write to us at ${input.supportAddress}.`;
+  const url = appLink(appUrl, "/");
+  if (input.invited) {
+    return {
+      subject: "Welcome to Supply Checkout",
+      preheader: "Your account is ready. Open Supply Checkout to join your team.",
+      heading: "Welcome to Supply Checkout",
+      paragraphs: [
+        greeting,
+        ready,
+        "You've been invited to a team. Open Supply Checkout and accept the invite, if you haven't already, to see the team's sheets and inventory.",
+        `Want a team of your own too? You can create one in the app. ${TRIAL}`,
+        questions,
+      ],
+      button: { label: "Open Supply Checkout", url },
+    };
+  }
+  return {
+    subject: "Welcome to Supply Checkout",
+    preheader: `Your account is ready. Create your team and try it free for ${TRIAL_DAYS} days.`,
+    heading: "Welcome to Supply Checkout",
+    paragraphs: [
+      greeting,
+      ready,
+      `Next, create your team: give it a name, then add your supplies and invite your crew. ${TRIAL}`,
+      "If someone invites you to their team, you'll find the invite in the app too.",
+      questions,
+    ],
+    button: { label: "Create your team", url },
   };
 }
 

@@ -12,11 +12,11 @@ import { LambdaSubscription } from "aws-cdk-lib/aws-sns-subscriptions";
 import { Queue, QueueEncryption } from "aws-cdk-lib/aws-sqs";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
-import { SECURITY_NOTICE_ATTRIBUTES, tableName } from "../../../backend/src/data/schema.js";
-import { EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, emailResourceNames } from "../../../backend/src/email/names.js";
+import { GSI2, SECURITY_NOTICE_ATTRIBUTES, tableName, WELCOME_INVITE_ATTRIBUTES, WELCOME_RECORD_ATTRIBUTES, WELCOME_TEAM_ATTRIBUTES } from "../../../backend/src/data/schema.js";
+import { EMAIL_EVENTS_READS, EMAIL_EVENTS_WRITES, emailResourceNames, WELCOME_ENV } from "../../../backend/src/email/names.js";
 import { SECURITY_NOTICE_EVENTS, SECURITY_NOTICES_ENV } from "../../../backend/src/identity/names.js";
 import type { DeploymentConfig } from "../config.js";
-import { grantSendEmail } from "../email.js";
+import { grantSendEmail, supportAddress } from "../email.js";
 import { identityOutputParameters } from "../identity.js";
 import { LOG_RETENTION } from "../observability/defaults.js";
 import { bundling } from "./api-stack.js";
@@ -68,6 +68,25 @@ const BACKEND = fileURLToPath(new URL("../../../backend/", import.meta.url));
  *   with one it couldn't deliver, so it can be replayed. A notice SES refuses
  *   isn't retried; it's counted (SecurityNoticeFailures).
  *
+ * The welcome email (supply-checkout-6uw.25, backend/src/email/welcome-handler.ts):
+ *
+ * - The user pool's post confirmation and pre token generation triggers (the
+ *   identity stack) invoke the function asynchronously, by its fixed name
+ *   (emailResourceNames().welcomeFunction), with a new account's sub and how it
+ *   signed up. Their roles may invoke it and nothing else of Lambda's; no other
+ *   principal is granted it.
+ * - The function may call ListUsers and AdminGetUser on the app pool only (it's
+ *   handed a sub), send the app's email (grantSendEmail), and in the table:
+ *   UpdateItem naming only WELCOME_RECORD_ATTRIBUTES, returning nothing, and
+ *   ConditionCheckItem (the DELETING mark, keys only), in `USER#` partitions:
+ *   its once-only record; Query of `USER#` partitions naming only the keys (is
+ *   the user in a team); and Query of GSI2's `INVITEE#` partitions naming only
+ *   WELCOME_INVITE_ATTRIBUTES (is an invite waiting), both with Select
+ *   SPECIFIC_ATTRIBUTES. No GetItem, PutItem, DeleteItem or Scan.
+ * - Lambda tries a failed request twice more, then puts it on the welcome
+ *   dead-letter queue (SQS-encrypted, 14 days: a sub and a sign-up method, no
+ *   address), which alarms ("Welcome emails dropped").
+ *
  * Deploy after the data stack (the table's key ARN, from SSM), the primary
  * region's domain stack (the topic) and the identity stack (the app pool's ID
  * and ARN, from SSM).
@@ -77,6 +96,8 @@ export class EmailStack extends SupplyCheckoutStack {
   readonly deadLetterQueue: Queue;
   readonly securityNotices: NodejsFunction;
   readonly securityNoticeEvents: Rule;
+  readonly welcome: NodejsFunction;
+  readonly welcomeDeadLetterQueue: Queue;
 
   constructor(scope: Construct, config: DeploymentConfig, region: string) {
     super(scope, { config, region, component: "email", layer: "stateless" });
@@ -189,6 +210,114 @@ export class EmailStack extends SupplyCheckoutStack {
     topic.addSubscription(new LambdaSubscription(this.eventsFunction, { deadLetterQueue: this.deadLetterQueue }));
 
     [this.securityNotices, this.securityNoticeEvents] = this.addSecurityNotices(config, table, tableArn, tableKeyArn);
+    [this.welcome, this.welcomeDeadLetterQueue] = this.addWelcome(config, table, tableArn, tableKeyArn);
+  }
+
+  /** The welcome email function and its dead-letter queue (see the class comment). */
+  private addWelcome(config: DeploymentConfig, table: string, tableArn: string, tableKeyArn: string): [NodejsFunction, Queue] {
+    const names = emailResourceNames(config.envName);
+    const identity = identityOutputParameters(config.envName);
+    const userPoolId = StringParameter.valueForStringParameter(this, identity.userPoolId);
+    const userPoolArn = StringParameter.valueForStringParameter(this, identity.userPoolArn);
+    const logGroup = new LogGroup(this, "WelcomeLogs", { retention: LOG_RETENTION });
+    const role = new Role(this, "WelcomeRole", {
+      assumedBy: new ServicePrincipal("lambda.amazonaws.com"),
+      description: "Execution role for the welcome email function",
+    });
+    role.addToPolicy(new PolicyStatement({ actions: ["logs:CreateLogStream", "logs:PutLogEvents"], resources: [logGroup.logGroupArn] }));
+    // Requests the function gave up on, to replay: a user's sub and how they signed up, no address
+    const deadLetters = new Queue(this, "WelcomeDeadLetterQueue", {
+      queueName: names.welcomeDeadLetterQueue,
+      encryption: QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      retentionPeriod: Duration.days(14),
+    });
+    Validations.of(deadLetters).acknowledge({
+      id: "AwsSolutions-SQS3",
+      reason: "This is the dead-letter queue: it holds welcome email requests the function failed on after Lambda's retries.",
+    });
+    // A fixed name: the user pool's triggers invoke it by name (the identity stack deploys first)
+    const fn = new NodejsFunction(this, "WelcomeFunction", {
+      functionName: names.welcomeFunction,
+      role,
+      logGroup,
+      entry: `${BACKEND}src/email/welcome.ts`,
+      projectRoot: BACKEND,
+      depsLockFilePath: `${BACKEND}package-lock.json`,
+      runtime: Runtime.NODEJS_24_X,
+      architecture: Architecture.ARM_64,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      description: "Emails a new account its welcome, once (supply-checkout-6uw.25)",
+      environment: {
+        NODE_OPTIONS: "--enable-source-maps",
+        TABLE_NAME: table,
+        [WELCOME_ENV.userPoolId]: userPoolId,
+        [WELCOME_ENV.supportAddress]: supportAddress(config),
+      },
+      retryAttempts: 2,
+      maxEventAge: Duration.hours(6),
+      deadLetterQueue: deadLetters,
+      bundling,
+    });
+    // noreply@ only, through the configuration set (lib/email.ts)
+    grantSendEmail(fn, config);
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "FindAppUsers",
+        actions: ["cognito-idp:ListUsers", "cognito-idp:AdminGetUser"],
+        resources: [userPoolArn],
+      }),
+    );
+    const userPartitions = { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] } };
+    // backend/src/data/welcome.ts: claimWelcome and releaseWelcome, returning nothing; the DELETING mark's check names only the keys
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ClaimWelcome",
+        actions: ["dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"],
+        resources: [tableArn],
+        conditions: {
+          ...userPartitions,
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...WELCOME_RECORD_ATTRIBUTES] },
+          StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+        },
+      }),
+    );
+    // hasTeam: the keys of the user's own rows
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ReadTeamKeys",
+        actions: ["dynamodb:Query"],
+        resources: [tableArn],
+        conditions: {
+          ...userPartitions,
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...WELCOME_TEAM_ATTRIBUTES] },
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
+    // hasLiveInvite: an invite's type, address and expiry, in GSI2's invitee partitions
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "ReadWaitingInvites",
+        actions: ["dynamodb:Query"],
+        resources: [`${tableArn}/index/${GSI2}`],
+        conditions: {
+          "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["INVITEE#*"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": [...WELCOME_INVITE_ATTRIBUTES] },
+          StringEquals: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
+        },
+      }),
+    );
+    fn.addToRolePolicy(
+      new PolicyStatement({
+        sid: "TableKeyThroughDynamoDb",
+        actions: ["kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey"],
+        resources: [tableKeyArn],
+        conditions: { StringEquals: { "kms:ViaService": `dynamodb.${Aws.REGION}.amazonaws.com` } },
+      }),
+    );
+    return [fn, deadLetters];
   }
 
   /** The security notices function and its CloudTrail rule (see the class comment). */

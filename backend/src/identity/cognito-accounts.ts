@@ -1,7 +1,9 @@
 // Finds an app user by their `sub` for the security notices function
 // (security-notices-handler.ts, supply-checkout-8jc.28): CloudTrail records the
-// sub of the user whose token made a call, not their username. Signed with the
-// function's role, which may call ListUsers and AdminGetUser on the app pool only.
+// sub of the user whose token made a call, not their username. And for the
+// welcome email function (email/welcome-handler.ts, supply-checkout-6uw.25),
+// which the user pool's triggers hand only a sub. Signed with the function's
+// role, which may call ListUsers and AdminGetUser on the app pool only.
 
 import { emailVerifiedFrom } from "../api/cognito-user.js";
 import { type CognitoAdminOptions, cognitoRequest, type ListedUser } from "./cognito-admin.js";
@@ -20,6 +22,8 @@ export interface PoolAccount {
   readonly emailVerifiedInCognito: boolean;
   /** An authenticator app (TOTP) is one of the user's MFA methods, preferred or not. */
   readonly totpEnabled: boolean;
+  /** Cognito's `given_name`, if the user has one: for the welcome email's greeting only, never a log line. */
+  readonly givenName?: string;
 }
 
 /** The user in the pool with this `sub`, or undefined if there's none. */
@@ -57,6 +61,7 @@ export function cognitoAccounts(options: CognitoAdminOptions & { readonly userPo
       emailVerified: emailVerifiedFrom(user.Username, attributes),
       emailVerifiedInCognito: attributes.email_verified === "true",
       totpEnabled: Array.isArray(user.UserMFASettingList) && user.UserMFASettingList.includes("SOFTWARE_TOKEN_MFA"),
+      ...(attributes.given_name ? { givenName: attributes.given_name } : {}),
     };
   };
 }
