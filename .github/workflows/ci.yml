@@ -173,7 +173,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm audit --audit-level=high
+      # High and critical advisories fail, except the expiring exceptions in scripts/npm-audit-exceptions.json (see their reasons).
+      - run: node scripts/npm-audit.mjs
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         if: github.event_name == 'pull_request'
         with:

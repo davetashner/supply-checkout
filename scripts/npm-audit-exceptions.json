@@ -6,5 +6,13 @@
     "expires": "2026-10-31",
     "bead": "supply-checkout-pbp.33",
     "reason": "aws-cdk-lib bundles minimatch with brace-expansion 5.0.9, and no aws-cdk-lib release (2.272.0 checked) bundles 5.0.12 yet. npm overrides can't reach a bundled dependency. It runs only at synth time on CDK's own glob patterns, never in a deployed Lambda, so the CPU and stack-exhaustion DoS needs an attacker-controlled pattern we never pass. Remove this entry once aws-cdk-lib bundles a fixed version."
+  },
+  {
+    "package": "braces",
+    "paths": ["node_modules/braces"],
+    "advisories": ["GHSA-vfj7-8cjw-p6xm"],
+    "expires": "2026-11-05",
+    "bead": "supply-checkout-gs9n",
+    "reason": "braces (stack-exhaustion DoS on deeply nested glob patterns) has no fixed release; 3.0.3 is the latest. It comes in through vite-plugin-singlefile and micromatch, which run only when the claude.ai artifact is built, on our own file names, never on anyone else's input and never in a deployed Lambda or the web app. Remove this entry once braces releases a fix or vite-plugin-singlefile stops depending on micromatch."
   }
 ]
