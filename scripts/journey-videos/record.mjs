@@ -157,7 +157,13 @@ async function marketing(opts, { registry, size }) {
     }
     // A run of some clips keeps the others' entries, in the config's order
     const manifestFile = join(outDir, "clips.json");
-    const kept = existsSync(manifestFile) ? JSON.parse(readFileSync(manifestFile, "utf8")).clips.filter((c) => !manifest.some((m) => m.slug === c.slug)) : [];
+    let before = [];
+    try {
+      before = JSON.parse(readFileSync(manifestFile, "utf8")).clips;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error; // the first run has no manifest yet
+    }
+    const kept = before.filter((c) => !manifest.some((m) => m.slug === c.slug));
     const order = config.clips.map((c) => c.slug);
     const all = [...kept, ...manifest].filter((c) => order.includes(c.slug)).sort((a, b) => order.indexOf(a.slug) - order.indexOf(b.slug));
     writeFileSync(manifestFile, `${JSON.stringify({ commit: commit(), recordedAt: new Date().toISOString(), clips: all }, null, 2)}\n`);

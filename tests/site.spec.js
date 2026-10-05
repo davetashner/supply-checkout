@@ -63,7 +63,7 @@ test("the page leads with the checkout journey and the trial, and says the price
 
 test("each recorded clip is on the page with a poster, and every file loads", async ({ page }) => {
   const failed = [];
-  page.on("response", (r) => { if (r.url().startsWith(ORIGIN) && r.status() >= 400) failed.push(`${r.status()} ${r.url()}`); });
+  page.on("response", (r) => { if (new URL(r.url()).origin === ORIGIN && r.status() >= 400) failed.push(`${r.status()} ${r.url()}`); });
   await open(page);
   // The clips' own journeys, in the order the config gives them: J4 is the hero and again its section
   const sources = await page.locator(".screen video source").evaluateAll((s) => s.map((e) => e.getAttribute("src")));
