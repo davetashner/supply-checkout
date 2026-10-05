@@ -218,8 +218,14 @@ test("the viewports and the command's options", () => {
   assert.deepEqual(frame("phone").page, { width: 390, height: 776 });
   assert.deepEqual(frame("phone").video, { width: 780, height: 1552 });
   assert.throws(() => frame("tv"), /desktop or phone/);
-  assert.deepEqual(parseArgs([]), { headless: false, only: null, pace: 1, slowMo: 0, build: true, viewport: "desktop", evidence: false });
-  assert.deepEqual(parseArgs(["--only", "j4,J7", "--only=J1", "--headless", "--pace=0.3", "--slow-mo", "50", "--viewport", "phone", "--skip-build", "--evidence"]), { headless: true, only: ["J4", "J7", "J1"], pace: 0.3, slowMo: 50, build: false, viewport: "phone", evidence: true });
+  assert.deepEqual(parseArgs([]), { headless: false, only: null, pace: 1, slowMo: 0, build: true, viewport: "desktop", evidence: false, marketing: false });
+  assert.deepEqual(parseArgs(["--only", "j4,J7", "--only=J1", "--headless", "--pace=0.3", "--slow-mo", "50", "--viewport", "phone", "--skip-build", "--evidence"]), { headless: true, only: ["J4", "J7", "J1"], pace: 0.3, slowMo: 50, build: false, viewport: "phone", evidence: true, marketing: false });
+  // The marketing profile: a phone and 1x frames with no banner, and no evidence pack
+  assert.deepEqual(parseArgs(["--marketing"]), { headless: false, only: null, pace: 1, slowMo: 0, build: true, viewport: "phone", evidence: false, marketing: true });
+  assert.equal(parseArgs(["--marketing", "--viewport", "desktop"]).viewport, "desktop");
+  assert.throws(() => parseArgs(["--marketing", "--evidence"]), /don't go together/);
+  assert.deepEqual(frame("phone", { marketing: true }).video, { width: 390, height: 664 });
+  assert.deepEqual(frame("desktop", { marketing: true }).page, { width: 1280, height: 720 });
   assert.deepEqual(parseArgs(["-h"]), { help: true });
   assert.throws(() => parseArgs(["--pace", "0"]), /--pace must be a number above 0/);
   assert.throws(() => parseArgs(["--slow-mo", "-1"]), /--slow-mo must be 0 or more/);

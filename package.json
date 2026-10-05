@@ -14,11 +14,12 @@
     "last 2 Safari major versions"
   ],
   "scripts": {
-    "build": "npm run build:artifact && npm run build:web && npm run build:demo && npm run build:ops",
+    "build": "npm run build:artifact && npm run build:web && npm run build:demo && npm run build:ops && npm run build:site",
     "build:artifact": "vite build --mode artifact",
     "build:web": "vite build --mode web",
     "build:demo": "vite build --mode demo",
     "build:ops": "vite build --mode ops",
+    "build:site": "vite build --mode site",
     "lint": "eslint . && node scripts/check-links.mjs && npm run build && node scripts/validate-html.mjs",
     "test": "npm run test:artifact && npm run test:web",
     "test:artifact": "BUILD=artifact playwright test --project=desktop-chrome --project=iphone-safari",
@@ -41,12 +42,13 @@
     "land": "bash scripts/land-pr.sh",
     "deploy": "bash scripts/deploy.sh",
     "test:ops": "node --test --experimental-test-coverage --test-coverage-include='ops/lib/**' --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 ops/test/*.test.mjs",
-    "test:scripts": "shellcheck scripts/*.sh && bash scripts/land-pr.test.sh && bash scripts/beads-pr.test.sh && bash scripts/deploy.test.sh && bash scripts/deploy-diff.test.sh && node --test scripts/publish-web.test.mjs scripts/deploy-stacks.test.mjs scripts/check-replacements.test.mjs scripts/check-environments.test.mjs scripts/deploy-github-deploy.test.mjs scripts/check-web.test.mjs scripts/smoke-checks.test.mjs scripts/ops.test.mjs scripts/operators.test.mjs scripts/restore-drill.test.mjs scripts/check-stray-files.test.mjs scripts/backlog-page.test.mjs scripts/backlog-stop-hook.test.mjs scripts/journeys.test.mjs scripts/journey-videos/journey-videos.test.mjs scripts/journey-videos/report.test.mjs scripts/npm-audit.test.mjs",
+    "test:scripts": "shellcheck scripts/*.sh && bash scripts/land-pr.test.sh && bash scripts/beads-pr.test.sh && bash scripts/deploy.test.sh && bash scripts/deploy-diff.test.sh && node --test scripts/publish-web.test.mjs scripts/deploy-stacks.test.mjs scripts/check-replacements.test.mjs scripts/check-environments.test.mjs scripts/deploy-github-deploy.test.mjs scripts/check-web.test.mjs scripts/smoke-checks.test.mjs scripts/ops.test.mjs scripts/operators.test.mjs scripts/restore-drill.test.mjs scripts/check-stray-files.test.mjs scripts/backlog-page.test.mjs scripts/backlog-stop-hook.test.mjs scripts/journeys.test.mjs scripts/journey-videos/journey-videos.test.mjs scripts/journey-videos/marketing.test.mjs scripts/journey-videos/report.test.mjs scripts/npm-audit.test.mjs",
     "publish:web": "node scripts/publish-web.mjs",
     "ops": "node scripts/ops.mjs",
     "operators": "node scripts/operators.mjs",
     "restore-drill": "node scripts/restore-drill.mjs",
     "publish:demo": "npm run build:demo && node scripts/publish-web.mjs publish --channel demo --dir dist/demo",
+    "publish:site": "npm run build:site && node scripts/publish-web.mjs publish --channel site --dir dist/site",
     "publish:ops": "npm run build:ops && node scripts/publish-web.mjs publish --channel ops --dir dist/ops"
   },
   "devDependencies": {

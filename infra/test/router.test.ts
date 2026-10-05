@@ -100,6 +100,45 @@ describe("router (CloudFront Function)", () => {
     expect(res.headers?.["cache-control"]?.value).toBe("no-store");
   });
 
+  describe("the marketing home page (channel site)", () => {
+    const withSite = router({ app: "1.4.0", demo: "demo-20260926-abc1234", site: "site-20261005-120000-abc1234" });
+
+    it("serves the apex's / and /assets/ from the site's live release, and nothing else", async () => {
+      expect((await withSite(APEX, "/")).uri).toBe("/releases/site-20261005-120000-abc1234/index.html");
+      expect((await withSite(APEX, "/assets/index-abc.css")).uri).toBe("/releases/site-20261005-120000-abc1234/assets/index-abc.css");
+      expect((await withSite(APEX, "/assets/J4-checkout-abc.mp4")).uri).toBe("/releases/site-20261005-120000-abc1234/assets/J4-checkout-abc.mp4");
+      // Its release marker, and every path that isn't the page's, never reach it
+      for (const uri of ["/index.html", "/site-release.json", "/icon.svg", "/config.json", "/assets", "/Assets/x.js", "/releases/app-1/index.html", "/about/", "//evil.example/"]) {
+        expectRedirect(await withSite(APEX, uri), 302, `https://${APP}/`);
+      }
+    });
+
+    it("leaves the app, the demo and www. as they were", async () => {
+      expect((await withSite(APP, "/")).uri).toBe("/releases/1.4.0/index.html");
+      expect((await withSite(APEX, "/demo/")).uri).toBe("/releases/demo-20260926-abc1234/index.html");
+      expectRedirect(await withSite(APEX, "/demo"), 301, "/demo/");
+      expectRedirect(await withSite(WWW, "/"), 301, `https://${APEX}/`);
+      expectRedirect(await withSite(WWW, "/assets/index-abc.css"), 301, `https://${APEX}/`);
+    });
+
+    it("serves it for any host that isn't app. or www. (the cloudfront.net name, a trailing dot), as with the apex", async () => {
+      for (const host of ["d111111abcdef8.cloudfront.net", `${APEX}.`, `${APEX}:443`, `${APP}.`, undefined]) {
+        expect((await withSite(host, "/")).uri, String(host)).toBe("/releases/site-20261005-120000-abc1234/index.html");
+      }
+    });
+
+    it("sends / to the app, never a 503, while nothing is live on the site: not published, none, a bad version or a store error", async () => {
+      for (const site of [undefined, "none", "", "../secret", "a b", new Error("KVS unavailable")]) {
+        const r = router({ app: "1.4.0", ...(site === undefined ? {} : { site }) });
+        for (const uri of ["/", "/assets/index-abc.css"]) {
+          const res = await r(APEX, uri);
+          expectRedirect(res, 302, `https://${APP}/`);
+          expect(res.headers?.["cache-control"]?.value, String(site)).toBe("no-store");
+        }
+      }
+    });
+  });
+
   it("redirects /demo to /demo/ permanently", async () => {
     const res = await live(APEX, "/demo");
     expectRedirect(res, 301, "/demo/");

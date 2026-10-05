@@ -13,6 +13,9 @@
 //   npm run journeys:video -- --headless            without a window (the videos are the same)
 //   npm run journeys:video -- --pace 0.3            shorter pauses, for a quick check
 //   npm run journeys:video -- --slow-mo 100         the browser's slowMo, in milliseconds (default 0)
+//   npm run journeys:video -- --marketing          the clips for the home page (journeys/marketing.json): a
+//                                                   phone, no test banner, and an MP4 and poster each, in
+//                                                   site/clips/ (needs ffmpeg). With --only J4,J13
 //   npm run journeys:video -- --skip-build          use the dist/web already built
 //   npm run journeys:video -- --evidence            also keep each test's trace and a screenshot at the
 //                                                   end of each step, for the release evidence pack
@@ -32,10 +35,10 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const CONFIG = fileURLToPath(new URL("./playwright.config.mjs", import.meta.url));
-const USAGE = "Usage: npm run journeys:video -- [--only J4[,J7]] [--viewport desktop|phone] [--headless] [--pace 1] [--slow-mo 0] [--skip-build] [--evidence]";
+const USAGE = "Usage: npm run journeys:video -- [--only J4[,J7]] [--viewport desktop|phone] [--headless] [--pace 1] [--slow-mo 0] [--skip-build] [--evidence] [--marketing]";
 
 export function parseArgs(argv) {
-  const opts = { headless: false, only: null, pace: 1, slowMo: 0, build: true, viewport: "desktop", evidence: false };
+  const opts = { headless: false, only: null, pace: 1, slowMo: 0, build: true, viewport: "desktop", evidence: false, marketing: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const value = () => {
@@ -48,6 +51,7 @@ export function parseArgs(argv) {
     else if (arg === "--headed") opts.headless = false;
     else if (arg === "--skip-build") opts.build = false;
     else if (arg === "--evidence") opts.evidence = true;
+    else if (arg === "--marketing") opts.marketing = true;
     else if (is("--only")) opts.only = [...(opts.only || []), ...value().split(",").map((s) => s.trim().toUpperCase()).filter(Boolean)];
     else if (is("--pace")) opts.pace = Number(value());
     else if (is("--slow-mo")) opts.slowMo = Number(value());
@@ -58,6 +62,11 @@ export function parseArgs(argv) {
   if (!(opts.pace > 0)) throw new Error("--pace must be a number above 0");
   if (!(opts.slowMo >= 0)) throw new Error("--slow-mo must be 0 or more");
   if (!["desktop", "phone"].includes(opts.viewport)) throw new Error(`--viewport is desktop or phone, not ${opts.viewport}`);
+  if (opts.marketing) {
+    if (opts.evidence) throw new Error("--marketing and --evidence don't go together: the clips have no result to keep");
+    // Phone clips, unless the viewport was asked for
+    if (!argv.some((a) => a.startsWith("--viewport"))) opts.viewport = "phone";
+  }
   return opts;
 }
 
@@ -94,6 +103,80 @@ async function recordCard(browser, html, seconds, { size, video, scale, dir }) {
   return v.path();
 }
 
+// --marketing: one recording per clip in journeys/marketing.json, as an MP4 loop and a poster in
+// site/clips/, with a manifest the home page's build reads. Fails if a clip's test fails or
+// a clip is over its size or length.
+async function marketing(opts, { registry, size }) {
+  const { planClips, grepClips, resultFor, encode, problems } = await import("./marketing.mjs");
+  const { readReport } = await import("./assemble.mjs");
+  const { webmDuration } = await import("./webm.mjs");
+  const { acquireRunLock, releaseRunLock } = await import("../../tests/run-lock.js");
+  const { buildApp, distDir } = await import("../builds.mjs");
+  const { run, onInterrupt } = await import("./process.mjs");
+  const config = JSON.parse(readFileSync(join(ROOT, "journeys/marketing.json"), "utf8"));
+  const clips = planClips(config, registry, opts.only);
+
+  await acquireRunLock();
+  const scratch = mkdtempSync(join(tmpdir(), "journey-clips-"));
+  const outDir = join(ROOT, "site/clips");
+  const env = {
+    BUILD: "web",
+    JOURNEY_VIDEO: "1",
+    JOURNEY_VIDEO_OPTIONS: JSON.stringify({ viewport: opts.viewport, pace: opts.pace, slowMo: opts.slowMo, headless: opts.headless, marketing: { caption: "" }, outputDir: join(scratch, "results"), report: join(scratch, "report.json") }),
+  };
+  let done = false;
+  const cleanup = async () => {
+    if (done) return;
+    done = true;
+    rmSync(scratch, { recursive: true, force: true });
+    releaseRunLock();
+  };
+  const stopHandling = onInterrupt(cleanup);
+  const manifest = [], errors = [];
+  try {
+    if (opts.build || !existsSync(join(distDir("web"), "index.html"))) {
+      console.log("Building the web app…");
+      await buildApp("web");
+    }
+    // One run per clip, so each has its own caption line
+    mkdirSync(outDir, { recursive: true });
+    for (const clip of clips) {
+      const options = { ...JSON.parse(env.JOURNEY_VIDEO_OPTIONS), pace: opts.pace * (clip.pace ?? 1), marketing: { caption: clip.caption }, report: join(scratch, `${clip.slug}.json`), outputDir: join(scratch, clip.slug) };
+      console.log(`Recording ${clip.journey} ${clip.slug}…`);
+      const recording = await playwright(run, [clip.file, "--grep", grepClips([clip])], { ...env, JOURNEY_VIDEO_OPTIONS: JSON.stringify(options) });
+      const reportFile = options.report;
+      if (!existsSync(reportFile)) throw new Error(`The recording run for ${clip.slug} didn't finish (exit ${recording.status})`);
+      const result = resultFor(clip, readReport(JSON.parse(readFileSync(reportFile, "utf8")), (videos) => videos.reduce((a, b) => (webmDuration(b) > webmDuration(a) ? b : a))));
+      if (!result?.video) throw new Error(`${clip.slug}: no recording of "${clip.test}" in ${clip.file}`);
+      if (result.status !== "passed") { errors.push(`${clip.slug}: its test ${result.status}${result.error ? `: ${result.error}` : ""}`); continue; }
+      const mp4 = `${clip.journey}-${clip.slug}.mp4`, poster = `${clip.journey}-${clip.slug}.jpg`;
+      const seconds = encode(result.video, join(outDir, mp4), join(outDir, poster), { width: size.video.width });
+      const bytes = statSync(join(outDir, mp4)).size;
+      errors.push(...problems(clip.slug, { bytes, seconds }));
+      manifest.push({ journey: clip.journey, slug: clip.slug, mp4, poster, caption: clip.caption, seconds: Number(seconds.toFixed(1)), bytes, width: size.video.width, height: size.video.height });
+    }
+    // A run of some clips keeps the others' entries, in the config's order
+    const manifestFile = join(outDir, "clips.json");
+    let before = [];
+    try {
+      before = JSON.parse(readFileSync(manifestFile, "utf8")).clips;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error; // the first run has no manifest yet
+    }
+    const kept = before.filter((c) => !manifest.some((m) => m.slug === c.slug));
+    const order = config.clips.map((c) => c.slug);
+    const all = [...kept, ...manifest].filter((c) => order.includes(c.slug)).sort((a, b) => order.indexOf(a.slug) - order.indexOf(b.slug));
+    writeFileSync(manifestFile, `${JSON.stringify({ commit: commit(), recordedAt: new Date().toISOString(), clips: all }, null, 2)}\n`);
+  } finally {
+    stopHandling();
+    await cleanup();
+  }
+  console.log("\nMarketing clips (site/clips/):");
+  for (const m of manifest) console.log(`  ${m.journey.padEnd(3)} ${m.mp4} (${m.seconds} s, ${(m.bytes / 1e6).toFixed(2)} MB)`);
+  for (const e of errors) console.error(`  PROBLEM ${e}`);
+  if (errors.length) process.exitCode = 1;
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) return console.log(USAGE);
@@ -105,7 +188,8 @@ async function main() {
   const { buildApp, distDir, DEMO } = await import("../builds.mjs");
   const { run, onInterrupt } = await import("./process.mjs");
   const registry = JSON.parse(readFileSync(join(ROOT, "journeys/registry.json"), "utf8"));
-  const size = frame(opts.viewport);
+  const size = frame(opts.viewport, { marketing: opts.marketing });
+  if (opts.marketing) return marketing(opts, { registry, size });
 
   await acquireRunLock();
   const scratch = mkdtempSync(join(tmpdir(), "journey-videos-"));

@@ -7,7 +7,7 @@ import { defineConfig, devices } from "@playwright/test";
 import { frame } from "./director.mjs";
 
 const options = JSON.parse(process.env.JOURNEY_VIDEO_OPTIONS || "{}");
-const { page, video, device } = frame(options.viewport || "desktop");
+const { page, video, device } = frame(options.viewport || "desktop", { marketing: Boolean(options.marketing) });
 // The device's screen, touch and user agent, in Chromium whatever the device's own browser
 const emulate = { ...devices[device] };
 delete emulate.defaultBrowserType;

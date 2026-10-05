@@ -1,0 +1,35 @@
+{
+  "comment": "The clips on the marketing home page (npm run journeys:video -- --marketing). Each is one tagged Playwright test, recorded on a phone with no test banner. `caption` is shown while a test.step named for a journey step isn't running. Only Tested journeys. `pace` slows the cursor and the pauses (default 1) for a clip that would run under 15 seconds.",
+  "clips": [
+    {
+      "journey": "J4",
+      "slug": "checkout",
+      "file": "tests/app.spec.js",
+      "test": "checks out a new barcode, returns part of it, and finishes the return",
+      "caption": "Scan it out. Scan it back."
+    },
+    {
+      "journey": "J13",
+      "slug": "equipment",
+      "file": "tests/equipment.spec.js",
+      "test": "Inventory filters supplies and equipment, and shows where equipment is out",
+      "caption": "Know where every ladder and vacuum is, and who took it.",
+      "pace": 1.8
+    },
+    {
+      "journey": "J14",
+      "slug": "quick-take",
+      "file": "tests/adhoc.spec.js",
+      "test": "Quick take starts the team's ad hoc sheet, adds to it after, and takes stock down",
+      "caption": "A box of gloves for the van? Quick take, no job sheet."
+    },
+    {
+      "journey": "J5",
+      "slug": "receipt",
+      "file": "tests/app.spec.js",
+      "test": "receipt review merges duplicates and splits items between a client and storage",
+      "caption": "Photograph the receipt. Every line lands on the right job.",
+      "pace": 1.3
+    }
+  ]
+}

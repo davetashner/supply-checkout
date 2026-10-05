@@ -19,6 +19,7 @@ const pages = {
   "dist/web/index.html": readFileSync(distDir("web") + "index.html", "utf8"),
   "dist/demo/index.html": readFileSync(distDir("demo") + "index.html", "utf8"),
   "dist/ops/index.html": readFileSync(distDir("ops") + "index.html", "utf8"),
+  "dist/site/index.html": readFileSync(distDir("site") + "index.html", "utf8"),
 };
 let valid = true;
 for (const [name, html] of Object.entries(pages)) {
