@@ -3,6 +3,7 @@
 //
 //   node scripts/publish-web.mjs publish  --channel demo --dir dist/demo [--version V] [--no-activate] [--reuse]
 //   node scripts/publish-web.mjs publish  --channel ops --dir dist/ops   the operator page, at ops.<env domain>
+//   node scripts/publish-web.mjs publish  --channel site --dir dist/site the marketing home page, at the apex (npm run publish:site)
 //   node scripts/publish-web.mjs activate --channel app --version V     switch (or roll back) the live release
 //   node scripts/publish-web.mjs live     --channel app                 print the channel's live version ("none" if nothing)
 //   node scripts/publish-web.mjs status                                  live versions and uploaded releases
@@ -17,7 +18,8 @@
 // make it live again instead of failing, so deploying a release twice, or an older one, works.
 // It never uploads over an existing release, and the channel check of `activate` still applies.
 //
-// Channels: "demo" is served at the apex's /demo/, "app" at app. (infra/lib/web/router.js), and
+// Channels: "site" is the marketing home page, at the apex's / (its build has site-release.json),
+// "demo" is served at the apex's /demo/, "app" at app. (infra/lib/web/router.js), and
 // "ops", the operator page (supply-checkout-gxlt), at ops. by its own distribution and router
 // (infra/lib/web/ops-router.js), which serves only releases named ops-*. So ops releases must be
 // named ops-* (the default version is), and app and demo releases mustn't be.
@@ -52,7 +54,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const CHANNELS = ["app", "demo", "ops"];
+export const CHANNELS = ["app", "demo", "ops", "site"];
 /** The operator page's channel: its releases, and only its, are named ops-* (infra/lib/web/ops-router.js). */
 export const OPS_VERSION = /^ops-[A-Za-z0-9._-]{1,124}$/;
 // Same pattern as infra/lib/web/router.js, which refuses anything else
@@ -273,7 +275,10 @@ export function routerChecks(aliases) {
   return [
     { host: app, uri: "/", expect: "serve" },
     { host: apex, uri: "/demo/", expect: "serve" },
-    { host: apex, uri: "/", expect: 302 },
+    // The home page once published; until then the redirect to the app
+    { host: apex, uri: "/", expect: "site" },
+    { host: apex, uri: "/assets/check-router.js", expect: "site" },
+    { host: apex, uri: "/anything-else", expect: 302 },
     { host: www, uri: "/", expect: 301 },
   ];
 }
@@ -294,10 +299,14 @@ export function checkRouterResult(check, result) {
   if (check.expect === "serve") {
     if (typeof uri === "string" && uri.startsWith("/releases/")) return `ok  ${where} -> ${uri}`;
     if (status === 503) return `ok  ${where} -> 503 (nothing live on this channel)`;
+  } else if (check.expect === "site") {
+    // Served from a release, or (nothing live on the site channel yet) the redirect to the app
+    if (typeof uri === "string" && uri.startsWith("/releases/")) return `ok  ${where} -> ${uri}`;
+    if (status === 302) return `ok  ${where} -> 302 (no home page live: the app)`;
   } else if (status === check.expect) {
     return `ok  ${where} -> ${status}`;
   }
-  throw new Error(`The router answered ${where} with ${status ?? uri ?? "nothing"}, not ${check.expect === "serve" ? "a release" : check.expect}`);
+  throw new Error(`The router answered ${where} with ${status ?? uri ?? "nothing"}, not ${check.expect === "serve" ? "a release" : check.expect === "site" ? "a release or a 302" : check.expect}`);
 }
 
 function checkRouter(aws, envName) {
@@ -331,6 +340,9 @@ function testRouter(aws, name, checks) {
 export const releaseIndexKey = (version) => `releases/${version}/index.html`;
 export const releaseConfigKey = (version) => `releases/${version}/config.json`;
 export const releaseOpsConfigKey = (version) => `releases/${version}/ops-config.json`;
+/** The home page's build marks itself (vite.config.js), so it can't go live as the demo, whose builds have no marker. */
+export const SITE_MARKER = "site-release.json";
+export const releaseSiteKey = (version) => `releases/${version}/${SITE_MARKER}`;
 
 class Aws {
   constructor({ profile, region, dryRun, log = console.log, run = execFileSync }) {
@@ -433,7 +445,7 @@ export function main(argv, deps = {}) {
   if (opts.command === "publish") {
     const dir = path.resolve(opts.dir);
     if (!existsSync(path.join(dir, "index.html")) || !statSync(dir).isDirectory()) {
-      throw new Error(`${opts.dir} has no index.html. Build it first (npm run build:${{ demo: "demo", ops: "ops", app: "web" }[opts.channel]}).`);
+      throw new Error(`${opts.dir} has no index.html. Build it first (npm run build:${{ demo: "demo", ops: "ops", site: "site", app: "web" }[opts.channel]}).`);
     }
     const version = opts.version ?? defaultVersion(opts.channel);
     if (!VERSION.test(version)) throw new Error(`Bad version ${version}`);
@@ -447,7 +459,13 @@ export function main(argv, deps = {}) {
     if (opts.channel === "demo" && existsSync(path.join(dir, "config.json"))) {
       throw new Error(`${opts.dir} has a config.json, so it's an app build, not the demo (npm run build:demo builds dist/demo).`);
     }
-    // A folder is one channel's build: the operator page never ships with the app's files, nor the app with the page's
+    // A folder is one channel's build: the home page's marker is on its folder alone, and the operator page never ships with the app's files, nor the app with the page's
+    if (opts.channel === "site" && !existsSync(path.join(dir, SITE_MARKER))) {
+      throw new Error(`${opts.dir} has no ${SITE_MARKER}, so it isn't the home page's build (npm run build:site builds dist/site).`);
+    }
+    if (opts.channel !== "site" && existsSync(path.join(dir, SITE_MARKER))) {
+      throw new Error(`${opts.dir} has a ${SITE_MARKER}, so it's the home page's build (npm run build:site), not the ${opts.channel}'s.`);
+    }
     if (opts.channel !== "ops" && existsSync(path.join(dir, "ops-config.json"))) {
       throw new Error(`${opts.dir} has an ops-config.json, so it's the operator page's build (npm run build:ops), not the ${opts.channel}'s.`);
     }
@@ -480,17 +498,19 @@ export function main(argv, deps = {}) {
 }
 
 /**
- * App releases have config.json, operator page releases ops-config.json, and demo releases
- * neither; none goes live on another's channel.
+ * App releases have config.json, operator page releases ops-config.json, home page releases
+ * site-release.json, and demo releases none of them; none goes live on another's channel.
  */
 function checkReleaseChannel(aws, { bucket, bucketRegion, channel, version }) {
   const releaseChannel = aws.exists(bucket, releaseConfigKey(version), bucketRegion)
     ? "app"
     : aws.exists(bucket, releaseOpsConfigKey(version), bucketRegion)
       ? "ops"
-      : "demo";
+      : aws.exists(bucket, releaseSiteKey(version), bucketRegion)
+        ? "site"
+        : "demo";
   if (releaseChannel !== channel) {
-    const what = { app: "an app release (it has config.json)", ops: "an operator page release (it has ops-config.json)", demo: "a demo release (it has no config.json)" }[releaseChannel];
+    const what = { app: "an app release (it has config.json)", ops: "an operator page release (it has ops-config.json)", site: `a home page release (it has ${SITE_MARKER})`, demo: "a demo release (it has no config.json)" }[releaseChannel];
     throw new Error(`Release ${version} is ${what}, so it can't go live on the ${channel} channel.`);
   }
 }

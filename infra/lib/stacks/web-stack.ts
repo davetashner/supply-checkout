@@ -193,7 +193,7 @@ export class WebStack extends SupplyCheckoutStack {
       source: ImportSource.fromInline(JSON.stringify({ data: RELEASE_CHANNELS.map((key) => ({ key, value: "none" })) })),
     });
     const router = new CloudFrontFunction(this, "Router", {
-      comment: "Serves the live release for the host's channel; redirects the apex home page",
+      comment: "Serves the live release for the host's channel; serves the apex home page, or redirects it to the app",
       runtime: FunctionRuntime.JS_2_0,
       keyValueStore: this.liveVersions,
       code: FunctionCode.fromInline(

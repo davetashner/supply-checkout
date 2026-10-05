@@ -13,9 +13,12 @@ export const VIEWPORTS = {
 };
 
 // The page's viewport (the test's own, plus the banner), and the video's size
-export function frame(name) {
-  const v = VIEWPORTS[name];
-  if (!v) throw new Error(`--viewport is desktop or phone, not ${name}`);
+// The marketing profile has no banner: its caption is drawn over the bottom of the page
+export function frame(name, { marketing = false } = {}) {
+  const base = VIEWPORTS[name];
+  if (!base) throw new Error(`--viewport is desktop or phone, not ${name}`);
+  // Playwright's video doesn't scale the page up to a larger canvas: the clips are at 1x
+  const v = marketing ? { ...base, banner: 0, scale: 1 } : base;
   const page = { width: v.viewport.width, height: v.viewport.height + v.banner };
   return { ...v, page, video: { width: page.width * v.scale, height: page.height * v.scale } };
 }
@@ -24,7 +27,7 @@ export function frame(name) {
 // elements go on <html>, outside <body>, so the app's redraws never remove them; none of them
 // take pointer events, and none is in the accessibility tree. The styles are a constructed
 // stylesheet, so a Content Security Policy that forbids inline styles doesn't stop them.
-export function installOverlay({ banner: height, compact }) {
+export function installOverlay({ banner: height, compact, marketing = false }) {
   if (window.top !== window || window.__jv) return;
   const api = { ready: false, state: null };
   window.__jv = api;
@@ -54,7 +57,12 @@ export function installOverlay({ banner: height, compact }) {
     .jv-ripple { position: fixed; z-index: 2147483646; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%;
       border: 3px solid #ff3b30; background: rgba(255,59,48,.25); animation: jv-ripple .6s ease-out forwards; }
     @keyframes jv-ripple { from { transform: scale(.3); opacity: 1; } to { transform: scale(1.5); opacity: 0; } }
-  `;
+  ` + (marketing ? `
+    #jv-banner { top: auto; bottom: ${compact ? 12 : 20}px; left: ${compact ? 10 : 24}px; right: ${compact ? 10 : 24}px; height: auto; border: 0; border-radius: 14px; padding: ${compact ? "10px 14px" : "12px 20px"}; background: rgba(11, 27, 43, .92); justify-content: center; text-align: center; }
+    #jv-banner .jv-id, #jv-banner .jv-test, #jv-banner .jv-note, #jv-banner .jv-state { display: none; }
+    #jv-banner .jv-text { flex: none; max-width: 100%; }
+    #jv-banner .jv-step { font-size: ${compact ? 15 : 20}px; font-weight: 700; -webkit-line-clamp: 2; }
+  ` : "");
   let banner, cursor;
   const el = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
   // Once per document

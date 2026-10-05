@@ -2,10 +2,12 @@
 // distribution (supply-checkout-qk1, supply-checkout-59p). By host and path:
 //
 //   app.<domain>/...          channel "app": the real web app
-//   <domain>/                 302 to https://app.<domain>/ (until the landing page)
+//   <domain>/                 channel "site": the marketing home page. With nothing live on
+//                             it, 302 to https://app.<domain>/ as before
+//   <domain>/assets/...       channel "site" too (its hashed scripts, styles and clips)
 //   <domain>/demo             301 to /demo/
 //   <domain>/demo/...         channel "demo", with /demo stripped: the demo
-//   <domain>/anything else    302 to https://app.<domain>/
+//   <domain>/anything else    302 to https://app.<domain>/ (the site has only / and /assets/)
 //   www.<domain>/demo...      301 to https://<domain>/demo/
 //   www.<domain>/anything     301 to https://<domain>/
 //
@@ -72,6 +74,8 @@ const moved = (location) => redirect(301, location, "max-age=86400");
 const found = (location) => redirect(302, location, "no-store");
 
 const isDemo = (uri) => uri === "/demo" || uri.startsWith("/demo/");
+// The home page's paths: the page, and its hashed files, which the build puts in assets/
+const isSite = (uri) => uri === "/" || uri.startsWith("/assets/");
 
 async function serve(request, channel, uri) {
   // A missing key or a store error means nothing can be served
@@ -87,6 +91,15 @@ async function serve(request, channel, uri) {
   return request;
 }
 
+// The home page, or the redirect to the app while no release of it is live (a missing key, "none",
+// a bad value or a store error), so publishing the site is what turns it on and nothing 503s
+async function site(request, uri) {
+  const version = await kvs.get("site").catch(() => null);
+  if (!version || version === "none" || !VERSION.test(version)) return found("https://" + APP + "/");
+  request.uri = "/releases/" + version + (uri.endsWith("/") ? uri + "index.html" : uri);
+  return request;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- CloudFront calls it by name
 async function handler(event) {
   const request = event.request;
@@ -97,5 +110,6 @@ async function handler(event) {
   if (host === WWW) return moved(isDemo(uri) ? "https://" + APEX + "/demo/" : "https://" + APEX + "/");
   if (uri === "/demo") return moved("/demo/");
   if (uri.startsWith("/demo/")) return serve(request, "demo", uri.slice("/demo".length));
+  if (isSite(uri)) return site(request, uri);
   return found("https://" + APP + "/");
 }

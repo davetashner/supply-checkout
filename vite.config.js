@@ -7,6 +7,8 @@
 //   vite build --mode demo       dist/demo/: the web build in demo mode, for supplycheckout.com
 //                                until sign-in exists (demo/main.js). Relative URLs, so it
 //                                works from any path.
+//   vite build --mode site       dist/site/: the marketing home page (site/) for the apex, a
+//                                separate small site with none of src/ in it.
 //   vite build --mode ops        dist/ops/: the operator page (ops/, ADR 0015), a separate
 //                                small site for ops.<env domain> with none of src/ in it.
 //
@@ -176,9 +178,35 @@ const opsConfig = () => ({
   },
 });
 
+// The marketing home page: its own root (site/), no scripts but its own, and every file hashed
+// into assets/ (the clips and posters too, so a release's clips are never cached under an old
+// name). site-release.json marks the build as the site's, for scripts/publish-web.mjs. The
+// page is served by the same distribution as the app, under that CSP.
+const siteMarker = () => ({
+  name: "supply-checkout:site-marker",
+  generateBundle() {
+    this.emitFile({ type: "asset", fileName: "site-release.json", source: '{"site":true}\n' });
+  },
+});
+const siteConfig = () => ({
+  root: fileURLToPath(new URL("site", import.meta.url)),
+  base: "/",
+  publicDir: false,
+  plugins: [siteMarker()],
+  build: {
+    outDir: fileURLToPath(new URL("dist/site", import.meta.url)),
+    emptyOutDir: true,
+    target: browserTargets(),
+    modulePreload: { polyfill: false },
+    assetsInlineLimit: 0,
+    rollupOptions: { input: fileURLToPath(new URL("site/index.html", import.meta.url)) },
+  },
+});
+
 export default defineConfig(({ mode }) => {
   if (mode === "ops") return opsConfig();
-  if (!["artifact", "web", "demo"].includes(mode)) throw new Error("Build with --mode artifact, web, demo or ops");
+  if (mode === "site") return siteConfig();
+  if (!["artifact", "web", "demo"].includes(mode)) throw new Error("Build with --mode artifact, web, demo, ops or site");
   const artifact = mode === "artifact";
   return {
     root: fileURLToPath(new URL("src", import.meta.url)),

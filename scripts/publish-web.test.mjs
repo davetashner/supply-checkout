@@ -45,7 +45,7 @@ function build() {
 }
 
 /** A fake AWS CLI: records every call, answers reads from `existing` demo and `apps` app releases. */
-function fakeAws({ existing = [], apps = [], ops = [], params = PARAMS, headError, listed = [], listError } = {}) {
+function fakeAws({ existing = [], apps = [], ops = [], site = [], params = PARAMS, headError, listed = [], listError } = {}) {
   const calls = [];
   const log = [];
   const run = (cmd, args) => {
@@ -61,6 +61,7 @@ function fakeAws({ existing = [], apps = [], ops = [], params = PARAMS, headErro
       if ([...existing, ...apps].some((v) => key === `releases/${v}/index.html`)) return "{}";
       if (apps.some((v) => key === `releases/${v}/config.json`)) return "{}";
       if (ops.some((v) => key === `releases/${v}/ops-config.json`)) return "{}";
+      if (site.some((v) => key === `releases/${v}/site-release.json`)) return "{}";
       if (headError) throw headError;
       const e = new Error("Command failed: aws s3api head-object");
       e.stderr = "\nAn error occurred (404) when calling the HeadObject operation: Not Found\n";
@@ -158,6 +159,37 @@ test("publishing the operator page writes ops-config.json, never config.json, an
   assert.ok(dryAws.log.some((l) => l.startsWith("Would write ops-config.json") && l.includes('"clientId": "opsclient1"')));
   // Missing build
   assert.throws(() => main(["publish", "--channel", "ops", "--dir", path.join(dir, "nope"), "--version", "ops-4"], fakeAws({ params: OPS_PARAMS }).deps), /npm run build:ops/);
+});
+
+test("publishing the home page needs its build's marker, writes no config, and keeps it off the other channels", () => {
+  const dir = build();
+  writeFileSync(path.join(dir, "site-release.json"), '{"site":true}\n');
+  const aws = fakeAws();
+  main(["publish", "--channel", "site", "--dir", dir, "--version", "site-1"], aws.deps);
+  assert.ok(!existsSync(path.join(dir, "config.json")) && !existsSync(path.join(dir, "ops-config.json")));
+  assert.deepEqual(writes(aws.calls).at(-1).slice(4, 8), ["--key", "site", "--value", "site-1"]);
+  assert.match(defaultVersion("site", new Date("2026-10-05T12:00:00Z"), "abc1234"), /^site-20261005-120000-abc1234$/);
+  // Its folder is never the app's, the demo's or the operator page's
+  for (const channel of ["app", "demo", "ops"]) {
+    const version = channel === "ops" ? "ops-9" : `${channel}-9`;
+    assert.throws(() => main(["publish", "--channel", channel, "--dir", dir, "--version", version], fakeAws({ params: { ...PARAMS, ...OPS_PARAMS } }).deps), /home page's build/);
+  }
+  // And another build is never the home page
+  assert.throws(() => main(["publish", "--channel", "site", "--dir", build(), "--version", "site-2"], fakeAws().deps), /isn't the home page's build \(npm run build:site/);
+  assert.throws(() => main(["publish", "--channel", "site", "--dir", path.join(dir, "nope"), "--version", "site-3"], fakeAws().deps), /npm run build:site/);
+  // ops-* is the operator page's alone
+  assert.throws(() => parseArgs(["publish", "--channel", "site", "--dir", "d", "--version", "ops-1"], {}), /operator page's/);
+});
+
+test("activate keeps the home page's releases on the site channel", () => {
+  const release = fakeAws({ existing: ["site-1"], site: ["site-1"] });
+  main(["activate", "--channel", "site", "--version", "site-1"], release.deps);
+  assert.deepEqual(writes(release.calls).at(-1).slice(4, 8), ["--key", "site", "--value", "site-1"]);
+  for (const channel of ["app", "demo", "ops"]) {
+    assert.throws(() => main(["activate", "--channel", channel, "--version", channel === "ops" ? "ops-1" : "site-1"], fakeAws({ existing: ["site-1", "ops-1"], site: ["site-1", "ops-1"], params: { ...PARAMS, ...OPS_PARAMS } }).deps), /is a home page release \(it has site-release\.json\), so it can't go live on the .* channel/);
+  }
+  // A demo release (no marker) never goes live as the home page
+  assert.throws(() => main(["activate", "--channel", "site", "--version", "demo-1"], fakeAws({ existing: ["demo-1"] }).deps), /is a demo release.*can't go live on the site channel/);
 });
 
 test("ops-config.json's hosts are this environment's, whatever SSM says", () => {
@@ -437,6 +469,8 @@ test("check-router runs the live router on a request to each host", () => {
     { host: "app.supplycheckout.com", uri: "/" },
     { host: "supplycheckout.com", uri: "/demo/" },
     { host: "supplycheckout.com", uri: "/" },
+    { host: "supplycheckout.com", uri: "/assets/check-router.js" },
+    { host: "supplycheckout.com", uri: "/anything-else" },
     { host: "www.supplycheckout.com", uri: "/" },
     { host: "ops.supplycheckout.com", uri: "/" },
     { host: "ops.supplycheckout.com", uri: "/config.json" },
@@ -444,7 +478,9 @@ test("check-router runs the live router on a request to each host", () => {
   assert.deepEqual(aws.log, [
     "ok  app.supplycheckout.com/ -> /releases/1.3.0/index.html",
     "ok  supplycheckout.com/demo/ -> /releases/demo-1/index.html",
-    "ok  supplycheckout.com/ -> 302",
+    "ok  supplycheckout.com/ -> 302 (no home page live: the app)",
+    "ok  supplycheckout.com/assets/check-router.js -> 302 (no home page live: the app)",
+    "ok  supplycheckout.com/anything-else -> 302",
     "ok  www.supplycheckout.com/ -> 301",
     "The live router (router-fn) works.",
     "ok  ops.supplycheckout.com/ -> /releases/ops-1/index.html",
@@ -454,11 +490,21 @@ test("check-router runs the live router on a request to each host", () => {
   const fns = aws.calls.filter(([, op]) => op === "describe-function").map((fn) => fn[fn.indexOf("--name") + 1]);
   assert.deepEqual(fns, ["router-fn", "ops-router-fn"]);
   const tested = aws.calls.filter(([, op]) => op === "test-function").map((fn) => fn[fn.indexOf("--name") + 1]);
-  assert.deepEqual(tested, ["router-fn", "router-fn", "router-fn", "router-fn", "ops-router-fn", "ops-router-fn"]);
+  assert.deepEqual(tested, ["router-fn", "router-fn", "router-fn", "router-fn", "router-fn", "router-fn", "ops-router-fn", "ops-router-fn"]);
   // Nothing live on a channel is a 503, which the router means
   const empty = fakeCloudFront({ router: workingRouter({ app: null }) });
   main(["check-router"], empty.deps);
   assert.equal(empty.log[0], "ok  app.supplycheckout.com/ -> 503 (nothing live on this channel)");
+});
+
+test("check-router accepts the home page served from its release as well as the redirect", () => {
+  const served = fakeCloudFront({ router: ({ host, uri }) => (host === "supplycheckout.com" && (uri === "/" || uri.startsWith("/assets/")) ? { request: { uri: `/releases/site-1${uri === "/" ? "/index.html" : uri}` } } : workingRouter()({ host, uri })) });
+  main(["check-router"], served.deps);
+  assert.ok(served.log.includes("ok  supplycheckout.com/ -> /releases/site-1/index.html"));
+  assert.ok(served.log.includes("ok  supplycheckout.com/assets/check-router.js -> /releases/site-1/assets/check-router.js"));
+  // But not a 503, and not the home page's release for a path it doesn't have
+  const down = fakeCloudFront({ router: ({ host, uri }) => (host === "supplycheckout.com" && uri === "/" ? { response: { statusCode: 503 } } : workingRouter()({ host, uri })) });
+  assert.throws(() => main(["check-router"], down.deps), /answered supplycheckout\.com\/ with 503, not a release or a 302/);
 });
 
 test("check-router fails when the router throws or answers wrong", () => {
@@ -469,7 +515,7 @@ test("check-router fails when the router throws or answers wrong", () => {
   const redirectsApp = fakeCloudFront({ router: () => ({ response: { statusCode: 302 } }) });
   assert.throws(() => main(["check-router"], redirectsApp.deps), /answered app\.supplycheckout\.com\/ with 302, not a release/);
   const servesWww = fakeCloudFront({ router: ({ host }) => (host.startsWith("www.") ? { request: { uri: "/x" } } : workingRouter()({ host, uri: "/demo/" })) });
-  assert.throws(() => main(["check-router"], servesWww.deps), /answered supplycheckout\.com\/ with \/releases\/.*, not 302/);
+  assert.throws(() => main(["check-router"], servesWww.deps), /answered supplycheckout\.com\/anything-else with \/releases\/.*, not 302/);
   const garbled = fakeCloudFront({ router: () => undefined });
   assert.throws(() => main(["check-router"], garbled.deps), /no readable output/);
   assert.throws(() => main(["check-router"], fakeCloudFront({ params: PARAMS }).deps), /deploy the web stack first\): \/supply-checkout\/prod\/web\/router-function-name/);
@@ -482,7 +528,7 @@ test("check-router fails when the router throws or answers wrong", () => {
 });
 
 test("check-router needs the app., www. and apex aliases", () => {
-  assert.equal(routerChecks(["a.test", "www.a.test", "app.a.test"]).length, 4);
+  assert.equal(routerChecks(["a.test", "www.a.test", "app.a.test"]).length, 6);
   assert.throws(() => routerChecks(["www.a.test", "app.a.test"]), /Expected app\., www\. and apex aliases/);
   assert.throws(() => routerChecks([]), /\(got none\)/);
   assert.deepEqual(routerTestEvent("a.test", "/").request.headers, { host: { value: "a.test" } });

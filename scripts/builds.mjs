@@ -4,6 +4,7 @@
 //   web        dist/web/, index.html plus hashed assets, for CloudFront
 //   demo       dist/demo/, the web build in demo mode, for supplycheckout.com
 //   ops        dist/ops/, the operator page (ops/), for ops.<env domain>
+//   site       dist/site/, the marketing home page (site/), for the apex
 //
 // Tests pick artifact or web with BUILD=artifact (the default) or BUILD=web. The
 // demo isn't a BUILD of its own: it's built and tested alongside the web build
@@ -32,8 +33,10 @@ export async function buildApp(build) {
 export const DEMO = "demo";
 // Built with the web build too, for tests/ops.spec.js
 export const OPS = "ops";
+// And the marketing home page, for tests/site.spec.js
+export const SITE = "site";
 
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".map": "application/json", ".svg": "image/svg+xml", ".png": "image/png" };
+const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".map": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".mp4": "video/mp4", ".json": "application/json" };
 
 // What a server hosting the build would serve, by URL path. The artifact is only
 // the page, in the document skeleton claude.ai adds when it's published.

@@ -41,6 +41,8 @@ class Recorder {
   }
 
   caption(ids, state, note) {
+    // The marketing profile (journeys/marketing.json) shows the clip's own line, or a step's, and no result
+    if (options.marketing) return { id: "", test: "", step: this.line || options.marketing.caption || "", note: "", state: "running" };
     const known = ids.map((id) => steps.get(id)).filter(Boolean);
     const simulated = known.map((s) => s.simulated).filter(Boolean);
     return {
@@ -79,6 +81,7 @@ class Recorder {
 
   async stepStart(id, title) {
     this.event({ type: "step-start", id, title });
+    if (options.marketing) this.line = title.replace(STEP_TITLE, "").trim();
     await this.show(this.caption([id], "running"));
     await sleep(ms(1200));
   }
@@ -108,7 +111,7 @@ class Recorder {
 export async function start(page, testInfo) {
   await setup();
   const v = director.VIEWPORTS[options.viewport];
-  await page.context().addInitScript(director.installOverlay, { banner: v.banner, compact: options.viewport === "phone" });
+  await page.context().addInitScript(director.installOverlay, { banner: options.marketing ? 0 : v.banner, compact: options.viewport === "phone", marketing: Boolean(options.marketing) });
   patchLocator(page);
   const recorder = new Recorder(page, testInfo);
   // A new document gets the overlay from the init script; this puts the caption back

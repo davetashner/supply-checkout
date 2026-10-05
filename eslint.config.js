@@ -39,8 +39,8 @@ export default [
     languageOptions: { globals: { ...globals.browser } },
   },
   {
-    // The operator page runs in the browser; its unit tests (ops/test/) run in Node
-    files: ["ops/**/*.js"],
+    // The operator page and the home page run in the browser; its unit tests (ops/test/) run in Node
+    files: ["ops/**/*.js", "site/**/*.js"],
     languageOptions: { globals: { ...globals.browser } },
   },
   {
