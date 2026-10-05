@@ -81,6 +81,8 @@ test("each recorded clip is on the page with a poster, and every file loads", as
     await expect(v).toHaveAttribute("playsinline", "");
     // Described by its figure's hidden caption
     await expect(v.locator("xpath=ancestor::figure/figcaption")).toHaveText(/.{20}/);
+    // ...and not drawn on the page
+    expect((await v.locator("xpath=ancestor::figure/figcaption").boundingBox()).width).toBeLessThanOrEqual(1);
     await expect(v).not.toHaveAttribute("autoplay", /.*/);
   }
   // A poster, or a clip a scroll has brought on screen, loaded without an error
