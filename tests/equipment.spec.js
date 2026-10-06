@@ -4,7 +4,6 @@
 // In both builds, against the claude.ai runtime's mock; the web build's checkout command is
 // against tests/fake-aws.js at the end.
 import { test, expect, openApp, enterBarcode, modal, modalViolations, lineRow, inventoryRow } from "./helpers.js";
-import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, openAws, connected } from "./fake-aws.js";
 import { persona } from "./journey-video.js";
 
@@ -181,7 +180,7 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     // By item, then the oldest sheet first. The artifact build saves a typed name when there's no
     // user, and an older line has no time
     // (The web build's lines name a user, and someone it has no profile for is "Someone")
-    await expect(rows.nth(0).locator("td")).toHaveText(["Step ladderBarcode LAD-1", "2", "Delta DentalSep 22, 2026", persona?.crew ?? (currentBuild() === "web" ? "Someone" : "Sam"), "—"]);
+    await expect(rows.nth(0).locator("td")).toHaveText(["Step ladderBarcode LAD-1", "2", "Delta DentalSep 22, 2026", persona?.crew ?? "Someone", "—"]);
     await expect(rows.nth(1).locator("td")).toHaveText(["Step ladderBarcode LAD-1", "1", "Echo StudioSep 24, 2026", persona?.user ?? "Test User", when]);
     // The closed sheet's vacuum came back, so it isn't listed; a row opens its sheet
     await rows.nth(0).click();
@@ -284,7 +283,6 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
 });
 
 test.describe("the web build's checkout command", () => {
-  test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 
   test("snapshots equipment on the server, and the sheet shows it apart", { tag: ["@J13.2"] }, async ({ page }) => {
     const docs = Object.fromEntries(Object.entries(seed).map(([k, v]) => [`t1/${k}`, v]));

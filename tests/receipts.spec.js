@@ -1,6 +1,5 @@
 import { test, expect, openApp, lineRow, inventoryRow } from "./helpers.js";
 import { usedState, fakeImage } from "./fixtures.js";
-import { currentBuild } from "../scripts/builds.mjs";
 
 // usedState.receipt: line 0 is 4 × storage bins (suggested match for the
 // "Storage bins, 12 qt" inventory item, receipt price $5.50 vs $5.00),
@@ -547,20 +546,6 @@ test("general-inventory lines saved again after a lost answer add to storage onc
   expect(Object.values(products).find((p) => p.name === "Sponges")).toMatchObject({ stock: 4 });
 });
 
-test("a receipt whose answer was lost stays locked through a reload, and saves once", { tag: ["@J5.3"] }, async ({ page }) => {
-  test.skip(currentBuild() === "web", "The web build keeps its drafts per team (tests/aws-data.spec.js)");
-  await seedDraft(page, { savePrices: false, dests: [{ id: "d1", sheetId: "s1", client: "" }], lines: [draftLine({ name: "Paper towels", match: "SKU1", qty: 2, price: 8.5 })] });
-  await mock(page, () => { window.__mock.loseWrites = "sheets/"; });
-  await saveBtn(page).click();
-  await expect(tryAgain(page)).toBeEnabled();
-  await page.reload();
-  await page.getByRole("button", { name: "Continue review" }).click();
-  await expectLocked(page);
-  await tryAgain(page).click();
-  await expect(toast(page)).toHaveText("Saved to 1 sheet");
-  expect((await docs(page, "sheets/s1"))["sheets/s1"].items.SKU1.out).toBe(5);
-});
-
 test("a sheet deleted after a lost answer unlocks the review, keeping only what wasn't saved", { tag: ["@J5.3"] }, async ({ page }) => {
   await seedDraft(page, {
     savePrices: false,
@@ -587,33 +572,6 @@ test("a sheet deleted after a lost answer unlocks the review, keeping only what 
   await saveBtn(page).click();
   await expect(page.getByRole("heading", { name: "Mike Co" })).toBeVisible();
   expect(Object.values(await docs(page, "sheets/")).filter((s) => s.client === "Lima Co")).toHaveLength(1);
-});
-
-// claude.ai's db has no timeout, so the artifact gives up on a write after 20 s. It may still
-// land: Try again waits for it, then finds its mark (src/moves.js)
-test("in the artifact, a receipt save that timed out and then landed adds its lines once on Try again", { tag: ["@J5.3"] }, async ({ page }) => {
-  test.skip(currentBuild() === "web", "The web build's requests have their own timeout");
-  await page.clock.install();
-  await seedDraft(page, { savePrices: false, dests: [{ id: "d1", sheetId: "s1", client: "" }], lines: [draftLine({ name: "Mop heads", qty: 2, price: 4 })] });
-  const before = await page.evaluate(() => window.__mock.writes);
-  await mock(page, () => window.__mock.hold());
-  await saveBtn(page).click();
-  await expect(page.getByRole("button", { name: "Saving…" })).toBeDisabled();
-  await expect(line(page, 0).getByLabel("Qty")).toBeDisabled();
-  await expect(locked(page)).toHaveCount(0);
-  await page.clock.fastForward(20e3);
-  await expect(toast(page)).toHaveText("That didn't save. Check your connection and try again.");
-  await expectLocked(page);
-  await hideToast(page);
-  await tryAgain(page).click();
-  await expect(page.getByRole("button", { name: "Saving…" })).toBeDisabled();
-  // The first attempt lands now
-  await mock(page, () => window.__mock.release());
-  await expect(toast(page)).toHaveText("Saved to 1 sheet");
-  const mops = Object.values((await docs(page, "sheets/s1"))["sheets/s1"].items).filter((it) => it.name === "Mop heads");
-  expect(mops).toMatchObject([{ out: 2 }]);
-  // One write: Try again wrote nothing
-  expect(await page.evaluate(() => window.__mock.writes)).toBe(before + 1);
 });
 
 // ADR 0014: cost and client price, and packs converted to eaches (J5)

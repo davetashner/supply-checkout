@@ -171,7 +171,7 @@ test("a test.step named for a step must be in a test tagged with that step", () 
   ]);
 });
 
-test("a failed listing says what Playwright said, and a missing artifact build is built first", () => {
+test("a failed listing says what Playwright said, and a missing web build is built first", () => {
   const stdout = JSON.stringify({ errors: [{ message: "Error: ENOENT: dist/demo/" }, { message: "SyntaxError in a.spec.js" }] });
   assert.equal(listErrors(stdout), "Error: ENOENT: dist/demo/\nSyntaxError in a.spec.js");
   assert.equal(listErrors("not json"), "");
@@ -186,10 +186,10 @@ test("a failed listing says what Playwright said, and a missing artifact build i
   console.error = () => {};
   try {
     assert.throws(() => listPlaywrightTests(root, { run: fail }), /Couldn't list the Playwright tests:\nError: ENOENT: dist\/demo\/\nSyntaxError in a\.spec\.js/);
-    assert.deepEqual(calls.map((c) => c.split(" ").slice(0, 3).join(" ")), ["npm run build:artifact", "npx playwright test"]);
+    assert.deepEqual(calls.map((c) => c.split(" ").slice(0, 3).join(" ")), ["npm run build:web", "npx playwright test"]);
     // Built already: listed straight away; errors in a listing that exits 0 fail it too
-    mkdirSync(join(root, "dist/artifact"), { recursive: true });
-    writeFileSync(join(root, "dist/artifact/index.html"), "");
+    mkdirSync(join(root, "dist/web"), { recursive: true });
+    writeFileSync(join(root, "dist/web/index.html"), "");
     calls.length = 0;
     assert.deepEqual(listPlaywrightTests(root, { run: (cmd) => { calls.push(cmd); return JSON.stringify({ suites: [] }); } }), { suites: [] });
     assert.deepEqual(calls, ["npx"]);

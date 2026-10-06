@@ -1,6 +1,5 @@
 import "./theme.js";
 import { use, help } from "./runtime.js";
-import { WEB } from "./build.js";
 import { checkOut, recordReturn, markLost, saveItem, addLines, markOf, quickTake, moveLine } from "./moves.js";
 import { esc, money, todayISO, fmtDate, keyOf, own, int, codeText, hasStock, hasCost, unitValue, isEquipment, newKey, uid, round2, numOrNull, MAX_MONEY } from "./format.js";
 import { lines, lineCharge, totals, isEquipmentLine, equipmentCounts, lostRows, lineLabel, isAdhoc, sheetTitle, leftOut } from "./sheet-math.js";
@@ -32,22 +31,13 @@ let firstRun = null;
 // (not refused or overtaken), so the same save is worth trying again (saving() below).
 // Offline, nothing is sent: it can't be confirmed, so it isn't tried.
 //
-// claude.ai's db has no timeout of its own, so in the artifact build a write that hasn't
-// answered in WRITE_TIMEOUT fails as the connection's (the web build's requests give up
-// after 15 s each, src/aws/http.js).
+// The web build's requests give up after 15 s each (src/aws/http.js).
 let retryable = false;
-const WRITE_TIMEOUT = 20000;
-// WEB: the web build's requests time out themselves, so the artifact build keeps only the right side
-const timed = WEB ? p => p : p => {
-  let timer;
-  const late = new Promise((_, reject) => { timer = setTimeout(() => reject({ code: "timeout" }), WRITE_TIMEOUT); });
-  return Promise.race([p, late]).finally(() => clearTimeout(timer));
-};
 async function write(fn, okMsg, sheetId) {
   retryable = false;
   if (!db) { toast("Not connected to shared storage."); return false; }
   if (!navigator.onLine) { retryable = true; toast(OFFLINE); return false; }
-  try { await timed(fn()); if (okMsg) toast(okMsg); return true; }
+  try { await fn(); if (okMsg) toast(okMsg); return true; }
   catch (e) {
     if (sheetId && e && (e.code === "not_found" || (e.code === "invalid_argument" && await sheetGone(sheetId)))) {
       closeModal(); toast("Someone else deleted this sheet, so your change wasn't saved.");
@@ -59,8 +49,8 @@ async function write(fn, okMsg, sheetId) {
     // Finished Return on a sheet with equipment out that this page didn't know about (someone
     // took more meanwhile): the server refuses to close it (ADR 0017, docs/api/commands.md)
     // Reopening an ad hoc sheet while another is open, which this page didn't know about
-    else if (WEB && e && e.reason === "adhoc_open") { toast(ADHOC_OPEN); }
-    else if (WEB && e && e.reason === "equipment_out") { closeModal(); toast("Equipment is still out on this sheet, so it wasn't finished. Tap Finished Return again to say where each piece is."); }
+    else if (e && e.reason === "adhoc_open") { toast(ADHOC_OPEN); }
+    else if (e && e.reason === "equipment_out") { closeModal(); toast("Equipment is still out on this sheet, so it wasn't finished. Tap Finished Return again to say where each piece is."); }
     else if (e && e.code === "aborted") { closeModal(); toast("Someone else changed this just now, so your change wasn't saved. The latest is showing; make your change again if it's still needed."); }
     // Refused for what's saved now, such as returning more than are left (the web build's
     // checkout and return commands, src/aws/db.js): the message says why. The latest is showing.
@@ -68,7 +58,7 @@ async function write(fn, okMsg, sheetId) {
     else if (e && e.code === "refused") { closeModal(); toast(e.message); }
     // The web build's session ended (signed out, here or in another tab, or it expired): the
     // connection isn't the problem, and trying again won't help until they sign in
-    else if (WEB && e && e.code === "unauthenticated") toast("You're signed out, so that wasn't saved. Sign in, then make your change again.");
+    else if (e && e.code === "unauthenticated") toast("You're signed out, so that wasn't saved. Sign in, then make your change again.");
     else { retryable = true; toast("That didn't save. Check your connection and try again."); }
     return false;
   }
@@ -179,8 +169,7 @@ function personText(s) { return s.createdBy ? ((own(people, s.createdBy) || {}).
 function takerText(id) {
   if (!id) return "—";
   const p = own(people, id);
-  // The artifact build saves a typed name when there's no user, which has no profile
-  return p && p.name ? p.name : WEB ? "Someone" : id;
+  return p && p.name ? p.name : "Someone";
 }
 const whenText = iso => { const d = iso ? new Date(iso) : null; return d && !isNaN(d) ? d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—"; };
 
@@ -219,7 +208,7 @@ window.addEventListener("online", () => {
 // meanwhile, the page is read-only (canWrite) and it hides, as for a team that opens closed.
 function draw() {
   drawView();
-  if (WEB && firstRun) firstRun.draw(connected && canWrite && !$("#main").hidden, Object.keys(products).length, sheets.length);
+  if (firstRun) firstRun.draw(connected && canWrite && !$("#main").hidden, Object.keys(products).length, sheets.length);
 }
 function drawView() {
   $("#tab-sheets").setAttribute("aria-pressed", ui.tab === "sheets");
@@ -359,7 +348,7 @@ function drawList() {
         ${canWrite ? `<button type="button" class="btn" id="returnAny">Return</button><button type="button" class="btn" id="quickTake">Quick take</button><button type="button" class="btn primary" id="newSheet">+ New sheet</button>` : ""}
       </div>
     </div>
-    ${WEB && canWrite && receiptOK && receiptUsage ? `<p class="muted receipts-left" id="receiptsLeft">${esc(receiptUsage.label)}</p>` : ""}
+    ${canWrite && receiptOK && receiptUsage ? `<p class="muted receipts-left" id="receiptsLeft">${esc(receiptUsage.label)}</p>` : ""}
     <div class="search-row"><input type="search" id="sheetSearch" aria-label="Search sheets" placeholder="Search by client, who prepared it, or item" autocomplete="off"></div>
     ${draft && canWrite ? `<div class="notice resume"><span>You have a receipt that hasn't been saved yet.</span><button type="button" class="btn" id="resume">Continue review</button></div>` : ""}
     <div class="list">
@@ -904,8 +893,8 @@ function lineModal(s, key) {
 // moment between the read and the write, as before.
 async function removeLine(id, key) {
   const ref = db.doc("sheets/" + id);
-  // WEB: the artifact build keeps only the update, since claude.ai's db has no commands (src/build.js)
-  if (!(WEB && db.command)) {
+  // Without commands (the demo and the tests' mock runtime), the update comes first
+  if (!db.command) {
     try { await ref.update({ items: { [key]: null } }); return; }
     // Refused: the sheet is gone (not_found below), the runtime doesn't take a null value, or
     // this user is a viewer (the set below is refused too)
@@ -1049,7 +1038,6 @@ function exportAllModal() {
       <button type="button" class="btn" data-export="inventory">Inventory (CSV)</button>
       <button type="button" class="btn" data-export="json">Everything (JSON)</button>
     </div>
-    ${WEB ? "" : `<p class="hint" id="moveHint" style="margin-top:12px">Moving to the Supply Checkout web app? Download Everything (JSON) and send that file to us. We'll bring your items and sheets into your new team.</p>`}
     <div class="modal-actions"><button type="button" class="btn" id="cancel">Close</button></div>`, m => {
     m.querySelector("#cancel").addEventListener("click", closeModal);
     const day = todayISO();
@@ -1070,7 +1058,7 @@ $("#tab-prices").addEventListener("click", () => { ui.tab = "prices"; ui.receipt
 // the app in a new tab or window. Not while a dialog is saving (dismiss); a receipt being
 // entered stays as its draft, which the sheet list offers to resume.
 $("#home").addEventListener("click", e => {
-  if (WEB && (e.ctrlKey || e.metaKey || e.shiftKey)) return;
+  if ((e.ctrlKey || e.metaKey || e.shiftKey)) return;
   e.preventDefault();
   if (!dismiss()) return;
   ui.tab = "sheets"; ui.sheetId = null; ui.receipt = false; ui.filter = "open"; draw(); window.scrollTo(0, 0);
@@ -1095,14 +1083,12 @@ const loadReceiptUsage = async () => { receiptUsage = await sampleFn.usage(); dr
 // equipment bought for a client. Nobody else's page ever has the percentage (ADR 0017, 2a).
 let settingsCap = null, markup = null;
 async function refreshMarkup() {
-  // WEB: the artifact build has no markup (claude.ai's db can't keep it from the crew)
-  if (!(WEB && settingsCap)) return;
+  if (!settingsCap) return;
   // Anything but a number (an owner demoted meanwhile gets an empty settings) is no markup
   try { const v = (await settingsCap.get()).settings.equipmentMarkup; markup = typeof v === "number" && Number.isFinite(v) ? v : null; } catch { markup = null; }
 }
-const stored = fn => { const k = draftKeyNow(); if (WEB && !k) return; try { fn(k); } catch {} };
+const stored = fn => { const k = draftKeyNow(); if (!k) return; try { fn(k); } catch {} };
 const loadDraft = () => stored(k => { draft = JSON.parse(localStorage.getItem(k) || "null"); });
-if (!WEB) loadDraft();
 const saveDraft = () => stored(k => { draft ? localStorage.setItem(k, JSON.stringify(draft)) : localStorage.removeItem(k); });
 
 function receiptPrompt() {
@@ -1137,15 +1123,14 @@ const priceChoice = l => { const p = lineProd(l); return l.usePrice || (p && has
 // shows an owner (who has the markup), and the artifact build charges the receipt price
 const isBought = l => isEquipment(lineProd(l)) && l.dest !== "stock";
 const typedPrice = l => l.typed === undefined || l.typed === "" ? undefined : Math.max(0, round2(l.typed));
-const boughtPrice = l => typedPrice(l) ?? (WEB && markup !== null ? round2(unitCost(l) * (1 + markup / 100)) : unitCost(l));
+const boughtPrice = l => typedPrice(l) ?? (markup !== null ? round2(unitCost(l) * (1 + markup / 100)) : unitCost(l));
 function chargedText(l) {
   const typed = typedPrice(l);
   if (typed !== undefined) return `Charged: ${money(typed)} each, the price you typed`;
-  if (!WEB) return `Charged: ${money(unitCost(l))} each, the receipt price`;
   return markup !== null ? `Charged: ${money(boughtPrice(l))} each (receipt price + ${markup}% markup)` : "Charged: receipt price + team markup";
 }
 // The server adds a markup this page doesn't know (web build, not an owner), so the total is short of the charge
-const preMarkup = l => WEB && markup === null && isBought(l) && typedPrice(l) === undefined;
+const preMarkup = l => markup === null && isBought(l) && typedPrice(l) === undefined;
 const totalText = l => money(charge(l)) + (preMarkup(l) ? " (before markup)" : "");
 const effPrice = l => { const p = lineProd(l); return isBought(l) ? boughtPrice(l) : p && priceChoice(l) === "inv" ? round2(p.price) : unitCost(l); };
 const charge = l => round2(eaches(l) * effPrice(l));
@@ -1177,7 +1162,7 @@ async function startReceipt(file) {
     const matchOf = m => res.byKey ? (typeof m === "string" && own(products, m) ? m : "") : own(ids, m) || "";
     const items = res && Array.isArray(res.items) ? res.items.filter(i => i && i.name).map(i => ({ ...i, match: matchOf(i.match) })) : [];
     // The AWS runtime's answer has the team's scans left, this one counted
-    if (WEB && res.usage) { receiptUsage = res.usage; }
+    if (res.usage) { receiptUsage = res.usage; }
     if (!items.length) { receiptError("No line items were found in that photo. Lay the receipt flat, fill the frame, and make sure the text is in focus."); return; }
     draft = newDraft({ ...res, items }); saveDraft();
     await refreshMarkup(); renderReceipt();
@@ -1185,7 +1170,7 @@ async function startReceipt(file) {
     if (e && e.code === "cancelled") { ui.receipt = false; draw(); return; }
     receiptError(sampleErr(e && e.code, e && e.message));
     // Refused for the team's allowance: what's left now (none)
-    if (WEB && /receipt_limit$/.test(e && e.code) && sampleFn.usage) loadReceiptUsage();
+    if (/receipt_limit$/.test(e && e.code) && sampleFn.usage) loadReceiptUsage();
   }
 }
 
@@ -1515,7 +1500,7 @@ draw();
 
 (async () => {
   [db, userNs, dl, sampleFn] = await Promise.all([use("db"), use("user"), use("downloads"), use("sample")]);
-  if (WEB) {
+  {
     const drafts = await use("drafts"); if (drafts) draftKeyNow = () => drafts.key; loadDraft();
     const fr = await use("firstRun");
     settingsCap = await use("settings");
@@ -1523,7 +1508,7 @@ draw();
   }
   if (sampleFn) { try { const lim = await sampleFn.limits(); receiptOK = !!(lim && lim.images); } catch {} }
   // Only the AWS runtime has usage(); the tests' mock runtime, in the web build too, hasn't
-  if (WEB && receiptOK && sampleFn.usage) loadReceiptUsage();
+  if (receiptOK && sampleFn.usage) loadReceiptUsage();
   if (userNs) {
     try { myId = await userNs.id(); } catch {}
     try { const w = await userNs.can("data.write"); if (w === false) canWrite = false; } catch {}

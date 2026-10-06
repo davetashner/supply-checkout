@@ -16,7 +16,6 @@
 //
 // Each resolves, once the sheet and the storage count have saved, to { quantity, line }: for a
 // return, how many came back and the line as it is now.
-import { WEB } from "./build.js";
 import { int, own, uid, hasStock, round2 } from "./format.js";
 
 // claude.ai's db has no transactions or conditional writes, so the artifact build makes each
@@ -46,8 +45,8 @@ function attempt(action, fn) {
 // return what it resolves to. partial: what a change to part of the line is called (a return),
 // which doesn't make a line someone else removed again; false for a checkout.
 async function move(db, action, command, sheetId, body, partial, plan) {
-  // WEB: the artifact build leaves this path out, since claude.ai's db has no commands (src/build.js)
-  if (WEB && db.command) return db.command(command, sheetId, body, action);
+  // Without commands (the demo and the tests' mock runtime), the code below saves the sheet itself
+  if (db.command) return db.command(command, sheetId, body, action);
   // As with the web build's operation IDs, a changed request (another quantity) is a new action
   const key = body.productKey, request = JSON.stringify([command, sheetId, body]), ref = db.doc("sheets/" + sheetId);
   if (action.request !== request) Object.assign(action, { request, mark: uid() });
@@ -127,8 +126,8 @@ export const markLost = (db, action, sheetId, key, q, charge) =>
 //   take reads the sheet again and, if its mark isn't there, writes the line again. Stock is
 //   right either way: its mark is on the item (addStock).
 export async function quickTake(db, action, key, qty, item, oneOff, start) {
-  // WEB: the artifact build leaves this path out, since claude.ai's db has no commands (src/build.js)
-  if (WEB && db.quickTake) return db.quickTake({ productKey: key, quantity: qty, ...oneOff, date: start.date }, action);
+  // Without commands (the demo and the tests' mock runtime), the code below saves the sheet itself
+  if (db.quickTake) return db.quickTake({ productKey: key, quantity: qty, ...oneOff, date: start.date }, action);
   let id = action.sheetId || start.id;
   for (;;) {
     const got = await db.doc("sheets/" + id).get();
@@ -156,8 +155,8 @@ export async function quickTake(db, action, key, qty, item, oneOff, start) {
 //   removed line is). A retry that finds the mark on the job sheet skips the first write, and one
 //   that finds it on the ad hoc line writes nothing.
 export async function moveLine(db, action, fromId, key, toId) {
-  // WEB: the artifact build leaves this path out, since claude.ai's db has no commands (src/build.js)
-  if (WEB && db.moveLine) return db.moveLine(fromId, key, toId, action);
+  // Without commands (the demo and the tests' mock runtime), the code below saves the sheet itself
+  if (db.moveLine) return db.moveLine(fromId, key, toId, action);
   const mark = markOf(action), from = db.doc("sheets/" + fromId), to = db.doc("sheets/" + toId);
   return attempt(action, async () => {
     // A sheet that's gone has no lines (data() is undefined)
@@ -199,8 +198,8 @@ export const MAX_LINES = 40;
 // the server works out the team's markup itself. The artifact build has no markup: the line
 // is charged the receipt price, or the typed price, which says who typed it and when.
 export async function addLines(db, action, sheetId, items, bought = {}) {
-  // WEB: the artifact build leaves this path out, since claude.ai's db has no commands (src/build.js)
-  if (WEB && db.addLines) {
+  // Without commands (the demo and the tests' mock runtime), the code below saves the sheet itself
+  if (db.addLines) {
     const lines = [
       ...Object.entries(items).map(([productKey, l]) => ({ productKey, quantity: l.out, code: l.code, name: l.name, price: l.price, cost: l.cost })),
       ...Object.entries(bought).map(([productKey, b]) => ({ productKey, quantity: b.out, code: b.code, name: b.name, cost: b.cost, ...(b.typed === undefined ? {} : { price: b.typed, priceSet: "manual" }) })),
@@ -241,10 +240,9 @@ export async function addLines(db, action, sheetId, items, bought = {}) {
 // count, counted, expected } (count undefined: not counted; counted: the form showed a count when
 // it opened, so a blank one stops counting; expected: the count it opened with, null if none), or
 // { reason: "receipt", lines: [{ action, quantity, unitCost }] }, one per receipt
-// line, each line its own action. (`||`, not a condition: the artifact runs the right side.)
-// WEB: the artifact build keeps only the right side, since claude.ai's db has no saveItem.
+// line, each line its own action. (`||`, not a condition: a db without saveItem runs the right side.)
 export const saveItem = (db, action, key, body, change) =>
-  ((WEB && db.saveItem) || ((key, body) => setItem(db, key, body, change)))(key, body, change, action);
+  (db.saveItem || ((key, body) => setItem(db, key, body, change)))(key, body, change, action);
 // What the inventory form says when the stock moved while it was open and the person changed
 // the count: what the stock is now (null: not counted). The web build's server says the first
 // part (docs/api/commands.md, `stock_changed`), and src/aws/db.js adds the rest.

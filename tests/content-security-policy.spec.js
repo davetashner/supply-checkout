@@ -3,13 +3,12 @@
 // fails on any violation: the page fixture already fails on the console error a browser
 // logs, and each test also collects securitypolicyviolation events.
 import { test, expect, createSheet, enterBarcode, modal } from "./helpers.js";
-import { DEMO, builtFiles, currentBuild } from "../scripts/builds.mjs";
+import { DEMO, builtFiles } from "../scripts/builds.mjs";
 import { installMockClaude } from "./mock-claude.js";
 import { fakeImage } from "./fixtures.js";
 import { contentSecurityPolicy } from "../infra/lib/web/content-security-policy.ts";
 import { FakeBackend, FakeRum, RUM, RUM_REGION, installFakeSocket, TEAM } from "./fake-aws.js";
 
-test.skip(currentBuild() !== "web", "CloudFront serves the web and demo builds; the artifact runs under claude.ai's own policy");
 
 const CSP = contentSecurityPolicy({ api: "api.supplycheckout.com", realtime: "realtime.supplycheckout.com", auth: "auth.supplycheckout.com", rumRegion: RUM_REGION });
 // Their own origins, so coverage of the other suites isn't affected

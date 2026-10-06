@@ -50,7 +50,7 @@ Each check is tried 3 times, 5 seconds apart, with a 15-second timeout per reque
 
 **By hand.** Actions, Deploy, **Run workflow**, from `main`, with the tag: to deploy a release again, to roll the stacks back to an older release (its commit must still be on `main`; the replacement check still applies), for a planned migration (**allow-replacement**), or for a **dry run** (the plan only). Only one deploy runs at a time (concurrency group `deploy-production`, never cancelled once started); a run started while another is going waits, and a newer waiting run replaces an older waiting one. Dry runs deploy nothing and have their own group (`deploy-production-dry-run`), so a dry run never replaces a release deploy that's waiting for approval. A dry run can also run while a real deploy is executing; its diff may then fail or show changes that are mid-deploy, which is harmless: run it again afterwards.
 
-**What it doesn't do yet.** The core journey canary (`supply-checkout-pkt`, after the pilot; its hook is below), alarm checks, and automatic rollback of the stacks (`supply-checkout-9lj`). The claude.ai artifact is still published by hand ([Publishing to claude.ai](#publishing-to-claudeai)); the release workflow attaches its `index.html` to the GitHub Release. `npm run deploy` ([Deploying](infrastructure.md#deploying)) and `npm run publish:web` ([Web hosting and releases](web-app.md#web-hosting-and-releases)) stay the break-glass path.
+**What it doesn't do yet.** The core journey canary (`supply-checkout-pkt`, after the pilot; its hook is below), alarm checks, and automatic rollback of the stacks (`supply-checkout-9lj`). The claude.ai artifact is retired: nothing is published to claude.ai. `npm run deploy` ([Deploying](infrastructure.md#deploying)) and `npm run publish:web` ([Web hosting and releases](web-app.md#web-hosting-and-releases)) stay the break-glass path.
 
 **Settings it needs (the owner, once).**
 
@@ -66,7 +66,7 @@ Each check is tried 3 times, 5 seconds apart, with a 15-second timeout per reque
 
 ## Real-device check
 
-Playwright can't open a phone's camera, so before publishing a release, check scanning on a real iPhone and a real Android phone: your own phones, or a real-device cloud such as BrowserStack Live. Check the web build and the artifact on claude.ai. Scanning takes a photo through the file input (`capture="environment"`), then decodes it with the browser's `BarcodeDetector` where there is one (Chrome and Samsung Internet on Android) or ZXing otherwise (Safari on iPhone and iPad, Firefox).
+Playwright can't open a phone's camera, so before publishing a release, check scanning on a real iPhone and a real Android phone: your own phones, or a real-device cloud such as BrowserStack Live. Scanning takes a photo through the file input (`capture="environment"`), then decodes it with the browser's `BarcodeDetector` where there is one (Chrome and Samsung Internet on Android) or ZXing otherwise (Safari on iPhone and iPad, Firefox).
 
 1. **iPhone, Safari** (current iOS): open a sheet, tap **Scan to check out**, and photograph a real barcode with the rear camera. The checkout dialog opens with the right item. Then, on the sheet list, tap **Scan receipt**, photograph a paper receipt, and check the review screen lists its lines.
 2. **Android phone, Chrome** (current Android): repeat step 1.
@@ -87,7 +87,3 @@ Each GitHub Release also gets a journey evidence pack, built by the `evidence` a
 It's recorded from the release tag against the test suite's fakes and demo data, never production or a real account: the job has no secrets or cloud credentials and only a read-only token, and a separate job with `contents: write` uploads the files. Release assets are public. A test that fails while recording doesn't stop the upload: the report shows it failed, and the workflow run has a warning. How it works: [Journey videos](testing.md#journey-videos).
 
 To check it, open the release on GitHub and look for those assets. Download the report, the videos and `journey-traces.zip` into one folder and unzip the traces there; then the report plays each video in the page, its timestamps seek to the step, and its trace links open the files (`npx playwright show-trace <file>`, or drop one on trace.playwright.dev).
-
-## Publishing to claude.ai
-
-Publishing the artifact is a manual step, because claude.ai artifacts are published from a Claude session rather than from CI. After a release, download `index.html` from the GitHub Release (or run `npm run build:artifact` on the release tag), and ask Claude to republish that file to the existing [artifact URL](https://claude.ai/artifact/LcSb29dTE99AK4N6iuVFrj). Publish `dist/artifact/index.html`, never `src/index.html`: the source page loads its script and styles as separate files, which an artifact can't serve. Publishing to the same URL keeps all saved sheets and inventory.

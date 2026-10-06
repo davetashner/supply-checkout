@@ -6,7 +6,7 @@ const connected = (page) => page.waitForFunction(() => {
   return n.hidden || !n.textContent.startsWith("Connecting");
 });
 
-test("explains when the page isn't running on claude.ai at all", async ({ page }) => {
+test("explains when the page has no runtime at all", async ({ page }) => {
   await openApp(page, { noRuntime: true });
   await expect(page.locator("#notice")).toContainText("Shared storage isn't available");
 });

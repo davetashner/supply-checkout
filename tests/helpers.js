@@ -16,7 +16,7 @@ const ABORTED = /^https:\/\/fonts\.(googleapis|gstatic)\.com\//;
 const isAbortedRequest = (text) =>
   /Failed to load resource/.test(text) ||
   (/Cross-Origin Request Blocked/.test(text) && (text.match(/https:\/\/[^\s"]+/g) || []).some((url) => ABORTED.test(url)));
-// The build under test (BUILD=artifact or BUILD=web), built by tests/global-setup.js
+// The build under test (BUILD=web), built by tests/global-setup.js
 const files = builtFiles(currentBuild());
 
 // Every test fails on an uncaught exception or console error in the page.

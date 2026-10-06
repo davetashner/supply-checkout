@@ -5,15 +5,14 @@
 import AxeBuilder from "@axe-core/playwright";
 import { readFileSync } from "node:fs";
 import { test, expect } from "./helpers.js";
-import { SITE, builtFiles, currentBuild } from "../scripts/builds.mjs";
+import { SITE, builtFiles } from "../scripts/builds.mjs";
 import { contentSecurityPolicy } from "../infra/lib/web/content-security-policy.ts";
 import { RUM_REGION } from "./fake-aws.js";
 
-test.skip(currentBuild() !== "web", "The home page is built and tested with the web build");
 
 const ORIGIN = "https://site.supply-checkout.test";
 const CSP = contentSecurityPolicy({ api: "api.supplycheckout.com", realtime: "realtime.supplycheckout.com", auth: "auth.supplycheckout.com", rumRegion: RUM_REGION });
-const files = currentBuild() === "web" ? builtFiles(SITE) : new Map();
+const files = builtFiles(SITE);
 const CLIPS = JSON.parse(readFileSync(new URL("../site/clips/clips.json", import.meta.url), "utf8")).clips;
 
 // axe reads the page's stylesheets by fetch, which the policy's connect-src refuses: its runs have no policy

@@ -3,10 +3,8 @@
 // it's finished or dismissed, remembered per team. Against the fake backend in tests/fake-aws.js.
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./helpers.js";
-import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, TEAM, openAws, connected } from "./fake-aws.js";
 
-test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 // The modal's entrance animation fades it in; axe must see its final colors
 test.use({ reducedMotion: "reduce" });
 

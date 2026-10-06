@@ -2,11 +2,9 @@
 // a tab open as one user when someone else signs in (or the user signs out) in another tab,
 // an invite saved in a tab whose session ended, and saves refused once signed out.
 import { test, expect, modal } from "./helpers.js";
-import { currentBuild } from "../scripts/builds.mjs";
 import { usedState } from "./fixtures.js";
 import { FakeBackend, TEAM, USER, openAws, connected, sockets, setVisible } from "./fake-aws.js";
 
-test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 
 const seeded = () => Object.fromEntries(Object.entries(usedState.seed).map(([k, v]) => [`t1/${k}`, v]));
 const SAM = { id: "u-sam", email: "sam@example.com", emailVerified: true };

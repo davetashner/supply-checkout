@@ -2,11 +2,9 @@
 // (docs/api/openapi.yaml) and live updates (docs/api/realtime.md), against the fake
 // backend in tests/fake-aws.js.
 import { test, expect, createSheet, enterBarcode, modal, lineRow, inventoryRow } from "./helpers.js";
-import { currentBuild } from "../scripts/builds.mjs";
 import { usedState } from "./fixtures.js";
 import { FakeBackend, TEAM, USER, openAws, connected, sockets, emit, receive, dropSocket, setVisible } from "./fake-aws.js";
 
-test.skip(currentBuild() !== "web", "The AWS runtime is only in the web build");
 
 const seeded = () => Object.fromEntries(Object.entries(usedState.seed).map(([k, v]) => [`t1/${k}`, v]));
 // How many times each collection has been listed (first pages only)

@@ -7,7 +7,7 @@
 //
 // Options: --json <file> also writes the trace as JSON (for journey videos and evidence packs),
 // --tests <file> reads Playwright's `--list --reporter=json` output from a file instead of
-// listing the tests (which needs a build: npm run build:artifact).
+// listing the tests (which needs a build: npm run build:web).
 //
 // What it checks:
 // - the registry is well formed: step IDs J<n>.<m> in order, a status of built or planned
@@ -112,12 +112,12 @@ export function playwrightTests(list) {
   return [...tests.values()];
 }
 
-// Playwright's listing loads every spec, and the specs load the artifact build: it's built first
+// Playwright's listing loads every spec, and the specs load the web build: it's built first
 // when it's missing
 export function listPlaywrightTests(root = ROOT, { run = execFileSync } = {}) {
-  if (!existsSync(join(root, "dist", "artifact", "index.html"))) {
-    console.error("Building the artifact (npm run build:artifact), which the Playwright tests load…");
-    run("npm", ["run", "build:artifact"], { cwd: root, stdio: ["ignore", "ignore", "inherit"] });
+  if (!existsSync(join(root, "dist", "web", "index.html"))) {
+    console.error("Building the web app (npm run build:web), which the Playwright tests load…");
+    run("npm", ["run", "build:web"], { cwd: root, stdio: ["ignore", "ignore", "inherit"] });
   }
   let out;
   try {

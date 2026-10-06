@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
 import { HtmlValidate, formatterFactory } from "html-validate";
-import { buildPage } from "./page.mjs";
 import { distDir } from "./builds.mjs";
 
 const validator = new HtmlValidate({
@@ -15,7 +14,6 @@ const validator = new HtmlValidate({
 
 // Run `npm run build` first (npm run lint does).
 const pages = {
-  "dist/artifact/index.html (as published)": buildPage(),
   "dist/web/index.html": readFileSync(distDir("web") + "index.html", "utf8"),
   "dist/demo/index.html": readFileSync(distDir("demo") + "index.html", "utf8"),
   "dist/ops/index.html": readFileSync(distDir("ops") + "index.html", "utf8"),
