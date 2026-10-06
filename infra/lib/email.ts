@@ -5,7 +5,7 @@
 // those events is the email stack. A function that sends (the account
 // function, for invites; billing notices, supply-checkout-x0l) gets
 // grantSendEmail(), and nothing else may send.
-import { Stack, Validations } from "aws-cdk-lib";
+import { Stack, Token, Validations } from "aws-cdk-lib";
 import { PolicyStatement, type User } from "aws-cdk-lib/aws-iam";
 import type { Construct } from "constructs";
 import type { Function as LambdaFunction } from "aws-cdk-lib/aws-lambda";
@@ -65,9 +65,11 @@ export function grantSendEmail(fn: LambdaFunction, config: DeploymentConfig): vo
       conditions: { StringEquals: { "ses:FromAddress": email.fromAddress } },
     }),
   );
+  const account = Stack.of(fn).account;
   if (SES_SANDBOX && fn.role) {
     Validations.of(fn.role.node.findChild("DefaultPolicy")).acknowledge({
-      id: `AwsSolutions-IAM5[Resource::arn:aws:ses:${email.region}:<AWS::AccountId>:identity/*]`,
+      // As cdk-nag prints the ARN: the account's ID in a deploy that knows it, <AWS::AccountId> in the tests and CI synth that don't
+      id: `AwsSolutions-IAM5[Resource::arn:aws:ses:${email.region}:${Token.isUnresolved(account) ? "<AWS::AccountId>" : account}:identity/*]`,
       reason:
         "SES sandbox only (supply-checkout-3sv.20): SES also authorizes SendEmail on each verified recipient's identity. The statement keeps the From-address condition (noreply@ only) and only ses:SendEmail; remove with SES_SANDBOX once production access is granted (supply-checkout-3sv.18).",
     });
