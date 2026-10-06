@@ -391,6 +391,15 @@ describe("grantSendEmail", () => {
     expect(statement).toMatchObject({ Action: "ses:SendEmail", Condition: { StringEquals: { "ses:FromAddress": "noreply@supplycheckout.com" } } });
   });
 
+  // A real deploy knows the account, so cdk-nag prints it in the ARN it finds a wildcard in, where the
+  // tests above (no account) get <AWS::AccountId>: the acknowledgement must match both
+  // (the first deploy with the sandbox grant failed on exactly this)
+  it("passes cdk-nag in a deploy that knows the account, for every role that sends", () => {
+    const { stacks } = build({ account: "123456789012" });
+    // Every stack is synthesized and validated with the account (the api, email and observability stacks send)
+    expect(() => Template.fromStack(stacks.all[0] as Stack)).not.toThrow();
+  });
+
   it("tells the function where and how to send", () => {
     sender().hasResourceProperties("AWS::Lambda::Function", {
       Environment: {
