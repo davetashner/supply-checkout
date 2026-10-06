@@ -20,6 +20,7 @@
     "build:demo": "vite build --mode demo",
     "build:ops": "vite build --mode ops",
     "build:site": "vite build --mode site",
+    "site:share": "node scripts/render-share-card.mjs",
     "lint": "eslint . && node scripts/check-links.mjs && npm run build && node scripts/validate-html.mjs",
     "test": "npm run test:artifact && npm run test:web",
     "test:artifact": "BUILD=artifact playwright test --project=desktop-chrome --project=iphone-safari",

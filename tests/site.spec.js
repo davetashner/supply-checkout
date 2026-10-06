@@ -143,3 +143,26 @@ test("the page has no scripts but its own, and no links to terms or privacy unti
   expect(files.get("/site-release.json").body.toString()).toBe('{"site":true}\n');
   await expect(page.getByRole("link", { name: /terms|privacy/i })).toHaveCount(0);
 });
+
+test("a shared link previews with its own title, description and a 1200 x 630 image at a full URL", async ({ page }) => {
+  await open(page);
+  const meta = (selector) => page.locator(`head meta[${selector}]`).getAttribute("content");
+  await expect(page).toHaveTitle("Supply Checkout: track supplies and equipment by job");
+  expect(await meta('property="og:title"')).toBe("Supply Checkout: track supplies and equipment by job");
+  expect(await meta('property="og:description"')).toMatch(/^Scan supplies and company equipment out to each client's job/);
+  expect(await meta('property="og:url"')).toBe("https://supplycheckout.com/");
+  expect(await meta('name="twitter:card"')).toBe("summary_large_image");
+  // The image is a full URL (scrapers don't resolve paths), on the apex's /assets/, and is there
+  for (const selector of ['property="og:image"', 'name="twitter:image"']) {
+    const url = new URL(await meta(selector));
+    expect(url.origin).toBe("https://supplycheckout.com");
+    expect(url.pathname).toMatch(/^\/assets\/share-[\w-]+\.png$/);
+    const file = files.get(url.pathname);
+    expect(file.contentType).toBe("image/png");
+    // A PNG's header holds its size
+    expect([file.body.readUInt32BE(16), file.body.readUInt32BE(20)]).toEqual([1200, 630]);
+    expect(file.body.length).toBeLessThan(600_000);
+  }
+  expect(await meta('property="og:image:width"')).toBe("1200");
+  expect(await meta('property="og:image:height"')).toBe("630");
+});

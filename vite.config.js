@@ -188,11 +188,23 @@ const siteMarker = () => ({
     this.emitFile({ type: "asset", fileName: "site-release.json", source: '{"site":true}\n' });
   },
 });
+// Link previews (iMessage, Slack) fetch the image from the page's tags and need a full URL: Vite
+// hashes share.png into assets/ and writes it as a path, so this puts the page's origin on it
+const SITE_ORIGIN = "https://supplycheckout.com";
+const siteShareImage = () => ({
+  name: "supply-checkout:site-share-image",
+  enforce: "post",
+  // After Vite has written the page's asset paths
+  generateBundle(_, bundle) {
+    const page = bundle["index.html"];
+    page.source = String(page.source).replace(/(content=")(\/assets\/share-[\w-]+\.png")/g, `$1${SITE_ORIGIN}$2`);
+  },
+});
 const siteConfig = () => ({
   root: fileURLToPath(new URL("site", import.meta.url)),
   base: "/",
   publicDir: false,
-  plugins: [siteMarker()],
+  plugins: [siteMarker(), siteShareImage()],
   build: {
     outDir: fileURLToPath(new URL("dist/site", import.meta.url)),
     emptyOutDir: true,
