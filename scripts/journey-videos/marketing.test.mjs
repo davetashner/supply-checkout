@@ -11,7 +11,8 @@ const config = read("../../journeys/marketing.json");
 
 test("the configured clips are Tested journeys, each with a test that exists in its file", () => {
   const clips = planClips(config, registry);
-  assert.deepEqual(clips.map((c) => c.journey), ["J4", "J13", "J14", "J5"]);
+  assert.deepEqual(clips.map((c) => c.slug), ["checkout", "storage", "equipment", "quick-take", "receipt"]);
+  assert.ok(config.slow >= 1);
   for (const clip of clips) {
     const file = new URL(`../../${clip.file}`, import.meta.url);
     assert.ok(existsSync(file), clip.file);
@@ -29,8 +30,8 @@ test("a clip for a journey that isn't Tested, or doesn't exist, or a name used t
 });
 
 test("--only picks clips by journey, and names the ones there are when it's wrong", () => {
-  assert.deepEqual(planClips(config, registry, ["J5", "J4"]).map((c) => c.slug), ["checkout", "receipt"]);
-  assert.throws(() => planClips(config, registry, ["J6"]), /No marketing clip for J6\. There are J4, J13, J14, J5/);
+  assert.deepEqual(planClips(config, registry, ["J5", "J4"]).map((c) => c.slug), ["checkout", "storage", "receipt"]);
+  assert.throws(() => planClips(config, registry, ["J6"]), /No marketing clip for J6\. There are J4, J4, J13, J14, J5/);
 });
 
 test("the grep matches each clip's test literally", () => {
@@ -58,19 +59,21 @@ test("ffmpeg makes an even-sized, streamable H.264 loop with no sound, and a pos
   const args = mp4Args("in.webm", "out.mp4", 390);
   assert.ok(args.includes("-an") && args.includes("libx264") && args.includes("yuv420p"));
   assert.equal(args[args.indexOf("-movflags") + 1], "+faststart");
-  assert.match(args[args.indexOf("-vf") + 1], /^scale=390:-2/);
+  assert.match(args[args.indexOf("-vf") + 1], /^setpts=1\*PTS,fps=24,scale=390:-2/);
+  // 1.5 plays 50% slower
+  assert.match(mp4Args("in.webm", "out.mp4", 390, 1.5)[mp4Args("in.webm", "out.mp4", 390, 1.5).indexOf("-vf") + 1], /^setpts=1\.5\*PTS/);
   assert.equal(args.at(-1), "out.mp4");
   const poster = posterArgs("out.mp4", "p.jpg", "9.50", 390);
   assert.equal(poster[poster.indexOf("-ss") + 1], "9.50");
   assert.ok(poster.includes("-frames:v") && poster.at(-1) === "p.jpg");
 });
 
-test("a clip over 3 MB, or outside 15 to 30 seconds, is a problem", () => {
+test("a clip over 3 MB, or outside 15 to 45 seconds, is a problem", () => {
   assert.deepEqual(problems("a", { bytes: 1e6, seconds: 20 }), []);
   assert.deepEqual(problems("a", { bytes: LIMITS.bytes, seconds: 15 }), []);
-  assert.deepEqual(problems("a", { bytes: LIMITS.bytes + 1, seconds: 30 }).length, 1);
+  assert.deepEqual(problems("a", { bytes: LIMITS.bytes + 1, seconds: 45 }).length, 1);
   assert.match(problems("a", { bytes: 1, seconds: 14.9 })[0], /under 15 s/);
-  assert.match(problems("a", { bytes: 1, seconds: 31 })[0], /over 30 s/);
+  assert.match(problems("a", { bytes: 1, seconds: 46 })[0], /over 45 s/);
   assert.equal(problems("a", { bytes: 9e6, seconds: 1 }).length, 2);
 });
 

@@ -1,6 +1,6 @@
 {
-  "commit": "5269f13",
-  "recordedAt": "2026-10-05T22:42:42.005Z",
+  "commit": "bf8a086",
+  "recordedAt": "2026-10-06T00:15:29.073Z",
   "clips": [
     {
       "journey": "J4",
@@ -8,8 +8,19 @@
       "mp4": "J4-checkout.mp4",
       "poster": "J4-checkout.jpg",
       "caption": "Scan it out. Scan it back.",
-      "seconds": 21,
-      "bytes": 289556,
+      "seconds": 31.3,
+      "bytes": 310045,
+      "width": 390,
+      "height": 664
+    },
+    {
+      "journey": "J4",
+      "slug": "storage",
+      "mp4": "J4-storage.mp4",
+      "poster": "J4-storage.jpg",
+      "caption": "Storage counts follow every scan.",
+      "seconds": 22.4,
+      "bytes": 322805,
       "width": 390,
       "height": 664
     },
@@ -19,8 +30,8 @@
       "mp4": "J13-equipment.mp4",
       "poster": "J13-equipment.jpg",
       "caption": "Know where every ladder and vacuum is, and who took it.",
-      "seconds": 16.8,
-      "bytes": 227179,
+      "seconds": 17.2,
+      "bytes": 222497,
       "width": 390,
       "height": 664
     },
@@ -30,8 +41,8 @@
       "mp4": "J14-quick-take.mp4",
       "poster": "J14-quick-take.jpg",
       "caption": "A box of gloves for the van? Quick take, no job sheet.",
-      "seconds": 15.9,
-      "bytes": 337147,
+      "seconds": 24,
+      "bytes": 407931,
       "width": 390,
       "height": 664
     },
@@ -41,8 +52,8 @@
       "mp4": "J5-receipt.mp4",
       "poster": "J5-receipt.jpg",
       "caption": "Photograph the receipt. Every line lands on the right job.",
-      "seconds": 17,
-      "bytes": 143580,
+      "seconds": 20.9,
+      "bytes": 168565,
       "width": 390,
       "height": 664
     }

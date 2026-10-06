@@ -1,5 +1,5 @@
 {
-  "comment": "The clips on the marketing home page (npm run journeys:video -- --marketing). Each is one tagged Playwright test, recorded on a phone with no test banner. `caption` is shown while a test.step named for a journey step isn't running. Only Tested journeys. `pace` slows the cursor and the pauses (default 1) for a clip that would run under 15 seconds.",
+  "comment": "The clips on the marketing home page (npm run journeys:video -- --marketing). Each is one tagged Playwright test, recorded on a phone with no test banner, with made-up crew names (tests/journey-video.js). `caption` is shown while a test.step named for a journey step isn't running. `pace` slows the cursor and the pauses (default 1) for a clip that would run under 15 seconds, and `slow` stretches every clip's playback (1.5 is 50% slower) after it's recorded. Only Tested journeys.",
   "clips": [
     {
       "journey": "J4",
@@ -9,12 +9,19 @@
       "caption": "Scan it out. Scan it back."
     },
     {
+      "journey": "J4",
+      "slug": "storage",
+      "file": "tests/app.spec.js",
+      "test": "storage counts go down on checkout and back up on return",
+      "caption": "Storage counts follow every scan."
+    },
+    {
       "journey": "J13",
       "slug": "equipment",
       "file": "tests/equipment.spec.js",
       "test": "Inventory filters supplies and equipment, and shows where equipment is out",
       "caption": "Know where every ladder and vacuum is, and who took it.",
-      "pace": 1.8
+      "pace": 1.2
     },
     {
       "journey": "J14",
@@ -28,8 +35,8 @@
       "slug": "receipt",
       "file": "tests/app.spec.js",
       "test": "receipt review merges duplicates and splits items between a client and storage",
-      "caption": "Photograph the receipt. Every line lands on the right job.",
-      "pace": 1.3
+      "caption": "Photograph the receipt. Every line lands on the right job."
     }
-  ]
+  ],
+  "slow": 1.5
 }

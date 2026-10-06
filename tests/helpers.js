@@ -49,6 +49,10 @@ export async function openApp(page, opts = {}) {
     const file = files.get(new URL(r.request().url()).pathname);
     return file ? r.fulfill(file) : r.fulfill({ status: 404 });
   });
+  // The marketing clips' crew (tests/journey-video.js): the signed-in user, and the teammate
+  // seeded as "Sam" (a name typed on the sheet, which the web build has no profile for)
+  const { persona } = journeyVideo;
+  if (persona) opts = { userName: persona.user, ...opts, names: { Sam: persona.crew, [persona.crew]: persona.crew, ...opts.names } };
   await page.addInitScript(installMockClaude, opts);
   await page.goto(ORIGIN);
 }

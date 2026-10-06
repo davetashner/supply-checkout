@@ -11,6 +11,10 @@ import { readFileSync } from "node:fs";
 
 export const enabled = process.env.JOURNEY_VIDEO === "1";
 
+// The marketing clips (journeys/marketing.json) show made-up crew names, not the tests' "Test User"
+// and an unnamed teammate. Tests that assert a name take it from here, so they pass either way.
+export const persona = enabled && JSON.parse(process.env.JOURNEY_VIDEO_OPTIONS || "{}").marketing ? { user: "Maria Lopez", crew: "Dan Reyes" } : null;
+
 const STEP = /^J\d+\.\d+$/;
 const STEP_TITLE = /^(J\d+\.\d+)\b/;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

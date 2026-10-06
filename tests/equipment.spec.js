@@ -6,8 +6,11 @@
 import { test, expect, openApp, enterBarcode, modal, modalViolations, lineRow, inventoryRow } from "./helpers.js";
 import { currentBuild } from "../scripts/builds.mjs";
 import { FakeBackend, openAws, connected } from "./fake-aws.js";
+import { persona } from "./journey-video.js";
 
 const TAKEN = "2026-09-24T13:05:00.000Z";
+// The teammate on the seeded sheets: "Sam", or in the marketing clips a full name
+const SAM = persona?.crew ?? "Sam";
 const ladder = { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, stock: 3 };
 const towels = { code: "SKU1", name: "Paper towels, 6 roll", price: 8.5, stock: 10 };
 const seed = {
@@ -22,11 +25,11 @@ const seed = {
     },
   },
   "sheets/s2": {
-    client: "Delta Dental", date: "2026-09-22", createdByName: "Sam", status: "open",
-    items: { "LAD-1": { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, out: 3, returned: 0, lost: 1, takenBy: "Sam" } },
+    client: "Delta Dental", date: "2026-09-22", createdByName: SAM, status: "open",
+    items: { "LAD-1": { code: "LAD-1", name: "Step ladder", kind: "equipment", cost: 120, out: 3, returned: 0, lost: 1, takenBy: SAM } },
   },
   "sheets/s3": {
-    client: "Foxtrot", date: "2026-09-20", createdByName: "Sam", status: "closed",
+    client: "Foxtrot", date: "2026-09-20", createdByName: SAM, status: "closed",
     items: { vac: { code: "", name: "Shop vacuum", kind: "equipment", cost: 210, out: 1, returned: 1 } },
   },
 };
@@ -178,8 +181,8 @@ test.describe("J13. Take company equipment to a job and bring it back", { tag: [
     // By item, then the oldest sheet first. The artifact build saves a typed name when there's no
     // user, and an older line has no time
     // (The web build's lines name a user, and someone it has no profile for is "Someone")
-    await expect(rows.nth(0).locator("td")).toHaveText(["Step ladderBarcode LAD-1", "2", "Delta DentalSep 22, 2026", currentBuild() === "web" ? "Someone" : "Sam", "—"]);
-    await expect(rows.nth(1).locator("td")).toHaveText(["Step ladderBarcode LAD-1", "1", "Echo StudioSep 24, 2026", "Test User", when]);
+    await expect(rows.nth(0).locator("td")).toHaveText(["Step ladderBarcode LAD-1", "2", "Delta DentalSep 22, 2026", persona?.crew ?? (currentBuild() === "web" ? "Someone" : "Sam"), "—"]);
+    await expect(rows.nth(1).locator("td")).toHaveText(["Step ladderBarcode LAD-1", "1", "Echo StudioSep 24, 2026", persona?.user ?? "Test User", when]);
     // The closed sheet's vacuum came back, so it isn't listed; a row opens its sheet
     await rows.nth(0).click();
     await expect(page.getByRole("heading", { name: "Delta Dental" })).toBeVisible();
