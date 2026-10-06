@@ -1,5 +1,7 @@
 {
-  "comment": "The clips on the marketing home page (npm run journeys:video -- --marketing). Each is one tagged Playwright test, recorded on a phone with no test banner, with made-up crew names (tests/journey-video.js). `caption` is shown while a test.step named for a journey step isn't running. `pace` slows the cursor and the pauses (default 1) for a clip that would run under 15 seconds, and `slow` stretches every clip's playback (1.5 is 50% slower) after it's recorded. Only Tested journeys.",
+  "comment": "The clips on the marketing home page (npm run journeys:video -- --marketing). Each is one tagged Playwright test, recorded on a phone with no test banner, with made-up crew names (tests/journey-video.js). `captions` draws a line over the bottom of the clip, the clip's `caption` or the current test.step's text, and is off because it takes up the screen; each clip's `caption` is still what the page describes it with. `pace` slows the cursor and the pauses (default 1) for a clip that would run under 15 seconds, and `slow` stretches every clip's playback (1.5 is 50% slower) after it's recorded. Only Tested journeys.",
+  "captions": false,
+  "slow": 1.5,
   "clips": [
     {
       "journey": "J4",
@@ -37,6 +39,5 @@
       "test": "receipt review merges duplicates and splits items between a client and storage",
       "caption": "Photograph the receipt. Every line lands on the right job."
     }
-  ],
-  "slow": 1.5
+  ]
 }

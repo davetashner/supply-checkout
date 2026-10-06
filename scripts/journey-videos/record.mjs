@@ -141,7 +141,7 @@ async function marketing(opts, { registry, size }) {
     // One run per clip, so each has its own caption line
     mkdirSync(outDir, { recursive: true });
     for (const clip of clips) {
-      const options = { ...JSON.parse(env.JOURNEY_VIDEO_OPTIONS), pace: opts.pace * (clip.pace ?? 1), marketing: { caption: clip.caption }, report: join(scratch, `${clip.slug}.json`), outputDir: join(scratch, clip.slug) };
+      const options = { ...JSON.parse(env.JOURNEY_VIDEO_OPTIONS), pace: opts.pace * (clip.pace ?? 1), marketing: { caption: clip.caption, captions: config.captions !== false }, report: join(scratch, `${clip.slug}.json`), outputDir: join(scratch, clip.slug) };
       console.log(`Recording ${clip.journey} ${clip.slug}…`);
       const recording = await playwright(run, [clip.file, "--grep", grepClips([clip])], { ...env, JOURNEY_VIDEO_OPTIONS: JSON.stringify(options) });
       const reportFile = options.report;

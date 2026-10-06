@@ -13,6 +13,8 @@ test("the configured clips are Tested journeys, each with a test that exists in 
   const clips = planClips(config, registry);
   assert.deepEqual(clips.map((c) => c.slug), ["checkout", "storage", "equipment", "quick-take", "receipt"]);
   assert.ok(config.slow >= 1);
+  // Nothing is drawn over the clips but the cursor: a caption takes up the screen
+  assert.equal(config.captions, false);
   for (const clip of clips) {
     const file = new URL(`../../${clip.file}`, import.meta.url);
     assert.ok(existsSync(file), clip.file);

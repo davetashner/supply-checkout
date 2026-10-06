@@ -52,7 +52,7 @@ export async function openApp(page, opts = {}) {
   // The marketing clips' crew (tests/journey-video.js): the signed-in user, and the teammate
   // seeded as "Sam" (a name typed on the sheet, which the web build has no profile for)
   const { persona } = journeyVideo;
-  if (persona) opts = { userName: persona.user, ...opts, names: { Sam: persona.crew, [persona.crew]: persona.crew, ...opts.names } };
+  if (persona) opts = { userName: persona.user, avatarUrl: persona.avatarUrl, ...opts, names: { Sam: persona.crew, [persona.crew]: persona.crew, ...opts.names } };
   await page.addInitScript(installMockClaude, opts);
   await page.goto(ORIGIN);
 }
