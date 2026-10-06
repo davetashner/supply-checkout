@@ -1,6 +1,6 @@
 {
-  "commit": "33e8407",
-  "recordedAt": "2026-10-06T00:34:34.849Z",
+  "commit": "ec5c105",
+  "recordedAt": "2026-10-06T00:40:23.376Z",
   "clips": [
     {
       "journey": "J4",
@@ -8,8 +8,8 @@
       "mp4": "J4-checkout.mp4",
       "poster": "J4-checkout.jpg",
       "caption": "Scan it out. Scan it back.",
-      "seconds": 30.5,
-      "bytes": 326037,
+      "seconds": 30.3,
+      "bytes": 307952,
       "width": 390,
       "height": 664
     },
@@ -20,7 +20,7 @@
       "poster": "J4-storage.jpg",
       "caption": "Storage counts follow every scan.",
       "seconds": 22.4,
-      "bytes": 315717,
+      "bytes": 313157,
       "width": 390,
       "height": 664
     },
@@ -31,7 +31,7 @@
       "poster": "J13-equipment.jpg",
       "caption": "Know where every ladder and vacuum is, and who took it.",
       "seconds": 16.9,
-      "bytes": 182700,
+      "bytes": 183463,
       "width": 390,
       "height": 664
     },
@@ -42,7 +42,7 @@
       "poster": "J14-quick-take.jpg",
       "caption": "A box of gloves for the van? Quick take, no job sheet.",
       "seconds": 23.9,
-      "bytes": 404952,
+      "bytes": 403321,
       "width": 390,
       "height": 664
     },
@@ -52,8 +52,8 @@
       "mp4": "J5-receipt.mp4",
       "poster": "J5-receipt.jpg",
       "caption": "Photograph the receipt. Every line lands on the right job.",
-      "seconds": 20.9,
-      "bytes": 160024,
+      "seconds": 20.8,
+      "bytes": 155305,
       "width": 390,
       "height": 664
     }
