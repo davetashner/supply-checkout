@@ -5,7 +5,7 @@ import { Code, Function as LambdaFunction, Runtime } from "aws-cdk-lib/aws-lambd
 import { describe, expect, it } from "vitest";
 import { EMAIL_ENV } from "../../backend/src/email/names.js";
 import { APPROVED_REGIONS, type DeploymentConfig } from "../lib/config.js";
-import { emailSettings, grantSendEmail } from "../lib/email.js";
+import { SES_SANDBOX, emailSettings, grantSendEmail } from "../lib/email.js";
 import { SECURITY_NOTICE_EVENTS } from "../../backend/src/identity/names.js";
 import { EmailStack } from "../lib/stacks/email-stack.js";
 import { EVENT_PATTERN_LIMIT } from "../lib/stacks/observability-stack.js";
@@ -371,7 +371,24 @@ describe("grantSendEmail", () => {
     expect(arns).toContain(`:ses:${EAST}:`);
     expect(arns).toContain(":identity/supplycheckout.com");
     expect(arns).toContain(":configuration-set/supply-checkout-prod-transactional");
-    expect(arns).not.toContain("*");
+    // The only wildcard is the sandbox's recipient identities (below); nothing else, and not a wildcard action
+    expect(JSON.stringify(statement?.Action)).not.toContain("*");
+    expect((arns.match(/\*/g) ?? []).length).toBe(SES_SANDBOX ? 1 : 0);
+  });
+
+  // While SES is in the sandbox it also authorizes each recipient's identity (supply-checkout-3sv.20)
+  it("covers recipient identities only while SES is in the sandbox, and then with the same From condition and action", () => {
+    const [statement] = statements(sender());
+    const resources = (statement?.Resource as unknown[]).map((r) => JSON.stringify(r));
+    const wildcards = resources.filter((r) => r.includes("*"));
+    if (SES_SANDBOX) {
+      expect(wildcards).toHaveLength(1);
+      expect(wildcards[0]).toContain(`:ses:${EAST}:`);
+      expect(wildcards[0]).toMatch(/:identity\/\*"\]\]\}$/);
+    } else {
+      expect(wildcards).toEqual([]);
+    }
+    expect(statement).toMatchObject({ Action: "ses:SendEmail", Condition: { StringEquals: { "ses:FromAddress": "noreply@supplycheckout.com" } } });
   });
 
   it("tells the function where and how to send", () => {
