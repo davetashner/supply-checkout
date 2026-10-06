@@ -5,7 +5,7 @@
 // those events is the email stack. A function that sends (the account
 // function, for invites; billing notices, supply-checkout-x0l) gets
 // grantSendEmail(), and nothing else may send.
-import { Stack } from "aws-cdk-lib";
+import { Stack, Validations } from "aws-cdk-lib";
 import { PolicyStatement, type User } from "aws-cdk-lib/aws-iam";
 import type { Construct } from "constructs";
 import type { Function as LambdaFunction } from "aws-cdk-lib/aws-lambda";
@@ -37,11 +37,22 @@ export function emailSettings(config: DeploymentConfig): EmailSettings {
 }
 
 /**
+ * True while the account's SES is in the sandbox (production access was denied on 2026-10-05,
+ * supply-checkout-3sv.18). In the sandbox SES authorizes ses:SendEmail against the recipient's
+ * identity too, so a send to a verified address was refused (AccessDeniedException: every invite
+ * since 2026-10-01, supply-checkout-3sv.20) unless the role covers that identity. Set this to
+ * false, and delete the branch below, once production access is granted.
+ */
+export const SES_SANDBOX = true;
+
+/**
  * Lets `fn` send the app's email (backend/src/email/mailer.ts): ses:SendEmail
  * on the domain identity and the configuration set only, and only with the
  * From address `noreply@<env domain>`. Sets the environment mailerFromEnv()
  * reads. No SendRawEmail (it could set arbitrary headers), no templates API,
- * and no other identity.
+ * and no other identity. While the account is in the SES sandbox (SES_SANDBOX), the
+ * same statement also covers any identity as a recipient, still only with that From address:
+ * the sender can't change, and the action is still only SendEmail.
  */
 export function grantSendEmail(fn: LambdaFunction, config: DeploymentConfig): void {
   const email = emailSettings(config);
@@ -50,10 +61,17 @@ export function grantSendEmail(fn: LambdaFunction, config: DeploymentConfig): vo
     new PolicyStatement({
       sid: "SendAppEmail",
       actions: ["ses:SendEmail"],
-      resources: [arn("identity", email.identity), arn("configuration-set", email.configurationSet)],
+      resources: [arn("identity", email.identity), arn("configuration-set", email.configurationSet), ...(SES_SANDBOX ? [arn("identity", "*")] : [])],
       conditions: { StringEquals: { "ses:FromAddress": email.fromAddress } },
     }),
   );
+  if (SES_SANDBOX && fn.role) {
+    Validations.of(fn.role.node.findChild("DefaultPolicy")).acknowledge({
+      id: `AwsSolutions-IAM5[Resource::arn:aws:ses:${email.region}:<AWS::AccountId>:identity/*]`,
+      reason:
+        "SES sandbox only (supply-checkout-3sv.20): SES also authorizes SendEmail on each verified recipient's identity. The statement keeps the From-address condition (noreply@ only) and only ses:SendEmail; remove with SES_SANDBOX once production access is granted (supply-checkout-3sv.18).",
+    });
+  }
   fn.addEnvironment(EMAIL_ENV.fromAddress, email.fromAddress);
   fn.addEnvironment(EMAIL_ENV.configurationSet, email.configurationSet);
   fn.addEnvironment(EMAIL_ENV.region, email.region);
