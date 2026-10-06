@@ -81,3 +81,6 @@ footer p { margin: 0; }
 .play[data-state="playing"] { opacity: 0; }
 .play[data-state="playing"]:hover, .play[data-state="playing"]:focus-visible { opacity: 1; }
 .play[data-state="playing"]::before { left: 22px; top: 20px; width: 20px; height: 24px; border: 0; background: linear-gradient(90deg, #fff 0 36%, transparent 36% 64%, #fff 64%); }
+
+/* Text for the clips' figures, for screen readers only */
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
