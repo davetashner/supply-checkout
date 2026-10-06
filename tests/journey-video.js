@@ -115,7 +115,7 @@ class Recorder {
 export async function start(page, testInfo) {
   await setup();
   const v = director.VIEWPORTS[options.viewport];
-  await page.context().addInitScript(director.installOverlay, { banner: options.marketing ? 0 : v.banner, compact: options.viewport === "phone", marketing: Boolean(options.marketing) });
+  await page.context().addInitScript(director.installOverlay, { banner: options.marketing ? 0 : v.banner, compact: options.viewport === "phone", marketing: Boolean(options.marketing), captions: options.marketing?.captions !== false });
   patchLocator(page);
   const recorder = new Recorder(page, testInfo);
   // A new document gets the overlay from the init script; this puts the caption back

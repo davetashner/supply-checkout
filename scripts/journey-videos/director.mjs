@@ -27,7 +27,7 @@ export function frame(name, { marketing = false } = {}) {
 // elements go on <html>, outside <body>, so the app's redraws never remove them; none of them
 // take pointer events, and none is in the accessibility tree. The styles are a constructed
 // stylesheet, so a Content Security Policy that forbids inline styles doesn't stop them.
-export function installOverlay({ banner: height, compact, marketing = false }) {
+export function installOverlay({ banner: height, compact, marketing = false, captions = true }) {
   if (window.top !== window || window.__jv) return;
   const api = { ready: false, state: null };
   window.__jv = api;
@@ -62,7 +62,7 @@ export function installOverlay({ banner: height, compact, marketing = false }) {
     #jv-banner .jv-id, #jv-banner .jv-test, #jv-banner .jv-note, #jv-banner .jv-state { display: none; }
     #jv-banner .jv-text { flex: none; max-width: 100%; }
     #jv-banner .jv-step { font-size: ${compact ? 15 : 20}px; font-weight: 700; -webkit-line-clamp: 2; }
-  ` : "");
+  ` + (captions ? "" : "#jv-banner { display: none !important; }") : "");
   let banner, cursor;
   const el = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
   // Once per document
