@@ -48,8 +48,8 @@ test("the page leads with the checkout journey and the trial, and says the price
   const trial = page.getByRole("link", { name: "Start your free trial" }).first();
   await expect(trial).toHaveAttribute("href", "https://app.supplycheckout.com/");
   await expect(page.getByRole("link", { name: "Try the demo", exact: true })).toHaveAttribute("href", "/demo/");
-  await expect(page.getByText("14 days free. No card needed. $3 per user per month after that.")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "$3 per user per month." })).toBeVisible();
+  await expect(page.getByText("14 days free, no card needed. Then $9 a month for 3 people and $3 for each person after that. Viewers are free.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "From $9 a month for 3 people." })).toBeVisible();
   // One section for each of the other journeys the clips show
   const features = await page.locator(".feature h2").allTextContents();
   expect(features).toEqual([
@@ -65,12 +65,13 @@ test("each recorded clip is on the page with a poster, and every file loads", as
   const failed = [];
   page.on("response", (r) => { if (new URL(r.url()).origin === ORIGIN && r.status() >= 400) failed.push(`${r.status()} ${r.url()}`); });
   await open(page);
-  // The clips' own journeys, in the order the config gives them: J4 is the hero and again its section
+  // The clips, in the order the config gives them: the checkout clip is the hero
   const sources = await page.locator(".screen video source").evaluateAll((s) => s.map((e) => e.getAttribute("src")));
-  expect(sources).toHaveLength(CLIPS.length + 1);
+  expect(sources).toHaveLength(CLIPS.length);
   for (const clip of CLIPS) {
     const hashed = sources.filter((src) => src.includes(`/assets/${clip.mp4.replace(".mp4", "")}-`));
-    expect(hashed, clip.mp4).toHaveLength(clip.journey === "J4" ? 2 : 1);
+    // Each clip is on the page once: no two videos are the same
+    expect(hashed, clip.mp4).toHaveLength(1);
     expect(files.has(hashed[0]), clip.mp4).toBe(true);
   }
   for (const v of await page.locator(".screen video").all()) {
@@ -110,13 +111,13 @@ test("someone who prefers reduced motion gets stills, and a button to play a cli
   for (const v of await page.locator(".screen video").all()) {
     await expect(v).toHaveJSProperty("paused", true);
   }
-  const play = page.getByRole("button", { name: /^Play the clip: Checking a client's supplies out/ });
+  const play = page.getByRole("button", { name: /^Play the clip: A crew member checks supplies out/ });
   await expect(play).toBeVisible();
   // (Playwright's Firefox has no H.264 decoder, so a clip there can't start)
   if (browserName === "firefox") return;
   await play.click();
-  await expect(page.getByRole("button", { name: /^Pause the clip: Checking a client's supplies out/ })).toBeAttached();
-  await page.getByRole("button", { name: /^Pause the clip: Checking a client's supplies out/ }).click();
+  await expect(page.getByRole("button", { name: /^Pause the clip: A crew member checks supplies out/ })).toBeAttached();
+  await page.getByRole("button", { name: /^Pause the clip: A crew member checks supplies out/ }).click();
   await expect(play).toBeAttached();
 });
 

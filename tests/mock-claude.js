@@ -2,7 +2,7 @@
 // Injected with page.addInitScript, so it must be self-contained.
 export function installMockClaude(opts) {
   const {
-    seed = {}, canWrite = true, owner = true, userId = "u_test", userName = "Test User", avatarUrl = "data:,", receipt = null,
+    seed = {}, canWrite = true, owner = true, userId = "u_test", userName = "Test User", names = {}, avatarUrl = "data:,", receipt = null,
     sampleDelay = 0, // milliseconds sample.json takes to answer, like a real model call
     // Failure modes: a capability that isn't available, or calls that reject
     unavailable = [], writeError = null, sampleError = null,
@@ -119,7 +119,7 @@ export function installMockClaude(opts) {
   }
 
   const db = { doc: docRef, collection: collRef };
-  const profile = (id) => ({ id, name: id === userId ? userName : "", avatarUrl, color: "#336", email: null, isMe: id === userId, guest: false });
+  const profile = (id) => ({ id, name: id === userId ? userName : names[id] || "", avatarUrl, color: "#336", email: null, isMe: id === userId, guest: false });
   const fails = (name) => { if (userErrors.includes(name)) throw { code: "unavailable", message: "simulated " + name + " failure" }; };
   const user = {
     id: async () => { fails("id"); return userId; },

@@ -150,7 +150,7 @@ async function marketing(opts, { registry, size }) {
       if (!result?.video) throw new Error(`${clip.slug}: no recording of "${clip.test}" in ${clip.file}`);
       if (result.status !== "passed") { errors.push(`${clip.slug}: its test ${result.status}${result.error ? `: ${result.error}` : ""}`); continue; }
       const mp4 = `${clip.journey}-${clip.slug}.mp4`, poster = `${clip.journey}-${clip.slug}.jpg`;
-      const seconds = encode(result.video, join(outDir, mp4), join(outDir, poster), { width: size.video.width });
+      const seconds = encode(result.video, join(outDir, mp4), join(outDir, poster), { width: size.video.width, slow: config.slow ?? 1 });
       const bytes = statSync(join(outDir, mp4)).size;
       errors.push(...problems(clip.slug, { bytes, seconds }));
       manifest.push({ journey: clip.journey, slug: clip.slug, mp4, poster, caption: clip.caption, seconds: Number(seconds.toFixed(1)), bytes, width: size.video.width, height: size.video.height });
